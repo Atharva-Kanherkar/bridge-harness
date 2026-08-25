@@ -200,6 +200,24 @@
     --sidebar-ring: #6a9bcc;
 }
 
+/* Unlayered so this beats `:root { --window-radius: 16px }`. Fullscreen is a
+   flush rectangle; chip radius stays 10pt because there is no window arc to
+   stay concentric with. */
+html[data-fullscreen],
+html[data-flush-window] {
+    --window-radius: 0px;
+    --radius-window: 0px;
+    --radius-window-control: 10px;
+}
+
+/* Traffic-light inset (`pl-24`) is only real in a windowed Tauri frame.
+   Vite, and native macOS fullscreen (lights auto-hide), sit the panel on
+   the left edge. Unlayered so this beats the utility. */
+html:not([data-tauri]) .u-traffic-inset,
+html[data-native-fullscreen] .u-traffic-inset {
+    padding-left: 0.5rem;
+}
+
 @layer base {
   * {
     @apply border-border;

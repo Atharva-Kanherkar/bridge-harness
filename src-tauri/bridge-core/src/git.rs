@@ -47,6 +47,61 @@ pub fn current_branch(path: &Path) -> Option<String> {
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty() && value != "HEAD")
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceBranches {
+    pub current: Option<String>,
+    pub branches: Vec<String>,
+}
+
+/// Local branches available to the workspace checkout. Remote-only refs are
+/// intentionally excluded: choosing one would need explicit tracking-branch
+/// creation rather than silently inventing local state.
+pub fn list_branches(path: &Path) -> Result<WorkspaceBranches, BridgeError> {
+    if !is_repository(path) {
+        return Err(BridgeError::Invalid(
+            "this workspace directory is not a Git repository".into(),
+        ));
+    }
+    let mut branches = nonempty_lines(&run(
+        path,
+        ["for-each-ref", "--format=%(refname:short)", "refs/heads/"],
+    )?);
+    branches.sort();
+    branches.dedup();
+    Ok(WorkspaceBranches {
+        current: current_branch(path),
+        branches,
+    })
+}
+
+/// Switch a clean, inactive workspace to an existing local branch. The branch
+/// must come from Git's own ref list, which also prevents option injection.
+pub fn checkout_branch(
+    worktree: &Path,
+    branch: &str,
+    session_active: bool,
+) -> Result<WorkspaceBranches, BridgeError> {
+    ensure_inactive(session_active, "switch branches")?;
+    if !is_repository(worktree) {
+        return Err(BridgeError::Invalid(
+            "this workspace directory is not a Git repository".into(),
+        ));
+    }
+    ensure_clean(worktree, "switch branches")?;
+    let available = list_branches(worktree)?;
+    if !available.branches.iter().any(|candidate| candidate == branch) {
+        return Err(BridgeError::Invalid(format!(
+            "branch '{branch}' is not an existing local branch"
+        )));
+    }
+    if available.current.as_deref() != Some(branch) {
+        run(worktree, ["switch", branch])?;
+    }
+    list_branches(worktree)
+}
+
 pub fn slug(value: &str) -> String {
     let mut out = String::new();
     let mut dash = false;
@@ -1108,6 +1163,36 @@ mod tests {
 
     fn paths(values: &[&str]) -> Vec<String> {
         values.iter().map(|value| (*value).to_owned()).collect()
+    }
+
+    #[test]
+    fn lists_and_switches_only_existing_local_branches() {
+        let (_fixture, repo) = repository();
+        let initial = current_branch(&repo).unwrap();
+        git(&repo, &["branch", "feature"]);
+
+        let listed = list_branches(&repo).unwrap();
+        assert_eq!(listed.current.as_deref(), Some(initial.as_str()));
+        assert!(listed.branches.contains(&initial));
+        assert!(listed.branches.contains(&"feature".to_owned()));
+
+        let switched = checkout_branch(&repo, "feature", false).unwrap();
+        assert_eq!(switched.current.as_deref(), Some("feature"));
+        assert!(checkout_branch(&repo, "--detach", false).is_err());
+    }
+
+    #[test]
+    fn branch_switch_refuses_active_or_dirty_workspaces() {
+        let (_fixture, repo) = repository();
+        git(&repo, &["branch", "feature"]);
+
+        let active = checkout_branch(&repo, "feature", true).unwrap_err();
+        assert!(active.to_string().contains("session is active"), "{active}");
+
+        std::fs::write(repo.join("shared.txt"), "dirty\n").unwrap();
+        let dirty = checkout_branch(&repo, "feature", false).unwrap_err();
+        assert!(dirty.to_string().contains("dirty worktree"), "{dirty}");
+        assert_ne!(current_branch(&repo).as_deref(), Some("feature"));
     }
 
     #[test]

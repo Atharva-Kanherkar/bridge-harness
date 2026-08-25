@@ -45,6 +45,17 @@ describe("shell flags", () => {
     const source = readFileSync(join(__dirname, "App.tsx"), "utf8");
     expect(source).not.toContain("SHOW_CURSOR_SIDEBAR_MOCK");
     expect(source).not.toContain("CursorSidebarMock");
+    expect(source).not.toContain("RightRailPreview");
+    expect(source).not.toContain("NewChatDialog");
     expect(source).toContain("BridgeSidebar");
+    expect(source).toContain("chromeFullscreen");
+    expect(source).toContain("data-flush-window");
+    expect(source).toContain("setLayoutFullscreenDocument");
+    expect(source).toContain("notifyLayoutFullscreen");
+    expect(source).not.toContain("chromeFullscreen && <AppTitleBar");
+    expect(source).not.toContain("WindowHistoryChevrons");
+    expect(source).not.toContain("WindowPanelButton");
+    expect(source).toContain("showWindowNav");
+    expect(source).toContain("flex h-[100dvh] flex-row");
   });
 });

@@ -8,6 +8,7 @@ import type {
   ManagedAgentOperationKind,
   ManagedAgentOperationResult,
   ManagedAgentStatus,
+  ListWorkspaceBranchesResult,
   ReadWorkspaceFileResult,
   SubmitInputResult,
   WorkspaceChangesResult,
@@ -1329,6 +1330,21 @@ export const bridgeApi = {
   writeTerminal: (workspaceId: string, data: string): Promise<void> => isTauri() ? unit(call("terminal/write_terminal", { workspaceId, data })) : Promise.resolve(),
   resizeTerminal: (workspaceId: string, rows: number, cols: number): Promise<void> => isTauri() ? unit(call("terminal/resize_terminal", { workspaceId, rows, cols })) : Promise.resolve(),
   refreshWorkspace: (workspaceId: string): Promise<BridgeState> => isTauri() ? call("workspaces/refresh_workspace", { workspaceId }) : Promise.resolve(snapshot()),
+  listWorkspaceBranches: (workspaceId: string): Promise<ListWorkspaceBranchesResult> => {
+    if (isTauri()) return call("workspaces/list_workspace_branches", { workspaceId });
+    const current = mockState.workspaces.find(workspace => workspace.id === workspaceId)?.branch ?? null;
+    return Promise.resolve({
+      current,
+      branches: [...new Set([current, "main", "feat/sidebar-polish"].filter((branch): branch is string => !!branch))].sort(),
+    });
+  },
+  checkoutWorkspaceBranch: async (workspaceId: string, branch: string): Promise<BridgeState> => {
+    if (isTauri()) return call("workspaces/checkout_workspace_branch", { workspaceId, branch });
+    const workspace = mockState.workspaces.find(item => item.id === workspaceId);
+    if (workspace) workspace.branch = branch;
+    emitState();
+    return snapshot();
+  },
   archiveWorkspace: async (workspaceId: string): Promise<BridgeState> => {
     if (isTauri()) return call("workspaces/archive_workspace", { workspaceId });
     mockState.sessions = mockState.sessions.filter(session => session.workspaceId !== workspaceId); mockState.workspaces = mockState.workspaces.filter(workspace => workspace.id !== workspaceId); emitState(); return snapshot();

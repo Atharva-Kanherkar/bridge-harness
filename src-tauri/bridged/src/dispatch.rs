@@ -74,6 +74,18 @@ pub fn dispatch(
             let p: wire::RefreshWorkspaceParams = decode(method, params)?;
             reply(api::refresh_workspace(core, &p.workspace_id))
         }
+        MethodName::ListWorkspaceBranches => {
+            let p: wire::ListWorkspaceBranchesParams = decode(method, params)?;
+            reply(api::list_workspace_branches(core, &p.workspace_id))
+        }
+        MethodName::CheckoutWorkspaceBranch => {
+            let p: wire::CheckoutWorkspaceBranchParams = decode(method, params)?;
+            reply(api::checkout_workspace_branch(
+                core,
+                &p.workspace_id,
+                &p.branch,
+            ))
+        }
         MethodName::ArchiveWorkspace => {
             let p: wire::ArchiveWorkspaceParams = decode(method, params)?;
             reply(api::archive_workspace(core, &p.workspace_id))

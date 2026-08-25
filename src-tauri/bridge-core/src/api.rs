@@ -226,6 +226,47 @@ pub fn refresh_workspace(
     core.record_workspace_git_stats(workspace_id, stats)
 }
 
+pub fn list_workspace_branches(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+) -> Result<git::WorkspaceBranches, BridgeError> {
+    let path = core.workspace_path(workspace_id)?;
+    git::list_branches(Path::new(&path))
+}
+
+pub fn checkout_workspace_branch(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+    branch: &str,
+) -> Result<BridgeState, BridgeError> {
+    let (path, active) = {
+        let db = core.db.lock().unwrap();
+        let path: String = db.query_row(
+            "SELECT path FROM workspaces WHERE id=?1",
+            params![workspace_id],
+            |row| row.get(0),
+        )?;
+        let active: bool = db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND ended_at IS NULL AND status IN ('starting','working','waiting','ready','resuming','checkpointing'))",
+            params![workspace_id],
+            |row| row.get(0),
+        )?;
+        (path, active)
+    };
+
+    let switched = git::checkout_branch(Path::new(&path), branch, active)?;
+    let (dirty, additions, deletions) = git::stats(Path::new(&path))?;
+    let current = switched.current.ok_or_else(|| {
+        BridgeError::Invalid("the selected branch left the workspace in detached HEAD state".into())
+    })?;
+    let db = core.db.lock().unwrap();
+    db.execute(
+        "UPDATE workspaces SET branch=?2,dirty_files=?3,additions=?4,deletions=?5 WHERE id=?1",
+        params![workspace_id, current, dirty, additions, deletions],
+    )?;
+    store::state(&db)
+}
+
 /// The workspace's uncommitted changeset for the importance-first review UI:
 /// every path that differs from `HEAD`, tracked or not, each with a unified
 /// diff and an importance badge. Resolves the path under the lock, then runs

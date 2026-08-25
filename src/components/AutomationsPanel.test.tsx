@@ -50,4 +50,10 @@ describe("AutomationsPanel", () => {
     );
     expect(html).toContain("No automations yet");
   });
+
+  it("offers a quiet catalog link when a handler is provided", () => {
+    const html = renderToStaticMarkup(<AutomationsPanel initialCatalog={catalog} onBrowseCatalog={() => {}} />);
+    expect(html).toContain("Browse catalog");
+    expect(html).not.toContain('aria-label="Filter resources"');
+  });
 });

@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Session, Workspace } from "../types";
 import { BridgeSidebar, type BridgeSidebarProps } from "./BridgeSidebar";
-import { CHAT_SCOPE_KEY, CHAT_VIEW_KEY } from "./sidebarChats";
+import { CHAT_VIEW_KEY } from "./sidebarChats";
 
 const session = (id: string, overrides: Partial<Session> = {}): Session => ({
   id,
@@ -30,19 +30,21 @@ const workspace: Workspace = {
 
 const noop = () => {};
 
+const DATE_VIEW = JSON.stringify({ status: "all", agent: "all", groupBy: "date", sortBy: "recency" });
+
 const props = (overrides: Partial<BridgeSidebarProps> = {}): BridgeSidebarProps => ({
   chats: [session("chat-1", { title: "Policy engine budget" })],
   workspaces: [workspace],
   activeSessionId: undefined,
-  workBoardActive: false,
-  workNeedsYouCount: 0,
   projectsActive: false,
-  marketplaceActive: false,
+  automationsActive: false,
+  missionControlActive: false,
   settingsActive: false,
+  accountName: "cestercian",
   onOpenNewChat: noop,
-  onOpenWorkBoard: () => {},
   onOpenProjects: noop,
-  onOpenMarketplace: noop,
+  onOpenAutomations: noop,
+  onOpenMissionControl: noop,
   onOpenMemory: noop,
   onOpenSettings: noop,
   onOpenSession: noop,
@@ -78,6 +80,8 @@ beforeEach(() => {
 describe("BridgeSidebar responsive rail", () => {
   it("stays off-canvas on narrow windows until it is opened", () => {
     const html = render({ mobileOpen: false });
+    expect(html).toContain("left-0");
+    expect(html).toContain("border-r border-sidebar-border");
     expect(html).toContain("-translate-x-full");
     // It must still be laid out normally from the sm breakpoint up.
     expect(html).toContain("sm:translate-x-0");
@@ -95,14 +99,16 @@ describe("BridgeSidebar responsive rail", () => {
     expect(render({ mobileOpen: false })).not.toContain("Close navigation");
   });
 
-  it("keeps the drag-to-resize handle to pointer-capable widths only", () => {
+  it("keeps the drag-to-resize handle on the right edge, pointer-capable widths only", () => {
     // The handle is meaningless in the drawer, where width is fixed.
+    expect(render()).toContain("absolute inset-y-0 right-0");
     expect(render()).toContain("hidden w-3 cursor-col-resize touch-none select-none sm:block");
   });
 
   it("puts panel beside the traffic lights and chevrons on the right of that strip", () => {
     const html = render();
     expect(html).toContain("pl-24");
+    expect(html).toContain("u-traffic-inset");
     expect(html).toContain("Hide sidebar");
     expect(html).toContain("ml-auto");
     expect(html).toContain("aria-label=\"Back\"");
@@ -152,6 +158,7 @@ describe("BridgeSidebar theming", () => {
 
 describe("BridgeSidebar history", () => {
   it("groups chats under day headers", () => {
+    localStorage.setItem(CHAT_VIEW_KEY, DATE_VIEW);
     const html = render({
       chats: [
         session("now", { title: "Today chat", startedAt: daysAgo(0) }),
@@ -162,11 +169,17 @@ describe("BridgeSidebar history", () => {
     expect(html).toContain("Yesterday");
   });
 
-  it("keeps a project chat out of Work and shows it under Code", () => {
-    const chats = [session("in-project", { title: "Inside harness", workspaceId: "workspace-1" })];
-    expect(render({ chats })).not.toContain("Inside harness");
-    localStorage.setItem(CHAT_SCOPE_KEY, "code");
-    expect(render({ chats })).toContain("Inside harness");
+  it("lists plain chats and project chats together", () => {
+    const chats = [
+      session("plain", { title: "Japan relocation planning" }),
+      session("in-project", { title: "Inside harness", workspaceId: "workspace-1" }),
+    ];
+    const html = render({ chats });
+    expect(html).toContain("Japan relocation planning");
+    expect(html).toContain("Inside harness");
+    expect(html).toContain("Repositories");
+    expect(html).toContain("No project");
+    expect(html).toContain("harness");
   });
 
   it("keeps harness and model out of the row text but in its tooltip", () => {
@@ -178,6 +191,7 @@ describe("BridgeSidebar history", () => {
   });
 
   it("caps a group and offers the rest behind one control", () => {
+    localStorage.setItem(CHAT_VIEW_KEY, DATE_VIEW);
     const chats = Array.from({ length: 15 }, (_, index) =>
       session(`c${index}`, { title: `Chat ${index}`, startedAt: daysAgo(0, 1 + index) }));
     const html = render({ chats });
@@ -209,13 +223,13 @@ describe("BridgeSidebar history", () => {
     expect(render({ chats: [session("a", { status: "working" })] })).toContain("No chat matches this filter");
   });
 
-  it("labels the Code list Repositories and the Work list Chats", () => {
-    expect(render()).toContain("Chats");
-    localStorage.setItem(CHAT_SCOPE_KEY, "code");
+  it("labels the list Repositories", () => {
     expect(render()).toContain("Repositories");
+    expect(render()).not.toContain(">Chats<");
   });
 
   it("indents rows under a group and shows a compact time", () => {
+    localStorage.setItem(CHAT_VIEW_KEY, DATE_VIEW);
     const html = render({
       chats: [session("now", { title: "Today chat", startedAt: new Date(Date.now() - 2_000).toISOString() })],
     });
@@ -224,7 +238,6 @@ describe("BridgeSidebar history", () => {
   });
 
   it("shows a git badge only when the chat's workspace has a branch", () => {
-    localStorage.setItem(CHAT_SCOPE_KEY, "code");
     const chats = [session("branched", { title: "On main", workspaceId: "workspace-1" })];
     expect(render({ chats })).toContain("On a git branch");
     expect(render({ chats, workspaces: [{ ...workspace, branch: null }] })).not.toContain("On a git branch");
@@ -238,7 +251,6 @@ describe("BridgeSidebar history", () => {
 
 describe("BridgeSidebar without the projects tree", () => {
   it("carries no project rows and no new-project control", () => {
-    localStorage.setItem(CHAT_SCOPE_KEY, "code");
     const html = render({
       workspaces: [workspace],
       chats: [session("a", { title: "Inside harness", workspaceId: "workspace-1" })],
@@ -250,70 +262,41 @@ describe("BridgeSidebar without the projects tree", () => {
     expect(html).not.toContain("Connect folder");
   });
 
-  it("offers Projects in the footer and marks it active when that screen is open", () => {
+  it("offers Projects below Mission Control and marks it active when that screen is open", () => {
     const projectsButton = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Projects"')) ?? "";
     expect(projectsButton(render())).toBeTruthy();
     expect(projectsButton(render())).not.toContain("aria-current");
     expect(projectsButton(render({ projectsActive: true }))).toContain('aria-current="page"');
   });
 
-  it("keeps Marketplace and Settings off the footer; those live on Automations and Customize", () => {
+  it("uses a real local account row as the settings entry", () => {
     const html = render();
     expect(html).toContain("Projects");
     expect(html).toContain("Memory");
     expect(html).not.toContain("Marketplace");
-    expect(html).not.toContain("Settings");
+    expect(html).toContain("cestercian");
+    expect(html).toContain('aria-label="Open settings for cestercian"');
     expect(html).not.toContain("Yashaswi");
   });
 
   it("still labels project groups, which is why it keeps the workspaces prop", () => {
-    localStorage.setItem(CHAT_SCOPE_KEY, "code");
     localStorage.setItem(CHAT_VIEW_KEY, JSON.stringify({ status: "all", agent: "all", groupBy: "project", sortBy: "recency" }));
     const html = render({ chats: [session("a", { workspaceId: "workspace-1" })] });
     expect(html).toContain("harness");
   });
 });
 
-describe("BridgeSidebar scope switch", () => {
-  it("offers Work and Code, with Work selected by default", () => {
+describe("BridgeSidebar list", () => {
+  it("has no Work / Code switch", () => {
     const html = render();
-    expect(html).toContain('aria-label="Work"');
-    expect(html).toContain('aria-label="Code"');
-    const work = html.split("<button").find(chunk => chunk.includes('aria-label="Work"')) ?? "";
-    expect(work).toContain('aria-selected="true"');
+    expect(html).not.toContain('aria-label="Work"');
+    expect(html).not.toContain('aria-label="Code"');
+    expect(html).not.toContain("Needs you");
   });
 
-  it("honours a persisted scope", () => {
-    localStorage.setItem(CHAT_SCOPE_KEY, "code");
-    const code = render().split("<button").find(chunk => chunk.includes('aria-label="Code"')) ?? "";
-    expect(code).toContain('aria-selected="true"');
-  });
-
-  it("splits plain chats from project chats", () => {
-    const chats = [
-      session("plain", { title: "Japan relocation planning" }),
-      session("project", { title: "Sidebar redesign", workspaceId: "workspace-1" }),
-    ];
-    const home = render({ chats });
-    expect(home).toContain("Japan relocation planning");
-    expect(home).not.toContain("Sidebar redesign");
-
-    localStorage.setItem(CHAT_SCOPE_KEY, "code");
-    const code = render({ chats });
-    expect(code).toContain("Sidebar redesign");
-    expect(code).not.toContain("Japan relocation planning");
-  });
-
-  it("says where project chats come from when Code is empty", () => {
-    localStorage.setItem(CHAT_SCOPE_KEY, "code");
-    expect(render({ chats: [session("plain")] })).toContain("New chat asks which project");
-  });
-
-  it("keeps the switch reachable in the collapsed rail", () => {
-    localStorage.setItem("bridge.sidebar.collapsed", "1");
-    const html = render();
-    expect(html).toContain('aria-label="Work"');
-    expect(html).toContain('aria-label="Code"');
+  it("says how New Chat picks a repo when the list is empty", () => {
+    expect(render({ chats: [] })).toContain("No chats yet. New Chat opens in the repo you were last in.");
+    expect(render({ chats: [] })).not.toContain("New chat asks which project");
   });
 });
 
@@ -327,13 +310,17 @@ describe("BridgeSidebar search", () => {
 });
 
 describe("BridgeSidebar action rows", () => {
-  it("offers New Chat, Search, Automations, and Customize as ghost rows", () => {
+  it("offers Mission Control followed by Projects and Memory near the top", () => {
     const html = render();
     expect(html).toContain("New Chat");
     expect(html).toContain("Automations");
-    expect(html).toContain("Customize");
-    expect(html.indexOf("New Chat")).toBeLessThan(html.indexOf('aria-label="Work"'));
-    expect(html.indexOf('aria-label="Work"')).toBeLessThan(html.indexOf("Needs you"));
+    expect(html).toContain("Mission Control");
+    expect(html.indexOf("New Chat")).toBeLessThan(html.indexOf("Automations"));
+    expect(html.indexOf("Automations")).toBeLessThan(html.indexOf("Mission Control"));
+    expect(html.indexOf("Mission Control")).toBeLessThan(html.indexOf("Projects"));
+    expect(html.indexOf("Projects")).toBeLessThan(html.indexOf("Memory"));
+    expect(html).not.toContain("Customize");
+    expect(html).not.toContain("Needs you");
   });
 
   it("drops the filled primary new-chat button", () => {
@@ -343,23 +330,19 @@ describe("BridgeSidebar action rows", () => {
   it("keeps those rows reachable as icon-only controls when collapsed", () => {
     localStorage.setItem("bridge.sidebar.collapsed", "1");
     const html = render();
-    for (const label of ["New Chat", "Search", "Automations", "Customize"]) {
+    for (const label of ["New Chat", "Search", "Automations", "Mission Control", "Projects", "Memory"]) {
       expect(html).toContain(`aria-label="${label}"`);
     }
     expect(html).not.toContain(">New Chat<");
   });
 
-  it("hides Needs-you in Code and keeps it in Work", () => {
-    expect(render()).toContain("Needs you");
-    localStorage.setItem(CHAT_SCOPE_KEY, "code");
-    expect(render()).not.toContain("Needs you");
-  });
-
-  it("marks Automations and Customize current when those screens are open", () => {
+  it("marks Automations, Mission Control, and account settings current", () => {
     const automations = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Automations"')) ?? "";
-    const customize = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Customize"')) ?? "";
-    expect(automations(render({ marketplaceActive: true }))).toContain('aria-current="page"');
-    expect(customize(render({ settingsActive: true }))).toContain('aria-current="page"');
+    const missionControl = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Mission Control"')) ?? "";
+    const account = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Open settings for cestercian"')) ?? "";
+    expect(automations(render({ automationsActive: true }))).toContain('aria-current="page"');
+    expect(missionControl(render({ missionControlActive: true }))).toContain('aria-current="page"');
+    expect(account(render({ settingsActive: true }))).toContain('aria-current="page"');
     expect(automations(render())).not.toContain("aria-current");
   });
 });
@@ -377,7 +360,7 @@ describe("BridgeSidebar without the worker panel", () => {
     expect(html).not.toContain("Live workers");
     expect(html).not.toMatch(/workers?: /);
   });
-  it("offers Memory in the footer rail with no workspace at all", () => {
+  it("offers account Memory with no workspace at all", () => {
     // Account memory is not workspace memory; a plain chat reaches it too.
     expect(render({ workspaces: [] })).toContain("Memory");
   });

@@ -173,4 +173,15 @@ describe("theme tokens", () => {
   it("honours reduced motion", () => {
     expect(css).toContain("prefers-reduced-motion");
   });
+
+  it("zeros the window radius in fullscreen so the shell is a rectangle", () => {
+    expect(css).toMatch(/html\[data-fullscreen\]/);
+    expect(css).toMatch(/html\[data-flush-window\]/);
+    expect(css).toMatch(/html\[data-fullscreen\],\s*html\[data-flush-window\]\s*\{[^}]*--window-radius:\s*0px/);
+  });
+
+  it("drops the traffic-light inset when those buttons are not on the frame", () => {
+    expect(css).toMatch(/html:not\(\[data-tauri\]\) \.u-traffic-inset/);
+    expect(css).toMatch(/html\[data-native-fullscreen\] \.u-traffic-inset/);
+  });
 });

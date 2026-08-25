@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Bot, ChevronRight, Code2, Folder, FolderGit2, FolderPlus, GitBranch, Home, LayoutGrid, ListChecks, MessagesSquare, Pin, Search, SquarePen, type LucideIcon } from "lucide-react";
+import { Bot, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, Home, LayoutGrid, Pin, Search, Settings2, SquarePen, type LucideIcon } from "lucide-react";
 import { WindowNavButtons, WindowPanelButton } from "./WindowNavButtons";
 import type { Session, SessionStatus, Workspace } from "../types";
 import { cn } from "@/lib/utils";
@@ -14,13 +14,8 @@ import {
   chatTimestamp,
   filterChats,
   groupChats,
-  chatScope,
-  inScope,
-  readChatScope,
   readChatView,
-  writeChatScope,
   writeChatView,
-  type ChatScope,
   type ChatView,
 } from "./sidebarChats";
 
@@ -90,49 +85,6 @@ function ChatRow({
         </>
       )}
     </button>
-  );
-}
-
-// Work is where plain conversations live; Code is work inside a project. One
-// switch, so the two never interleave in one list.
-function ScopeSwitch({ scope, collapsed, onChange }: { scope: ChatScope; collapsed: boolean; onChange: (scope: ChatScope) => void }) {
-  const options: { id: ChatScope; label: string; icon: typeof Code2 }[] = [
-    { id: "work", label: "Work", icon: MessagesSquare },
-    { id: "code", label: "Code", icon: Code2 },
-  ];
-  return (
-    <div
-      role="tablist"
-      aria-label="Chat scope"
-      className={cn(
-        "flex shrink-0 rounded-lg border border-border bg-muted p-0.5",
-        collapsed ? "mb-3 flex-col gap-0.5" : "mb-3 h-8 gap-0.5",
-      )}
-    >
-      {options.map(option => {
-        const active = option.id === scope;
-        const Icon = option.icon;
-        return (
-          <button
-            key={option.id}
-            type="button"
-            role="tab"
-            aria-selected={active}
-            aria-label={option.label}
-            title={option.label}
-            onClick={() => onChange(option.id)}
-            className={cn(
-              "flex items-center justify-center gap-1.5 rounded-md text-[12.5px] font-medium transition-colors",
-              collapsed ? "h-8 w-full" : "h-7 flex-1",
-              active ? "bg-card text-foreground" : "text-muted-foreground hover:text-foreground",
-            )}
-          >
-            <Icon size={14} strokeWidth={1.7} aria-hidden="true" />
-            {!collapsed && option.label}
-          </button>
-        );
-      })}
-    </div>
   );
 }
 
@@ -225,6 +177,44 @@ function ActionRow({
   );
 }
 
+function AccountRow({
+  name,
+  collapsed,
+  active,
+  onOpenSettings,
+}: {
+  name: string;
+  collapsed: boolean;
+  active: boolean;
+  onOpenSettings: () => void;
+}) {
+  const initial = name.trim().charAt(0).toUpperCase() || "U";
+  return (
+    <button
+      type="button"
+      onClick={onOpenSettings}
+      title={`Settings · ${name}`}
+      aria-label={`Open settings for ${name}`}
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "flex items-center rounded-lg transition-colors",
+        collapsed ? "mx-auto size-10 justify-center" : "h-11 w-full gap-2.5 px-2",
+        active ? "bg-accent text-foreground" : "text-foreground/85 hover:bg-accent hover:text-foreground",
+      )}
+    >
+      <span className="grid size-7 shrink-0 place-items-center rounded-full bg-foreground text-[11px] font-semibold text-background">
+        {initial}
+      </span>
+      {!collapsed && (
+        <>
+          <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium tracking-[-0.008em]">{name}</span>
+          <Settings2 size={16} strokeWidth={1.6} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+        </>
+      )}
+    </button>
+  );
+}
+
 export type BridgeSidebarProps = {
   /** Every top-level session. The rail derives both the project tree and the
    * history from this one list, so a chat cannot be visible in one and missing
@@ -234,24 +224,18 @@ export type BridgeSidebarProps = {
    * screen now. */
   workspaces: Workspace[];
   activeSessionId?: string;
-  /** True while the Work board is the surface on the right. */
-  workBoardActive: boolean;
-  /** How many facts are waiting, for the rail's count. Blocking and attention only,
-   * so it can actually reach zero. */
-  workNeedsYouCount: number;
   projectsActive: boolean;
-  marketplaceActive: boolean;
+  automationsActive: boolean;
+  missionControlActive: boolean;
   settingsActive: boolean;
+  accountName: string;
   /** Drawer state below the sm breakpoint, where the rail is off-canvas. */
   mobileOpen?: boolean;
   onCloseMobile?: () => void;
-  /** Opens the new-chat dialog, which asks for project and worktree. */
   onOpenNewChat: () => void;
-  /** Show the Work board. Called when the pill flips to Work, and when the rail's
-   * own row is clicked. */
-  onOpenWorkBoard: () => void;
   onOpenProjects: () => void;
-  onOpenMarketplace: () => void;
+  onOpenAutomations: () => void;
+  onOpenMissionControl: () => void;
   /** Account memory. Not workspace-gated: a plain chat reaches it identically. */
   onOpenMemory: () => void;
   onOpenSettings: () => void;
@@ -271,17 +255,17 @@ export function BridgeSidebar({
   chats,
   workspaces,
   activeSessionId,
-  workBoardActive,
-  workNeedsYouCount,
   projectsActive,
-  marketplaceActive,
+  automationsActive,
+  missionControlActive,
   settingsActive,
+  accountName,
   mobileOpen = false,
   onCloseMobile,
   onOpenNewChat,
-  onOpenWorkBoard,
   onOpenProjects,
-  onOpenMarketplace,
+  onOpenAutomations,
+  onOpenMissionControl,
   onOpenMemory,
   onOpenSettings,
   onOpenSession,
@@ -304,7 +288,6 @@ export function BridgeSidebar({
   const [resizing, setResizing] = useState(false);
   const [skipWidthTransition, setSkipWidthTransition] = useState(false);
   const [view, setView] = useState<ChatView>(readChatView);
-  const [scope, setScope] = useState<ChatScope>(readChatScope);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [shownInFull, setShownInFull] = useState<Set<string>>(new Set());
@@ -312,7 +295,6 @@ export function BridgeSidebar({
   const [now, setNow] = useState(() => Date.now());
   const widthRef = useRef(width);
   const resizeHandleRef = useRef<HTMLDivElement>(null);
-  const followedRef = useRef<string | undefined>(undefined);
   widthRef.current = width;
 
   useEffect(() => {
@@ -329,35 +311,6 @@ export function BridgeSidebar({
   useEffect(() => {
     localStorage.setItem(COLLAPSED_KEY, collapsed ? "1" : "0");
   }, [collapsed]);
-
-  // Follow the chat that just opened. Starting a plain chat from Code, or opening
-  // a project chat from the projects screen, would otherwise leave the rail
-  // showing a list the active chat is not in. Once per id, so a manual switch
-  // afterwards survives the next poll — and so a chat that arrives a render later
-  // than its id is still followed.
-  useEffect(() => {
-    if (!activeSessionId || followedRef.current === activeSessionId) return;
-    const active = chats.find(chat => chat.id === activeSessionId);
-    if (!active) return;
-    followedRef.current = activeSessionId;
-    const next = chatScope(active);
-    setScope(current => {
-      if (current === next) return current;
-      writeChatScope(next);
-      return next;
-    });
-  }, [activeSessionId, chats]);
-
-  const changeScope = useCallback((next: ChatScope) => {
-    setScope(next);
-    writeChatScope(next);
-    setShownInFull(new Set());
-    setFoldedGroups(new Set());
-    // Work's surface is the board and Code's is a conversation, so the pill is the
-    // gesture that opens the board. Flipping to Code does not pick a chat — the
-    // effect above already follows whichever one is active.
-    if (next === "work") onOpenWorkBoard();
-  }, [onOpenWorkBoard]);
 
   const changeView = useCallback((next: ChatView) => {
     setView(next);
@@ -418,7 +371,7 @@ export function BridgeSidebar({
 
     const onMove = (moveEvent: PointerEvent) => {
       if (moveEvent.pointerId !== pointerId) return;
-      const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, startWidth + moveEvent.clientX - startX));
+      const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, startWidth + (moveEvent.clientX - startX)));
       setWidth(next);
     };
 
@@ -440,12 +393,6 @@ export function BridgeSidebar({
   const needle = query.trim().toLowerCase();
   const searching = needle.length > 0;
 
-  // A project grouping persisted from Code is meaningless in Home, so it is
-  // corrected rather than left to render one "No project" group.
-  useEffect(() => {
-    if (scope === "work" && view.groupBy === "project") changeView({ ...view, groupBy: "date" });
-  }, [scope, view, changeView]);
-
   const toggleFold = useCallback((key: string) => {
     setFoldedGroups(current => {
       const next = new Set(current);
@@ -455,8 +402,7 @@ export function BridgeSidebar({
     });
   }, []);
 
-  const scoped = useMemo(() => inScope(chats, scope), [chats, scope]);
-  const agents = useMemo(() => agentOptions(scoped), [scoped]);
+  const agents = useMemo(() => agentOptions(chats), [chats]);
   const workspaceTitle = useMemo(() => {
     const titles = new Map(workspaces.map(workspace => [workspace.id, workspace.title]));
     return (id: string | null | undefined) => (id ? titles.get(id) : undefined);
@@ -466,8 +412,8 @@ export function BridgeSidebar({
     [workspaces],
   );
   const visible = useMemo(
-    () => filterChats(scoped, { query, status: view.status, agent: view.agent, workspaceTitle }),
-    [scoped, query, view.status, view.agent, workspaceTitle],
+    () => filterChats(chats, { query, status: view.status, agent: view.agent, workspaceTitle }),
+    [chats, query, view.status, view.agent, workspaceTitle],
   );
   const groups = useMemo(
     () => groupChats(visible, { groupBy: view.groupBy, sortBy: view.sortBy, workspaces, now }),
@@ -507,7 +453,7 @@ export function BridgeSidebar({
             <WindowPanelButton collapsed={collapsed} onToggleCollapsed={toggleCollapsed} />
           </div>
         ) : (
-          <div className="flex h-11 shrink-0 items-center gap-0.5 pr-2 pl-24" data-tauri-drag-region="deep">
+          <div className="flex h-11 shrink-0 items-center gap-0.5 u-traffic-inset pl-24 pr-1.5" data-tauri-drag-region="deep">
             <WindowNavButtons
               spread
               collapsed={collapsed}
@@ -524,8 +470,10 @@ export function BridgeSidebar({
         <div className={cn("mb-2 shrink-0", collapsed && "flex flex-col items-center")}>
           <ActionRow icon={SquarePen} label="New Chat" collapsed={collapsed} onClick={onOpenNewChat} />
           <ActionRow icon={Search} label="Search" collapsed={collapsed} onClick={toggleSearch} />
-          <ActionRow icon={Bot} label="Automations" collapsed={collapsed} onClick={onOpenMarketplace} active={marketplaceActive} />
-          <ActionRow icon={LayoutGrid} label="Customize" collapsed={collapsed} onClick={onOpenSettings} active={settingsActive} />
+          <ActionRow icon={Bot} label="Automations" collapsed={collapsed} onClick={onOpenAutomations} active={automationsActive} />
+          <ActionRow icon={LayoutGrid} label="Mission Control" collapsed={collapsed} onClick={onOpenMissionControl} active={missionControlActive} />
+          <ActionRow icon={FolderGit2} label="Projects" collapsed={collapsed} onClick={onOpenProjects} active={projectsActive} />
+          <ActionRow icon={Pin} label="Memory" collapsed={collapsed} onClick={onOpenMemory} />
         </div>
 
         {!collapsed && searchOpen && (
@@ -544,60 +492,24 @@ export function BridgeSidebar({
           </div>
         )}
 
-        <ScopeSwitch scope={scope} collapsed={collapsed} onChange={changeScope} />
-
-        {scope === "work" && (
-          <div className="mb-2 shrink-0">
-            <button
-              type="button"
-              onClick={onOpenWorkBoard}
-              aria-current={workBoardActive ? "page" : undefined}
-              title={collapsed ? "Needs you" : undefined}
-              className={cn(
-                "flex shrink-0 items-center rounded-md transition-colors",
-                collapsed ? "mx-auto h-9 w-9 justify-center" : "h-7.5 w-full gap-2 px-2 text-[11.5px] font-medium",
-                workBoardActive ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-              )}
-            >
-              <ListChecks size={14} strokeWidth={1.7} aria-hidden="true" />
-              {!collapsed && (
-                <>
-                  Needs you
-                  {/* No badge at zero. A count that is always present is a count that
-                      stops being read. */}
-                  {workNeedsYouCount > 0 && (
-                    <span className={cn(
-                      "ml-auto flex h-4 min-w-4 items-center justify-center rounded-full px-1 text-[10px] font-semibold",
-                      workBoardActive ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground",
-                    )}>
-                      {workNeedsYouCount}
-                    </span>
-                  )}
-                </>
-              )}
-            </button>
-            <div className="mt-2 h-px bg-sidebar-border" />
-          </div>
-        )}
-
         <div className="flex-1 overflow-y-auto">
           {!collapsed && (
             <SectionLabel action={
               <span className="flex items-center gap-0.5">
-                <SidebarFilterMenu view={view} agents={agents} allowProjectGrouping={scope === "code"} onChange={changeView} />
+                <SidebarFilterMenu view={view} agents={agents} allowProjectGrouping onChange={changeView} />
                 <RailIconButton label="New folder" onClick={onOpenProjects}>
                   <FolderPlus size={13} strokeWidth={1.5} aria-hidden="true" />
                 </RailIconButton>
               </span>
             }>
-              {scope === "code" ? "Repositories" : "Chats"}
+              Repositories
             </SectionLabel>
           )}
 
           {groups.map(group => {
             // The icon rail has nowhere to put the reveal control, so it must not
             // cap either — a cap without its control puts chats out of reach.
-            const capped = !collapsed && !shownInFull.has(group.key) && group.chats.length > GROUP_ROW_CAP;
+            const capped = !collapsed && !searching && !shownInFull.has(group.key) && group.chats.length > GROUP_ROW_CAP;
             // Folding needs a header to unfold from, so the icon rail never folds.
             const folded = !collapsed && !!group.label && foldedGroups.has(group.key);
             const rows = folded ? [] : capped ? group.chats.slice(0, GROUP_ROW_CAP) : group.chats;
@@ -644,18 +556,13 @@ export function BridgeSidebar({
           })}
           {!visible.length && !collapsed && (
             <p className="px-2 py-1 text-[11px] leading-relaxed text-muted-foreground/70">
-              {scoped.length
-                ? "No chat matches this filter."
-                : scope === "code"
-                  ? "No project chats yet. New chat asks which project to run in."
-                  : "No chats yet."}
+              {chats.length ? "No chat matches this filter." : "No chats yet. New Chat opens in the repo you were last in."}
             </p>
           )}
         </div>
 
-        <div className={cn("mt-1 shrink-0 pt-1.5", collapsed && "flex flex-col items-center")}>
-          <ActionRow icon={FolderGit2} label="Projects" collapsed={collapsed} onClick={onOpenProjects} active={projectsActive} />
-          <ActionRow icon={Pin} label="Memory" collapsed={collapsed} onClick={onOpenMemory} />
+        <div className="mt-1 shrink-0 border-t border-sidebar-border pt-1.5">
+          <AccountRow name={accountName} collapsed={collapsed} active={settingsActive} onOpenSettings={onOpenSettings} />
         </div>
       </div>
 

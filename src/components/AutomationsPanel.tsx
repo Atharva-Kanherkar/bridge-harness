@@ -16,7 +16,7 @@ function relativeTime(epochMs: number | null, now: number): string | null {
   return delta >= 0 ? `in ${amount}${unit[1]}` : `${amount}${unit[1]} ago`;
 }
 
-export function AutomationsPanel({ initialCatalog }: { initialCatalog?: AutomationCatalog } = {}) {
+export function AutomationsPanel({ initialCatalog, onBrowseCatalog }: { initialCatalog?: AutomationCatalog; onBrowseCatalog?: () => void } = {}) {
   const [catalog, setCatalog] = useState<AutomationCatalog | undefined>(initialCatalog);
   const [provider, setProvider] = useState<AutomationProvider | "all">("all");
   const [status, setStatus] = useState<UnifiedAutomation["status"] | "all">("all");
@@ -60,7 +60,7 @@ export function AutomationsPanel({ initialCatalog }: { initialCatalog?: Automati
   };
   return <div className="h-full min-h-0 overflow-y-auto">
     <main className="mx-auto w-full max-w-5xl px-3 pb-16 pt-8 sm:px-6 sm:pt-12">
-      <div className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><h1 className="font-display text-[26px] font-semibold tracking-[-0.025em] text-foreground sm:text-[32px]">Automations</h1><p className="mt-1.5 text-[13.5px] leading-relaxed text-muted-foreground">Every scheduled job your agents already run — Claude Code and Codex schedules, one view. Each app stays the scheduler.</p></div><Button size="xs" variant="secondary" disabled={busy} onClick={() => void refresh()}><RefreshCw size={11}/>Refresh</Button></div>
+      <div className="flex flex-wrap items-start justify-between gap-4"><div className="min-w-0"><h1 className="font-display text-[26px] font-semibold tracking-[-0.025em] text-foreground sm:text-[32px]">Automations</h1><p className="mt-1.5 text-[13.5px] leading-relaxed text-muted-foreground">Every scheduled job your agents already run — Claude Code and Codex schedules, one view. Each app stays the scheduler.</p></div><div className="flex items-center gap-2">{onBrowseCatalog && <Button type="button" size="xs" variant="ghost" onClick={onBrowseCatalog}>Browse catalog</Button>}<Button size="xs" variant="secondary" disabled={busy} onClick={() => void refresh()}><RefreshCw size={11}/>Refresh</Button></div></div>
       <div className="mt-5 flex flex-wrap items-center gap-2">{(catalog?.providers ?? []).map(state => <span key={state.provider} title={state.detail} className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[10px] font-medium ${state.available ? "border-border bg-muted text-muted-foreground" : "border-border bg-muted text-muted-foreground/50"}`}><span className={`h-1.5 w-1.5 rounded-full ${state.available ? "bg-success" : "bg-muted-foreground/40"}`}/>{providerLabel(state.provider)}{state.available ? ` · ${state.count}` : " · unavailable"}</span>)}</div>
       <div className="mt-5 flex flex-wrap gap-2">
         <div className="u-segmented w-fit" aria-label="Filter automations by provider">{(["all", "claude", "codex"] as const).map(value => <button type="button" key={value} data-active={provider === value} aria-pressed={provider === value} onClick={() => setProvider(value)} className="u-segmented-item">{value === "all" ? "All providers" : providerLabel(value)}</button>)}</div>

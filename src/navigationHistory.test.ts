@@ -27,4 +27,11 @@ describe("placesEqual", () => {
   it("treats a different view as a different place", () => {
     expect(placesEqual(workspace("a"), { view: "work", sessionId: "a" })).toBe(false);
   });
+
+  it("treats automations as a distinct view from marketplace", () => {
+    expect(placesEqual(
+      { view: "automations", sessionId: null },
+      { view: "marketplace", sessionId: null },
+    )).toBe(false);
+  });
 });

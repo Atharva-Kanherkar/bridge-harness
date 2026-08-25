@@ -94,6 +94,26 @@ pub struct RefreshWorkspaceParams {
     pub workspace_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListWorkspaceBranchesParams {
+    pub workspace_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ListWorkspaceBranchesResult {
+    pub current: Option<String>,
+    pub branches: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CheckoutWorkspaceBranchParams {
+    pub workspace_id: String,
+    pub branch: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ArchiveWorkspaceParams {
@@ -168,6 +188,17 @@ mod tests {
         assert_eq!(round_trip(&create), create);
         let refresh = RefreshWorkspaceParams { workspace_id: "w-1".into() };
         assert_eq!(round_trip(&refresh), refresh);
+        let list_branches = ListWorkspaceBranchesParams { workspace_id: "w-1".into() };
+        assert_eq!(round_trip(&list_branches), list_branches);
+        let checkout = CheckoutWorkspaceBranchParams {
+            workspace_id: "w-1".into(),
+            branch: "feat/real-branch-menu".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&checkout).unwrap(),
+            json!({"workspaceId": "w-1", "branch": "feat/real-branch-menu"})
+        );
+        assert_eq!(round_trip(&checkout), checkout);
         let archive = ArchiveWorkspaceParams { workspace_id: "w-1".into() };
         assert_eq!(round_trip(&archive), archive);
         let changes = WorkspaceChangesParams { workspace_id: "w-1".into() };
@@ -226,6 +257,11 @@ mod tests {
         );
         assert!(serde_json::from_value::<ListWorkspaceFilesParams>(json!({})).is_err());
         assert!(serde_json::from_value::<RefreshWorkspaceParams>(json!({})).is_err());
+        assert!(serde_json::from_value::<ListWorkspaceBranchesParams>(json!({})).is_err());
+        assert!(serde_json::from_value::<CheckoutWorkspaceBranchParams>(
+            json!({"workspaceId": "w-1"})
+        )
+        .is_err());
         assert!(serde_json::from_value::<ArchiveWorkspaceParams>(json!({})).is_err());
         // Wire names are camelCase; snake_case spellings are not accepted.
         assert!(serde_json::from_value::<ArchiveWorkspaceParams>(json!({"workspace_id": "w-1"}))

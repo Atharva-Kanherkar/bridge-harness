@@ -17,6 +17,8 @@ export type BridgeMethod =
   | "workspaces/read_workspace_file"
   | "workspaces/write_workspace_file"
   | "workspaces/refresh_workspace"
+  | "workspaces/list_workspace_branches"
+  | "workspaces/checkout_workspace_branch"
   | "workspaces/archive_workspace"
   | "workspaces/workspace_changes"
   | "sessions/get_session_forest"
@@ -146,6 +148,8 @@ export const BRIDGE_METHODS = [
   { method: "workspaces/read_workspace_file", domain: "workspaces", command: "read_workspace_file" },
   { method: "workspaces/write_workspace_file", domain: "workspaces", command: "write_workspace_file" },
   { method: "workspaces/refresh_workspace", domain: "workspaces", command: "refresh_workspace" },
+  { method: "workspaces/list_workspace_branches", domain: "workspaces", command: "list_workspace_branches" },
+  { method: "workspaces/checkout_workspace_branch", domain: "workspaces", command: "checkout_workspace_branch" },
   { method: "workspaces/archive_workspace", domain: "workspaces", command: "archive_workspace" },
   { method: "workspaces/workspace_changes", domain: "workspaces", command: "workspace_changes" },
   { method: "sessions/get_session_forest", domain: "sessions", command: "get_session_forest" },
@@ -327,6 +331,8 @@ export interface BridgeMethodParams {
   "workspaces/read_workspace_file": ReadWorkspaceFileParams;
   "workspaces/write_workspace_file": WriteWorkspaceFileParams;
   "workspaces/refresh_workspace": RefreshWorkspaceParams;
+  "workspaces/list_workspace_branches": ListWorkspaceBranchesParams;
+  "workspaces/checkout_workspace_branch": CheckoutWorkspaceBranchParams;
   "workspaces/archive_workspace": ArchiveWorkspaceParams;
   "workspaces/workspace_changes": WorkspaceChangesParams;
   "sessions/get_session_forest": GetSessionForestParams;
@@ -458,6 +464,8 @@ export interface BridgeMethodResults {
   "workspaces/read_workspace_file": ReadWorkspaceFileResult;
   "workspaces/write_workspace_file": WriteWorkspaceFileResult;
   "workspaces/refresh_workspace": BridgeState;
+  "workspaces/list_workspace_branches": ListWorkspaceBranchesResult;
+  "workspaces/checkout_workspace_branch": BridgeState;
   "workspaces/archive_workspace": BridgeState;
   "workspaces/workspace_changes": WorkspaceChangesResult;
   "sessions/get_session_forest": SessionForestSnapshot;
@@ -1476,6 +1484,20 @@ export interface WriteWorkspaceFileResult {
 }
 
 export interface RefreshWorkspaceParams {
+  workspaceId: string;
+}
+
+export interface ListWorkspaceBranchesParams {
+  workspaceId: string;
+}
+
+export interface ListWorkspaceBranchesResult {
+  branches: string[];
+  current?: string | null;
+}
+
+export interface CheckoutWorkspaceBranchParams {
+  branch: string;
   workspaceId: string;
 }
 

@@ -48,21 +48,29 @@ describe("AppTitleBar", () => {
     expect(text).toContain("Orchestrator");
   });
 
-  it("leaves the traffic lights their corner", () => {
+  it("leaves the traffic lights their corner in a windowed Tauri frame", () => {
     mount();
     expect(header().className).toContain("pl-24");
+    expect(header().className).toContain("u-traffic-inset");
   });
 
   it("can sit flush beside a sidebar without a hairline", () => {
     mount({ flush: true, hideBrand: true });
     expect(header().className).not.toContain("border-b");
     expect(header().className).not.toContain("pl-24");
+    expect(header().className).not.toContain("u-traffic-inset");
     expect(header().textContent).not.toContain("bridge");
   });
 
   it("insets trailing chrome so nested controls can be concentric with the window", () => {
     mount();
     expect(header().className).toContain("pr-[var(--window-control-inset)]");
+  });
+
+  it("drops the trailing window-control inset when flush, because the right edge is the rail seam", () => {
+    mount({ flush: true });
+    expect(header().className).not.toContain("pr-[var(--window-control-inset)]");
+    expect(header().className).toContain("pr-3");
   });
 
   it("opens navigation from the mobile toggle", () => {
@@ -78,19 +86,5 @@ describe("AppTitleBar", () => {
   it("docks the actions cluster at the right edge", () => {
     mount({ actions: <button type="button">Mission Control</button> });
     expect(header().textContent).toContain("Mission Control");
-  });
-
-  it("puts trailing nav after the title so fullscreen can sit chevrons on the right", () => {
-    mount({ trailingNav: <button type="button" aria-label="Back">Back</button> });
-    const title = header().querySelector("p")!;
-    const back = header().querySelector('button[aria-label="Back"]')!;
-    expect(title.compareDocumentPosition(back) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  });
-
-  it("puts leading chrome before the title so fullscreen can sit the panel on the left", () => {
-    mount({ leading: <button type="button" aria-label="Hide sidebar">Panel</button> });
-    const title = header().querySelector("p")!;
-    const panel = header().querySelector('button[aria-label="Hide sidebar"]')!;
-    expect(panel.compareDocumentPosition(title) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 });

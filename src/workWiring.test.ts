@@ -86,10 +86,13 @@ describe("the shell knows about Work", () => {
     expect(APP).toContain('view === "work" ? "Work"');
   });
 
-  it("hands the rail the board's state and the way back to it", () => {
-    expect(APP).toContain('workBoardActive={view === "work"}');
-    expect(APP).toContain("workNeedsYouCount={needsYouCount(");
-    expect(APP).toContain("onOpenWorkBoard={openWorkBoard}");
+  it("keeps Work off the rail", () => {
+    expect(APP).not.toContain("workBoardActive");
+    expect(APP).not.toContain("workNeedsYouCount");
+    expect(APP).not.toContain("onOpenWorkBoard={openWorkBoard}");
+    expect(APP).not.toContain('import { needsYouCount } from "./components/workFacts";');
+    expect(SIDEBAR).not.toContain("Needs you");
+    expect(SIDEBAR).not.toContain("onOpenWorkBoard");
   });
 
   it("keeps Work out of the footer nav, where it would be a second meaning", () => {
@@ -99,10 +102,9 @@ describe("the shell knows about Work", () => {
     expect(footer).not.toContain('"Work"');
   });
 
-  it("counts what needs you without mounting the board", () => {
-    // The rail shows a count while a conversation is on screen, so the count comes
-    // from a plain function rather than from the board being rendered.
-    expect(APP).toContain('import { needsYouCount } from "./components/workFacts";');
+  it("counts what needs you on the board itself, not the rail", () => {
+    expect(APP).not.toContain('import { needsYouCount } from "./components/workFacts";');
+    expect(SIDEBAR).not.toContain("workNeedsYouCount");
   });
 });
 

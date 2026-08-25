@@ -9,14 +9,12 @@ import { appendAgentEventBatch } from "./agentEvents";
 import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, PermissionPolicy, Project, RiskTier, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
-import { WindowHistoryChevrons, WindowPanelButton } from "./components/WindowNavButtons";
 import { HealthWarnings } from "./components/HealthWarnings";
-import { NewChatDialog, type NewChatChoice } from "./components/NewChatDialog";
+import { ComposerContextStrip } from "./components/ComposerContextStrip";
 import { ProjectsScreen } from "./components/ProjectsScreen";
 import type { SuggestCompletionResult, SuggestionSettingsSnapshot, WorkBoard, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
-import { needsYouCount } from "./components/workFacts";
 import { isHiddenSession } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { SessionRecallSearch } from "./components/SessionRecallSearch";
@@ -42,7 +40,9 @@ import { projectSessionConversation, reduceConversation } from "./conversation";
 import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
 import { pickGreeting } from "./greetings";
 import { useThemePreference } from "./theme";
-import { recordPlace, type AppPlace } from "./navigationHistory";
+import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
+import { readLastWorkspaceId, resolveNewChatWorkspaceId, writeLastWorkspaceId } from "./lastWorkspace";
+import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setLayoutFullscreenDocument } from "./windowChrome";
 import { cn } from "@/lib/utils";
 import { buildCacheDiagnostics, buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
 import { describeError, errorMessage } from "./errors";
@@ -55,6 +55,7 @@ import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Kbd } from "@/components/ui/kbd";
 
+const AutomationsPanel = lazy(() => import("./components/AutomationsPanel").then(module => ({ default: module.AutomationsPanel })));
 const MarketplaceScreen = lazy(() => import("./components/MarketplaceScreen").then(module => ({ default: module.MarketplaceScreen })));
 const SettingsScreen = lazy(() => import("./components/SettingsScreen").then(module => ({ default: module.SettingsScreen })));
 const WorkView = lazy(() => import("./components/WorkView").then(module => ({ default: module.WorkView })));
@@ -94,7 +95,7 @@ export function App() {
   const [health, setHealth] = useState<Health>();
   const [modelSetup, setModelSetup] = useState<ModelSetupState>();
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
-  const [view, setView] = useState<"workspace" | "work" | "projects" | "marketplace" | "settings">("workspace");
+  const [view, setView] = useState<AppView>("workspace");
   const [navPlaces, setNavPlaces] = useState<{ stack: AppPlace[]; index: number }>({
     stack: [{ view: "workspace", sessionId: null }],
     index: 0,
@@ -125,11 +126,11 @@ export function App() {
   // Mission Control grid where every live agent is its own window at once.
   const [paradigm, setParadigm] = useState<"single" | "grid">("single");
   const [activeTab, setActiveTab] = useState<"agent" | "changes" | "code" | "events" | "terminal">("agent");
-  // Fullscreen keeps the panel on the left and moves panel/history buttons to
-  // the right of a full-width title bar so the session can use the rest of the
-  // window. ⌥⌘F rather than ⌃⌘F: the latter is macOS's own native-fullscreen
-  // binding, and this is an in-window layout change, not a window state change.
+  // Fullscreen only squares the native frame. The sidebar and canvas keep the
+  // same side-by-side geometry as windowed mode; native fullscreen and zoom
+  // arrive as `data-flush-window` from the shell.
   const [fullscreen, setFullscreen] = useState(false);
+  const [flushWindow, setFlushWindow] = useState(isFlushWindowDocument);
   /// The worker whose full activity feed is open over the chat. Owned here, not
   /// in the conversation, because the overlay covers the whole session pane and
   /// has to survive the transcript re-rendering underneath it.
@@ -139,13 +140,14 @@ export function App() {
   // diffs, and — now that both tabs can edit — unsaved text.
   const [visitedTabs, setVisitedTabs] = useState<Set<string>>(() => new Set(["agent"]));
   useEffect(() => { setVisitedTabs(previous => previous.has(activeTab) ? previous : new Set(previous).add(activeTab)); }, [activeTab]);
-  const [modal, setModal] = useState<"chat" | "workspace" | "orchestrator" | "router" | "memory" | null>(null);
+  const [modal, setModal] = useState<"workspace" | "orchestrator" | "router" | "memory" | null>(null);
   // A too-long "Remember this" lands here so the dialog opens pre-filled for
   // trimming; it is never saved on the user's behalf.
   const [memoryDraft, setMemoryDraft] = useState<string | null>(null);
   const [packetAudit, setPacketAudit] = useState<import("./types").MemoryPacketAudit | null>(null);
   const [memoryDisclosureOpen, setMemoryDisclosureOpen] = useState(false);
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
+  const worktreeBySessionRef = useRef(new Map<string, boolean>());
   const [title, setTitle] = useState("");
   const [composer, setComposer] = useState("");
   const [slashCommands, setSlashCommands] = useState<import("./types").SlashCommand[]>([]);
@@ -338,6 +340,25 @@ export function App() {
     [expandedWorkerId, state.sessions],
   );
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id).map(p => p.text), [pending, session?.id]);
+  const conversationStarted = useMemo(() => {
+    if (!session) return false;
+    if (session.activeTurnId) return true;
+    if (pendingForSession.length > 0) return true;
+    const durable = forest?.entries?.length ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [];
+    return durable.some(item => item.type === "message" && item.role === "user");
+  }, [forest, pendingForSession.length, session]);
+  const [worktreeOn, setWorktreeOn] = useState(false);
+  const [welcomeWorkspaceId, setWelcomeWorkspaceId] = useState<string | null>(null);
+  const [branchWorkspaceId, setBranchWorkspaceId] = useState<string | null>(null);
+  const [workspaceBranches, setWorkspaceBranches] = useState<string[]>([]);
+  const [branchBusy, setBranchBusy] = useState(false);
+  const [branchError, setBranchError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!session) { setWorktreeOn(false); return; }
+    const tracked = worktreeBySessionRef.current.get(session.id);
+    if (tracked !== undefined) { setWorktreeOn(tracked); return; }
+    setWorktreeOn(!!session.cwd && !!workspace?.path && session.cwd !== workspace.path);
+  }, [session, workspace?.path]);
   // Read from config rather than held in component state: the badge has to agree
   // with what the host stored, including after another window changed it.
   const [permissionPolicy, setPermissionPolicy] = useState<PermissionPolicy>();
@@ -599,7 +620,15 @@ export function App() {
   // Always land on the Agent tab: focusing a session (especially a blocked
   // worker from Mission Control) must reveal its conversation and approval card,
   // not whatever tab — Changes/Terminal — happened to be open before.
-  function openSession(id: string) { setView("workspace"); setParadigm("single"); setActiveTab("agent"); setSelectedSessionId(id); setExpandedWorkerId(undefined); }
+  function openSession(id: string) {
+    setView("workspace");
+    setParadigm("single");
+    setActiveTab("agent");
+    setSelectedSessionId(id);
+    setExpandedWorkerId(undefined);
+    const opened = state.sessions.find(candidate => candidate.id === id);
+    if (opened?.workspaceId) writeLastWorkspaceId(opened.workspaceId);
+  }
 
   // Reading the board is the whole of what opening Work does: one call, no session
   // selected, no model, no git, no network.
@@ -805,14 +834,60 @@ export function App() {
     await openNewChat(text);
   }
 
-  // The new-chat dialog asks the two questions once; this routes its answer.
-  async function startChat({ workspaceId, worktree }: NewChatChoice) {
-    if (workspaceId) {
-      await newWorkspaceSession(worktree, workspaceId);
+  async function startChatInCurrentRepo() {
+    if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode, then retry model setup."); return; }
+    const workspaceId = resolveNewChatWorkspaceId({
+      activeWorkspaceId: session?.workspaceId,
+      lastWorkspaceId: readLastWorkspaceId(),
+      workspaces: state.workspaces,
+    });
+    if (!workspaceId) {
+      await openNewChat();
       return;
     }
-    setModal(null);
-    await openNewChat();
+    await newWorkspaceSession(false, workspaceId);
+  }
+
+  async function retargetWorkspace(workspaceId: string, createWorktree: boolean) {
+    const previousId = session && !conversationStarted ? session.id : undefined;
+    const createdId = await newWorkspaceSession(createWorktree, workspaceId);
+    if (previousId && createdId && previousId !== createdId) {
+      try { setState(await bridgeApi.stopSession(previousId)); } catch { /* the empty chat we replaced */ }
+    }
+  }
+
+  async function requestWorkspaceBranches(workspaceId: string) {
+    if (branchBusy && branchWorkspaceId === workspaceId) return;
+    setBranchWorkspaceId(workspaceId);
+    setBranchBusy(true);
+    setBranchError(null);
+    try {
+      const result = await bridgeApi.listWorkspaceBranches(workspaceId);
+      setWorkspaceBranches(result.branches);
+    } catch (error) {
+      setWorkspaceBranches([]);
+      setBranchError(errorMessage(error));
+    } finally {
+      setBranchBusy(false);
+    }
+  }
+
+  async function switchWorkspaceBranch(workspaceId: string, branch: string) {
+    setBranchWorkspaceId(workspaceId);
+    setBranchBusy(true);
+    setBranchError(null);
+    setError(undefined);
+    try {
+      setState(await bridgeApi.checkoutWorkspaceBranch(workspaceId, branch));
+      const result = await bridgeApi.listWorkspaceBranches(workspaceId);
+      setWorkspaceBranches(result.branches);
+    } catch (error) {
+      const message = errorMessage(error);
+      setBranchError(message);
+      setError(message);
+    } finally {
+      setBranchBusy(false);
+    }
   }
 
   useEffect(() => {
@@ -834,11 +909,16 @@ export function App() {
     try {
       const next = await bridgeApi.createWorkspaceSession(workspaceId, createWorktree);
       const created = [...next.sessions].reverse().find(s => !s.parentSessionId && s.workspaceId === workspaceId);
+      writeLastWorkspaceId(workspaceId);
       setState(next);
       // Land in the new agent's chat rather than leaving the user looking at the
       // card or dialog they came from.
-      if (created) openSession(created.id);
+      if (created) {
+        worktreeBySessionRef.current.set(created.id, createWorktree);
+        openSession(created.id);
+      }
       setModal(null); setPendingWorkspaceId(undefined);
+      return created?.id;
     } catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); }
   }
@@ -1085,17 +1165,32 @@ export function App() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
 
+  useEffect(() => {
+    setLayoutFullscreenDocument(fullscreen || flushWindow);
+  }, [fullscreen, flushWindow]);
 
+  useEffect(() => {
+    notifyLayoutFullscreen(fullscreen);
+  }, [fullscreen]);
+
+  useEffect(() => {
+    const sync = () => setFlushWindow(isFlushWindowDocument());
+    sync();
+    document.documentElement.addEventListener(FLUSH_WINDOW_EVENT, sync);
+    return () => document.documentElement.removeEventListener(FLUSH_WINDOW_EVENT, sync);
+  }, []);
+
+
+  const chromeFullscreen = fullscreen || flushWindow;
   const turnActive = !!session?.activeTurnId || pendingForSession.length > 0;
   if (!health || !modelSetup) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{error ? <><X size={14} className="text-destructive" aria-hidden="true" />{error}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
   if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard adapters={health.adapters} onComplete={setModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
-  const chromeTitle = view === "work" ? "Work" : view === "projects" ? "Projects" : view === "marketplace" ? "Marketplace" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge";
+  const chromeTitle = view === "work" ? "Work" : view === "projects" ? "Projects" : view === "marketplace" ? "Marketplace" : view === "automations" ? "Automations" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge";
   const titleBarActions = <>
     <BypassBadge bypassing={!!permissionPolicy?.bypassAll} onOpenSettings={() => { setSettingsSection("permissions"); setView("settings"); }} />
     {view === "workspace" && <Button type="button" variant={paradigm === "grid" ? "secondary" : "ghost"} size="sm" className="text-muted-foreground" onClick={() => setParadigm(current => current === "grid" ? "single" : "grid")} aria-pressed={paradigm === "grid"}><LayoutGrid size={13} aria-hidden="true" /> <span className="hidden sm:inline">{paradigm === "grid" ? "Focus" : "Mission Control"}</span></Button>}
     <UsageWidget usage={usageByProvider} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} />
   </>;
-  const toggleSidebar = () => setSidebarCollapsed(value => !value);
   const sidebar = (
     <BridgeSidebar
       mobileOpen={navOpen}
@@ -1103,50 +1198,45 @@ export function App() {
       chats={topSessions}
       workspaces={state.workspaces}
       activeSessionId={session?.id}
-      workBoardActive={view === "work"}
-      workNeedsYouCount={needsYouCount(workBoard?.facts ?? [])}
       projectsActive={view === "projects"}
-      marketplaceActive={view === "marketplace"}
+      automationsActive={view === "automations"}
+      missionControlActive={view === "workspace" && paradigm === "grid"}
       settingsActive={view === "settings"}
-      onOpenNewChat={() => setModal("chat")}
-      onOpenWorkBoard={openWorkBoard}
+      accountName={localAccountName(health.database, workspace?.path)}
+      onOpenNewChat={() => void startChatInCurrentRepo()}
       onOpenProjects={() => setView("projects")}
-      onOpenMarketplace={() => setView("marketplace")}
+      onOpenAutomations={() => setView("automations")}
+      onOpenMissionControl={() => { setView("workspace"); setParadigm("grid"); }}
       onOpenMemory={() => setModal("memory")}
       onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
       collapsed={sidebarCollapsed}
       onCollapsedChange={setSidebarCollapsed}
-      showWindowNav={!fullscreen}
+      showWindowNav
       canBack={canBack}
       canForward={canForward}
       onBack={goBack}
       onForward={goForward}
     />
   );
+  const resolvedWelcomeWorkspaceId = resolveNewChatWorkspaceId({
+    activeWorkspaceId: welcomeWorkspaceId,
+    lastWorkspaceId: readLastWorkspaceId(),
+    workspaces: state.workspaces,
+  });
+  const welcomeWorkspace = state.workspaces.find(item => item.id === resolvedWelcomeWorkspaceId) ?? null;
 
-  return <div className={cn("u-app-shell relative flex h-[100dvh] overflow-hidden text-foreground", fullscreen ? "flex-col bg-background" : "flex-row")}>
-    {fullscreen && <AppTitleBar
-      title={chromeTitle}
-      navOpen={navOpen}
-      onOpenNav={() => setNavOpen(true)}
-      hideBrand
-      leading={<WindowPanelButton collapsed={sidebarCollapsed} onToggleCollapsed={toggleSidebar} />}
-      trailingNav={<WindowHistoryChevrons canBack={canBack} canForward={canForward} onBack={goBack} onForward={goForward} />}
-      actions={titleBarActions}
-    />}
-    {!fullscreen && sidebar}
-
-    <div className={cn("u-vibrancy-canvas relative z-10 flex min-h-0 min-w-0 flex-1 bg-background", fullscreen ? "flex-row" : "flex-col")}>
-    {fullscreen && sidebar}
-    {!fullscreen && <AppTitleBar
+  return <div data-fullscreen={chromeFullscreen ? "" : undefined} className="u-app-shell relative flex h-[100dvh] flex-row overflow-hidden text-foreground">
+    {sidebar}
+    <div className="u-vibrancy-canvas relative z-10 flex min-h-0 min-w-0 flex-1 flex-col bg-background">
+    <AppTitleBar
       flush
       hideBrand
       title={chromeTitle}
       navOpen={navOpen}
       onOpenNav={() => setNavOpen(true)}
       actions={titleBarActions}
-    />}
+    />
     <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
       {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
       <HealthWarnings warnings={health.warnings ?? []} className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl" />
@@ -1170,13 +1260,13 @@ export function App() {
         onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
-      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={setModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
+      /> : view === "automations" ? <Suspense fallback={<PanelLoading label="Opening automations…"/>}><AutomationsPanel onBrowseCatalog={() => setView("marketplace")} /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={setModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
         sessions={visibleSessions}
         runtimes={forest?.workerRuntimes ?? []}
         reasons={forest?.reasons ?? []}
         events={agentEvents}
         activeSessionId={session?.id}
-        fullscreen={fullscreen}
+        fullscreen={chromeFullscreen}
         onToggleFullscreen={() => setFullscreen(value => !value)}
         onFocusSession={openSession}
         onSteer={steerWorker}
@@ -1194,7 +1284,7 @@ export function App() {
           model={isDirectChat ? undefined : modelDisplayName(adapters, session.harness, session.model)}
           browserOpen={browserOpen}
           onToggleBrowser={() => setBrowserOpen(value => !value)}
-          fullscreen={fullscreen}
+          fullscreen={chromeFullscreen}
           onToggleFullscreen={() => setFullscreen(value => !value)}
           onOpenRouterSettings={!isDirectChat && workspace ? () => setModal("router") : undefined}
           onToggleRecall={() => {
@@ -1316,6 +1406,19 @@ export function App() {
                       </button>)}
                     </div>
                   </div>}
+                  <ComposerContextStrip
+                    workspaces={state.workspaces}
+                    workspace={workspace ?? null}
+                    worktree={worktreeOn}
+                    locked={conversationStarted}
+                    branches={branchWorkspaceId === workspace?.id ? workspaceBranches : []}
+                    branchBusy={branchWorkspaceId === workspace?.id && branchBusy}
+                    branchError={branchWorkspaceId === workspace?.id ? branchError : null}
+                    onSelectWorkspace={id => { if (id === workspace?.id) return; void retargetWorkspace(id, worktreeOn); }}
+                    onRequestBranches={() => { if (workspace) void requestWorkspaceBranches(workspace.id); }}
+                    onSelectBranch={branch => { if (workspace) void switchWorkspaceBranch(workspace.id, branch); }}
+                    onToggleWorktree={() => { if (!workspace) return; void retargetWorkspace(workspace.id, !worktreeOn); }}
+                  />
                   {harnessShortcutOpen && <div className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
                     <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70 border-b border-border flex items-center gap-2">
                       <span>Talk to a harness directly</span>
@@ -1368,6 +1471,16 @@ export function App() {
         modelSetup={modelSetup}
         canStartChat={adaptersReady}
         busy={busy}
+        workspaces={state.workspaces}
+        workspace={welcomeWorkspace}
+        worktree={false}
+        branches={branchWorkspaceId === welcomeWorkspace?.id ? workspaceBranches : []}
+        branchBusy={branchWorkspaceId === welcomeWorkspace?.id && branchBusy}
+        branchError={branchWorkspaceId === welcomeWorkspace?.id ? branchError : null}
+        onSelectWorkspace={id => { writeLastWorkspaceId(id); setWelcomeWorkspaceId(id); }}
+        onRequestBranches={() => { if (welcomeWorkspace) void requestWorkspaceBranches(welcomeWorkspace.id); }}
+        onSelectBranch={branch => { if (welcomeWorkspace) void switchWorkspaceBranch(welcomeWorkspace.id, branch); }}
+        onToggleWorktree={() => { if (resolvedWelcomeWorkspaceId) void newWorkspaceSession(true, resolvedWelcomeWorkspaceId); }}
         onStartChat={text => void startChatOrShortcut(text)}
         onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
       />}
@@ -1389,14 +1502,6 @@ export function App() {
       );
     })()}
 
-    <NewChatDialog
-      open={modal === "chat"}
-      workspaces={state.workspaces}
-      initialWorkspaceId={pendingWorkspaceId ?? null}
-      busy={busy}
-      onClose={() => { setModal(null); setPendingWorkspaceId(undefined); }}
-      onStart={choice => void startChat(choice)}
-    />
     <WorkspaceCreateDialog
       open={modal === "workspace"}
       title={title}
@@ -1423,6 +1528,16 @@ function PanelLoading({ label }: { label: string }) {
   return <div role="status" className="absolute inset-0 grid place-items-center text-xs text-muted-foreground">{label}</div>;
 }
 
+function localAccountName(...paths: Array<string | null | undefined>): string {
+  for (const path of paths) {
+    if (!path) continue;
+    const macOrLinux = path.match(/^\/(?:Users|home)\/([^/]+)/);
+    if (macOrLinux?.[1]) return macOrLinux[1];
+    const windows = path.match(/^[A-Za-z]:\\Users\\([^\\]+)/i);
+    if (windows?.[1]) return windows[1];
+  }
+  return "Local user";
+}
 
 function modelDisplayName(adapters: import("./types").AdapterDescriptor[], harness: Harness, model?: string | null): string {
   const adapter = adapters.find(item => item.id === harness);
@@ -1665,7 +1780,24 @@ function WelcomeModelBadge({ adapters, modelSetup }: { adapters: import("./types
   return <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1.5 text-xs text-muted-foreground">{tierLabel}<ChevronDown size={14} className="text-muted-foreground/70" aria-hidden="true" /></span>;
 }
 
-function Welcome({ adapters, modelSetup, busy, canStartChat, onStartChat, onNewWorkspace }: { adapters: import("./types").AdapterDescriptor[]; modelSetup: ModelSetupState; busy: boolean; canStartChat: boolean; onStartChat: (text?: string) => void; onNewWorkspace: () => void }) {
+function Welcome({ adapters, modelSetup, busy, canStartChat, onStartChat, onNewWorkspace, workspaces, workspace, worktree, branches, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree }: {
+  adapters: import("./types").AdapterDescriptor[];
+  modelSetup: ModelSetupState;
+  busy: boolean;
+  canStartChat: boolean;
+  onStartChat: (text?: string) => void;
+  onNewWorkspace: () => void;
+  workspaces: Workspace[];
+  workspace: Workspace | null;
+  worktree: boolean;
+  branches: string[];
+  branchBusy: boolean;
+  branchError: string | null;
+  onSelectWorkspace: (id: string) => void;
+  onRequestBranches: () => void;
+  onSelectBranch: (branch: string) => void;
+  onToggleWorktree: () => void;
+}) {
   const greeting = useMemo(() => pickGreeting("welcome"), []);
   const [draft, setDraft] = useState("");
   const submit = () => {
@@ -1676,6 +1808,19 @@ function Welcome({ adapters, modelSetup, busy, canStartChat, onStartChat, onNewW
   };
   return <div className="flex flex-1 flex-col items-center justify-center px-4 text-center animate-page-enter">
     <h1 className="mb-8 max-w-xl font-display text-[1.9rem] font-medium leading-[1.15] tracking-[-0.025em] text-foreground sm:mb-10 sm:text-[2.4rem]">{greeting.headline}</h1>
+    {workspaces.length > 0 && <ComposerContextStrip
+      workspaces={workspaces}
+      workspace={workspace}
+      worktree={worktree}
+      locked={false}
+      branches={branches}
+      branchBusy={branchBusy}
+      branchError={branchError}
+      onSelectWorkspace={onSelectWorkspace}
+      onRequestBranches={onRequestBranches}
+      onSelectBranch={onSelectBranch}
+      onToggleWorktree={onToggleWorktree}
+    />}
     <ComposerPill
       layout="hero"
       value={draft}
