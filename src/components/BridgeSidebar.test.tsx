@@ -287,8 +287,47 @@ describe("BridgeSidebar scope switch", () => {
 describe("BridgeSidebar search", () => {
   it("keeps the field closed until the search control is used", () => {
     const html = render();
-    expect(html).toContain("Search chats");
+    expect(html).toContain('aria-label="Search"');
+    expect(html).not.toContain("Search chats");
     expect(html).not.toContain("Filter chats and projects");
+  });
+});
+
+describe("BridgeSidebar action rows", () => {
+  it("offers New Chat, Search, Automations, and Customize as ghost rows", () => {
+    const html = render();
+    expect(html).toContain("New Chat");
+    expect(html).toContain("Automations");
+    expect(html).toContain("Customize");
+    expect(html.indexOf("New Chat")).toBeLessThan(html.indexOf('aria-label="Work"'));
+    expect(html.indexOf('aria-label="Work"')).toBeLessThan(html.indexOf("Needs you"));
+  });
+
+  it("drops the filled primary new-chat button", () => {
+    expect(render()).not.toContain("bg-primary text-primary-foreground");
+  });
+
+  it("keeps those rows reachable as icon-only controls when collapsed", () => {
+    localStorage.setItem("bridge.sidebar.collapsed", "1");
+    const html = render();
+    for (const label of ["New Chat", "Search", "Automations", "Customize"]) {
+      expect(html).toContain(`aria-label="${label}"`);
+    }
+    expect(html).not.toContain(">New Chat<");
+  });
+
+  it("hides Needs-you in Code and keeps it in Work", () => {
+    expect(render()).toContain("Needs you");
+    localStorage.setItem(CHAT_SCOPE_KEY, "code");
+    expect(render()).not.toContain("Needs you");
+  });
+
+  it("marks Automations and Customize current when those screens are open", () => {
+    const automations = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Automations"')) ?? "";
+    const customize = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Customize"')) ?? "";
+    expect(automations(render({ marketplaceActive: true }))).toContain('aria-current="page"');
+    expect(customize(render({ settingsActive: true }))).toContain('aria-current="page"');
+    expect(automations(render())).not.toContain("aria-current");
   });
 });
 
