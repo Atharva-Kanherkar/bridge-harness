@@ -2307,6 +2307,28 @@ pub fn repository_path_for_session(
     Ok(path.map(PathBuf::from))
 }
 
+/// The directory a session's base-branch facts describe: the workspace root
+/// when the session belongs to a workspace — the same directory the Work
+/// observer measures and the board projects — falling back to the session's
+/// own cwd only for direct chats, which have no workspace row.
+///
+/// This deliberately differs from [`repository_path_for_session`], whose
+/// cwd-first order answers "where is this session running". A drift fact
+/// measured at the workspace root but acted on at the session cwd produced
+/// issue #306: a fresh measurement of one directory next to a "not a git
+/// repository" failure from another.
+pub fn base_branch_path_for_session(
+    db: &Connection,
+    session_id: &str,
+) -> Result<Option<PathBuf>, BridgeError> {
+    let path: Option<String> = db.query_row(
+        "SELECT COALESCE(w.path,s.cwd) FROM sessions s LEFT JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
+        params![session_id],
+        |row| row.get(0),
+    ).optional()?.flatten();
+    Ok(path.map(PathBuf::from))
+}
+
 pub fn repository_state_for_path(path: &Path) -> serde_json::Value {
     let head = crate::git::git_command(path)
         .args(["rev-parse", "HEAD"])
@@ -3052,6 +3074,50 @@ mod tests {
             assert_ne!(parsed, Harness::Shell, "{stored:?} was read as Shell");
             assert_eq!(harness_name(&parsed), stored, "{stored:?} lost its raw id");
         }
+    }
+
+    /// Base-branch facts describe the workspace root; only a direct chat —
+    /// which has no workspace row — falls back to the session's own cwd.
+    /// The cwd-first order is `repository_path_for_session`'s job, and the
+    /// two orders disagreeing is what let a drift fact measured at one
+    /// directory fail its action in another (issue #306).
+    #[test]
+    fn base_branch_path_prefers_the_workspace_root_and_falls_back_to_cwd() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        let workspace_root = dir.path().join("workspace-root");
+        std::fs::create_dir(&workspace_root).unwrap();
+        db.execute_batch(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/demo','now');
+             INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at)
+                 VALUES('w','p','Kyoto','Task','bridge/task',NULL,'idle','now');
+             INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source)
+                 VALUES('workspace-session','w','codex','Codex','idle','reported');
+             INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,cwd)
+                 VALUES('direct-chat',NULL,'codex','Codex','idle','reported','/direct/chat');",
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE workspaces SET path=?1 WHERE id='w'",
+            params![workspace_root.to_string_lossy()],
+        )
+        .unwrap();
+
+        assert_eq!(
+            base_branch_path_for_session(&db, "workspace-session").unwrap(),
+            Some(workspace_root),
+            "a workspace session measures its workspace root, wherever the session runs"
+        );
+        assert_eq!(
+            base_branch_path_for_session(&db, "direct-chat").unwrap(),
+            Some(PathBuf::from("/direct/chat")),
+            "a direct chat has no workspace row, so its cwd is all there is"
+        );
+        assert_eq!(
+            base_branch_path_for_session(&db, "missing").unwrap(),
+            None,
+            "an unknown session has no repository at all"
+        );
     }
 
     #[test]

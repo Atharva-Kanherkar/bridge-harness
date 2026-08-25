@@ -4395,7 +4395,10 @@ pub fn warn_on_stale_base(
     allow_fetch: bool,
 ) -> Option<git::BaseBranchDivergence> {
     let state = core.clone();
-    let path = store::repository_path_for_session(&state.db.lock().unwrap(), session_id)
+    // The workspace root, not the session cwd: this warning and the Work
+    // board's drift fact must describe the same directory, or the chat says
+    // one thing about a workspace while the board says another (issue #306).
+    let path = store::base_branch_path_for_session(&state.db.lock().unwrap(), session_id)
         .ok()
         .flatten()?;
     if !path.is_dir() {

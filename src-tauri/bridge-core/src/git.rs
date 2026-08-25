@@ -400,6 +400,14 @@ pub fn fast_forward_to_base(
     session_active: bool,
 ) -> Result<BaseBranchDivergence, BridgeError> {
     ensure_inactive(session_active, "refresh the workspace")?;
+    if !is_repository(worktree) {
+        // Before ensure_clean, whose raw git stderr ("fatal: not a git
+        // repository…") is the error a user should never have to read. The
+        // workspace the board described is gone or was never a checkout.
+        return Err(BridgeError::Invalid(
+            "this workspace directory is not a Git repository, so there is nothing to refresh. Re-create the workspace from its repository, or remove it from Work.".into(),
+        ));
+    }
     ensure_clean(worktree, "refresh the workspace")?;
     let divergence = base_branch_divergence(worktree, true);
     let Some(base_ref) = divergence.base_ref.clone() else {
@@ -788,6 +796,13 @@ fn ensure_inactive(active: bool, operation: &str) -> Result<(), BridgeError> {
         )));
     }
     Ok(())
+}
+
+/// Whether git recognizes the directory as a repository at all — the cheapest
+/// question to answer before any operation that would otherwise fail with raw
+/// stderr deep in its first command.
+fn is_repository(path: &Path) -> bool {
+    run(path, ["rev-parse", "--git-dir"]).is_ok()
 }
 
 fn ensure_clean(worktree: &Path, operation: &str) -> Result<(), BridgeError> {
@@ -1503,6 +1518,27 @@ mod tests {
         let error = fast_forward_to_base(&clone, false).unwrap_err().to_string();
         assert!(error.contains("cannot be fast-forwarded"), "{error}");
         assert!(clone.join("local.txt").exists());
+    }
+
+    /// A workspace directory that is not a checkout must be refused with an
+    /// explanation, not git's raw stderr (issue #306 showed both a fresh
+    /// measurement and "fatal: not a git repository" in one card).
+    #[test]
+    fn a_fast_forward_refuses_a_directory_that_is_not_a_repository() {
+        let fixture = tempfile::tempdir().unwrap();
+        let plain = fixture.path().join("not-a-repo");
+        std::fs::create_dir(&plain).unwrap();
+
+        let error = fast_forward_to_base(&plain, false).unwrap_err();
+        assert!(matches!(error, BridgeError::Invalid(_)), "{error}");
+        assert!(
+            error.to_string().contains("not a Git repository"),
+            "the refusal should name the condition: {error}"
+        );
+        assert!(
+            !error.to_string().contains("fatal:"),
+            "raw git stderr must not reach the user: {error}"
+        );
     }
 
     #[test]
