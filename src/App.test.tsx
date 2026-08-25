@@ -38,9 +38,8 @@ describe("ChatModelControl", () => {
   });
 });
 
-// The Cursor sidebar mock renders invented repos and no session list, so with
-// its flag on the shipped app loses the real chats and every route to the Work
-// board. Nothing else mounts App, so the flag is asserted from source here.
+// The Cursor sidebar mock rendered invented repos and no session list. The
+// real rail is the only rail; this guard keeps the mock from coming back.
 describe("shell flags", () => {
   it("ships the real rail, not the Cursor sidebar mock", () => {
     const source = readFileSync(join(__dirname, "App.tsx"), "utf8");
