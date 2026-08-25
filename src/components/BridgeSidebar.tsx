@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, Code2, FolderGit2, ListChecks, MessagesSquare, Package, Pin, Plus, Search, Settings2, X } from "lucide-react";
+import { Bot, ChevronRight, Code2, FolderGit2, LayoutGrid, ListChecks, MessagesSquare, Package, Pin, Search, Settings2, SquarePen, type LucideIcon } from "lucide-react";
 import { WindowNavButtons, WindowPanelButton } from "./WindowNavButtons";
 import type { Session, SessionStatus, Workspace } from "../types";
 import { cn } from "@/lib/utils";
@@ -147,16 +147,34 @@ function GroupLabel({ label, count, folded, onToggle }: { label: string; count: 
   );
 }
 
-function RailIconButton({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
+function ActionRow({
+  icon: Icon,
+  label,
+  onClick,
+  collapsed,
+  active = false,
+}: {
+  icon: LucideIcon;
+  label: string;
+  onClick: () => void;
+  collapsed: boolean;
+  active?: boolean;
+}) {
   return (
     <button
       type="button"
       onClick={onClick}
       title={label}
       aria-label={label}
-      className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "flex items-center rounded-md text-[13px] tracking-[-0.008em] transition-colors",
+        collapsed ? "mx-auto size-9 justify-center" : "h-7 w-full gap-2.5 px-2",
+        active ? "bg-accent font-medium text-foreground" : "text-foreground/85 hover:bg-accent hover:text-foreground",
+      )}
     >
-      {children}
+      <Icon size={15} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+      {!collapsed && label}
     </button>
   );
 }
@@ -317,6 +335,15 @@ export function BridgeSidebar({
     setQuery("");
   }, []);
 
+  const toggleSearch = useCallback(() => {
+    if (searchOpen) {
+      closeSearch();
+      return;
+    }
+    if (collapsed) setCollapsed(false);
+    setSearchOpen(true);
+  }, [searchOpen, closeSearch, collapsed, setCollapsed]);
+
   const stopResize = useCallback((pointerId?: number) => {
     setResizing(false);
     document.body.style.cursor = "";
@@ -444,27 +471,15 @@ export function BridgeSidebar({
         )
       )}
       <div className={cn("flex min-h-0 flex-1 flex-col px-2 pb-3", showWindowNav ? "pt-1" : "pt-3")}>
-        <ScopeSwitch scope={scope} collapsed={collapsed} onChange={changeScope} />
-
-        <div className="mb-4 shrink-0">
-          <button
-            type="button"
-            onClick={onOpenNewChat}
-            title={collapsed ? "New chat" : undefined}
-            className={cn(
-              "flex items-center font-medium transition-all active:scale-[0.98]",
-              collapsed
-                ? "mx-auto h-9 w-9 justify-center rounded-lg bg-primary text-primary-foreground hover:opacity-90"
-                : "h-8 w-full gap-2 rounded-lg bg-primary px-2.5 text-[13px] tracking-[-0.006em] text-primary-foreground hover:opacity-90",
-            )}
-          >
-            <Plus size={15} strokeWidth={1.9} aria-hidden="true" />
-            {!collapsed && "New chat"}
-          </button>
+        <div className={cn("mb-2 shrink-0", collapsed && "flex flex-col items-center")}>
+          <ActionRow icon={SquarePen} label="New Chat" collapsed={collapsed} onClick={onOpenNewChat} />
+          <ActionRow icon={Search} label="Search" collapsed={collapsed} onClick={toggleSearch} />
+          <ActionRow icon={Bot} label="Automations" collapsed={collapsed} onClick={onOpenMarketplace} active={marketplaceActive} />
+          <ActionRow icon={LayoutGrid} label="Customize" collapsed={collapsed} onClick={onOpenSettings} active={settingsActive} />
         </div>
 
         {!collapsed && searchOpen && (
-          <div className="relative mb-3 shrink-0">
+          <div className="relative mb-2 shrink-0">
             <Search size={13} strokeWidth={1.7} aria-hidden="true" className="pointer-events-none absolute left-2 top-2 text-muted-foreground" />
             <input
               type="text"
@@ -478,6 +493,8 @@ export function BridgeSidebar({
             />
           </div>
         )}
+
+        <ScopeSwitch scope={scope} collapsed={collapsed} onChange={changeScope} />
 
         {scope === "work" && (
           <div className="mb-2 shrink-0">
@@ -515,19 +532,7 @@ export function BridgeSidebar({
 
         <div className="flex-1 overflow-y-auto">
           {!collapsed && (
-            <SectionLabel action={
-              <span className="flex items-center gap-0.5">
-                <RailIconButton
-                  label={searchOpen ? "Close search" : "Search chats"}
-                  onClick={() => (searchOpen ? closeSearch() : setSearchOpen(true))}
-                >
-                  {searchOpen
-                    ? <X size={14} strokeWidth={1.7} aria-hidden="true" />
-                    : <Search size={14} strokeWidth={1.7} aria-hidden="true" />}
-                </RailIconButton>
-                <SidebarFilterMenu view={view} agents={agents} allowProjectGrouping={scope === "code"} onChange={changeView} />
-              </span>
-            }>
+            <SectionLabel action={<SidebarFilterMenu view={view} agents={agents} allowProjectGrouping={scope === "code"} onChange={changeView} />}>
               Chats
             </SectionLabel>
           )}

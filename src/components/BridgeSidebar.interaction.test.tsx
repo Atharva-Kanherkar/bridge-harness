@@ -248,3 +248,30 @@ describe("BridgeSidebar and the Work board", () => {
     expect(onOpenMemory).toHaveBeenCalledOnce();
   });
 });
+
+describe("BridgeSidebar action rows", () => {
+  it("fires the matching handler from each action row", () => {
+    const onOpenNewChat = vi.fn();
+    const onOpenMarketplace = vi.fn();
+    const onOpenSettings = vi.fn();
+    mount({ onOpenNewChat, onOpenMarketplace, onOpenSettings });
+    click(container.querySelector('button[aria-label="New Chat"]')!);
+    click(container.querySelector('button[aria-label="Automations"]')!);
+    click(container.querySelector('button[aria-label="Customize"]')!);
+    expect(onOpenNewChat).toHaveBeenCalledOnce();
+    expect(onOpenMarketplace).toHaveBeenCalledOnce();
+    expect(onOpenSettings).toHaveBeenCalledOnce();
+  });
+
+  it("opens the filter from the Search row and closes it on Escape", () => {
+    mount();
+    expect(container.querySelector('input[aria-label="Filter chats and projects"]')).toBeNull();
+    click(container.querySelector('button[aria-label="Search"]')!);
+    const input = container.querySelector<HTMLInputElement>('input[aria-label="Filter chats and projects"]')!;
+    expect(input).toBeTruthy();
+    act(() => {
+      input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(container.querySelector('input[aria-label="Filter chats and projects"]')).toBeNull();
+  });
+});
