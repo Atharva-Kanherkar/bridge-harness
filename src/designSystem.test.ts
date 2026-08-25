@@ -184,4 +184,10 @@ describe("theme tokens", () => {
     expect(css).toMatch(/html:not\(\[data-tauri\]\) \.u-traffic-inset/);
     expect(css).toMatch(/html\[data-native-fullscreen\] \.u-traffic-inset/);
   });
+
+  it("lets the native canvas show a dark AppKit tint without changing the browser canvas", () => {
+    expect(css).toMatch(
+      /html\[data-tauri\] \.u-vibrancy-canvas\s*\{[^}]*background-color:\s*color-mix\(in srgb,\s*var\(--color-background\) 82%,\s*transparent\)/,
+    );
+  });
 });

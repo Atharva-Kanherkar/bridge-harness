@@ -344,7 +344,9 @@ html[data-native-fullscreen] .u-traffic-inset {
     background-color: color-mix(in srgb, var(--color-sidebar) 60%, transparent);
   }
   html[data-tauri] .u-vibrancy-canvas {
-    background-color: var(--color-background);
+    /* Keep the reading surface dark and legible while allowing AppKit's
+       wallpaper tint and blur to reach the canvas, not only the sidebar. */
+    background-color: color-mix(in srgb, var(--color-background) 82%, transparent);
   }
 }
 
