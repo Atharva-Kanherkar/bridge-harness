@@ -9,11 +9,12 @@ import { CodePanel } from "./CodePanel";
 // jsdom provides usefully. The document itself is covered by `fileBuffer`
 // tests; what this file checks is the panel's wiring around it.
 vi.mock("./editor/CodeEditor", () => ({
-  CodeEditor: ({ docKey, doc, onChange, onSave }: {
-    docKey: string; doc: string; onChange: (value: string) => void; onSave: () => void;
+  CodeEditor: ({ docKey, doc, revealLine, onChange, onSave }: {
+    docKey: string; doc: string; revealLine?: { line: number; nonce: number }; onChange: (value: string) => void; onSave: () => void;
   }) => <textarea
     data-testid="editor"
     data-dockey={docKey}
+    data-revealline={revealLine ? `${revealLine.line}:${revealLine.nonce}` : undefined}
     defaultValue={doc}
     onChange={event => onChange(event.target.value)}
     onKeyDown={event => { if (event.key === "s") onSave(); }}
@@ -74,6 +75,63 @@ afterEach(async () => {
 });
 
 describe("CodePanel", () => {
+  it("passes a reveal line to the active file's editor, and only there", async () => {
+    await render({ reveal: { path: "src/App.tsx", line: 42, nonce: 7 } });
+    const editor = () => container.querySelector<HTMLTextAreaElement>('[data-testid="editor"]');
+    expect(editor()!.getAttribute("data-revealline")).toBe("42:7");
+
+    read.mockResolvedValue({ path: "README.md", content: "# readme", sha256: "sha-r", tooLarge: false, binary: false, sizeBytes: 8 });
+    await click(rowNamed("README.md"));
+    expect(editor()!.getAttribute("data-revealline")).toBeNull();
+  });
+
+  it("passes no reveal line when the request has none", async () => {
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 } });
+    expect(container.querySelector('[data-testid="editor"]')!.getAttribute("data-revealline")).toBeNull();
+  });
+
+  it("reloads a clean open buffer when the disk moves under it", async () => {
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 }, driftSignal: "a" });
+    expect(container.querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!.defaultValue).toBe("const a = 1;");
+
+    read.mockResolvedValue({ path: "src/App.tsx", content: "const a = 2;", sha256: "sha-agent", tooLarge: false, binary: false, sizeBytes: 12 });
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 }, driftSignal: "b" });
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 }, driftSignal: "b" });
+    expect(container.querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!.defaultValue).toBe("const a = 2;");
+    expect(text()).not.toContain("Changed on disk");
+  });
+
+  it("turns a dirty open buffer to conflict instead of clobbering it", async () => {
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 }, driftSignal: "a" });
+    await typeInto(container.querySelector('[data-testid="editor"]')!, "my unsaved edit");
+
+    read.mockResolvedValue({ path: "src/App.tsx", content: "agent version", sha256: "sha-agent", tooLarge: false, binary: false, sizeBytes: 13 });
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 }, driftSignal: "b" });
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 }, driftSignal: "b" });
+    expect(text()).toContain("Changed on disk while you were editing");
+    const editor = container.querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!;
+    expect(editor.value).toBe("my unsaved edit");
+    expect([...container.querySelectorAll("button")].some(button => button.textContent === "Reload")).toBe(true);
+    expect([...container.querySelectorAll("button")].some(button => button.textContent === "Overwrite")).toBe(true);
+  });
+
+  it("leaves an unchanged file alone on drift", async () => {
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 }, driftSignal: "a" });
+    const keyBefore = container.querySelector('[data-testid="editor"]')!.getAttribute("data-dockey");
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 }, driftSignal: "b" });
+    await render({ reveal: { path: "src/App.tsx", nonce: 1 }, driftSignal: "b" });
+    expect(container.querySelector('[data-testid="editor"]')!.getAttribute("data-dockey")).toBe(keyBefore);
+    expect(text()).not.toContain("Changed on disk");
+  });
+
+  it("issues no reads on drift with nothing open", async () => {
+    await render({ driftSignal: "a" });
+    read.mockClear();
+    await render({ driftSignal: "b" });
+    await render({ driftSignal: "b" });
+    expect(read).not.toHaveBeenCalled();
+  });
+
   it("honours a reveal request: the file opens and its tab is active", async () => {
     await render({ reveal: { path: "src/App.tsx", nonce: 1 } });
     const tab = [...container.querySelectorAll("button")].find(node => node.getAttribute("title") === "src/App.tsx");

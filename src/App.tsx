@@ -346,7 +346,7 @@ export function App() {
   // Cross-pane intents. Quoting names what a message is about instead of
   // describing it; revealing hands a file from the diff to the editor. The
   // nonce distinguishes "open it again" from a re-render.
-  const [codeReveal, setCodeReveal] = useState<{ path: string; nonce: number }>();
+  const [codeReveal, setCodeReveal] = useState<{ path: string; line?: number; nonce: number }>();
   const revealNonce = useRef(0);
   // The intent names a path in one worktree; a remounted CodePanel in another
   // workspace resets its nonce guard and would honour it against the wrong
@@ -361,9 +361,9 @@ export function App() {
     });
     composerRef.current?.focus();
   }
-  function openFileInDock(path: string) {
+  function openFileInDock(path: string, line?: number) {
     revealNonce.current += 1;
-    setCodeReveal({ path, nonce: revealNonce.current });
+    setCodeReveal({ path, line, nonce: revealNonce.current });
     dispatchDock({ type: "open-pane", pane: "code" });
   }
   // A focused worker is watchable, its approvals are resolvable, and it can be
@@ -1500,6 +1500,8 @@ export function App() {
                   working={turnActive}
                   pendingMessages={pendingForSession}
                   onResolve={resolveApproval}
+                  workspaceFiles={hasRepo ? workspaceFiles : undefined}
+                  onOpenFile={hasRepo && workspace ? openFileInDock : undefined}
                   highlightEntryId={highlightEntryId}
                   onRemember={rememberMessage}
                 />
@@ -1630,7 +1632,7 @@ export function App() {
                  Without the key a save would aim the old path at the new
                  workspace. */
               if (pane === "changes") return <ChangesPanel key={workspace.id} workspace={workspace} onQuote={quoteToComposer} onOpenFile={openFileInDock} />;
-              if (pane === "code") return <Suspense fallback={<PanelLoading label="Opening editor…"/>}><CodePanel key={workspace.id} workspaceId={workspace.id} visible={dock.open && dock.pane === "code"} reveal={codeReveal} onSaved={() => void refreshWorkspaceStats(workspace.id)}/></Suspense>;
+              if (pane === "code") return <Suspense fallback={<PanelLoading label="Opening editor…"/>}><CodePanel key={workspace.id} workspaceId={workspace.id} visible={dock.open && dock.pane === "code"} reveal={codeReveal} driftSignal={`${workspace.dirtyFiles}:${workspace.additions}:${workspace.deletions}`} onSaved={() => void refreshWorkspaceStats(workspace.id)}/></Suspense>;
               return <Suspense fallback={<PanelLoading label="Opening terminal…"/>}><TerminalPane key={workspace.id} workspaceId={workspace.id}/></Suspense>;
             }}
           </SessionDock>

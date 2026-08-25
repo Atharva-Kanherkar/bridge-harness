@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useState } from "react";
+import { createContext, memo, useContext, useEffect, useMemo, useState } from "react";
 import { Check, Copy, Maximize2, Minimize2 } from "lucide-react";
 import katex from "katex";
 import { COLORIZE_DEBOUNCE_MS, colorizeCode, escapeHtml, normalizeLang } from "./highlight";
@@ -117,6 +117,72 @@ export function splitBlocks(source: string): Block[] {
   return blocks;
 }
 
+// ── File links out of prose ────────────────────────────────────────────────
+// A conversation names files constantly — in tool rows, in assistant prose,
+// in the user's own @mentions. When a host provides the workspace's file list
+// and an opener, those names become live links into the Code pane; when it
+// does not (previews, worker feeds), the same text renders inert. Resolution
+// is exact-match against real paths: a dead link is worse than none.
+
+export type FileLinks = {
+  has: (path: string) => boolean;
+  open: (path: string, line?: number) => void;
+};
+
+export const FileLinkContext = createContext<FileLinks | null>(null);
+
+/** A workspace-relative path with at least one directory and an extension,
+ *  optionally suffixed :line. */
+const FILE_REF = /^([\w~@.-]+(?:\/[\w~@.-]+)+)(?::(\d+))?$/;
+
+export function parseFileRef(text: string, links: FileLinks | null): { path: string; line?: number } | undefined {
+  if (!links) return undefined;
+  const match = FILE_REF.exec(text);
+  if (!match || !links.has(match[1])) return undefined;
+  return { path: match[1], line: match[2] === undefined ? undefined : Number(match[2]) };
+}
+
+function InlineCode({ text }: { text: string }) {
+  const links = useContext(FileLinkContext);
+  const ref = parseFileRef(text, links);
+  if (!ref) return <code>{text}</code>;
+  return <button
+    type="button"
+    onClick={() => links!.open(ref.path, ref.line)}
+    aria-label={`Open ${ref.path} in the Code pane`}
+    title={`Open ${ref.path} in the Code pane`}
+    className="rounded transition-colors hover:bg-accent"
+  ><code>{text}</code></button>;
+}
+
+const MENTION = /(@[\w~@./-]+)/g;
+
+/** Plain text with live @mentions — the user-bubble renderer, where full
+ *  markdown would be wrong but a file name should still be a link. */
+export function MentionText({ text }: { text: string }) {
+  return <TextRun text={text} />;
+}
+
+function TextRun({ text }: { text: string }) {
+  const links = useContext(FileLinkContext);
+  if (!links || !text.includes("@")) return <>{text}</>;
+  const parts = text.split(MENTION).filter(part => part !== "");
+  return <>{parts.map((part, index) => {
+    if (part.startsWith("@") && links.has(part.slice(1))) {
+      const path = part.slice(1);
+      return <button
+        key={index}
+        type="button"
+        onClick={() => links.open(path)}
+        aria-label={`Open ${path} in the Code pane`}
+        title={`Open ${path} in the Code pane`}
+        className="rounded text-[var(--color-ring)] underline decoration-dotted underline-offset-2 transition-colors hover:bg-accent"
+      >{part}</button>;
+    }
+    return <span key={index}>{part}</span>;
+  })}</>;
+}
+
 // Inline tokens, in priority order: code span, \(math\), $math$, bold, italic, link.
 // The $…$ pattern requires non-space just inside both delimiters and forbids a
 // trailing digit, so ordinary prose ("costs $5 and $10") is not misread as math.
@@ -188,7 +254,7 @@ function MathBlock({ tex }: { tex: string }) {
 
 function renderInline(text: string): React.ReactNode[] {
   return text.split(INLINE).filter(part => part !== "").map((part, index) => {
-    if (part.startsWith("`") && part.endsWith("`") && part.length > 2) return <code key={index}>{part.slice(1, -1)}</code>;
+    if (part.startsWith("`") && part.endsWith("`") && part.length > 2) return <InlineCode key={index} text={part.slice(1, -1)} />;
     if (part.startsWith("\\(") && part.endsWith("\\)") && part.length > 4) return <InlineMath key={index} tex={part.slice(2, -2)} />;
     if (part.startsWith("$") && part.endsWith("$") && part.length > 2) return <InlineMath key={index} tex={part.slice(1, -1)} />;
     if (part.startsWith("~~") && part.endsWith("~~") && part.length > 4) return <del key={index}>{renderInline(part.slice(2, -2))}</del>;
@@ -196,7 +262,7 @@ function renderInline(text: string): React.ReactNode[] {
     if (part.startsWith("*") && part.endsWith("*") && part.length > 2) return <em key={index}>{renderInline(part.slice(1, -1))}</em>;
     const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/);
     if (link) return <a key={index} href={link[2]} target="_blank" rel="noreferrer">{renderInline(link[1])}</a>;
-    return <span key={index}>{part}</span>;
+    return <TextRun key={index} text={part} />;
   });
 }
 

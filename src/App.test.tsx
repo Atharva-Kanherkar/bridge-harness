@@ -299,6 +299,31 @@ describe("the dock in the session view", () => {
     expect([...container.querySelectorAll("button[title]")].some(node => node.getAttribute("title") === "src-tauri/bridge-core/src/policy.rs")).toBe(true);
   });
 
+  // Contract: testing/feat-dock-code.md §4.
+  it("turns a sent mention into a live link back into the editor", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+
+    const textarea = composer()!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(textarea, "please recheck @src/App.tsx before merging");
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+    });
+    await settle(6);
+
+    const mention = container.querySelector<HTMLButtonElement>('button[aria-label="Open src/App.tsx in the Code pane"]');
+    expect(mention).not.toBeNull();
+    await click(mention!);
+    await settle(4);
+    const codeTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Code")!;
+    expect(codeTab.getAttribute("aria-selected")).toBe("true");
+    expect([...container.querySelectorAll("button[title]")].some(node => node.getAttribute("title") === "src/App.tsx")).toBe(true);
+  });
+
   it("lets Escape restore an expanded pane before it leaves fullscreen", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");

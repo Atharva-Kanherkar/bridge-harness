@@ -156,9 +156,12 @@ describe("three layers", () => {
 
   it("gives an edit a bordered card and a read a flat row", () => {
     mount([read(1, "src-tauri/src/lib.rs"), fileChange({ id: 2, sequence: 2, itemId: "i-2" })]);
-    const rowFor = (label: string) => buttonWith(label)?.parentElement;
-    expect(rowFor("Edited lib.rs")?.className).toContain("border-border");
-    expect(rowFor("Read lib.rs")?.className).not.toContain("border-border");
+    // The card is the nearest bordered ancestor: the row split into sibling
+    // controls (a path can be a link, and buttons do not nest), so the card
+    // frame sits one level above the row.
+    const carded = (label: string) => !!buttonWith(label)?.closest(".bg-card");
+    expect(carded("Edited lib.rs")).toBe(true);
+    expect(carded("Read lib.rs")).toBe(false);
   });
 
   it("does not reorder the transcript to tidy it", () => {

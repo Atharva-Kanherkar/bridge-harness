@@ -122,15 +122,19 @@ function FilePalette({ paths, onPick, onClose }: { paths: string[]; onPick: (pat
  * That turns the one genuinely dangerous case — a human and an agent editing
  * the same file — into a visible choice instead of a silent lost update.
  */
-export function CodePanel({ workspaceId, visible = true, reveal, onSaved }: {
+export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, onSaved }: {
   workspaceId: string;
   /** False while another tab is showing: the panel stays mounted, but its
    *  shortcuts must not steal ⌘P and ⌘S from whatever is on screen. */
   visible?: boolean;
-  /** An outside request — a diff row, later a chat mention — to open a file
-   *  here. The nonce is the request identity: one open per nonce, so a
-   *  re-render with the same request does not re-activate the tab. */
-  reveal?: { path: string; nonce: number };
+  /** An outside request — a diff row, a chat mention — to open a file here,
+   *  at a line when one is known. The nonce is the request identity: one
+   *  open per nonce, so a re-render with the same request does not
+   *  re-activate the tab. */
+  reveal?: { path: string; line?: number; nonce: number };
+  /** Changes when the workspace's stats drift — the cue to compare every
+   *  open buffer against the disk the agent just wrote. */
+  driftSignal?: string;
   onSaved?: () => void;
 }) {
   const [paths, setPaths] = useState<string[]>([]);
@@ -247,6 +251,36 @@ export function CodePanel({ workspaceId, visible = true, reveal, onSaved }: {
     setOpen(files => files.map(entry => entry.path === path ? buffer : entry));
   }, [open, workspaceId]);
 
+  // The agent writes the same tree this panel edits. When the workspace's
+  // stats move, compare every open buffer against disk: a clean buffer takes
+  // the new bytes, a dirty one turns its existing conflict state on — the
+  // same state a refused save produces — and keeps the unsaved text.
+  const driftSeen = useRef(driftSignal);
+  useEffect(() => {
+    if (driftSignal === undefined || driftSignal === driftSeen.current) return;
+    driftSeen.current = driftSignal;
+    if (open.length === 0) return;
+    let live = true;
+    void (async () => {
+      for (const file of open) {
+        if (file.state === "saving" || file.state === "error") continue;
+        try {
+          const disk = await bridgeApi.readWorkspaceFile(workspaceId, file.path);
+          if (!live || disk.sha256 === file.baseSha) continue;
+          if (isDirty(file)) {
+            if (file.state !== "conflict") patch(file.path, { state: "conflict", message: "Changed on disk while you were editing" });
+          } else {
+            await reload(file.path);
+          }
+        } catch {
+          // A vanished file surfaces on the next save; drift polling stays quiet.
+        }
+      }
+    })();
+    return () => { live = false; };
+  }, [driftSignal, open, workspaceId, patch, reload]);
+
+
   // ⌘P and ⌘S also work when focus is in the tree or the tab strip; the
   // editor has its own ⌘S so a save never depends on where the caret is.
   useEffect(() => {
@@ -349,6 +383,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, onSaved }: {
                   docKey={`${active.path}:${active.seed}`}
                   doc={active.saved}
                   path={active.path}
+                  revealLine={reveal && reveal.path === active.path && reveal.line !== undefined ? { line: reveal.line, nonce: reveal.nonce } : undefined}
                   onChange={value => handleChange(active.path, value)}
                   onSave={() => void save(active.path)}
                   visible={visible}

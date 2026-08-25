@@ -1,4 +1,4 @@
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Maximize2, Navigation, Pencil, Pin, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
 import { delegationChildSessionId, delegationFacet, foldWorkerDelegations, projectSessionConversation, reduceConversation, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
@@ -8,7 +8,7 @@ import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
 import { describeError } from "../errors";
 import { looksLikeDiff } from "./highlight";
 import { PatchView } from "./DiffView";
-import { Markdown } from "./Markdown";
+import { FileLinkContext, Markdown, MentionText, parseFileRef, type FileLinks } from "./Markdown";
 import { formatElapsed, harnessLabel } from "../utils";
 import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionStagger, useMotionTransition } from "../motion";
@@ -253,25 +253,48 @@ function ActionRow({ item }: { item: ConversationItem }) {
   const card = !FLAT_VERBS.has(call.verb);
   const label = `${live ? call.doing : call.done}${call.target ? ` ${call.target}` : ""}`;
   const path = call.path && call.path !== call.target ? call.path : undefined;
+  // A path the workspace recognises is a link into the Code pane. It has to be
+  // a sibling of the expand control, not a child — buttons do not nest.
+  const links = useContext(FileLinkContext);
+  const fileRef = path && (call.verb === "edit" || call.verb === "read") ? parseFileRef(path, links) : undefined;
   return (
     // No `initial`/`animate` of its own: the row inherits both from the group
     // that reveals it, which is what produces the stagger.
     <motion.div className="min-w-0" variants={ROW_VARIANTS}>
       <div className={cn("min-w-0", card && "overflow-hidden rounded-lg border border-border bg-card")}>
-        <button
-          type="button"
+        <div
           className={cn(
-            "group/row flex w-full min-w-0 items-center gap-2 px-3 py-1.5 text-left font-mono text-[11px] text-muted-foreground transition-colors hover:bg-accent disabled:cursor-default disabled:hover:bg-transparent",
+            "group/row flex w-full min-w-0 items-center gap-2 px-3 py-1.5 font-mono text-[11px] text-muted-foreground transition-colors",
+            body && "hover:bg-accent",
             !card && "rounded-lg",
           )}
-          disabled={!body}
-          onClick={() => body && setToggled(!open)}
         >
-          <span className="shrink-0 text-muted-foreground/70" aria-hidden="true">{TOOL_ICON[call.glyph]}</span>
-          <span className={cn("truncate", live && "text-foreground")}>{label}</span>
+          <button
+            type="button"
+            className="flex min-w-0 shrink-0 items-center gap-2 text-left disabled:cursor-default"
+            disabled={!body}
+            onClick={() => body && setToggled(!open)}
+          >
+            <span className="shrink-0 text-muted-foreground/70" aria-hidden="true">{TOOL_ICON[call.glyph]}</span>
+            <span className={cn("truncate", live && "text-foreground")}>{label}</span>
+          </button>
           {/* flex-1 from a zero basis, so the path gives up room before the label does. */}
-          {path && <span className="hidden min-w-0 flex-1 truncate text-muted-foreground/70 sm:block">{path}</span>}
-          <span className="ml-auto flex shrink-0 items-center gap-2">
+          {path && (fileRef
+            ? <button
+                type="button"
+                onClick={() => links!.open(fileRef.path, fileRef.line)}
+                aria-label={`Open ${fileRef.path} in the Code pane`}
+                title={`Open ${fileRef.path} in the Code pane`}
+                className="hidden min-w-0 flex-1 truncate text-left text-muted-foreground/70 decoration-dotted underline-offset-2 hover:text-foreground hover:underline sm:block"
+              >{path}</button>
+            : <span className="hidden min-w-0 flex-1 truncate text-muted-foreground/70 sm:block">{path}</span>)}
+          <button
+            type="button"
+            className="ml-auto flex shrink-0 items-center gap-2 disabled:cursor-default"
+            disabled={!body}
+            aria-label={open ? "Collapse tool output" : "Expand tool output"}
+            onClick={() => body && setToggled(!open)}
+          >
             {call.verb === "edit" && call.additions !== undefined && (
               <span><b className="font-medium text-success">+{call.additions}</b> <b className="font-medium text-destructive">−{call.deletions ?? 0}</b></span>
             )}
@@ -279,8 +302,8 @@ function ActionRow({ item }: { item: ConversationItem }) {
             {call.durationMs !== undefined && !live && <span className="text-muted-foreground/70">{Math.max(1, Math.round(call.durationMs / 1000))}s</span>}
             <StatusGlyph live={live} failed={failed} succeeded={succeeded}/>
             {body && <ChevronRight size={12} className={cn("text-muted-foreground/70 transition-transform", open && "rotate-90")} aria-hidden="true"/>}
-          </span>
-        </button>
+          </button>
+        </div>
         <Disclosure open={open} className={cn(card && "border-t border-border")}>
           {body === "patch" && <PatchView patch={call.patch ?? ""} path={call.path ?? ""} className="max-h-[420px] px-1" foldAfterHunks={1}/>}
           {body === "terminal" && <TerminalBlock command={call.command} output={call.output}/>}
@@ -367,7 +390,7 @@ const ROW_VARIANTS = {
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onOpenSession, onExpandWorker, onWaiveCompletion, onRefreshBase, onRetryWorker, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], highlightEntryId, onRemember }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: (eventId: number, decision: ApprovalDecision) => void; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onOpenSession, onExpandWorker, onWaiveCompletion, onRefreshBase, onRetryWorker, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: (eventId: number, decision: ApprovalDecision) => void; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void }) {
   const visibleItems = useMemo(() => {
     const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
     const nextLiveItems = reduceConversation(events);
@@ -381,6 +404,14 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     return foldWorkerDelegations(items.filter(item => item.type !== "raw"));
   }, [activeLeafId, events, forestEntries]);
   const renderedItems = useMemo(() => groupItems(visibleItems), [visibleItems]);
+
+  // Every file name in the transcript resolves against this one set; without
+  // an opener the transcript renders exactly as before.
+  const fileLinks = useMemo<FileLinks | null>(() => {
+    if (!onOpenFile || !workspaceFiles?.length) return null;
+    const paths = new Set(workspaceFiles);
+    return { has: path => paths.has(path), open: onOpenFile };
+  }, [workspaceFiles, onOpenFile]);
 
   if (!session && !preview) return <Empty title="No chat yet" copy="Start a chat from the sidebar, or open a workspace agent."/>;
   if (!visibleItems.length && !working && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} />;
@@ -399,7 +430,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   });
   const tailLength = visibleItems.length ? visibleItems[visibleItems.length - 1].text.length : 0;
   const scrollSignature = `${visibleItems.length}:${tailLength}:${optimistic.length}:${working ? 1 : 0}`;
-  return <ScrollFollow signature={scrollSignature} className="absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth px-3 py-8 pb-24 sm:px-6 sm:py-10">
+  return <FileLinkContext.Provider value={fileLinks}><ScrollFollow signature={scrollSignature} className="absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth px-3 py-8 pb-24 sm:px-6 sm:py-10">
     <div className="mx-auto flex w-full min-w-0 max-w-3xl flex-col gap-6 sm:gap-8">
       {pendingAdoptions.map(binding => <AdoptionCard key={binding.sessionId} binding={binding} onResolve={onResolveAdoption}/>)}
       {completion && <VerificationCard summary={completion} onWaive={onWaiveCompletion}/>}
@@ -430,11 +461,11 @@ export const AgentConversation = memo(function AgentConversation({ session, even
             >
               <ItemView item={entry.item} workers={workers} now={now} onResolve={onResolve} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRefreshBase={onRefreshBase} onRetryWorker={onRetryWorker} onRemember={onRemember} errorContext={errorContext}/>
             </TranscriptRow>)}
-        {pendingRows.map(row => <TranscriptRow key={row.key}><div className={BUBBLE}>{row.text}</div></TranscriptRow>)}
+        {pendingRows.map(row => <TranscriptRow key={row.key}><div className={BUBBLE}><MentionText text={row.text}/></div></TranscriptRow>)}
         {working && !streaming && <TranscriptRow key="working"><div className="flex justify-start"><div className="thinking-shimmer h-[2px] w-16 rounded-full" /></div></TranscriptRow>}
       </AnimatePresence>
     </div>
-  </ScrollFollow>;
+  </ScrollFollow></FileLinkContext.Provider>;
 });
 
 /// Changes that exist only in a worker's own worktree. The parent session cannot
@@ -543,7 +574,7 @@ function Empty({ title, copy }: { title: string; copy: string }) {
 
 function ItemView({ item, workers, now, onResolve, onOpenSession, onExpandWorker, onRefreshBase, onRetryWorker, onRemember, errorContext }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; onResolve: (eventId: number, decision: ApprovalDecision) => void; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onRemember?: (text: string) => void; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
   if (item.type === "message") {
-    if (item.role === "user") return <div className={BUBBLE}>{item.text}</div>;
+    if (item.role === "user") return <div className={BUBBLE}><MentionText text={item.text}/></div>;
     // No bubble, no card: the agent writes straight onto the canvas.
     return <div className="group w-full min-w-0 text-foreground">
       {item.status === "streaming" && !item.text.trim() ? <div className="thinking-shimmer h-[2px] w-16 rounded-full" /> : <Markdown text={item.text} dim={item.status === "streaming"} />}

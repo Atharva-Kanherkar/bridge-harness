@@ -1,5 +1,8 @@
+// @vitest-environment jsdom
+import { act } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { AgentConversation } from "./AgentConversation";
 import type { AgentEvent, CompletionSummary, Session, SessionEntry, WorkerRuntimeRecord } from "../types";
 
@@ -8,6 +11,41 @@ const event = (id: number, kind: string, overrides: Partial<AgentEvent> = {}): A
 const completion = (verdict: CompletionSummary["verdict"]): CompletionSummary => ({ attemptId:"a",contractId:"c",verdict,repository:{head:"abcdef1234567890",dirtyDigest:"clean"},passedRequired:0,totalRequired:1,markdownCommitted:false,waiverReason:verdict === "waived" ? "Accepted risk" : null,checks:[{checkId:"gate",kind:"deterministic",required:true,status:verdict === "verified" ? "passed" : verdict === "changes_requested" ? "failed" : verdict === "superseded" ? "stale" : verdict === "waived" ? "skipped" : "pending",executor:"bridge.shell",command:"bun test",verifierFamily:null,detail:null,outputDigest:verdict === "verified" ? "digest" : null,artifactRefs:[]}] });
 
 describe("AgentConversation", () => {
+  const editToolEvent = event(1, "tool.started", { itemId: "t", title: "Edit src/App.tsx", status: "completed", data: { type: "fileChange", path: "src/App.tsx" } });
+
+  async function mountConversation(extraProps: Record<string, unknown>) {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<AgentConversation session={session} onResolve={() => undefined} events={[editToolEvent]} {...extraProps} />));
+    const group = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Edited"));
+    if (group) await act(async () => {
+      group.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    return { container, unmount: async () => { await act(async () => root.unmount()); container.remove(); } };
+  }
+
+  it("makes an edit tool's path a link into the Code pane when an opener exists", async () => {
+    const onOpenFile = vi.fn();
+    const { container, unmount } = await mountConversation({ workspaceFiles: ["src/App.tsx"], onOpenFile });
+    const link = container.querySelector<HTMLButtonElement>('button[aria-label="Open src/App.tsx in the Code pane"]')!;
+    expect(link).not.toBeNull();
+    await act(async () => {
+      link.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onOpenFile).toHaveBeenCalledWith("src/App.tsx", undefined);
+    await unmount();
+  });
+
+  it("leaves the tool path inert without an opener", async () => {
+    const { container, unmount } = await mountConversation({});
+    expect(container.textContent).toContain("src/App.tsx");
+    expect(container.querySelector('button[aria-label="Open src/App.tsx in the Code pane"]')).toBeNull();
+    await unmount();
+  });
+
+
   it("shows revision-bound verification without requiring a committed contract file", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} completion={{ attemptId:"a",contractId:"c",verdict:"waived",repository:{head:"abcdef1234567890",dirtyDigest:"clean"},passedRequired:1,totalRequired:2,markdownCommitted:false,waiverReason:"Browser unavailable",checks:[{checkId:"tests",kind:"deterministic",required:true,status:"passed",executor:"bridge.shell",command:"bun test",verifierFamily:null,detail:"159 passed",outputDigest:"d",artifactRefs:[]},{checkId:"journey",kind:"user_testing",required:true,status:"skipped",executor:"bridge.worker",command:null,verifierFamily:"claude",detail:"No browser",outputDigest:null,artifactRefs:[]}]} } />);
     expect(html).toContain("Verified with waiver");
