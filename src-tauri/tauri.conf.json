@@ -24,6 +24,7 @@
       "hiddenTitle": true,
       "trafficLightPosition": { "x": 18, "y": 15 },
       "acceptFirstMouse": true,
+      "zoomHotkeysEnabled": true,
       "windowEffects": {
         "effects": ["sidebar"],
         "state": "followsWindowActiveState",
