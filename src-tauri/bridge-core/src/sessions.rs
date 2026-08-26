@@ -27,8 +27,11 @@ use uuid::Uuid;
 /// handoff summary before falling back to the mechanical projection. Tighter
 /// than [`compaction_controller::CHECKPOINT_TIMEOUT_SECONDS`] because the user
 /// is actively waiting on the switch — and because on the daemon host the wait
-/// holds one pooled connection for its duration.
-pub const SWITCH_SUMMARY_TIMEOUT_SECONDS: i64 = 6;
+/// holds one pooled connection for its duration. Still long enough for a real
+/// summarisation turn over meaningful history: at the original 6 seconds
+/// nearly every switch with a hot provider timed out, recording a spurious
+/// `compaction.failed` and handing the next model nothing.
+pub const SWITCH_SUMMARY_TIMEOUT_SECONDS: i64 = 20;
 
 /// A pending request for the outgoing provider to summarise the conversation
 /// before a model switch tears it down. Delivery and settlement are host-side
@@ -743,6 +746,49 @@ impl BridgeCore {
             Some("compaction") => Ok(SwitchSummaryOutcome::Summarised),
             _ => Ok(SwitchSummaryOutcome::Failed),
         }
+    }
+
+    /// Wait for a torn-down session's turn bookkeeping to settle, clearing it
+    /// if the dead reader never will. The switch's own summary turn writes
+    /// `active_turn_id` asynchronously when the provider acknowledges the
+    /// turn; once the adapter is stopped, `turn.completed` can never arrive,
+    /// and the reader's exit sweep races the commit. Left alone, that residue
+    /// trips the commit's `active_turn_id IS NULL` revision check and the
+    /// switch fails against its own machinery.
+    ///
+    /// Only a session with **no live runtime** is ever touched: with the
+    /// process alive a turn may still finish on its own, and the commit guard
+    /// keeps its full pessimism. With the process dead, any recorded turn is
+    /// unfinishable by construction, so clearing it restores the idle row the
+    /// plan verified.
+    pub fn settle_adapterless_turn_state(
+        &self,
+        session_id: &str,
+        budget: std::time::Duration,
+    ) -> Result<(), BridgeError> {
+        let deadline = std::time::Instant::now() + budget;
+        loop {
+            let active: Option<String> = self.db.lock().unwrap().query_row(
+                "SELECT active_turn_id FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| row.get(0),
+            )?;
+            if active.is_none() {
+                return Ok(());
+            }
+            if self.adapters.lock().unwrap().contains_key(session_id) {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(25));
+        }
+        self.db.lock().unwrap().execute(
+            "UPDATE sessions SET active_turn_id=NULL WHERE id=?1",
+            params![session_id],
+        )?;
+        Ok(())
     }
 
     /// Publish one provider's subscription usage tick to the ambient meter.
@@ -2148,6 +2194,131 @@ mod tests {
                 .contains("changed while the switch was in flight"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn switch_commits_after_its_own_summary_turn_left_turn_state_behind() {
+        // Regression for the "changed while the switch was in flight" failure:
+        // the switch's own summary turn wrote `active_turn_id`, teardown killed
+        // the adapter before `turn.completed`, and the commit refused. Settling
+        // the adapterless residue must let the commit land.
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Claude, None, None).unwrap();
+        let session_id = only_session_id(&core);
+        let change = core
+            .plan_chat_model_change(&session_id, &Harness::Codex, None)
+            .unwrap()
+            .unwrap();
+        // What the reader thread does when the summary turn starts — and no
+        // adapter survives to ever complete it.
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET active_turn_id='summary-turn',status='working' WHERE id=?1",
+                params![session_id],
+            )
+            .unwrap();
+        core.settle_adapterless_turn_state(&session_id, std::time::Duration::ZERO)
+            .unwrap();
+        core.commit_chat_model_change(change).unwrap();
+        let (harness, active_turn_id, status): (String, Option<String>, String) = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT harness,active_turn_id,status FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(harness, "codex", "the switch landed");
+        assert!(active_turn_id.is_none(), "no dangling turn survives");
+        assert_eq!(status, "idle", "the session is usable again");
+    }
+
+    #[test]
+    fn settle_waits_for_a_natural_clear_before_touching_the_row() {
+        // The reader's own cleanup (turn.completed or the exit sweep) may land
+        // during the budget; settle must observe it rather than rewrite it.
+        let (_scratch, core) = fixture();
+        let core = std::sync::Arc::new(core);
+        core.create_chat(&Harness::Claude, None, None).unwrap();
+        let session_id = only_session_id(&core);
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET active_turn_id='summary-turn',status='working' WHERE id=?1",
+                params![session_id],
+            )
+            .unwrap();
+        let clearer = {
+            let core = std::sync::Arc::clone(&core);
+            let session_id = session_id.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(60));
+                core.db
+                    .lock()
+                    .unwrap()
+                    .execute(
+                        "UPDATE sessions SET active_turn_id=NULL,status='stopped' WHERE id=?1",
+                        params![session_id],
+                    )
+                    .unwrap();
+            })
+        };
+        core.settle_adapterless_turn_state(&session_id, std::time::Duration::from_secs(5))
+            .unwrap();
+        clearer.join().unwrap();
+        let status: String = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT status FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "stopped", "the natural cleanup's write survives");
+    }
+
+    #[test]
+    fn settle_leaves_a_live_runtime_alone() {
+        // With the process alive a turn may still finish on its own; the
+        // commit guard keeps its pessimism and settle must not interfere.
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Claude, None, None).unwrap();
+        let session_id = only_session_id(&core);
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET active_turn_id='user-turn',status='working' WHERE id=?1",
+                params![session_id],
+            )
+            .unwrap();
+        core.adapters.lock().unwrap().insert(
+            session_id.clone(),
+            Box::new(RecordingRuntime {
+                interrupted: Default::default(),
+                usage_requested: Default::default(),
+            }),
+        );
+        core.settle_adapterless_turn_state(&session_id, std::time::Duration::ZERO)
+            .unwrap();
+        let active: Option<String> = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT active_turn_id FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(active.as_deref(), Some("user-turn"), "a live turn is not cleared");
     }
 
     /// A live adapter runtime that records control calls.

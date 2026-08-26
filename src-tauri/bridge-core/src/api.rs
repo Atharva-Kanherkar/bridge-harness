@@ -532,6 +532,11 @@ pub fn update_chat_model(
     };
     summarise_for_switch(core, session_id);
     core.stop_session_adapter(session_id, adapters::ShutdownReason::Replaced);
+    // The summary turn wrote `active_turn_id` asynchronously and its
+    // `turn.completed` may be dead with the adapter; settle that residue so
+    // the commit's revision check sees the idle row the plan verified instead
+    // of failing the switch against its own summary turn.
+    core.settle_adapterless_turn_state(session_id, std::time::Duration::from_secs(3))?;
     // The core publishes the durable agent event when the commit lands.
     core.commit_chat_model_change(change)?;
     core.state_snapshot()
