@@ -75,10 +75,6 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
   const [dismissed, setDismissed] = useState(false);
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [activeLogin, setActiveLogin] = useState<UsageProvider | null>(null);
-  const startProviderLogin = (provider: UsageProvider) => {
-    setActiveLogin(provider);
-    bridgeApi.startProviderLogin(provider).catch(() => setActiveLogin(current => current === provider ? null : current));
-  };
   const rootRef = useRef<HTMLDivElement>(null);
   const pressure = contextPressure(contextPercent);
   const breakdownState = useContextBreakdown(focusedSessionId, open && showBreakdown);
@@ -144,7 +140,7 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
         </div>
 
         <div className="grid gap-2">
-          {PROVIDERS.map(provider => <ProviderDetail key={provider.id} provider={provider} snapshot={usage[provider.id]} samples={samples[provider.id] ?? []} adapter={adapters?.find(item => item.id === provider.id)} activeLogin={activeLogin} onStartLogin={startProviderLogin} onCloseLogin={() => setActiveLogin(null)} />)}
+          {PROVIDERS.map(provider => <ProviderDetail key={provider.id} provider={provider} snapshot={usage[provider.id]} samples={samples[provider.id] ?? []} adapter={adapters?.find(item => item.id === provider.id)} activeLogin={activeLogin} onStartLogin={setActiveLogin} onCloseLogin={() => setActiveLogin(null)} />)}
         </div>
 
         <section className={cn("mt-2 border border-border p-3", PANEL_NESTED)} aria-label="Context pressure">
@@ -263,29 +259,39 @@ function ProviderDetail({ provider, snapshot, samples, adapter, activeLogin, onS
 function ProviderLoginPane({ provider, label, onClose }: { provider: UsageProvider; label: string; onClose: () => void }) {
   const [output, setOutput] = useState("");
   const [entry, setEntry] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const outputRef = useRef<HTMLPreElement>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  // Listen before launch: both subscriptions must be registered before the
+  // vendor process starts, or its first output (OAuth URL, initial prompt)
+  // can be lost permanently.
   useEffect(() => {
     let alive = true;
-    const unlisteners: Array<() => void> = [];
-    void bridgeApi.onTerminal(chunk => {
-      if (!alive || chunk.sessionId !== "provider-login" || chunk.terminalId !== provider) return;
-      setOutput(previous => (previous + chunk.data).slice(-8000));
-    }).then(fn => {
-      if (!alive) fn();
-      else unlisteners.push(fn);
-    });
-    void bridgeApi.onTerminalExited(exit => {
-      if (!alive || exit.sessionId !== "provider-login" || exit.terminalId !== provider) return;
-      onClose();
-    }).then(fn => {
-      if (!alive) fn();
-      else unlisteners.push(fn);
-    });
+    let unlistenOutput: (() => void) | undefined;
+    let unlistenExit: (() => void) | undefined;
+    void (async () => {
+      unlistenOutput = await bridgeApi.onTerminal(chunk => {
+        if (!alive || chunk.sessionId !== "provider-login" || chunk.terminalId !== provider) return;
+        setOutput(previous => (previous + chunk.data).slice(-8000));
+      });
+      unlistenExit = await bridgeApi.onTerminalExited(exit => {
+        if (!alive || exit.sessionId !== "provider-login" || exit.terminalId !== provider) return;
+        closeRef.current();
+      });
+      if (!alive) return;
+      try {
+        await bridgeApi.startProviderLogin(provider);
+      } catch {
+        if (alive) setError(`${label}'s sign-in flow could not be started. Check that the CLI is installed.`);
+      }
+    })();
     return () => {
       alive = false;
-      for (const fn of unlisteners.splice(0)) fn();
+      unlistenOutput?.();
+      unlistenExit?.();
     };
-  }, [provider, onClose]);
+  }, [provider, label]);
   useEffect(() => {
     outputRef.current?.scrollTo?.({ top: outputRef.current.scrollHeight });
   }, [output]);
@@ -302,6 +308,7 @@ function ProviderLoginPane({ provider, label, onClose }: { provider: UsageProvid
       <button type="button" onClick={onClose} className="ml-auto rounded-md px-1 py-0.5 text-[9px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Hide</button>
     </div>
     <pre ref={outputRef} aria-live="polite" aria-label={`${label} sign-in output`} className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-md border border-border bg-card p-2 font-mono text-[9.5px] leading-relaxed text-foreground">{output || "Starting…"}</pre>
+    {error && <p role="alert" className="text-[9.5px] text-destructive">{error}</p>}
     <form onSubmit={submit} className="flex gap-1.5">
       <input
         value={entry}

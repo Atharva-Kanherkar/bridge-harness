@@ -43,6 +43,7 @@ describe("UsageWidget sign-in control", () => {
     expect(controls).toHaveLength(1);
 
     await act(async () => { controls[0].click(); });
+    await act(async () => {});
     expect(startLogin).toHaveBeenCalledWith("codex");
   });
 
@@ -77,6 +78,42 @@ describe("UsageWidget sign-in control", () => {
       input!.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
     });
     expect(writeTerminal).toHaveBeenCalledWith("provider-login", "codex", "123456\r");
+  });
+
+  it("starts the vendor process only after both PTY subscriptions are registered", async () => {
+    let resolveOutput: (fn: () => void) => void;
+    let resolveExit: (fn: () => void) => void;
+    vi.spyOn(bridgeApi, "onTerminal").mockImplementation(() => new Promise(resolve => { resolveOutput = resolve; }));
+    vi.spyOn(bridgeApi, "onTerminalExited").mockImplementation(() => new Promise(resolve => { resolveExit = resolve; }));
+    const startLogin = vi.spyOn(bridgeApi, "startProviderLogin").mockResolvedValue({ workspaceId: "provider-login", terminalId: "codex" });
+    await act(async () => {
+      root.render(<UsageWidget usage={{}} adapters={adapters} />);
+    });
+    await act(async () => { signInButtons(container)[0].click(); });
+    await act(async () => {});
+    expect(startLogin).not.toHaveBeenCalled();
+
+    await act(async () => { resolveOutput!(() => undefined); });
+    await act(async () => {});
+    expect(startLogin).not.toHaveBeenCalled();
+
+    await act(async () => { resolveExit!(() => undefined); });
+    await act(async () => {});
+    expect(startLogin).toHaveBeenCalledWith("codex");
+  });
+
+  it("shows an inline error instead of closing when the flow cannot start", async () => {
+    vi.spyOn(bridgeApi, "onTerminal").mockResolvedValue(() => undefined);
+    vi.spyOn(bridgeApi, "onTerminalExited").mockResolvedValue(() => undefined);
+    vi.spyOn(bridgeApi, "startProviderLogin").mockRejectedValue(new Error("no cli"));
+    await act(async () => {
+      root.render(<UsageWidget usage={{}} adapters={adapters} />);
+    });
+    await act(async () => { signInButtons(container)[0].click(); });
+    await act(async () => {});
+
+    expect(container.querySelector('[aria-label="Codex sign-in output"]')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("could not be started");
   });
 
   it("closes the pane and keeps the control reachable when the vendor process exits", async () => {
