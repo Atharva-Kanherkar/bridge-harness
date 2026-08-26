@@ -365,11 +365,18 @@ export function App() {
   }
   function revealEntryInConversation(entryId: string) {
     // The conversation sits beside the dock, so reveal scrolls and highlights
-    // rather than navigates — the same jump recall search uses.
+    // rather than navigates — the same jump recall search uses. An expanded
+    // pane steps aside first: scrollIntoView on a hidden column is a no-op.
+    if (dockRef.current.expanded) dispatchDock({ type: "toggle-expanded" });
     setHighlightEntryId(entryId);
     requestAnimationFrame(() => {
       document.getElementById(`forest-entry-${entryId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
     });
+    // The highlight is a pointer, not a state: it fades once it has done its
+    // job, instead of marking the entry until the next navigation.
+    window.setTimeout(() => {
+      setHighlightEntryId(current => current === entryId ? null : current);
+    }, 3000);
   }
   function openFileInDock(path: string, line?: number) {
     revealNonce.current += 1;
