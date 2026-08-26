@@ -6,7 +6,7 @@ use crate::{
         ContextSegmentObservation,
     },
     delegation::WriteMode,
-    model::{CapabilityTier, ModelOption},
+    model::{AuthState, CapabilityTier, ModelOption},
     BridgeError,
 };
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
@@ -1368,6 +1368,35 @@ impl BufRead for ChannelReader {
     }
 }
 
+/// Whether OpenCode's own auth store (`auth.json` in its XDG data directory —
+/// `$XDG_DATA_HOME/opencode`, falling back to `~/.local/share/opencode`) has
+/// a saved credential. A presence + non-empty parse check only.
+pub fn auth_state() -> AuthState {
+    auth_state_from_data_dir(opencode_data_dir())
+}
+
+fn opencode_data_dir() -> Option<PathBuf> {
+    if let Some(xdg_data_home) = env::var_os("XDG_DATA_HOME") {
+        return Some(PathBuf::from(xdg_data_home).join("opencode"));
+    }
+    env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/share/opencode"))
+}
+
+fn auth_state_from_data_dir(dir: Option<PathBuf>) -> AuthState {
+    let Some(dir) = dir else {
+        return AuthState::Unknown;
+    };
+    // Metadata only: Bridge never opens or parses credential contents.
+    let Ok(metadata) = std::fs::metadata(dir.join("auth.json")) else {
+        return AuthState::SignedOut;
+    };
+    if metadata.len() > 0 {
+        AuthState::SignedIn
+    } else {
+        AuthState::SignedOut
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1666,5 +1695,39 @@ mod tests {
         assert!(has_rule(&read_only, "edit", "deny"));
         let isolated = permission_rules(Some(WriteMode::Isolated));
         assert!(has_rule(&isolated, "edit", "ask"));
+    }
+
+    #[test]
+    fn auth_probe_reports_signed_in_for_any_nonempty_store_without_reading_contents() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("auth.json"), "{not valid json").unwrap();
+        assert_eq!(
+            auth_state_from_data_dir(Some(dir.path().to_path_buf())),
+            AuthState::SignedIn
+        );
+    }
+
+    #[test]
+    fn auth_probe_reports_signed_out_when_cli_present_but_store_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(
+            auth_state_from_data_dir(Some(dir.path().to_path_buf())),
+            AuthState::SignedOut
+        );
+    }
+
+    #[test]
+    fn auth_probe_reports_signed_out_when_store_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("auth.json"), "").unwrap();
+        assert_eq!(
+            auth_state_from_data_dir(Some(dir.path().to_path_buf())),
+            AuthState::SignedOut
+        );
+    }
+
+    #[test]
+    fn auth_probe_reports_unknown_when_data_dir_is_missing() {
+        assert_eq!(auth_state_from_data_dir(None), AuthState::Unknown);
     }
 }

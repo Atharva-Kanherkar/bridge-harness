@@ -92,6 +92,8 @@ methods![
     (GetPacketAudit, "memory", "get_packet_audit"),
     // approvals
     (ResolveApproval, "approvals", "resolve_approval"),
+    // auth — provider sign-in
+    (StartProviderLogin, "auth", "start_provider_login"),
     // terminal
     (OpenTerminal, "terminal", "open_terminal"),
     (WriteTerminal, "terminal", "write_terminal"),

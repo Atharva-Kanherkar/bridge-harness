@@ -1025,6 +1025,7 @@ fn result_payloads_mirror_core() {
             id: "codex".into(),
             label: "Codex".into(),
             available: true,
+            auth_state: model::AuthState::SignedIn,
             version: Some("1.0".into()),
             capabilities: vec!["shell".into()],
             unavailable_reason: Some("offline".into()),

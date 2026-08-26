@@ -7,7 +7,7 @@ import { ModelProfileEditor } from "./ModelProfileEditor";
 import { recommendedProfileDrafts } from "../modelProfiles";
 
 const adapters: AdapterDescriptor[] = [{
-  id: "catalog", label: "Catalog", available: true, version: "1", capabilities: [], unavailableReason: null, defaultModel: "balanced",
+  id: "catalog", label: "Catalog", available: true, authState: "signed_in", version: "1", capabilities: [], unavailableReason: null, defaultModel: "balanced",
   models: [
     { id: "quick", label: "Quick", tier: "fast", defaultForTier: true },
     { id: "balanced", label: "Balanced", tier: "standard", defaultForTier: true },

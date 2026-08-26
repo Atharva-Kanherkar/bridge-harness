@@ -338,6 +338,13 @@
       "resultSchema": "unit-result.json"
     },
     {
+      "command": "start_provider_login",
+      "domain": "auth",
+      "method": "auth/start_provider_login",
+      "paramsSchema": "start-provider-login-params.json",
+      "resultSchema": "start-provider-login-result.json"
+    },
+    {
       "command": "open_terminal",
       "domain": "terminal",
       "method": "terminal/open_terminal",

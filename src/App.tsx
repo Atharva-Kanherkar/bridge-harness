@@ -217,11 +217,18 @@ export function App() {
     let offAgent: (() => void) | undefined;
     let offUsage: (() => void) | undefined;
     let offAdapters: (() => void) | undefined;
+    let offProviderLogin: (() => void) | undefined;
     let active = true;
     const reloadHealth = () => {
       void bridgeApi.health().then(setHealth).catch(value => setError(errorMessage(value)));
     };
     void bridgeApi.onStateChanged(reload).then(fn => offState = fn);
+    // The provider-login flow runs as an ordinary PTY under the "provider-login"
+    // pseudo-workspace; when the vendor process exits, re-read health so a
+    // completed sign-in populates the widget without a restart.
+    void bridgeApi.onTerminalExited(exit => {
+      if (exit.sessionId === "provider-login") reloadHealth();
+    }).then(fn => offProviderLogin = fn);
     // Adapter availability can change after startup (OpenCode catalog discovery
     // runs in the background) — re-read health when the backend says so.
     void bridgeApi.onAdaptersChanged(reloadHealth).then(fn => {
@@ -259,7 +266,7 @@ export function App() {
     }).then(fn => offUsage = fn);
     return () => {
       active = false;
-      offState?.(); offAgent?.(); offUsage?.(); offAdapters?.();
+      offState?.(); offAgent?.(); offUsage?.(); offAdapters?.(); offProviderLogin?.();
       if (agentEventTimerRef.current !== undefined) window.clearTimeout(agentEventTimerRef.current);
       agentEventTimerRef.current = undefined;
       agentEventQueueRef.current = [];
@@ -1444,7 +1451,7 @@ export function App() {
   const chromeTitle = view === "work" ? "Work" : view === "projects" ? "Projects" : view === "marketplace" ? "Marketplace" : view === "automations" ? "Automations" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge";
   const titleBarActions = <>
     <BypassBadge bypassing={!!permissionPolicy?.bypassAll} onOpenSettings={() => { setSettingsSection("permissions"); setView("settings"); }} />
-    <UsageWidget usage={usageByProvider} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} focusedSessionId={session?.id ?? null} onOpenPromptStudio={() => { setSettingsSection("prompts"); setView("settings"); }} />
+    <UsageWidget usage={usageByProvider} adapters={health?.adapters} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} focusedSessionId={session?.id ?? null} onOpenPromptStudio={() => { setSettingsSection("prompts"); setView("settings"); }} />
   </>;
   const sidebar = (
     <BridgeSidebar

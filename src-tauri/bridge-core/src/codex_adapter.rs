@@ -6,11 +6,13 @@ use crate::{
         ContextSegmentObservation,
     },
     delegation::WriteMode,
+    model::AuthState,
     BridgeError,
 };
 use serde_json::{json, Value};
 use std::{
     io::{BufRead, BufReader, Write},
+    path::PathBuf,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicI64, Ordering},
@@ -491,6 +493,27 @@ pub fn binary_version() -> Option<String> {
     binary::version_at(&resolve_runtime()?)
 }
 
+/// Whether `~/.codex/auth.json` parses with a non-empty token payload —
+/// independent of whether the `codex` binary itself resolves.
+pub fn auth_state() -> AuthState {
+    auth_state_from_home(std::env::var_os("HOME").map(PathBuf::from))
+}
+
+fn auth_state_from_home(home: Option<PathBuf>) -> AuthState {
+    let Some(home) = home else {
+        return AuthState::Unknown;
+    };
+    // Metadata only: Bridge never opens or parses credential contents.
+    let Ok(metadata) = std::fs::metadata(home.join(".codex/auth.json")) else {
+        return AuthState::SignedOut;
+    };
+    if metadata.len() > 0 {
+        AuthState::SignedIn
+    } else {
+        AuthState::SignedOut
+    }
+}
+
 fn write_value(writer: &Arc<Mutex<ChildStdin>>, value: &Value) -> Result<(), BridgeError> {
     let mut writer = lock_writer(writer, "Codex")?;
     serde_json::to_writer(&mut *writer, value)
@@ -818,5 +841,41 @@ mod tests {
         );
         resumed.runtime.stop(ShutdownReason::Completed);
         assert!(transcript.contains("BRIDGE_CODEX_RESUME_8F31"));
+    }
+
+    #[test]
+    fn auth_probe_reports_signed_in_for_any_nonempty_store_without_reading_contents() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+        std::fs::write(home.path().join(".codex/auth.json"), "{not valid json").unwrap();
+        assert_eq!(
+            auth_state_from_home(Some(home.path().to_path_buf())),
+            AuthState::SignedIn
+        );
+    }
+
+    #[test]
+    fn auth_probe_reports_signed_out_when_cli_present_but_store_absent() {
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(
+            auth_state_from_home(Some(home.path().to_path_buf())),
+            AuthState::SignedOut
+        );
+    }
+
+    #[test]
+    fn auth_probe_reports_signed_out_when_store_is_empty() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".codex")).unwrap();
+        std::fs::write(home.path().join(".codex/auth.json"), "").unwrap();
+        assert_eq!(
+            auth_state_from_home(Some(home.path().to_path_buf())),
+            AuthState::SignedOut
+        );
+    }
+
+    #[test]
+    fn auth_probe_reports_unknown_when_home_is_missing() {
+        assert_eq!(auth_state_from_home(None), AuthState::Unknown);
     }
 }

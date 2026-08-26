@@ -1310,6 +1310,148 @@ pub fn resize_terminal(
     Ok(())
 }
 
+// --- provider sign-in ---------------------------------------------------------
+
+/// The pseudo-workspace id addressing every provider login terminal. A
+/// vendor sign-in has no workspace of its own, so this reuses the terminal
+/// domain's `workspaceId`/`terminalId` key scheme rather than inventing a
+/// second PTY surface — the UI hosts the pane and drives it with the
+/// existing `write_terminal`/`resize_terminal`/`close_terminal` methods.
+const PROVIDER_LOGIN_WORKSPACE_ID: &str = "provider-login";
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderLogin {
+    pub workspace_id: String,
+    pub terminal_id: String,
+}
+
+/// The vendor's own documented login entry point for `provider`. Bridge only
+/// launches the process — any browser handoff is started by the vendor
+/// command itself, and Bridge never reads, stores, or logs the credential it
+/// produces.
+fn provider_login_command(provider: &str) -> Result<CommandBuilder, BridgeError> {
+    match provider {
+        // Bare and interactive: Claude Code's own first-run flow prompts for
+        // login when no credential is present, with no separate subcommand.
+        "claude" => {
+            let binary = binary::resolve("claude")
+                .ok_or_else(|| BridgeError::Invalid("Claude binary is not installed".into()))?;
+            Ok(CommandBuilder::new(binary))
+        }
+        "codex" => {
+            let binary = crate::codex_adapter::resolve_runtime()
+                .ok_or_else(|| BridgeError::Invalid("Codex binary is not installed".into()))?;
+            let mut command = CommandBuilder::new(binary);
+            command.args(["login"]);
+            Ok(command)
+        }
+        "opencode" => {
+            let binary = binary::resolve("opencode")
+                .ok_or_else(|| BridgeError::Invalid("OpenCode binary is not installed".into()))?;
+            let mut command = CommandBuilder::new(binary);
+            command.args(["auth", "login"]);
+            Ok(command)
+        }
+        other => Err(BridgeError::Invalid(format!("Unknown provider {other:?}"))),
+    }
+}
+
+/// Start `provider`'s own login flow inside a Bridge-owned PTY. Reattaches to
+/// an already-running login for the same provider instead of spawning a
+/// second one. The vendor process's exit publishes the same
+/// [`CoreEvent::TerminalExited`] the terminal domain always has, which is
+/// what lets the UI re-read health without a restart once sign-in completes.
+pub fn start_provider_login(
+    core: &Arc<BridgeCore>,
+    provider: &str,
+) -> Result<ProviderLogin, BridgeError> {
+    let runtime_id = terminal_runtime_id(PROVIDER_LOGIN_WORKSPACE_ID, provider);
+    let _lifecycle = core.claim_session_lifecycle(&runtime_id, "provider login")?;
+    if core.runtimes.lock().unwrap().contains_key(&runtime_id) {
+        return Ok(ProviderLogin {
+            workspace_id: PROVIDER_LOGIN_WORKSPACE_ID.into(),
+            terminal_id: provider.into(),
+        });
+    }
+    let mut command = provider_login_command(provider)?;
+    command.env("TERM", "xterm-256color");
+    if let Some(home) = std::env::var_os("HOME") {
+        command.cwd(home);
+    }
+    let pair = native_pty_system()
+        .openpty(PtySize {
+            rows: 32,
+            cols: 120,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| BridgeError::Pty(e.to_string()))?;
+    let child = pair
+        .slave
+        .spawn_command(command)
+        .map_err(|e| BridgeError::Pty(e.to_string()))?;
+    drop(pair.slave);
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| BridgeError::Pty(e.to_string()))?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| BridgeError::Pty(e.to_string()))?;
+    let epoch = TERMINAL_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    core.runtimes.lock().unwrap().insert(
+        runtime_id.clone(),
+        RuntimeSession {
+            writer,
+            master: pair.master,
+            child,
+            epoch,
+        },
+    );
+    let core_reader = Arc::clone(core);
+    let workspace_reader = PROVIDER_LOGIN_WORKSPACE_ID.to_owned();
+    let terminal_reader = provider.to_owned();
+    let runtime_reader = runtime_id;
+    thread::spawn(move || {
+        let mut buf = [0u8; 8192];
+        loop {
+            match reader.read(&mut buf) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let data = String::from_utf8_lossy(&buf[..n]).into_owned();
+                    core_reader.events.publish(CoreEvent::SessionOutput {
+                        session_id: workspace_reader.clone(),
+                        terminal_id: terminal_reader.clone(),
+                        data,
+                    });
+                }
+            }
+        }
+        {
+            let mut sessions = core_reader.runtimes.lock().unwrap();
+            match sessions.get(&runtime_reader) {
+                Some(entry) if entry.epoch == epoch => {
+                    sessions.remove(&runtime_reader);
+                }
+                Some(_) => {
+                    return;
+                }
+                None => {}
+            }
+        }
+        core_reader.events.publish(CoreEvent::TerminalExited {
+            session_id: workspace_reader,
+            terminal_id: terminal_reader,
+        });
+    });
+    Ok(ProviderLogin {
+        workspace_id: PROVIDER_LOGIN_WORKSPACE_ID.into(),
+        terminal_id: provider.into(),
+    })
+}
+
 // --- slash commands ------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize)]

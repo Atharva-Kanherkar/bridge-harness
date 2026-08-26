@@ -341,12 +341,31 @@ impl SandboxMode {
     pub const ALL: [Self; 3] = [Self::ReadOnly, Self::WorkspaceWrite, Self::DangerFullAccess];
 }
 
+/// Whether a provider's own credential store holds a usable credential —
+/// orthogonal to whether its CLI binary is installed. Derived from a
+/// presence/parse check only: Bridge never reads, stores, or logs the
+/// credential value itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthState {
+    SignedIn,
+    SignedOut,
+    /// The probe could not determine presence (e.g. an unreadable or
+    /// unparsable store). Never guessed as `SignedOut` — a probe error must
+    /// not read as "no credential".
+    Unknown,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AdapterDescriptor {
     pub id: String,
     pub label: String,
     pub available: bool,
+    /// Independent of `available`: a provider whose binary cannot be
+    /// resolved still reports its own credential-store probe rather than a
+    /// forced `SignedOut`.
+    pub auth_state: AuthState,
     pub version: Option<String>,
     pub capabilities: Vec<String>,
     /// Sandbox modes this harness can actually start in, including transport
