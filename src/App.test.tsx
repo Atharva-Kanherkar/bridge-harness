@@ -515,4 +515,24 @@ describe("the dock in the session view", () => {
     await key({ key: "Escape" });
     expect(shell()).toBeNull();
   });
+
+  // Contract: testing/feat-360-session-shell-cold-start.md §Part 1.
+  // AppTitleBar is the only <header> in the flush/no-brand form the shell
+  // mounts it in; other components (worker cards, plan cards, …) also render
+  // a bare <header>, so this pins on the flush-specific class instead.
+  const appTitleBar = () => container.querySelector("header.bg-transparent");
+
+  it("collapses to one chrome row on the session view — no second AppTitleBar strip", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    expect(appTitleBar()).toBeNull();
+    expect(container.querySelector('button[aria-label="Toggle dock"]')).not.toBeNull();
+  });
+
+  it("keeps AppTitleBar unchanged on every other view", async () => {
+    await mountApp();
+    await click(container.querySelector<HTMLButtonElement>('button[title^="Settings"]')!);
+    expect(appTitleBar()).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Toggle dock"]')).toBeNull();
+  });
 });

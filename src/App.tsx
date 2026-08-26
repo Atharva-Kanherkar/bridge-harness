@@ -2,7 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Braces, Check, ChevronDown, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { openExternalUrl } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
@@ -17,6 +17,8 @@ import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
 import { isHiddenSession } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
+import { ChatModelControl } from "./components/ChatModelControl";
+export { ChatModelControl };
 import { SessionDock, type DockPaneDescriptor } from "./components/SessionDock";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
@@ -1525,10 +1527,13 @@ export function App() {
   if (!health || !modelSetup) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{error ? <><X size={14} className="text-destructive" aria-hidden="true" />{error}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
   if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard adapters={health.adapters} onComplete={setModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
   const chromeTitle = view === "work" ? "Work" : view === "projects" ? "Projects" : view === "marketplace" ? "Marketplace" : view === "automations" ? "Automations" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge";
-  const titleBarActions = <>
-    <BypassBadge bypassing={!!permissionPolicy?.bypassAll} onOpenSettings={() => { setSettingsSection("permissions"); setView("settings"); }} />
-    <UsageWidget usage={usageByProvider} adapters={health?.adapters} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} focusedSessionId={session?.id ?? null} onOpenPromptStudio={() => { setSettingsSection("prompts"); setView("settings"); }} />
-  </>;
+  // A session view mounts SessionToolbar as its one chrome row instead of
+  // AppTitleBar; every other view (including the pre-session Welcome screen)
+  // keeps the title bar.
+  const isSessionChrome = view === "workspace" && paradigm !== "grid" && !!session;
+  const bypassBadge = <BypassBadge bypassing={!!permissionPolicy?.bypassAll} onOpenSettings={() => { setSettingsSection("permissions"); setView("settings"); }} />;
+  const usageWidget = <UsageWidget usage={usageByProvider} adapters={health?.adapters} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} focusedSessionId={session?.id ?? null} onOpenPromptStudio={() => { setSettingsSection("prompts"); setView("settings"); }} />;
+  const titleBarActions = <>{bypassBadge}{usageWidget}</>;
   const sidebar = (
     <BridgeSidebar
       mobileOpen={navOpen}
@@ -1570,14 +1575,14 @@ export function App() {
   return <div data-fullscreen={chromeFullscreen ? "" : undefined} className="u-app-shell relative flex h-[100dvh] flex-row overflow-hidden text-foreground">
     {sidebar}
     <div className="u-vibrancy-canvas relative z-10 flex min-h-0 min-w-0 flex-1 flex-col bg-background">
-    <AppTitleBar
+    {!isSessionChrome && <AppTitleBar
       flush
       hideBrand
       title={chromeTitle}
       navOpen={navOpen}
       onOpenNav={() => setNavOpen(true)}
       actions={titleBarActions}
-    />
+    />}
     <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
       {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
       <HealthWarnings warnings={health.warnings ?? []} className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl" />
@@ -1614,7 +1619,21 @@ export function App() {
       /> : session ? <>
         <SessionToolbar
           title={session.title || session.label}
-          model={isDirectChat ? undefined : modelDisplayName(adapters, session.harness, session.model)}
+          modelControl={isDirectChat ? undefined : <ChatModelControl
+            adapters={adapters}
+            harness={session.harness}
+            model={session.model ?? null}
+            disabled={busy || turnActive}
+            disabledReason={turnActive ? "Wait for the current response before switching models" : undefined}
+            onChange={(harness, model) => void changeChatModel(harness, model)}
+            compact
+            maxWidthClassName="max-w-[190px]"
+            roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"}
+          />}
+          bypassBadge={bypassBadge}
+          actions={usageWidget}
+          navOpen={navOpen}
+          onOpenNav={() => setNavOpen(true)}
           dockOpen={dock.open}
           onToggleDock={() => dispatchDock({ type: "toggle" })}
           browserOpen={dock.open && dock.pane === "browser"}
@@ -1939,49 +1958,6 @@ function localAccountName(...paths: Array<string | null | undefined>): string {
     if (windows?.[1]) return windows[1];
   }
   return "Local user";
-}
-
-function modelDisplayName(adapters: import("./types").AdapterDescriptor[], harness: Harness, model?: string | null): string {
-  const adapter = adapters.find(item => item.id === harness);
-  return adapter?.models.find(option => option.id === model)?.label ?? model ?? "Automatic";
-}
-
-export function ChatModelControl({ adapters, harness, model, disabled, disabledReason, onChange, compact, roleLabel = "Chat" }: { adapters: import("./types").AdapterDescriptor[]; harness: Harness; model: string | null; disabled?: boolean; disabledReason?: string; onChange: (harness: Harness, model: string | null) => void; compact?: boolean; roleLabel?: string }) {
-  const [open, setOpen] = useState(false);
-  const chatAdapters = adapters.filter(adapter => ["codex", "claude", "opencode"].includes(adapter.id));
-  const current = chatAdapters.find(adapter => adapter.id === harness);
-  const currentModel = current?.models.find(option => option.id === model) ?? current?.models.find(option => option.defaultForTier) ?? current?.models[0];
-  const modelLabel = currentModel?.label ?? model ?? "Default";
-  const compactLabel = `${harnessLabel(harness)} · ${modelLabel}`;
-  return <div className="relative">
-    <button type="button" disabled={disabled} onClick={() => setOpen(value => !value)} className={`flex max-w-[220px] items-center gap-1 rounded-full transition-colors disabled:opacity-45 ${compact ? "h-8 px-2 text-xs text-muted-foreground hover:bg-accent" : "h-[28px] px-2 text-[11.5px] text-foreground/90 hover:bg-accent"}`} title={disabled ? disabledReason ?? "Model selection is temporarily unavailable" : `Choose ${roleLabel.toLowerCase()} model`} aria-label={`${roleLabel} model: ${harnessLabel(harness)} ${modelLabel}`}>
-      <span className="whitespace-nowrap overflow-hidden text-ellipsis">{compactLabel}</span>
-      <ChevronDown size={compact ? 14 : 12} className={`shrink-0 text-muted-foreground/55 transition-transform ${open ? "rotate-180" : ""}`} aria-hidden="true" />
-    </button>
-    {open && <>
-      <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-      <div className="u-glass-popover absolute left-0 bottom-full mb-2 z-40 w-[280px] py-1.5 rounded-2xl max-h-[340px] overflow-y-auto">
-        <div className="border-b border-border/60 px-3 pb-2 pt-1">
-          <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/65">{roleLabel} runtime</p>
-          <p className="mt-1 text-[10px] leading-4 text-muted-foreground/55">Switching starts a fresh provider session. The chat stays visible, but provider reasoning state resets.</p>
-        </div>
-        {chatAdapters.map((adapter, index) => <div key={adapter.id} className={index > 0 ? "mt-1 pt-1 border-t border-border/60" : ""}>
-          <div className="px-3 py-1.5 text-[9px] font-semibold tracking-[0.12em] uppercase text-muted-foreground/50 flex items-center gap-2">
-            <span>{adapter.label}</span>
-            {!adapter.available && <span className="normal-case tracking-normal font-normal text-muted-foreground/40">unavailable</span>}
-          </div>
-          {(adapter.models.length ? adapter.models : [{ id: "", label: "Default", tier: "fast" as const, defaultForTier: true }]).map(option => {
-            const selected = adapter.id === harness && (option.id ? option.id === model : !model);
-            return <button key={`${adapter.id}:${option.id || "default"}`} type="button" disabled={!adapter.available} onClick={() => { onChange(adapter.id as Harness, option.id || null); setOpen(false); }} className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors disabled:opacity-40 ${selected ? "bg-foreground/[0.08]" : "hover:bg-foreground/[0.05]"}`}>
-              <span className="flex-1 min-w-0 text-[12.5px] text-foreground whitespace-nowrap overflow-hidden text-ellipsis">{option.label}</span>
-              <span className="text-[9.5px] uppercase tracking-[0.06em] text-muted-foreground/45">{option.tier}</span>
-              {selected && <Check size={13} className="text-foreground/80" aria-hidden="true" />}
-            </button>;
-          })}
-        </div>)}
-      </div>
-    </>}
-  </div>;
 }
 
 function EnvPanel({ workspace, project, session, sessions, forest, onChanges, onSelectLeaf, onCompact }: { workspace: Workspace; project?: Project; session?: Session; sessions: Session[]; forest?: SessionForestSnapshot; onChanges: () => void; onSelectLeaf: (entryId: string) => void; onCompact: () => void }) {

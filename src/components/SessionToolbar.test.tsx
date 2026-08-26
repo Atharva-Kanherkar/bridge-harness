@@ -11,7 +11,7 @@ const noop = () => {};
 
 const props = (overrides: Partial<SessionToolbarProps> = {}): SessionToolbarProps => ({
   title: "Orchestrator",
-  model: "Claude Opus",
+  modelControl: <span>Claude Opus</span>,
   dockOpen: false,
   onToggleDock: noop,
   browserOpen: false,
@@ -136,5 +136,44 @@ describe("SessionToolbar", () => {
     mount();
     const row = container.firstElementChild as HTMLElement;
     expect(row.getAttribute("data-tauri-drag-region")).toBe("deep");
+  });
+
+  it("carries select-none so a mis-started drag never selects the title", () => {
+    mount();
+    const row = container.firstElementChild as HTMLElement;
+    expect(row.className).toContain("select-none");
+  });
+
+  it("renders actions children in the right cluster", () => {
+    mount({ actions: <button type="button">Usage</button> });
+    expect(container.textContent).toContain("Usage");
+  });
+
+  it("renders the bypass badge through props with its full wording intact", () => {
+    const onOpenSettings = vi.fn();
+    mount({
+      bypassBadge: (
+        <button type="button" onClick={onOpenSettings}>Approvals bypassed</button>
+      ),
+    });
+    const badge = [...container.querySelectorAll("button")].find(button => button.textContent === "Approvals bypassed")!;
+    expect(badge).toBeTruthy();
+    click(badge);
+    expect(onOpenSettings).toHaveBeenCalledTimes(1);
+  });
+
+  it("hides the mobile nav button when no handler is given", () => {
+    mount();
+    expect(container.querySelector('button[aria-label="Open navigation"]')).toBeNull();
+  });
+
+  it("shows the mobile-only nav button when onOpenNav is provided", () => {
+    const onOpenNav = vi.fn();
+    mount({ onOpenNav, navOpen: true });
+    const toggle = container.querySelector<HTMLButtonElement>('button[aria-label="Open navigation"]')!;
+    expect(toggle.className).toContain("sm:hidden");
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    click(toggle);
+    expect(onOpenNav).toHaveBeenCalledTimes(1);
   });
 });
