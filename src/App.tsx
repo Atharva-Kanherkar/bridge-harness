@@ -319,17 +319,22 @@ export function App() {
   const dockRef = useRef(dock);
   dockRef.current = dock;
   const dockSheet = dockSectionWidth < DOCK_SHEET_THRESHOLD;
-  const dockSectionRef = useRef<HTMLElement | null>(null);
-  useEffect(() => {
-    const element = dockSectionRef.current;
+  // A callback ref, so the observer is keyed to the element itself: the
+  // section unmounts and remounts on view and paradigm switches while the
+  // session id stays put, and an effect keyed on the id would keep watching
+  // the detached node — freezing the width and with it the sheet threshold.
+  const dockSectionObserver = useRef<ResizeObserver | null>(null);
+  const dockSectionRef = useCallback((element: HTMLElement | null) => {
+    dockSectionObserver.current?.disconnect();
+    dockSectionObserver.current = null;
     if (!element || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(entries => {
       const width = entries[0]?.contentRect.width;
       if (typeof width === "number" && width > 0) setDockSectionWidth(width);
     });
     observer.observe(element);
-    return () => observer.disconnect();
-  }, [session?.id]);
+    dockSectionObserver.current = observer;
+  }, []);
   const dockPanes: DockPaneDescriptor[] = [
     { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: workspace?.dirtyFiles || undefined },
     { id: "code", label: "Code", icon: Code2, available: hasRepo && !!workspace, unavailableReason: "Code needs a repository. This chat has no worktree to read files from." },
