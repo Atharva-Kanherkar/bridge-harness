@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult } from "./protocol/generated/protocol";
 import type {
@@ -1409,6 +1410,13 @@ export const bridgeApi = {
     emitState();
     return snapshot();
   },
+  /** Menu picks from the shell. Not a protocol method — the native menu
+   *  speaks command ids from `src/keymap.ts`, not RPC. Outside Tauri there is
+   *  no menu, so this resolves to a no-op unsubscribe. */
+  onMenuCommand: (handler: (id: CommandId) => void): Promise<UnlistenFn> =>
+    isTauri()
+      ? listen<CommandId>(MENU_COMMAND_EVENT, event => handler(event.payload))
+      : Promise.resolve(() => {}),
   /** In-app ⌥⌘F. Not a protocol method — the shell listens on this event name. */
   notifyLayoutFullscreen: (on: boolean): void => {
     if (!isTauri()) return;

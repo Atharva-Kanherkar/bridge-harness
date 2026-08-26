@@ -3,6 +3,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Bot, ChevronRight, ClipboardList, Folder, FolderGit2, FolderPlus, GitBranch, Home, LayoutGrid, Pin, Search, Settings2, SquarePen, type LucideIcon } from "lucide-react";
 import { WindowNavButtons, WindowPanelButton } from "./WindowNavButtons";
 import type { Session, SessionStatus, Workspace } from "../types";
+import { chordLabel, type CommandId } from "../keymap";
 import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
 import { harnessLabel } from "../utils";
@@ -159,6 +160,7 @@ function ActionRow({
   collapsed,
   active = false,
   disabled = false,
+  chord,
 }: {
   icon: LucideIcon;
   label: string;
@@ -166,13 +168,16 @@ function ActionRow({
   collapsed: boolean;
   active?: boolean;
   disabled?: boolean;
+  /** Advertise the row's binding in its tooltip, read from the keymap so the
+   *  two cannot disagree. The accessible name stays the plain label. */
+  chord?: CommandId;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      title={label}
+      title={chord ? `${label}  ${chordLabel(chord)}` : label}
       aria-label={label}
       aria-current={active ? "page" : undefined}
       className={cn(
@@ -204,7 +209,7 @@ function AccountRow({
     <button
       type="button"
       onClick={onOpenSettings}
-      title={`Settings · ${name}`}
+      title={`Settings · ${name}  ${chordLabel("open-settings")}`}
       aria-label={`Open settings for ${name}`}
       aria-current={active ? "page" : undefined}
       className={cn(
@@ -496,11 +501,11 @@ export function BridgeSidebar({
       )}
       <div className={cn("flex min-h-0 flex-1 flex-col px-2 pb-3", showWindowNav ? "pt-1" : "pt-3")}>
         <div className={cn("mb-2 shrink-0", collapsed && "flex flex-col items-center")}>
-          <ActionRow icon={SquarePen} label="New Chat" collapsed={collapsed} disabled={newChatBusy} onClick={onOpenNewChat} />
+          <ActionRow icon={SquarePen} label="New Chat" chord="new-chat" collapsed={collapsed} disabled={newChatBusy} onClick={onOpenNewChat} />
           <ActionRow icon={Search} label="Search" collapsed={collapsed} onClick={toggleSearch} />
           <ActionRow icon={Bot} label="Automations" collapsed={collapsed} onClick={onOpenAutomations} active={automationsActive} />
           <ActionRow icon={LayoutGrid} label="Mission Control" collapsed={collapsed} onClick={onOpenMissionControl} active={missionControlActive} />
-          <ActionRow icon={FolderGit2} label="Projects" collapsed={collapsed} onClick={onOpenProjects} active={projectsActive} />
+          <ActionRow icon={FolderGit2} label="Projects" chord="open-projects" collapsed={collapsed} onClick={onOpenProjects} active={projectsActive} />
           <ActionRow icon={Pin} label="Memory" collapsed={collapsed} onClick={onOpenMemory} />
           <ActionRow icon={ClipboardList} label="Work board" collapsed={collapsed} onClick={onOpenWorkBoard} active={workActive} />
         </div>

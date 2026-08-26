@@ -4,6 +4,7 @@ pub use bridge_core::{
 };
 
 pub mod daemon_host;
+pub mod menu;
 pub mod window_chrome;
 
 use bridge_core::api;
@@ -1771,6 +1772,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
+        .menu(|handle| menu::build(handle))
+        .on_menu_event(menu::dispatch)
         .setup(move |app| select_host(app, &setup_slot))
         .on_window_event(|window, event| {
             // macOS rebuilds the titlebar on these and forgets the button
