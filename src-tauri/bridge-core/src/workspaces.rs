@@ -205,7 +205,15 @@ impl BridgeCore {
                 at_risk.len()
             )));
         }
-        archive_workspace_records(&db, workspace_id, || {
+        archive_workspace_records(&db, workspace_id, workers.len() + 1, || {
+            // Workers first: if one of these fails the whole archive rolls back,
+            // and rolling back with the task worktree already gone would leave
+            // the workspace row pointing at nothing.
+            for worker in &workers {
+                if worker.exists() {
+                    git::remove_worktree(Path::new(&repo), worker)?;
+                }
+            }
             git::remove_worktree(Path::new(&repo), Path::new(&path))
         })?;
         // The archive is committed; publish only now so a rolled-back
@@ -263,12 +271,15 @@ fn worker_worktrees_at_risk(worktrees: &[PathBuf]) -> Vec<PathBuf> {
 }
 
 /// Delete every record that depends on a workspace, then the workspace row
-/// itself, in one transaction; `remove_worktree` runs inside it so a failed
-/// worktree removal rolls everything back.
+/// itself, in one transaction; `remove_worktrees` runs inside it so a failed
+/// worktree removal rolls everything back — and it runs strictly after the audit
+/// write, because a rollback can undo rows but never a deleted directory.
+/// `reclaimed_worktrees` is what the audit entry records as freed.
 pub fn archive_workspace_records(
     db: &Connection,
     workspace_id: &str,
-    remove_worktree: impl FnOnce() -> Result<(), BridgeError>,
+    reclaimed_worktrees: usize,
+    remove_worktrees: impl FnOnce() -> Result<(), BridgeError>,
 ) -> Result<(), BridgeError> {
     let transaction = db.unchecked_transaction()?;
     transaction.execute(
@@ -304,9 +315,13 @@ pub fn archive_workspace_records(
         "supervisor",
         "workspace.archived",
         workspace_id,
-        "Archived clean workspace; branch preserved",
+        &format!(
+            "Archived clean workspace; branch preserved; reclaimed {reclaimed_worktrees} worktree(s)"
+        ),
     )?;
-    remove_worktree()?;
+    // Strictly after the audit write: a rollback can undo rows but not a deleted
+    // directory, so anything that can fail on its own must fail before this.
+    remove_worktrees()?;
     transaction.commit()?;
     Ok(())
 }
@@ -613,6 +628,69 @@ mod tests {
         assert_eq!(count(&core, "sessions"), 0);
         assert!(!worktree.exists(), "worktree directory must be removed");
         assert!(event_exists(&core, "workspace.archived", "w"));
+    }
+
+    #[test]
+    fn archive_reclaims_worker_worktrees_alongside_the_task_worktree() {
+        let (scratch, core) = fixture();
+        let (repo, worktree) = archive_fixture(&core, scratch.path());
+        let workers = with_worker_worktrees(&core, &repo, scratch.path(), 2);
+
+        core.archive_workspace("w").unwrap();
+
+        assert_eq!(count(&core, "workspaces"), 0);
+        assert!(!worktree.exists(), "the task worktree is reclaimed");
+        for worker in &workers {
+            assert!(!worker.exists(), "worker worktree {worker:?} is reclaimed");
+        }
+        // Git must not be left holding registrations for directories we removed.
+        let registered = std::process::Command::new("git")
+            .args(["worktree", "list"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        let listing = String::from_utf8_lossy(&registered.stdout);
+        assert!(
+            !listing.contains("worker-0") && !listing.contains("worker-1"),
+            "no stale worktree registrations remain: {listing}"
+        );
+    }
+
+    #[test]
+    fn archive_tolerates_a_worker_worktree_that_is_already_gone() {
+        let (scratch, core) = fixture();
+        let (repo, _worktree) = archive_fixture(&core, scratch.path());
+        let workers = with_worker_worktrees(&core, &repo, scratch.path(), 1);
+        // The directory vanished (manual cleanup, a previous partial archive):
+        // its record still exists, and that must not block the archive.
+        std::fs::remove_dir_all(&workers[0]).unwrap();
+
+        core.archive_workspace("w").unwrap();
+        assert_eq!(count(&core, "workspaces"), 0);
+    }
+
+    #[test]
+    fn archive_records_what_it_reclaimed() {
+        let (scratch, core) = fixture();
+        let (repo, _worktree) = archive_fixture(&core, scratch.path());
+        with_worker_worktrees(&core, &repo, scratch.path(), 2);
+
+        core.archive_workspace("w").unwrap();
+
+        let body: String = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT body FROM events WHERE kind='workspace.archived' AND entity_id='w'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            body.contains("reclaimed 3 worktree(s)"),
+            "two workers plus the task worktree: {body}"
+        );
     }
 
     #[test]

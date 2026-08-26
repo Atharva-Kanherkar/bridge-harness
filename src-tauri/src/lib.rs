@@ -2683,7 +2683,7 @@ mod tests {
     #[test]
     fn archive_workspace_records_cleans_every_dependent_table() {
         let db = archive_fixture();
-        workspaces::archive_workspace_records(&db, "w", || Ok(())).unwrap();
+        workspaces::archive_workspace_records(&db, "w", 0, || Ok(())).unwrap();
         for table in [
             "worker_leases",
             "session_heads",
@@ -2829,7 +2829,7 @@ mod tests {
     #[test]
     fn archive_workspace_records_rolls_back_when_worktree_removal_fails() {
         let db = archive_fixture();
-        let result = workspaces::archive_workspace_records(&db, "w", || {
+        let result = workspaces::archive_workspace_records(&db, "w", 0, || {
             Err(BridgeError::Git("injected removal failure".into()))
         });
         assert!(matches!(result, Err(BridgeError::Git(_))));
