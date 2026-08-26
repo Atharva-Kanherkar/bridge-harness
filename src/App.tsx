@@ -100,6 +100,18 @@ function StatusDot({ status }: { status: SessionStatus }) {
   return <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${color}`} />;
 }
 
+// #350: New chat opens an *unstarted* draft — no session row, no scratch dir, no
+// adapter process — until the first message is submitted. The draft captures the
+// choices made before sending. Harness/model are snapshotted at open time so the
+// carry-over from the current direct chat survives deselecting it.
+type NewChatDraft = {
+  harness: Harness;
+  model: string | null;
+  workspaceId: string | null;
+  createWorktree: boolean;
+  carryFromSessionId?: string;
+};
+
 export function App() {
   const [state, setState] = useState<BridgeState>(emptyState);
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
@@ -196,7 +208,10 @@ export function App() {
   const [usageByProvider, setUsageByProvider] = useState<Partial<Record<UsageProvider, UsageSnapshot>>>({});
   const [usageSamples, setUsageSamples] = useState<Partial<Record<UsageProvider, UsageRateSample[]>>>({});
   const startedRef = useRef<Set<string>>(new Set());
-  const pendingWelcomeMessageRef = useRef<string | null>(null);
+  // The first message of a just-created chat, tagged with its target session id so
+  // the delivery effect can only ever hand it to that chat — never to a session that
+  // became active while the create awaited (#350).
+  const pendingWelcomeMessageRef = useRef<{ sessionId: string; text: string } | null>(null);
   const forestKeyRef = useRef("");
   const agentEventQueueRef = useRef<AgentEvent[]>([]);
   const agentEventTimerRef = useRef<number | undefined>(undefined);
@@ -274,6 +289,12 @@ export function App() {
   }, [reload]);
   useThemePreference();
   useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
+  // Navigating away from an unstarted draft discards it silently — nothing was
+  // created, so there is nothing to clean up (#350). A draft only lives on the
+  // single-chat empty surface (workspace view, no session selected).
+  useEffect(() => {
+    if (selectedSessionId || view !== "workspace" || paradigm !== "single") setNewChatDraft(null);
+  }, [selectedSessionId, view, paradigm]);
 
   useEffect(() => {
     const place: AppPlace = { view, sessionId: selectedSessionId ?? null, paradigm };
@@ -448,6 +469,9 @@ export function App() {
   }, [forest, pendingForSession.length, session]);
   const [worktreeOn, setWorktreeOn] = useState(false);
   const [welcomeWorkspaceId, setWelcomeWorkspaceId] = useState<string | null>(null);
+  // The pending unstarted new chat, if any. Non-null ⇒ the empty-state surface is a
+  // draft: the choices are held here and the session is created on first submit.
+  const [newChatDraft, setNewChatDraft] = useState<NewChatDraft | null>(null);
   const [branchWorkspaceId, setBranchWorkspaceId] = useState<string | null>(null);
   const [workspaceBranches, setWorkspaceBranches] = useState<string[]>([]);
   const [workspaceBranchCurrent, setWorkspaceBranchCurrent] = useState<string | null>(null);
@@ -728,6 +752,7 @@ export function App() {
   function openSession(id: string) {
     setView("workspace");
     setParadigm("single");
+    setNewChatDraft(null);
     setSelectedSessionId(id);
     setExpandedWorkerId(undefined);
     const opened = state.sessions.find(candidate => candidate.id === id);
@@ -882,46 +907,68 @@ export function App() {
       return { ok: false, reason: errorMessage(error) };
     }
   }, [readWorkBoard]);
-  // New chat opens instantly (no picker up front). Preserve the current direct
-  // chat's harness/model so switching to OpenCode also changes the next-chat
-  // default; otherwise fall back to the configured standard profile.
-  // `carryFromSessionId` optionally seeds the new chat with a durable handoff
-  // brief projecting that session's stored context, so its first turn knows
-  // what "this" refers to ($harness shortcut).
-  async function openNewChat(initialMessage?: string, harnessOverride?: import("./types").AdapterDescriptor, alreadyLocked = false, carryFromSessionId?: string): Promise<string | undefined> {
+  // Preserve the current direct chat's harness/model so switching to OpenCode also
+  // changes the next-chat default; otherwise fall back to the configured standard
+  // profile. Snapshotted at draft-open time, while the session being left is still
+  // selected, so the carry-over survives deselecting it.
+  function resolveDraftHarnessModel(harnessOverride?: import("./types").AdapterDescriptor): { harness: Harness; model: string | null } {
+    const currentAdapter = session?.kind === "direct"
+      ? adapters.find(adapter => adapter.id === session.harness && adapter.available)
+      : undefined;
+    const profile = modelSetup ? resolveProfileOption("standard_orchestrator", modelSetup, adapters) : undefined;
+    const preferred = harnessOverride ?? currentAdapter ?? profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
+    const harness = (preferred?.id as Harness) ?? "codex";
+    const model = harnessOverride
+      ? harnessOverride.defaultModel ?? harnessOverride.models[0]?.id ?? null
+      : currentAdapter
+      ? session?.model ?? currentAdapter.defaultModel ?? currentAdapter.models[0]?.id ?? null
+      : profile?.model.id ?? preferred?.defaultModel ?? preferred?.models[0]?.id ?? null;
+    return { harness, model };
+  }
+
+  // The single create-on-submit path (#350). Turns a draft into a real session —
+  // workspace orchestrator or non-workspace direct chat — carries the handoff brief,
+  // then hands the first message to the pending-message effect on selection. Guarded
+  // by `newChatPendingRef` so a fast second submit cannot produce two sessions.
+  async function submitNewChatDraft(draft: NewChatDraft, message?: string, alreadyLocked = false): Promise<string | undefined> {
     if (!alreadyLocked) {
       if (newChatPendingRef.current) return;
       newChatPendingRef.current = true;
     }
     try {
       if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode, then retry model setup."); return; }
-      setView("workspace");
-      const currentAdapter = session?.kind === "direct"
-        ? adapters.find(adapter => adapter.id === session.harness && adapter.available)
-        : undefined;
-      const profile = modelSetup ? resolveProfileOption("standard_orchestrator", modelSetup, adapters) : undefined;
-      const preferred = harnessOverride ?? currentAdapter ?? profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
-      const harness = (preferred?.id as Harness) ?? "codex";
-      const model = harnessOverride
-        ? harnessOverride.defaultModel ?? harnessOverride.models[0]?.id ?? null
-        : currentAdapter
-        ? session?.model ?? currentAdapter.defaultModel ?? currentAdapter.models[0]?.id ?? null
-        : profile?.model.id ?? preferred?.defaultModel ?? preferred?.models[0]?.id ?? null;
-      const draft = initialMessage?.trim() ?? "";
-      if (draft) pendingWelcomeMessageRef.current = draft;
+      const text = message?.trim() ?? "";
+      // A chat comes into existence only when it has something in it (#350): an empty
+      // submit is a no-op, never a zero-entry placeholder row. The draft stays open.
+      if (!text) return undefined;
       setBusy(true); setError(undefined);
       try {
-        const next = await bridgeApi.createChat(harness, model, null);
-        const created = [...next.sessions].reverse().find(s => !s.parentSessionId && !s.workspaceId);
-        // Carry before selecting: the welcome-message effect fires on
-        // session-id change, and the brief must be in the forest before the
-        // first cold start compiles its prompt.
-        if (created && carryFromSessionId && carryFromSessionId !== created.id) {
-          try { await bridgeApi.carrySessionHandoff(created.id, carryFromSessionId); }
+        // Workspace drafts create an orchestrator, whose harness/model come from the
+        // orchestrator profile (unchanged from before #350); the draft's harness/model
+        // are the carry-over for the non-workspace direct-chat path only.
+        const next = draft.workspaceId
+          ? await bridgeApi.createWorkspaceSession(draft.workspaceId, draft.createWorktree)
+          : await bridgeApi.createChat(draft.harness, draft.model, null);
+        const created = draft.workspaceId
+          ? [...next.sessions].reverse().find(s => !s.parentSessionId && s.workspaceId === draft.workspaceId)
+          : [...next.sessions].reverse().find(s => !s.parentSessionId && !s.workspaceId);
+        // Carry before selecting: the welcome-message effect fires on session-id
+        // change, and the brief must be in the forest before the first cold start
+        // compiles its prompt.
+        if (created && draft.carryFromSessionId && draft.carryFromSessionId !== created.id) {
+          try { await bridgeApi.carrySessionHandoff(created.id, draft.carryFromSessionId); }
           catch { /* context carry is best-effort; the chat starts regardless */ }
         }
+        if (draft.workspaceId) writeLastWorkspaceId(draft.workspaceId);
+        // Tag the message with the created session so it can only land there, even if
+        // another session became active while the create awaited.
+        if (created) pendingWelcomeMessageRef.current = { sessionId: created.id, text };
         setState(next);
-        if (created) setSelectedSessionId(created.id);
+        setNewChatDraft(null);
+        if (created) {
+          if (draft.workspaceId) worktreeBySessionRef.current.set(created.id, draft.createWorktree);
+          setSelectedSessionId(created.id);
+        }
         return created?.id;
       } catch (e) {
         pendingWelcomeMessageRef.current = null;
@@ -931,6 +978,22 @@ export function App() {
     } finally {
       if (!alreadyLocked) newChatPendingRef.current = false;
     }
+  }
+
+  // Open an unstarted draft — no session row is created (#350). This is the
+  // non-workspace path: the `$harness` shortcut and the no-workspace fallback.
+  // A pinned harness ($harness) always carries an `initialMessage`, so it creates on
+  // send immediately, exactly like a submit; otherwise the draft surface just opens.
+  async function openNewChat(initialMessage?: string, harnessOverride?: import("./types").AdapterDescriptor, alreadyLocked = false, carryFromSessionId?: string): Promise<string | undefined> {
+    if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode, then retry model setup."); return; }
+    const { harness, model } = resolveDraftHarnessModel(harnessOverride);
+    const draft: NewChatDraft = { harness, model, workspaceId: null, createWorktree: false, carryFromSessionId };
+    const message = initialMessage?.trim();
+    if (message) return submitNewChatDraft(draft, message, alreadyLocked);
+    setView("workspace"); setParadigm("single");
+    setNewChatDraft(draft);
+    setSelectedSessionId(undefined);
+    return undefined;
   }
 
   // A `$harness` prefix (e.g. `$codex are we right?`) bypasses whatever
@@ -959,19 +1022,18 @@ export function App() {
     newChatPendingRef.current = true;
     try {
       if (text && await openHarnessShortcut(text, true)) return;
-      const workspaceId = resolveNewChatWorkspaceId({
-        activeWorkspaceId: welcomeWorkspaceId,
-        lastWorkspaceId: readLastWorkspaceId(),
-        workspaces: state.workspaces,
-      });
-      if (!workspaceId) {
-        await openNewChat(text, undefined, true);
-        return;
-      }
-      const draft = text?.trim() ?? "";
-      if (draft) pendingWelcomeMessageRef.current = draft;
-      const createdId = await newWorkspaceSession(false, workspaceId, true);
-      if (!createdId) pendingWelcomeMessageRef.current = null;
+      // Submit the open draft's choices; on the fresh welcome surface (no draft yet)
+      // resolve them from the welcome workspace, just as this path used to.
+      const draft: NewChatDraft = newChatDraft ?? {
+        ...resolveDraftHarnessModel(),
+        workspaceId: resolveNewChatWorkspaceId({
+          activeWorkspaceId: welcomeWorkspaceId,
+          lastWorkspaceId: readLastWorkspaceId(),
+          workspaces: state.workspaces,
+        }),
+        createWorktree: false,
+      };
+      await submitNewChatDraft(draft, text, true);
     } finally {
       newChatPendingRef.current = false;
     }
@@ -991,7 +1053,13 @@ export function App() {
         await openNewChat(undefined, undefined, true);
         return;
       }
-      await newWorkspaceSession(false, workspaceId, true);
+      // Open an unstarted workspace draft (#350) — no row until the first submit.
+      // Snapshot harness/model before deselecting so the carry-over survives.
+      const { harness, model } = resolveDraftHarnessModel();
+      setView("workspace"); setParadigm("single");
+      setWelcomeWorkspaceId(workspaceId);
+      setNewChatDraft({ harness, model, workspaceId, createWorktree: false });
+      setSelectedSessionId(undefined);
     } finally {
       newChatPendingRef.current = false;
     }
@@ -1055,10 +1123,12 @@ export function App() {
   }
 
   useEffect(() => {
-    const draft = pendingWelcomeMessageRef.current;
-    if (!draft || !session) return;
+    const pending = pendingWelcomeMessageRef.current;
+    // Deliver only to the session the message was created for — never to whatever
+    // session happened to become active in the meantime (#350).
+    if (!pending || session?.id !== pending.sessionId) return;
     pendingWelcomeMessageRef.current = null;
-    void sendPrompt(draft);
+    void sendPrompt(pending.text);
   }, [session?.id]);
   // Workspace "+": ask whether this orchestrator should get an isolated worktree.
   function requestWorkspaceSession(workspaceId: string) {
@@ -1787,18 +1857,19 @@ export function App() {
         busy={busy}
         workspaces={state.workspaces}
         workspace={welcomeWorkspace}
-        worktree={false}
+        worktree={newChatDraft?.createWorktree ?? false}
         branches={branchWorkspaceId === welcomeWorkspace?.id ? workspaceBranches : []}
         currentBranch={branchWorkspaceId === welcomeWorkspace?.id ? workspaceBranchCurrent : welcomeWorkspace?.branch ?? null}
         branchBusy={branchWorkspaceId === welcomeWorkspace?.id && branchBusy}
         branchError={branchWorkspaceId === welcomeWorkspace?.id ? branchError : null}
-        onSelectWorkspace={id => { writeLastWorkspaceId(id); setWelcomeWorkspaceId(id); }}
+        onSelectWorkspace={id => { writeLastWorkspaceId(id); setWelcomeWorkspaceId(id); setNewChatDraft(current => current ? { ...current, workspaceId: id } : current); }}
         onRequestBranches={() => { if (welcomeWorkspace) void requestWorkspaceBranches(welcomeWorkspace.id); }}
         onSelectBranch={branch => { if (welcomeWorkspace) void switchWorkspaceBranch(welcomeWorkspace.id, branch); }}
-        onToggleWorktree={draft => {
-          if (draft) pendingWelcomeMessageRef.current = draft;
-          if (resolvedWelcomeWorkspaceId) void newWorkspaceSession(true, resolvedWelcomeWorkspaceId);
-        }}
+        onToggleWorktree={() => setNewChatDraft(current => current
+          ? { ...current, createWorktree: !current.createWorktree }
+          // Fresh welcome surface with no draft yet: the worktree decision is now
+          // held on the draft (#350), created on submit — not started immediately.
+          : { ...resolveDraftHarnessModel(), workspaceId: resolvedWelcomeWorkspaceId, createWorktree: true })}
         onStartChat={text => void startChatOrShortcut(text)}
         onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
       />}

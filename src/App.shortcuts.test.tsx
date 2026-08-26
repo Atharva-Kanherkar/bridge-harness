@@ -74,13 +74,24 @@ const composerField = () => [...container.querySelectorAll<HTMLTextAreaElement>(
 
 const onWelcome = () => container.querySelector('button[aria-label="New workspace"]') !== null;
 
+// Turn an open draft into a real chat by sending its first message.
+async function sendFirst(text: string) {
+  const composer = composerField()!;
+  const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+  await act(async () => { setValue.call(composer, text); composer.dispatchEvent(new Event("input", { bubbles: true })); });
+  await act(async () => composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+  await settle();
+}
+
 describe("keyboard shortcuts inside the app", () => {
-  it("starts a chat on ⌘N without the mouse", async () => {
+  it("opens an unstarted draft on ⌘N without the mouse", async () => {
     expect(onWelcome(), "the app mounted on the welcome surface").toBe(true);
     await press({ key: "n", code: "KeyN", metaKey: true });
     await settle();
-    expect(onWelcome()).toBe(false);
-    expect(composerField(), "landed in a chat with its composer").not.toBeUndefined();
+    // #350: the new-chat shortcut opens a draft — the composer is ready, but no
+    // session is created, so the welcome/draft surface is still what's showing.
+    expect(composerField(), "the draft composer is focused").not.toBeUndefined();
+    expect(onWelcome(), "still an unstarted draft, not a created chat").toBe(true);
   });
 
   it("opens the shortcuts sheet on ⌘/ and closes it again", async () => {
@@ -123,8 +134,11 @@ describe("keyboard shortcuts inside the app", () => {
   });
 
   it("keeps the dock and fullscreen chords working from the table", async () => {
+    // ⌘N now opens a draft (#350); send a first message so a real chat — with a
+    // dock — actually exists for the dock/fullscreen chords to act on.
     await press({ key: "n", code: "KeyN", metaKey: true });
     await settle();
+    await sendFirst("open the dock");
     // The dock rail is always mounted; the pane tablist is what open means.
     const docked = () => container.querySelector('[role="tablist"][aria-label="Dock panes"]') !== null;
     const before = docked();
