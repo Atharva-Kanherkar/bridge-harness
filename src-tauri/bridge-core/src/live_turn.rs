@@ -3415,6 +3415,70 @@ pub fn launch_worker_outcome(
     if directive.write_mode != delegation::WriteMode::ReadOnly {
         warn_on_stale_base(core, parent_session_id, "before_write_delegation", false);
     }
+    if directive.role == delegation::WorkerRole::Verification {
+        // Bind the verifier to an implementation revision *before* reserving it
+        // (issue #327): an existing gate passes through untouched; edits the
+        // orchestrator made itself are recorded here straight from Git; anything
+        // else is refused as a delegation instead of surfacing later as a worker
+        // launch failure after a reservation was already created.
+        let available_capabilities = live_available_capabilities(&state);
+        let resolution = {
+            let db = state.db.lock().unwrap();
+            completion::ensure_verification_target(
+                &db,
+                parent_session_id,
+                directive,
+                &available_capabilities,
+            )
+        };
+        match resolution {
+            Ok(completion::VerificationTargetResolution::Existing) => {}
+            Ok(completion::VerificationTargetResolution::SelfRecorded) => {
+                let db = state.db.lock().unwrap();
+                let _ = store::event(
+                    &db,
+                    "completion",
+                    "completion.self_recorded_revision",
+                    parent_session_id,
+                    "opened the verification gate over this session's own uncommitted edits",
+                );
+            }
+            Ok(completion::VerificationTargetResolution::Missing) => {
+                let reason = completion::verification_target_unavailable_reason();
+                {
+                    let db = state.db.lock().unwrap();
+                    let _ = learning_router::record_route_status(
+                        &db,
+                        &routed.decision.id,
+                        completion::VERIFICATION_TARGET_UNAVAILABLE,
+                    );
+                    let _ = store::event(
+                        &db,
+                        "completion",
+                        "completion.verification_target_unavailable",
+                        parent_session_id,
+                        &reason,
+                    );
+                }
+                report_worker_launch_failure(
+                    core,
+                    parent_session_id,
+                    "verification_target",
+                    &reason,
+                );
+                return WorkerLaunchOutcome::Failed;
+            }
+            Err(error) => {
+                report_worker_launch_failure(
+                    core,
+                    parent_session_id,
+                    "verification_target",
+                    &format!("Could not record or bind the implementation revision: {error}"),
+                );
+                return WorkerLaunchOutcome::Failed;
+            }
+        }
+    }
     let reservation = {
         let db = state.db.lock().unwrap();
         let _ = record_model_resolution_warning(&db, parent_session_id, &resolution);
@@ -3541,7 +3605,9 @@ pub fn launch_worker_outcome(
             }
             // Unroutable, not broken. This used to forward rusqlite's
             // `Query returned no rows`, which told the orchestrator neither what
-            // was missing nor what to do about it.
+            // was missing nor what to do about it. `ensure_verification_target`
+            // already settled this before the reservation, so reaching this arm
+            // means a gate vanished mid-launch — keep it as a race backstop.
             Ok(None) => {
                 let reason = completion::verification_target_unavailable_reason();
                 let db = state.db.lock().unwrap();
