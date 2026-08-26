@@ -2,6 +2,11 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { UsageWidget } from "./UsageWidget";
 import type { CacheDiagnostic, UsageHistoryEntry, UsageSnapshot } from "../usage";
+import type { AdapterDescriptor, AuthState } from "../types";
+
+function adapterFixture(id: string, overrides: Partial<AdapterDescriptor> = {}): AdapterDescriptor {
+  return { id, label: id, available: true, authState: "signed_in" as AuthState, version: "mock", capabilities: [], unavailableReason: null, models: [], ...overrides };
+}
 
 describe("UsageWidget", () => {
   it("keeps both providers visible and states unknown limits without fabrication", () => {
@@ -87,5 +92,50 @@ describe("UsageWidget", () => {
     expect(withSession).not.toContain("reconciling");
     const noSession = renderToStaticMarkup(<UsageWidget usage={{}} contextPercent={76} contextSource="measured" />);
     expect(noSession).not.toContain("Open context breakdown");
+  });
+
+  it("labels a signed-out provider 'Not signed in' and never claims its limit is merely unknown", () => {
+    const adapters: AdapterDescriptor[] = [
+      adapterFixture("codex", { authState: "signed_out" }),
+      adapterFixture("claude"),
+      adapterFixture("opencode"),
+    ];
+    const snapshot: UsageSnapshot = { windows: [{ id: "weekly", label: "Weekly", usedPercent: 40, source: "reported" }], source: "reported", capturedAt: "2026-07-16T10:00:00Z" };
+    const html = renderToStaticMarkup(<UsageWidget usage={{ claude: snapshot, opencode: snapshot }} adapters={adapters} />);
+    expect(html).toContain("Not signed in");
+    expect(html).not.toContain("Limit unknown");
+  });
+
+  it("still renders 'Limit unknown' for a signed-in provider that has no snapshot yet", () => {
+    const adapters: AdapterDescriptor[] = [
+      adapterFixture("codex"),
+      adapterFixture("claude"),
+      adapterFixture("opencode"),
+    ];
+    const html = renderToStaticMarkup(<UsageWidget usage={{}} adapters={adapters} />);
+    expect(html).toContain("Limit unknown");
+    expect(html).not.toContain("Not signed in");
+  });
+
+  it("renders a not-installed provider distinctly from a signed-out one", () => {
+    const adapters: AdapterDescriptor[] = [
+      adapterFixture("codex", { available: false, authState: "unknown", unavailableReason: "codex CLI not found on PATH" }),
+      adapterFixture("claude", { authState: "signed_out" }),
+      adapterFixture("opencode"),
+    ];
+    const html = renderToStaticMarkup(<UsageWidget usage={{}} adapters={adapters} />);
+    expect(html).toContain("not installed");
+    expect(html).toContain("codex CLI not found on PATH");
+    expect(html).toContain("Not signed in");
+  });
+
+  it("renders no progress arc for not-installed or signed-out providers", () => {
+    const adapters: AdapterDescriptor[] = [
+      adapterFixture("codex", { available: false, authState: "unknown" }),
+      adapterFixture("claude", { authState: "signed_out" }),
+      adapterFixture("opencode", { authState: "signed_out" }),
+    ];
+    const html = renderToStaticMarkup(<UsageWidget usage={{}} adapters={adapters} />);
+    expect(html).not.toContain("stroke-dashoffset");
   });
 });

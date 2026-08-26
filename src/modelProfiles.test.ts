@@ -3,14 +3,14 @@ import { availableModelOptions, modelProfilesChanged, profileDraftsFromSetup, re
 import type { AdapterDescriptor, ModelSetupState } from "./types";
 
 const adapters: AdapterDescriptor[] = [{
-  id: "catalog", label: "Catalog", available: true, version: "1", capabilities: [], unavailableReason: null, defaultModel: "balanced",
+  id: "catalog", label: "Catalog", available: true, authState: "signed_in", version: "1", capabilities: [], unavailableReason: null, defaultModel: "balanced",
   models: [
     { id: "quick", label: "Quick", tier: "fast", defaultForTier: true },
     { id: "balanced", label: "Balanced", tier: "standard", defaultForTier: true },
     { id: "deep", label: "Deep", tier: "strong", defaultForTier: true },
   ],
 }, {
-  id: "offline", label: "Offline", available: false, version: null, capabilities: [], unavailableReason: "not installed", defaultModel: "hidden",
+  id: "offline", label: "Offline", available: false, authState: "unknown", version: null, capabilities: [], unavailableReason: "not installed", defaultModel: "hidden",
   models: [{ id: "hidden", label: "Hidden", tier: "strong", defaultForTier: true }],
 }];
 

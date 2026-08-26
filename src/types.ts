@@ -39,6 +39,7 @@ export type {
   AdapterDescriptor,
   AgentDefinition,
   ApprovalDecision,
+  AuthState,
   AutomationAction,
   AutomationProvider,
   BaseBranchDivergence,

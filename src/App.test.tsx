@@ -28,11 +28,11 @@ import { bridgeApi } from "./api";
 
 const adapters: AdapterDescriptor[] = [
   {
-    id: "codex", label: "Codex", available: true, version: "test", capabilities: [], unavailableReason: null,
+    id: "codex", label: "Codex", available: true, authState: "signed_in", version: "test", capabilities: [], unavailableReason: null,
     models: [{ id: "gpt-balanced", label: "GPT Balanced", tier: "standard", defaultForTier: true }], defaultModel: "gpt-balanced",
   },
   {
-    id: "claude", label: "Claude", available: true, version: "test", capabilities: [], unavailableReason: null,
+    id: "claude", label: "Claude", available: true, authState: "signed_in", version: "test", capabilities: [], unavailableReason: null,
     models: [{ id: "opus", label: "Claude Opus", tier: "strong", defaultForTier: true }], defaultModel: "opus",
   },
 ];
