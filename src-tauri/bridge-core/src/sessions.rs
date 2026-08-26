@@ -1217,6 +1217,7 @@ mod tests {
                 id: "codex".into(),
                 label: "Codex".into(),
                 available: true,
+                auth_state: crate::model::AuthState::Unknown,
                 version: None,
                 capabilities: Vec::new(),
                 unavailable_reason: None,

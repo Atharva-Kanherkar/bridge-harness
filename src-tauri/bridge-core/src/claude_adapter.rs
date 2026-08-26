@@ -6,6 +6,7 @@ use crate::{
         ContextSegmentClass, ContextSegmentObservation,
     },
     delegation::WriteMode,
+    model::AuthState,
     BridgeError,
 };
 use serde_json::{json, Value};
@@ -276,6 +277,42 @@ fn claude_oauth_token() -> Result<Option<String>, BridgeError> {
 #[cfg(not(target_os = "macos"))]
 fn claude_oauth_token() -> Result<Option<String>, BridgeError> {
     Ok(None)
+}
+
+/// Whether Claude's own credential store holds a usable credential. A
+/// presence check only — Bridge never reads the token value out of the
+/// Keychain entry, only whether the entry exists.
+pub fn auth_state() -> AuthState {
+    auth_state_from_home(std::env::var_os("HOME").map(PathBuf::from), claude_keychain_present())
+}
+
+fn auth_state_from_home(home: Option<PathBuf>, keychain: AuthState) -> AuthState {
+    let file_present = home
+        .map(|home| home.join(".claude/.credentials.json"))
+        .is_some_and(|path| path.is_file());
+    if file_present {
+        return AuthState::SignedIn;
+    }
+    keychain
+}
+
+#[cfg(target_os = "macos")]
+fn claude_keychain_present() -> AuthState {
+    match Command::new("/usr/bin/security")
+        .args(["find-generic-password", "-s", "Claude Code-credentials"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+    {
+        Ok(status) if status.success() => AuthState::SignedIn,
+        Ok(_) => AuthState::SignedOut,
+        Err(_) => AuthState::Unknown,
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn claude_keychain_present() -> AuthState {
+    AuthState::SignedOut
 }
 
 /// The write-mode label passed to the sidecar, which maps it to SDK permission
@@ -1001,6 +1038,39 @@ mod tests {
         );
         resumed.runtime.stop(ShutdownReason::Completed);
         assert!(transcript.contains("BRIDGE_CLAUDE_RESUME_5A72"));
+    }
+
+    #[test]
+    fn auth_probe_reports_signed_in_when_credential_store_present() {
+        let home = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(home.path().join(".claude")).unwrap();
+        std::fs::write(home.path().join(".claude/.credentials.json"), "{}").unwrap();
+        assert_eq!(
+            auth_state_from_home(Some(home.path().to_path_buf()), AuthState::SignedOut),
+            AuthState::SignedIn
+        );
+    }
+
+    #[test]
+    fn auth_probe_reports_signed_out_when_cli_present_but_store_absent() {
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(
+            auth_state_from_home(Some(home.path().to_path_buf()), AuthState::SignedOut),
+            AuthState::SignedOut
+        );
+    }
+
+    #[test]
+    fn missing_credentials_file_falls_back_to_the_keychain_probe() {
+        let home = tempfile::tempdir().unwrap();
+        assert_eq!(
+            auth_state_from_home(Some(home.path().to_path_buf()), AuthState::SignedIn),
+            AuthState::SignedIn
+        );
+        assert_eq!(
+            auth_state_from_home(Some(home.path().to_path_buf()), AuthState::Unknown),
+            AuthState::Unknown
+        );
     }
 }
 

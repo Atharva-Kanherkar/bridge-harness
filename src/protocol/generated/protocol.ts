@@ -55,6 +55,7 @@ export type BridgeMethod =
   | "memory/set_memory_injection"
   | "memory/get_packet_audit"
   | "approvals/resolve_approval"
+  | "auth/start_provider_login"
   | "terminal/open_terminal"
   | "terminal/write_terminal"
   | "terminal/resize_terminal"
@@ -191,6 +192,7 @@ export const BRIDGE_METHODS = [
   { method: "memory/set_memory_injection", domain: "memory", command: "set_memory_injection" },
   { method: "memory/get_packet_audit", domain: "memory", command: "get_packet_audit" },
   { method: "approvals/resolve_approval", domain: "approvals", command: "resolve_approval" },
+  { method: "auth/start_provider_login", domain: "auth", command: "start_provider_login" },
   { method: "terminal/open_terminal", domain: "terminal", command: "open_terminal" },
   { method: "terminal/write_terminal", domain: "terminal", command: "write_terminal" },
   { method: "terminal/resize_terminal", domain: "terminal", command: "resize_terminal" },
@@ -381,6 +383,7 @@ export interface BridgeMethodParams {
   "memory/set_memory_injection": SetMemoryInjectionParams;
   "memory/get_packet_audit": GetPacketAuditParams;
   "approvals/resolve_approval": ResolveApprovalParams;
+  "auth/start_provider_login": StartProviderLoginParams;
   "terminal/open_terminal": OpenTerminalParams;
   "terminal/write_terminal": WriteTerminalParams;
   "terminal/resize_terminal": ResizeTerminalParams;
@@ -519,6 +522,7 @@ export interface BridgeMethodResults {
   "memory/set_memory_injection": MemoryInjectionSettings;
   "memory/get_packet_audit": MemoryPacketAudit;
   "approvals/resolve_approval": UnitResult;
+  "auth/start_provider_login": StartProviderLoginResult;
   "terminal/open_terminal": UnitResult;
   "terminal/write_terminal": UnitResult;
   "terminal/resize_terminal": UnitResult;
@@ -608,6 +612,7 @@ export interface BridgeMethodResults {
 }
 
 export interface AdapterDescriptor {
+  authState: AuthState;
   available: boolean;
   capabilities: string[];
   defaultModel?: string | null;
@@ -636,6 +641,8 @@ export interface AgentDefinition {
 }
 
 export type ApprovalDecision = "accept" | "acceptForSession" | "decline" | "cancel";
+
+export type AuthState = "signed_in" | "signed_out" | "unknown";
 
 export type AutomationAction = "pause" | "resume" | "delete";
 
@@ -1812,6 +1819,15 @@ export interface ResolveApprovalParams {
   decision: ApprovalDecision;
   eventId: number;
   sessionId: string;
+}
+
+export interface StartProviderLoginParams {
+  provider: string;
+}
+
+export interface StartProviderLoginResult {
+  terminalId: string;
+  workspaceId: string;
 }
 
 export interface OpenTerminalParams {

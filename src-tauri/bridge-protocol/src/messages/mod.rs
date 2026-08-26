@@ -21,6 +21,7 @@
 
 mod agents;
 mod approvals;
+mod auth;
 mod automations;
 mod browser;
 mod common;
@@ -43,6 +44,7 @@ mod workspaces;
 
 pub use agents::*;
 pub use approvals::*;
+pub use auth::*;
 pub use automations::*;
 pub use browser::*;
 pub use common::*;
@@ -201,6 +203,8 @@ typed_methods![
     (GetPacketAudit, GetPacketAuditParams, MemoryPacketAudit),
     // approvals
     (ResolveApproval, ResolveApprovalParams, UnitResult),
+    // auth — provider sign-in
+    (StartProviderLogin, StartProviderLoginParams, StartProviderLoginResult),
     // terminal
     (OpenTerminal, OpenTerminalParams, UnitResult),
     (WriteTerminal, WriteTerminalParams, UnitResult),

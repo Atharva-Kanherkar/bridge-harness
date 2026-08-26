@@ -163,6 +163,15 @@ pub enum SandboxMode {
     DangerFullAccess,
 }
 
+/// Mirrors `bridge_core::model::AuthState`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthState {
+    SignedIn,
+    SignedOut,
+    Unknown,
+}
+
 /// Mirrors `bridge_core::model::AdapterDescriptor`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -170,6 +179,7 @@ pub struct AdapterDescriptor {
     pub id: String,
     pub label: String,
     pub available: bool,
+    pub auth_state: AuthState,
     pub version: Option<String>,
     pub capabilities: Vec<String>,
     #[serde(default)]
@@ -310,6 +320,9 @@ mod tests {
         );
         assert!(serde_json::from_value::<SessionStatus>(json!("Working")).is_err());
         assert!(serde_json::from_value::<CapabilityTier>(json!("premium")).is_err());
+        assert_eq!(serde_json::to_value(AuthState::SignedIn).unwrap(), json!("signed_in"));
+        assert_eq!(serde_json::to_value(AuthState::SignedOut).unwrap(), json!("signed_out"));
+        assert_eq!(serde_json::to_value(AuthState::Unknown).unwrap(), json!("unknown"));
     }
 
     #[test]
@@ -327,6 +340,7 @@ mod tests {
                 id: "codex".into(),
                 label: "Codex".into(),
                 available: true,
+                auth_state: AuthState::SignedIn,
                 version: Some("1.0".into()),
                 capabilities: vec!["shell".into()],
                 sandbox_modes: vec![SandboxMode::ReadOnly, SandboxMode::WorkspaceWrite],
@@ -347,6 +361,7 @@ mod tests {
             }],
         };
         let wire = serde_json::to_value(&health).unwrap();
+        assert_eq!(wire["adapters"][0]["authState"], json!("signed_in"));
         assert_eq!(wire["adapters"][0]["models"][0]["defaultForTier"], json!(true));
         assert_eq!(wire["harnesses"]["claude"], json!(true));
         assert_eq!(wire["telemetry_database"], json!("/data/bridge-telemetry.db"));

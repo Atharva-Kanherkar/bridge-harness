@@ -5,6 +5,9 @@
     "AdapterDescriptor": {
       "description": "Mirrors `bridge_core::model::AdapterDescriptor`.",
       "properties": {
+        "authState": {
+          "$ref": "#/definitions/AuthState"
+        },
         "available": {
           "type": "boolean"
         },
@@ -53,6 +56,7 @@
         }
       },
       "required": [
+        "authState",
         "available",
         "capabilities",
         "id",
@@ -60,6 +64,15 @@
         "models"
       ],
       "type": "object"
+    },
+    "AuthState": {
+      "description": "Mirrors `bridge_core::model::AuthState`.",
+      "enum": [
+        "signed_in",
+        "signed_out",
+        "unknown"
+      ],
+      "type": "string"
     },
     "CapabilityTier": {
       "description": "Mirrors `bridge_core::model::CapabilityTier`.",

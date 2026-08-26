@@ -1684,6 +1684,7 @@ mod tests {
                 id: harness.into(),
                 label: harness.into(),
                 available: true,
+                auth_state: crate::model::AuthState::Unknown,
                 version: Some("test".into()),
                 capabilities: vec!["tools".into(), "commands".into()],
                 unavailable_reason: None,

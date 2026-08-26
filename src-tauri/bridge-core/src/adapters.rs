@@ -733,15 +733,25 @@ impl HarnessAdapter for OpenCodeAdapter {
             .or_else(|| models.iter().find(|model| model.default_for_tier))
             .map(|model| model.id.clone());
         let available = catalog.is_some() && !models.is_empty();
-        let unavailable_reason = if catalog.is_some() && models.is_empty() {
+        // Every unavailable state names a reason: install status must be
+        // distinguishable from auth status, and "unavailable" with no reason
+        // reads as a signed-out problem to the usage widget.
+        let unavailable_reason = if available {
+            None
+        } else if catalog.is_some() {
             Some("OpenCode has no connected provider models selected".into())
+        } else if let Some(error) = self.catalog_error.read().unwrap().clone() {
+            Some(error)
+        } else if crate::binary::resolve("opencode").is_none() {
+            Some("OpenCode binary is not installed".into())
         } else {
-            self.catalog_error.read().unwrap().clone()
+            Some("OpenCode has not finished starting".into())
         };
         AdapterDescriptor {
             id: "opencode".into(),
             label: "OpenCode".into(),
             available,
+            auth_state: opencode_adapter::auth_state(),
             version: catalog.as_ref().map(|catalog| catalog.version.clone()),
             capabilities: [
                 "messages",
@@ -823,6 +833,7 @@ impl HarnessAdapter for CodexAdapter {
             id: "codex".into(),
             label: "Codex".into(),
             available: version.is_some(),
+            auth_state: codex_adapter::auth_state(),
             version,
             capabilities: [
                 "messages",
@@ -899,6 +910,7 @@ impl HarnessAdapter for ClaudeAdapter {
             id: "claude".into(),
             label: "Claude Code".into(),
             available: version.is_some(),
+            auth_state: claude_adapter::auth_state(),
             version,
             capabilities: [
                 "messages",
@@ -979,6 +991,7 @@ mod tests {
                 id: "fake".into(),
                 label: "Fake".into(),
                 available: true,
+                auth_state: crate::model::AuthState::Unknown,
                 version: Some("1".into()),
                 capabilities: vec!["messages".into()],
                 unavailable_reason: None,
@@ -1049,6 +1062,37 @@ mod tests {
                 other.id
             );
         }
+    }
+
+    /// Install status and auth status are reported through separate fields:
+    /// an unresolved binary must never coerce the credential probe into
+    /// `SignedOut`, since the two can genuinely disagree (a user can sign in
+    /// once and later uninstall the CLI).
+    #[test]
+    fn missing_binary_is_not_reported_as_signed_out() {
+        for descriptor in AdapterRegistry::built_in().unwrap().descriptors() {
+            if !descriptor.available {
+                assert!(
+                    descriptor.unavailable_reason.is_some(),
+                    "{} is unavailable but names no reason",
+                    descriptor.id
+                );
+            }
+        }
+        let unavailable_but_signed_in = AdapterDescriptor {
+            id: "codex".into(),
+            label: "Codex".into(),
+            available: false,
+            auth_state: crate::model::AuthState::SignedIn,
+            version: None,
+            capabilities: vec![],
+            sandbox_modes: vec![],
+            unavailable_reason: Some("Codex binary is not installed".into()),
+            models: vec![],
+            default_model: None,
+        };
+        assert!(!unavailable_but_signed_in.available);
+        assert_eq!(unavailable_but_signed_in.auth_state, crate::model::AuthState::SignedIn);
     }
 
     #[test]

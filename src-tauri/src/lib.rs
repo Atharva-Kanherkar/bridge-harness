@@ -987,6 +987,18 @@ async fn start_chat(
 }
 
 #[tauri::command]
+async fn start_provider_login(
+    provider: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<api::ProviderLogin, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Provider login", move || {
+        api::start_provider_login(&core, &provider)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn open_terminal(
     workspace_id: String,
     terminal_id: String,
@@ -1761,6 +1773,7 @@ pub fn run() {
             retry_worker_task,
             refresh_account_usage,
             resolve_approval,
+            start_provider_login,
             stop_session,
             refresh_workspace,
             list_workspace_branches,

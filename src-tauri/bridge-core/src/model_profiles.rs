@@ -535,6 +535,7 @@ mod tests {
             id: "catalog-provider".into(),
             label: "Catalog Provider".into(),
             available: true,
+            auth_state: crate::model::AuthState::Unknown,
             version: Some("1".into()),
             capabilities: vec!["tools".into()],
             unavailable_reason: None,

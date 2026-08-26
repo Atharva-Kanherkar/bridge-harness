@@ -256,6 +256,11 @@ pub fn dispatch(
             ))
         }
 
+        MethodName::StartProviderLogin => {
+            let p: wire::StartProviderLoginParams = decode(method, params)?;
+            reply(api::start_provider_login(core, &p.provider))
+        }
+
         MethodName::OpenTerminal => {
             let p: wire::OpenTerminalParams = decode(method, params)?;
             reply(api::open_terminal(core, &p.workspace_id, &p.terminal_id))
