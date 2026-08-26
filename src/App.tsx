@@ -348,6 +348,12 @@ export function App() {
   // nonce distinguishes "open it again" from a re-render.
   const [codeReveal, setCodeReveal] = useState<{ path: string; nonce: number }>();
   const revealNonce = useRef(0);
+  // The intent names a path in one worktree; a remounted CodePanel in another
+  // workspace resets its nonce guard and would honour it against the wrong
+  // tree. Changing workspaces retires the request.
+  useEffect(() => {
+    setCodeReveal(undefined);
+  }, [workspace?.id]);
   function quoteToComposer(path: string, range?: HunkRange) {
     setComposer(current => {
       const mentioned = appendFileMention(current, path);

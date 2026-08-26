@@ -45,7 +45,7 @@ function DiffLine({ row, numbered, onQuoteHunk }: { row: DiffRow; numbered: bool
         onClick={() => onQuoteHunk?.(range)}
         aria-label={`Reference lines ${range.start}-${range.end} in the composer`}
         title="Reference this hunk in the composer"
-        className="ml-2 hidden h-4 items-center gap-1 rounded px-1 align-middle text-[10px] text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:inline-flex group-hover/hunk:inline-flex"
+        className="ml-2 inline-flex h-4 items-center gap-1 rounded px-1 align-middle text-[10px] text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/hunk:opacity-100"
       >
         <Quote size={9} strokeWidth={1.8} aria-hidden="true" />
         quote

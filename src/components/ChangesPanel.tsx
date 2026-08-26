@@ -80,7 +80,7 @@ function ChangeFileRow({ file, viewed, expanded, workspaceId, onToggleViewed, on
         onClick={() => onQuote(file.path)}
         aria-label={`Reference ${file.path} in the composer`}
         title="Reference in the composer"
-        className="hidden h-6 w-6 shrink-0 place-items-center rounded-md text-muted-foreground/70 hover:bg-accent hover:text-foreground focus-visible:grid group-hover:grid"
+        className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-muted-foreground/70 opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
       >
         <Quote size={11} strokeWidth={1.8} aria-hidden="true" />
       </button>}
@@ -89,7 +89,7 @@ function ChangeFileRow({ file, viewed, expanded, workspaceId, onToggleViewed, on
         onClick={() => onOpenFile(file.path)}
         aria-label={`Open ${file.path} in the Code pane`}
         title="Open in the Code pane"
-        className="hidden h-6 w-6 shrink-0 place-items-center rounded-md text-muted-foreground/70 hover:bg-accent hover:text-foreground focus-visible:grid group-hover:grid"
+        className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-muted-foreground/70 opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
       >
         <Code2 size={11} strokeWidth={1.8} aria-hidden="true" />
       </button>}
