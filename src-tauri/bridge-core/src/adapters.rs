@@ -332,7 +332,36 @@ impl ShutdownReason {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+/// A cold-start phase observed at a real launch boundary — never emitted on a
+/// timer, and never emitted for a harness where the boundary was not actually
+/// reached. See [`crate::events::CoreEvent::SessionStartup`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StartupPhase {
+    /// The provider's child process is about to be spawned (or has just been).
+    Spawning,
+    /// Waiting on the provider to become responsive: an OpenCode health poll,
+    /// a Codex `initialize` round trip, the Claude Node sidecar booting.
+    Handshake,
+    /// The provider session itself (create or resume) has completed.
+    SessionOpen,
+}
+
+impl StartupPhase {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Spawning => "spawning",
+            Self::Handshake => "handshake",
+            Self::SessionOpen => "session_open",
+        }
+    }
+}
+
+/// A launch-progress sink. Adapters call it at the real boundaries they
+/// observe; callers with nothing to narrate (worker delegation, briefings,
+/// suggestions) pass `None` rather than a no-op closure.
+pub type StartupProgress<'a> = &'a dyn Fn(StartupPhase);
+
+#[derive(Clone, Copy)]
 pub struct StartRequest<'a> {
     pub cwd: &'a str,
     pub model: Option<&'a str>,
@@ -347,9 +376,28 @@ pub struct StartRequest<'a> {
     /// defaulted, because an adapter that silently ignores it would run a
     /// briefing with a coding agent's tools.
     pub briefing: Option<&'a BriefingRuntimePolicy>,
+    /// See [`StartupProgress`].
+    pub on_progress: Option<StartupProgress<'a>>,
 }
 
-#[derive(Debug, Clone, Copy)]
+// Manual, not derived: `on_progress` is a `&dyn Fn`, which has no `Debug` impl
+// to derive against. Everything else prints as it always did.
+impl std::fmt::Debug for StartRequest<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("StartRequest")
+            .field("cwd", &self.cwd)
+            .field("model", &self.model)
+            .field("effort", &self.effort)
+            .field("instructions", &self.instructions)
+            .field("write_mode", &self.write_mode)
+            .field("read_only_sandbox", &self.read_only_sandbox)
+            .field("briefing", &self.briefing)
+            .field("on_progress", &self.on_progress.map(|_| "<fn>"))
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy)]
 pub struct ResumeRequest<'a> {
     pub provider_session_id: &'a str,
     pub cwd: &'a str,
@@ -360,6 +408,24 @@ pub struct ResumeRequest<'a> {
     pub read_only_sandbox: Option<&'a ReadOnlySandbox>,
     /// See [`StartRequest::briefing`].
     pub briefing: Option<&'a BriefingRuntimePolicy>,
+    /// See [`StartupProgress`].
+    pub on_progress: Option<StartupProgress<'a>>,
+}
+
+impl std::fmt::Debug for ResumeRequest<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ResumeRequest")
+            .field("provider_session_id", &self.provider_session_id)
+            .field("cwd", &self.cwd)
+            .field("model", &self.model)
+            .field("effort", &self.effort)
+            .field("instructions", &self.instructions)
+            .field("write_mode", &self.write_mode)
+            .field("read_only_sandbox", &self.read_only_sandbox)
+            .field("briefing", &self.briefing)
+            .field("on_progress", &self.on_progress.map(|_| "<fn>"))
+            .finish()
+    }
 }
 
 pub struct StartedAdapter {

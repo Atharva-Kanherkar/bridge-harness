@@ -60,6 +60,15 @@ pub enum CoreEvent {
     /// payload carries the agent id only — authoritative state is refetched
     /// through `agents/list_managed_agents`, never reconstructed from this.
     ManagedAgentChanged { agent_id: String },
+    /// A cold-start phase observed at a real adapter launch boundary.
+    /// Transient and best-effort: worthless once stale, and a client that
+    /// missed one simply never shows that phase rather than catching up —
+    /// unlike every other variant here, there is no "last known state" to
+    /// resend after a lag.
+    SessionStartup {
+        session_id: String,
+        phase: crate::adapters::StartupPhase,
+    },
 }
 
 impl CoreEvent {
@@ -77,6 +86,7 @@ impl CoreEvent {
             CoreEvent::TerminalExited { .. } => NotificationName::TerminalExited,
             CoreEvent::AccountUsage { .. } => NotificationName::AccountUsage,
             CoreEvent::ManagedAgentChanged { .. } => NotificationName::ManagedAgentChanged,
+            CoreEvent::SessionStartup { .. } => NotificationName::SessionStartup,
         }
     }
 
@@ -104,6 +114,10 @@ impl CoreEvent {
             // than rebuilding it from a notification.
             CoreEvent::ManagedAgentChanged { agent_id } => serde_json::json!({
                 "agentId": agent_id,
+            }),
+            CoreEvent::SessionStartup { session_id, phase } => serde_json::json!({
+                "sessionId": session_id,
+                "phase": phase.as_str(),
             }),
             CoreEvent::AccountUsage {
                 provider,
@@ -249,7 +263,8 @@ impl EventBus {
                 CoreEvent::Agent(_)
                 | CoreEvent::SessionOutput { .. }
                 | CoreEvent::TerminalExited { .. }
-                | CoreEvent::AccountUsage { .. } => {}
+                | CoreEvent::AccountUsage { .. }
+                | CoreEvent::SessionStartup { .. } => {}
             }
         }
         let _ = self.sender.send(event);
@@ -326,6 +341,10 @@ mod tests {
                 session_id: "s".into(),
                 terminal_id: "t1".into(),
             },
+            CoreEvent::SessionStartup {
+                session_id: "s".into(),
+                phase: crate::adapters::StartupPhase::Spawning,
+            },
         ];
         for event in &events {
             assert_eq!(
@@ -386,6 +405,16 @@ mod tests {
             serde_json::json!({"scopeKey":"account:local"}),
             "the hint names the scope and carries no record"
         );
+        let startup = CoreEvent::SessionStartup {
+            session_id: "s".into(),
+            phase: crate::adapters::StartupPhase::Handshake,
+        };
+        assert_eq!(startup.kind(), NotificationName::SessionStartup);
+        assert_eq!(
+            startup.payload(),
+            serde_json::json!({"sessionId": "s", "phase": "handshake"})
+        );
+        assert_eq!(startup.durable_cursor(), None);
     }
 
     #[test]

@@ -163,6 +163,11 @@ export interface TerminalExit { sessionId: string; terminalId: string }
 /** `memory-changed` refetch hint: names the scope, never carries a record. */
 export interface MemoryChangedPayload { scopeKey: string }
 
+/** `session-startup` cold-start phase, observed at a real adapter launch
+ *  boundary. Transient and best-effort: never replayed, never a timer. */
+export type SessionStartupPhase = "spawning" | "handshake" | "session_open";
+export interface SessionStartupPayload { sessionId: string; phase: SessionStartupPhase }
+
 // ---------------------------------------------------------------------------
 // Deferred result shapes (`resultDeferred` methods). Hand-written until their
 // contract slice lands; keep field-for-field with the core serializers.

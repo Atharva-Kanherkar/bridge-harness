@@ -114,6 +114,19 @@ pub fn record_launch_in_dir(root: &Path, kind: &str, label: &str, pid: u32) -> L
     LaunchGuard { path: Some(path) }
 }
 
+/// Record how long a harness took from child spawn to a usable provider
+/// session, so cold-start regressions show up in logs without instrumenting
+/// every call site by hand. Best effort, like the rest of the ledger: a
+/// logging failure never affects the launch it describes.
+pub fn log_spawn_to_ready(harness: &str, spawned_at: std::time::Instant) {
+    let elapsed = spawned_at.elapsed();
+    tracing::info!(
+        harness,
+        elapsed_ms = elapsed.as_millis() as u64,
+        "adapter spawn-to-ready"
+    );
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RecoveryOutcome {
     pub killed: usize,

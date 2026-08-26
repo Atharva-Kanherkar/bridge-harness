@@ -81,6 +81,11 @@ notifications![
     // bytes: a client that missed it re-lists the workspace's terminals.
     (TerminalExited, "terminal-exited", Transient),
     (AccountUsage, "account-usage", Transient),
+    // Cold-start narration: a phase observed at a real adapter launch
+    // boundary (spawning/handshake/session_open). Live-only on purpose — a
+    // client that missed one simply never shows that phase, unlike the
+    // refetch hints above there is no "latest state" worth resending.
+    (SessionStartup, "session-startup", Transient),
     // Host-synthesized: the live channel dropped events for this connection.
     // Durable history is intact — replay every watched session from its last
     // cursor via `sessions/replay_session_events`; refetch hints are resent
@@ -137,6 +142,7 @@ mod tests {
             NotificationName::MemoryChanged,
             NotificationName::SessionOutput,
             NotificationName::AccountUsage,
+            NotificationName::SessionStartup,
             NotificationName::StreamLagged,
         ] {
             assert_eq!(
