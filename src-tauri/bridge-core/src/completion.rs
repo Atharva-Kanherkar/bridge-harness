@@ -1006,11 +1006,20 @@ pub fn verification_target_path(
 /// What the orchestrator can actually do about a missing implementation
 /// revision. `permanent` is the right failure class for this, but "retry will
 /// not help" is only half the answer the orchestrator needs.
+///
+/// The wording must cover both ways this state arises, because they have
+/// different remedies and only one of them involves a worker at all (issue
+/// #327): an implementation worker whose changes sit unadopted in its own
+/// worktree, versus no recorded implementation work anywhere. Telling the
+/// second case to "adopt the worker's changes" sends the orchestrator looking
+/// for a worker that never existed.
 pub fn verification_target_unavailable_reason() -> String {
     format!(
-        "no implementation revision is recorded for this task ({VERIFICATION_TARGET_UNAVAILABLE}), \
-         so there is nothing for a verifier to bind to. Adopt or commit the implementation \
-         worker's worktree changes, or re-run the implementation, before delegating verification."
+        "no implementation revision is recorded for this task ({VERIFICATION_TARGET_UNAVAILABLE}) \
+         and its checkout has no uncommitted implementation work to record either, so there is \
+         nothing for a verifier to bind to. If an implementation worker ran, adopt or commit the \
+         worker's worktree changes; if you implemented directly, make sure the edits were saved in \
+         the task checkout; otherwise delegate the implementation before requesting verification."
     )
 }
 
@@ -1110,6 +1119,162 @@ pub fn create_from_worker_result(
         )?;
     }
     latest_summary(db, &context.parent_session_id)
+}
+
+/// How [`ensure_verification_target`] resolved a verifier's bind target.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerificationTargetResolution {
+    /// An open gate already existed; nothing was written.
+    Existing,
+    /// A gate was just opened over the orchestrator's own uncommitted edits.
+    SelfRecorded,
+    /// No open gate and nothing recordable: the delegation must be refused
+    /// before a worker is reserved for it.
+    Missing,
+}
+
+/// Make sure a verification delegation has an implementation revision to bind
+/// to, opening one when the orchestrator edited the checkout itself.
+///
+/// Issue #327: revisions were recorded only from a *delegated* worker's
+/// completion event, so "I made the change myself, now verify it" left real
+/// work on disk with no `eval_attempts` row — and the verifier died at launch.
+/// This runs before the worker reservation so a task with nothing to verify is
+/// rejected as a delegation, not discovered as a launch failure after a worker
+/// was already created.
+pub fn ensure_verification_target(
+    db: &Connection,
+    parent_session_id: &str,
+    directive: &DelegationRequest,
+    available_capabilities: &HashSet<String>,
+) -> Result<VerificationTargetResolution, BridgeError> {
+    if verification_target_path(db, parent_session_id)?.is_some() {
+        return Ok(VerificationTargetResolution::Existing);
+    }
+    let Some(repository_path) = store::repository_path_for_session(db, parent_session_id)? else {
+        return Ok(VerificationTargetResolution::Missing);
+    };
+    let repository_path = repository_path.to_string_lossy().into_owned();
+    // The contract pins the workspace the gate belongs to. Without one there is
+    // no durable checkout identity to bind verification to — the same reason a
+    // worker lease cannot exist without it.
+    let workspace_id: Option<String> = db
+        .query_row(
+            "SELECT workspace_id FROM sessions WHERE id=?1",
+            params![parent_session_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    let Some(workspace_id) = workspace_id else {
+        return Ok(VerificationTargetResolution::Missing);
+    };
+    match create_from_orchestrator_edits(
+        db,
+        parent_session_id,
+        &workspace_id,
+        &repository_path,
+        directive,
+        available_capabilities,
+    )? {
+        Some(_) => Ok(VerificationTargetResolution::SelfRecorded),
+        None => Ok(VerificationTargetResolution::Missing),
+    }
+}
+
+/// Open a completion gate over edits the orchestrator made itself — the
+/// parallel of [`create_from_worker_result`] for work no worker ever reported.
+///
+/// Everything is derived from Git rather than claimed by anyone: the stamp is
+/// the checkout's HEAD + dirty digest, the changed paths come from porcelain
+/// status, and the acceptance criteria and commands are the ones the
+/// verification directive itself carries (what the orchestrator asked to have
+/// checked). `implementer_family` records the orchestrator's own harness; no
+/// worker binding is written because no worker exists.
+///
+/// Committed-only orchestrator work is deliberately out of scope: without a
+/// recorded base commit there is no honest way to say which commits belong to
+/// this task, so detection covers the uncommitted tree state direct edits
+/// actually produce. `Ok(None)` means "no evidence of direct implementation
+/// work" — the caller's signal to reject rather than fabricate a revision over
+/// a pristine tree.
+pub fn create_from_orchestrator_edits(
+    db: &Connection,
+    parent_session_id: &str,
+    workspace_id: &str,
+    repository_path: &str,
+    directive: &DelegationRequest,
+    available_capabilities: &HashSet<String>,
+) -> Result<Option<CompletionSummary>, BridgeError> {
+    if directive.acceptance_criteria.is_empty() {
+        return Err(BridgeError::Invalid(
+            "recording an orchestrator revision requires the verification directive's \
+             acceptance criteria"
+                .into(),
+        ));
+    }
+    // A directory that is not a repository has no worktree state to record;
+    // report that as "nothing to verify" instead of failing the delegation
+    // with raw git stderr.
+    if store::repository_state_for_path(Path::new(repository_path))["status"]
+        .as_str()
+        == Some("unavailable")
+    {
+        return Ok(None);
+    }
+    let evidence = crate::git::derive_repository_evidence(Path::new(repository_path), None)?;
+    if evidence.is_empty() {
+        return Ok(None);
+    }
+    let changed_paths = evidence.changed_paths();
+    let repository = repository_stamp(repository_path)?;
+    if let Some(existing) = latest_summary(db, parent_session_id)? {
+        if matches!(
+            existing.verdict,
+            CompletionVerdict::Verifying | CompletionVerdict::ChangesRequested
+        ) && existing.repository == repository
+        {
+            return Ok(Some(existing));
+        }
+    }
+    let harness: Option<String> = db
+        .query_row(
+            "SELECT harness FROM sessions WHERE id=?1",
+            params![parent_session_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    let contract = CompletionContract {
+        id: Uuid::new_v4().to_string(),
+        workspace_id: workspace_id.to_owned(),
+        session_id: parent_session_id.to_owned(),
+        schema_version: COMPLETION_SCHEMA_VERSION,
+        acceptance_criteria: directive.acceptance_criteria.clone(),
+        markdown_projection: None,
+        markdown_committed: false,
+    };
+    let plan = plan_with_registered_manifests(
+        db,
+        PlanInput {
+            contract_id: contract.id.clone(),
+            acceptance_criteria: directive.acceptance_criteria.clone(),
+            changed_paths: changed_paths.clone(),
+            repository_commands: directive.verification.clone(),
+        },
+        &labels_for_paths(&changed_paths),
+        available_capabilities,
+    )?;
+    create_flow(
+        db,
+        &contract,
+        &plan,
+        parent_session_id,
+        repository_path,
+        &repository,
+        harness.as_deref(),
+    )?;
+    latest_summary(db, parent_session_id)
 }
 
 fn settle_verification_result(
@@ -2224,7 +2389,11 @@ mod tests {
         assert_eq!(verification_target_path(&db, "s").unwrap(), None);
         let reason = verification_target_unavailable_reason();
         assert!(reason.contains(VERIFICATION_TARGET_UNAVAILABLE));
-        assert!(reason.contains("Adopt or commit"));
+        // Issue #327: the message must cover both ways to arrive here — an
+        // unadopted worker's changes, and no implementation work recorded at
+        // all — instead of assuming an implementation worker exists.
+        assert!(reason.contains("adopt or commit the"));
+        assert!(reason.contains("delegate the implementation before requesting verification"));
         // "Nothing to verify" and "the database is broken" are different facts,
         // and the bind site reports them differently.
         db.execute("DROP TABLE eval_attempts", []).unwrap();
@@ -2876,5 +3045,186 @@ mod tests {
         assert!(report.proof_cost_per_accepted < report.baseline_cost_per_accepted);
         assert!(report.proof_average_latency_ms < report.baseline_average_latency_ms);
         assert!(report.proof_human_interventions < report.baseline_human_interventions);
+    }
+
+    fn git(cwd: &Path, args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    /// A real one-commit repository, so the Git-derived revision paths have
+    /// honest state to read instead of a fixture pretending to be a checkout.
+    fn repository() -> (tempfile::TempDir, String) {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = fixture.path().join("task");
+        std::fs::create_dir(&repo).unwrap();
+        git(&repo, &["init", "-q"]);
+        git(&repo, &["config", "user.email", "bridge-test@example.invalid"]);
+        git(&repo, &["config", "user.name", "Bridge Test"]);
+        std::fs::write(repo.join("README.md"), "base\n").unwrap();
+        git(&repo, &["add", "."]);
+        git(&repo, &["commit", "-m", "fixture", "-q"]);
+        (fixture, repo.to_string_lossy().into_owned())
+    }
+
+    fn verification_directive() -> DelegationRequest {
+        DelegationRequest {
+            schema_version: crate::delegation::SCHEMA_VERSION,
+            role: crate::delegation::WorkerRole::Verification,
+            objective: "Verify the orchestrator's own edit".into(),
+            acceptance_criteria: vec!["the edit is present in the checkout".into()],
+            known_facts: vec![],
+            decisions: vec![],
+            evidence_ids: vec![],
+            relevant_files: vec![],
+            owned_paths: vec![],
+            write_mode: crate::delegation::WriteMode::ReadOnly,
+            capability_tier: crate::delegation::CapabilityTier::Standard,
+            effort: crate::delegation::Effort::Medium,
+            network_access: false,
+            writable_output_paths: vec![],
+            verification: vec!["git diff --check".into()],
+            output_contract: crate::delegation::OutputContract::VerificationResult,
+            harness: None,
+            model: None,
+        }
+    }
+
+    /// Point the fixture workspace at the real temp repo so
+    /// `repository_path_for_session` (`COALESCE(s.cwd, w.path)`) resolves to it.
+    fn wire_workspace_to(db: &Connection, repository_path: &str) {
+        db.execute(
+            "UPDATE workspaces SET path=?2 WHERE id='w'",
+            params!["w", repository_path],
+        )
+        .unwrap();
+    }
+
+    /// Issue #327, happy path: the orchestrator edited files directly and then
+    /// delegated verification. A gate must open from the checkout's Git state —
+    /// with no implementation worker ever having run.
+    #[test]
+    fn orchestrator_edits_open_a_verification_gate_without_a_worker() {
+        let (_fixture, repo) = repository();
+        std::fs::write(std::path::Path::new(&repo).join("README.md"), "edited\n").unwrap();
+        let db = fixture();
+        wire_workspace_to(&db, &repo);
+        let directive = verification_directive();
+
+        let summary =
+            create_from_orchestrator_edits(&db, "s", "w", &repo, &directive, &HashSet::new())
+                .unwrap()
+                .expect("direct edits deserve an implementation revision");
+        assert_eq!(summary.verdict, CompletionVerdict::Verifying);
+        assert_eq!(summary.repository.head, git(Path::new(&repo), &["rev-parse", "HEAD"]));
+        assert!(
+            !summary.checks.is_empty(),
+            "the gate plans checks over the changed paths"
+        );
+        // The verifier can now find its bind target.
+        assert_eq!(
+            verification_target_path(&db, "s").unwrap(),
+            Some(repo.clone())
+        );
+        let (stored_head, stored_path): (String, String) = db
+            .query_row(
+                "SELECT repository_head,repository_path FROM eval_attempts",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(stored_path, repo, "the attempt is bound to the task checkout");
+        assert_eq!(stored_head, summary.repository.head);
+    }
+
+    /// Nothing implemented anywhere means nothing to record — but that must be
+    /// a clean refusal, not a fabricated revision over a pristine tree.
+    #[test]
+    fn a_clean_checkout_records_no_orchestrator_revision() {
+        let (_fixture, repo) = repository();
+        let db = fixture();
+        wire_workspace_to(&db, &repo);
+        let resolution = ensure_verification_target(&db, "s", &verification_directive(), &HashSet::new())
+            .unwrap();
+        assert_eq!(resolution, VerificationTargetResolution::Missing);
+        let attempts: i64 = db
+            .query_row("SELECT COUNT(*) FROM eval_attempts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(attempts, 0);
+
+        // A directory that is not even a repository is also Missing, not an error.
+        let scratch = tempfile::tempdir().unwrap();
+        wire_workspace_to(&db, scratch.path().to_string_lossy().as_ref());
+        let resolution = ensure_verification_target(&db, "s", &verification_directive(), &HashSet::new())
+            .unwrap();
+        assert_eq!(resolution, VerificationTargetResolution::Missing);
+    }
+
+    /// Recording twice over the same tree state must not stack gates: the first
+    /// call self-records, the second finds the live gate and leaves it alone.
+    #[test]
+    fn self_recording_dedupes_while_the_stamp_is_unchanged() {
+        let (_fixture, repo) = repository();
+        std::fs::write(std::path::Path::new(&repo).join("README.md"), "edited\n").unwrap();
+        let db = fixture();
+        wire_workspace_to(&db, &repo);
+        let directive = verification_directive();
+
+        let first = ensure_verification_target(&db, "s", &directive, &HashSet::new()).unwrap();
+        assert_eq!(first, VerificationTargetResolution::SelfRecorded);
+        let second = ensure_verification_target(&db, "s", &directive, &HashSet::new()).unwrap();
+        assert_eq!(second, VerificationTargetResolution::Existing);
+
+        let attempts: i64 = db
+            .query_row("SELECT COUNT(*) FROM eval_attempts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(attempts, 1, "one revision per unchanged tree state");
+    }
+
+    /// An already-open gate wins over any new recording, whatever the directive
+    /// says — self-recording exists to fill the gap, not to supersede live work.
+    #[test]
+    fn an_open_gate_is_left_alone_by_self_recording() {
+        let (_fixture, repo) = repository();
+        std::fs::write(std::path::Path::new(&repo).join("README.md"), "edited\n").unwrap();
+        let db = fixture();
+        wire_workspace_to(&db, &repo);
+        let mut directive = verification_directive();
+        create_from_orchestrator_edits(&db, "s", "w", &repo, &directive, &HashSet::new())
+            .unwrap()
+            .expect("first recording opens the gate");
+
+        directive.objective = "a different delegation over the same tree".into();
+        let resolution = ensure_verification_target(&db, "s", &directive, &HashSet::new()).unwrap();
+        assert_eq!(resolution, VerificationTargetResolution::Existing);
+        let contracts: i64 = db
+            .query_row("SELECT COUNT(*) FROM completion_contracts", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(contracts, 1, "no second contract behind the live gate");
+    }
+
+    /// Issue #327's complaint about the message: it assumed an implementation
+    /// worker existed. Both remedies must now be named, each for its own case.
+    #[test]
+    fn missing_target_reason_names_both_remediations() {
+        let reason = verification_target_unavailable_reason();
+        assert!(reason.contains(VERIFICATION_TARGET_UNAVAILABLE), "{reason}");
+        assert!(
+            reason.contains("adopt or commit the"),
+            "the unadopted-worker case keeps its remedy: {reason}"
+        );
+        assert!(
+            reason.contains("delegate the implementation before requesting verification"),
+            "the no-work-at-all case gets its own remedy: {reason}"
+        );
     }
 }
