@@ -1386,17 +1386,14 @@ fn auth_state_from_data_dir(dir: Option<PathBuf>) -> AuthState {
     let Some(dir) = dir else {
         return AuthState::Unknown;
     };
-    let path = dir.join("auth.json");
-    if !path.is_file() {
+    // Metadata only: Bridge never opens or parses credential contents.
+    let Ok(metadata) = std::fs::metadata(dir.join("auth.json")) else {
         return AuthState::SignedOut;
-    }
-    let Ok(contents) = std::fs::read_to_string(&path) else {
-        return AuthState::Unknown;
     };
-    match serde_json::from_str::<Value>(&contents) {
-        Ok(Value::Object(entries)) if !entries.is_empty() => AuthState::SignedIn,
-        Ok(_) => AuthState::SignedOut,
-        Err(_) => AuthState::Unknown,
+    if metadata.len() > 0 {
+        AuthState::SignedIn
+    } else {
+        AuthState::SignedOut
     }
 }
 
@@ -1701,13 +1698,9 @@ mod tests {
     }
 
     #[test]
-    fn auth_probe_reports_signed_in_when_credential_store_present() {
+    fn auth_probe_reports_signed_in_for_any_nonempty_store_without_reading_contents() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(
-            dir.path().join("auth.json"),
-            r#"{"opencode":{"type":"oauth"}}"#,
-        )
-        .unwrap();
+        std::fs::write(dir.path().join("auth.json"), "{not valid json").unwrap();
         assert_eq!(
             auth_state_from_data_dir(Some(dir.path().to_path_buf())),
             AuthState::SignedIn
@@ -1724,12 +1717,17 @@ mod tests {
     }
 
     #[test]
-    fn auth_probe_reports_unknown_when_store_unreadable() {
+    fn auth_probe_reports_signed_out_when_store_is_empty() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("auth.json"), "{not valid json").unwrap();
+        std::fs::write(dir.path().join("auth.json"), "").unwrap();
         assert_eq!(
             auth_state_from_data_dir(Some(dir.path().to_path_buf())),
-            AuthState::Unknown
+            AuthState::SignedOut
         );
+    }
+
+    #[test]
+    fn auth_probe_reports_unknown_when_data_dir_is_missing() {
+        assert_eq!(auth_state_from_data_dir(None), AuthState::Unknown);
     }
 }

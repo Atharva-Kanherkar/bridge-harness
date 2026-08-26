@@ -503,25 +503,11 @@ fn auth_state_from_home(home: Option<PathBuf>) -> AuthState {
     let Some(home) = home else {
         return AuthState::Unknown;
     };
-    let path = home.join(".codex/auth.json");
-    if !path.is_file() {
+    // Metadata only: Bridge never opens or parses credential contents.
+    let Ok(metadata) = std::fs::metadata(home.join(".codex/auth.json")) else {
         return AuthState::SignedOut;
-    }
-    let Ok(contents) = std::fs::read_to_string(&path) else {
-        return AuthState::Unknown;
     };
-    let Ok(parsed) = serde_json::from_str::<Value>(&contents) else {
-        return AuthState::Unknown;
-    };
-    let has_token = parsed
-        .pointer("/tokens/access_token")
-        .and_then(Value::as_str)
-        .is_some_and(|token| !token.trim().is_empty())
-        || parsed
-            .get("OPENAI_API_KEY")
-            .and_then(Value::as_str)
-            .is_some_and(|key| !key.trim().is_empty());
-    if has_token {
+    if metadata.len() > 0 {
         AuthState::SignedIn
     } else {
         AuthState::SignedOut
@@ -858,14 +844,10 @@ mod tests {
     }
 
     #[test]
-    fn auth_probe_reports_signed_in_when_credential_store_present() {
+    fn auth_probe_reports_signed_in_for_any_nonempty_store_without_reading_contents() {
         let home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(home.path().join(".codex")).unwrap();
-        std::fs::write(
-            home.path().join(".codex/auth.json"),
-            r#"{"tokens":{"access_token":"present"}}"#,
-        )
-        .unwrap();
+        std::fs::write(home.path().join(".codex/auth.json"), "{not valid json").unwrap();
         assert_eq!(
             auth_state_from_home(Some(home.path().to_path_buf())),
             AuthState::SignedIn
@@ -882,10 +864,10 @@ mod tests {
     }
 
     #[test]
-    fn auth_probe_reports_signed_out_when_store_has_no_token() {
+    fn auth_probe_reports_signed_out_when_store_is_empty() {
         let home = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(home.path().join(".codex")).unwrap();
-        std::fs::write(home.path().join(".codex/auth.json"), r#"{"tokens":{}}"#).unwrap();
+        std::fs::write(home.path().join(".codex/auth.json"), "").unwrap();
         assert_eq!(
             auth_state_from_home(Some(home.path().to_path_buf())),
             AuthState::SignedOut
@@ -893,13 +875,7 @@ mod tests {
     }
 
     #[test]
-    fn auth_probe_reports_unknown_when_store_unreadable() {
-        let home = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(home.path().join(".codex")).unwrap();
-        std::fs::write(home.path().join(".codex/auth.json"), "{not valid json").unwrap();
-        assert_eq!(
-            auth_state_from_home(Some(home.path().to_path_buf())),
-            AuthState::Unknown
-        );
+    fn auth_probe_reports_unknown_when_home_is_missing() {
+        assert_eq!(auth_state_from_home(None), AuthState::Unknown);
     }
 }
