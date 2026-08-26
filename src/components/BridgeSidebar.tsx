@@ -465,7 +465,7 @@ export function BridgeSidebar({
       </AnimatePresence>
       <aside
         className={cn(
-          "z-40 flex shrink-0 flex-col overflow-hidden font-sans antialiased",
+          "z-40 flex shrink-0 flex-col font-sans antialiased",
           "fixed inset-y-0 left-0 w-[min(84vw,20rem)] transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
           mobileOpen ? "translate-x-0" : "-translate-x-full",
           "sm:relative sm:z-20 sm:w-(--sidebar-w) sm:translate-x-0",
@@ -494,7 +494,7 @@ export function BridgeSidebar({
           </div>
         )
       )}
-      <div className={cn("flex min-h-0 flex-1 flex-col px-2 pb-3", showWindowNav ? "pt-1" : "pt-3")}>
+      <div className={cn("flex min-h-0 flex-1 flex-col overflow-hidden px-2 pb-3", showWindowNav ? "pt-1" : "pt-3")}>
         <div className={cn("mb-2 shrink-0", collapsed && "flex flex-col items-center")}>
           <ActionRow icon={SquarePen} label="New Chat" collapsed={collapsed} disabled={newChatBusy} onClick={onOpenNewChat} />
           <ActionRow icon={Search} label="Search" collapsed={collapsed} onClick={toggleSearch} />
@@ -521,7 +521,7 @@ export function BridgeSidebar({
           </div>
         )}
 
-        <div className="flex-1 overflow-y-auto">
+        <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
           {!collapsed && (
             <SectionLabel action={
               <span className="flex items-center gap-0.5">
@@ -546,7 +546,7 @@ export function BridgeSidebar({
               ? (group.key === NO_PROJECT_GROUP_KEY ? Home : Folder)
               : undefined;
             return (
-              <div key={group.key}>
+              <div key={group.key} className={cn("flex flex-col", !collapsed && "mb-0.5 gap-0.5")}>
                 {!collapsed && group.label && (
                   <GroupLabel
                     label={group.label}
@@ -604,8 +604,8 @@ export function BridgeSidebar({
           aria-label="Resize sidebar"
           onPointerDown={startResize}
           className={cn(
-            "absolute inset-y-0 right-0 z-30 hidden w-3 cursor-col-resize touch-none select-none sm:block",
-            "after:absolute after:inset-y-4 after:right-0 after:w-px after:transition-colors",
+            "absolute inset-y-0 -right-3 z-30 hidden w-3 cursor-col-resize touch-none select-none sm:block",
+            "after:absolute after:inset-y-4 after:left-0 after:w-px after:transition-colors",
             resizing ? "after:bg-ring/60" : "after:bg-transparent hover:after:bg-border",
           )}
         />
