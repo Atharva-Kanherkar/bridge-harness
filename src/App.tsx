@@ -943,15 +943,21 @@ export function App() {
       if (!text) return undefined;
       setBusy(true); setError(undefined);
       try {
-        // Workspace drafts create an orchestrator, whose harness/model come from the
-        // orchestrator profile (unchanged from before #350); the draft's harness/model
-        // are the carry-over for the non-workspace direct-chat path only.
-        const next = draft.workspaceId
+        // create_chat takes harness/model directly; create_workspace_session doesn't,
+        // so a workspace orchestrator is aligned to the draft's chosen model right
+        // after creation — the model picked on the draft is the model it starts with.
+        let next = draft.workspaceId
           ? await bridgeApi.createWorkspaceSession(draft.workspaceId, draft.createWorktree)
           : await bridgeApi.createChat(draft.harness, draft.model, null);
-        const created = draft.workspaceId
+        let created = draft.workspaceId
           ? [...next.sessions].reverse().find(s => !s.parentSessionId && s.workspaceId === draft.workspaceId)
           : [...next.sessions].reverse().find(s => !s.parentSessionId && !s.workspaceId);
+        if (created && draft.workspaceId && (created.harness !== draft.harness || (created.model ?? null) !== draft.model)) {
+          try {
+            next = await bridgeApi.updateChatModel(created.id, draft.harness, draft.model);
+            created = next.sessions.find(s => s.id === created!.id) ?? created;
+          } catch { /* keep the orchestrator's default model rather than fail the chat */ }
+        }
         // Carry before selecting: the welcome-message effect fires on session-id
         // change, and the brief must be in the forest before the first cold start
         // compiles its prompt.
@@ -1852,7 +1858,13 @@ export function App() {
         </section>
       </> : <Welcome
         adapters={adapters}
-        modelSetup={modelSetup}
+        harness={(newChatDraft ?? resolveDraftHarnessModel()).harness}
+        model={(newChatDraft ?? resolveDraftHarnessModel()).model}
+        onSelectModel={(harness, model) => setNewChatDraft(current => ({
+          ...(current ?? { workspaceId: resolvedWelcomeWorkspaceId, createWorktree: false }),
+          harness,
+          model,
+        }))}
         canStartChat={adaptersReady}
         busy={busy}
         workspaces={state.workspaces}
@@ -1981,17 +1993,11 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
   </aside>;
 }
 
-function WelcomeModelBadge({ adapters, modelSetup }: { adapters: import("./types").AdapterDescriptor[]; modelSetup: ModelSetupState }) {
-  const profile = resolveProfileOption("standard_orchestrator", modelSetup, adapters);
-  const preferred = profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];
-  const model = profile?.model ?? preferred?.models.find(option => option.id === preferred.defaultModel) ?? preferred?.models.find(option => option.defaultForTier) ?? preferred?.models[0];
-  const tierLabel = model?.tier === "strong" ? "High" : model?.tier === "standard" ? "Balanced" : "Fast";
-  return <span className="inline-flex items-center gap-1 rounded-full px-2.5 py-1.5 text-xs text-muted-foreground">{tierLabel}<ChevronDown size={14} className="text-muted-foreground/70" aria-hidden="true" /></span>;
-}
-
-function Welcome({ adapters, modelSetup, busy, canStartChat, onStartChat, onNewWorkspace, workspaces, workspace, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree }: {
+function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, onStartChat, onNewWorkspace, workspaces, workspace, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree }: {
   adapters: import("./types").AdapterDescriptor[];
-  modelSetup: ModelSetupState;
+  harness: Harness;
+  model: string | null;
+  onSelectModel: (harness: Harness, model: string | null) => void;
   busy: boolean;
   canStartChat: boolean;
   onStartChat: (text?: string) => void;
@@ -2044,7 +2050,9 @@ function Welcome({ adapters, modelSetup, busy, canStartChat, onStartChat, onNewW
       // attach to. This surface keeps the structural action — and says so.
       plusLabel="New workspace"
       onPlusClick={onNewWorkspace}
-      trailing={<WelcomeModelBadge adapters={adapters} modelSetup={modelSetup} />}
+      // The unstarted draft is a real chat-in-waiting: let the model be chosen
+      // before the first message, the same picker the session composer uses.
+      trailing={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} compact roleLabel="Chat" />}
     />
     <p className="mt-6 max-w-md text-[13px] leading-relaxed text-muted-foreground">{greeting.hint}</p>
   </div>;

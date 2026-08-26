@@ -155,6 +155,35 @@ describe("deferred new-chat creation (#350)", () => {
     expect(totalCreates(creates)).toBe(1);
   });
 
+  it("offers an interactive model picker on the draft and applies the choice on submit", async () => {
+    await act(async () => byLabel("New Chat")!.click());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+
+    // The draft is a real chat-in-waiting: an interactive model control, not a
+    // display-only "Balanced" badge.
+    const modelButton = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => (button.getAttribute("aria-label") ?? "").startsWith("Chat model:"));
+    expect(modelButton, "the draft exposes an interactive model picker").toBeTruthy();
+
+    const updateModel = vi.spyOn(bridgeApi, "updateChatModel");
+    await act(async () => modelButton!.click());
+    const opus = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => (button.textContent ?? "").includes("Claude Opus"));
+    expect(opus, "the picker lists more than one model").toBeTruthy();
+    await act(async () => opus!.click());
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+
+    const composer = composerField();
+    await type(composer!, "with opus please");
+    await act(async () => pressEnter(composer!));
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 60)); });
+
+    // The chosen model reaches the created session (workspace orchestrator syncs via
+    // updateChatModel since create_workspace_session takes no model).
+    const call = updateModel.mock.calls.find(c => c[1] === "claude" && c[2] === "opus");
+    expect(call, "the draft's chosen harness/model was applied").toBeTruthy();
+  });
+
   it("the worktree decision is held on the draft and applied on submit, not on toggle", async () => {
     await act(async () => byLabel("New Chat")!.click());
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
