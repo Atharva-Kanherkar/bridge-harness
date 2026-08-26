@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
 import { CodePanel } from "./CodePanel";
+import { STATS_REFRESH_DEBOUNCE_MS } from "./ChangesPanel";
 
 // CodeMirror owns a real DOM and its own measurement loop, neither of which
 // jsdom provides usefully. The document itself is covered by `fileBuffer`
@@ -74,6 +75,13 @@ afterEach(async () => {
   container.remove();
 });
 
+
+const settleDrift = async () => {
+  await act(async () => {
+    await new Promise(resolve => setTimeout(resolve, STATS_REFRESH_DEBOUNCE_MS + 40));
+  });
+};
+
 describe("CodePanel", () => {
   it("passes a reveal line to the active file's editor, and only there", async () => {
     await render({ reveal: { path: "src/App.tsx", line: 42, nonce: 7 } });
@@ -96,7 +104,7 @@ describe("CodePanel", () => {
 
     read.mockResolvedValue({ path: "src/App.tsx", content: "const a = 2;", sha256: "sha-agent", tooLarge: false, binary: false, sizeBytes: 12 });
     await render({ reveal: { path: "src/App.tsx", nonce: 1 }, driftSignal: "b" });
-    await render({ reveal: { path: "src/App.tsx", nonce: 1 }, driftSignal: "b" });
+    await settleDrift();
     expect(container.querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!.defaultValue).toBe("const a = 2;");
     expect(text()).not.toContain("Changed on disk");
   });
@@ -107,7 +115,7 @@ describe("CodePanel", () => {
 
     read.mockResolvedValue({ path: "src/App.tsx", content: "agent version", sha256: "sha-agent", tooLarge: false, binary: false, sizeBytes: 13 });
     await render({ reveal: { path: "src/App.tsx", nonce: 1 }, driftSignal: "b" });
-    await render({ reveal: { path: "src/App.tsx", nonce: 1 }, driftSignal: "b" });
+    await settleDrift();
     expect(text()).toContain("Changed on disk while you were editing");
     const editor = container.querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!;
     expect(editor.value).toBe("my unsaved edit");
@@ -119,7 +127,7 @@ describe("CodePanel", () => {
     await render({ reveal: { path: "src/App.tsx", nonce: 1 }, driftSignal: "a" });
     const keyBefore = container.querySelector('[data-testid="editor"]')!.getAttribute("data-dockey");
     await render({ reveal: { path: "src/App.tsx", nonce: 1 }, driftSignal: "b" });
-    await render({ reveal: { path: "src/App.tsx", nonce: 1 }, driftSignal: "b" });
+    await settleDrift();
     expect(container.querySelector('[data-testid="editor"]')!.getAttribute("data-dockey")).toBe(keyBefore);
     expect(text()).not.toContain("Changed on disk");
   });
@@ -128,7 +136,7 @@ describe("CodePanel", () => {
     await render({ driftSignal: "a" });
     read.mockClear();
     await render({ driftSignal: "b" });
-    await render({ driftSignal: "b" });
+    await settleDrift();
     expect(read).not.toHaveBeenCalled();
   });
 

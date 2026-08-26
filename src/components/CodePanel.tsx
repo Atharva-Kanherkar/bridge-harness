@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { CodeEditor } from "./editor/CodeEditor";
 import { isDirty, isReadOnly, loadBuffer, saveBuffer, stateAfterEdit, statusLabel, type FileBuffer } from "./editor/fileBuffer";
+import { STATS_REFRESH_DEBOUNCE_MS } from "./ChangesPanel";
 
 /** Rows the tree actually paints. Deep repositories stay responsive because
  *  only expanded directories contribute. */
@@ -252,33 +253,48 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
   }, [open, workspaceId]);
 
   // The agent writes the same tree this panel edits. When the workspace's
-  // stats move, compare every open buffer against disk: a clean buffer takes
-  // the new bytes, a dirty one turns its existing conflict state on — the
-  // same state a refused save produces — and keeps the unsaved text.
+  // stats settle after a drift, compare every open buffer against disk: a
+  // clean buffer takes the new bytes, a dirty one turns its existing conflict
+  // state on — the same state a refused save produces — and keeps the unsaved
+  // text. Debounced like the Changes pane, because stats tick many times a
+  // second under a writing agent, and each probe is a blocking IPC call.
   const driftSeen = useRef(driftSignal);
   useEffect(() => {
     if (driftSignal === undefined || driftSignal === driftSeen.current) return;
     driftSeen.current = driftSignal;
     if (open.length === 0) return;
     let live = true;
-    void (async () => {
+    const timer = window.setTimeout(() => void (async () => {
       for (const file of open) {
+        if (!live) break;
         if (file.state === "saving" || file.state === "error") continue;
         try {
+          // Captured before the read: a tab closed (or closed and reopened)
+          // while the probe was in flight must not be resurrected by it.
+          const generation = opens.current.get(file.path) ?? 0;
           const disk = await bridgeApi.readWorkspaceFile(workspaceId, file.path);
-          if (!live || disk.sha256 === file.baseSha) continue;
+          if (!live) break;
+          if ((opens.current.get(file.path) ?? 0) !== generation) continue;
+          if (disk.sha256 === file.baseSha) continue;
           if (isDirty(file)) {
             if (file.state !== "conflict") patch(file.path, { state: "conflict", message: "Changed on disk while you were editing" });
           } else {
-            await reload(file.path);
+            // The probe already carried the bytes; reseed from them instead of
+            // reading the same file a second time.
+            const seed = (open.find(entry => entry.path === file.path)?.seed ?? 0) + 1;
+            buffers.current.set(file.path, disk.content);
+            setOpen(files => files.map(entry => entry.path === file.path ? {
+              path: file.path, baseSha: disk.sha256, saved: disk.content, binary: disk.binary,
+              tooLarge: disk.tooLarge, sizeBytes: disk.sizeBytes, seed, state: "clean",
+            } : entry));
           }
         } catch {
           // A vanished file surfaces on the next save; drift polling stays quiet.
         }
       }
-    })();
-    return () => { live = false; };
-  }, [driftSignal, open, workspaceId, patch, reload]);
+    })(), STATS_REFRESH_DEBOUNCE_MS);
+    return () => { live = false; window.clearTimeout(timer); };
+  }, [driftSignal, open, workspaceId, patch]);
 
 
   // ⌘P and ⌘S also work when focus is in the tree or the tab strip; the
