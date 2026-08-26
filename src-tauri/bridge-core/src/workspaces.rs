@@ -194,7 +194,26 @@ impl BridgeCore {
                 "Workspace has {dirty} uncommitted file(s). Commit or discard them before archiving"
             )));
         }
-        archive_workspace_records(&db, workspace_id, || {
+        // Enumerate before mutating: the worker rows cascade away with the
+        // sessions this archive deletes, so anything missed here becomes an
+        // orphan nothing can locate afterwards.
+        let workers = worker_worktrees(&db, workspace_id)?;
+        let at_risk = worker_worktrees_at_risk(&workers);
+        if !at_risk.is_empty() {
+            return Err(BridgeError::Invalid(format!(
+                "{} worker worktree(s) have uncommitted changes. Commit, discard, or integrate them before archiving this workspace",
+                at_risk.len()
+            )));
+        }
+        archive_workspace_records(&db, workspace_id, workers.len() + 1, || {
+            // Workers first: if one of these fails the whole archive rolls back,
+            // and rolling back with the task worktree already gone would leave
+            // the workspace row pointing at nothing.
+            for worker in &workers {
+                if worker.exists() {
+                    git::remove_worktree(Path::new(&repo), worker)?;
+                }
+            }
             git::remove_worktree(Path::new(&repo), Path::new(&path))
         })?;
         // The archive is committed; publish only now so a rolled-back
@@ -204,13 +223,63 @@ impl BridgeCore {
     }
 }
 
+/// Every worker (child) worktree the workspace owns.
+///
+/// Worker worktrees are siblings of the task worktree, not children of it
+/// (`git::worker_worktree_path`), so removing the task worktree leaves them
+/// behind. Their rows reference `sessions(id) ON DELETE CASCADE`, which the
+/// archive deletes — so a worktree this query does not find here can never be
+/// found again: the directory stays on disk, still registered in the repo, with
+/// nothing left pointing at it. Enumerating them is what makes the archive's
+/// reclamation complete instead of a slow leak.
+///
+/// Both the live runtime table and the durable adoption table are consulted: a
+/// worker that finished and was adopted is recorded in one, a worker that never
+/// got that far in the other.
+fn worker_worktrees(db: &Connection, workspace_id: &str) -> Result<Vec<PathBuf>, BridgeError> {
+    let mut statement = db.prepare(
+        "SELECT DISTINCT path FROM (
+             SELECT r.worktree_path AS path
+               FROM worker_runtime r JOIN sessions s ON s.id = r.session_id
+              WHERE s.workspace_id = ?1
+             UNION
+             SELECT a.worktree_path AS path
+               FROM worker_worktree_adoptions a
+              WHERE a.workspace_id = ?1
+         )
+         WHERE path IS NOT NULL AND TRIM(path) <> ''
+         ORDER BY path",
+    )?;
+    let paths = statement
+        .query_map(params![workspace_id], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(paths.into_iter().map(PathBuf::from).collect())
+}
+
+/// Which of a workspace's worker worktrees still hold uncommitted work.
+///
+/// A path that is no longer on disk is already reclaimed, not a problem. A path
+/// git cannot read is reported as at-risk rather than assumed clean: the archive
+/// refuses on doubt instead of deleting something it failed to inspect.
+fn worker_worktrees_at_risk(worktrees: &[PathBuf]) -> Vec<PathBuf> {
+    worktrees
+        .iter()
+        .filter(|path| path.exists())
+        .filter(|path| git::worktree_is_dirty(path).unwrap_or(true))
+        .cloned()
+        .collect()
+}
+
 /// Delete every record that depends on a workspace, then the workspace row
-/// itself, in one transaction; `remove_worktree` runs inside it so a failed
-/// worktree removal rolls everything back.
+/// itself, in one transaction; `remove_worktrees` runs inside it so a failed
+/// worktree removal rolls everything back — and it runs strictly after the audit
+/// write, because a rollback can undo rows but never a deleted directory.
+/// `reclaimed_worktrees` is what the audit entry records as freed.
 pub fn archive_workspace_records(
     db: &Connection,
     workspace_id: &str,
-    remove_worktree: impl FnOnce() -> Result<(), BridgeError>,
+    reclaimed_worktrees: usize,
+    remove_worktrees: impl FnOnce() -> Result<(), BridgeError>,
 ) -> Result<(), BridgeError> {
     let transaction = db.unchecked_transaction()?;
     transaction.execute(
@@ -246,9 +315,13 @@ pub fn archive_workspace_records(
         "supervisor",
         "workspace.archived",
         workspace_id,
-        "Archived clean workspace; branch preserved",
+        &format!(
+            "Archived clean workspace; branch preserved; reclaimed {reclaimed_worktrees} worktree(s)"
+        ),
     )?;
-    remove_worktree()?;
+    // Strictly after the audit write: a rollback can undo rows but not a deleted
+    // directory, so anything that can fail on its own must fail before this.
+    remove_worktrees()?;
     transaction.commit()?;
     Ok(())
 }
@@ -484,6 +557,61 @@ mod tests {
         (repo, worktree)
     }
 
+    /// Add `count` worker worktrees to the archive fixture's workspace, each a
+    /// real child checkout of the same repository with its own session row.
+    fn with_worker_worktrees(
+        core: &BridgeCore,
+        repo: &Path,
+        root: &Path,
+        count: usize,
+    ) -> Vec<PathBuf> {
+        let mut paths = Vec::new();
+        for index in 0..count {
+            let path = root.join(format!("worker-{index}"));
+            git::create_worktree(repo, &path, &format!("bridge/worker-{index}")).unwrap();
+            let session = format!("worker-{index}");
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,parent_session_id,harness,label,status,metric_source,ended_at) VALUES(?1,'w','s','codex','W','stopped','reported','now')",
+                params![session],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,worktree_path,worktree_branch,updated_at) VALUES(?1,'s','stopped','fam','key',?2,?3,'now')",
+                params![session, path.to_string_lossy(), format!("bridge/worker-{index}")],
+            )
+            .unwrap();
+            paths.push(path);
+        }
+        paths
+    }
+
+    #[test]
+    fn archive_refuses_when_a_worker_worktree_has_uncommitted_work() {
+        let (scratch, core) = fixture();
+        let (repo, worktree) = archive_fixture(&core, scratch.path());
+        let workers = with_worker_worktrees(&core, &repo, scratch.path(), 2);
+        // One worker still holds work nobody committed.
+        std::fs::write(workers[1].join("scratch.txt"), "unsaved\n").unwrap();
+
+        let mut events = core.events.subscribe();
+        let error = core.archive_workspace("w").unwrap_err();
+        assert!(
+            error.to_string().contains("uncommitted"),
+            "the refusal names uncommitted work: {error}"
+        );
+        assert!(
+            events.try_recv().is_err(),
+            "a refused archive announces nothing"
+        );
+        // Nothing at all was destroyed — not the rows, not the clean worker.
+        assert_eq!(count(&core, "workspaces"), 1);
+        assert_eq!(count(&core, "sessions"), 3);
+        assert!(worktree.exists(), "the task worktree survives");
+        assert!(workers[0].exists(), "the clean worker survives the refusal");
+        assert!(workers[1].exists(), "the dirty worker is never discarded");
+    }
+
     #[test]
     fn archive_workspace_removes_records_and_the_worktree() {
         let (scratch, core) = fixture();
@@ -500,6 +628,69 @@ mod tests {
         assert_eq!(count(&core, "sessions"), 0);
         assert!(!worktree.exists(), "worktree directory must be removed");
         assert!(event_exists(&core, "workspace.archived", "w"));
+    }
+
+    #[test]
+    fn archive_reclaims_worker_worktrees_alongside_the_task_worktree() {
+        let (scratch, core) = fixture();
+        let (repo, worktree) = archive_fixture(&core, scratch.path());
+        let workers = with_worker_worktrees(&core, &repo, scratch.path(), 2);
+
+        core.archive_workspace("w").unwrap();
+
+        assert_eq!(count(&core, "workspaces"), 0);
+        assert!(!worktree.exists(), "the task worktree is reclaimed");
+        for worker in &workers {
+            assert!(!worker.exists(), "worker worktree {worker:?} is reclaimed");
+        }
+        // Git must not be left holding registrations for directories we removed.
+        let registered = std::process::Command::new("git")
+            .args(["worktree", "list"])
+            .current_dir(&repo)
+            .output()
+            .unwrap();
+        let listing = String::from_utf8_lossy(&registered.stdout);
+        assert!(
+            !listing.contains("worker-0") && !listing.contains("worker-1"),
+            "no stale worktree registrations remain: {listing}"
+        );
+    }
+
+    #[test]
+    fn archive_tolerates_a_worker_worktree_that_is_already_gone() {
+        let (scratch, core) = fixture();
+        let (repo, _worktree) = archive_fixture(&core, scratch.path());
+        let workers = with_worker_worktrees(&core, &repo, scratch.path(), 1);
+        // The directory vanished (manual cleanup, a previous partial archive):
+        // its record still exists, and that must not block the archive.
+        std::fs::remove_dir_all(&workers[0]).unwrap();
+
+        core.archive_workspace("w").unwrap();
+        assert_eq!(count(&core, "workspaces"), 0);
+    }
+
+    #[test]
+    fn archive_records_what_it_reclaimed() {
+        let (scratch, core) = fixture();
+        let (repo, _worktree) = archive_fixture(&core, scratch.path());
+        with_worker_worktrees(&core, &repo, scratch.path(), 2);
+
+        core.archive_workspace("w").unwrap();
+
+        let body: String = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT body FROM events WHERE kind='workspace.archived' AND entity_id='w'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            body.contains("reclaimed 3 worktree(s)"),
+            "two workers plus the task worktree: {body}"
+        );
     }
 
     #[test]

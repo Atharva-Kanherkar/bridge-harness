@@ -871,6 +871,15 @@ fn is_repository(path: &Path) -> bool {
     run(path, ["rev-parse", "--git-dir"]).is_ok()
 }
 
+/// Whether a worktree has any uncommitted change, tracked or not — the same
+/// question [`ensure_clean`] asks, as a value instead of a refusal. Callers that
+/// must classify several worktrees *before* mutating any of them need the answer
+/// without the error, so a refusal can name every problem at once and leave the
+/// filesystem untouched.
+pub fn worktree_is_dirty(worktree: &Path) -> Result<bool, BridgeError> {
+    Ok(!run(worktree, ["status", "--porcelain"])?.trim().is_empty())
+}
+
 fn ensure_clean(worktree: &Path, operation: &str) -> Result<(), BridgeError> {
     if !run(worktree, ["status", "--porcelain"])?.trim().is_empty() {
         return Err(BridgeError::Invalid(format!(

@@ -638,7 +638,7 @@ mod tests {
         seed(&db, "/tmp/w");
         record_base_divergence(&db, "w", Ok(&divergence(31)), at("2026-08-19T09:00:00+00:00"))
             .unwrap();
-        crate::workspaces::archive_workspace_records(&db, "w", || Ok(())).unwrap();
+        crate::workspaces::archive_workspace_records(&db, "w", 0, || Ok(())).unwrap();
         let rows: i64 = db
             .query_row("SELECT COUNT(*) FROM work_fact_cache", [], |row| row.get(0))
             .unwrap();
