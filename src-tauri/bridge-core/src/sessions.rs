@@ -15,13 +15,108 @@
 use crate::model::*;
 use crate::runtime::BridgeCore;
 use crate::{
-    adapters, agent, agent_config, binary, claude_adapter, compaction_controller, completion, git,
-    model_profiles, orchestrator, policy, restoration, session_forest, session_supervisor, store,
-    BridgeError,
+    adapters, agent, agent_config, binary, claude_adapter, compaction_controller, completion,
+    context::ContextProjector, git, model_profiles, orchestrator, policy, restoration,
+    session_forest, session_supervisor, store, BridgeError,
 };
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
+
+/// How long a model switch waits for the outgoing provider to produce its
+/// handoff summary before falling back to the mechanical projection. Tighter
+/// than [`compaction_controller::CHECKPOINT_TIMEOUT_SECONDS`] because the user
+/// is actively waiting on the switch — and because on the daemon host the wait
+/// holds one pooled connection for its duration.
+pub const SWITCH_SUMMARY_TIMEOUT_SECONDS: i64 = 6;
+
+/// A pending request for the outgoing provider to summarise the conversation
+/// before a model switch tears it down. Delivery and settlement are host-side
+/// live-turn orchestration; this is the durable, validated part.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchSummaryRequest {
+    pub session_id: String,
+    pub prompt: String,
+    /// The sequence of this request's own `compaction.requested` entry.
+    /// Outcome reads only consider terminal entries with a greater sequence,
+    /// so a stale terminal from an earlier checkpoint can never answer for
+    /// this request.
+    pub after_sequence: i64,
+}
+
+/// What became of a [`SwitchSummaryRequest`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwitchSummaryOutcome {
+    /// A valid typed summary landed in the forest (`compaction` entry).
+    Summarised,
+    /// The pipeline recorded a failure (`compaction.failed`) — parse errors,
+    /// repair exhaustion, or a cancelled request.
+    Failed,
+    /// Still awaiting the provider (including its single repair retry).
+    Pending,
+}
+
+/// What a switched chat will actually inherit from its previous turns, as
+/// reported by the `session.model_changed` transcript event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CarriedContext {
+    pub summary: bool,
+    pub decisions: usize,
+    pub files_touched: usize,
+    pub recent_entries: usize,
+}
+
+impl CarriedContext {
+    fn describe(&self) -> String {
+        if self.summary {
+            format!(
+                "carried forward: summary + {} decisions + {} files",
+                self.decisions, self.files_touched
+            )
+        } else {
+            format!(
+                "carried forward: {} recent entries (no summary available)",
+                self.recent_entries
+            )
+        }
+    }
+}
+
+/// Project what the next provider would receive from stored history. `None`
+/// means nothing can be carried: an empty branch projects to nothing.
+fn carried_context(db: &Connection, session_id: &str) -> Option<CarriedContext> {
+    let branch = session_forest::SessionForest::new(db)
+        .active_branch(session_id)
+        .ok()?;
+    let projection = ContextProjector::project(&branch, 128_000).ok()?;
+    let recent_entries = projection
+        .render_entries
+        .iter()
+        .filter(|entry| {
+            matches!(
+                entry.kind.as_str(),
+                "user.message" | "assistant.message" | "worker.result" | "handoff.brief"
+            )
+        })
+        .count();
+    if recent_entries == 0 && projection.restoration_context.is_none() {
+        return None;
+    }
+    Some(CarriedContext {
+        summary: projection.restoration_context.is_some(),
+        decisions: projection
+            .restoration_context
+            .as_ref()
+            .map(|context| context.decisions.len())
+            .unwrap_or(0),
+        files_touched: projection
+            .restoration_context
+            .as_ref()
+            .map(|context| context.files_touched.len())
+            .unwrap_or(0),
+        recent_entries,
+    })
+}
 
 #[derive(Debug, Clone)]
 pub struct OrchestratorSelection {
@@ -543,6 +638,113 @@ impl BridgeCore {
         .ok_or_else(|| BridgeError::Invalid("Compaction is already pending".into()))
     }
 
+    /// Ask the outgoing provider to summarise the conversation before a model
+    /// switch tears it down. The request rides the existing validated
+    /// compaction pipeline: `compaction.requested` entry, one internal turn,
+    /// typed parse/validate with a single repair retry. Only a hot, idle chat
+    /// with meaningful history can be asked; anything else — cold process,
+    /// active turn, in-flight compaction, empty conversation — returns `None`
+    /// and the switch falls back to the mechanical projection.
+    pub fn plan_switch_summary(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<SwitchSummaryRequest>, BridgeError> {
+        if self.adapters.lock().unwrap().get(session_id).is_none() {
+            return Ok(None);
+        }
+        let db = self.db.lock().unwrap();
+        let status: String = db.query_row(
+            "SELECT status FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        if matches!(status.as_str(), "working" | "waiting" | "checkpointing") {
+            return Ok(None);
+        }
+        let branch = session_forest::SessionForest::new(&db)
+            .active_branch(session_id)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        let meaningful = branch.iter().any(|entry| {
+            matches!(
+                entry.kind.as_str(),
+                "user.message" | "assistant.message" | "worker.result" | "tool.completed"
+            )
+        });
+        if !meaningful {
+            return Ok(None);
+        }
+        // Never disturb an in-flight compaction; its outcome is already owned.
+        if compaction_controller::CompactionController::pending(&db, session_id)?.is_some() {
+            return Ok(None);
+        }
+        let tokens =
+            compaction_controller::active_token_estimate(&db, session_id)?;
+        let Some(prompt) = compaction_controller::CompactionController::begin(
+            &db,
+            session_id,
+            compaction_controller::CompactionReason::BeforeDowngrade,
+            tokens,
+        )?
+        else {
+            return Ok(None);
+        };
+        // The request's own sequence scopes outcome reads to THIS request, so
+        // a terminal from an older checkpoint is never mistaken for its answer.
+        let after_sequence: i64 = db.query_row(
+            "SELECT COALESCE(MAX(sequence),0) FROM session_entries WHERE session_id=?1 AND kind='compaction.requested'",
+            params![session_id],
+            |row| row.get(0),
+        )?;
+        Ok(Some(SwitchSummaryRequest {
+            session_id: session_id.to_owned(),
+            prompt,
+            after_sequence,
+        }))
+    }
+
+    /// Cancel an outstanding summary request so normal replies are never
+    /// misparsed as checkpoint output. This is the timeout path's cleanup and
+    /// the delivery-failure path's cleanup.
+    pub fn cancel_switch_summary(
+        &self,
+        session_id: &str,
+        reason: &str,
+        attempt: u8,
+    ) -> Result<(), BridgeError> {
+        compaction_controller::CompactionController::record_failure(
+            &self.db.lock().unwrap(),
+            session_id,
+            reason,
+            attempt,
+        )
+    }
+
+    /// Read what became of a summary request without blocking. Terminal
+    /// entries are scoped to sequences after this request's own
+    /// `compaction.requested` row, so the verdict always describes *this*
+    /// request — never a previous checkpoint's leftover.
+    pub fn switch_summary_outcome(
+        &self,
+        request: &SwitchSummaryRequest,
+    ) -> Result<SwitchSummaryOutcome, BridgeError> {
+        let db = self.db.lock().unwrap();
+        if compaction_controller::CompactionController::pending(&db, &request.session_id)?.is_some()
+        {
+            return Ok(SwitchSummaryOutcome::Pending);
+        }
+        let kind: Option<String> = db
+            .query_row(
+                "SELECT kind FROM session_entries WHERE session_id=?1 AND sequence > ?2 AND kind IN ('compaction','compaction.failed') ORDER BY sequence DESC LIMIT 1",
+                params![request.session_id, request.after_sequence],
+                |row| row.get(0),
+            )
+            .optional()?;
+        match kind.as_deref() {
+            Some("compaction") => Ok(SwitchSummaryOutcome::Summarised),
+            _ => Ok(SwitchSummaryOutcome::Failed),
+        }
+    }
+
     /// Publish one provider's subscription usage tick to the ambient meter.
     pub fn publish_account_usage(&self, provider: &str, rate_limits: serde_json::Value) {
         self.events.publish(crate::events::CoreEvent::AccountUsage {
@@ -634,17 +836,26 @@ impl BridgeCore {
             ResumeEligibility::Fresh,
             None,
         )?;
+        // Say what the next provider will actually inherit. The projection is
+        // read before any switch bookkeeping appends, so it describes exactly
+        // what start_chat's cold path will inject.
+        let carried = carried_context(&transaction, session_id);
         let subject = if change.kind == "orchestrator" {
             "Orchestrator"
         } else {
             "Chat"
         };
+        let carry_note = carried
+            .as_ref()
+            .map(CarriedContext::describe)
+            .unwrap_or_else(|| "no context carried (summary unavailable)".to_owned());
         let detail = format!(
-            "{subject} runtime changed from {}/{} to {}/{}. The next message starts a fresh provider session.",
+            "{subject} runtime changed from {}/{} to {}/{}. The next message starts a fresh provider session — {}.",
             change.previous_harness,
             change.previous_model.as_deref().unwrap_or("automatic"),
             change.adapter_id,
             change.selected.id,
+            carry_note,
         );
         store::event(
             &transaction,
@@ -671,6 +882,12 @@ impl BridgeCore {
                     "modelLabel": change.selected.label,
                     "tier": change.selected.tier,
                     "freshProviderSession": true,
+                    "carriedContext": carried.map(|carried| serde_json::json!({
+                        "summary": carried.summary,
+                        "decisions": carried.decisions,
+                        "filesTouched": carried.files_touched,
+                        "recentEntries": carried.recent_entries,
+                    })),
                 }),
             },
             &serde_json::json!({"source": "user-selection"}),
@@ -1422,6 +1639,232 @@ mod tests {
             !worktree.path.exists(),
             "failed persistence must remove the worktree"
         );
+    }
+
+    #[test]
+    fn switch_summary_is_skipped_without_a_hot_provider() {
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Claude, None, None).unwrap();
+        let session_id = only_session_id(&core);
+        {
+            let db = core.db.lock().unwrap();
+            session_forest::SessionForest::new(&db)
+                .append(
+                    &session_id,
+                    session_forest::EntryKind::UserMessage,
+                    serde_json::json!({"text":"we decided to change src/app.ts"}),
+                )
+                .unwrap();
+        }
+        // No adapter runtime is registered for this chat, so there is nobody
+        // to ask: the plan must decline without touching the forest.
+        assert!(core.plan_switch_summary(&session_id).unwrap().is_none());
+        let db = core.db.lock().unwrap();
+        let kinds: Vec<String> = db
+            .prepare("SELECT kind FROM session_entries WHERE session_id=?1 AND kind LIKE 'compaction%'")
+            .unwrap()
+            .query_map(params![session_id], |row| row.get(0))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert!(kinds.is_empty(), "no compaction traffic was appended");
+    }
+
+    #[test]
+    fn switch_summary_outcome_tracks_the_pipeline_and_timeout_cancels_it() {
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Codex, None, None).unwrap();
+        let session_id = only_session_id(&core);
+        {
+            let db = core.db.lock().unwrap();
+            session_forest::SessionForest::new(&db)
+                .append(
+                    &session_id,
+                    session_forest::EntryKind::UserMessage,
+                    serde_json::json!({"text":"history worth summarising"}),
+                )
+                .unwrap();
+        }
+        // A cold session declines to plan a summary at all.
+        assert!(core.plan_switch_summary(&session_id).unwrap().is_none());
+
+        // Simulate what a hot session's pipeline does: begin() appends the
+        // request; the reader resolves it with a terminal entry.
+        let request = {
+            let db = core.db.lock().unwrap();
+            let prompt = compaction_controller::CompactionController::begin(
+                &db,
+                &session_id,
+                compaction_controller::CompactionReason::BeforeDowngrade,
+                100,
+            )
+            .unwrap()
+            .expect("no compaction is in flight");
+            let after_sequence: i64 = db
+                .query_row(
+                    "SELECT COALESCE(MAX(sequence),0) FROM session_entries WHERE session_id=?1 AND kind='compaction.requested'",
+                    params![session_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            super::SwitchSummaryRequest {
+                session_id: session_id.clone(),
+                prompt,
+                after_sequence,
+            }
+        };
+        assert_eq!(
+            core.switch_summary_outcome(&request).unwrap(),
+            super::SwitchSummaryOutcome::Pending
+        );
+        {
+            let db = core.db.lock().unwrap();
+            session_forest::SessionForest::new(&db)
+                .append(
+                    &session_id,
+                    session_forest::EntryKind::Compaction,
+                    serde_json::json!({"schemaVersion":1,"summary":"the typed summary"}),
+                )
+                .unwrap();
+        }
+        assert_eq!(
+            core.switch_summary_outcome(&request).unwrap(),
+            super::SwitchSummaryOutcome::Summarised
+        );
+
+        // A second request that times out must be cancelled, so later normal
+        // replies are never misread as checkpoint output.
+        {
+            let db = core.db.lock().unwrap();
+            compaction_controller::CompactionController::begin(
+                &db,
+                &session_id,
+                compaction_controller::CompactionReason::BeforeDowngrade,
+                120,
+            )
+            .unwrap()
+            .expect("previous terminal cleared the way");
+        }
+        core.cancel_switch_summary(
+            &session_id,
+            "model-switch summary timed out; switch continued",
+            1,
+        )
+        .unwrap();
+        assert_eq!(
+            core.switch_summary_outcome(&request).unwrap(),
+            super::SwitchSummaryOutcome::Failed
+        );
+        let db = core.db.lock().unwrap();
+        assert!(compaction_controller::CompactionController::pending(&db, &session_id)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn switch_summary_outcome_ignores_terminals_older_than_the_request() {
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Codex, None, None).unwrap();
+        let session_id = only_session_id(&core);
+        {
+            let db = core.db.lock().unwrap();
+            session_forest::SessionForest::new(&db)
+                .append(
+                    &session_id,
+                    session_forest::EntryKind::UserMessage,
+                    serde_json::json!({"text":"history worth summarising"}),
+                )
+                .unwrap();
+        }
+        // A terminal from a PREVIOUS checkpoint exists before this request.
+        {
+            let db = core.db.lock().unwrap();
+            session_forest::SessionForest::new(&db)
+                .append(
+                    &session_id,
+                    session_forest::EntryKind::Compaction,
+                    serde_json::json!({"schemaVersion":1,"summary":"an older summary"}),
+                )
+                .unwrap();
+        }
+        let request = {
+            let db = core.db.lock().unwrap();
+            compaction_controller::CompactionController::begin(
+                &db,
+                &session_id,
+                compaction_controller::CompactionReason::BeforeDowngrade,
+                100,
+            )
+            .unwrap()
+            .expect("the older terminal cleared the way");
+            let after_sequence: i64 = db
+                .query_row(
+                    "SELECT COALESCE(MAX(sequence),0) FROM session_entries WHERE session_id=?1 AND kind='compaction.requested'",
+                    params![session_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            super::SwitchSummaryRequest {
+                session_id: session_id.clone(),
+                prompt: "summarise".into(),
+                after_sequence,
+            }
+        };
+        // The stale terminal must not answer for this request.
+        assert_eq!(
+            core.switch_summary_outcome(&request).unwrap(),
+            super::SwitchSummaryOutcome::Pending
+        );
+    }
+
+    #[test]
+    fn commit_reports_what_the_next_provider_will_inherit() {
+        let (_scratch, core) = fixture();
+
+        // An empty chat carries nothing, and says so plainly.
+        let empty_id = core.create_chat_id(&Harness::Claude, None, None).unwrap();
+        let change = core
+            .plan_chat_model_change(&empty_id, &Harness::Codex, None)
+            .unwrap()
+            .unwrap();
+        let event = core.commit_chat_model_change(change).unwrap();
+        assert_eq!(event.data["carriedContext"], serde_json::Value::Null);
+        assert!(event.text.as_deref().unwrap().contains("no context carried"));
+
+        // A chat whose branch holds a validated summary reports it. Seeded
+        // through the real reconstruction path so the boundary trio
+        // (checkpoint + compaction + branch.summary) matches production.
+        let rich_id = core.create_chat_id(&Harness::Claude, None, None).unwrap();
+        {
+            let db = core.db.lock().unwrap();
+            let forest = session_forest::SessionForest::new(&db);
+            forest
+                .append(
+                    &rich_id,
+                    session_forest::EntryKind::UserMessage,
+                    serde_json::json!({"text":"we decided to change src/app.ts"}),
+                )
+                .unwrap();
+            compaction_controller::CompactionController::record_reconstructed(
+                &db,
+                &rich_id,
+                "chose src/app.ts".to_owned(),
+                vec!["change src/app.ts".to_owned()],
+                Vec::new(),
+                compaction_controller::CompactionReason::BeforeDowngrade,
+            )
+            .unwrap();
+        }
+        let change = core
+            .plan_chat_model_change(&rich_id, &Harness::Codex, None)
+            .unwrap()
+            .unwrap();
+        let event = core.commit_chat_model_change(change).unwrap();
+        assert_eq!(event.data["carriedContext"]["summary"], true);
+        assert_eq!(event.data["carriedContext"]["decisions"], 1);
+        assert_eq!(event.data["carriedContext"]["filesTouched"], 0);
+        let text = event.text.as_deref().unwrap();
+        assert!(text.contains("carried forward: summary + 1 decisions"), "{text}");
     }
 
     #[test]

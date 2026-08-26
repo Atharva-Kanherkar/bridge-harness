@@ -26,6 +26,7 @@ pub enum EntryKind {
     DelegationRejected,
     WorkerResult,
     Checkpoint,
+    HandoffBrief,
     CompactionRequested,
     Compaction,
     CompactionFailed,
@@ -106,6 +107,10 @@ mod tests {
             (
                 EntryKind::Checkpoint,
                 json!({"schemaVersion":1,"summary":"checkpoint"}),
+            ),
+            (
+                EntryKind::HandoffBrief,
+                json!({"text":"carried context from the previous chat"}),
             ),
             (EntryKind::CompactionRequested, json!({"reason":"pressure"})),
             (
@@ -528,6 +533,7 @@ impl EntryKind {
             Self::DelegationRejected => "delegation.rejected",
             Self::WorkerResult => "worker.result",
             Self::Checkpoint => "checkpoint",
+            Self::HandoffBrief => "handoff.brief",
             Self::CompactionRequested => "compaction.requested",
             Self::Compaction => "compaction",
             Self::CompactionFailed => "compaction.failed",
@@ -554,6 +560,7 @@ impl EntryKind {
             "delegation.rejected" => Self::DelegationRejected,
             "worker.result" => Self::WorkerResult,
             "checkpoint" => Self::Checkpoint,
+            "handoff.brief" => Self::HandoffBrief,
             "compaction.requested" => Self::CompactionRequested,
             "compaction" => Self::Compaction,
             "compaction.failed" => Self::CompactionFailed,
@@ -601,6 +608,9 @@ impl EntryKind {
             Self::Checkpoint => {
                 require_number(payload, self, "schemaVersion")?;
                 require_string(payload, self, &["summary"])?;
+            }
+            Self::HandoffBrief => {
+                require_string(payload, self, &["text"])?;
             }
             Self::CompactionRequested => {
                 require_string(payload, self, &["reason"])?;

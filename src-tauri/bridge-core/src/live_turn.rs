@@ -83,11 +83,15 @@ fn compile_session_prompt(
     stack: &prompt_sections::ResolvedPromptStack,
     configured_prompt: &str,
     credential_context: &str,
+    checkpoint_context: Option<&str>,
     memory_packet: Option<&str>,
 ) -> Result<prompt_compiler::CompiledPrompt, BridgeError> {
     let mut compiler = compiler_for_stack(stack, prompts::PromptTarget::DirectSession)?
         .project_rule("configured_project_rules", configured_prompt)
         .variable_section("session_capabilities", credential_context);
+    if let Some(context) = checkpoint_context {
+        compiler = compiler.variable_section("restoration_context", context);
+    }
     if let Some(packet) = memory_packet {
         compiler = compiler.variable_section("memory_packet", packet);
     }
@@ -293,6 +297,34 @@ mod prompt_section_tests {
     }
 
     #[test]
+    fn session_prompt_injects_restoration_context_like_the_orchestrator() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        let configured = "Repository-specific rule";
+        let credential = "Use [secret:sec_example] through /credential-proxy/session/ref";
+        let context = "Bridge checkpoint-restoration context (stored history, not native provider resume):\nuser.message: we decided to change src/app.ts";
+
+        let stack = prompt_sections::resolve(&db, prompts::PromptTarget::DirectSession, 0).unwrap();
+        let with_context =
+            compile_session_prompt(&stack, configured, credential, Some(context), None).unwrap();
+        let without = compile_session_prompt(&stack, configured, credential, None, None).unwrap();
+
+        assert!(with_context.instructions().contains("restoration_context"));
+        // Sections serialize as JSON, so newlines arrive escaped; a phrase
+        // proves the projected text itself made it into the instructions.
+        assert!(with_context
+            .instructions()
+            .contains("stored history, not native provider resume"));
+        assert!(with_context.instructions().contains("we decided to change src/app.ts"));
+        assert!(!without.instructions().contains("restoration_context"));
+        // Restoration context is a variable section: it must ride beside the
+        // stable prefix, never move its bytes.
+        assert_eq!(
+            with_context.metadata.prefix_hash,
+            without.metadata.prefix_hash
+        );
+    }
+
+    #[test]
     fn default_target_stacks_match_legacy_live_bytes() {
         let db = store::open(Path::new(":memory:")).unwrap();
         let configured = "Repository-specific rule";
@@ -324,7 +356,8 @@ mod prompt_section_tests {
 
         let direct_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::DirectSession, 0).unwrap();
-        let direct = compile_session_prompt(&direct_stack, configured, credential, None).unwrap();
+        let direct =
+            compile_session_prompt(&direct_stack, configured, credential, None, None).unwrap();
         assert_eq!(direct, legacy_session_prompt(configured, credential));
         assert!(!direct.instructions().contains("bridge-delegate"));
         assert!(!direct.instructions().contains("worker_contract"));
@@ -436,7 +469,8 @@ mod prompt_section_tests {
         let db = store::open(Path::new(":memory:")).unwrap();
         let orchestrator_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
-        let error = compile_session_prompt(&orchestrator_stack, "", "capabilities", None).unwrap_err();
+        let error =
+            compile_session_prompt(&orchestrator_stack, "", "capabilities", None, None).unwrap_err();
         assert!(error.to_string().contains("cannot compile as direct_session"));
     }
 
@@ -1195,6 +1229,9 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
         )?
     };
+    // An empty stored id is not a thread to resume; treating it as Some would
+    // send `""` to registry.resume under the native plan.
+    let provider_id = provider_id.filter(|value| !value.is_empty());
     let workspace_operation = workspace_id
         .as_deref()
         .map(|workspace_id| state.workspace_operation(workspace_id));
@@ -1284,7 +1321,27 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
         (configured_prompt, prompt_sections::resolve(&db, target, 0)?)
     };
     let memory_packet = compiled_memory_packet(state, &session_id);
-    let compiled_prompt = if is_orchestrator {
+    // A chat with stored history but no resumable provider thread — the state a
+    // model/harness switch leaves behind — must not start empty. Project the
+    // active branch now, exactly like start_session does, so the cold path can
+    // inject it as labelled restoration context instead of dropping it.
+    let has_prior_history = {
+        let db = state.db.lock().unwrap();
+        db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM session_entries WHERE session_id=?1)",
+            params![session_id],
+            |row| row.get::<_, i64>(0),
+        )? == 1
+    };
+    let checkpoint_context = if has_prior_history {
+        restoration::checkpoint_context(&state.db.lock().unwrap(), &session_id)?
+    } else {
+        None
+    };
+    // Compiled without restoration context first, on purpose: the hot check and
+    // its early-return audit must describe what the already-running process was
+    // actually launched with, not what a future cold start would deliver.
+    let hot_check_prompt = if is_orchestrator {
         compile_orchestrator_prompt(
             &prompt_stack,
             &configured_prompt,
@@ -1297,10 +1354,10 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
             &prompt_stack,
             &configured_prompt,
             &proxy_instructions,
+            None,
             memory_packet.as_deref(),
         )?
     };
-    let runtime_instructions = compiled_prompt.instructions().to_owned();
     let process_is_hot = state.adapters.lock().unwrap().contains_key(&session_id);
     if process_is_hot {
         let hot_prompt_compatible = store::latest_prompt_compilation(
@@ -1312,7 +1369,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                 &previous,
                 adapter_id,
                 chosen_model.as_deref(),
-                &compiled_prompt,
+                &hot_check_prompt,
             )
         });
         if hot_prompt_compatible {
@@ -1346,7 +1403,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                 },
                 RestorationMode::Hot,
                 "not_applicable",
-                &compiled_prompt,
+                &hot_check_prompt,
             )?;
             return store::state(&db);
         }
@@ -1360,53 +1417,79 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
             adapters::ShutdownReason::Replaced,
         )?;
     }
+    // Past the hot return: this call is really going to start a process. The
+    // delivered prompt is compiled WITHOUT restoration context — the same bytes
+    // the hot check audited — because only the CheckpointRestored arms below
+    // deliver the projected variant. Native resume must not re-inject history
+   // its own thread already holds, and a Fresh start that claims no projection
+    // must not secretly carry one (the honesty rule `record_fidelity` reports
+    // by). One compilation serves both, like start_session's base prompt.
+    let compiled_prompt = hot_check_prompt;
+    let runtime_instructions = compiled_prompt.instructions().to_owned();
     let configured_effort = configured_harness
         .and_then(|config| config.effort)
         .map(|value| value.as_str().to_owned());
     let chosen_effort = effort
         .filter(|value| !value.is_empty())
         .or(configured_effort);
-    let resumable = provider_id
-        .filter(|value| !value.is_empty())
-        .filter(|_| state.adapter_registry.supports_native_resume(&dispatch_id));
     let registry = state.adapter_registry.clone();
     let launch_adapter_id = dispatch_id.clone();
     let launch_cwd = cwd.clone();
     let launch_model = chosen_model.clone();
-    let (mut started, mode, eligibility) = (match resumable {
-        Some(provider) => match registry.resume(
+    // Same decision ladder as the orchestrator launch: native resume when the
+    // stored thread can be resumed, otherwise project the stored branch, and
+    // only a genuinely empty chat starts fresh.
+    let plan = restoration::select_plan(
+        false,
+        provider_id.as_deref(),
+        state.adapter_registry.supports_native_resume(&dispatch_id),
+        checkpoint_context.is_some(),
+    );
+    let start_fresh = |instructions: &str| {
+        registry.start(
             &launch_adapter_id,
-            adapters::ResumeRequest {
-                provider_session_id: &provider,
+            adapters::StartRequest {
                 cwd: &launch_cwd,
                 model: launch_model.as_deref(),
                 effort: chosen_effort.as_deref(),
-                instructions: Some(&runtime_instructions),
+                instructions: Some(instructions),
                 write_mode: None,
                 read_only_sandbox: None,
                 briefing: None,
             },
-        ) {
-            Ok(started) => Ok((started, RestorationMode::Native, ResumeEligibility::Native)),
-            Err(_) => registry
-                .start(
-                    &launch_adapter_id,
-                    adapters::StartRequest {
-                        cwd: &launch_cwd,
-                        model: launch_model.as_deref(),
-                        effort: chosen_effort.as_deref(),
-                        instructions: Some(&runtime_instructions),
-                        write_mode: None,
-                        read_only_sandbox: None,
-                        briefing: None,
-                    },
+        )
+    };
+    let checkpoint_instructions = checkpoint_context
+        .as_deref()
+        .map(|context| {
+            if is_orchestrator {
+                compile_orchestrator_prompt(
+                    &prompt_stack,
+                    &configured_prompt,
+                    &proxy_instructions,
+                    Some(context),
+                    memory_packet.as_deref(),
                 )
-                .map(|started| (started, RestorationMode::Fresh, ResumeEligibility::Fresh)),
-        },
-        None => registry
-            .start(
+            } else {
+                compile_session_prompt(
+                    &prompt_stack,
+                    &configured_prompt,
+                    &proxy_instructions,
+                    Some(context),
+                    memory_packet.as_deref(),
+                )
+            }
+            .map(|prompt| prompt.instructions().to_owned())
+        })
+        .transpose()?;    let (mut started, mode, eligibility) = match plan {
+        restoration::RestorationPlan::Native => {
+            let provider = provider_id
+                .as_deref()
+                .expect("native plan has a provider id");
+            match registry.resume(
                 &launch_adapter_id,
-                adapters::StartRequest {
+                adapters::ResumeRequest {
+                    provider_session_id: provider,
                     cwd: &launch_cwd,
                     model: launch_model.as_deref(),
                     effort: chosen_effort.as_deref(),
@@ -1415,9 +1498,87 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                     read_only_sandbox: None,
                     briefing: None,
                 },
-            )
-            .map(|started| (started, RestorationMode::Fresh, ResumeEligibility::Fresh)),
-    })?;
+            ) {
+                Ok(started) => (started, RestorationMode::Native, ResumeEligibility::Native),
+                Err(error) => {
+                    let db = state.db.lock().unwrap();
+                    restoration::record_resume_failed(&db, &session_id, &error.to_string())?;
+                    drop(db);
+                    match restoration::fallback_after_failure(
+                        restoration::RestorationPlan::Native,
+                        checkpoint_instructions.is_some(),
+                    ) {
+                        Some(restoration::RestorationPlan::CheckpointRestored) => {
+                            match start_fresh(
+                                checkpoint_instructions
+                                    .as_deref()
+                                    .expect("checkpoint fallback has stored context"),
+                            ) {
+                                Ok(started) => (
+                                    started,
+                                    RestorationMode::CheckpointRestored,
+                                    ResumeEligibility::CheckpointRestored,
+                                ),
+                                Err(error) => {
+                                    let db = state.db.lock().unwrap();
+                                    restoration::record_checkpoint_restore_failed(
+                                        &db,
+                                        &session_id,
+                                        &error.to_string(),
+                                    )?;
+                                    drop(db);
+                                    (
+                                        start_fresh(&runtime_instructions)?,
+                                        RestorationMode::Fresh,
+                                        ResumeEligibility::Fresh,
+                                    )
+                                }
+                            }
+                        }
+                        Some(restoration::RestorationPlan::Fresh) => (
+                            start_fresh(&runtime_instructions)?,
+                            RestorationMode::Fresh,
+                            ResumeEligibility::Fresh,
+                        ),
+                        _ => unreachable!("native failure has a deterministic fallback"),
+                    }
+                }
+            }
+        }
+        restoration::RestorationPlan::CheckpointRestored => {
+            match start_fresh(
+                checkpoint_instructions
+                    .as_deref()
+                    .expect("checkpoint plan has stored context"),
+            ) {
+                Ok(started) => (
+                    started,
+                    RestorationMode::CheckpointRestored,
+                    ResumeEligibility::CheckpointRestored,
+                ),
+                Err(error) => {
+                    let db = state.db.lock().unwrap();
+                    restoration::record_checkpoint_restore_failed(
+                        &db,
+                        &session_id,
+                        &error.to_string(),
+                    )?;
+                    drop(db);
+                    (
+                        start_fresh(&runtime_instructions)?,
+                        RestorationMode::Fresh,
+                        ResumeEligibility::Fresh,
+                    )
+                }
+            }
+        }
+        restoration::RestorationPlan::Fresh => (
+            start_fresh(&runtime_instructions)?,
+            RestorationMode::Fresh,
+            ResumeEligibility::Fresh,
+        ),
+        restoration::RestorationPlan::Hot => unreachable!("hot sessions returned above"),
+    };
     let thread_id = started.runtime.provider_session_id().to_owned();
     let current_turn = started.runtime.current_turn();
     let process_id = started.runtime.process_id();
@@ -1482,6 +1643,21 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
             return Err(error);
         }
         restoration::set_head_state(&db, &session_id, mode, eligibility, Some(&thread_id))?;
+        // Say how much of the conversation the new provider actually inherits.
+        // A fresh start over existing history is a projection, not a resume —
+        // the same honesty rule start_session records by.
+        handoff::record_fidelity(
+            &db,
+            &session_id,
+            match mode {
+                RestorationMode::Hot | RestorationMode::Native => ContinuationFidelity::Native,
+                RestorationMode::CheckpointRestored => ContinuationFidelity::ProjectedAtBoundary,
+                RestorationMode::Fresh if has_prior_history => {
+                    ContinuationFidelity::ProjectedMidTurn
+                }
+                RestorationMode::Fresh => ContinuationFidelity::Native,
+            },
+        )?;
         if let Some(workspace) = &workspace_id {
             let _ = db.execute(
                 "UPDATE workspaces SET status='working' WHERE id=?1",

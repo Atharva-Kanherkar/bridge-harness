@@ -172,6 +172,11 @@ typed_methods![
     (StartSession, StartSessionParams, BridgeState),
     (StartChat, StartChatParams, BridgeState),
     (UpdateChatModel, UpdateChatModelParams, BridgeState),
+    (
+        CarrySessionHandoff,
+        CarrySessionHandoffParams,
+        CarrySessionHandoffResult
+    ),
     (PrepareTurn, PrepareTurnParams, SanitizedTurn),
     (SendTurn, SendTurnParams, UnitResult),
     (SubmitInput, SubmitInputParams, SubmitInputResult),

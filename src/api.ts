@@ -1303,6 +1303,10 @@ export const bridgeApi = {
     if (session && ["direct", "orchestrator"].includes(session.kind ?? "")) { session.harness = harness; session.model = model; session.status = "idle"; session.providerSessionId = null; session.restorationMode = "fresh"; }
     emitState(); return snapshot();
   },
+  carrySessionHandoff: async (targetSessionId: string, sourceSessionId: string): Promise<boolean> => {
+    if (isTauri()) return (await call("sessions/carry_session_handoff", { targetSessionId, sourceSessionId })).carried;
+    return false;
+  },
   listSlashCommands: async (): Promise<SlashCommand[]> => {
     if (isTauri()) return call("slash/list_slash_commands");
     return [];

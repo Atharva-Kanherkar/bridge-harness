@@ -16,7 +16,7 @@ use crate::model::{
 };
 use crate::{
     adapters, agent, agent_config, agent_integration, automations, binary, browser_bridge,
-    completion, delegation, git, learning_job, learning_router, live_turn, marketplace,
+    completion, delegation, git, handoff, learning_job, learning_router, live_turn, marketplace,
     memory_ledger,
     model_profiles, opencode_adapter, prompt_studio, prompts, secret_interception,
     session_recall, session_supervisor,
@@ -530,10 +530,84 @@ pub fn update_chat_model(
     let Some(change) = core.plan_chat_model_change(session_id, harness, model)? else {
         return core.state_snapshot();
     };
+    summarise_for_switch(core, session_id);
     core.stop_session_adapter(session_id, adapters::ShutdownReason::Replaced);
     // The core publishes the durable agent event when the commit lands.
     core.commit_chat_model_change(change)?;
     core.state_snapshot()
+}
+
+/// Best-effort handoff brief: while the outgoing provider is still alive, ask
+/// it to summarise the conversation through the validated compaction pipeline
+/// so the incoming model inherits a typed summary instead of nothing.
+///
+/// Bounded by [`sessions::SWITCH_SUMMARY_TIMEOUT_SECONDS`] and forbidden from
+/// failing the switch: every skip, timeout, delivery failure, or invalid
+/// output simply leaves the mechanical projection (`start_chat`'s stored-
+/// history injection) as the carried context instead.
+///
+/// The wait is deliberately inline: teardown must not run while the outgoing
+/// provider is still writing its summary, and the invoke must return the
+/// post-commit state. The budget is kept short because on the daemon host it
+/// holds one pooled connection for its duration.
+fn summarise_for_switch(core: &Arc<BridgeCore>, session_id: &str) {
+    let request = match core.plan_switch_summary(session_id) {
+        Ok(Some(request)) => request,
+        _ => return,
+    };
+    if let Err(error) =
+        live_turn::send_internal_checkpoint_turn(core, session_id, &request.prompt)
+    {
+        let _ = core.cancel_switch_summary(
+            session_id,
+            &format!("model-switch summary could not be delivered: {error}"),
+            0,
+        );
+        return;
+    }
+    let deadline = std::time::Instant::now()
+        + std::time::Duration::from_secs(sessions::SWITCH_SUMMARY_TIMEOUT_SECONDS.max(0) as u64);
+    loop {
+        match core.switch_summary_outcome(&request) {
+            Ok(sessions::SwitchSummaryOutcome::Summarised)
+            | Ok(sessions::SwitchSummaryOutcome::Failed) => return,
+            Ok(sessions::SwitchSummaryOutcome::Pending) => {}
+            Err(error) => {
+                // A read failure mid-wait strands the pending request exactly
+                // like a timeout would: cancel so later normal replies are
+                // never misparsed as checkpoint output.
+                let _ = core.cancel_switch_summary(
+                    session_id,
+                    &format!("model-switch summary wait failed: {error}"),
+                    1,
+                );
+                return;
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = core.cancel_switch_summary(
+                session_id,
+                "model-switch summary timed out; switch continued",
+                1,
+            );
+            return;
+        }
+        thread::sleep(std::time::Duration::from_millis(300));
+    }
+}
+
+/// Carry a source chat's projected context into another chat as a durable
+/// handoff brief — the `$harness` shortcut's way of giving the new sibling
+/// chat the conversation it was asked about. Best-effort: `carried` reports
+/// whether anything was carried.
+pub fn carry_session_handoff(
+    core: &Arc<BridgeCore>,
+    target_session_id: &str,
+    source_session_id: &str,
+) -> Result<wire::CarrySessionHandoffResult, BridgeError> {
+    let db = core.db.lock().unwrap();
+    let carried = handoff::carry_brief(&db, target_session_id, source_session_id)?;
+    Ok(wire::CarrySessionHandoffResult { carried })
 }
 
 pub fn prepare_turn(

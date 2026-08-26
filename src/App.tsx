@@ -787,7 +787,10 @@ export function App() {
   // New chat opens instantly (no picker up front). Preserve the current direct
   // chat's harness/model so switching to OpenCode also changes the next-chat
   // default; otherwise fall back to the configured standard profile.
-  async function openNewChat(initialMessage?: string, harnessOverride?: import("./types").AdapterDescriptor, alreadyLocked = false) {
+  // `carryFromSessionId` optionally seeds the new chat with a durable handoff
+  // brief projecting that session's stored context, so its first turn knows
+  // what "this" refers to ($harness shortcut).
+  async function openNewChat(initialMessage?: string, harnessOverride?: import("./types").AdapterDescriptor, alreadyLocked = false, carryFromSessionId?: string): Promise<string | undefined> {
     if (!alreadyLocked) {
       if (newChatPendingRef.current) return;
       newChatPendingRef.current = true;
@@ -812,8 +815,16 @@ export function App() {
       try {
         const next = await bridgeApi.createChat(harness, model, null);
         const created = [...next.sessions].reverse().find(s => !s.parentSessionId && !s.workspaceId);
+        // Carry before selecting: the welcome-message effect fires on
+        // session-id change, and the brief must be in the forest before the
+        // first cold start compiles its prompt.
+        if (created && carryFromSessionId && carryFromSessionId !== created.id) {
+          try { await bridgeApi.carrySessionHandoff(created.id, carryFromSessionId); }
+          catch { /* context carry is best-effort; the chat starts regardless */ }
+        }
         setState(next);
         if (created) setSelectedSessionId(created.id);
+        return created?.id;
       } catch (e) {
         pendingWelcomeMessageRef.current = null;
         setError(errorMessage(e));
@@ -826,9 +837,10 @@ export function App() {
 
   // A `$harness` prefix (e.g. `$codex are we right?`) bypasses whatever
   // session is open and starts a fresh direct chat pinned to that harness,
-  // handing it the rest of the text as its first message. Returns whether
-  // the text was a shortcut at all, so the caller knows whether to fall back
-  // to its own normal send path.
+  // handing it the rest of the text as its first message — plus a projected
+  // handoff brief of this conversation, so the question has its context.
+  // Returns whether the text was a shortcut at all, so the caller knows
+  // whether to fall back to its own normal send path.
   async function openHarnessShortcut(text: string, alreadyLocked = false): Promise<boolean> {
     const shortcut = parseHarnessShortcut(text);
     if (!shortcut) return false;
@@ -838,7 +850,8 @@ export function App() {
       setError(`${adapter.label} isn't available${adapter.unavailableReason ? ` — ${adapter.unavailableReason}` : ""}.`);
       return true;
     }
-    await openNewChat(shortcut.rest, adapter, alreadyLocked);
+    const carryFromSessionId = session?.id;
+    await openNewChat(shortcut.rest, adapter, alreadyLocked, carryFromSessionId);
     return true;
   }
   // Entry point for the Welcome screen's own composer, which has no session

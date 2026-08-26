@@ -149,6 +149,10 @@ pub fn dispatch(
             let p: wire::UpdateChatModelParams = decode(method, params)?;
             reply(api::update_chat_model(core, &p.session_id, &p.harness.into(), p.model.as_deref()))
         }
+        MethodName::CarrySessionHandoff => {
+            let p: wire::CarrySessionHandoffParams = decode(method, params)?;
+            reply(api::carry_session_handoff(core, &p.target_session_id, &p.source_session_id))
+        }
         MethodName::PrepareTurn => {
             let p: wire::PrepareTurnParams = decode(method, params)?;
             reply(api::prepare_turn(core, p.session_id, p.text))

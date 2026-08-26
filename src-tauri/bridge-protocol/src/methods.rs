@@ -67,6 +67,7 @@ methods![
     (StartSession, "sessions", "start_session"),
     (StartChat, "sessions", "start_chat"),
     (UpdateChatModel, "sessions", "update_chat_model"),
+    (CarrySessionHandoff, "sessions", "carry_session_handoff"),
     (PrepareTurn, "sessions", "prepare_turn"),
     (SendTurn, "sessions", "send_turn"),
     (SubmitInput, "sessions", "submit_input"),

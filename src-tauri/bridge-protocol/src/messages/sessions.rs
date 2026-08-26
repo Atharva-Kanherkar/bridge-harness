@@ -213,6 +213,23 @@ pub struct UpdateChatModelParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CarrySessionHandoffParams {
+    /// The chat receiving the projected context (usually a brand-new one).
+    pub target_session_id: String,
+    /// The chat whose stored history is projected into the brief.
+    pub source_session_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CarrySessionHandoffResult {
+    /// Whether a handoff brief was appended; false means there was nothing to
+    /// carry (empty or unknown sessions) and the target starts as usual.
+    pub carried: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ReplaySessionEventsParams {
     pub session_id: String,

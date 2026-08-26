@@ -74,9 +74,10 @@ pub fn checkpoint_context(
     }
     for entry in projection.render_entries.iter().rev() {
         let value = match entry.kind.as_str() {
-            "checkpoint" | "compaction" | "branch.summary" => entry
+            "checkpoint" | "compaction" | "branch.summary" | "handoff.brief" => entry
                 .payload
                 .get("summary")
+                .or_else(|| entry.payload.get("text"))
                 .and_then(serde_json::Value::as_str),
             "user.message" | "assistant.message" | "worker.result" => entry
                 .payload
@@ -255,6 +256,36 @@ mod tests {
         assert!(context.contains("stable decision"));
         assert!(!context.contains("raw log"));
         assert!(context.contains("not native provider resume"));
+    }
+
+    #[test]
+    fn handoff_brief_entries_feed_the_checkpoint_projection() {
+        let db = database();
+        let forest = SessionForest::new(&db);
+        forest
+            .append(
+                "s",
+                EntryKind::HandoffBrief,
+                serde_json::json!({
+                    "text":"Continued from another chat: we chose the SQLite token store.",
+                    "sourceSessionId":"source-session",
+                    "sourceHarness":"claude",
+                }),
+            )
+            .unwrap();
+        let context = checkpoint_context(&db, "s").unwrap().unwrap();
+        assert!(context.contains("SQLite token store"));
+        assert!(context.contains("handoff.brief"));
+        assert!(context.contains("not native provider resume"));
+    }
+
+    #[test]
+    fn handoff_brief_payload_requires_text() {
+        let db = database();
+        let forest = SessionForest::new(&db);
+        assert!(forest
+            .append("s", EntryKind::HandoffBrief, serde_json::json!({"summary":"x"}))
+            .is_err());
     }
 
     #[test]
