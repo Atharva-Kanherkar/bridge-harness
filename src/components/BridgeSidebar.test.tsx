@@ -102,8 +102,10 @@ describe("BridgeSidebar responsive rail", () => {
 
   it("keeps the drag-to-resize handle on the right edge, pointer-capable widths only", () => {
     // The handle is meaningless in the drawer, where width is fixed.
-    expect(render()).toContain("absolute inset-y-0 right-0");
+    // Its hit area lives just outside the rail, leaving the edge scrollbar usable.
+    expect(render()).toContain("absolute inset-y-0 -right-3");
     expect(render()).toContain("hidden w-3 cursor-col-resize touch-none select-none sm:block");
+    expect(render()).toContain("after:left-0");
   });
 
   it("puts panel beside the traffic lights and chevrons on the right of that strip", () => {
@@ -132,6 +134,13 @@ describe("BridgeSidebar responsive rail", () => {
 });
 
 describe("BridgeSidebar theming", () => {
+  it("spaces folders and chat rows while letting the scrollbar reach the rail edge", () => {
+    const html = render();
+    expect(html).toContain("mb-0.5 gap-0.5");
+    expect(html).not.toContain("border-b border-sidebar-border pr-2");
+    expect(html).toContain("-mr-2 min-h-0 flex-1 overflow-y-auto pr-2");
+  });
+
   it("paints the rail from the sidebar ladder tokens, never a literal", () => {
     const html = render();
     expect(html).toContain("bg-sidebar");
