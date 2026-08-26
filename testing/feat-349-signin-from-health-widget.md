@@ -15,14 +15,16 @@ Locked before implementation. This file is the definition of "done" for this bra
 - Install status stays orthogonal: a provider whose CLI binary cannot be resolved is
   reported through the existing availability path (`available: false` +
   `unavailable_reason`), and the UI renders it as *not installed*, never as signed out.
-- Probe sources (presence checks only — Bridge never reads, copies, stores, or logs
-  secret values):
-  - Claude: `~/.claude/.credentials.json` exists, or macOS Keychain generic password
-    service `Claude Code-credentials` exists.
-  - Codex: `~/.codex/auth.json` exists and parses with a non-empty token payload.
-  - OpenCode: its documented auth store exists and parses non-empty (exact path
-    verified during implementation against OpenCode's own docs/source; probe failure
-    degrades to `unknown`, not `signed_out`).
+- Probe sources — metadata/presence checks only. Bridge never opens, reads, or
+  parses credential file contents, and never invokes anything that prints secret
+  values:
+  - Claude: `~/.claude/.credentials.json` exists (non-empty), or macOS Keychain
+    generic password service `Claude Code-credentials` exists (status bits only,
+    entry value never requested).
+  - Codex: `~/.codex/auth.json` exists with size > 0 (`fs::metadata` only).
+  - OpenCode: its auth store exists with size > 0 under its data dir
+    (XDG-aware; `fs::metadata` only). Probe failure degrades to `unknown`, not
+    `signed_out`.
 
 ### Start a provider login from Bridge (backend)
 
@@ -52,6 +54,9 @@ Locked before implementation. This file is the definition of "done" for this bra
   terminal.
 - When the flow completes, the widget re-reads health without an app restart and the
   ring populates (usage/quota/context for that provider appear).
+- **Listen before launch:** the UI subscribes to the login PTY's output and exit
+  events *before* starting the vendor process, so no early output (OAuth URL,
+  first prompt) can be lost to a subscription race.
 - Settings → Harnesses keeps working unchanged. This feature is an additional entry
   point, not a move.
 
