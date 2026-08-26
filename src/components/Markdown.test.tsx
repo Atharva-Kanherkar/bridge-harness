@@ -3,7 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { Markdown, renderMathToHtml, splitBlocks } from "./Markdown";
+import { FileLinkContext, Markdown, renderMathToHtml, splitBlocks, type FileLinks } from "./Markdown";
 
 describe("splitBlocks rich content detection", () => {
   it("detects a diagram fenced block", () => {
@@ -280,5 +280,71 @@ describe("existing markdown behavior is preserved", () => {
     expect(html).toContain("<ul>");
     expect(html).toContain("<strong>");
     expect(html).toContain("<code>code</code>");
+  });
+});
+
+describe("file links out of prose", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  const open = vi.fn();
+  const links: FileLinks = { has: path => ["src/App.tsx", "src/api.ts"].includes(path), open };
+
+  beforeEach(() => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    open.mockClear();
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(() => {
+    act(() => root.unmount());
+    container.remove();
+  });
+
+  const mount = (text: string, value: FileLinks | null = links) => {
+    act(() => {
+      root.render(<FileLinkContext.Provider value={value}><Markdown text={text} /></FileLinkContext.Provider>);
+    });
+  };
+  const click = (element: Element) => {
+    act(() => {
+      element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+  };
+
+  it("opens a workspace file named in inline code, at its line", () => {
+    mount("The guard moved in `src/App.tsx:42` yesterday.");
+    const button = container.querySelector('button[aria-label="Open src/App.tsx in the Code pane"]')!;
+    expect(button.textContent).toBe("src/App.tsx:42");
+    click(button);
+    expect(open).toHaveBeenCalledWith("src/App.tsx", 42);
+  });
+
+  it("opens without a line when the code span has no suffix", () => {
+    mount("See `src/api.ts` for the boundary.");
+    click(container.querySelector('button[aria-label="Open src/api.ts in the Code pane"]')!);
+    expect(open).toHaveBeenCalledWith("src/api.ts", undefined);
+  });
+
+  it("leaves an unresolvable path as plain code", () => {
+    mount("See `src/nope.ts` for nothing.");
+    expect(container.querySelector("button")).toBeNull();
+    expect(container.querySelector("code")!.textContent).toBe("src/nope.ts");
+  });
+
+  it("opens a mention in plain message text", () => {
+    mount("please fix @src/App.tsx first");
+    const button = container.querySelector('button[aria-label="Open src/App.tsx in the Code pane"]')!;
+    expect(button.textContent).toBe("@src/App.tsx");
+    click(button);
+    expect(open).toHaveBeenCalledWith("src/App.tsx");
+  });
+
+  it("renders everything inert without a provider", () => {
+    mount("see `src/App.tsx:42` and @src/App.tsx", null);
+    expect(container.querySelector("button")).toBeNull();
+    expect(container.textContent).toContain("src/App.tsx:42");
+    expect(container.textContent).toContain("@src/App.tsx");
   });
 });

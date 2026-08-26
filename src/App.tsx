@@ -2,11 +2,11 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Check, ChevronDown, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Braces, Check, ChevronDown, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { openExternalUrl } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
-import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, PermissionPolicy, Project, RiskTier, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "./types";
+import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
@@ -17,6 +17,15 @@ import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
 import { isHiddenSession } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
+import { SessionDock, type DockPaneDescriptor } from "./components/SessionDock";
+import { ChangesPanel } from "./components/ChangesPanel";
+import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
+import type { BrowserSupervision } from "./components/BrowserSurface";
+import type { TerminalActivity } from "./components/TerminalPane";
+import { TasksPane } from "./components/TasksPane";
+import { workerStatus } from "./components/workerStatus";
+import type { HunkRange } from "./components/DiffView";
+import { DOCK_PANES, DOCK_SHEET_THRESHOLD, useDockLayout } from "./dockLayout";
 import { SessionRecallSearch } from "./components/SessionRecallSearch";
 import { AppTitleBar } from "./components/AppTitleBar";
 import { MissionControl } from "./components/MissionControl";
@@ -125,7 +134,7 @@ export function App() {
   // Two ways to look at the workspace: the classic single-session view, or the
   // Mission Control grid where every live agent is its own window at once.
   const [paradigm, setParadigm] = useState<"single" | "grid">("single");
-  const [activeTab, setActiveTab] = useState<"agent" | "changes" | "code" | "events" | "terminal">("agent");
+  const [dockSectionWidth, setDockSectionWidth] = useState(1280);
   // Fullscreen only squares the native frame. The sidebar and canvas keep the
   // same side-by-side geometry as windowed mode; native fullscreen and zoom
   // arrive as `data-flush-window` from the shell.
@@ -138,8 +147,6 @@ export function App() {
   // Tabs mount on first visit and then stay mounted. Unmounting the Changes
   // and Code panels on every tab switch would throw away open files, expanded
   // diffs, and — now that both tabs can edit — unsaved text.
-  const [visitedTabs, setVisitedTabs] = useState<Set<string>>(() => new Set(["agent"]));
-  useEffect(() => { setVisitedTabs(previous => previous.has(activeTab) ? previous : new Set(previous).add(activeTab)); }, [activeTab]);
   const [modal, setModal] = useState<"workspace" | "orchestrator" | "router" | "memory" | null>(null);
   // A too-long "Remember this" lands here so the dialog opens pre-filled for
   // trimming; it is never saved on the user's behalf.
@@ -161,7 +168,9 @@ export function App() {
   const [harnessShortcutDismissed, setHarnessShortcutDismissed] = useState(false);
   const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
   const [busy, setBusy] = useState(false);
-  const [browserOpen, setBrowserOpen] = useState(false);
+  const [browserSupervision, setBrowserSupervision] = useState<BrowserSupervision>();
+  const [terminalActivity, setTerminalActivity] = useState<TerminalActivity>();
+  const [acknowledgedTasks, setAcknowledgedTasks] = useState<Set<string>>(() => new Set());
   const [recallOpen, setRecallOpen] = useState(false);
   const [highlightEntryId, setHighlightEntryId] = useState<string | null>(null);
   const [error, setError] = useState<string>();
@@ -271,7 +280,6 @@ export function App() {
     setSelectedSessionId(place.sessionId ?? undefined);
     setParadigm(place.paradigm);
     if (place.view === "workspace") {
-      setActiveTab("agent");
       setExpandedWorkerId(undefined);
     }
   }, []);
@@ -312,6 +320,87 @@ export function App() {
   const workspace = session?.workspaceId ? state.workspaces.find(w => w.id === session.workspaceId) : undefined;
   const hasRepo = !!workspace?.path;
   const isDirectChat = session?.kind === "direct";
+
+  // The dock is a workspace possession: width, active pane, and expand state
+  // belong to the tree being worked on, so direct chats key by session instead.
+  const dockKey = workspace?.id ?? session?.id;
+  const [dock, dispatchDock] = useDockLayout(dockKey);
+  const dockRef = useRef(dock);
+  dockRef.current = dock;
+  const dockSheet = dockSectionWidth < DOCK_SHEET_THRESHOLD;
+  // A callback ref, so the observer is keyed to the element itself: the
+  // section unmounts and remounts on view and paradigm switches while the
+  // session id stays put, and an effect keyed on the id would keep watching
+  // the detached node — freezing the width and with it the sheet threshold.
+  const dockSectionObserver = useRef<ResizeObserver | null>(null);
+  const dockSectionRef = useCallback((element: HTMLElement | null) => {
+    dockSectionObserver.current?.disconnect();
+    dockSectionObserver.current = null;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(entries => {
+      const width = entries[0]?.contentRect.width;
+      if (typeof width === "number" && width > 0) setDockSectionWidth(width);
+    });
+    observer.observe(element);
+    dockSectionObserver.current = observer;
+  }, []);
+  const dockTaskBadge = useMemo(() => {
+    const statuses = (forest?.workerRuntimes ?? []).flatMap(runtime => {
+      const workerSession = visibleSessions.find(item => item.id === runtime.sessionId);
+      return workerSession ? [{ id: runtime.sessionId, status: workerStatus(workerSession, runtime) }] : [];
+    });
+    const running = statuses.filter(item => item.status.tone === "working").length + (terminalActivity?.running ?? 0);
+    const attention = statuses.some(item => (item.status.tone === "failed" || item.status.tone === "stalled") && !acknowledgedTasks.has(item.id));
+    return { running, attention };
+  }, [forest?.workerRuntimes, visibleSessions, terminalActivity?.running, acknowledgedTasks]);
+  const dockPanes: DockPaneDescriptor[] = [
+    { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: workspace?.dirtyFiles || undefined },
+    { id: "code", label: "Code", icon: Code2, available: hasRepo && !!workspace, unavailableReason: "Code needs a repository. This chat has no worktree to read files from." },
+    { id: "terminal", label: "Terminal", icon: TerminalSquare, available: hasRepo && !!workspace, unavailableReason: "The terminal needs a repository. This chat has no worktree to run a shell in.", badge: terminalActivity && terminalActivity.running > 1 ? terminalActivity.running : undefined, alert: terminalActivity?.attention || undefined },
+    { id: "browser", label: "Browser", icon: Monitor, available: true, alert: browserSupervision?.attention || undefined },
+    { id: "transcript", label: "Transcript", icon: Braces, available: true },
+    { id: "tasks", label: "Tasks", icon: Activity, available: true, badge: dockTaskBadge.running || undefined, alert: dockTaskBadge.attention || undefined },
+  ];
+  const dockExpandedVisible = dock.open && dock.expanded && !fullscreen;
+
+  // Cross-pane intents. Quoting names what a message is about instead of
+  // describing it; revealing hands a file from the diff to the editor. The
+  // nonce distinguishes "open it again" from a re-render.
+  const [codeReveal, setCodeReveal] = useState<{ path: string; line?: number; nonce: number }>();
+  const revealNonce = useRef(0);
+  // The intent names a path in one worktree; a remounted CodePanel in another
+  // workspace resets its nonce guard and would honour it against the wrong
+  // tree. Changing workspaces retires the request.
+  useEffect(() => {
+    setCodeReveal(undefined);
+  }, [workspace?.id]);
+  function quoteToComposer(path: string, range?: HunkRange) {
+    setComposer(current => {
+      const mentioned = appendFileMention(current, path);
+      return range ? `${mentioned}lines ${range.start}-${range.end} ` : mentioned;
+    });
+    composerRef.current?.focus();
+  }
+  function revealEntryInConversation(entryId: string) {
+    // The conversation sits beside the dock, so reveal scrolls and highlights
+    // rather than navigates — the same jump recall search uses. An expanded
+    // pane steps aside first: scrollIntoView on a hidden column is a no-op.
+    if (dockRef.current.expanded) dispatchDock({ type: "toggle-expanded" });
+    setHighlightEntryId(entryId);
+    requestAnimationFrame(() => {
+      document.getElementById(`forest-entry-${entryId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    // The highlight is a pointer, not a state: it fades once it has done its
+    // job, instead of marking the entry until the next navigation.
+    window.setTimeout(() => {
+      setHighlightEntryId(current => current === entryId ? null : current);
+    }, 3000);
+  }
+  function openFileInDock(path: string, line?: number) {
+    revealNonce.current += 1;
+    setCodeReveal({ path, line, nonce: revealNonce.current });
+    dispatchDock({ type: "open-pane", pane: "code" });
+  }
   // A focused worker is watchable, its approvals are resolvable, and it can be
   // steered — the composer says "steer", not "message", because the worker still
   // answers to the objective its orchestrator gave it.
@@ -629,7 +718,6 @@ export function App() {
   function openSession(id: string) {
     setView("workspace");
     setParadigm("single");
-    setActiveTab("agent");
     setSelectedSessionId(id);
     setExpandedWorkerId(undefined);
     const opened = state.sessions.find(candidate => candidate.id === id);
@@ -1228,16 +1316,44 @@ export function App() {
   // and this is an in-window layout change, not a window state change.
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.altKey && (event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "f") {
+      const chord = event.altKey && (event.metaKey || event.ctrlKey);
+      if (chord && event.key.toLowerCase() === "f") {
         event.preventDefault();
         setFullscreen(value => !value);
-      } else if (event.key === "Escape") {
-        setFullscreen(false);
+        return;
+      }
+      // The dock's chords live beside ⌥⌘F: 0 toggles, digits pick a pane by
+      // switcher order, return expands. Digits go by physical code because ⌥
+      // rewrites the printed key on macOS.
+      if (chord && (event.code === "Digit0" || event.key === "0")) {
+        event.preventDefault();
+        dispatchDock({ type: "toggle" });
+        return;
+      }
+      if (chord && event.key === "Enter") {
+        event.preventDefault();
+        dispatchDock({ type: "toggle-expanded" });
+        return;
+      }
+      if (chord) {
+        const digit = /^Digit([1-9])$/.exec(event.code)?.[1] ?? (/^[1-9]$/.test(event.key) ? event.key : undefined);
+        const pane = digit ? DOCK_PANES[Number(digit) - 1] : undefined;
+        if (pane) {
+          event.preventDefault();
+          dispatchDock({ type: "open-pane", pane });
+          return;
+        }
+      }
+      if (event.key === "Escape") {
+        // An expanded dock is the nearer layer: the first Escape restores it,
+        // the next one leaves fullscreen.
+        if (dockRef.current.open && dockRef.current.expanded) dispatchDock({ type: "toggle-expanded" });
+        else setFullscreen(false);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [dispatchDock]);
 
   useEffect(() => {
     setLayoutFullscreenDocument(fullscreen || flushWindow);
@@ -1352,29 +1468,29 @@ export function App() {
       /> : session ? <>
         <SessionToolbar
           title={session.title || session.label}
-          tabs={hasRepo ? [
-            { id: "agent", label: "Agent", icon: MessageSquareText },
-            { id: "changes", label: "Changes", icon: FileCode2, badge: workspace?.dirtyFiles || undefined },
-            { id: "code", label: "Code", icon: Code2 },
-            { id: "terminal", label: "Terminal", icon: TerminalSquare },
-          ] : [{ id: "agent", label: "Agent", icon: MessageSquareText }]}
-          activeTab={activeTab}
-          onTabChange={id => setActiveTab(id as typeof activeTab)}
           model={isDirectChat ? undefined : modelDisplayName(adapters, session.harness, session.model)}
-          browserOpen={browserOpen}
-          onToggleBrowser={() => setBrowserOpen(value => !value)}
+          dockOpen={dock.open}
+          onToggleDock={() => dispatchDock({ type: "toggle" })}
+          browserOpen={dock.open && dock.pane === "browser"}
+          onToggleBrowser={() => dispatchDock(
+            // The menu item is a checkbox, so it has to close what it opened:
+            // a second activation collapses the dock instead of re-opening the
+            // pane that is already showing.
+            dock.open && dock.pane === "browser" ? { type: "toggle" } : { type: "open-pane", pane: "browser" },
+          )}
           fullscreen={fullscreen}
           onToggleFullscreen={toggleLayoutFullscreen}
           onOpenRouterSettings={!isDirectChat && workspace ? () => setModal("router") : undefined}
           onToggleRecall={() => {
-            setActiveTab("agent");
+            // Recall reads the conversation, so an expanded pane steps aside first.
+            if (dockRef.current.expanded) dispatchDock({ type: "toggle-expanded" });
             setRecallOpen(open => !open);
           }}
           recallOpen={recallOpen}
           onEnd={sessionConnected ? () => void endChat() : undefined}
           busy={busy}
         />
-        <section className="flex-1 min-h-0 overflow-hidden flex relative">
+        <section ref={dockSectionRef} className="flex-1 min-h-0 overflow-hidden flex relative">
           {/* The chat's own panel, expanded. Rendered over the session pane
               rather than navigating away, because the reason to look at a
               worker's full feed is usually to decide something in the
@@ -1389,8 +1505,8 @@ export function App() {
               onSteer={steerWorker}
             />
           </div>}
-          <div className="flex-1 min-w-0 flex flex-col relative">
-            {(activeTab === "agent" || !hasRepo) && <>
+          <div className={cn("flex-1 min-w-0 flex flex-col relative", dockExpandedVisible && "hidden")}>
+            <>
               {recallOpen && (
                 <SessionRecallSearch
                   sessionId={session.id}
@@ -1424,6 +1540,8 @@ export function App() {
                   working={turnActive}
                   pendingMessages={pendingForSession}
                   onResolve={resolveApproval}
+                  workspaceFiles={hasRepo ? workspaceFiles : undefined}
+                  onOpenFile={hasRepo && workspace ? openFileInDock : undefined}
                   highlightEntryId={highlightEntryId}
                   onRemember={rememberMessage}
                 />
@@ -1536,15 +1654,61 @@ export function App() {
                   />
                 </div>}
               </div>
-            </>}
-            {hasRepo && workspace && visitedTabs.has("changes") && <div className={cn("absolute inset-0", activeTab !== "changes" && "hidden")}><ChangesPanel key={workspace.id} workspace={workspace}/></div>}
-            {hasRepo && workspace && visitedTabs.has("code") && <div className={cn("absolute inset-0", activeTab !== "code" && "hidden")}>{/* Keyed on the workspace: these panels hold open buffers and relative
-                  paths, and neither survives a change of tree. Without it a save
-                  would aim the old path at the new workspace. */}
-              <Suspense fallback={<PanelLoading label="Opening editor…"/>}><CodePanel key={workspace.id} workspaceId={workspace.id} visible={activeTab === "code"} onSaved={() => void refreshWorkspaceStats(workspace.id)}/></Suspense></div>}
-            {hasRepo && workspace && activeTab === "terminal" && <div className="absolute inset-0"><Suspense fallback={<PanelLoading label="Opening terminal…"/>}><TerminalPane workspaceId={workspace.id}/></Suspense></div>}
+            </>
           </div>
-          {browserOpen && <BrowserSurface onClose={() => setBrowserOpen(false)} onError={setError} />}
+          <SessionDock
+            state={dock}
+            panes={dockPanes}
+            availableWidth={dockSectionWidth}
+            sheet={dockSheet}
+            concealed={fullscreen}
+            onAction={dispatchDock}
+            onConnectFolder={workspace && !hasRepo ? () => void connectFolder(workspace.id) : undefined}
+          >
+            {pane => {
+              if (pane === "tasks") return <TasksPane
+                key={session.id}
+                sessions={visibleSessions}
+                runtimes={forest?.workerRuntimes}
+                queue={forest?.workerQueue}
+                terminalActivity={terminalActivity}
+                acknowledged={acknowledgedTasks}
+                onAcknowledge={id => setAcknowledgedTasks(previous => new Set(previous).add(id))}
+                onOpenSession={openSession}
+                onExpandWorker={setExpandedWorkerId}
+                onRetryWorker={id => void retryWorkerTask(id)}
+                onOpenTerminal={() => dispatchDock({ type: "open-pane", pane: "terminal" })}
+              />;
+              if (pane === "browser") return <BrowserSurface
+                visible={dock.open && dock.pane === "browser" && !fullscreen}
+                onError={setError}
+                onSupervisionChange={setBrowserSupervision}
+              />;
+              if (pane === "transcript") return <TranscriptPane
+                key={session.id}
+                sessionId={session.id}
+                events={sessionEvents}
+                entries={forest?.entries}
+                head={forest?.head}
+                leaves={forest?.leaves}
+                loadOlder={request => bridgeApi.replaySessionEvents(
+                  session.id,
+                  request.tail ? 0 : Math.max(0, (request.beforeSequence ?? 1) - 1 - TRANSCRIPT_PAGE_SIZE),
+                  TRANSCRIPT_PAGE_SIZE,
+                  request.tail,
+                )}
+                onRevealEntry={revealEntryInConversation}
+              />;
+              if (!workspace) return null;
+              /* Keyed on the workspace: these panes hold open buffers, shells,
+                 and relative paths, and none of that survives a change of tree.
+                 Without the key a save would aim the old path at the new
+                 workspace. */
+              if (pane === "changes") return <ChangesPanel key={workspace.id} workspace={workspace} onQuote={quoteToComposer} onOpenFile={openFileInDock} />;
+              if (pane === "code") return <Suspense fallback={<PanelLoading label="Opening editor…"/>}><CodePanel key={workspace.id} workspaceId={workspace.id} visible={dock.open && dock.pane === "code"} reveal={codeReveal} driftSignal={`${workspace.dirtyFiles}:${workspace.additions}:${workspace.deletions}`} onSaved={() => void refreshWorkspaceStats(workspace.id)}/></Suspense>;
+              return <Suspense fallback={<PanelLoading label="Opening terminal…"/>}><TerminalPane key={workspace.id} workspaceId={workspace.id} workspacePath={workspace.path ?? undefined} visible={dock.open && dock.pane === "terminal" && !fullscreen} onActivity={setTerminalActivity}/></Suspense>;
+            }}
+          </SessionDock>
         </section>
       </> : <Welcome
         adapters={adapters}
@@ -1675,187 +1839,6 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
   </aside>;
 }
 
-const IMPORTANCE_RANK: Record<RiskTier, number> = { high: 0, medium: 1, low: 2 };
-const IMPORTANCE_BADGE: Record<RiskTier, { label: string; variant: "error" | "warning" | "outline" }> = {
-  high: { label: "High", variant: "error" },
-  medium: { label: "Medium", variant: "warning" },
-  low: { label: "Low", variant: "outline" },
-};
-
-function FileDiffView({ patch, binary, path }: { patch: string; binary: boolean; path: string }) {
-  if (binary) return <div className="px-3.5 py-4 text-[11.5px] text-muted-foreground">Binary file — no diff to show.</div>;
-  if (!patch.trim()) return <div className="px-3.5 py-4 text-[11.5px] text-muted-foreground">No diff content.</div>;
-  return <PatchView patch={patch} path={path} />;
-}
-
-/** Proportional add/delete bar. Silent when a file has no line changes. */
-function DiffStatBar({ additions, deletions, className }: { additions: number; deletions: number; className?: string }) {
-  const total = additions + deletions;
-  if (!total) return null;
-  return <span className={cn("flex h-1 w-10 shrink-0 overflow-hidden rounded-full bg-muted", className)} aria-hidden="true">
-    <span className="bg-success" style={{ width: `${(additions / total) * 100}%` }} />
-    <span className="bg-destructive" style={{ width: `${(deletions / total) * 100}%` }} />
-  </span>;
-}
-
-function ChangeFileRow({ file, viewed, expanded, workspaceId, onToggleViewed, onToggleExpanded, onSaved }: {
-  file: WorkspaceFileChange;
-  viewed: boolean;
-  expanded: boolean;
-  workspaceId: string;
-  onToggleViewed: () => void;
-  onToggleExpanded: () => void;
-  onSaved: () => void;
-}) {
-  // Reading the diff and fixing what you just read are the same motion, so
-  // the row carries both. Diff stays the default: review first.
-  const [mode, setMode] = useState<"diff" | "edit">("diff");
-  // Once a file has been edited the editor stays mounted — hidden behind the
-  // diff, and kept alive through a collapse while it still holds unsaved text.
-  // Unmounting it was the same data loss the tab switch used to cause.
-  const [everEdited, setEverEdited] = useState(false);
-  const [dirty, setDirty] = useState(false);
-  // "Low" is the default state, so labelling it adds noise to every row. Only
-  // a file that actually wants attention gets a badge.
-  const badge = file.importance === "low" ? undefined : IMPORTANCE_BADGE[file.importance];
-  const cut = file.path.lastIndexOf("/") + 1;
-  return <div className={cn("transition-opacity", viewed && !expanded && "opacity-55")}>
-    <div className="flex items-center gap-2 px-2 py-1">
-      <button type="button" onClick={onToggleExpanded} aria-expanded={expanded} className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left hover:bg-accent">
-        <ChevronDown size={13} className={cn("shrink-0 text-muted-foreground/60 transition-transform", !expanded && "-rotate-90")} aria-hidden="true" />
-        <span className="truncate font-mono text-[12px]">
-          {cut > 0 && <span className="text-muted-foreground/70">{file.path.slice(0, cut)}</span>}
-          <span className="text-foreground">{file.path.slice(cut)}</span>
-        </span>
-      </button>
-      {dirty && <span className="shrink-0 text-[10.5px] text-warning" title="This file has unsaved edits in the inline editor">unsaved</span>}
-      {badge && <Badge variant={badge.variant} size="sm" className="hidden shrink-0 sm:inline-flex">{badge.label}</Badge>}
-      <span className="hidden shrink-0 items-center gap-1.5 font-mono text-[10.5px] tabular-nums sm:flex">
-        <span className="text-success">+{file.additions}</span>
-        <span className="text-destructive">−{file.deletions}</span>
-        <DiffStatBar additions={file.additions} deletions={file.deletions} />
-      </span>
-      <button
-        type="button"
-        onClick={onToggleViewed}
-        aria-pressed={viewed}
-        title={viewed ? "Mark as not viewed" : "Mark as viewed"}
-        aria-label={viewed ? `Mark ${file.path} as not viewed` : `Mark ${file.path} as viewed`}
-        className={cn(
-          "grid h-6 w-6 shrink-0 place-items-center rounded-md border transition-colors",
-          viewed ? "border-success/40 bg-success/10 text-success" : "border-border text-muted-foreground/60 hover:bg-accent hover:text-foreground",
-        )}
-      >
-        <Check size={12} aria-hidden="true" />
-      </button>
-    </div>
-    {(expanded || dirty) && <div className={cn("border-t border-border bg-code", !expanded && "hidden")}>
-      {!file.binary && <div className="flex items-center gap-1 border-b border-border px-2 py-1">
-        {(["diff", "edit"] as const).map(option => <button
-          key={option}
-          type="button"
-          onClick={() => { setMode(option); if (option === "edit") setEverEdited(true); }}
-          aria-pressed={mode === option}
-          className={cn(
-            "h-[20px] rounded-[5px] px-2 text-[10.5px] capitalize transition-colors",
-            mode === option ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
-          )}
-        >{option}</button>)}
-      </div>}
-      <div className={cn(mode === "edit" && !file.binary && "hidden")}>
-        <FileDiffView patch={file.patch} binary={file.binary} path={file.path} />
-      </div>
-      {everEdited && !file.binary && <div className={cn(mode !== "edit" && "hidden")}>
-        <Suspense fallback={<div className="px-3.5 py-4 text-[11.5px] text-muted-foreground">Opening editor…</div>}>
-          <InlineFileEditor workspaceId={workspaceId} path={file.path} onDirtyChange={setDirty} onSaved={onSaved} />
-        </Suspense>
-      </div>}
-    </div>}
-  </div>;
-}
-
-function ChangesPanel({ workspace }: { workspace: Workspace }) {
-  const [changes, setChanges] = useState<WorkspaceChangesResult>();
-  const [loadError, setLoadError] = useState<string>();
-  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(new Set());
-  const [viewedPaths, setViewedPaths] = useState<Set<string>>(new Set());
-  const [showLowSignal, setShowLowSignal] = useState(false);
-
-  /** Re-read the changeset in place. Saving from an expanded row calls this,
-   *  so the diff under the editor catches up without collapsing the review. */
-  const reloadChanges = useCallback(async () => {
-    try {
-      setChanges(await bridgeApi.workspaceChanges(workspace.id));
-      setLoadError(undefined);
-    } catch (error) {
-      setLoadError(errorMessage(error));
-    }
-  }, [workspace.id]);
-
-  useEffect(() => {
-    setChanges(undefined); setLoadError(undefined); setExpandedPaths(new Set()); setShowLowSignal(false);
-    void reloadChanges();
-  }, [reloadChanges]);
-
-  const sortedFiles = useMemo(() => [...(changes?.files ?? [])].sort((a, b) =>
-    IMPORTANCE_RANK[a.importance] - IMPORTANCE_RANK[b.importance] || a.path.localeCompare(b.path)
-  ), [changes]);
-  const visibleFiles = sortedFiles.filter(file => showLowSignal || !file.lowSignal);
-  const lowSignalCount = sortedFiles.length - sortedFiles.filter(file => !file.lowSignal).length;
-
-  const toggle = (setter: typeof setExpandedPaths, path: string) => setter(previous => {
-    const next = new Set(previous);
-    if (next.has(path)) next.delete(path); else next.add(path);
-    return next;
-  });
-
-  if (loadError) return <div className="p-[38px_44px] max-w-[780px]">
-    <div className="text-muted-foreground/65 text-[10.5px] font-semibold tracking-[0.1em]">CHANGES</div>
-    <p className="mt-2.5 text-destructive text-[13px]">{loadError}</p>
-  </div>;
-
-  if (!changes) return <div className="p-[38px_44px] max-w-[780px]">
-    <div className="text-muted-foreground/65 text-[10.5px] font-semibold tracking-[0.1em]">CHANGES</div>
-    <p className="mt-2.5 text-muted-foreground text-[13px]">Loading changes…</p>
-  </div>;
-
-  const totalAdditions = changes.files.reduce((sum, file) => sum + file.additions, 0);
-  const totalDeletions = changes.files.reduce((sum, file) => sum + file.deletions, 0);
-  const viewedCount = sortedFiles.filter(file => viewedPaths.has(file.path)).length;
-
-  return <div className="mx-auto h-full max-w-3xl overflow-y-auto px-4 py-6 sm:px-6 sm:py-8">
-    <div className="text-[10.5px] font-semibold tracking-[0.1em] text-muted-foreground/65">CHANGES</div>
-    <h2 className="my-2 font-heading text-[20px] tracking-[-0.015em] text-foreground">{changes.files.length ? `${changes.files.length} file${changes.files.length === 1 ? "" : "s"} changed` : "Workspace is clean"}</h2>
-    {changes.files.length === 0
-      ? <p className="max-w-[560px] text-[13px] leading-relaxed text-muted-foreground">No uncommitted changes against HEAD.</p>
-      : <>
-        <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 font-mono text-[11.5px]">
-          <span className="text-success">+{totalAdditions}</span>
-          <span className="text-destructive">−{totalDeletions}</span>
-          <DiffStatBar additions={totalAdditions} deletions={totalDeletions} className="w-24" />
-          <span className="ml-auto text-muted-foreground">{viewedCount}/{sortedFiles.length} viewed</span>
-        </div>
-        {/* One list with dividers, not a stack of floating cards — a review
-            reads down a column of paths, and cards fight that. */}
-        <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
-          {visibleFiles.map(file => <ChangeFileRow
-            key={file.path}
-            file={file}
-            workspaceId={workspace.id}
-            onSaved={() => void reloadChanges()}
-            viewed={viewedPaths.has(file.path)}
-            expanded={expandedPaths.has(file.path)}
-            onToggleViewed={() => toggle(setViewedPaths, file.path)}
-            onToggleExpanded={() => toggle(setExpandedPaths, file.path)}
-          />)}
-        </div>
-        {lowSignalCount > 0 && <button type="button" onClick={() => setShowLowSignal(value => !value)} className="mt-2.5 px-1.5 py-1 text-left text-[11.5px] text-muted-foreground transition-colors hover:text-foreground">
-          {showLowSignal ? "Hide low-signal files" : `${lowSignalCount} low-signal file${lowSignalCount === 1 ? "" : "s"} hidden — show`}
-        </button>}
-      </>}
-  </div>;
-}
-function EventPanel({ state, workspace }: { state: BridgeState; workspace: Workspace }) { const events = state.events.filter(e => e.entityId === workspace.id || state.sessions.some(s => s.workspaceId === workspace.id && s.id === e.entityId)); return <div className="max-w-[720px] px-8 py-[22px]">{events.length ? events.map(e => <article key={e.id} className="flex gap-3 py-[13px] border-b border-border text-muted-foreground"><CircleDot size={14} aria-hidden="true" /><div><b className="text-foreground text-[11px] font-medium tracking-[0.02em] capitalize">{e.kind.replaceAll(".", " ")}</b><p className="text-[12.5px] my-1 text-foreground">{e.body}</p><small className="font-mono text-[10.5px] text-muted-foreground/65">{new Date(e.createdAt).toLocaleTimeString([], {hour:"2-digit",minute:"2-digit"})}</small></div></article>) : <div className="text-muted-foreground text-[12.5px] p-7">No events for this workspace yet.</div>}</div>; }
 function WelcomeModelBadge({ adapters, modelSetup }: { adapters: import("./types").AdapterDescriptor[]; modelSetup: ModelSetupState }) {
   const profile = resolveProfileOption("standard_orchestrator", modelSetup, adapters);
   const preferred = profile?.adapter ?? adapters.find(adapter => adapter.available) ?? adapters[0];

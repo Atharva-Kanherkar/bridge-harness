@@ -196,6 +196,7 @@ mod tests {
         for index in 0..(SINK_CAPACITY + EVENT_BUS_TEST_MARGIN) {
             bus.publish(CoreEvent::SessionOutput {
                 session_id: "s".into(),
+                terminal_id: "t1".into(),
                 data: index.to_string(),
             });
         }

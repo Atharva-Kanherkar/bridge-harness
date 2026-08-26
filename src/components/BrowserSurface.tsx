@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Camera, ChevronRight, Chrome, ExternalLink, Eye, Hand, LoaderCircle, MousePointer2, Plug, RefreshCw, ScrollText, ShieldAlert, TerminalSquare, Unplug } from "lucide-react";
 import { bridgeApi } from "../api";
 import { startSerialPoll } from "../polling";
@@ -12,7 +12,23 @@ const statusLabel: Record<string, string> = {
   not_attached: "Not attached", reading: "Reading", acting: "Acting", waiting_for_you: "Waiting for you", paused: "Paused",
 };
 
-export function BrowserSurface({ onClose, onError }: { onClose: () => void; onError: (message: string) => void }) {
+/** Poll cadences: the page can change under the agent while you watch, so
+ *  visible polls run hot; a hidden pane that still holds a lease keeps a slow
+ *  heartbeat so waiting_for_you can reach the switcher; hidden without a
+ *  lease there is nothing to watch, so nothing polls. */
+export const BROWSER_POLL_VISIBLE_MS = 700;
+export const BROWSER_POLL_HIDDEN_MS = 5000;
+
+export type BrowserSupervision = { status: string; attention: boolean };
+
+export function BrowserSurface({ visible = true, onClose, onError, onSupervisionChange }: {
+  /** False while another dock pane is showing. The surface stays mounted —
+   *  the lease survives — but polling backs off or stops. */
+  visible?: boolean;
+  onClose?: () => void;
+  onError: (message: string) => void;
+  onSupervisionChange?: (state: BrowserSupervision) => void;
+}) {
   const [snapshot, setSnapshot] = useState<BrowserBridgeSnapshot>();
   const [pane, setPane] = useState<Pane>("page");
   const [busy, setBusy] = useState(false);
@@ -23,7 +39,11 @@ export function BrowserSurface({ onClose, onError }: { onClose: () => void; onEr
   const [remoteUrl, setRemoteUrl] = useState("https://example.com");
 
   const refresh = async () => setSnapshot(await bridgeApi.browserBridgeState());
-  useEffect(() => startSerialPoll(refresh, 700), []);
+  const hasLease = !!snapshot?.lease;
+  useEffect(() => {
+    if (!visible && !hasLease) return;
+    return startSerialPoll(refresh, visible ? BROWSER_POLL_VISIBLE_MS : BROWSER_POLL_HIDDEN_MS);
+  }, [visible, hasLease]);
   useEffect(() => {
     if (!snapshot?.remoteProvider) return;
     setRemoteEndpoint(snapshot.remoteProvider.endpoint); setRemoteTokenEnv(snapshot.remoteProvider.bearerTokenEnv);
@@ -39,9 +59,17 @@ export function BrowserSurface({ onClose, onError }: { onClose: () => void; onEr
     return bridgeApi.browserAction({ kind, actor: "user", expectedDomain: snapshot?.lease?.domain, ...extras });
   });
   const status = snapshot?.status ?? "not_attached";
+  const attention = status === "waiting_for_you" || !!snapshot?.pendingApproval;
+  const supervisionRef = useRef<string>();
+  useEffect(() => {
+    const signature = `${status}:${attention}`;
+    if (supervisionRef.current === signature) return;
+    supervisionRef.current = signature;
+    onSupervisionChange?.({ status, attention });
+  }, [status, attention, onSupervisionChange]);
   const suspiciousCount = useMemo(() => Math.max(snapshot?.promptInjectionSignals.length ?? 0, snapshot?.elements.filter(element => element.promptInjectionSuspected).length ?? 0), [snapshot?.elements, snapshot?.promptInjectionSignals]);
 
-  return <aside className="u-surface relative flex min-w-0 flex-[0_0_48%] flex-col overflow-hidden border-l border-border md:min-w-[340px]">
+  return <div className="relative flex h-full min-w-0 flex-col overflow-hidden bg-card">
     <header className="flex min-h-12 items-center gap-2 border-b border-border px-3">
       <Chrome size={15} className="shrink-0 text-muted-foreground" aria-hidden="true" />
       <div className="min-w-0 flex-1">
@@ -50,7 +78,7 @@ export function BrowserSurface({ onClose, onError }: { onClose: () => void; onEr
       </div>
       <Badge variant={status === "waiting_for_you" ? "warning" : status === "paused" ? "secondary" : status === "not_attached" ? "outline" : "success"} size="sm">{statusLabel[status] ?? status}</Badge>
       {snapshot?.lease && <Badge variant="outline" size="sm" className="hidden sm:inline-flex">{snapshot.lease.permission === "read_only" ? "Read only" : "Interact"}</Badge>}
-      <Button variant="ghost" size="icon-xs" onClick={onClose} aria-label="Close Browser Surface"><ChevronRight size={14} /></Button>
+      {onClose && <Button variant="ghost" size="icon-xs" onClick={onClose} aria-label="Close Browser Surface"><ChevronRight size={14} /></Button>}
     </header>
 
     {!snapshot ? <div className="grid flex-1 place-items-center text-muted-foreground"><LoaderCircle className="animate-spin" size={18} /></div> : !snapshot.nativeHostInstalled ? <SetupCard snapshot={snapshot} busy={busy} onInstall={() => void run(bridgeApi.installBrowserNativeHost)} /> : !snapshot.transportConnected ? <ConnectCard snapshot={snapshot} /> : !snapshot.lease ? <TabPicker snapshot={snapshot} busy={busy} onRefresh={() => void action("list_tabs")} onAttach={tabId => void action("attach", { tabId })} /> : <>
@@ -93,7 +121,7 @@ export function BrowserSurface({ onClose, onError }: { onClose: () => void; onEr
         </div>
       </div>
     </div>}
-  </aside>;
+  </div>;
 }
 
 function SetupCard({ snapshot, busy, onInstall }: { snapshot: BrowserBridgeSnapshot; busy: boolean; onInstall: () => void }) {

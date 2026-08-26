@@ -258,15 +258,25 @@ pub fn dispatch(
 
         MethodName::OpenTerminal => {
             let p: wire::OpenTerminalParams = decode(method, params)?;
-            reply(api::open_terminal(core, &p.workspace_id))
+            reply(api::open_terminal(core, &p.workspace_id, &p.terminal_id))
         }
         MethodName::WriteTerminal => {
             let p: wire::WriteTerminalParams = decode(method, params)?;
-            reply(api::write_terminal(core, &p.workspace_id, &p.data))
+            reply(api::write_terminal(core, &p.workspace_id, &p.terminal_id, &p.data))
         }
         MethodName::ResizeTerminal => {
             let p: wire::ResizeTerminalParams = decode(method, params)?;
-            reply(api::resize_terminal(core, &p.workspace_id, p.rows, p.cols))
+            reply(api::resize_terminal(core, &p.workspace_id, &p.terminal_id, p.rows, p.cols))
+        }
+        MethodName::CloseTerminal => {
+            let p: wire::CloseTerminalParams = decode(method, params)?;
+            reply(api::close_terminal(core, &p.workspace_id, &p.terminal_id))
+        }
+        MethodName::ListTerminals => {
+            let p: wire::ListTerminalsParams = decode(method, params)?;
+            reply(Ok(wire::ListTerminalsResult {
+                terminal_ids: api::list_terminals(core, &p.workspace_id),
+            }))
         }
 
         MethodName::ListSlashCommands => reply(api::list_slash_commands(core)),

@@ -58,13 +58,16 @@ function baseExtensions(onSave: () => void): Extension[] {
  * `doc` seeds the document, and later changes flow out through `onChange`.
  * Changing `docKey` (the file being edited) is what re-seeds it.
  */
-export function CodeEditor({ docKey, doc, path, readOnly = false, visible = true, onChange, onSave, className }: {
+export function CodeEditor({ docKey, doc, path, readOnly = false, visible = true, revealLine, onChange, onSave, className }: {
   docKey: string;
   doc: string;
   path: string;
   readOnly?: boolean;
   /** False while the editor is display:none — it must re-measure on return. */
   visible?: boolean;
+  /** Move the cursor to a line and scroll it into view — once per nonce, so a
+   *  re-render does not yank the caret back after the user moves on. */
+  revealLine?: { line: number; nonce: number };
   onChange: (value: string) => void;
   onSave: () => void;
   className?: string;
@@ -114,6 +117,19 @@ export function CodeEditor({ docKey, doc, path, readOnly = false, visible = true
   useEffect(() => {
     if (visible) view.current?.requestMeasure();
   }, [visible]);
+
+  const revealSeen = useRef(0);
+  useEffect(() => {
+    const editor = view.current;
+    if (!editor || !revealLine || revealLine.nonce === revealSeen.current) return;
+    revealSeen.current = revealLine.nonce;
+    const line = Math.min(Math.max(revealLine.line, 1), editor.state.doc.lines);
+    const position = editor.state.doc.line(line).from;
+    editor.dispatch({
+      selection: { anchor: position },
+      effects: EditorView.scrollIntoView(position, { y: "center" }),
+    });
+  }, [revealLine]);
 
   return <div ref={host} className={className} />;
 }

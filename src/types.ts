@@ -156,7 +156,8 @@ export type LearningTriggerKind = LocalLearningTriggerKind | ExternalLearningTri
 // Notification payloads without a contracted schema yet.
 // ---------------------------------------------------------------------------
 
-export interface TerminalChunk { sessionId: string; data: string }
+export interface TerminalChunk { sessionId: string; terminalId: string; data: string }
+export interface TerminalExit { sessionId: string; terminalId: string }
 
 /** `memory-changed` refetch hint: names the scope, never carries a record. */
 export interface MemoryChangedPayload { scopeKey: string }

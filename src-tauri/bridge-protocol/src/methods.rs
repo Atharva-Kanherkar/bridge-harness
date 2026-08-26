@@ -96,6 +96,8 @@ methods![
     (OpenTerminal, "terminal", "open_terminal"),
     (WriteTerminal, "terminal", "write_terminal"),
     (ResizeTerminal, "terminal", "resize_terminal"),
+    (CloseTerminal, "terminal", "close_terminal"),
+    (ListTerminals, "terminal", "list_terminals"),
     // slash commands
     (ListSlashCommands, "slash", "list_slash_commands"),
     (ResolveSlashCommand, "slash", "resolve_slash_command"),

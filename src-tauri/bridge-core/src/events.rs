@@ -45,8 +45,12 @@ pub enum CoreEvent {
     /// names the scope only, because a client that rebuilt a record from a
     /// notification would keep showing a pin the tombstone already removed.
     MemoryChanged { scope_key: String },
-    /// Transient terminal bytes; worthless once stale, never replayed.
-    SessionOutput { session_id: String, data: String },
+    /// Transient terminal bytes; worthless once stale, never replayed. The
+    /// terminal id addresses one shell of the workspace's several.
+    SessionOutput { session_id: String, terminal_id: String, data: String },
+    /// One shell ended — exit, kill, or explicit close. Clients re-list the
+    /// workspace's terminals rather than trusting a rebuilt roster.
+    TerminalExited { session_id: String, terminal_id: String },
     /// Transient provider usage tick for the ambient meter.
     AccountUsage {
         provider: String,
@@ -70,6 +74,7 @@ impl CoreEvent {
             CoreEvent::LearningJobChanged(_) => NotificationName::LearningJobChanged,
             CoreEvent::MemoryChanged { .. } => NotificationName::MemoryChanged,
             CoreEvent::SessionOutput { .. } => NotificationName::SessionOutput,
+            CoreEvent::TerminalExited { .. } => NotificationName::TerminalExited,
             CoreEvent::AccountUsage { .. } => NotificationName::AccountUsage,
             CoreEvent::ManagedAgentChanged { .. } => NotificationName::ManagedAgentChanged,
         }
@@ -86,9 +91,14 @@ impl CoreEvent {
             CoreEvent::MemoryChanged { scope_key } => serde_json::json!({
                 "scopeKey": scope_key,
             }),
-            CoreEvent::SessionOutput { session_id, data } => serde_json::json!({
+            CoreEvent::SessionOutput { session_id, terminal_id, data } => serde_json::json!({
                 "sessionId": session_id,
+                "terminalId": terminal_id,
                 "data": data,
+            }),
+            CoreEvent::TerminalExited { session_id, terminal_id } => serde_json::json!({
+                "sessionId": session_id,
+                "terminalId": terminal_id,
             }),
             // The agent id only: the client refetches authoritative state rather
             // than rebuilding it from a notification.
@@ -238,6 +248,7 @@ impl EventBus {
                 }
                 CoreEvent::Agent(_)
                 | CoreEvent::SessionOutput { .. }
+                | CoreEvent::TerminalExited { .. }
                 | CoreEvent::AccountUsage { .. } => {}
             }
         }
@@ -249,6 +260,27 @@ impl EventBus {
 mod tests {
     use super::*;
     use bridge_protocol::notifications::DeliveryClass;
+
+    #[test]
+    fn terminal_payloads_carry_the_shell_identity() {
+        let output = CoreEvent::SessionOutput {
+            session_id: "w".into(),
+            terminal_id: "t1".into(),
+            data: "ok".into(),
+        };
+        assert_eq!(output.kind(), NotificationName::SessionOutput);
+        assert_eq!(
+            output.payload(),
+            serde_json::json!({"sessionId": "w", "terminalId": "t1", "data": "ok"})
+        );
+
+        let exited = CoreEvent::TerminalExited { session_id: "w".into(), terminal_id: "t1".into() };
+        assert_eq!(exited.kind(), NotificationName::TerminalExited);
+        assert_eq!(
+            exited.payload(),
+            serde_json::json!({"sessionId": "w", "terminalId": "t1"})
+        );
+    }
 
     fn agent_event(sequence: i64) -> AgentEvent {
         AgentEvent {
@@ -280,6 +312,7 @@ mod tests {
             },
             CoreEvent::SessionOutput {
                 session_id: "s".into(),
+                terminal_id: "t1".into(),
                 data: "$ ls".into(),
             },
             CoreEvent::AccountUsage {
@@ -288,6 +321,10 @@ mod tests {
             },
             CoreEvent::ManagedAgentChanged {
                 agent_id: "codex".into(),
+            },
+            CoreEvent::TerminalExited {
+                session_id: "s".into(),
+                terminal_id: "t1".into(),
             },
         ];
         for event in &events {
@@ -324,11 +361,12 @@ mod tests {
         assert_eq!(CoreEvent::StateChanged.payload(), Value::Null);
         let output = CoreEvent::SessionOutput {
             session_id: "s".into(),
+            terminal_id: "t1".into(),
             data: "hi".into(),
         };
         assert_eq!(
             output.payload(),
-            serde_json::json!({"sessionId":"s","data":"hi"})
+            serde_json::json!({"sessionId":"s","terminalId":"t1","data":"hi"})
         );
         let usage = CoreEvent::AccountUsage {
             provider: "claude".into(),
@@ -418,6 +456,7 @@ mod tests {
         for index in 0..=EVENT_BUS_CAPACITY {
             bus.publish(CoreEvent::SessionOutput {
                 session_id: "s".into(),
+                terminal_id: "t1".into(),
                 data: index.to_string(),
             });
         }

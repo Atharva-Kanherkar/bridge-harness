@@ -1120,8 +1120,20 @@ pub fn resolve_approval(
 
 // --- terminal ----------------------------------------------------------------
 
-pub fn open_terminal(core: &Arc<BridgeCore>, workspace_id: &str) -> Result<(), BridgeError> {
-    let runtime_id = format!("terminal:{workspace_id}");
+fn terminal_runtime_id(workspace_id: &str, terminal_id: &str) -> String {
+    format!("terminal:{workspace_id}:{terminal_id}")
+}
+
+/// One counter across every shell ever spawned: equality is all the reader
+/// threads need, and a global sidesteps per-key bookkeeping.
+static TERMINAL_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+pub fn open_terminal(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+    terminal_id: &str,
+) -> Result<(), BridgeError> {
+    let runtime_id = terminal_runtime_id(workspace_id, terminal_id);
     core.workspace_path(workspace_id)?;
     let workspace_operation = core.workspace_operation(workspace_id);
     let _workspace_operation = workspace_operation.lock().unwrap();
@@ -1165,16 +1177,19 @@ pub fn open_terminal(core: &Arc<BridgeCore>, workspace_id: &str) -> Result<(), B
         .master
         .take_writer()
         .map_err(|e| BridgeError::Pty(e.to_string()))?;
+    let epoch = TERMINAL_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     core.runtimes.lock().unwrap().insert(
         runtime_id.clone(),
         RuntimeSession {
             writer,
             master: pair.master,
             child,
+            epoch,
         },
     );
     let core_reader = Arc::clone(core);
     let workspace_reader = workspace_id.to_owned();
+    let terminal_reader = terminal_id.to_owned();
     let runtime_reader = runtime_id;
     thread::spawn(move || {
         let mut buf = [0u8; 8192];
@@ -1185,24 +1200,79 @@ pub fn open_terminal(core: &Arc<BridgeCore>, workspace_id: &str) -> Result<(), B
                     let data = String::from_utf8_lossy(&buf[..n]).into_owned();
                     core_reader.events.publish(CoreEvent::SessionOutput {
                         session_id: workspace_reader.clone(),
+                        terminal_id: terminal_reader.clone(),
                         data,
                     });
                 }
             }
         }
-        core_reader.runtimes.lock().unwrap().remove(&runtime_reader);
+        {
+            let mut sessions = core_reader.runtimes.lock().unwrap();
+            match sessions.get(&runtime_reader) {
+                Some(entry) if entry.epoch == epoch => {
+                    sessions.remove(&runtime_reader);
+                }
+                Some(_) => {
+                    // A newer shell took this key while we drained. It is
+                    // alive and it is not ours: removing it would orphan its
+                    // PTY, and announcing an exit would mark it dead.
+                    return;
+                }
+                None => {}
+            }
+        }
+        // The exit outlives the bytes: whoever is not looking still learns
+        // that this shell is gone.
+        core_reader.events.publish(CoreEvent::TerminalExited {
+            session_id: workspace_reader,
+            terminal_id: terminal_reader,
+        });
     });
     Ok(())
+}
+
+pub fn close_terminal(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+    terminal_id: &str,
+) -> Result<(), BridgeError> {
+    let runtime_id = terminal_runtime_id(workspace_id, terminal_id);
+    // The same claim open takes, so a close racing an open of the same key
+    // settles into a definite order instead of interleaving.
+    let _lifecycle = core.claim_session_lifecycle(&runtime_id, "terminal close")?;
+    let mut sessions = core.runtimes.lock().unwrap();
+    let Some(mut runtime) = sessions.remove(&runtime_id) else {
+        return Ok(());
+    };
+    drop(sessions);
+    // Killing the child ends the reader loop, which publishes the exit; the
+    // entry is already gone, so the loop's cleanup remove is a no-op.
+    let _ = runtime.child.kill();
+    Ok(())
+}
+
+pub fn list_terminals(core: &Arc<BridgeCore>, workspace_id: &str) -> Vec<String> {
+    let prefix = format!("terminal:{workspace_id}:");
+    let mut ids: Vec<String> = core
+        .runtimes
+        .lock()
+        .unwrap()
+        .keys()
+        .filter_map(|key| key.strip_prefix(&prefix).map(str::to_owned))
+        .collect();
+    ids.sort();
+    ids
 }
 
 pub fn write_terminal(
     core: &Arc<BridgeCore>,
     workspace_id: &str,
+    terminal_id: &str,
     data: &str,
 ) -> Result<(), BridgeError> {
     let mut sessions = core.runtimes.lock().unwrap();
     let runtime = sessions
-        .get_mut(&format!("terminal:{workspace_id}"))
+        .get_mut(&terminal_runtime_id(workspace_id, terminal_id))
         .ok_or_else(|| BridgeError::Invalid("Workspace terminal is not open".into()))?;
     runtime.writer.write_all(data.as_bytes())?;
     runtime.writer.flush()?;
@@ -1212,6 +1282,7 @@ pub fn write_terminal(
 pub fn resize_terminal(
     core: &Arc<BridgeCore>,
     workspace_id: &str,
+    terminal_id: &str,
     rows: u16,
     cols: u16,
 ) -> Result<(), BridgeError> {
@@ -1219,7 +1290,7 @@ pub fn resize_terminal(
         .runtimes
         .lock()
         .unwrap()
-        .get_mut(&format!("terminal:{workspace_id}"))
+        .get_mut(&terminal_runtime_id(workspace_id, terminal_id))
     {
         runtime
             .master
@@ -2732,6 +2803,78 @@ pub fn execute_automation_action(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn shells_key_by_workspace_and_terminal() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO projects(id,name,path,created_at) VALUES('p','P','/tmp','now')",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','main',?1,'ready','now')",
+                rusqlite::params![scratch.path().to_string_lossy()],
+            )
+            .unwrap();
+        }
+
+        super::open_terminal(&core, "w", "t1").unwrap();
+        super::open_terminal(&core, "w", "t2").unwrap();
+        assert_eq!(super::list_terminals(&core, "w"), vec!["t1", "t2"]);
+
+        super::write_terminal(&core, "w", "t1", "true\n").unwrap();
+        let missing = super::write_terminal(&core, "w", "t3", "x");
+        assert!(missing.is_err(), "a write addresses one existing shell");
+
+        super::close_terminal(&core, "w", "t1").unwrap();
+        assert_eq!(super::list_terminals(&core, "w"), vec!["t2"]);
+        super::close_terminal(&core, "w", "t1").unwrap();
+
+        super::close_terminal(&core, "w", "t2").unwrap();
+        assert!(super::list_terminals(&core, "w").is_empty());
+    }
+
+    #[test]
+    fn a_reopened_terminal_survives_the_old_readers_drain() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO projects(id,name,path,created_at) VALUES('p','P','/tmp','now')",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','main',?1,'ready','now')",
+                rusqlite::params![scratch.path().to_string_lossy()],
+            )
+            .unwrap();
+        }
+
+        super::open_terminal(&core, "w", "t1").unwrap();
+        // Close and immediately reopen the same id: the dying shell's reader
+        // thread drains on its own schedule, and its cleanup must recognise
+        // that the key now belongs to a newer shell.
+        super::close_terminal(&core, "w", "t1").unwrap();
+        super::open_terminal(&core, "w", "t1").unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            assert_eq!(
+                super::list_terminals(&core, "w"),
+                vec!["t1"],
+                "the reopened shell must survive the old reader's drain"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        super::write_terminal(&core, "w", "t1", "true\n").unwrap();
+        super::close_terminal(&core, "w", "t1").unwrap();
+    }
+
     #[test]
     fn learning_runs_never_hold_the_global_sqlite_lock() {
         // run_learning opens its own connection via run_local_database; a

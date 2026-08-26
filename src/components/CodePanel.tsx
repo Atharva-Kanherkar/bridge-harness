@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
 import { CodeEditor } from "./editor/CodeEditor";
 import { isDirty, isReadOnly, loadBuffer, saveBuffer, stateAfterEdit, statusLabel, type FileBuffer } from "./editor/fileBuffer";
+import { STATS_REFRESH_DEBOUNCE_MS } from "./ChangesPanel";
 
 /** Rows the tree actually paints. Deep repositories stay responsive because
  *  only expanded directories contribute. */
@@ -122,11 +123,19 @@ function FilePalette({ paths, onPick, onClose }: { paths: string[]; onPick: (pat
  * That turns the one genuinely dangerous case — a human and an agent editing
  * the same file — into a visible choice instead of a silent lost update.
  */
-export function CodePanel({ workspaceId, visible = true, onSaved }: {
+export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, onSaved }: {
   workspaceId: string;
   /** False while another tab is showing: the panel stays mounted, but its
    *  shortcuts must not steal ⌘P and ⌘S from whatever is on screen. */
   visible?: boolean;
+  /** An outside request — a diff row, a chat mention — to open a file here,
+   *  at a line when one is known. The nonce is the request identity: one
+   *  open per nonce, so a re-render with the same request does not
+   *  re-activate the tab. */
+  reveal?: { path: string; line?: number; nonce: number };
+  /** Changes when the workspace's stats drift — the cue to compare every
+   *  open buffer against the disk the agent just wrote. */
+  driftSignal?: string;
   onSaved?: () => void;
 }) {
   const [paths, setPaths] = useState<string[]>([]);
@@ -186,6 +195,15 @@ export function CodePanel({ workspaceId, visible = true, onSaved }: {
     }
   }, [open, workspaceId]);
 
+  // One open per reveal nonce. The ref carries the last honoured request so a
+  // re-render with the same reveal object is inert.
+  const revealSeen = useRef(0);
+  useEffect(() => {
+    if (!reveal || reveal.nonce === revealSeen.current) return;
+    revealSeen.current = reveal.nonce;
+    void openFile(reveal.path);
+  }, [reveal, openFile]);
+
   const closeFile = useCallback((path: string) => {
     // Retire any load still in flight for this path along with the tab.
     opens.current.set(path, (opens.current.get(path) ?? 0) + 1);
@@ -233,6 +251,51 @@ export function CodePanel({ workspaceId, visible = true, onSaved }: {
     buffers.current.set(path, buffer.saved);
     setOpen(files => files.map(entry => entry.path === path ? buffer : entry));
   }, [open, workspaceId]);
+
+  // The agent writes the same tree this panel edits. When the workspace's
+  // stats settle after a drift, compare every open buffer against disk: a
+  // clean buffer takes the new bytes, a dirty one turns its existing conflict
+  // state on — the same state a refused save produces — and keeps the unsaved
+  // text. Debounced like the Changes pane, because stats tick many times a
+  // second under a writing agent, and each probe is a blocking IPC call.
+  const driftSeen = useRef(driftSignal);
+  useEffect(() => {
+    if (driftSignal === undefined || driftSignal === driftSeen.current) return;
+    driftSeen.current = driftSignal;
+    if (open.length === 0) return;
+    let live = true;
+    const timer = window.setTimeout(() => void (async () => {
+      for (const file of open) {
+        if (!live) break;
+        if (file.state === "saving" || file.state === "error") continue;
+        try {
+          // Captured before the read: a tab closed (or closed and reopened)
+          // while the probe was in flight must not be resurrected by it.
+          const generation = opens.current.get(file.path) ?? 0;
+          const disk = await bridgeApi.readWorkspaceFile(workspaceId, file.path);
+          if (!live) break;
+          if ((opens.current.get(file.path) ?? 0) !== generation) continue;
+          if (disk.sha256 === file.baseSha) continue;
+          if (isDirty(file)) {
+            if (file.state !== "conflict") patch(file.path, { state: "conflict", message: "Changed on disk while you were editing" });
+          } else {
+            // The probe already carried the bytes; reseed from them instead of
+            // reading the same file a second time.
+            const seed = (open.find(entry => entry.path === file.path)?.seed ?? 0) + 1;
+            buffers.current.set(file.path, disk.content);
+            setOpen(files => files.map(entry => entry.path === file.path ? {
+              path: file.path, baseSha: disk.sha256, saved: disk.content, binary: disk.binary,
+              tooLarge: disk.tooLarge, sizeBytes: disk.sizeBytes, seed, state: "clean",
+            } : entry));
+          }
+        } catch {
+          // A vanished file surfaces on the next save; drift polling stays quiet.
+        }
+      }
+    })(), STATS_REFRESH_DEBOUNCE_MS);
+    return () => { live = false; window.clearTimeout(timer); };
+  }, [driftSignal, open, workspaceId, patch]);
+
 
   // ⌘P and ⌘S also work when focus is in the tree or the tab strip; the
   // editor has its own ⌘S so a save never depends on where the caret is.
@@ -336,6 +399,7 @@ export function CodePanel({ workspaceId, visible = true, onSaved }: {
                   docKey={`${active.path}:${active.seed}`}
                   doc={active.saved}
                   path={active.path}
+                  revealLine={reveal && reveal.path === active.path && reveal.line !== undefined ? { line: reveal.line, nonce: reveal.nonce } : undefined}
                   onChange={value => handleChange(active.path, value)}
                   onSave={() => void save(active.path)}
                   visible={visible}

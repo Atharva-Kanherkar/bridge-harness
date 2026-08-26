@@ -205,6 +205,8 @@ typed_methods![
     (OpenTerminal, OpenTerminalParams, UnitResult),
     (WriteTerminal, WriteTerminalParams, UnitResult),
     (ResizeTerminal, ResizeTerminalParams, UnitResult),
+    (CloseTerminal, CloseTerminalParams, UnitResult),
+    (ListTerminals, ListTerminalsParams, ListTerminalsResult),
     // slash commands
     (ListSlashCommands, _, SlashCommandsResult),
     (ResolveSlashCommand, ResolveSlashCommandParams, SlashCommandResolveResult),
@@ -511,7 +513,12 @@ mod tests {
     fn params_fields_are_the_wire_names_a_host_validates() {
         assert_eq!(
             TypedMethod::params_fields(MethodName::ResizeTerminal),
-            Some(vec!["cols".to_string(), "rows".to_string(), "workspaceId".to_string()])
+            Some(vec![
+                "cols".to_string(),
+                "rows".to_string(),
+                "terminalId".to_string(),
+                "workspaceId".to_string(),
+            ])
         );
         assert_eq!(
             TypedMethod::params_fields(MethodName::ResolveApproval),

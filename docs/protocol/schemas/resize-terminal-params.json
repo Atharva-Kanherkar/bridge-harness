@@ -13,6 +13,9 @@
       "minimum": 0.0,
       "type": "integer"
     },
+    "terminalId": {
+      "type": "string"
+    },
     "workspaceId": {
       "type": "string"
     }
@@ -20,6 +23,7 @@
   "required": [
     "cols",
     "rows",
+    "terminalId",
     "workspaceId"
   ],
   "title": "ResizeTerminalParams",

@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult } from "./protocol/generated/protocol";
 import type {
   ManagedAgentInspection,
@@ -959,7 +959,12 @@ export const bridgeApi = {
   contextBreakdownDigest: (sessionId: string): Promise<string> => isTauri() ? call("sessions/get_context_breakdown_digest", { sessionId }).then(result => result.digest) : Promise.resolve(mockContextBreakdown(sessionId).digest),
   /** Durable backfill of one session's event log — any session id, including a
    * worker child's. Cursor semantics: pass the last sequence already held. */
-  replaySessionEvents: (sessionId: string, afterSequence = 0, limit?: number, tail?: boolean): Promise<AgentEvent[]> => isTauri() ? call("sessions/replay_session_events", { sessionId, afterSequence, limit, tail }) as Promise<AgentEvent[]> : Promise.resolve([]),
+  replaySessionEvents: (sessionId: string, afterSequence = 0, limit?: number, tail?: boolean): Promise<AgentEvent[]> => {
+    if (isTauri()) return call("sessions/replay_session_events", { sessionId, afterSequence, limit, tail }) as Promise<AgentEvent[]>;
+    const all = mockState.agentEvents.filter(event => event.sessionId === sessionId && event.sequence > afterSequence).sort((a, b) => a.sequence - b.sequence);
+    const page = tail ? all.slice(Math.max(0, all.length - (limit ?? all.length))) : all.slice(0, limit ?? all.length);
+    return Promise.resolve(structuredClone(page));
+  },
   createCompletionPlan: async (sessionId: string, acceptanceCriteria: string[], changedPaths: string[], repositoryCommands: string[], markdownProjection: string | null = null, markdownCommitted = false): Promise<CompletionSummary> => {
     if (isTauri()) return call("completion/create_completion_plan", { sessionId, acceptanceCriteria, changedPaths, repositoryCommands, markdownProjection, markdownCommitted });
     const forest = mockForest(sessionId); if (!forest.completion) throw new Error("Mock completion plan is available only on the demo orchestrator"); return forest.completion;
@@ -1380,9 +1385,14 @@ export const bridgeApi = {
     if (isTauri()) return unit(call("approvals/resolve_approval", { sessionId, eventId, decision }));
     const request = mockState.agentEvents.find(item => item.id === eventId); if (request) appendAgent(request.sessionId, "approval.resolved", { status: decision, data: { requestEventId: eventId, decision } }); emitState();
   },
-  openTerminal: (workspaceId: string): Promise<void> => isTauri() ? unit(call("terminal/open_terminal", { workspaceId })) : Promise.resolve(),
-  writeTerminal: (workspaceId: string, data: string): Promise<void> => isTauri() ? unit(call("terminal/write_terminal", { workspaceId, data })) : Promise.resolve(),
-  resizeTerminal: (workspaceId: string, rows: number, cols: number): Promise<void> => isTauri() ? unit(call("terminal/resize_terminal", { workspaceId, rows, cols })) : Promise.resolve(),
+  openTerminal: (workspaceId: string, terminalId: string): Promise<void> => isTauri() ? unit(call("terminal/open_terminal", { workspaceId, terminalId })) : Promise.resolve(),
+  writeTerminal: (workspaceId: string, terminalId: string, data: string): Promise<void> => isTauri() ? unit(call("terminal/write_terminal", { workspaceId, terminalId, data })) : Promise.resolve(),
+  resizeTerminal: (workspaceId: string, terminalId: string, rows: number, cols: number): Promise<void> => isTauri() ? unit(call("terminal/resize_terminal", { workspaceId, terminalId, rows, cols })) : Promise.resolve(),
+  closeTerminal: (workspaceId: string, terminalId: string): Promise<void> => isTauri() ? unit(call("terminal/close_terminal", { workspaceId, terminalId })) : Promise.resolve(),
+  listTerminals: async (workspaceId: string): Promise<string[]> => {
+    if (isTauri()) return ((await call("terminal/list_terminals", { workspaceId })) as { terminalIds: string[] }).terminalIds;
+    return [];
+  },
   refreshWorkspace: (workspaceId: string): Promise<BridgeState> => isTauri() ? call("workspaces/refresh_workspace", { workspaceId }) : Promise.resolve(snapshot()),
   listWorkspaceBranches: (workspaceId: string): Promise<ListWorkspaceBranchesResult> => {
     if (isTauri()) return call("workspaces/list_workspace_branches", { workspaceId });
@@ -1422,6 +1432,7 @@ export const bridgeApi = {
   writeWorkspaceFile: async (workspaceId: string, path: string, content: string, baseSha256: string | null): Promise<WriteWorkspaceFileResult> =>
     isTauri() ? call("workspaces/write_workspace_file", { workspaceId, path, content, baseSha256 }) : mockWriteFile(path, content, baseSha256),
   onTerminal: async (handler: (chunk: TerminalChunk) => void): Promise<UnlistenFn> => isTauri() ? subscribe<TerminalChunk>("session-output", handler) : () => undefined,
+  onTerminalExited: async (handler: (exit: TerminalExit) => void): Promise<UnlistenFn> => isTauri() ? subscribe<TerminalExit>("terminal-exited", handler) : () => undefined,
   onAgentEvent: async (handler: (event: AgentEvent) => void): Promise<UnlistenFn> => {
     if (isTauri()) return subscribe<AgentEvent>("agent-event", handler);
     return () => undefined;

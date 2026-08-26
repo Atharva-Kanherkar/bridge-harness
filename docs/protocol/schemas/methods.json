@@ -359,6 +359,20 @@
       "resultSchema": "unit-result.json"
     },
     {
+      "command": "close_terminal",
+      "domain": "terminal",
+      "method": "terminal/close_terminal",
+      "paramsSchema": "close-terminal-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "list_terminals",
+      "domain": "terminal",
+      "method": "terminal/list_terminals",
+      "paramsSchema": "list-terminals-params.json",
+      "resultSchema": "list-terminals-result.json"
+    },
+    {
       "command": "list_slash_commands",
       "domain": "slash",
       "method": "slash/list_slash_commands",
