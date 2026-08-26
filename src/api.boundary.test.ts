@@ -18,8 +18,12 @@ describe("the api boundary consumes the generated contract", () => {
   });
 
   it("routes every event subscription through the typed subscribe() helper", () => {
-    // One raw listen() — the body of subscribe() itself.
-    expect(source.match(/\blisten[(<]/g)).toHaveLength(1);
+    // Naming the call sites rather than counting them: a raw listen() is only
+    // allowed for subscribe()'s own body and for the shell's menu channel,
+    // which is a Tauri event the desktop shell owns and not a protocol
+    // notification. Any other literal here would be a hand-typed wire shape.
+    const targets = [...source.matchAll(/\blisten(?:<[^>]*>)?\(([^,]+),/g)].map(match => match[1].trim());
+    expect(targets).toEqual(["notification", "MENU_COMMAND_EVENT"]);
   });
 
   it("only calls methods the generated registry declares", () => {

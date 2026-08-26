@@ -52,6 +52,8 @@ import { useThemePreference } from "./theme";
 import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
 import { readLastWorkspaceId, resolveNewChatWorkspaceId, writeLastWorkspaceId } from "./lastWorkspace";
 import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setLayoutFullscreenDocument } from "./windowChrome";
+import { isTypingTarget, matchShortcut, MENU_COMMAND_EVENT, type CommandId } from "./keymap";
+import { ShortcutsSheet } from "./components/ShortcutsSheet";
 import { cn } from "@/lib/utils";
 import { buildCacheDiagnostics, buildUsageHistory, clampPercent, extractUsageSnapshot, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "./usage";
 import { describeError, errorMessage } from "./errors";
@@ -172,6 +174,7 @@ export function App() {
   const [terminalActivity, setTerminalActivity] = useState<TerminalActivity>();
   const [acknowledgedTasks, setAcknowledgedTasks] = useState<Set<string>>(() => new Set());
   const [recallOpen, setRecallOpen] = useState(false);
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [highlightEntryId, setHighlightEntryId] = useState<string | null>(null);
   const [error, setError] = useState<string>();
   const [forest, setForest] = useState<SessionForestSnapshot>();
@@ -1312,37 +1315,85 @@ export function App() {
     if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); void sendPrompt(); }
   }
 
-  // ⌥⌘F rather than ⌃⌘F: the latter is macOS's own native-fullscreen binding,
-  // and this is an in-window layout change, not a window state change.
-  useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      const chord = event.altKey && (event.metaKey || event.ctrlKey);
-      if (chord && event.key.toLowerCase() === "f") {
-        event.preventDefault();
+  // Every chord in the app resolves through `src/keymap.ts`: this dispatcher,
+  // the shell's menu items, and the shortcuts sheet all read the one table, so
+  // a binding cannot mean different things in three places. Held in a ref
+  // rather than a callback because the commands close over half the component
+  // and the window listener must never run yesterday's copy of them.
+  const commandRef = useRef<(id: CommandId, index?: number) => void>(() => {});
+  commandRef.current = (id, index) => {
+    switch (id) {
+      case "new-chat":
+        void startChatInCurrentRepo();
+        return;
+      case "new-project":
+        setTitle("");
+        setModal("workspace");
+        return;
+      case "interrupt-turn":
+        // Reachable mid-sentence, so it has to be inert when nothing is running.
+        if (session?.activeTurnId) void bridgeApi.interruptTurn(session.id);
+        return;
+      case "open-recall":
+        if (!session) return;
+        // Recall reads the conversation, so an expanded pane steps aside first.
+        if (dockRef.current.expanded) dispatchDock({ type: "toggle-expanded" });
+        setView("workspace");
+        setRecallOpen(open => !open);
+        return;
+      case "jump-to-chat": {
+        const target = topSessions[index ?? 0];
+        if (target) openSession(target.id);
+        return;
+      }
+      case "next-chat":
+      case "previous-chat": {
+        if (!topSessions.length) return;
+        const step = id === "next-chat" ? 1 : -1;
+        const current = topSessions.findIndex(chat => chat.id === session?.id);
+        // Nothing open yet: step onto the end the direction came from.
+        const target = current < 0
+          ? topSessions[step > 0 ? 0 : topSessions.length - 1]
+          : topSessions[(current + step + topSessions.length) % topSessions.length];
+        openSession(target.id);
+        return;
+      }
+      case "open-projects":
+        setView("projects");
+        return;
+      case "open-settings":
+        setView("settings");
+        return;
+      case "toggle-sidebar":
+        setSidebarCollapsed(value => !value);
+        return;
+      case "toggle-fullscreen":
         setFullscreen(value => !value);
         return;
-      }
-      // The dock's chords live beside ⌥⌘F: 0 toggles, digits pick a pane by
-      // switcher order, return expands. Digits go by physical code because ⌥
-      // rewrites the printed key on macOS.
-      if (chord && (event.code === "Digit0" || event.key === "0")) {
-        event.preventDefault();
+      case "toggle-dock":
         dispatchDock({ type: "toggle" });
         return;
-      }
-      if (chord && event.key === "Enter") {
-        event.preventDefault();
+      case "expand-dock":
         dispatchDock({ type: "toggle-expanded" });
         return;
+      case "open-dock-pane": {
+        const pane = DOCK_PANES[index ?? 0];
+        if (pane) dispatchDock({ type: "open-pane", pane });
+        return;
       }
-      if (chord) {
-        const digit = /^Digit([1-9])$/.exec(event.code)?.[1] ?? (/^[1-9]$/.test(event.key) ? event.key : undefined);
-        const pane = digit ? DOCK_PANES[Number(digit) - 1] : undefined;
-        if (pane) {
-          event.preventDefault();
-          dispatchDock({ type: "open-pane", pane });
-          return;
-        }
+      case "show-shortcuts":
+        setShortcutsOpen(open => !open);
+        return;
+    }
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const match = matchShortcut(event, isTypingTarget(event.target));
+      if (match) {
+        event.preventDefault();
+        commandRef.current(match.shortcut.id, match.index);
+        return;
       }
       if (event.key === "Escape") {
         // An expanded dock is the nearer layer: the first Escape restores it,
@@ -1354,6 +1405,18 @@ export function App() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [dispatchDock]);
+
+  // A menu pick carries the same command id a chord does, so both land on the
+  // same handler. Outside the desktop shell there is no menu and no listener.
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    let cancelled = false;
+    void bridgeApi.onMenuCommand(id => commandRef.current(id)).then(dispose => {
+      if (cancelled) dispose();
+      else unlisten = dispose;
+    });
+    return () => { cancelled = true; unlisten?.(); };
+  }, []);
 
   useEffect(() => {
     setLayoutFullscreenDocument(fullscreen || flushWindow);
@@ -1768,6 +1831,7 @@ export function App() {
       onClose={() => void newWorkspaceSession(false)}
     />
     <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={setModelSetup} onClose={() => setModal(null)} onError={setError} />
+    <ShortcutsSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
     <MemoryDialog open={modal === "memory"} initialBody={memoryDraft} adapters={adapters} onClose={() => { setModal(null); setMemoryDraft(null); }} onError={setError} />
   </div>;
 }
