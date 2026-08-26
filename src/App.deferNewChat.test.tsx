@@ -98,6 +98,17 @@ describe("deferred new-chat creation (#350)", () => {
     expect(totalCreates(creates)).toBe(0);
   });
 
+  it("rapid repeat clicks on New Chat produce at most one draft and no session", async () => {
+    const creates = spyCreates();
+    const newChat = byLabel("New Chat")!;
+    await act(async () => { newChat.click(); newChat.click(); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+
+    expect(totalCreates(creates)).toBe(0);
+    // One draft surface, one composer — not two.
+    expect(container.querySelectorAll('button[aria-label="New workspace"]').length).toBe(1);
+  });
+
   it("the first submitted message creates exactly one session and leaves the draft", async () => {
     await act(async () => byLabel("New Chat")!.click());
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });

@@ -24,7 +24,15 @@ requires the row to pre-exist, so creation is *moved* to first submit, not remov
 - **The draft** holds the choices made before sending: `harness`, `model`,
   `workspaceId` (null ⇒ non-workspace direct chat), `createWorktree`, and an optional
   `carryFromSessionId` for the handoff brief. Harness/model are captured at draft-open
-  time so the carry-over from the current direct chat survives deselection.
+  time so the carry-over from the current direct chat survives deselection. They apply
+  to the **non-workspace direct-chat** path only; a **workspace** draft creates an
+  orchestrator whose harness/model come from the orchestrator profile (unchanged from
+  before #350 — `create_workspace_session` takes no harness/model, and the welcome
+  model badge is display-only, so no user selection is discarded).
+- **First-message delivery** is tagged with the created session id: the delivery
+  effect hands the message only to the chat it was created for, never to a session that
+  became active while `create_chat`/`create_workspace_session` awaited. This closes a
+  race that could otherwise misroute the message and leave the created chat empty.
 - **On submit** the session is created with exactly the draft's choices, the first
   message lands in it, and nothing is dropped or double-sent:
   - `workspaceId` set ⇒ `createWorkspaceSession(workspaceId, createWorktree)`.

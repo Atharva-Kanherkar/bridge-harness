@@ -208,7 +208,10 @@ export function App() {
   const [usageByProvider, setUsageByProvider] = useState<Partial<Record<UsageProvider, UsageSnapshot>>>({});
   const [usageSamples, setUsageSamples] = useState<Partial<Record<UsageProvider, UsageRateSample[]>>>({});
   const startedRef = useRef<Set<string>>(new Set());
-  const pendingWelcomeMessageRef = useRef<string | null>(null);
+  // The first message of a just-created chat, tagged with its target session id so
+  // the delivery effect can only ever hand it to that chat — never to a session that
+  // became active while the create awaited (#350).
+  const pendingWelcomeMessageRef = useRef<{ sessionId: string; text: string } | null>(null);
   const forestKeyRef = useRef("");
   const agentEventQueueRef = useRef<AgentEvent[]>([]);
   const agentEventTimerRef = useRef<number | undefined>(undefined);
@@ -938,9 +941,11 @@ export function App() {
       // A chat comes into existence only when it has something in it (#350): an empty
       // submit is a no-op, never a zero-entry placeholder row. The draft stays open.
       if (!text) return undefined;
-      pendingWelcomeMessageRef.current = text;
       setBusy(true); setError(undefined);
       try {
+        // Workspace drafts create an orchestrator, whose harness/model come from the
+        // orchestrator profile (unchanged from before #350); the draft's harness/model
+        // are the carry-over for the non-workspace direct-chat path only.
         const next = draft.workspaceId
           ? await bridgeApi.createWorkspaceSession(draft.workspaceId, draft.createWorktree)
           : await bridgeApi.createChat(draft.harness, draft.model, null);
@@ -955,13 +960,14 @@ export function App() {
           catch { /* context carry is best-effort; the chat starts regardless */ }
         }
         if (draft.workspaceId) writeLastWorkspaceId(draft.workspaceId);
+        // Tag the message with the created session so it can only land there, even if
+        // another session became active while the create awaited.
+        if (created) pendingWelcomeMessageRef.current = { sessionId: created.id, text };
         setState(next);
         setNewChatDraft(null);
         if (created) {
           if (draft.workspaceId) worktreeBySessionRef.current.set(created.id, draft.createWorktree);
           setSelectedSessionId(created.id);
-        } else {
-          pendingWelcomeMessageRef.current = null;
         }
         return created?.id;
       } catch (e) {
@@ -1117,10 +1123,12 @@ export function App() {
   }
 
   useEffect(() => {
-    const draft = pendingWelcomeMessageRef.current;
-    if (!draft || !session) return;
+    const pending = pendingWelcomeMessageRef.current;
+    // Deliver only to the session the message was created for — never to whatever
+    // session happened to become active in the meantime (#350).
+    if (!pending || session?.id !== pending.sessionId) return;
     pendingWelcomeMessageRef.current = null;
-    void sendPrompt(draft);
+    void sendPrompt(pending.text);
   }, [session?.id]);
   // Workspace "+": ask whether this orchestrator should get an isolated worktree.
   function requestWorkspaceSession(workspaceId: string) {
