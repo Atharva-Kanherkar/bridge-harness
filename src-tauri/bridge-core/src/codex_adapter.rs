@@ -53,6 +53,7 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedCodex, BridgeError> {
             write_mode: request.write_mode,
             read_only_sandbox: request.read_only_sandbox,
             briefing: request.briefing,
+            on_progress: request.on_progress,
         },
         Some(request.provider_session_id),
     )
@@ -70,6 +71,7 @@ fn launch(
         write_mode,
         read_only_sandbox,
         briefing,
+        on_progress,
     } = request;
     // Codex cannot express one connector tool's exact identity, so a briefing
     // policy here would be decoration. Refused at the boundary with the reason,
@@ -112,6 +114,10 @@ fn launch(
             .env("BRIDGE_WORKER_OUTPUT_DIR", sandbox.output_dir());
     }
     crate::adapters::configure_process_group(&mut command);
+    if let Some(on_progress) = on_progress {
+        on_progress(crate::adapters::StartupPhase::Spawning);
+    }
+    let spawned_at = std::time::Instant::now();
     let mut child = command.spawn()?;
     let stderr_tail = crate::adapters::StderrTail::capture(&mut child);
     let stdin = child
@@ -128,7 +134,11 @@ fn launch(
         &writer,
         &json!({"method":"initialize","id":1,"params":{"clientInfo":{"name":"bridge","title":"Bridge","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":false,"requestAttestation":false}}}),
     )?;
+    if let Some(on_progress) = on_progress {
+        on_progress(crate::adapters::StartupPhase::Handshake);
+    }
     let (_, mut startup_messages) = wait_for_response(&mut reader, 1)?;
+    crate::process_ledger::log_spawn_to_ready("codex", spawned_at);
     write_value(&writer, &json!({"method":"initialized"}))?;
     let (method, params, lifecycle_phase) = if let Some(thread_id) = resume_thread_id {
         (
@@ -155,6 +165,9 @@ fn launch(
             ))
         })?
         .to_owned();
+    if let Some(on_progress) = on_progress {
+        on_progress(crate::adapters::StartupPhase::SessionOpen);
+    }
     Ok(StartedCodex {
         runtime: CodexRuntime {
             writer,
@@ -749,6 +762,7 @@ mod tests {
             write_mode: None,
             read_only_sandbox: None,
             briefing: None,
+            on_progress: None,
         })
         .unwrap();
         let mut runtime = started.runtime;
@@ -818,6 +832,7 @@ mod tests {
             write_mode: None,
             read_only_sandbox: None,
             briefing: None,
+            on_progress: None,
         })
         .unwrap();
         run_turn(&mut started, "Remember this exact token for the next turn: BRIDGE_CODEX_RESUME_8F31. Reply only SAVED.");
@@ -833,6 +848,7 @@ mod tests {
             read_only_sandbox: None,
             briefing: None,
             provider_session_id: &thread_id,
+            on_progress: None,
         })
         .unwrap();
         let transcript = run_turn(

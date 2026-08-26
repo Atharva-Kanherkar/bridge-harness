@@ -450,6 +450,7 @@ fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
             write_mode: None,
             read_only_sandbox: None,
             briefing: Some(&policy),
+            on_progress: None,
         },
     );
     let started = match started {

@@ -1,19 +1,21 @@
 import { memo, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Maximize2, Navigation, Pencil, Pin, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
 import { delegationChildSessionId, delegationFacet, foldWorkerDelegations, projectSessionConversation, reduceConversation, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
 import { pickGreeting } from "../greetings";
-import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, WorkerRepositoryBinding, WorkerRuntimeRecord } from "../types";
+import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, SessionStartupPhase, WorkerRepositoryBinding, WorkerRuntimeRecord } from "../types";
 import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
 import { describeError } from "../errors";
 import { looksLikeDiff } from "./highlight";
 import { PatchView } from "./DiffView";
 import { FileLinkContext, Markdown, MentionText, parseFileRef, type FileLinks } from "./Markdown";
-import { formatElapsed, harnessLabel } from "../utils";
+import { formatElapsed, harnessLabel, modelLabel } from "../utils";
 import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionStagger, useMotionTransition } from "../motion";
 import { workerPanelModel, type WorkerPanelModel } from "./workerPanel";
 import type { WorkerTone } from "./workerStatus";
+import { bridgeApi } from "../api";
+import { computeNarration, type NarrationView } from "../startupNarration";
 
 function providerLabel(harness?: string | null): string | undefined {
   return harness ? harnessLabel(harness) : undefined;
@@ -388,6 +390,103 @@ const ROW_VARIANTS = {
   shown: { opacity: 1, y: 0 },
 };
 
+/* ── Cold-start narration ─────────────────────────────────────────────────
+   A self-contained status row: it subscribes to `session-startup` for its own
+   session id and drives its own elapsed clock, so it needs nothing from
+   `App.tsx` beyond the props this component already takes. */
+
+/// Ties the pure narration computation in `startupNarration.ts` to the live
+/// `session-startup` subscription and a tick clock. Resets whenever the
+/// session id changes, so switching chats never carries over a stale phase.
+function useStartupNarration({ sessionId, harness, model, hasProviderSessionId, hasPendingWork, streaming }: {
+  sessionId?: string;
+  harness?: string | null;
+  model?: string | null;
+  hasProviderSessionId: boolean;
+  hasPendingWork: boolean;
+  streaming: boolean;
+}): NarrationView {
+  const reducedMotion = useReducedMotion() ?? false;
+  const [phase, setPhase] = useState<SessionStartupPhase | null>(null);
+  const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [streamStartedAt, setStreamStartedAt] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    setPhase(null);
+    setStartedAt(null);
+    setStreamStartedAt(null);
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    let live = true;
+    let off: (() => void) | undefined;
+    void bridgeApi.onSessionStartup(payload => {
+      if (!live || payload.sessionId !== sessionId) return;
+      setPhase(payload.phase);
+    }).then(unlisten => {
+      if (!live) { unlisten(); return; }
+      off = unlisten;
+    });
+    return () => { live = false; off?.(); };
+  }, [sessionId]);
+
+  useEffect(() => {
+    if (hasPendingWork) { setStartedAt(value => value ?? Date.now()); return; }
+    setStartedAt(null);
+    setStreamStartedAt(null);
+    setPhase(null);
+  }, [hasPendingWork]);
+
+  useEffect(() => {
+    if (streaming) setStreamStartedAt(value => value ?? Date.now());
+  }, [streaming]);
+
+  // The only reason to keep re-rendering while idle: the elapsed counter and
+  // the collapse-after-first-token timer both read the clock.
+  useEffect(() => {
+    if (!hasPendingWork) return;
+    const id = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(id);
+  }, [hasPendingWork]);
+
+  return computeNarration({
+    hasPendingWork,
+    streaming,
+    harnessName: harnessLabel(harness),
+    modelName: modelLabel(model),
+    firstLaunch: !hasProviderSessionId,
+    latestPhase: phase,
+    startedAt,
+    streamStartedAt,
+    now,
+    reducedMotion,
+  });
+}
+
+/// The row itself. `view.mounted` gates presence entirely, and the
+/// `thinking-shimmer` node (or its reduced-motion stand-in dot) is rendered
+/// unconditionally within that window — only the label/elapsed siblings
+/// mount and unmount, so the collapse handoff never remounts the animation.
+function StartupStatusRow({ view }: { view: NarrationView }) {
+  if (!view.mounted) return null;
+  const elapsed = view.showElapsed ? ` · ${view.elapsedSeconds}s` : "";
+  return (
+    <div className="flex flex-col gap-1">
+      {view.showFirstLaunchNote && (
+        <p className="text-[11px] text-muted-foreground/70">First time opening this chat — startup can take a little longer.</p>
+      )}
+      <div className="flex items-center gap-2">
+        {!view.collapsed && <span className="text-[12px] text-muted-foreground">{view.label}{elapsed}</span>}
+        {view.reducedMotion
+          ? <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" aria-hidden="true"/>
+          : <div className="thinking-shimmer h-[2px] w-16 rounded-full"/>}
+      </div>
+    </div>
+  );
+}
+
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
 export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onOpenSession, onExpandWorker, onWaiveCompletion, onRefreshBase, onRetryWorker, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: (eventId: number, decision: ApprovalDecision) => void; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void }) {
@@ -413,9 +512,20 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     return { has: path => paths.has(path), open: onOpenFile };
   }, [workspaceFiles, onOpenFile]);
 
+  const streaming = visibleItems.some(item => item.status === "streaming" || item.status === "inProgress");
+  // Hooks run unconditionally, ahead of the early returns below: the row
+  // itself only renders past them, but its state still has to track every
+  // render this component makes.
+  const startupNarration = useStartupNarration({
+    sessionId: session?.id,
+    harness: session?.harness,
+    model: session?.model,
+    hasProviderSessionId: !!session?.providerSessionId,
+    hasPendingWork: !!working || pendingMessages.length > 0,
+    streaming,
+  });
   if (!session && !preview) return <Empty title="No chat yet" copy="Start a chat from the sidebar, or open a workspace agent."/>;
   if (!visibleItems.length && !working && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} />;
-  const streaming = visibleItems.some(item => item.status === "streaming" || item.status === "inProgress");
   const existingUserTexts = new Set(visibleItems.filter(item => item.type === "message" && item.role === "user").map(item => item.text.trim()));
   const optimistic = pendingMessages.filter(text => !existingUserTexts.has(text.trim()));
   const errorContext = { provider: providerLabel(session?.harness), snapshot: latestUsageSnapshot(events) };
@@ -462,7 +572,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
               <ItemView item={entry.item} workers={workers} now={now} onResolve={onResolve} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRefreshBase={onRefreshBase} onRetryWorker={onRetryWorker} onRemember={onRemember} errorContext={errorContext}/>
             </TranscriptRow>)}
         {pendingRows.map(row => <TranscriptRow key={row.key}><div className={BUBBLE}><MentionText text={row.text}/></div></TranscriptRow>)}
-        {working && !streaming && <TranscriptRow key="working"><div className="flex justify-start"><div className="thinking-shimmer h-[2px] w-16 rounded-full" /></div></TranscriptRow>}
+        {startupNarration.mounted && <TranscriptRow key="working"><div className="flex justify-start"><StartupStatusRow view={startupNarration}/></div></TranscriptRow>}
       </AnimatePresence>
     </div>
   </ScrollFollow></FileLinkContext.Provider>;

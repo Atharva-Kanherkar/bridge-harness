@@ -39,6 +39,10 @@
     },
     {
       "delivery": "transient",
+      "notification": "session-startup"
+    },
+    {
+      "delivery": "transient",
       "notification": "stream-lagged"
     }
   ]

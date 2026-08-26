@@ -36,3 +36,6 @@ cap-std = "4.0.2"
 tar = "0.4"
 flate2 = "1"
 tempfile = { workspace = true }
+# Cold-start narration: spawn-to-ready timing per harness, surfaced as
+# structured logs rather than println.
+tracing = "0.1"

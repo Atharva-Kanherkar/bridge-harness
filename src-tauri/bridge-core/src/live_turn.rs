@@ -941,6 +941,7 @@ pub fn start_session(
                 write_mode: None,
                 read_only_sandbox: None,
                 briefing: None,
+                on_progress: None,
             },
         )
     };
@@ -973,6 +974,7 @@ pub fn start_session(
                     write_mode: None,
                     read_only_sandbox: None,
                     briefing: None,
+                    on_progress: None,
                 },
             ) {
                 Ok(started) => (started, RestorationMode::Native, ResumeEligibility::Native),
@@ -1445,6 +1447,15 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
         state.adapter_registry.supports_native_resume(&dispatch_id),
         checkpoint_context.is_some(),
     );
+    // Narration for the cold path only: a hot return already left above, so
+    // every phase published here is a real launch boundary this call is
+    // actually about to cross.
+    let on_startup_progress = |phase: adapters::StartupPhase| {
+        state.events.publish(CoreEvent::SessionStartup {
+            session_id: session_id.clone(),
+            phase,
+        });
+    };
     let start_fresh = |instructions: &str| {
         registry.start(
             &launch_adapter_id,
@@ -1456,6 +1467,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                 write_mode: None,
                 read_only_sandbox: None,
                 briefing: None,
+                on_progress: Some(&on_startup_progress),
             },
         )
     };
@@ -1497,6 +1509,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                     write_mode: None,
                     read_only_sandbox: None,
                     briefing: None,
+                    on_progress: Some(&on_startup_progress),
                 },
             ) {
                 Ok(started) => (started, RestorationMode::Native, ResumeEligibility::Native),
@@ -4233,6 +4246,7 @@ pub fn launch_worker_outcome(
                         write_mode: Some(directive.write_mode),
                         read_only_sandbox: read_only_sandbox.as_ref(),
                         briefing: None,
+                        on_progress: None,
                     },
                 )
             })
@@ -4257,6 +4271,7 @@ pub fn launch_worker_outcome(
                                 write_mode: Some(directive.write_mode),
                                 read_only_sandbox: read_only_sandbox.as_ref(),
                                 briefing: None,
+                                on_progress: None,
                             },
                         )
                     })
@@ -4274,6 +4289,7 @@ pub fn launch_worker_outcome(
                             write_mode: Some(directive.write_mode),
                             read_only_sandbox: read_only_sandbox.as_ref(),
                             briefing: None,
+                            on_progress: None,
                         },
                     )
                 })
@@ -4292,6 +4308,7 @@ pub fn launch_worker_outcome(
                     write_mode: Some(directive.write_mode),
                     read_only_sandbox: read_only_sandbox.as_ref(),
                     briefing: None,
+                    on_progress: None,
                 },
             )
             .map(|started| (started, WorkerActivation::Fresh))

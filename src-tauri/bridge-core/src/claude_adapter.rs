@@ -16,10 +16,22 @@ use std::{
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex, MutexGuard,
+        Arc, Mutex, MutexGuard, RwLock,
     },
 };
 use uuid::Uuid;
+
+/// Where the Node module-compile cache for the Claude sidecar lives, so its
+/// SDK module load warms across launches (Node 22+; `NODE_COMPILE_CACHE`).
+/// Unregistered (e.g. in tests) means every launch skips the env var —
+/// warm compilation is an optimization, never a launch requirement.
+static NODE_COMPILE_CACHE_ROOT: RwLock<Option<PathBuf>> = RwLock::new(None);
+
+pub fn register_node_compile_cache_root(root: impl Into<PathBuf>) {
+    *NODE_COMPILE_CACHE_ROOT
+        .write()
+        .expect("the node compile cache root lock is never poisoned") = Some(root.into());
+}
 
 pub struct ClaudeRuntime {
     pub writer: Arc<Mutex<ChildStdin>>,
@@ -52,6 +64,7 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedClaude, BridgeError> 
             write_mode: request.write_mode,
             read_only_sandbox: request.read_only_sandbox,
             briefing: request.briefing,
+            on_progress: request.on_progress,
         },
         Some(request.provider_session_id),
     )
@@ -69,6 +82,7 @@ fn launch(
         write_mode,
         read_only_sandbox,
         briefing,
+        on_progress,
     } = request;
     // Claude runs through the Claude Agent SDK, driven by a Node sidecar. One
     // long-lived streaming query serves every turn on a single session (fixing
@@ -181,12 +195,33 @@ fn launch(
     if let Some(budget) = thinking_budget(effort) {
         command.env("MAX_THINKING_TOKENS", budget.to_string());
     }
+    // Best effort: warms SDK module load across launches on Node 22+. A cache
+    // directory we cannot create just means the sidecar boots without it.
+    if let Some(cache_dir) = NODE_COMPILE_CACHE_ROOT
+        .read()
+        .expect("the node compile cache root lock is never poisoned")
+        .clone()
+    {
+        if std::fs::create_dir_all(&cache_dir).is_ok() {
+            command.env("NODE_COMPILE_CACHE", &cache_dir);
+        }
+    }
     crate::adapters::configure_process_group(&mut command);
+    if let Some(on_progress) = on_progress {
+        on_progress(crate::adapters::StartupPhase::Spawning);
+    }
+    let spawned_at = std::time::Instant::now();
     let mut child = command.spawn().map_err(|e| {
         BridgeError::Invalid(format!(
             "Failed to launch the Claude Agent SDK sidecar via node: {e}"
         ))
     })?;
+    if let Some(on_progress) = on_progress {
+        // The sidecar is now booting the Claude Agent SDK; Bridge has nothing
+        // further to synchronously wait on before it can consider the session
+        // open, so this is the whole of the observed handshake.
+        on_progress(crate::adapters::StartupPhase::Handshake);
+    }
     let stderr_tail = crate::adapters::StderrTail::capture(&mut child);
     let stdin = child
         .stdin
@@ -206,6 +241,10 @@ fn launch(
         "model": chosen_model,
         "resumed": resume_session_id.is_some(),
     })];
+    crate::process_ledger::log_spawn_to_ready("claude", spawned_at);
+    if let Some(on_progress) = on_progress {
+        on_progress(crate::adapters::StartupPhase::SessionOpen);
+    }
     Ok(StartedClaude {
         runtime: ClaudeRuntime {
             writer,
@@ -946,6 +985,7 @@ mod tests {
             write_mode: None,
             read_only_sandbox: None,
             briefing: None,
+            on_progress: None,
         })
         .unwrap();
         let mut runtime = started.runtime;
@@ -1015,6 +1055,7 @@ mod tests {
             write_mode: None,
             read_only_sandbox: None,
             briefing: None,
+            on_progress: None,
         })
         .unwrap();
         run_turn(&mut started, "Remember this exact token for the next turn: BRIDGE_CLAUDE_RESUME_5A72. Reply only SAVED.");
@@ -1030,6 +1071,7 @@ mod tests {
             read_only_sandbox: None,
             briefing: None,
             provider_session_id: &session_id,
+            on_progress: None,
         })
         .unwrap();
         let transcript = run_turn(

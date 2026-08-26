@@ -305,6 +305,9 @@ impl BridgeCore {
         // instance's failure.
         let ledger_root = config.data_dir.join("process-ledger");
         crate::process_ledger::register_ledger_root(&ledger_root);
+        crate::claude_adapter::register_node_compile_cache_root(
+            config.data_dir.join("node-compile-cache"),
+        );
         let _ = crate::process_ledger::recover_in_dir(&connection, &ledger_root);
         let _ = crate::process_ledger::sweep_legacy_opencode_orphans(&connection);
         session_supervisor::SessionSupervisor::recover_orphaned_workers(&connection)?;

@@ -344,6 +344,7 @@ fn start_warm_session(core: &Arc<BridgeCore>, provider: &str, model: &str) -> Re
             write_mode: Some(WriteMode::ReadOnly),
             read_only_sandbox: None,
             briefing: None,
+            on_progress: None,
         },
     );
     let started = match started {

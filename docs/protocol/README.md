@@ -296,6 +296,7 @@ unchanged.
 | `memory-changed` | transient | Refetch hint naming the changed scope (`{"scopeKey": …}`); the records come from `memory/list_memory_records` |
 | `session-output` | transient | Terminal bytes; worthless once stale |
 | `account-usage` | transient | Provider usage tick for the ambient meter |
+| `session-startup` | transient | Cold-start phase observed at a real adapter launch boundary (`{"sessionId", "phase": "spawning"\|"handshake"\|"session_open"}`); never replayed, never timer-driven |
 | `stream-lagged` | transient | Host-synthesized: this connection's live channel dropped events (`{"missed": n}`); refetch hints follow, replay durable history from your cursors |
 
 The delivery rules are contract: the session forest (SQLite) is the
