@@ -20,15 +20,15 @@ use crate::{
     session_forest, session_supervisor, store, BridgeError,
 };
 use rusqlite::{params, Connection, OptionalExtension};
-use chrono::Utc;
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 /// How long a model switch waits for the outgoing provider to produce its
 /// handoff summary before falling back to the mechanical projection. Tighter
 /// than [`compaction_controller::CHECKPOINT_TIMEOUT_SECONDS`] because the user
-/// is actively waiting on the switch, not on background maintenance.
-pub const SWITCH_SUMMARY_TIMEOUT_SECONDS: i64 = 10;
+/// is actively waiting on the switch — and because on the daemon host the wait
+/// holds one pooled connection for its duration.
+pub const SWITCH_SUMMARY_TIMEOUT_SECONDS: i64 = 6;
 
 /// A pending request for the outgoing provider to summarise the conversation
 /// before a model switch tears it down. Delivery and settlement are host-side
@@ -37,9 +37,11 @@ pub const SWITCH_SUMMARY_TIMEOUT_SECONDS: i64 = 10;
 pub struct SwitchSummaryRequest {
     pub session_id: String,
     pub prompt: String,
-    /// RFC3339 mirror of the pending compaction's `requestedAt`, so hosts can
-    /// bound their wait without re-reading the forest.
-    pub requested_at: String,
+    /// The sequence of this request's own `compaction.requested` entry.
+    /// Outcome reads only consider terminal entries with a greater sequence,
+    /// so a stale terminal from an earlier checkpoint can never answer for
+    /// this request.
+    pub after_sequence: i64,
 }
 
 /// What became of a [`SwitchSummaryRequest`].
@@ -686,15 +688,17 @@ impl BridgeCore {
         else {
             return Ok(None);
         };
-        // Read back what begin() durably recorded so hosts bound their wait
-        // against the same clock the timeout sweep uses.
-        let requested_at = compaction_controller::CompactionController::pending(&db, session_id)?
-            .map(|pending| pending.requested_at)
-            .unwrap_or_else(|| Utc::now().to_rfc3339());
+        // The request's own sequence scopes outcome reads to THIS request, so
+        // a terminal from an older checkpoint is never mistaken for its answer.
+        let after_sequence: i64 = db.query_row(
+            "SELECT COALESCE(MAX(sequence),0) FROM session_entries WHERE session_id=?1 AND kind='compaction.requested'",
+            params![session_id],
+            |row| row.get(0),
+        )?;
         Ok(Some(SwitchSummaryRequest {
             session_id: session_id.to_owned(),
             prompt,
-            requested_at,
+            after_sequence,
         }))
     }
 
@@ -715,7 +719,10 @@ impl BridgeCore {
         )
     }
 
-    /// Read what became of a summary request without blocking.
+    /// Read what became of a summary request without blocking. Terminal
+    /// entries are scoped to sequences after this request's own
+    /// `compaction.requested` row, so the verdict always describes *this*
+    /// request — never a previous checkpoint's leftover.
     pub fn switch_summary_outcome(
         &self,
         request: &SwitchSummaryRequest,
@@ -727,8 +734,8 @@ impl BridgeCore {
         }
         let kind: Option<String> = db
             .query_row(
-                "SELECT kind FROM session_entries WHERE session_id=?1 AND kind IN ('compaction','compaction.failed') ORDER BY sequence DESC LIMIT 1",
-                params![request.session_id],
+                "SELECT kind FROM session_entries WHERE session_id=?1 AND sequence > ?2 AND kind IN ('compaction','compaction.failed') ORDER BY sequence DESC LIMIT 1",
+                params![request.session_id, request.after_sequence],
                 |row| row.get(0),
             )
             .optional()?;
@@ -1693,10 +1700,17 @@ mod tests {
             )
             .unwrap()
             .expect("no compaction is in flight");
+            let after_sequence: i64 = db
+                .query_row(
+                    "SELECT COALESCE(MAX(sequence),0) FROM session_entries WHERE session_id=?1 AND kind='compaction.requested'",
+                    params![session_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
             super::SwitchSummaryRequest {
                 session_id: session_id.clone(),
                 prompt,
-                requested_at: chrono::Utc::now().to_rfc3339(),
+                after_sequence,
             }
         };
         assert_eq!(
@@ -1745,6 +1759,62 @@ mod tests {
         assert!(compaction_controller::CompactionController::pending(&db, &session_id)
             .unwrap()
             .is_none());
+    }
+
+    #[test]
+    fn switch_summary_outcome_ignores_terminals_older_than_the_request() {
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Codex, None, None).unwrap();
+        let session_id = only_session_id(&core);
+        {
+            let db = core.db.lock().unwrap();
+            session_forest::SessionForest::new(&db)
+                .append(
+                    &session_id,
+                    session_forest::EntryKind::UserMessage,
+                    serde_json::json!({"text":"history worth summarising"}),
+                )
+                .unwrap();
+        }
+        // A terminal from a PREVIOUS checkpoint exists before this request.
+        {
+            let db = core.db.lock().unwrap();
+            session_forest::SessionForest::new(&db)
+                .append(
+                    &session_id,
+                    session_forest::EntryKind::Compaction,
+                    serde_json::json!({"schemaVersion":1,"summary":"an older summary"}),
+                )
+                .unwrap();
+        }
+        let request = {
+            let db = core.db.lock().unwrap();
+            compaction_controller::CompactionController::begin(
+                &db,
+                &session_id,
+                compaction_controller::CompactionReason::BeforeDowngrade,
+                100,
+            )
+            .unwrap()
+            .expect("the older terminal cleared the way");
+            let after_sequence: i64 = db
+                .query_row(
+                    "SELECT COALESCE(MAX(sequence),0) FROM session_entries WHERE session_id=?1 AND kind='compaction.requested'",
+                    params![session_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            super::SwitchSummaryRequest {
+                session_id: session_id.clone(),
+                prompt: "summarise".into(),
+                after_sequence,
+            }
+        };
+        // The stale terminal must not answer for this request.
+        assert_eq!(
+            core.switch_summary_outcome(&request).unwrap(),
+            super::SwitchSummaryOutcome::Pending
+        );
     }
 
     #[test]

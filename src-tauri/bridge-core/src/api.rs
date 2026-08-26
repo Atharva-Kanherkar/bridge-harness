@@ -545,6 +545,11 @@ pub fn update_chat_model(
 /// failing the switch: every skip, timeout, delivery failure, or invalid
 /// output simply leaves the mechanical projection (`start_chat`'s stored-
 /// history injection) as the carried context instead.
+///
+/// The wait is deliberately inline: teardown must not run while the outgoing
+/// provider is still writing its summary, and the invoke must return the
+/// post-commit state. The budget is kept short because on the daemon host it
+/// holds one pooled connection for its duration.
 fn summarise_for_switch(core: &Arc<BridgeCore>, session_id: &str) {
     let request = match core.plan_switch_summary(session_id) {
         Ok(Some(request)) => request,
@@ -567,7 +572,17 @@ fn summarise_for_switch(core: &Arc<BridgeCore>, session_id: &str) {
             Ok(sessions::SwitchSummaryOutcome::Summarised)
             | Ok(sessions::SwitchSummaryOutcome::Failed) => return,
             Ok(sessions::SwitchSummaryOutcome::Pending) => {}
-            Err(_) => return,
+            Err(error) => {
+                // A read failure mid-wait strands the pending request exactly
+                // like a timeout would: cancel so later normal replies are
+                // never misparsed as checkpoint output.
+                let _ = core.cancel_switch_summary(
+                    session_id,
+                    &format!("model-switch summary wait failed: {error}"),
+                    1,
+                );
+                return;
+            }
         }
         if std::time::Instant::now() >= deadline {
             let _ = core.cancel_switch_summary(
@@ -577,7 +592,7 @@ fn summarise_for_switch(core: &Arc<BridgeCore>, session_id: &str) {
             );
             return;
         }
-        thread::sleep(std::time::Duration::from_millis(150));
+        thread::sleep(std::time::Duration::from_millis(300));
     }
 }
 

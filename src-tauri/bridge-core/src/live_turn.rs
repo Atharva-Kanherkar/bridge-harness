@@ -1229,6 +1229,9 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
         )?
     };
+    // An empty stored id is not a thread to resume; treating it as Some would
+    // send `""` to registry.resume under the native plan.
+    let provider_id = provider_id.filter(|value| !value.is_empty());
     let workspace_operation = workspace_id
         .as_deref()
         .map(|workspace_id| state.workspace_operation(workspace_id));
@@ -1414,26 +1417,14 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
             adapters::ShutdownReason::Replaced,
         )?;
     }
-    // Past the hot return: this call is really going to start a process, so the
-    // delivered prompt is compiled now — restoration context included when the
-    // branch has history to project.
-    let compiled_prompt = if is_orchestrator {
-        compile_orchestrator_prompt(
-            &prompt_stack,
-            &configured_prompt,
-            &proxy_instructions,
-            checkpoint_context.as_deref(),
-            memory_packet.as_deref(),
-        )?
-    } else {
-        compile_session_prompt(
-            &prompt_stack,
-            &configured_prompt,
-            &proxy_instructions,
-            checkpoint_context.as_deref(),
-            memory_packet.as_deref(),
-        )?
-    };
+    // Past the hot return: this call is really going to start a process. The
+    // delivered prompt is compiled WITHOUT restoration context — the same bytes
+    // the hot check audited — because only the CheckpointRestored arms below
+    // deliver the projected variant. Native resume must not re-inject history
+   // its own thread already holds, and a Fresh start that claims no projection
+    // must not secretly carry one (the honesty rule `record_fidelity` reports
+    // by). One compilation serves both, like start_session's base prompt.
+    let compiled_prompt = hot_check_prompt;
     let runtime_instructions = compiled_prompt.instructions().to_owned();
     let configured_effort = configured_harness
         .and_then(|config| config.effort)
@@ -1490,8 +1481,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
             }
             .map(|prompt| prompt.instructions().to_owned())
         })
-        .transpose()?;
-    let (mut started, mode, eligibility) = match plan {
+        .transpose()?;    let (mut started, mode, eligibility) = match plan {
         restoration::RestorationPlan::Native => {
             let provider = provider_id
                 .as_deref()
