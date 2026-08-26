@@ -29,6 +29,11 @@ pub struct RuntimeSession {
     pub writer: Box<dyn Write + Send>,
     pub master: Box<dyn MasterPty + Send>,
     pub child: Box<dyn Child + Send + Sync>,
+    /// Which spawn this entry belongs to. A reader thread draining a dead
+    /// shell may outlive a close-and-reopen of the same key; the epoch lets
+    /// its cleanup recognise that the entry under the key is no longer its
+    /// own and leave the newer shell alone.
+    pub epoch: u64,
 }
 
 pub struct BridgeCore {

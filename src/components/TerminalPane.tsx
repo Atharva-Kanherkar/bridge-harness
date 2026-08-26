@@ -171,7 +171,13 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
     const roster = rosterFor(workspaceId);
     void bridgeApi.listTerminals(workspaceId).then(alive => {
       if (!live) return;
-      for (const terminalId of alive) if (!roster.ids.includes(terminalId)) roster.ids.push(terminalId);
+      for (const terminalId of alive) {
+        if (!roster.ids.includes(terminalId)) roster.ids.push(terminalId);
+        // Keep the counter ahead of every live id, or the next "+" would
+        // regenerate an existing one and merely activate its tab.
+        const ordinal = Number(/^t(\d+)$/.exec(terminalId)?.[1] ?? NaN);
+        if (Number.isFinite(ordinal)) roster.counter = Math.max(roster.counter, ordinal);
+      }
       if (roster.ids.length === 0) {
         roster.counter += 1;
         openShell(workspaceId, `t${roster.counter}`);
@@ -195,9 +201,15 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
       if (chunk.sessionId !== workspaceId) return;
       rememberScrollback(`${chunk.sessionId}:${chunk.terminalId}`, chunk.data);
       terms.current.get(chunk.terminalId)?.write(chunk.data);
-      if (chunk.terminalId !== activeRef.current || !visibleRef.current) {
-        setMarks(previous => previous.get(chunk.terminalId) === "exited" ? previous : new Map(previous).set(chunk.terminalId, "output"));
-      }
+      setMarks(previous => {
+        const background = chunk.terminalId !== activeRef.current || !visibleRef.current;
+        const next = background ? "output" : undefined;
+        if (previous.get(chunk.terminalId) === next) return previous;
+        const map = new Map(previous);
+        if (next) map.set(chunk.terminalId, next);
+        else map.delete(chunk.terminalId);
+        return map;
+      });
     }).then(fn => { offChunk = fn; });
     void bridgeApi.onTerminalExited(exit => {
       if (exit.sessionId !== workspaceId) return;

@@ -1124,6 +1124,10 @@ fn terminal_runtime_id(workspace_id: &str, terminal_id: &str) -> String {
     format!("terminal:{workspace_id}:{terminal_id}")
 }
 
+/// One counter across every shell ever spawned: equality is all the reader
+/// threads need, and a global sidesteps per-key bookkeeping.
+static TERMINAL_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 pub fn open_terminal(
     core: &Arc<BridgeCore>,
     workspace_id: &str,
@@ -1173,12 +1177,14 @@ pub fn open_terminal(
         .master
         .take_writer()
         .map_err(|e| BridgeError::Pty(e.to_string()))?;
+    let epoch = TERMINAL_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     core.runtimes.lock().unwrap().insert(
         runtime_id.clone(),
         RuntimeSession {
             writer,
             master: pair.master,
             child,
+            epoch,
         },
     );
     let core_reader = Arc::clone(core);
@@ -1200,7 +1206,21 @@ pub fn open_terminal(
                 }
             }
         }
-        core_reader.runtimes.lock().unwrap().remove(&runtime_reader);
+        {
+            let mut sessions = core_reader.runtimes.lock().unwrap();
+            match sessions.get(&runtime_reader) {
+                Some(entry) if entry.epoch == epoch => {
+                    sessions.remove(&runtime_reader);
+                }
+                Some(_) => {
+                    // A newer shell took this key while we drained. It is
+                    // alive and it is not ours: removing it would orphan its
+                    // PTY, and announcing an exit would mark it dead.
+                    return;
+                }
+                None => {}
+            }
+        }
         // The exit outlives the bytes: whoever is not looking still learns
         // that this shell is gone.
         core_reader.events.publish(CoreEvent::TerminalExited {
@@ -1217,6 +1237,9 @@ pub fn close_terminal(
     terminal_id: &str,
 ) -> Result<(), BridgeError> {
     let runtime_id = terminal_runtime_id(workspace_id, terminal_id);
+    // The same claim open takes, so a close racing an open of the same key
+    // settles into a definite order instead of interleaving.
+    let _lifecycle = core.claim_session_lifecycle(&runtime_id, "terminal close")?;
     let mut sessions = core.runtimes.lock().unwrap();
     let Some(mut runtime) = sessions.remove(&runtime_id) else {
         return Ok(());
@@ -2812,6 +2835,44 @@ mod tests {
 
         super::close_terminal(&core, "w", "t2").unwrap();
         assert!(super::list_terminals(&core, "w").is_empty());
+    }
+
+    #[test]
+    fn a_reopened_terminal_survives_the_old_readers_drain() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO projects(id,name,path,created_at) VALUES('p','P','/tmp','now')",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','main',?1,'ready','now')",
+                rusqlite::params![scratch.path().to_string_lossy()],
+            )
+            .unwrap();
+        }
+
+        super::open_terminal(&core, "w", "t1").unwrap();
+        // Close and immediately reopen the same id: the dying shell's reader
+        // thread drains on its own schedule, and its cleanup must recognise
+        // that the key now belongs to a newer shell.
+        super::close_terminal(&core, "w", "t1").unwrap();
+        super::open_terminal(&core, "w", "t1").unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while std::time::Instant::now() < deadline {
+            assert_eq!(
+                super::list_terminals(&core, "w"),
+                vec!["t1"],
+                "the reopened shell must survive the old reader's drain"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        super::write_terminal(&core, "w", "t1", "true\n").unwrap();
+        super::close_terminal(&core, "w", "t1").unwrap();
     }
 
     #[test]

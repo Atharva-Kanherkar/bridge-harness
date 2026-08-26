@@ -120,6 +120,25 @@ describe("TerminalPane multi-shell", () => {
     expect(api.openTerminal).toHaveBeenCalledTimes(2);
     expect(api.openTerminal).toHaveBeenCalledWith(ws, "t4");
     expect(api.openTerminal).toHaveBeenCalledWith(ws, "t7");
+
+    // The counter learned from the live ids: "+" creates, never re-activates.
+    await click(container.querySelector('button[aria-label="New shell"]')!);
+    expect(api.openTerminal).toHaveBeenLastCalledWith(ws, "t8");
+    expect(tabButtons()).toHaveLength(3);
+  });
+
+  it("clears an exited mark when the reopened shell speaks", async () => {
+    api.listTerminals.mockResolvedValue(["t1", "t2"]);
+    await mount();
+    await click(tabButtons()[0]);
+    await act(async () => {
+      exitHandler?.({ sessionId: ws, terminalId: "t2" });
+    });
+    expect(container.querySelector('[data-shell-mark="exited"]')).not.toBeNull();
+
+    await emitChunk("t2", "$ ");
+    expect(container.querySelector('[data-shell-mark="exited"]')).toBeNull();
+    expect(container.querySelector('[data-shell-mark="output"]')).not.toBeNull();
   });
 
   it("routes output to its shell only and keeps hosts mounted across switches", async () => {
