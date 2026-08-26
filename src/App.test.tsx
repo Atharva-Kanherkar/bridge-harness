@@ -389,6 +389,14 @@ describe("the dock in the session view", () => {
 
     const browserTab = [...container.querySelectorAll('[role="tab"]')].find(tab => tab.getAttribute("aria-label") === "Browser")!;
     expect(browserTab.getAttribute("aria-selected")).toBe("true");
+
+    // The checkbox closes what it opened: a second activation collapses the dock.
+    await click(container.querySelector('button[aria-label="Session actions"]')!);
+    const again = [...document.querySelectorAll('[role="menu"] [role="menuitemcheckbox"]')].find(node => node.textContent?.includes("Browser"))!;
+    await click(again);
+    await settle(2);
+    expect(dockToggle()!.getAttribute("aria-pressed")).toBe("false");
+    await click(dockToggle()!);
     const surface = () => [...dockAside()!.querySelectorAll("*")].find(node => node.textContent === "Connect your browser once");
     const before = surface();
     expect(before).toBeTruthy();

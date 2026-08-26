@@ -1456,7 +1456,12 @@ export function App() {
           dockOpen={dock.open}
           onToggleDock={() => dispatchDock({ type: "toggle" })}
           browserOpen={dock.open && dock.pane === "browser"}
-          onToggleBrowser={() => dispatchDock({ type: "open-pane", pane: "browser" })}
+          onToggleBrowser={() => dispatchDock(
+            // The menu item is a checkbox, so it has to close what it opened:
+            // a second activation collapses the dock instead of re-opening the
+            // pane that is already showing.
+            dock.open && dock.pane === "browser" ? { type: "toggle" } : { type: "open-pane", pane: "browser" },
+          )}
           fullscreen={fullscreen}
           onToggleFullscreen={toggleLayoutFullscreen}
           onOpenRouterSettings={!isDirectChat && workspace ? () => setModal("router") : undefined}
