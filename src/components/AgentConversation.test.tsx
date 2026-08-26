@@ -46,6 +46,20 @@ describe("AgentConversation", () => {
   });
 
 
+  // A session left on its adapter's default stores no model id. `modelLabel`
+  // renders that absence as an em dash, which the narration row would have
+  // read out as "— is reading your message…".
+  it("names the harness in the startup row when the session carries no model id", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={{ ...session, model: null }} onResolve={() => undefined} events={[]} working />);
+    expect(html).toContain("Codex is reading your message");
+    expect(html).not.toContain("— is reading your message");
+  });
+
+  it("names the model in the startup row when the session has one", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} working />);
+    expect(html).toContain("GPT Luna is reading your message");
+  });
+
   it("shows revision-bound verification without requiring a committed contract file", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} completion={{ attemptId:"a",contractId:"c",verdict:"waived",repository:{head:"abcdef1234567890",dirtyDigest:"clean"},passedRequired:1,totalRequired:2,markdownCommitted:false,waiverReason:"Browser unavailable",checks:[{checkId:"tests",kind:"deterministic",required:true,status:"passed",executor:"bridge.shell",command:"bun test",verifierFamily:null,detail:"159 passed",outputDigest:"d",artifactRefs:[]},{checkId:"journey",kind:"user_testing",required:true,status:"skipped",executor:"bridge.worker",command:null,verifierFamily:"claude",detail:"No browser",outputDigest:null,artifactRefs:[]}]} } />);
     expect(html).toContain("Verified with waiver");

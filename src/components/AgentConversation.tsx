@@ -455,7 +455,10 @@ function useStartupNarration({ sessionId, harness, model, hasProviderSessionId, 
     hasPendingWork,
     streaming,
     harnessName: harnessLabel(harness),
-    modelName: modelLabel(model),
+    // A session on its adapter's default model stores no model id, and
+    // `modelLabel` renders that absence as an em dash — which would read as
+    // "— is reading your message…". Name the harness instead.
+    modelName: model ? modelLabel(model) : harnessLabel(harness),
     firstLaunch: !hasProviderSessionId,
     latestPhase: phase,
     startedAt,

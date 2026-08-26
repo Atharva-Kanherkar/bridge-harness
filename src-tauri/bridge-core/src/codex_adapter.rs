@@ -138,7 +138,7 @@ fn launch(
         on_progress(crate::adapters::StartupPhase::Handshake);
     }
     let (_, mut startup_messages) = wait_for_response(&mut reader, 1)?;
-    crate::process_ledger::log_spawn_to_ready("codex", spawned_at);
+    crate::process_ledger::log_spawn_to_ready("codex", "initialize_response", spawned_at);
     write_value(&writer, &json!({"method":"initialized"}))?;
     let (method, params, lifecycle_phase) = if let Some(thread_id) = resume_thread_id {
         (

@@ -529,6 +529,19 @@ describe("the dock in the session view", () => {
     expect(container.querySelector('button[aria-label="Toggle dock"]')).not.toBeNull();
   });
 
+  it("opens the toolbar model picker downward, into the view rather than above it", async () => {
+    await mountApp();
+    await openWorkspaceSession("7 files");
+    const pill = [...container.querySelectorAll<HTMLButtonElement>('button[aria-label*="model:"]')][0];
+    expect(pill).toBeTruthy();
+    await click(pill);
+    // The toolbar is the first row of an overflow-hidden <main>; an upward
+    // panel there is clipped out of existence.
+    const panel = container.querySelector<HTMLElement>(".u-glass-popover")!;
+    expect(panel).not.toBeNull();
+    expect(panel.className).toContain("top-full");
+  });
+
   it("keeps AppTitleBar unchanged on every other view", async () => {
     await mountApp();
     await click(container.querySelector<HTMLButtonElement>('button[title^="Settings"]')!);

@@ -4,8 +4,8 @@ import type { AdapterDescriptor, Harness } from "../types";
 import { harnessLabel } from "../utils";
 
 // OpenCode Zen's free tier suffixes its catalog labels with "(Unlimited)".
-// That's useful in the picker list (it explains why the model is free) but
-// redundant once the same label is the whole pill's text — strip it there.
+// It names the plan, not the model, so it is noise wherever Bridge shows the
+// label as a name — the pill and the picker rows alike.
 const UNLIMITED_SUFFIX = /\s*\(unlimited\)\s*$/i;
 
 /** Exact-match lookup of a session's configured model, for display outside
@@ -28,9 +28,14 @@ export type ChatModelControlProps = {
   /** Overrides the pill's width cap. Defaults to the composer's width; the
    *  session toolbar's tighter row passes a narrower cap. */
   maxWidthClassName?: string;
+  /** Which way the picker opens. The composer sits at the bottom of the view,
+   *  so it opens upward — the default. A caller in the session toolbar (the
+   *  top row of a container that clips its overflow) must pass `"down"`, or
+   *  the panel lands above the viewport and never becomes visible. */
+  placement?: "up" | "down";
 };
 
-export function ChatModelControl({ adapters, harness, model, disabled, disabledReason, onChange, compact, roleLabel = "Chat", maxWidthClassName = "max-w-[220px]" }: ChatModelControlProps) {
+export function ChatModelControl({ adapters, harness, model, disabled, disabledReason, onChange, compact, roleLabel = "Chat", maxWidthClassName = "max-w-[220px]", placement = "up" }: ChatModelControlProps) {
   const [open, setOpen] = useState(false);
   const chatAdapters = adapters.filter(adapter => ["codex", "claude", "opencode"].includes(adapter.id));
   const current = chatAdapters.find(adapter => adapter.id === harness);
@@ -44,7 +49,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
     </button>
     {open && <>
       <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-      <div className="u-glass-popover absolute left-0 bottom-full mb-2 z-40 w-[280px] py-1.5 rounded-2xl max-h-[340px] overflow-y-auto">
+      <div className={`u-glass-popover absolute left-0 z-40 w-[280px] py-1.5 rounded-2xl max-h-[340px] overflow-y-auto ${placement === "down" ? "top-full mt-2" : "bottom-full mb-2"}`}>
         <div className="border-b border-border/60 px-3 pb-2 pt-1">
           <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-muted-foreground/65">{roleLabel} runtime</p>
           <p className="mt-1 text-[10px] leading-4 text-muted-foreground/55">Switching starts a fresh provider session. The chat stays visible, but provider reasoning state resets.</p>

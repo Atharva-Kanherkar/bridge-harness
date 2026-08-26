@@ -202,7 +202,7 @@ fn launch(
         drop_client_safely(client);
         return Err(error);
     }
-    crate::process_ledger::log_spawn_to_ready("opencode", spawned_at);
+    crate::process_ledger::log_spawn_to_ready("opencode", "server_ready", spawned_at);
 
     let model = request.model.and_then(parse_model);
     let variant = request

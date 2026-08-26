@@ -1628,6 +1628,9 @@ export function App() {
             onChange={(harness, model) => void changeChatModel(harness, model)}
             compact
             maxWidthClassName="max-w-[190px]"
+            // The toolbar is the top row of an overflow-hidden container, so
+            // the composer's upward panel would open above the viewport.
+            placement="down"
             roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"}
           />}
           bypassBadge={bypassBadge}

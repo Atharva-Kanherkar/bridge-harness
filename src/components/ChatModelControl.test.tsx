@@ -33,6 +33,10 @@ afterEach(() => {
 });
 
 const trigger = () => container.querySelector<HTMLButtonElement>("button")!;
+// The session toolbar is the top row of an overflow-hidden container: a panel
+// anchored to the trigger's top edge there lands above the viewport and is
+// clipped away entirely, which makes the pill look inert.
+const panel = () => container.querySelector<HTMLElement>(".u-glass-popover")!;
 
 describe("ChatModelControl", () => {
   it("caps the compact pill's width and ellipsizes when constrained", async () => {
@@ -59,6 +63,24 @@ describe("ChatModelControl", () => {
     expect(trigger().textContent).toContain("Ox Alpha Free");
     expect(trigger().textContent).not.toContain("Unlimited");
     expect(trigger().title).not.toContain("Unlimited");
+  });
+
+  it("opens the panel upward by default, where the composer sits at the bottom of the view", async () => {
+    await act(async () => root.render(
+      <ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" compact onChange={vi.fn()} />,
+    ));
+    await act(async () => trigger().click());
+    expect(panel().className).toContain("bottom-full");
+    expect(panel().className).not.toContain("top-full");
+  });
+
+  it("opens the panel downward when placed in a top chrome row", async () => {
+    await act(async () => root.render(
+      <ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" compact placement="down" onChange={vi.fn()} />,
+    ));
+    await act(async () => trigger().click());
+    expect(panel().className).toContain("top-full");
+    expect(panel().className).not.toContain("bottom-full");
   });
 
   it("opens the picker and calls onChange when a model is chosen", async () => {

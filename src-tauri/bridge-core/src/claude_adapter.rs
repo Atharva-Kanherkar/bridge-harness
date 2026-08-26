@@ -217,9 +217,11 @@ fn launch(
         ))
     })?;
     if let Some(on_progress) = on_progress {
-        // The sidecar is now booting the Claude Agent SDK; Bridge has nothing
-        // further to synchronously wait on before it can consider the session
-        // open, so this is the whole of the observed handshake.
+        // The sidecar is now booting the Claude Agent SDK. This launch never
+        // waits on that boot — it hands the caller a reader and returns — so
+        // `handshake` is the last phase Claude can honestly report. No
+        // `session_open` follows: nothing here observes one, and the contract
+        // is that an unobserved phase is not emitted rather than guessed.
         on_progress(crate::adapters::StartupPhase::Handshake);
     }
     let stderr_tail = crate::adapters::StderrTail::capture(&mut child);
@@ -241,10 +243,9 @@ fn launch(
         "model": chosen_model,
         "resumed": resume_session_id.is_some(),
     })];
-    crate::process_ledger::log_spawn_to_ready("claude", spawned_at);
-    if let Some(on_progress) = on_progress {
-        on_progress(crate::adapters::StartupPhase::SessionOpen);
-    }
+    // Boundary named honestly: this is the fork plus the pipe handoff, not the
+    // sidecar becoming usable, which this call never waits for.
+    crate::process_ledger::log_spawn_to_ready("claude", "process_spawned", spawned_at);
     Ok(StartedClaude {
         runtime: ClaudeRuntime {
             writer,
