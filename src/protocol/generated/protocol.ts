@@ -1191,6 +1191,11 @@ export interface SuggestionSettings {
   provider: string;
 }
 
+export interface TurnImage {
+  base64Data: string;
+  mediaType: string;
+}
+
 export interface UsageLedgerRow {
   cacheReadTokens?: JsSafeI64 | null;
   cacheWriteTokens?: JsSafeI64 | null;
@@ -1707,6 +1712,7 @@ export interface SendTurnParams {
 export type UnitResult = null;
 
 export interface SubmitInputParams {
+  attachments?: TurnImage[];
   sessionId: string;
   text: string;
 }
