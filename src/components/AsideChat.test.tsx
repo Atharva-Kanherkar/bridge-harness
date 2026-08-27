@@ -3,7 +3,9 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AsideChat } from "./AsideChat";
-import type { Session } from "../types";
+import { bridgeApi } from "../api";
+import type { ComposerAttachment } from "../pasteAttachments";
+import type { AgentEvent, Session } from "../types";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -43,6 +45,10 @@ afterEach(() => {
 });
 
 const dialog = () => container.querySelector<HTMLElement>('div[role="dialog"]')!;
+
+const makeEvent = (sequence: number): AgentEvent => ({
+  id: sequence, sessionId: "aside-1", sequence, protocolVersion: 1, kind: "assistant.delta", itemId: null, role: "assistant", status: null, title: null, text: "…", data: {}, providerMeta: {}, createdAt: "now",
+});
 
 describe("AsideChat", () => {
   it("wears the harness's tinted mark and names the delegation", async () => {
@@ -86,7 +92,7 @@ describe("AsideChat", () => {
     await act(async () => {
       box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     });
-    expect(onSend).toHaveBeenCalledWith("and the failure mode?");
+    expect(onSend).toHaveBeenCalledWith("and the failure mode?", []);
     expect(box.value).toBe("");
   });
 
@@ -101,5 +107,56 @@ describe("AsideChat", () => {
     await act(async () => { approve.click(); });
     expect(onResolve).toHaveBeenCalled();
     expect(onResolve.mock.calls[0][0]).toBe(7);
+  });
+
+  it("attaches a pasted image as a removable chip and sends it with the message", async () => {
+    const onSend = vi.fn(async (_text: string, _attachments?: ComposerAttachment[]) => undefined);
+    await mount({ onSend });
+    const box = container.querySelector<HTMLTextAreaElement>("textarea")!;
+
+    const file = new File(["fake-image-bytes"], "shot.png", { type: "image/png" });
+    const items = [{ kind: "file", type: "image/png", getAsFile: () => file }];
+    const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, "clipboardData", { value: { items } });
+    await act(async () => { box.dispatchEvent(pasteEvent); });
+    // Let the FileReader promise resolve into attachment state.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+
+    expect(container.querySelectorAll("img")).toHaveLength(1);
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Remove attached image"]')).toBeTruthy();
+
+    await act(async () => {
+      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    expect(onSend).toHaveBeenCalledTimes(1);
+    const [text, attachments] = onSend.mock.calls[0];
+    expect(text).toBe("");
+    expect(attachments).toHaveLength(1);
+    expect(attachments![0].mediaType).toBe("image/png");
+    // The chip clears once the send that carried it has gone out.
+    expect(container.querySelectorAll("img")).toHaveLength(0);
+  });
+
+  it("polls the forest by digest instead of refetching the full snapshot on every streamed event", async () => {
+    const forestSpy = vi.spyOn(bridgeApi, "sessionForest");
+    const digestSpy = vi.spyOn(bridgeApi, "sessionForestDigest");
+    await mount({ events: [] });
+    // Let the initial digest -> full-snapshot chain settle.
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+    expect(forestSpy).toHaveBeenCalledTimes(1);
+    expect(digestSpy).toHaveBeenCalledTimes(1);
+
+    // A burst of streamed frames for the same session, same as a turn in
+    // flight growing the live event list on every chunk. The old effect kept
+    // `ownEvents.length` in its deps and refetched the whole snapshot on
+    // each one; the digest-gated poll must not.
+    for (let sequence = 1; sequence <= 5; sequence += 1) {
+      const events = Array.from({ length: sequence }, (_, index) => makeEvent(index));
+      await mount({ events });
+    }
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
+
+    expect(forestSpy).toHaveBeenCalledTimes(1);
+    expect(digestSpy).toHaveBeenCalledTimes(1);
   });
 });
