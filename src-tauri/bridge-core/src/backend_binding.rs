@@ -313,6 +313,16 @@ impl BackendResolver {
         })
     }
 
+    /// Whether any agent in the table is served by this backend. Used to tell
+    /// a cross-switch leftover (backend real, agent wrong) from a build that
+    /// genuinely lost the backend — the two must not share an outcome.
+    pub fn serves_any_agent(&self, backend: &BackendId) -> bool {
+        self.candidates
+            .values()
+            .flatten()
+            .any(|candidate| &candidate.backend == backend)
+    }
+
     /// A stronger candidate than the one a session is bound to, when there is
     /// one. Purely informational: it is what a caller shows to offer the move,
     /// and it never moves anything by itself.
@@ -602,8 +612,22 @@ pub fn plan_continuation(
 
     // The recorded backend has to still exist. Falling through to another
     // candidate when it does not would be exactly the silent substitution this
-    // module exists to prevent.
-    resolver.resolve_bound(stored)?;
+    // module exists to prevent. One reading is healed rather than refused: a
+    // backend that is registered — but under a *different* agent — is a
+    // leftover from a harness switch that did not clear the binding columns
+    // (`read_binding` composes the agent from the session's current harness,
+    // so the stale backend id lands under the new agent's name). There is
+    // nothing to substitute: that backend never served this agent, the switch
+    // already discarded the provider session, and a fresh bind is exactly what
+    // a correctly-cleared row would produce. A backend no agent has is still
+    // the refusal — that is a build that lost the backend, the case this
+    // module exists for.
+    if resolver.resolve_bound(stored).is_err() {
+        if resolver.serves_any_agent(&stored.backend) {
+            return Ok(Continuation::BindFresh(resolver.resolve(agent, backing)?));
+        }
+        resolver.resolve_bound(stored)?;
+    }
 
     // A session moves backend only when a user authorizes that exact move. A
     // stronger candidate appearing is reported by `preferred_elsewhere`, not
@@ -1575,6 +1599,74 @@ mod tests {
         assert!(
             BackendVersion::parse("npm:@anthropic-ai/claude-agent-sdk@0.3.209").is_ok(),
             "the recipe's own version spelling must round-trip"
+        );
+    }
+
+    /// The exact field failure: switching a chat's harness used to leave the
+    /// old backend id in place, and `read_binding` composes the binding's agent
+    /// from the *current* harness column — so the row read as
+    /// `{agent: codex, backend: claude.agent-sdk}` and every launch refused
+    /// with "codex was served by claude.agent-sdk, which this build does not
+    /// have". Rows the old bug already wrote must heal to a fresh bind.
+    #[test]
+    fn a_cross_switch_leftover_binding_heals_to_a_fresh_bind() {
+        let resolver = BackendResolver::built_in();
+        let stored = StoredBinding::Bound(BackendBinding {
+            agent: agent("codex"),
+            backend: backend("claude.agent-sdk"),
+            version: None,
+            installation: None,
+        });
+        let continuation = plan_continuation(
+            &resolver,
+            &stored,
+            &agent("codex"),
+            &BackendBacking::default(),
+            None,
+        )
+        .expect("a leftover from a harness switch is healed, not refused");
+        match continuation {
+            Continuation::BindFresh(binding) => {
+                assert_eq!(binding.agent, agent("codex"));
+                assert_eq!(binding.backend, backend("codex.app-server"));
+            }
+            other => panic!("expected BindFresh, got {other:?}"),
+        }
+
+        // End to end: a session row written by the old bug launches again.
+        let db = store_with_session("codex");
+        db.execute(
+            "UPDATE sessions SET backend_id='claude.agent-sdk' WHERE id='s'",
+            [],
+        )
+        .unwrap();
+        let plan = plan_launch(&db, &resolver, "s", "codex", &BackendBacking::default())
+            .expect("the bricked session launches");
+        assert_eq!(plan.adapter_id, "codex");
+    }
+
+    /// The heal must not swallow the case the refusal exists for: a backend no
+    /// agent in this build has is a lost backend, not a switch leftover.
+    #[test]
+    fn a_backend_no_agent_serves_still_refuses() {
+        let resolver = BackendResolver::built_in();
+        let stored = StoredBinding::Bound(BackendBinding {
+            agent: agent("codex"),
+            backend: backend("codex.acp"),
+            version: None,
+            installation: None,
+        });
+        let error = plan_continuation(
+            &resolver,
+            &stored,
+            &agent("codex"),
+            &BackendBacking::default(),
+            None,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(error, BackendError::BackendUnavailable { .. }),
+            "a genuinely missing backend is a refusal: {error}"
         );
     }
 

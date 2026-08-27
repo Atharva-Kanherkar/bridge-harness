@@ -1102,6 +1102,19 @@ pub(crate) fn persist_chat_model_selection(
     tier: CapabilityTier,
     (previous_harness, previous_model): (&str, Option<&str>),
 ) -> Result<usize, BridgeError> {
+    // A harness change is a different agent, so the backend binding goes the
+    // way of the provider session id: `read_binding` composes the binding's
+    // agent from the harness column, and a stale backend id left under the new
+    // harness reads as "codex was served by claude.agent-sdk" and refuses
+    // every later launch. A same-harness model change keeps the binding — the
+    // same agent resumes under the same backend, and the recorded version and
+    // installation stay true.
+    if previous_harness != adapter_id {
+        return Ok(db.execute(
+            "UPDATE sessions SET harness=?2,model=?3,requested_tier=?4,provider_session_id=NULL,backend_id=NULL,backend_version=NULL,backend_installation_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator') AND harness=?5 AND model IS ?6 AND active_turn_id IS NULL",
+            params![session_id, adapter_id, model, tier.as_str(), previous_harness, previous_model],
+        )?);
+    }
     Ok(db.execute(
         "UPDATE sessions SET harness=?2,model=?3,requested_tier=?4,provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator') AND harness=?5 AND model IS ?6 AND active_turn_id IS NULL",
         params![session_id, adapter_id, model, tier.as_str(), previous_harness, previous_model],
@@ -1703,6 +1716,63 @@ mod tests {
             !worktree.path.exists(),
             "failed persistence must remove the worktree"
         );
+    }
+
+    /// A harness change clears the backend binding with the provider session
+    /// id; a same-harness model change keeps it. The binding's agent is read
+    /// from the harness column, so a stale backend id under a new harness
+    /// bricks every later launch.
+    #[test]
+    fn switching_harness_clears_the_backend_binding_and_model_alone_keeps_it() {
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Claude, None, None).unwrap();
+        let session_id = only_session_id(&core);
+        let read_backend = || -> Option<String> {
+            core.db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT backend_id FROM sessions WHERE id=?1",
+                    params![session_id],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        let set_backend = |value: &str| {
+            core.db
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE sessions SET backend_id=?2,backend_version='1.0.0' WHERE id=?1",
+                    params![session_id, value],
+                )
+                .unwrap();
+        };
+        set_backend("claude.agent-sdk");
+
+        // Same harness, different model: the binding survives.
+        persist_chat_model_selection(
+            &core.db.lock().unwrap(),
+            &session_id,
+            "claude",
+            "opus",
+            CapabilityTier::Fast,
+            ("claude", None),
+        )
+        .unwrap();
+        assert_eq!(read_backend().as_deref(), Some("claude.agent-sdk"));
+
+        // Different harness: binding and provider session id both go.
+        persist_chat_model_selection(
+            &core.db.lock().unwrap(),
+            &session_id,
+            "codex",
+            "gpt-5.3-codex",
+            CapabilityTier::Fast,
+            ("claude", Some("opus")),
+        )
+        .unwrap();
+        assert_eq!(read_backend(), None, "a different agent has nothing to continue");
     }
 
     #[test]
