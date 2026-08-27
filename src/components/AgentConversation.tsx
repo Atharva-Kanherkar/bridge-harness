@@ -41,7 +41,10 @@ function groupItems(items: ConversationItem[]): Rendered[] {
       rawItems.push(item);
       continue;
     }
-    if (GROUPABLE.has(item.type) && item.data.staleBase !== true) {
+    // A model change is a milestone in the transcript, not tool activity — a
+    // group of one labeled "Used tools" is how a reload made it read as a
+    // glitch. It renders as its own quiet divider row instead.
+    if (GROUPABLE.has(item.type) && item.data.staleBase !== true && item.data.freshProviderSession !== true) {
       const last = out[out.length - 1];
       if (last?.kind === "group") { last.items.push(item); continue; }
       out.push({ kind: "group", key: `group-${item.key}`, items: [item] });
@@ -715,6 +718,7 @@ function ItemView({ item, workers, now, onResolve, onOpenSession, onExpandWorker
   if (item.type === "approval") return <ApprovalCard item={item} onResolve={onResolve}/>;
   if (item.type === "delegation") return <DelegationRow item={item} workers={workers} now={now} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRetryWorker={onRetryWorker}/>;
   if (item.type === "checkpoint" || item.type === "compaction" || item.type === "branch-summary") return <ForestCard item={item}/>;
+  if (item.data.freshProviderSession === true) return <ModelChangedRow item={item}/>;
   if (item.type === "raw") return <RawEvent item={item}/>;
   if (item.type === "error") return <ErrorCard item={item} errorContext={errorContext}/>;
   return <ActivityGroup items={[item]}/>;
@@ -743,6 +747,24 @@ function ErrorCard({ item, errorContext }: { item: ConversationItem; errorContex
       {isUsage ? <Gauge size={14} aria-hidden="true" /> : <AlertTriangle size={14} aria-hidden="true" />}
     </motion.span>
     <div className="min-w-0"><b className="text-[12px]">{described.title}</b><p className="mt-1 text-[12px] leading-relaxed break-words text-muted-foreground">{described.message}</p></div>
+  </div>;
+}
+
+/// A model switch, as a milestone the transcript reads past: one hairline
+/// with the transition inline, in the same register as a group label. The
+/// carried-context sentence lives in `title`-adjacent text and the payload;
+/// the row keeps only the fact of the change.
+function ModelChangedRow({ item }: { item: ConversationItem }) {
+  const side = (harness: unknown, model: unknown) => [
+    harness ? harnessLabel(String(harness)) : undefined,
+    model ? modelLabel(String(model)) : undefined,
+  ].filter(Boolean).join(" · ");
+  const from = side(item.data.previousHarness, item.data.previousModel);
+  const to = side(item.data.harness, item.data.model);
+  return <div className="my-3 flex items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.08em] text-muted-foreground/70">
+    <span className="h-px flex-1 bg-border" aria-hidden="true"/>
+    <span className="shrink-0 normal-case tracking-normal">{from && to ? `${from} → ${to}` : item.title || "Model changed"}</span>
+    <span className="h-px flex-1 bg-border" aria-hidden="true"/>
   </div>;
 }
 

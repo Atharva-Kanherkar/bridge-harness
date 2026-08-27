@@ -82,16 +82,20 @@ Locked before implementation.
   Today these render as collapsed "used tools" activity groups before and
   around user messages. The live/durable asymmetry means they only ever
   appeared after a reload — which is exactly why they look like a glitch.
-- `session.model_changed` disappears from the transcript with the rest. The
-  model change is already visible in the toolbar pill and the composer; the
-  live view never showed this row, so removing it from replay is convergence,
-  not loss.
+- Amended during implementation: `session.model_changed` and
+  `provider.unknown` deliberately survive the filter. Two pre-existing tests
+  pin them as wanted ("renders a model switch with the fidelity it reports",
+  "keeps raw provider entries collapsed and inspectable") — the projection
+  filter is a *subset* of the reducer's, not a copy. The model change stops
+  being a "used tools" group of one: it leaves activity grouping and renders
+  as a hairline divider (`Codex · GPT Luna → Claude · Opus`).
 
 ### Unit Tests
 
-- Frontend `conversation.test.ts`: durable `session.started` /
-  `session.status` / `session.model_changed` / `turn.started` entries project
-  to no conversation items; a `user.message` between them still projects.
+- Frontend: durable `session.started` / `session.status` / `turn.completed`
+  entries render nothing in a replayed transcript; a message between them
+  still renders; a replayed model change renders as the divider and never as
+  a tools group.
 
 ## Part 4 — The switch gets its own UI state
 
