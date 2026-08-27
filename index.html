@@ -25,5 +25,11 @@
       })();
     </script>
   </head>
-  <body><div id="root"></div><script type="module" src="/src/main.tsx"></script></body>
+  <body>
+    <div id="boot-splash" class="pointer-events-none fixed inset-0 z-50 flex items-center justify-center bg-background" aria-hidden="true">
+      <span class="boot-splash-mark select-none font-display text-[13px] font-medium uppercase tracking-[0.5em] text-foreground/80">Bridge</span>
+    </div>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
 </html>
