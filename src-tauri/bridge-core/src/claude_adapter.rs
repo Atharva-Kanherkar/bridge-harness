@@ -528,6 +528,34 @@ pub fn supports_native_resume() -> bool {
     binary::resolve("node").is_some() && sidecar_entry().is_ok()
 }
 
+/// The stream-json user frame for a turn: one text block, then one Anthropic
+/// image block per attachment, in order. Pure so the exact wire bytes are
+/// unit-testable without a provider process.
+fn user_turn_frame(
+    text: &str,
+    images: &[bridge_protocol::messages::TurnImage],
+) -> serde_json::Value {
+    let mut content = Vec::with_capacity(1 + images.len());
+    content.push(json!({"type": "text", "text": text}));
+    content.extend(images.iter().map(|image| {
+        json!({
+            "type": "image",
+            "source": {
+                "type": "base64",
+                "media_type": image.media_type,
+                "data": image.base64_data,
+            }
+        })
+    }));
+    json!({
+        "type": "user",
+        "message": {
+            "role": "user",
+            "content": content
+        }
+    })
+}
+
 impl ClaudeRuntime {
     fn terminate(&mut self) {
         if self.stopped {
@@ -539,18 +567,21 @@ impl ClaudeRuntime {
         let _ = self.child.wait();
     }
     pub fn start_turn(&self, text: &str) -> Result<(), BridgeError> {
+        self.start_turn_with_images(text, &[])
+    }
+
+    /// Start a turn whose user message carries image attachments beside the
+    /// text. The stream-json input frame already speaks Anthropic content
+    /// blocks, so an image is a `{"type":"image"}` block with a base64
+    /// source — the sidecar forwards blocks untouched.
+    pub fn start_turn_with_images(
+        &self,
+        text: &str,
+        images: &[bridge_protocol::messages::TurnImage],
+    ) -> Result<(), BridgeError> {
         let turn_id = format!("turn-{}", self.request_id.fetch_add(1, Ordering::Relaxed));
         *self.current_turn.lock().unwrap() = Some(turn_id.clone());
-        write_value(
-            &self.writer,
-            &json!({
-                "type": "user",
-                "message": {
-                    "role": "user",
-                    "content": [{"type": "text", "text": text}]
-                }
-            }),
-        )?;
+        write_value(&self.writer, &user_turn_frame(text, images))?;
         let (mcp_names, plugin_names) = {
             let inventory = self.context_inventory.lock().unwrap();
             let catalog = inventory
@@ -628,6 +659,19 @@ impl AdapterRuntime for ClaudeRuntime {
     }
     fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
         self.start_turn(text)
+    }
+    /// Vision-capable transport: the SDK message content is a content-block
+    /// array, so image blocks ride beside text natively.
+    fn supports_images(&self) -> bool {
+        true
+    }
+    fn send_turn_with_images(
+        &self,
+        text: &str,
+        _application_context: Option<&str>,
+        images: &[bridge_protocol::messages::TurnImage],
+    ) -> Result<(), BridgeError> {
+        self.start_turn_with_images(text, images)
     }
     /// The sidecar feeds one long-lived streaming-input `query()`, so a user
     /// message written while a turn is running is picked up by that turn — the
@@ -919,6 +963,48 @@ mod tests {
         assert_eq!(write_mode_label(WriteMode::ReadOnly), "ReadOnly");
         assert_eq!(write_mode_label(WriteMode::Shared), "Shared");
         assert_eq!(write_mode_label(WriteMode::Isolated), "Isolated");
+    }
+
+    #[test]
+    fn a_plain_text_turn_emits_exactly_todays_frame() {
+        assert_eq!(
+            user_turn_frame("ship it", &[]),
+            json!({
+                "type": "user",
+                "message": {"role": "user", "content": [{"type": "text", "text": "ship it"}]}
+            }),
+            "image support must not reshape the no-image wire"
+        );
+    }
+
+    #[test]
+    fn image_attachments_become_anthropic_image_content_blocks_in_order() {
+        let images = vec![
+            bridge_protocol::messages::TurnImage {
+                media_type: "image/png".into(),
+                base64_data: "iVBORw0".into(),
+            },
+            bridge_protocol::messages::TurnImage {
+                media_type: "image/jpeg".into(),
+                base64_data: "/9j/4AAQ".into(),
+            },
+        ];
+        let frame = user_turn_frame("what are these?", &images);
+        let content = frame["message"]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 3, "one text block, then one block per image");
+        assert_eq!(content[0], json!({"type": "text", "text": "what are these?"}));
+        assert_eq!(
+            content[1],
+            json!({
+                "type": "image",
+                "source": {"type": "base64", "media_type": "image/png", "data": "iVBORw0"}
+            })
+        );
+        assert_eq!(
+            content[2]["source"]["media_type"],
+            json!("image/jpeg"),
+            "order is preserved: the text references images positionally"
+        );
     }
 
     #[test]

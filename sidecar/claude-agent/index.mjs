@@ -19,6 +19,7 @@
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 import { buildOptions } from "./options.mjs";
+import { userContentBlocks } from "./input.mjs";
 
 // Which copy of the Agent SDK to load.
 //
@@ -73,10 +74,10 @@ function makeInputStream() {
 
 const input = makeInputStream();
 
-function userMessage(text) {
+function userMessage(content) {
   return {
     type: "user",
-    message: { role: "user", content: [{ type: "text", text }] },
+    message: { role: "user", content },
     parent_tool_use_id: null,
     ...(sessionId ? { session_id: sessionId } : {}),
   };
@@ -94,8 +95,12 @@ rl.on("line", (line) => {
   let frame;
   try { frame = JSON.parse(trimmed); } catch { return; }
   if (frame.type === "user") {
-    const text = frame?.message?.content?.map?.((part) => part?.text ?? "").join("") ?? "";
-    if (text) input.push(userMessage(text));
+    // Forward content blocks as-is: image attachments arrive as
+    // `[{type:"image",source:{...}}, …]` beside the text block. Flattening
+    // here would silently drop them — the exact failure image paste exists
+    // to remove. See input.mjs for the shapes this tolerates.
+    const blocks = userContentBlocks(frame);
+    if (blocks) input.push(userMessage(blocks));
   } else if (frame.type === "control_request" && frame?.request?.subtype === "interrupt") {
     void run.interrupt().catch(() => {});
   }
