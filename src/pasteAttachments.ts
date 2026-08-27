@@ -16,6 +16,7 @@ export interface ComposerAttachment {
 
 interface PasteFile {
   type: string;
+  size?: number;
 }
 
 /** Image files hiding in clipboard items, in clipboard order. */
@@ -45,8 +46,7 @@ export function mediaTypeOf(file: PasteFile): string {
 export const MAX_PASTE_BYTES = 8 * 1024 * 1024;
 
 export function isPasteTooLarge(file: PasteFile): boolean {
-  const bytes = (file as { size?: number }).size;
-  return typeof bytes === "number" && bytes > MAX_PASTE_BYTES;
+  return typeof file.size === "number" && file.size > MAX_PASTE_BYTES;
 }
 
 /** `File` → data URI, resolved once the bytes are in hand. */

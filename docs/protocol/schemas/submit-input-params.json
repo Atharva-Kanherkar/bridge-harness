@@ -25,11 +25,14 @@
   },
   "properties": {
     "attachments": {
-      "description": "Image attachments pasted or otherwise added in the composer. Absent means none: older clients omit it and stay on plain text.",
+      "description": "Image attachments pasted or otherwise added in the composer. Absent (or `None`) means none: older clients omit it and stay on plain text.",
       "items": {
         "$ref": "#/definitions/TurnImage"
       },
-      "type": "array"
+      "type": [
+        "array",
+        "null"
+      ]
     },
     "sessionId": {
       "type": "string"

@@ -333,9 +333,9 @@ pub struct SubmitInputParams {
     pub session_id: String,
     pub text: String,
     /// Image attachments pasted or otherwise added in the composer. Absent
-    /// means none: older clients omit it and stay on plain text.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub attachments: Vec<TurnImage>,
+    /// (or `None`) means none: older clients omit it and stay on plain text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<TurnImage>>,
 }
 
 /// What Bridge did with submitted user input. These three modes are the whole
@@ -619,8 +619,11 @@ mod tests {
             serde_json::to_value(&start).unwrap(),
             json!({"workspaceId": "w-1", "harness": "claude"})
         );
-        let submit =
-            SubmitInputParams { session_id: "s-1".into(), text: "steer left".into(), attachments: vec![] };
+        let submit = SubmitInputParams {
+            session_id: "s-1".into(),
+            text: "steer left".into(),
+            attachments: None,
+        };
         assert_eq!(
             serde_json::to_value(&submit).unwrap(),
             json!({"sessionId": "s-1", "text": "steer left"}),
@@ -630,7 +633,7 @@ mod tests {
         let with_image = SubmitInputParams {
             session_id: "s-1".into(),
             text: "what is this?".into(),
-            attachments: vec![TurnImage { media_type: "image/png".into(), base64_data: "iVBORw0".into() }],
+            attachments: Some(vec![TurnImage { media_type: "image/png".into(), base64_data: "iVBORw0".into() }]),
         };
         assert_eq!(
             serde_json::to_value(&with_image).unwrap(),
@@ -749,16 +752,17 @@ mod tests {
             "text is required"
         );
         // Attachment-less submits stay valid without the new field, and an
-        // empty array is interchangeable with absence — both mean plain text.
+        // explicit empty list is interchangeable with absence — both mean
+        // plain text.
         let no_attachments =
             serde_json::from_value::<SubmitInputParams>(json!({"sessionId": "s", "text": "hi"}))
                 .expect("older clients omit attachments");
-        assert!(no_attachments.attachments.is_empty());
+        assert!(no_attachments.attachments.is_none());
         let empty_attachments = serde_json::from_value::<SubmitInputParams>(json!(
             {"sessionId": "s", "text": "hi", "attachments": []}
         ))
         .expect("an explicit empty list is accepted");
-        assert!(empty_attachments.attachments.is_empty());
+        assert!(empty_attachments.attachments.unwrap().is_empty());
         assert!(
             serde_json::from_value::<SubmitInputParams>(
                 json!({"sessionId": "s", "text": "hi", "attachments": [{"mediaType": "image/png"}]})

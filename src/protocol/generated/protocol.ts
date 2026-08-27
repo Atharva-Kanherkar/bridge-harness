@@ -1712,7 +1712,7 @@ export interface SendTurnParams {
 export type UnitResult = null;
 
 export interface SubmitInputParams {
-  attachments?: TurnImage[];
+  attachments?: TurnImage[] | null;
   sessionId: string;
   text: string;
 }
