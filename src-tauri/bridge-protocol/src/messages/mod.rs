@@ -231,6 +231,9 @@ typed_methods![
     (GetRouterPreferences, GetRouterPreferencesParams, RouterPreferences),
     (UpdateRouterPreferences, UpdateRouterPreferencesParams, RouterPreferences),
     (RollbackRoutingPolicy, RollbackRoutingPolicyParams, _),
+    (GetRoutingEvaluations, GetRoutingEvaluationsParams, RoutingEvaluationsResult),
+    (GetEvaluationSettings, GetEvaluationSettingsParams, RoutingEvaluationSettings),
+    (UpdateEvaluationSettings, UpdateEvaluationSettingsParams, RoutingEvaluationSettings),
     // model profiles
     (GetModelSetup, _, _),
     (RecommendedModelProfiles, _, RecommendedModelProfilesResult),

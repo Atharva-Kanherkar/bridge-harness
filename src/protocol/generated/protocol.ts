@@ -76,6 +76,9 @@ export type BridgeMethod =
   | "routing/get_router_preferences"
   | "routing/update_router_preferences"
   | "routing/rollback_routing_policy"
+  | "routing/get_routing_evaluations"
+  | "routing/get_evaluation_settings"
+  | "routing/update_evaluation_settings"
   | "models/get_model_setup"
   | "models/recommended_model_profiles"
   | "models/save_model_profiles"
@@ -213,6 +216,9 @@ export const BRIDGE_METHODS = [
   { method: "routing/get_router_preferences", domain: "routing", command: "get_router_preferences" },
   { method: "routing/update_router_preferences", domain: "routing", command: "update_router_preferences" },
   { method: "routing/rollback_routing_policy", domain: "routing", command: "rollback_routing_policy" },
+  { method: "routing/get_routing_evaluations", domain: "routing", command: "get_routing_evaluations" },
+  { method: "routing/get_evaluation_settings", domain: "routing", command: "get_evaluation_settings" },
+  { method: "routing/update_evaluation_settings", domain: "routing", command: "update_evaluation_settings" },
   { method: "models/get_model_setup", domain: "models", command: "get_model_setup" },
   { method: "models/recommended_model_profiles", domain: "models", command: "recommended_model_profiles" },
   { method: "models/save_model_profiles", domain: "models", command: "save_model_profiles" },
@@ -406,6 +412,9 @@ export interface BridgeMethodParams {
   "routing/get_router_preferences": GetRouterPreferencesParams;
   "routing/update_router_preferences": UpdateRouterPreferencesParams;
   "routing/rollback_routing_policy": RollbackRoutingPolicyParams;
+  "routing/get_routing_evaluations": GetRoutingEvaluationsParams;
+  "routing/get_evaluation_settings": GetEvaluationSettingsParams;
+  "routing/update_evaluation_settings": UpdateEvaluationSettingsParams;
   "models/get_model_setup": undefined;
   "models/recommended_model_profiles": undefined;
   "models/save_model_profiles": SaveModelProfilesParams;
@@ -545,6 +554,9 @@ export interface BridgeMethodResults {
   "routing/get_router_preferences": RouterPreferences;
   "routing/update_router_preferences": RouterPreferences;
   "routing/rollback_routing_policy": unknown;
+  "routing/get_routing_evaluations": RoutingEvaluationsResult;
+  "routing/get_evaluation_settings": RoutingEvaluationSettings;
+  "routing/update_evaluation_settings": RoutingEvaluationSettings;
   "models/get_model_setup": unknown;
   "models/recommended_model_profiles": RecommendedModelProfilesResult;
   "models/save_model_profiles": unknown;
@@ -1070,6 +1082,30 @@ export interface RouterPreferences {
   mode: RouterMode;
   pinnedHarness?: string | null;
   pinnedModel?: string | null;
+}
+
+export interface RoutingEvaluationRun {
+  confidenceBps?: number | null;
+  createdAt: string;
+  decisionId: string;
+  detail?: string | null;
+  evaluatorVersion: string;
+  evidenceDigest?: string | null;
+  harness: string;
+  model: string;
+  observedTokens: number;
+  runId: string;
+  scoreBps?: number | null;
+  spendMicrousd: number;
+  status: string;
+  updatedAt: string;
+}
+
+export interface RoutingEvaluationSettings {
+  harness?: string | null;
+  mode: string;
+  model?: string | null;
+  scopeKey: string;
 }
 
 export interface RpcError {
@@ -1961,6 +1997,26 @@ export interface UpdateRouterPreferencesParams {
 export interface RollbackRoutingPolicyParams {
   explanation: string;
   targetVersion: number;
+  workspaceId: string;
+}
+
+export interface GetRoutingEvaluationsParams {
+  workspaceId: string;
+}
+
+export interface RoutingEvaluationsResult {
+  runs: RoutingEvaluationRun[];
+  settings: RoutingEvaluationSettings;
+}
+
+export interface GetEvaluationSettingsParams {
+  workspaceId: string;
+}
+
+export interface UpdateEvaluationSettingsParams {
+  harness?: string | null;
+  mode: string;
+  model?: string | null;
   workspaceId: string;
 }
 

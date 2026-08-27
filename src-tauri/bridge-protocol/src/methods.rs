@@ -120,6 +120,12 @@ methods![
     (GetRouterPreferences, "routing", "get_router_preferences"),
     (UpdateRouterPreferences, "routing", "update_router_preferences"),
     (RollbackRoutingPolicy, "routing", "rollback_routing_policy"),
+    // bounded outcome evaluation. Read and settings only: a run is queued by
+    // the learning job and executed by the host that owns the data directory,
+    // never by a client asking for one.
+    (GetRoutingEvaluations, "routing", "get_routing_evaluations"),
+    (GetEvaluationSettings, "routing", "get_evaluation_settings"),
+    (UpdateEvaluationSettings, "routing", "update_evaluation_settings"),
     // model profiles
     (GetModelSetup, "models", "get_model_setup"),
     (RecommendedModelProfiles, "models", "recommended_model_profiles"),
