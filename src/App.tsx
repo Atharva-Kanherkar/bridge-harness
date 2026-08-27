@@ -1303,12 +1303,12 @@ export function App() {
   /// The delivery core both composers share: prepare, cold-start if needed,
   /// submit, with optimistic pending bookkeeping. Slash-command handling stays
   /// in `sendPrompt` - an aside is pinned to its harness on purpose.
-  async function deliverPrompt(target: Session, submittedText: string): Promise<void> {
+  async function deliverPrompt(target: Session, submittedText: string, sentAttachments?: ComposerAttachment[]): Promise<void> {
     const key = crypto.randomUUID();
     const prepared = await bridgeApi.prepareTurn(target.id, submittedText);
     const text = prepared.text;
     try {
-      setPending(current => [...current, { key, sessionId: target.id, text }]);
+      setPending(current => [...current, { key, sessionId: target.id, text, attachment: sentAttachments?.[0]?.dataUri }]);
       if (!liveStatuses.includes(target.status)) {
         startedRef.current.add(target.id);
         setState(await bridgeApi.startChat(target.id));
@@ -1316,7 +1316,7 @@ export function App() {
       // One call whatever the session is doing. The backend decides between
       // starting a turn, steering the live one, and durably queueing, and says
       // which — so the message can be shown in the state it is actually in.
-      const outcome = await bridgeApi.submitInput(target.id, text);
+      const outcome = await bridgeApi.submitInput(target.id, text, sentAttachments);
       if (outcome.disposition !== "startedNewTurn") {
         const delivery = outcome.disposition === "steeredActiveTurn" ? "steered" as const : "queued" as const;
         setPending(current => current.map(item => item.key === key ? { ...item, delivery } : item));
@@ -1802,8 +1802,8 @@ export function App() {
             events={agentEvents}
             pendingMessages={asidePending}
             working={!!asideSession.activeTurnId || asideSession.status === "working"}
-            onSend={async text => {
-              try { await deliverPrompt(asideSession, text); }
+            onSend={async (text, attachments) => {
+              try { await deliverPrompt(asideSession, text, attachments); }
               catch (e) { setError(errorMessage(e)); }
             }}
             onResolve={(eventId, decision) => {

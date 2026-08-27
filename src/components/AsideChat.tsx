@@ -1,9 +1,16 @@
+import type { ClipboardEvent } from "react";
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, ArrowUpRight, X } from "lucide-react";
+import { open } from "@tauri-apps/plugin-dialog";
+import { ArrowUpRight, X } from "lucide-react";
 import { AgentConversation } from "./AgentConversation";
+import { ComposerPill } from "./ComposerPill";
 import { HarnessMark, harnessTintClass } from "./harnessMarks";
 import { harnessLabel, modelLabel } from "../utils";
 import { bridgeApi } from "../api";
+import { mergeForestSnapshot } from "../forest";
+import { startSerialPoll } from "../polling";
+import { appendFileMention } from "../fileMentions";
+import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "../pasteAttachments";
 import { cn } from "@/lib/utils";
 import type { AgentEvent, ApprovalDecision, Session, SessionForestSnapshot } from "../types";
 
@@ -21,7 +28,7 @@ export function AsideChat({ session, events, pendingMessages, working, onSend, o
   events: AgentEvent[];
   pendingMessages: string[];
   working: boolean;
-  onSend: (text: string) => Promise<void>;
+  onSend: (text: string, attachments?: ComposerAttachment[]) => Promise<void>;
   onResolve: (eventId: number, decision: ApprovalDecision) => void;
   /** Make the aside the active session and close the panel. */
   onPromote: () => void;
@@ -29,21 +36,42 @@ export function AsideChat({ session, events, pendingMessages, working, onSend, o
 }) {
   const [draft, setDraft] = useState("");
   const [forest, setForest] = useState<SessionForestSnapshot>();
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const [composerError, setComposerError] = useState<string>();
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const forestKeyRef = useRef("");
   const ownEvents = events.filter(event => event.sessionId === session.id);
 
   // The durable side of the transcript: without it the handoff brief the aside
   // was created around is invisible, because the brief is a forest entry and
-  // never a live frame. Refetched as the live stream grows, so durable rows
-  // (checkpoints, briefs) keep up with the conversation; AgentConversation
-  // dedupes the overlap.
+  // never a live frame. Digest-gated the same way the main conversation polls
+  // its own forest: the live stream can grow every frame during a turn, and a
+  // full snapshot refetch on every frame is what used to hang the panel. Only
+  // the cheap digest is checked that often; the snapshot itself is only
+  // refetched when the digest actually moves.
   useEffect(() => {
-    let live = true;
-    bridgeApi.sessionForest(session.id)
-      .then(snapshot => { if (live) setForest(snapshot); })
-      .catch(() => undefined);
-    return () => { live = false; };
-  }, [session.id, ownEvents.length]);
+    forestKeyRef.current = "";
+    setForest(undefined);
+    let active = true;
+    let pollsSinceFullFetch = 0;
+    const refresh = async () => {
+      const digest = await bridgeApi.sessionForestDigest(session.id).catch(() => undefined);
+      const force = pollsSinceFullFetch >= 9 || digest === undefined;
+      if (!active) return;
+      if (!force && digest === forestKeyRef.current) {
+        pollsSinceFullFetch += 1;
+        return;
+      }
+      const value = await bridgeApi.sessionForest(session.id).catch(() => undefined);
+      if (!active) return;
+      pollsSinceFullFetch = 0;
+      if (!value) return;
+      forestKeyRef.current = digest ?? "";
+      setForest(current => mergeForestSnapshot(current, value));
+    };
+    const stop = startSerialPoll(refresh, 3000);
+    return () => { active = false; stop(); };
+  }, [session.id]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -56,9 +84,59 @@ export function AsideChat({ session, events, pendingMessages, working, onSend, o
 
   async function send() {
     const text = draft.trim();
-    if (!text) return;
+    const sentAttachments = attachments;
+    if (!text && sentAttachments.length === 0) return;
     setDraft("");
-    await onSend(text);
+    setAttachments([]);
+    await onSend(text, sentAttachments);
+  }
+
+  // Mirrors the main composer's `handleComposerPaste`: clipboard images become
+  // removable preview chips instead of inserted text; every other paste falls
+  // through untouched. Sized before decode, same reasoning as the main chat —
+  // a silent multi-second paste for a huge screenshot reads as broken.
+  const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = event.clipboardData?.items;
+    if (!items) return;
+    const files = imageFilesFromClipboard(items);
+    if (files.length === 0) return;
+    event.preventDefault();
+    if (files.some(isPasteTooLarge)) {
+      setComposerError("That image is too large to paste (over 8 MB).");
+      return;
+    }
+    setComposerError(undefined);
+    void Promise.all(files.map(async file => ({
+      id: crypto.randomUUID(),
+      mediaType: mediaTypeOf(file),
+      dataUri: await readAsDataUri(file),
+    })))
+      .then(pasted => setAttachments(current => [...current, ...pasted]))
+      .catch(error => setComposerError(error instanceof Error ? error.message : String(error)));
+    inputRef.current?.focus();
+  };
+
+  // The `+` control, mirroring the main composer's `attachFile`: the system
+  // file dialog inside the desktop shell, turning picks into `@path`
+  // mentions. Outside Tauri there is no dialog and the aside has no mention
+  // picker of its own, so it drops a bare `@` for the user to keep typing.
+  async function attachFile() {
+    if (!("__TAURI_INTERNALS__" in window)) {
+      setDraft(current => (current.length === 0 || /\s$/.test(current) ? `${current}@` : `${current} @`));
+      inputRef.current?.focus();
+      return;
+    }
+    try {
+      const picked = await open({ multiple: true, title: "Attach files" });
+      if (picked == null) return;
+      const paths = (Array.isArray(picked) ? picked : [picked]).filter((path): path is string => typeof path === "string");
+      if (paths.length === 0) return;
+      setDraft(current => paths.reduce(appendFileMention, current));
+    } catch (e) {
+      setComposerError(e instanceof Error ? e.message : String(e));
+    } finally {
+      inputRef.current?.focus();
+    }
   }
 
   return (
@@ -113,28 +191,22 @@ export function AsideChat({ session, events, pendingMessages, working, onSend, o
         </div>
 
         <footer className="shrink-0 border-t border-border p-3">
-          <div className="flex items-end gap-2 rounded-2xl bg-accent/60 px-3 py-2">
-            <textarea
-              ref={inputRef}
-              value={draft}
-              rows={1}
-              placeholder={`Ask ${harnessLabel(session.harness)}…`}
-              onChange={event => setDraft(event.target.value)}
-              onKeyDown={event => {
-                if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); void send(); }
-              }}
-              className="max-h-28 min-w-0 flex-1 resize-none bg-transparent text-[13px] leading-6 text-foreground outline-none placeholder:text-muted-foreground/60"
-            />
-            <button
-              type="button"
-              onClick={() => void send()}
-              disabled={!draft.trim()}
-              aria-label="Send to the aside"
-              className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground transition-opacity disabled:opacity-35"
-            >
-              <ArrowUp size={14} aria-hidden="true"/>
-            </button>
-          </div>
+          {composerError && <p className="mb-2 px-1 text-[11px] text-destructive">{composerError}</p>}
+          <ComposerPill
+            layout="dock"
+            className="mx-0 max-w-none px-0 pb-0 pt-0 sm:px-0 sm:pb-0"
+            value={draft}
+            onChange={setDraft}
+            onSubmit={() => void send()}
+            onPaste={handlePaste}
+            attachments={attachments}
+            onRemoveAttachment={id => setAttachments(current => current.filter(attachment => attachment.id !== id))}
+            placeholder={`Ask ${harnessLabel(session.harness)}…`}
+            working={working}
+            activeAction="queue"
+            onPlusClick={() => void attachFile()}
+            inputRef={inputRef}
+          />
         </footer>
       </div>
     </div>
