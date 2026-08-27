@@ -31,6 +31,44 @@ pub fn resolve(name: &str) -> Option<PathBuf> {
     candidates.into_iter().find(|path| is_executable(path))
 }
 
+
+/// A build identity for an executable: FNV-1a-64 over the file's bytes,
+/// hex-encoded.
+///
+/// Exists because `ServerInfo.version` cannot tell two dev builds apart — the
+/// workspace version is a constant — and a desktop app attaching to a daemon
+/// built hours earlier silently runs stale code behind a fresh UI. Hand-rolled
+/// FNV rather than `DefaultHasher` because the comparison crosses process and
+/// toolchain boundaries, and `DefaultHasher` guarantees stability across
+/// neither. Not cryptographic on purpose: this distinguishes builds, it does
+/// not authenticate them (the socket token does that).
+pub fn file_identity(path: &Path) -> std::io::Result<String> {
+    use std::io::Read;
+    const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+    let mut hash = FNV_OFFSET;
+    let mut file = fs::File::open(path)?;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        for byte in &buffer[..read] {
+            hash ^= u64::from(*byte);
+            hash = hash.wrapping_mul(FNV_PRIME);
+        }
+    }
+    Ok(format!("{hash:016x}"))
+}
+
+/// [`file_identity`] of the running executable. Callers that outlive rebuilds
+/// (the daemon) must call this at startup, while the file at
+/// `current_exe()` is still the binary that is actually running.
+pub fn self_identity() -> std::io::Result<String> {
+    file_identity(&env::current_exe()?)
+}
+
 pub fn version(name: &str) -> Option<String> {
     version_at(&resolve(name)?)
 }
@@ -72,5 +110,33 @@ mod tests {
     #[test]
     fn resolve_skips_missing_binaries() {
         assert!(resolve("bridge-definitely-missing-binary-xyz").is_none());
+    }
+
+    /// The identity crosses process and toolchain boundaries, so it has to be
+    /// a pure function of the bytes — same content same id, one byte one id.
+    #[test]
+    fn file_identity_is_content_addressed() {
+        let dir = tempfile::tempdir().unwrap();
+        let a = dir.path().join("a");
+        let b = dir.path().join("b");
+        fs::write(&a, b"the same bytes").unwrap();
+        fs::write(&b, b"the same bytes").unwrap();
+        let first = file_identity(&a).unwrap();
+        assert_eq!(first.len(), 16, "a fixed-width hex id");
+        assert_eq!(first, file_identity(&a).unwrap(), "stable across reads");
+        assert_eq!(first, file_identity(&b).unwrap(), "a function of content, not path");
+        fs::write(&b, b"the same bytez").unwrap();
+        assert_ne!(first, file_identity(&b).unwrap(), "one byte, one id");
+    }
+
+    #[test]
+    fn a_missing_binary_identity_is_an_error_not_a_panic() {
+        assert!(file_identity(Path::new("/nonexistent/bridged")).is_err());
+    }
+
+    #[test]
+    fn self_identity_matches_the_file_identity_of_the_test_binary() {
+        let own = env::current_exe().unwrap();
+        assert_eq!(self_identity().unwrap(), file_identity(&own).unwrap());
     }
 }

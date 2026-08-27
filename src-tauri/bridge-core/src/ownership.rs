@@ -169,6 +169,30 @@ impl DataDirLease {
         &self.data_dir
     }
 
+    /// The identity of whoever holds this data directory's lease, or `None`
+    /// when nothing does (no lock file, an unheld one, or an unreadable
+    /// identity). Read-only: OS file locks gate locking, not reading, so this
+    /// neither takes nor disturbs the lease. It is how a launcher finds the
+    /// pid of a daemon some earlier process spawned.
+    pub fn current_holder(data_dir: &Path) -> Option<OwnerIdentity> {
+        let lock_path = data_dir.join(LOCK_FILE_NAME);
+        let mut file = OpenOptions::new().read(true).write(true).open(&lock_path).ok()?;
+        match file.try_lock() {
+            // We could lock it, so nobody holds it. Release immediately.
+            Ok(()) => {
+                let _ = file.unlock();
+                None
+            }
+            Err(std::fs::TryLockError::WouldBlock) => {
+                let mut contents = String::new();
+                file.seek(SeekFrom::Start(0)).ok()?;
+                file.read_to_string(&mut contents).ok()?;
+                serde_json::from_str::<OwnerIdentity>(&contents).ok()
+            }
+            Err(std::fs::TryLockError::Error(_)) => None,
+        }
+    }
+
     pub fn identity(&self) -> &OwnerIdentity {
         &self.identity
     }
@@ -187,6 +211,27 @@ impl Drop for DataDirLease {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn current_holder_reads_a_held_lease_without_disturbing_it() {
+        let fixture = tempfile::tempdir().unwrap();
+        assert!(
+            DataDirLease::current_holder(fixture.path()).is_none(),
+            "an unheld directory has no holder"
+        );
+        let lease = DataDirLease::acquire(fixture.path(), OwnerKind::Daemon).unwrap();
+        let holder = DataDirLease::current_holder(fixture.path())
+            .expect("a held lease names its holder");
+        assert_eq!(holder.pid, std::process::id());
+        assert_eq!(holder.kind, OwnerKind::Daemon);
+        // The read must not have released the lock: a second acquire refuses.
+        assert!(matches!(
+            DataDirLease::acquire(fixture.path(), OwnerKind::Daemon),
+            Err(OwnershipError::Held { .. })
+        ));
+        drop(lease);
+        assert!(DataDirLease::current_holder(fixture.path()).is_none());
+    }
 
     #[test]
     fn a_second_owner_is_refused_with_the_holders_identity() {

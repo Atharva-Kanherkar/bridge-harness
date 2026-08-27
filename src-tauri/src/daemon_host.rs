@@ -270,6 +270,25 @@ impl DaemonProxy {
     }
 }
 
+/// Whether an attached daemon is running different code than the binary this
+/// launcher would spawn.
+///
+/// `ours` is the identity of the launcher's own `bridged` binary (`None` when
+/// the launcher is attach-only — it has nothing better to offer, so nothing is
+/// ever stale to it). `theirs` is what the daemon's handshake reported; a
+/// daemon that reports none predates the identity handshake and is stale by
+/// definition. This exists because the desktop app used to attach to *any*
+/// live daemon: a rebuild changed the binary on disk and nothing else, so
+/// every backend fix merged during a daemon's lifetime silently never ran —
+/// behind a webview that *did* update.
+fn daemon_is_stale(ours: Option<&str>, theirs: Option<&str>) -> bool {
+    match (ours, theirs) {
+        (None, _) => false,
+        (Some(_), None) => true,
+        (Some(ours), Some(theirs)) => ours != theirs,
+    }
+}
+
 /// Attach-or-start: how the supervisor obtains connections.
 pub struct Launcher {
     data_dir: PathBuf,
@@ -310,13 +329,37 @@ impl Launcher {
         start_deadline: Duration,
         stop: Option<&AtomicBool>,
     ) -> Result<Vec<Arc<DaemonClient>>, String> {
-        let initial = self.attach();
-        match initial {
-            Ok(clients) => return Ok(clients),
+        let initial: Result<Vec<Arc<DaemonClient>>, ClientError> = match self.attach() {
+            Ok(clients) => {
+                let ours = self.binary_identity();
+                let theirs = clients
+                    .first()
+                    .and_then(|client| client.handshake().build_id.clone());
+                if !daemon_is_stale(ours.as_deref(), theirs.as_deref()) {
+                    return Ok(clients);
+                }
+                // The daemon is serving a different build than the one on
+                // disk. Attaching anyway is how a merged fix runs everywhere
+                // except the process that matters, so replace it: drop the
+                // pool, stop the daemon, and fall through to the spawn path
+                // below exactly as if nothing had been listening.
+                eprintln!(
+                    "bridge: bridged is serving build {} but the binary on disk is build {}; replacing the stale daemon",
+                    theirs.as_deref().unwrap_or("<pre-identity>"),
+                    ours.as_deref().unwrap_or("<unknown>"),
+                );
+                drop(clients);
+                self.stop_running_daemon();
+                Err(ClientError::Disconnected)
+            }
+            Err(error) => Err(error),
+        };
+        match &initial {
+            Ok(_) => unreachable!("the Ok case returned or decayed above"),
             // A live daemon answered and said no (bad token, incompatible
             // protocol). Starting a second one cannot help — the socket is
             // owned. Surface its refusal verbatim.
-            Err(ClientError::Handshake(error)) if !retryable_handshake(&error) => {
+            Err(ClientError::Handshake(error)) if !retryable_handshake(error) => {
                 return Err(format!(
                     "a running bridged daemon refused this app ({}): {}",
                     error.code, error.message
@@ -389,6 +432,52 @@ impl Launcher {
                     self.log_tail()
                 ));
             }
+        }
+    }
+
+    /// The identity of the binary this launcher would spawn. Recomputed per
+    /// call on purpose: the whole point is noticing that the file changed
+    /// under a long-running app, so memoizing it would rebuild the bug this
+    /// check exists to kill. `None` for attach-only launchers and for a
+    /// binary that cannot be read.
+    fn binary_identity(&self) -> Option<String> {
+        bridge_core::binary::file_identity(self.binary.as_deref()?).ok()
+    }
+
+    /// Stop whatever daemon is serving the data directory: the launcher's own
+    /// child when it has one, otherwise the process the lease names — and only
+    /// when the lease says that process is a daemon, because an `embedded`
+    /// owner is an app and is never signalled. Bounded wait for the lease to
+    /// clear, so the spawn that follows does not lose the ownership race to a
+    /// daemon that is still draining.
+    fn stop_running_daemon(&mut self) {
+        if self.child.is_some() {
+            self.terminate_child();
+        } else {
+            let holder = bridge_core::ownership::DataDirLease::current_holder(&self.data_dir);
+            let Some(holder) = holder else { return };
+            if holder.kind != bridge_core::ownership::OwnerKind::Daemon {
+                eprintln!(
+                    "bridge: the data directory is owned by {:?} (pid {}), not a daemon; leaving it alone",
+                    holder.kind, holder.pid
+                );
+                return;
+            }
+            let pid = holder.pid as libc::pid_t;
+            if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
+                return;
+            }
+            let deadline = Instant::now() + CHILD_SHUTDOWN_DEADLINE;
+            while Instant::now() < deadline {
+                if bridge_core::ownership::DataDirLease::current_holder(&self.data_dir).is_none() {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            // Still holding past the drain budget: escalate once, then give
+            // the release race a beat to settle.
+            let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
+            std::thread::sleep(Duration::from_millis(200));
         }
     }
 
@@ -812,6 +901,89 @@ mod tests {
         assert!(proxy.reserve_invoke().is_none());
         drop(permits);
         assert!(proxy.reserve_invoke().is_some());
+    }
+
+    /// The decision table. `ours` is the launcher's binary identity, `theirs`
+    /// the daemon's handshake report.
+    #[test]
+    fn staleness_is_a_mismatch_and_attach_only_launchers_never_see_one() {
+        // Attach-only: nothing better to offer, so nothing is stale.
+        assert!(!daemon_is_stale(None, None));
+        assert!(!daemon_is_stale(None, Some("aaaa")));
+        // A daemon that reports no identity predates the check: stale.
+        assert!(daemon_is_stale(Some("aaaa"), None));
+        // The actual comparison.
+        assert!(!daemon_is_stale(Some("aaaa"), Some("aaaa")));
+        assert!(daemon_is_stale(Some("aaaa"), Some("bbbb")));
+    }
+
+    /// The field failure end to end: a live daemon whose handshake names a
+    /// different build must be replaced by a spawn of the launcher's binary,
+    /// not attached to. The fake daemon completes a real handshake carrying a
+    /// stale id; the fake replacement binary drops a marker when started.
+    #[test]
+    fn a_stale_daemon_is_replaced_instead_of_attached_to() {
+        let fixture = tempfile::tempdir().unwrap();
+        let data_dir = fixture.path().join("data");
+        std::fs::create_dir_all(&data_dir).unwrap();
+        std::fs::write(data_dir.join(bridge_client::TOKEN_FILE_NAME), "test-token").unwrap();
+        let socket_path = data_dir.join(bridge_client::SOCKET_FILE_NAME);
+        let listener = UnixListener::bind(&socket_path).unwrap();
+        let server = std::thread::spawn(move || {
+            // First connection: a full, successful handshake reporting a build
+            // this test's launcher does not have. Later pool/loop connections
+            // are dropped unanswered; attach tolerates both.
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = String::new();
+            BufReader::new(socket.try_clone().unwrap())
+                .read_line(&mut request)
+                .unwrap();
+            let request: bridge_protocol::RpcRequest = serde_json::from_str(&request).unwrap();
+            assert_eq!(request.method, bridge_protocol::HANDSHAKE_METHOD);
+            let response = bridge_protocol::RpcResponse::result(
+                request.id,
+                serde_json::json!({
+                    "protocolVersion": bridge_protocol::PROTOCOL_VERSION,
+                    "server": {"name": "bridge", "version": "0.1.0"},
+                    "capabilities": ["sessions"],
+                    "buildId": "0000000000000000",
+                }),
+            );
+            serde_json::to_writer(&mut socket, &response).unwrap();
+            socket.write_all(b"\n").unwrap();
+            // Hold the connection open until the launcher moves on.
+            std::thread::sleep(Duration::from_millis(600));
+        });
+
+        let spawned = fixture.path().join("spawned");
+        let binary = fixture.path().join("fake-bridged");
+        std::fs::write(
+            &binary,
+            format!(
+                "#!/bin/sh\necho spawned > '{}'\nexec sleep 30\n",
+                spawned.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut launcher = Launcher::new(
+            data_dir,
+            fixture.path().join("extension"),
+            Some(binary),
+        );
+        let error = match launcher.ensure_with_deadline(Duration::from_millis(1500)) {
+            Ok(_) => panic!("a stale daemon was attached to"),
+            Err(error) => error,
+        };
+        server.join().unwrap();
+        // The replacement (a shell script) never serves, so ensure times out —
+        // what matters is that the launcher refused the stale daemon and
+        // started its own binary instead of settling for what answered.
+        assert!(error.contains("did not become reachable"), "{error}");
+        assert!(
+            spawned.is_file(),
+            "the launcher's own binary was never started: {error}"
+        );
     }
 
     #[test]
