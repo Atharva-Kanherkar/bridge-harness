@@ -223,7 +223,7 @@ export function App() {
   // The first message of a just-created chat, tagged with its target session id so
   // the delivery effect can only ever hand it to that chat — never to a session that
   // became active while the create awaited (#350).
-  const pendingWelcomeMessageRef = useRef<{ sessionId: string; text: string } | null>(null);
+  const pendingWelcomeMessageRef = useRef<{ sessionId: string; text: string; attachments: ComposerAttachment[] } | null>(null);
   const forestKeyRef = useRef("");
   const agentEventQueueRef = useRef<AgentEvent[]>([]);
   const agentEventTimerRef = useRef<number | undefined>(undefined);
@@ -955,7 +955,12 @@ export function App() {
   // workspace orchestrator or non-workspace direct chat — carries the handoff brief,
   // then hands the first message to the pending-message effect on selection. Guarded
   // by `newChatPendingRef` so a fast second submit cannot produce two sessions.
-  async function submitNewChatDraft(draft: NewChatDraft, message?: string, alreadyLocked = false): Promise<string | undefined> {
+  async function submitNewChatDraft(
+    draft: NewChatDraft,
+    message?: string,
+    alreadyLocked = false,
+    initialAttachments: ComposerAttachment[] = [],
+  ): Promise<string | undefined> {
     if (!alreadyLocked) {
       if (newChatPendingRef.current) return;
       newChatPendingRef.current = true;
@@ -965,7 +970,7 @@ export function App() {
       const text = message?.trim() ?? "";
       // A chat comes into existence only when it has something in it (#350): an empty
       // submit is a no-op, never a zero-entry placeholder row. The draft stays open.
-      if (!text) return undefined;
+      if (!text && initialAttachments.length === 0) return undefined;
       setBusy(true); setError(undefined);
       try {
         // create_chat takes harness/model directly; create_workspace_session doesn't,
@@ -993,7 +998,7 @@ export function App() {
         if (draft.workspaceId) writeLastWorkspaceId(draft.workspaceId);
         // Tag the message with the created session so it can only land there, even if
         // another session became active while the create awaited.
-        if (created) pendingWelcomeMessageRef.current = { sessionId: created.id, text };
+        if (created) pendingWelcomeMessageRef.current = { sessionId: created.id, text, attachments: initialAttachments };
         setState(next);
         setNewChatDraft(null);
         if (created) {
@@ -1081,11 +1086,11 @@ export function App() {
   }
   // Entry point for the Welcome screen's own composer, which has no session
   // to skip past — a `$harness` prefix there is the only branch either way.
-  async function startChatOrShortcut(text?: string) {
+  async function startChatOrShortcut(text?: string, initialAttachments: ComposerAttachment[] = []) {
     if (newChatPendingRef.current) return;
     newChatPendingRef.current = true;
     try {
-      if (text && await openHarnessShortcut(text, true)) return;
+      if (text && initialAttachments.length === 0 && await openHarnessShortcut(text, true)) return;
       // Submit the open draft's choices; on the fresh welcome surface (no draft yet)
       // resolve them from the welcome workspace, just as this path used to.
       const draft: NewChatDraft = newChatDraft ?? {
@@ -1097,7 +1102,7 @@ export function App() {
         }),
         createWorktree: false,
       };
-      await submitNewChatDraft(draft, text, true);
+      await submitNewChatDraft(draft, text, true, initialAttachments);
     } finally {
       newChatPendingRef.current = false;
     }
@@ -1192,7 +1197,7 @@ export function App() {
     // session happened to become active in the meantime (#350).
     if (!pending || session?.id !== pending.sessionId) return;
     pendingWelcomeMessageRef.current = null;
-    void sendPrompt(pending.text);
+    void sendPrompt(pending.text, pending.attachments);
   }, [session?.id]);
   // Workspace "+": ask whether this orchestrator should get an isolated worktree.
   function requestWorkspaceSession(workspaceId: string) {
@@ -1326,9 +1331,9 @@ export function App() {
       throw e;
     }
   }
-  async function sendPrompt(forcedText?: string) {
+  async function sendPrompt(forcedText?: string, forcedAttachments?: ComposerAttachment[]) {
     const submittedText = (forcedText ?? composer).trim();
-    const sentAttachments = attachments;
+    const sentAttachments = forcedAttachments ?? attachments;
     if (!submittedText && sentAttachments.length === 0) return;
     // A harness shortcut is a chat launcher, not a turn — `$codex fix the lint`
     // opens a chat whose first message is that text. An image has nowhere to
@@ -2048,7 +2053,7 @@ export function App() {
           // Fresh welcome surface with no draft yet: the worktree decision is now
           // held on the draft (#350), created on submit — not started immediately.
           : { ...resolveDraftHarnessModel(), workspaceId: resolvedWelcomeWorkspaceId, createWorktree: true })}
-        onStartChat={text => void startChatOrShortcut(text)}
+        onStartChat={(text, initialAttachments) => void startChatOrShortcut(text, initialAttachments)}
         onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
       />}
     </main>
@@ -2123,7 +2128,7 @@ function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, 
   onSelectModel: (harness: Harness, model: string | null) => void;
   busy: boolean;
   canStartChat: boolean;
-  onStartChat: (text?: string) => void;
+  onStartChat: (text?: string, attachments?: ComposerAttachment[]) => void;
   onNewWorkspace: () => void;
   workspaces: Workspace[];
   workspace: Workspace | null;
@@ -2139,11 +2144,31 @@ function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, 
 }) {
   const greeting = useMemo(() => pickGreeting("welcome"), []);
   const [draft, setDraft] = useState("");
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
+  const [composerError, setComposerError] = useState<string>();
   const submit = () => {
     const text = draft.trim();
-    if (text) onStartChat(text);
+    if (text || attachments.length > 0) onStartChat(text, attachments);
     else onStartChat();
-    setDraft("");
+  };
+  const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = event.clipboardData?.items;
+    if (!items) return;
+    const files = imageFilesFromClipboard(items);
+    if (files.length === 0) return;
+    event.preventDefault();
+    if (files.some(isPasteTooLarge)) {
+      setComposerError("That image is too large to paste (over 8 MB). Save it to the repo and reference it with @ instead.");
+      return;
+    }
+    setComposerError(undefined);
+    void Promise.all(files.map(async file => ({
+      id: crypto.randomUUID(),
+      mediaType: mediaTypeOf(file),
+      dataUri: await readAsDataUri(file),
+    })))
+      .then(pasted => setAttachments(current => [...current, ...pasted]))
+      .catch(error => setComposerError(errorMessage(error)));
   };
   return <div className="flex flex-1 flex-col items-center justify-center px-4 text-center animate-page-enter">
     <h1 className="mb-8 max-w-xl font-display text-[1.9rem] font-medium leading-[1.15] tracking-[-0.025em] text-foreground sm:mb-10 sm:text-[2.4rem]">{greeting.headline}</h1>
@@ -2167,16 +2192,21 @@ function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, 
       onChange={setDraft}
       onSubmit={submit}
       onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); } }}
+      onPaste={handlePaste}
+      attachments={attachments}
+      onRemoveAttachment={id => setAttachments(current => current.filter(attachment => attachment.id !== id))}
       placeholder={canStartChat ? "Ask Bridge…" : "Install or sign in to a model adapter…"}
       disabled={busy || !canStartChat}
-      // There is no conversation or folder here yet, so there is nothing to
-      // attach to. This surface keeps the structural action — and says so.
+      // There is no conversation or folder here yet, so the structural `+`
+      // still creates a workspace. Clipboard images are first-turn content and
+      // use the paste path above instead of pretending to be repository files.
       plusLabel="New workspace"
       onPlusClick={onNewWorkspace}
       // The unstarted draft is a real chat-in-waiting: let the model be chosen
       // before the first message, the same picker the session composer uses.
       trailing={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} compact roleLabel="Chat" />}
     />
+    {composerError && <p className="mt-2 max-w-2xl text-left text-[11px] text-destructive">{composerError}</p>}
     <p className="mt-6 max-w-md text-[13px] leading-relaxed text-muted-foreground">{greeting.hint}</p>
   </div>;
 }

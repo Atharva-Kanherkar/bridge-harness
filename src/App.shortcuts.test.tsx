@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import { bridgeApi } from "./api";
 
 // The keymap's own suite proves what a chord means. This one proves the app
 // is listening: the bindings are only worth anything mounted, dispatching
@@ -56,6 +57,7 @@ beforeEach(async () => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   act(() => root?.unmount());
   container?.remove();
   document.documentElement.removeAttribute("data-fullscreen");
@@ -83,7 +85,45 @@ async function sendFirst(text: string) {
   await settle();
 }
 
+async function pasteWelcomeImage() {
+  const composer = composerField()!;
+  const file = new File(["image bytes"], "screenshot.png", { type: "image/png" });
+  const event = new Event("paste", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "clipboardData", {
+    value: {
+      items: {
+        0: { kind: "file", type: "image/png", getAsFile: () => file },
+        length: 1,
+      },
+    },
+  });
+  await act(async () => { composer.dispatchEvent(event); });
+  await settle();
+}
+
 describe("keyboard shortcuts inside the app", () => {
+  it("previews an image pasted into the welcome composer", async () => {
+    await pasteWelcomeImage();
+
+    expect(container.querySelector('img[alt="Attached image, image/png"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Remove attached image"]')).not.toBeNull();
+  });
+
+  it("creates a chat and delivers an image-only first turn", async () => {
+    const submitInput = vi.spyOn(bridgeApi, "submitInput");
+    await pasteWelcomeImage();
+
+    await act(async () => composerField()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })));
+    await settle();
+
+    expect(onWelcome(), "image-only submit created the selected chat").toBe(false);
+    expect(submitInput).toHaveBeenCalledWith(
+      expect.any(String),
+      "",
+      [expect.objectContaining({ mediaType: "image/png", dataUri: expect.stringMatching(/^data:image\/png;base64,/) })],
+    );
+  });
+
   it("opens an unstarted draft on ⌘N without the mouse", async () => {
     expect(onWelcome(), "the app mounted on the welcome surface").toBe(true);
     await press({ key: "n", code: "KeyN", metaKey: true });
