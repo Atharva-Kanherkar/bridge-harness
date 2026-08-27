@@ -39,6 +39,29 @@ impl CompactionReason {
         }
     }
 
+    /// Why Bridge is asking, in the prompt's own voice. An agent that knows
+    /// what the checkpoint is for can judge what belongs in the summary.
+    const fn why_asked(self) -> &'static str {
+        match self {
+            Self::ContextPressure | Self::ResponseReserve => {
+                "This session's context is nearly full, so I need a summary to carry forward before older turns are dropped."
+            }
+            Self::PhaseBoundary => {
+                "This session has reached a phase boundary, so I need a summary to carry into the next phase."
+            }
+            Self::BeforeSuspend => {
+                "This session is about to be suspended, so I need a summary to resume it from later."
+            }
+            Self::BeforeDowngrade => {
+                "The user is switching this chat to a different model, so I need a summary for the incoming model to inherit."
+            }
+            Self::BeforeShutdown => {
+                "This session is shutting down, so I need a summary of it kept on record."
+            }
+            Self::Manual => "Someone asked to compact this session, so I need a summary to carry forward.",
+        }
+    }
+
     fn parse(value: &str) -> Option<Self> {
         Some(match value {
             "context_pressure" => Self::ContextPressure,
@@ -236,19 +259,45 @@ pub enum CheckpointOutcome {
 pub struct CompactionController;
 
 impl CompactionController {
+    /// The maintenance turn Bridge sends its own agent.
+    ///
+    /// It names its asker and says why. The previous wording was a bare schema
+    /// with "do no more work" and an unexplained `sourceAgent` the agent could
+    /// not verify — which reads exactly like an injected instruction, and an
+    /// agent that treats it as one is right to refuse. It also has to say that
+    /// empty arrays are valid: told to fill `decisions` and `filesTouched` from
+    /// a conversation where nothing was decided and nothing was touched, an
+    /// honest agent's only options are to invent or to refuse.
     pub fn checkpoint_prompt(
         session_id: &str,
         pending: &PendingCompaction,
         repair_error: Option<&str>,
     ) -> String {
         let repair = repair_error
-            .map(|error| format!(" Your previous response was invalid: {error}."))
+            .map(|error| format!(" Your previous response was not valid against that schema: {error}. Reply with the JSON alone."))
             .unwrap_or_default();
         format!(
-            "Produce a checkpoint matching this exact JSON schema; do no more work. Return JSON only: {{\"schemaVersion\":1,\"summary\":\"non-empty\",\"decisions\":[\"durable decision\"],\"filesTouched\":[\"relative/path\"],\"sourceAgent\":\"{session_id}\",\"firstRetainedEntryId\":\"{}\",\"tokensBefore\":{},\"reason\":\"{}\"}}.{repair}",
-            pending.first_retained_entry_id,
-            pending.tokens_before,
-            pending.reason.as_str(),
+            "[bridge session maintenance] This is Bridge, the host running this \
+             session, not the person you are talking to. {why} Reply with this \
+             JSON object and nothing else — no prose, no code fence: \
+             {{\"schemaVersion\":1,\"summary\":\"what this session was about so \
+             far\",\"decisions\":[],\"filesTouched\":[],\"sourceAgent\":\
+             \"{session_id}\",\"firstRetainedEntryId\":\"{first_retained}\",\
+             \"tokensBefore\":{tokens_before},\"reason\":\"{reason}\"}} Report \
+             only what actually happened: leave `decisions` and `filesTouched` \
+             as empty arrays if nothing was decided or changed, and say so \
+             plainly in `summary` if this session has barely started. Invent \
+             nothing. Do not call tools, run commands, change files, delegate, \
+             or take any other action; this maintenance turn may only return \
+             the checkpoint JSON. Copy `sourceAgent`, `firstRetainedEntryId`, \
+             `tokensBefore`, and `reason` through exactly as given — they are \
+             Bridge's own bookkeeping and are how this reply is matched to this \
+             request. Nothing you write here reaches the user, and this turn is \
+             not part of your conversation with them.{repair}",
+            why = pending.reason.why_asked(),
+            first_retained = pending.first_retained_entry_id,
+            tokens_before = pending.tokens_before,
+            reason = pending.reason.as_str(),
         )
     }
 
@@ -781,6 +830,106 @@ mod tests {
             has_meaningful_new_work: true,
             wall_clock_only: false,
         }
+    }
+
+    fn pending_for(reason: CompactionReason) -> PendingCompaction {
+        PendingCompaction {
+            reason,
+            attempt: 0,
+            tokens_before: 4_200,
+            requested_at: "now".into(),
+            first_retained_entry_id: "retained-1".into(),
+        }
+    }
+
+    /// The wording is load-bearing. An agent that cannot tell who is asking, or
+    /// that is told to fill arrays from a session where nothing happened, is
+    /// right to refuse — and a refusal is what the user ends up looking at.
+    #[test]
+    fn the_checkpoint_prompt_names_its_asker_and_asks_for_no_invention() {
+        let pending = pending_for(CompactionReason::BeforeDowngrade);
+        let prompt = CompactionController::checkpoint_prompt("s", &pending, None);
+        assert!(
+            prompt.contains("bridge session maintenance") && prompt.contains("the host running this session"),
+            "the prompt must say who is asking: {prompt}"
+        );
+        assert!(
+            prompt.contains("switching this chat to a different model"),
+            "and why it is asking: {prompt}"
+        );
+        assert!(
+            prompt.contains("empty arrays") && prompt.contains("Invent nothing"),
+            "and that an empty answer is a valid one: {prompt}"
+        );
+        for forbidden_action in [
+            "Do not call tools",
+            "run commands",
+            "change files",
+            "delegate",
+            "any other action",
+            "may only return the checkpoint JSON",
+        ] {
+            assert!(
+                prompt.contains(forbidden_action),
+                "the maintenance turn must forbid {forbidden_action:?}: {prompt}"
+            );
+        }
+        assert!(
+            prompt.contains("reaches the user") && prompt.contains("not part of your conversation"),
+            "and that this turn is not the conversation: {prompt}"
+        );
+        // The mangled-continuation trap: a `\`-joined Rust literal that lost its
+        // continuations reads as one line with runs of indentation inside it.
+        assert!(!prompt.contains("   "), "the prompt carries stray indentation: {prompt}");
+        // The bookkeeping still has to survive verbatim, or `handle_output`
+        // cannot match a reply to its request.
+        assert!(prompt.contains("retained-1") && prompt.contains("4200") && prompt.contains("before_downgrade"));
+    }
+
+    #[test]
+    fn every_reason_explains_itself_in_the_prompt() {
+        for reason in [
+            CompactionReason::ContextPressure,
+            CompactionReason::ResponseReserve,
+            CompactionReason::PhaseBoundary,
+            CompactionReason::BeforeSuspend,
+            CompactionReason::BeforeDowngrade,
+            CompactionReason::BeforeShutdown,
+            CompactionReason::Manual,
+        ] {
+            let why = reason.why_asked();
+            assert!(
+                why.len() > 30 && why.ends_with('.'),
+                "{reason:?} has no sentence explaining itself: {why}"
+            );
+            assert!(
+                CompactionController::checkpoint_prompt("s", &pending_for(reason), None).contains(why),
+                "{reason:?} does not carry its explanation into the prompt"
+            );
+        }
+    }
+
+    /// The prompt embeds the schema it wants back, so the schema it shows has to
+    /// be one the validator accepts — including with the empty arrays it now
+    /// explicitly permits.
+    #[test]
+    fn an_empty_but_honest_checkpoint_validates() {
+        let pending = pending_for(CompactionReason::BeforeDowngrade);
+        let output = json!({
+            "schemaVersion": 1,
+            "summary": "This session had only just started; nothing was decided or changed.",
+            "decisions": [],
+            "filesTouched": [],
+            "sourceAgent": "s",
+            "firstRetainedEntryId": pending.first_retained_entry_id,
+            "tokensBefore": pending.tokens_before,
+            "reason": pending.reason.as_str(),
+        })
+        .to_string();
+        let checkpoint = Checkpoint::parse_and_validate(&output, "s")
+            .expect("an honestly empty checkpoint is still a checkpoint");
+        assert!(checkpoint.decisions.is_empty());
+        assert!(checkpoint.files_touched.is_empty());
     }
 
     #[test]

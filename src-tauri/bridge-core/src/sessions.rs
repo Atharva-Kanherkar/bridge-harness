@@ -33,6 +33,16 @@ use uuid::Uuid;
 /// `compaction.failed` and handing the next model nothing.
 pub const SWITCH_SUMMARY_TIMEOUT_SECONDS: i64 = 20;
 
+/// Below this many tokens on the active branch, a model switch asks for no
+/// handoff summary.
+///
+/// The summary exists to *compress* context the incoming model could not
+/// otherwise carry. Under the floor there is nothing to compress —
+/// `start_chat`'s mechanical projection replays the whole branch verbatim — so
+/// the round trip buys nothing and can only cost: a visible pause, and an agent
+/// asked to checkpoint a conversation that has barely started.
+pub const SWITCH_SUMMARY_MIN_TOKENS: i64 = 1_500;
+
 /// A pending request for the outgoing provider to summarise the conversation
 /// before a model switch tears it down. Delivery and settlement are host-side
 /// live-turn orchestration; this is the durable, validated part.
@@ -645,9 +655,11 @@ impl BridgeCore {
     /// switch tears it down. The request rides the existing validated
     /// compaction pipeline: `compaction.requested` entry, one internal turn,
     /// typed parse/validate with a single repair retry. Only a hot, idle chat
-    /// with meaningful history can be asked; anything else — cold process,
-    /// active turn, in-flight compaction, empty conversation — returns `None`
-    /// and the switch falls back to the mechanical projection.
+    /// with meaningful history *and* enough of it to be worth compressing can be
+    /// asked; anything else — cold process, active turn, in-flight compaction,
+    /// empty conversation, or a branch under
+    /// [`SWITCH_SUMMARY_MIN_TOKENS`] — returns `None` and the switch falls back
+    /// to the mechanical projection, which loses nothing at that size.
     pub fn plan_switch_summary(
         &self,
         session_id: &str,
@@ -682,6 +694,11 @@ impl BridgeCore {
         }
         let tokens =
             compaction_controller::active_token_estimate(&db, session_id)?;
+        // A floor under the "meaningful work" gate above, not a replacement for
+        // it: two messages clear that gate but are not worth a checkpoint.
+        if tokens < SWITCH_SUMMARY_MIN_TOKENS {
+            return Ok(None);
+        }
         let Some(prompt) = compaction_controller::CompactionController::begin(
             &db,
             session_id,
@@ -1715,6 +1732,84 @@ mod tests {
             .filter_map(Result::ok)
             .collect();
         assert!(kinds.is_empty(), "no compaction traffic was appended");
+    }
+
+    /// The floor is a magic number, so what needs pinning is that it lands
+    /// between the two cases it exists to separate: the "hi" that produced a
+    /// refusal in the transcript, and a session with real work in it.
+    #[test]
+    fn the_switch_summary_floor_separates_a_greeting_from_real_work() {
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Claude, None, None).unwrap();
+        let session_id = only_session_id(&core);
+        core.adapters.lock().unwrap().insert(
+            session_id.clone(),
+            Box::new(RecordingRuntime {
+                interrupted: Default::default(),
+                usage_requested: Default::default(),
+            }),
+        );
+        let append = |kind: session_forest::EntryKind, payload: serde_json::Value| {
+            let db = core.db.lock().unwrap();
+            session_forest::SessionForest::new(&db)
+                .append(&session_id, kind, payload)
+                .unwrap();
+        };
+
+        append(session_forest::EntryKind::UserMessage, serde_json::json!({"text":"hi"}));
+        append(
+            session_forest::EntryKind::AssistantMessage,
+            serde_json::json!({"role":"assistant","text":"Hey — what are we building?"}),
+        );
+        let greeting_tokens = {
+            let db = core.db.lock().unwrap();
+            compaction_controller::active_token_estimate(&db, &session_id).unwrap()
+        };
+        assert!(
+            greeting_tokens < SWITCH_SUMMARY_MIN_TOKENS,
+            "a greeting must sit under the floor, estimated {greeting_tokens}"
+        );
+        assert!(
+            core.plan_switch_summary(&session_id).unwrap().is_none(),
+            "the hot-path planner must apply the floor, not only compute an estimate below it"
+        );
+        let compaction_requests = || {
+            core.db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM session_entries WHERE session_id=?1 AND kind='compaction.requested'",
+                    params![session_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(compaction_requests(), 0, "the skipped summary must not touch the forest");
+
+        // Now the same session with actual work in it. Sizes are the point, so
+        // the payloads carry real bulk rather than a token_estimate override.
+        for index in 0..8 {
+            append(
+                session_forest::EntryKind::AssistantMessage,
+                serde_json::json!({
+                    "role": "assistant",
+                    "text": format!("Refactored the token store for the {index}th time. {}", "Details of what changed and why, at the length a real turn runs to. ".repeat(12)),
+                }),
+            );
+        }
+        let working_tokens = {
+            let db = core.db.lock().unwrap();
+            compaction_controller::active_token_estimate(&db, &session_id).unwrap()
+        };
+        assert!(
+            working_tokens >= SWITCH_SUMMARY_MIN_TOKENS,
+            "a session with real history must clear the floor, estimated {working_tokens}"
+        );
+        assert!(
+            core.plan_switch_summary(&session_id).unwrap().is_some(),
+            "real history must still produce a checkpoint request"
+        );
+        assert_eq!(compaction_requests(), 1);
     }
 
     #[test]

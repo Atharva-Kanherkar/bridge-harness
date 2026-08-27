@@ -16,6 +16,7 @@ import { workerPanelModel, type WorkerPanelModel } from "./workerPanel";
 import type { WorkerTone } from "./workerStatus";
 import { bridgeApi } from "../api";
 import { computeNarration, type NarrationView } from "../startupNarration";
+import { HarnessMark } from "./harnessMarks";
 
 function providerLabel(harness?: string | null): string | undefined {
   return harness ? harnessLabel(harness) : undefined;
@@ -468,23 +469,29 @@ function useStartupNarration({ sessionId, harness, model, hasProviderSessionId, 
   });
 }
 
-/// The row itself. `view.mounted` gates presence entirely, and the
-/// `thinking-shimmer` node (or its reduced-motion stand-in dot) is rendered
-/// unconditionally within that window — only the label/elapsed siblings
-/// mount and unmount, so the collapse handoff never remounts the animation.
-function StartupStatusRow({ view }: { view: NarrationView }) {
+/// The row itself: the harness's own mark, the elapsed seconds, the label —
+/// in that order, so the eye lands on *which agent* before it reads *what it is
+/// doing*.
+///
+/// `view.mounted` gates presence entirely, and the `HarnessMark` is rendered
+/// unconditionally within that window; only the label/elapsed siblings mount and
+/// unmount, so the collapse handoff never remounts the animation. The counter is
+/// `tabular-nums` because a second ticking over must not reflow the label beside
+/// it.
+function StartupStatusRow({ view, harness }: { view: NarrationView; harness?: string | null }) {
   if (!view.mounted) return null;
-  const elapsed = view.showElapsed ? ` · ${view.elapsedSeconds}s` : "";
   return (
     <div className="flex flex-col gap-1">
       {view.showFirstLaunchNote && (
         <p className="text-[11px] text-muted-foreground/70">First time opening this chat — startup can take a little longer.</p>
       )}
       <div className="flex items-center gap-2">
-        {!view.collapsed && <span className="text-[12px] text-muted-foreground">{view.label}{elapsed}</span>}
-        {view.reducedMotion
-          ? <span className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/60" aria-hidden="true"/>
-          : <div className="thinking-shimmer h-[2px] w-16 rounded-full"/>}
+        <HarnessMark harness={harness} live={!view.reducedMotion}/>
+        {!view.collapsed && <span className="min-w-0 truncate text-[12px] font-medium">
+          {/* Dimmer than the label: the counter is metadata, the label is the news. */}
+          {view.showElapsed && <span className="text-muted-foreground/70 tabular-nums">{view.elapsedSeconds}s · </span>}
+          <span className="text-shimmer">{view.label}</span>
+        </span>}
       </div>
     </div>
   );
@@ -575,7 +582,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
               <ItemView item={entry.item} workers={workers} now={now} onResolve={onResolve} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRefreshBase={onRefreshBase} onRetryWorker={onRetryWorker} onRemember={onRemember} errorContext={errorContext}/>
             </TranscriptRow>)}
         {pendingRows.map(row => <TranscriptRow key={row.key}><div className={BUBBLE}><MentionText text={row.text}/></div></TranscriptRow>)}
-        {startupNarration.mounted && <TranscriptRow key="working"><div className="flex justify-start"><StartupStatusRow view={startupNarration}/></div></TranscriptRow>}
+        {startupNarration.mounted && <TranscriptRow key="working"><div className="flex justify-start"><StartupStatusRow view={startupNarration} harness={session?.harness}/></div></TranscriptRow>}
       </AnimatePresence>
     </div>
   </ScrollFollow></FileLinkContext.Provider>;
@@ -743,8 +750,12 @@ function ForestCard({ item }: { item: ConversationItem }) {
   const label = item.type === "checkpoint" ? "Checkpoint" : item.type === "compaction" ? "Context" : "Branch";
   return <div className={`my-2 min-w-0 px-3 py-2.5 border border-border rounded-lg bg-card ${item.type}`}>
     <header className="flex gap-2 items-center"><GitFork size={13} className="shrink-0" aria-hidden="true" /><b className="min-w-0 truncate text-foreground">{item.title || label}</b><small className="ml-auto shrink-0 text-muted-foreground">{item.status || "durable"}</small></header>
+    {/* `data.reason` is the only source `item.text` has on the two entries that
+        carry one (`compaction.requested` reads it through
+        `compactionReasonLabel`, `compaction.failed` uses it verbatim), so the
+        <code> block that used to sit below this line could only ever repeat it
+        — which is how a model switch came to show `before_downgrade` twice. */}
     {item.text && <p className="mt-2 text-muted-foreground text-[12px]">{item.text}</p>}
-    {item.data.reason ? <code className="inline-block mt-2 font-mono text-[10px] break-all text-muted-foreground">{String(item.data.reason)}</code> : null}
   </div>;
 }
 
@@ -772,7 +783,7 @@ function Reasoning({ item }: { item: ConversationItem }) {
       <div className="my-3 flex min-w-0 items-start gap-3 rounded-xl border border-border bg-card px-3.5 py-3 sm:px-4">
         <Brain size={14} className="mt-0.5 shrink-0 text-muted-foreground animate-[thinking-pulse_1.6s_ease-in-out_infinite]" aria-hidden="true"/>
         <div className="min-w-0 flex-1">
-          <span className="text-[12px] font-medium bg-[linear-gradient(90deg,var(--color-muted-foreground)_0%,var(--color-foreground)_50%,var(--color-muted-foreground)_100%)] bg-[length:200%_100%] bg-clip-text text-transparent animate-[thinking-shimmer_2s_linear_infinite]">Thinking…</span>
+          <span className="text-shimmer text-[12px] font-medium">Thinking…</span>
           {recent.length > 0 && <div className="mt-1.5 space-y-0.5">
             {recent.map((line, index) => <p key={index} className={`truncate text-[12px] leading-relaxed ${index === recent.length - 1 ? "text-muted-foreground" : "text-muted-foreground/70"}`}>{line}</p>)}
           </div>}

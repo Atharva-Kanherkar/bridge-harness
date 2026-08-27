@@ -1835,6 +1835,24 @@ fn cleanup_reader_state(
     }
 }
 
+fn stop_direct_session_after_reader_exit(db: &Connection, session_id: &str) {
+    if let Ok(Some(pending)) =
+        compaction_controller::CompactionController::pending(db, session_id)
+    {
+        let _ = compaction_controller::CompactionController::record_failure(
+            db,
+            session_id,
+            "checkpoint turn ended because the adapter exited",
+            pending.attempt,
+        );
+    }
+    let _ = db.execute(
+        "UPDATE sessions SET status='stopped',ended_at=?2,active_turn_id=NULL
+         WHERE id=?1 AND status IN ('working','waiting','checkpointing')",
+        params![session_id, Utc::now().to_rfc3339()],
+    );
+}
+
 /// Drive one structured session's stdout: normalize every frame, then on exit
 /// mark the session stopped and unblock any parent that was waiting on it.
 fn spawn_reader_thread(
@@ -1976,7 +1994,7 @@ fn spawn_reader_thread(
                 )
                 .ok();
             if !is_worker {
-                let _ = db.execute("UPDATE sessions SET status='stopped',ended_at=?2,active_turn_id=NULL WHERE id=?1 AND status IN ('working','waiting')", params![session_id,Utc::now().to_rfc3339()]);
+                stop_direct_session_after_reader_exit(&db, &session_id);
             }
             workspace
         };
@@ -2106,8 +2124,33 @@ fn handle_agent_value(
                 event.role.as_deref() != Some("user") || !event.kind.starts_with("message.")
             })
             .collect::<Vec<_>>();
+        // A maintenance turn uses the same provider process as the user chat,
+        // but none of its content is conversation. `pending` covers the normal
+        // path; the durable session status keeps the boundary alive after a
+        // timeout records `compaction.failed` and until `turn.completed` closes
+        // the provider turn.
+        let checkpoint_turn_active =
+            compaction_controller::CompactionController::pending(&db, session_id)
+                .ok()
+                .flatten()
+                .is_some()
+                || db
+                    .query_row(
+                        "SELECT status='checkpointing' FROM sessions WHERE id=?1",
+                        params![session_id],
+                        |row| row.get::<_, bool>(0),
+                    )
+                    .unwrap_or(false);
         bridge_state_changed = normalized.iter().any(agent_event_changes_bridge_state);
         for event in &normalized {
+            if checkpoint_turn_active
+                && !matches!(
+                    event.kind.as_str(),
+                    "turn.started" | "turn.completed" | "usage.updated" | "error"
+                )
+            {
+                continue;
+            }
             match event.kind.as_str() {
                 "turn.started" => {
                     let turn_id = event
@@ -2350,10 +2393,55 @@ fn handle_agent_value(
             }
         }
         for mut normalized_event in normalized {
+            // An internal checkpoint turn's reply answers Bridge, not the user:
+            // the machine block precedent this loop already follows for
+            // delegation, peek, and steer applies whole here, because the
+            // *entire* message is the machine block. Recognised before anything
+            // persists or publishes, so neither a valid checkpoint's JSON nor a
+            // refusal to write one can land in the conversation as prose.
+            let pending_compaction =
+                compaction_controller::CompactionController::pending(&db, session_id)
+                    .ok()
+                    .flatten();
+            let is_checkpoint_reply = checkpoint_turn_active
+                && normalized_event.kind == "message.completed"
+                && normalized_event.role.as_deref() == Some("assistant")
+                && pending_compaction.is_some();
+            let suppress_checkpoint_frame = checkpoint_turn_active
+                && !matches!(
+                    normalized_event.kind.as_str(),
+                    "turn.started" | "turn.completed" | "usage.updated" | "error"
+                );
+            if is_checkpoint_reply {
+                checkpoint_response_seen = true;
+                checkpoint_turn_handled = true;
+                let output = normalized_event.text.as_deref().unwrap_or_default();
+                match compaction_controller::CompactionController::handle_output(
+                    &db, session_id, output,
+                ) {
+                    Ok(compaction_controller::CheckpointOutcome::Repair { prompt }) => {
+                        checkpoint_prompt_after_turn = Some(prompt);
+                    }
+                    Ok(outcome @ (compaction_controller::CheckpointOutcome::Completed { .. }
+                    | compaction_controller::CheckpointOutcome::Failed)) => {
+                        recover_compaction = matches!(
+                            outcome,
+                            compaction_controller::CheckpointOutcome::Failed
+                        );
+                        finish_checkpointing = own_depth > 0;
+                        finish_requested_shutdown = pending_compaction.is_some_and(|pending| {
+                            pending.reason
+                                == compaction_controller::CompactionReason::BeforeShutdown
+                        });
+                    }
+                    Ok(compaction_controller::CheckpointOutcome::NotPending) | Err(_) => {}
+                }
+            }
             // A completed assistant message may carry delegation directives.
             // Spawn the workers (after the lock is released) and strip the raw
             // directive block so the conversation shows prose, not machine JSON.
             if !is_direct
+                && !suppress_checkpoint_frame
                 && normalized_event.kind == "message.completed"
                 && normalized_event.role.as_deref() == Some("assistant")
             {
@@ -2482,73 +2570,44 @@ fn handle_agent_value(
                     }
                 }
             }
-            if let Ok(event) = store::session_event(
-                &db,
-                session_id,
-                &normalized_event,
-                &serde_json::json!({"adapter":adapter_id,"method":value.get("method")}),
-            ) {
-                pending_telemetry.push(store::telemetry_span(
-                    &trace_id,
+            // No maintenance content frame reaches the store at all — a
+            // persisted-then-hidden entry would still be in the forest, and the
+            // forest is what a reconnecting client replays. This includes
+            // streamed text/reasoning and late output after cancellation.
+            if !suppress_checkpoint_frame {
+                if let Ok(event) = store::session_event(
+                    &db,
                     session_id,
-                    &adapter_id,
                     &normalized_event,
-                    &event.created_at,
-                ));
-                // A policy match needs the durable sequence of the request it
-                // is answering. `session_event` returns sequence 0 for a frame it
-                // chose not to persist, and answering 0 would resolve whatever
-                // approval happens to sit at that sequence.
-                if auto_approve_this_event && event.sequence > 0 {
-                    pending_auto_approval = Some(event.sequence);
+                    &serde_json::json!({"adapter":adapter_id,"method":value.get("method")}),
+                ) {
+                    pending_telemetry.push(store::telemetry_span(
+                        &trace_id,
+                        session_id,
+                        &adapter_id,
+                        &normalized_event,
+                        &event.created_at,
+                    ));
+                    // A policy match needs the durable sequence of the request it
+                    // is answering. `session_event` returns sequence 0 for a frame it
+                    // chose not to persist, and answering 0 would resolve whatever
+                    // approval happens to sit at that sequence.
+                    if auto_approve_this_event && event.sequence > 0 {
+                        pending_auto_approval = Some(event.sequence);
+                    }
+                    // Publish while the database mutex is still held. This keeps
+                    // durable live delivery in commit/sequence order: another
+                    // thread cannot persist and publish sequence N+1 before N.
+                    state.events.publish(CoreEvent::Agent(event));
                 }
-                // Publish while the database mutex is still held. This keeps
-                // durable live delivery in commit/sequence order: another
-                // thread cannot persist and publish sequence N+1 before N.
-                state.events.publish(CoreEvent::Agent(event));
             }
             auto_approve_this_event = false;
-            if own_depth > 0 {
+            if own_depth > 0 && !suppress_checkpoint_frame {
                 if let Some(summary) = worker_progress_summary(&normalized_event) {
                     let _ = db.execute(
                         "UPDATE worker_runtime SET progress_summary=?2 WHERE session_id=?1 AND result_status='pending'",
                         params![session_id, summary],
                     );
-                }
-            }
-            let pending_compaction =
-                compaction_controller::CompactionController::pending(&db, session_id)
-                    .ok()
-                    .flatten();
-            if normalized_event.kind == "message.completed"
-                && normalized_event.role.as_deref() == Some("assistant")
-                && pending_compaction.is_some()
-            {
-                checkpoint_response_seen = true;
-                checkpoint_turn_handled = true;
-                let output = normalized_event.text.as_deref().unwrap_or_default();
-                match compaction_controller::CompactionController::handle_output(
-                    &db, session_id, output,
-                ) {
-                    Ok(compaction_controller::CheckpointOutcome::Repair { prompt }) => {
-                        checkpoint_prompt_after_turn = Some(prompt);
-                    }
-                    Ok(compaction_controller::CheckpointOutcome::Completed { .. }) => {
-                        finish_checkpointing = own_depth > 0;
-                        finish_requested_shutdown = pending_compaction.is_some_and(|pending| {
-                            pending.reason
-                                == compaction_controller::CompactionReason::BeforeShutdown
-                        });
-                    }
-                    Ok(compaction_controller::CheckpointOutcome::Failed) => {
-                        recover_compaction = true;
-                        finish_checkpointing = own_depth > 0;
-                        finish_requested_shutdown = pending_compaction.is_some_and(|pending| {
-                            pending.reason
-                                == compaction_controller::CompactionReason::BeforeShutdown
-                        });
-                    }
-                    Ok(compaction_controller::CheckpointOutcome::NotPending) | Err(_) => {}
                 }
             }
         }
@@ -2557,20 +2616,62 @@ fn handle_agent_value(
                 compaction_controller::CompactionController::pending(&db, session_id)
             {
                 if pending.attempt == 1 {
+                    let repair_already_scheduled = db
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM events WHERE kind='compaction.repair.scheduled' AND entity_id=?1 AND body=?2)",
+                            params![session_id, pending.requested_at],
+                            |row| row.get::<_, bool>(0),
+                        )
+                        .unwrap_or(false);
                     checkpoint_turn_handled = true;
-                    checkpoint_prompt_after_turn = Some(
-                        compaction_controller::CompactionController::checkpoint_prompt(
+                    if repair_already_scheduled {
+                        let shutdown = pending.reason
+                            == compaction_controller::CompactionReason::BeforeShutdown;
+                        let _ = compaction_controller::CompactionController::record_failure(
+                            &db,
                             session_id,
-                            &pending,
-                            Some("repair the invalid checkpoint response"),
-                        ),
+                            "checkpoint repair turn completed without an assistant response",
+                            pending.attempt,
+                        );
+                        recover_compaction = true;
+                        finish_checkpointing = own_depth > 0;
+                        finish_requested_shutdown = shutdown;
+                    } else {
+                        let _ = store::event(
+                            &db,
+                            "compaction",
+                            "compaction.repair.scheduled",
+                            session_id,
+                            &pending.requested_at,
+                        );
+                        checkpoint_prompt_after_turn = Some(
+                            compaction_controller::CompactionController::checkpoint_prompt(
+                                session_id,
+                                &pending,
+                                Some("repair the invalid checkpoint response"),
+                            ),
+                        );
+                    }
+                } else if checkpoint_turn_active && !checkpoint_response_seen {
+                    checkpoint_turn_handled = true;
+                    let shutdown = pending.reason
+                        == compaction_controller::CompactionReason::BeforeShutdown;
+                    let _ = compaction_controller::CompactionController::record_failure(
+                        &db,
+                        session_id,
+                        "checkpoint turn completed without an assistant response",
+                        pending.attempt,
                     );
+                    recover_compaction = true;
+                    finish_checkpointing = own_depth > 0;
+                    finish_requested_shutdown = shutdown;
                 }
             }
         }
         if turn_completed
             && checkpoint_prompt_after_turn.is_none()
             && !checkpoint_response_seen
+            && !checkpoint_turn_active
             && own_depth == 0
             && !is_direct
         {
@@ -2880,12 +2981,36 @@ pub fn send_internal_checkpoint_turn(
     prompt: &str,
 ) -> Result<(), BridgeError> {
     let state = core.clone();
-    let adapters = state.adapters.lock().unwrap();
-    let runtime = adapters
-        .get(session_id)
-        .ok_or_else(|| BridgeError::Invalid("checkpoint agent process is not running".into()))?;
-    runtime.send_turn(prompt)?;
-    drop(adapters);
+    // The status is the maintenance-turn tombstone. Unlike the pending forest
+    // entry, it survives timeout/cancellation until the provider emits
+    // `turn.completed`, so a late streamed reply cannot become normal chat.
+    let previous_status = {
+        let db = state.db.lock().unwrap();
+        let status = db.query_row(
+            "SELECT status FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| row.get::<_, String>(0),
+        )?;
+        db.execute(
+            "UPDATE sessions SET status='checkpointing' WHERE id=?1",
+            params![session_id],
+        )?;
+        status
+    };
+    let delivery = {
+        let adapters = state.adapters.lock().unwrap();
+        let runtime = adapters.get(session_id).ok_or_else(|| {
+            BridgeError::Invalid("checkpoint agent process is not running".into())
+        });
+        runtime.and_then(|runtime| runtime.send_turn(prompt))
+    };
+    if let Err(error) = delivery {
+        let _ = state.db.lock().unwrap().execute(
+            "UPDATE sessions SET status=?2 WHERE id=?1 AND status='checkpointing'",
+            params![session_id, previous_status],
+        );
+        return Err(error);
+    }
     store::event(
         &state.db.lock().unwrap(),
         "compaction",
@@ -9584,6 +9709,366 @@ mod submit_input_tests {
                 |row| row.get(0),
             )
             .unwrap()
+    }
+
+    fn codex_agent_message(text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "id": "checkpoint-reply",
+                    "type": "agentMessage",
+                    "status": "completed",
+                    "text": text,
+                }
+            }
+        })
+    }
+
+    fn codex_message_delta(text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "method": "item/agentMessage/delta",
+            "params": { "itemId": "checkpoint-reply", "delta": text }
+        })
+    }
+
+    fn codex_reasoning_delta(text: &str) -> serde_json::Value {
+        serde_json::json!({
+            "method": "item/reasoning/summaryTextDelta",
+            "params": { "itemId": "checkpoint-reasoning", "delta": text }
+        })
+    }
+
+    fn codex_turn_completed() -> serde_json::Value {
+        serde_json::json!({
+            "method": "turn/completed",
+            "params": { "turn": { "id": "turn-1", "status": "completed" } }
+        })
+    }
+
+    fn begin_checkpoint(core: &Arc<BridgeCore>) -> compaction_controller::PendingCompaction {
+        let db = core.db.lock().unwrap();
+        compaction_controller::CompactionController::begin(
+            &db,
+            "chat",
+            compaction_controller::CompactionReason::Manual,
+            42,
+        )
+        .unwrap()
+        .expect("checkpoint request starts");
+        compaction_controller::CompactionController::pending(&db, "chat")
+            .unwrap()
+            .expect("checkpoint request remains pending")
+    }
+
+    fn assistant_message_count(core: &Arc<BridgeCore>) -> i64 {
+        core.db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM session_entries WHERE session_id='chat' AND kind='assistant.message'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn checkpoint_reply_is_consumed_without_entering_the_conversation() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET harness='codex' WHERE id='chat'", [])
+            .unwrap();
+        let pending = begin_checkpoint(&core);
+        let output = serde_json::json!({
+            "schemaVersion": 1,
+            "summary": "The session had only just started.",
+            "decisions": [],
+            "filesTouched": [],
+            "sourceAgent": "chat",
+            "firstRetainedEntryId": pending.first_retained_entry_id,
+            "tokensBefore": pending.tokens_before,
+            "reason": pending.reason.as_str(),
+        })
+        .to_string();
+        let mut published = core.events.subscribe();
+
+        handle_agent_value(
+            &core,
+            "chat",
+            &Arc::new(Mutex::new(Some("turn-1".into()))),
+            &codex_agent_message(&output),
+        );
+
+        assert_eq!(assistant_message_count(&core), 0, "checkpoint JSON is plumbing, not chat");
+        assert!(
+            core.db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM session_entries WHERE session_id='chat' AND kind='compaction')",
+                    [],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap(),
+            "the consumed reply still completes the checkpoint"
+        );
+        assert!(published.try_recv().is_err(), "the raw reply must not be published live");
+    }
+
+    #[test]
+    fn invalid_checkpoint_reply_requests_repair_without_leaking_the_refusal() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET harness='codex' WHERE id='chat'", [])
+            .unwrap();
+        begin_checkpoint(&core);
+        let mut published = core.events.subscribe();
+
+        handle_agent_value(
+            &core,
+            "chat",
+            &Arc::new(Mutex::new(Some("turn-1".into()))),
+            &codex_agent_message("I refuse to invent checkpoint data."),
+        );
+
+        assert_eq!(assistant_message_count(&core), 0, "a refusal is not user-facing chat");
+        assert_eq!(
+            compaction_controller::CompactionController::pending(
+                &core.db.lock().unwrap(),
+                "chat",
+            )
+            .unwrap()
+            .expect("invalid output asks for one repair")
+            .attempt,
+            1
+        );
+        assert!(published.try_recv().is_err(), "the refusal must not be published live");
+    }
+
+    #[test]
+    fn streamed_checkpoint_frames_never_enter_the_live_transcript() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET harness='codex' WHERE id='chat'", [])
+            .unwrap();
+        begin_checkpoint(&core);
+        let mut published = core.events.subscribe();
+        let current_turn = Arc::new(Mutex::new(Some("turn-1".into())));
+
+        handle_agent_value(
+            &core,
+            "chat",
+            &current_turn,
+            &codex_message_delta("{\"schemaVersion\":"),
+        );
+        handle_agent_value(
+            &core,
+            "chat",
+            &current_turn,
+            &codex_reasoning_delta("I should summarize the chat"),
+        );
+
+        assert_eq!(assistant_message_count(&core), 0);
+        assert!(
+            published.try_recv().is_err(),
+            "neither checkpoint JSON deltas nor maintenance reasoning are live conversation"
+        );
+    }
+
+    #[test]
+    fn cancelled_checkpoint_keeps_late_reply_hidden_until_its_turn_ends() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET harness='codex' WHERE id='chat'", [])
+            .unwrap();
+        attach_handles(&core, false);
+        let pending = begin_checkpoint(&core);
+        send_internal_checkpoint_turn(&core, "chat", "maintenance prompt").unwrap();
+        compaction_controller::CompactionController::record_failure(
+            &core.db.lock().unwrap(),
+            "chat",
+            "model-switch summary timed out; switch continued",
+            pending.attempt,
+        )
+        .unwrap();
+        assert_eq!(session_status(&core), "checkpointing");
+        let mut published = core.events.subscribe();
+        let current_turn = Arc::new(Mutex::new(Some("turn-1".into())));
+
+        handle_agent_value(
+            &core,
+            "chat",
+            &current_turn,
+            &codex_message_delta("late refusal"),
+        );
+        handle_agent_value(
+            &core,
+            "chat",
+            &current_turn,
+            &codex_agent_message("late refusal"),
+        );
+
+        assert_eq!(assistant_message_count(&core), 0);
+        assert!(published.try_recv().is_err(), "late checkpoint output stays hidden");
+
+        handle_agent_value(&core, "chat", &current_turn, &codex_turn_completed());
+        assert_eq!(session_status(&core), "ready", "turn completion clears the tombstone");
+    }
+
+    #[test]
+    fn completion_only_checkpoint_turn_does_not_capture_the_next_real_reply() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET harness='codex' WHERE id='chat'", [])
+            .unwrap();
+        let pending = begin_checkpoint(&core);
+        attach_handles(&core, false);
+        send_internal_checkpoint_turn(&core, "chat", "maintenance prompt").unwrap();
+        let current_turn = Arc::new(Mutex::new(Some("turn-1".into())));
+
+        handle_agent_value(&core, "chat", &current_turn, &codex_turn_completed());
+
+        assert_eq!(session_status(&core), "ready");
+        assert!(
+            compaction_controller::CompactionController::pending(
+                &core.db.lock().unwrap(),
+                "chat",
+            )
+            .unwrap()
+            .is_none(),
+            "a provider terminal without a reply still settles maintenance"
+        );
+        assert!(
+            core.db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM session_entries WHERE session_id='chat' AND kind='compaction.failed' AND json_extract(payload,'$.attempt')=?1)",
+                    params![pending.attempt],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap()
+        );
+
+        handle_agent_value(
+            &core,
+            "chat",
+            &current_turn,
+            &codex_agent_message("This is the next real answer."),
+        );
+        assert_eq!(
+            assistant_message_count(&core),
+            1,
+            "ordinary conversation resumes after the empty maintenance turn"
+        );
+    }
+
+    #[test]
+    fn completion_only_repair_turn_stops_after_the_single_repair() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET harness='codex' WHERE id='chat'", [])
+            .unwrap();
+        begin_checkpoint(&core);
+        let handles = attach_handles(&core, false);
+        send_internal_checkpoint_turn(&core, "chat", "maintenance prompt").unwrap();
+        let current_turn = Arc::new(Mutex::new(Some("turn-1".into())));
+
+        handle_agent_value(
+            &core,
+            "chat",
+            &current_turn,
+            &codex_agent_message("not checkpoint JSON"),
+        );
+        handle_agent_value(&core, "chat", &current_turn, &codex_turn_completed());
+        assert_eq!(
+            handles.sent.lock().unwrap().len(),
+            2,
+            "the invalid response gets exactly one repair turn"
+        );
+
+        handle_agent_value(&core, "chat", &current_turn, &codex_turn_completed());
+
+        assert_eq!(handles.sent.lock().unwrap().len(), 2, "no third turn is sent");
+        assert!(
+            compaction_controller::CompactionController::pending(
+                &core.db.lock().unwrap(),
+                "chat",
+            )
+            .unwrap()
+            .is_none(),
+            "an empty repair turn settles the pending request"
+        );
+        assert_eq!(session_status(&core), "ready");
+    }
+
+    #[test]
+    fn root_adapter_exit_clears_an_unfinished_checkpoint_turn() {
+        let (_fixture, core, _managed_root) = core_with_chat("working");
+        let pending = begin_checkpoint(&core);
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET status='checkpointing',started_at='launch',provider_session_id='fake' WHERE id='chat'",
+                [],
+            )
+            .unwrap();
+        attach_handles(&core, false);
+
+        spawn_reader_thread(
+            core.clone(),
+            "chat".into(),
+            "claude".into(),
+            "launch".into(),
+            "fake".into(),
+            0,
+            Arc::new(Mutex::new(Some("turn-1".into()))),
+            Box::new(std::io::Cursor::new(Vec::<u8>::new())),
+        );
+
+        for _ in 0..100 {
+            if session_status(&core) == "stopped" {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        assert_eq!(session_status(&core), "stopped");
+        assert!(
+            compaction_controller::CompactionController::pending(
+                &core.db.lock().unwrap(),
+                "chat",
+            )
+            .unwrap()
+            .is_none(),
+            "the next resumed turn must not inherit checkpoint mode"
+        );
+        assert!(
+            core.db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM session_entries WHERE session_id='chat' AND kind='compaction.failed' AND json_extract(payload,'$.attempt')=?1)",
+                    params![pending.attempt],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap(),
+            "reader exit records why the checkpoint disappeared"
+        );
     }
 
     /// Persist an `opencode.question` `approval.requested` for "chat" with

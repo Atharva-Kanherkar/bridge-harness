@@ -52,6 +52,12 @@
     --color-info: var(--info);
     --color-destructive-foreground: var(--destructive-foreground);
     --color-scrim: var(--scrim);
+    /* Harness tints. Only ever worn by a harness's own mark while its session
+       starts — transient, and identifying rather than decorative, which is why
+       the achromatic ladder above stays achromatic. */
+    --color-harness-claude: var(--harness-claude);
+    --color-harness-codex: var(--harness-codex);
+    --color-harness-opencode: var(--harness-opencode);
     --radius-sm: calc(var(--radius) * 0.6);
     --radius-md: calc(var(--radius) * 0.8);
     --radius-lg: var(--radius);
@@ -108,6 +114,11 @@
     --info-foreground: #fafaf9;
     --destructive: #be3d3d;
     --destructive-foreground: #fafaf9;
+
+    /* Harness marks — one hue each, read against paper */
+    --harness-claude: #b8542f;
+    --harness-codex: #0f8f6f;
+    --harness-opencode: #6a5acd;
 
     /* Code */
     --code: #f3f3f1;
@@ -177,6 +188,11 @@
     --info-foreground: #0d1520;
     --destructive: #e5695e;
     --destructive-foreground: #210f0d;
+
+    /* Harness marks — lifted for graphite, like the meaning colours above */
+    --harness-claude: #d97757;
+    --harness-codex: #4bc39c;
+    --harness-opencode: #9b8cf0;
 
     --code: #0e0e0d;
     --code-foreground: #ececea;
@@ -439,6 +455,47 @@ html[data-native-fullscreen] .u-traffic-inset {
   );
   background-size: 200% 100%;
   animation: thinking-shimmer 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* The startup mark: the harness's own glyph, turning while Bridge waits on it.
+   Every mark is radially symmetric, so the rotation reads as scintillation
+   rather than as a logo being spun. The breathe is the same 2s cadence the
+   shimmer and the reasoning pulse keep. `@media (prefers-reduced-motion)` at
+   the bottom of this file freezes both. */
+@keyframes harness-turn {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes harness-breathe {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.harness-mark-live {
+  animation:
+    harness-turn 9s linear infinite,
+    harness-breathe 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Text that shimmers while something is in flight. The `Thinking…` row carried
+   this as an eight-utility arbitrary-value string; two callers is one too many
+   for that, so the gradient lives here once. */
+.text-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-muted-foreground) 0%,
+    var(--color-foreground) 50%,
+    var(--color-muted-foreground) 100%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  color: transparent;
+  animation: text-shimmer-sweep 2s linear infinite;
+}
+
+@keyframes text-shimmer-sweep {
+  from { background-position: -200% 0; }
+  to { background-position: 200% 0; }
 }
 
 @keyframes page-mount {
