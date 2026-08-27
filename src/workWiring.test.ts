@@ -48,19 +48,21 @@ describe("the Work view is lazy", () => {
 });
 
 describe("opening Work starts nothing", () => {
-  it("reads the board and calls nothing else", () => {
+  it("declares one lazy query that reads the board and nothing else", () => {
     // The acceptance criterion this slice rests on: opening Work must not select or
     // create a session, or start a model, connector, git command, or request. The
-    // read path is where that would slip in.
-    const read = declaration("const readWorkBoard");
-    const calls = read.match(/bridgeApi\.\w+/g) ?? [];
-    expect(calls).toEqual(["bridgeApi.workBoard"]);
-    expect(read).not.toMatch(/createSession|startTurn|setSelectedSessionId|openSession/);
+    // disabled query is the only read path.
+    const query = APP.slice(APP.indexOf("data: workBoard"), APP.indexOf("const [state"));
+    expect(query.match(/bridgeApi\.\w+/g)).toEqual(["bridgeApi.workBoard"]);
+    expect(query).toContain("queryKey: queryKeys.workBoard");
+    expect(query).toContain("enabled: false");
+    expect(query).not.toMatch(/createSession|startTurn|setSelectedSessionId|openSession/);
   });
 
   it("opens the view without selecting a session", () => {
     const open = declaration("const openWorkBoard");
     expect(open).toContain('setView("work")');
+    expect(open).toContain("refetchWorkBoard()");
     expect(open).not.toContain("setSelectedSessionId");
     expect(open).not.toContain("openSession");
   });
@@ -108,24 +110,18 @@ describe("the shell knows about Work", () => {
   });
 });
 
-describe("overlapping reads", () => {
-  it("guards the read against a slower earlier call landing last", () => {
-    // Opening, refreshing, and both mutating actions all read. Without a generation
-    // check, a slow earlier call — especially a failing one — writes its result over
-    // a newer board.
-    const read = declaration("const readWorkBoard");
-    expect(read).toContain("++workReadGeneration.current");
-    expect(read).toMatch(/if \(generation !== workReadGeneration\.current\) return;/);
-    // Both arms are guarded, not just the success path: the failure arm is the one
-    // that used to wipe the board.
-    expect(read.match(/if \(generation !== workReadGeneration\.current\) return;/g)).toHaveLength(2);
+describe("cached reads", () => {
+  it("delegates request deduplication and stale response handling to TanStack Query", () => {
+    expect(APP).toContain("QueryClientProvider");
+    expect(APP).toContain("refetch: refetchWorkBoard");
+    expect(APP).not.toContain("workReadGeneration");
+    expect(APP).not.toContain("workBoardRef");
   });
 
   it("never replaces a board on screen with a read failure", () => {
-    const read = declaration("const readWorkBoard");
-    expect(read).not.toContain("setWorkBoard(undefined)");
-    expect(read).toContain("if (workBoardRef.current === undefined) setWorkError(reason);");
-    expect(read).toContain("else setWorkRefreshError(reason);");
+    expect(APP).not.toContain("setWorkBoard");
+    expect(APP).toContain("const workError = workBoard === undefined ? workQueryError : undefined;");
+    expect(APP).toContain("const workRefreshError = workBoard === undefined ? undefined : workBriefingError ?? workQueryError;");
   });
 
   it("hands the view the refresh failure separately from the fatal one", () => {

@@ -1,4 +1,5 @@
 import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
@@ -7,13 +8,13 @@ import { bridgeApi } from "./api";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
 import { openExternalUrl } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
-import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
+import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
 import { ComposerContextStrip } from "./components/ComposerContextStrip";
 import { ProjectsScreen } from "./components/ProjectsScreen";
-import type { SuggestCompletionResult, SuggestionSettingsSnapshot, WorkBoard, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
+import type { SuggestCompletionResult, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
 import { isHiddenSession } from "./components/sidebarChats";
@@ -70,6 +71,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Kbd } from "@/components/ui/kbd";
+import { createBridgeQueryClient, queryKeys } from "./queryClient";
 
 const AutomationsPanel = lazy(() => import("./components/AutomationsPanel").then(module => ({ default: module.AutomationsPanel })));
 const MarketplaceScreen = lazy(() => import("./components/MarketplaceScreen").then(module => ({ default: module.MarketplaceScreen })));
@@ -118,10 +120,31 @@ type NewChatDraft = {
 };
 
 export function App() {
+  const [queryClient] = useState(createBridgeQueryClient);
+  return <QueryClientProvider client={queryClient}><AppContent /></QueryClientProvider>;
+}
+
+function AppContent() {
+  const queryClient = useQueryClient();
+  const { data: health, error: healthError } = useQuery({
+    queryKey: queryKeys.health,
+    queryFn: () => bridgeApi.health(),
+  });
+  const { data: modelSetup, error: modelSetupError } = useQuery({
+    queryKey: queryKeys.modelSetup,
+    queryFn: () => bridgeApi.modelSetup(),
+  });
+  const {
+    data: workBoard,
+    error: workBoardQueryError,
+    refetch: refetchWorkBoard,
+  } = useQuery({
+    queryKey: queryKeys.workBoard,
+    queryFn: () => bridgeApi.workBoard(),
+    enabled: false,
+  });
   const [state, setState] = useState<BridgeState>(emptyState);
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
-  const [health, setHealth] = useState<Health>();
-  const [modelSetup, setModelSetup] = useState<ModelSetupState>();
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [view, setView] = useState<AppView>("workspace");
   const [navPlaces, setNavPlaces] = useState<{ stack: AppPlace[]; index: number }>({
@@ -133,22 +156,7 @@ export function App() {
     try { return localStorage.getItem("bridge.sidebar.collapsed") === "1"; }
     catch { return false; }
   });
-  // The Work board. Held here rather than inside WorkView so the rail can show a
-  // count while a conversation is on screen. Returning to the board does re-read, on
-  // purpose: a fact you just acted on may be gone, and showing it again would be
-  // worse than a second SQLite read.
-  const [workBoard, setWorkBoard] = useState<WorkBoard>();
-  const [workError, setWorkError] = useState<string>();
-  // A re-read that failed while a board is on screen. Separate from `workError`
-  // because it must not replace the board — see `readWorkBoard`.
-  const [workRefreshError, setWorkRefreshError] = useState<string>();
-  // Which read is the newest. Opening, refreshing, and both mutating actions all
-  // read, so a slow earlier call can land after a fast later one; without this it
-  // would write its own result over the newer board.
-  const workReadGeneration = useRef(0);
-  // Mirrors `workBoard` so the catch below can tell "nothing to show" from "a refresh
-  // failed" without depending on the state it is setting.
-  const workBoardRef = useRef<WorkBoard>();
+  const [workBriefingError, setWorkBriefingError] = useState<string>();
   const [navOpen, setNavOpen] = useState(false);
   // Two ways to look at the workspace: the classic single-session view, or the
   // Mission Control grid where every live agent is its own window at once.
@@ -229,6 +237,13 @@ export function App() {
   const agentEventQueueRef = useRef<AgentEvent[]>([]);
   const agentEventTimerRef = useRef<number | undefined>(undefined);
   const browserSessionRef = useRef<string>();
+  const workQueryError = workBoardQueryError ? errorMessage(workBoardQueryError) : undefined;
+  const workError = workBoard === undefined ? workQueryError : undefined;
+  const workRefreshError = workBoard === undefined ? undefined : workBriefingError ?? workQueryError;
+
+  const acceptModelSetup = useCallback((setup: ModelSetupState) => {
+    queryClient.setQueryData(queryKeys.modelSetup, setup);
+  }, [queryClient]);
 
   const reload = useCallback(async () => {
     setState(await bridgeApi.state());
@@ -238,9 +253,7 @@ export function App() {
     setPermissionPolicy((await bridgeApi.configState()).permissionPolicy);
   }, []);
   useEffect(() => {
-    void Promise.all([reload(), bridgeApi.modelSetup()])
-      .then(([, setup]) => { setModelSetup(setup); })
-      .catch(value => setError(errorMessage(value)));
+    void reload().catch(value => setError(errorMessage(value)));
     let offState: (() => void) | undefined;
     let offAgent: (() => void) | undefined;
     let offUsage: (() => void) | undefined;
@@ -248,7 +261,7 @@ export function App() {
     let offProviderLogin: (() => void) | undefined;
     let active = true;
     const reloadHealth = () => {
-      void bridgeApi.health().then(setHealth).catch(value => setError(errorMessage(value)));
+      void queryClient.invalidateQueries({ queryKey: queryKeys.health });
     };
     void bridgeApi.onStateChanged(reload).then(fn => offState = fn);
     // The provider-login flow runs as an ordinary PTY under the "provider-login"
@@ -299,7 +312,7 @@ export function App() {
       agentEventTimerRef.current = undefined;
       agentEventQueueRef.current = [];
     };
-  }, [reload]);
+  }, [queryClient, reload]);
   useThemePreference();
   useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
   // Navigating away from an unstarted draft discards it silently — nothing was
@@ -620,8 +633,8 @@ export function App() {
 
   // Debounced draft completion: 400ms after the last keystroke, with a
   // generation counter so a stale response from an earlier draft can never
-  // overwrite a newer one — the same latest-wins discipline `readWorkBoard`
-  // uses. No request fires with the toggle off, no session, or an empty draft.
+  // overwrite a newer one. No request fires with the toggle off, no session,
+  // or an empty draft.
   useEffect(() => scheduleSuggestion({
     text: composer,
     enabled: !!suggestionSettings?.settings.enabled && !!session,
@@ -785,33 +798,12 @@ export function App() {
     if (opened?.workspaceId) writeLastWorkspaceId(opened.workspaceId);
   }
 
-  // Reading the board is the whole of what opening Work does: one call, no session
-  // selected, no model, no git, no network.
-  const readWorkBoard = useCallback(async () => {
-    const generation = ++workReadGeneration.current;
-    try {
-      const board = await bridgeApi.workBoard();
-      if (generation !== workReadGeneration.current) return;
-      workBoardRef.current = board;
-      setWorkBoard(board);
-      setWorkError(undefined);
-      setWorkRefreshError(undefined);
-    } catch (error) {
-      if (generation !== workReadGeneration.current) return;
-      const reason = errorMessage(error);
-      // A failed re-read never throws away a board that is on screen. The numbers
-      // are a snapshot either way, and replacing them with an error panel loses
-      // what the reader had without telling them anything they can act on.
-      if (workBoardRef.current === undefined) setWorkError(reason);
-      else setWorkRefreshError(reason);
-    }
-  }, []);
-
   const openWorkBoard = useCallback(() => {
     setView("work");
     setParadigm("single");
-    void readWorkBoard();
-  }, [readWorkBoard]);
+    setWorkBriefingError(undefined);
+    void refetchWorkBoard();
+  }, [refetchWorkBoard]);
 
   // Local state on a suggested task. Nothing here reaches a connector — see
   // bridge_core::work_actions — so a failure is Bridge's own and shows on the row.
@@ -835,22 +827,24 @@ export function App() {
         ? new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()
         : null;
       await bridgeApi.workTaskAction(task.id, action, snoozedUntil);
-      await readWorkBoard();
+      setWorkBriefingError(undefined);
+      await refetchWorkBoard();
       return { ok: true };
     } catch (error) {
       return { ok: false, reason: errorMessage(error) };
     }
-  }, [adapters, readWorkBoard]);
+  }, [adapters, refetchWorkBoard]);
 
   const toggleWorkTaskPin = useCallback(async (task: WorkTask): Promise<WorkActionOutcome> => {
     try {
       await bridgeApi.workTaskPin(task.id, !task.pinned);
-      await readWorkBoard();
+      setWorkBriefingError(undefined);
+      await refetchWorkBoard();
       return { ok: true };
     } catch (error) {
       return { ok: false, reason: errorMessage(error) };
     }
-  }, [readWorkBoard]);
+  }, [refetchWorkBoard]);
 
   const openWorkTaskEvidence = useCallback(async (task: WorkTask): Promise<void> => {
     try {
@@ -888,24 +882,26 @@ export function App() {
     try {
       const receipt = await bridgeApi.runWorkBriefing(trigger);
       if (receipt.outcome === "refused" && trigger === "manual") {
-        setWorkRefreshError(receipt.detail ?? receipt.code ?? "the briefing was refused");
+        setWorkBriefingError(receipt.detail ?? receipt.code ?? "the briefing was refused");
+      } else if (trigger === "manual") {
+        setWorkBriefingError(undefined);
       }
     } catch (error) {
-      if (trigger === "manual") setWorkRefreshError(errorMessage(error));
+      if (trigger === "manual") setWorkBriefingError(errorMessage(error));
     }
-    void readWorkBoard();
-  }, [readWorkBoard]);
+    void refetchWorkBoard();
+  }, [refetchWorkBoard]);
 
   // The opt-in focus trigger. Gated on the stored settings the board carries, so
   // a user who never opted in gets no background model run from switching apps.
   useEffect(() => {
     const onFocus = () => {
-      if (!workBoardRef.current?.settings.refreshOnFocus) return;
+      if (!workBoard?.settings.refreshOnFocus) return;
       void runWorkBriefing("focus");
     };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
-  }, [runWorkBriefing]);
+  }, [runWorkBriefing, workBoard?.settings.refreshOnFocus]);
 
   // Two of the four actions are navigation and two are calls. A board button must
   // never answer an approval on the user's behalf — it takes them to where the
@@ -920,19 +916,21 @@ export function App() {
           return { ok: true };
         case "refreshWorkspaceBase":
           await bridgeApi.refreshWorkspaceBase(action.sessionId);
-          await readWorkBoard();
+          setWorkBriefingError(undefined);
+          await refetchWorkBoard();
           return { ok: true };
         case "refreshBaseObservation":
           // A user-triggered reading is written through to the cache the board reads,
           // so re-measuring is the same call the warning offers.
           await bridgeApi.workspaceBaseDivergence(action.sessionId, false);
-          await readWorkBoard();
+          setWorkBriefingError(undefined);
+          await refetchWorkBoard();
           return { ok: true };
       }
     } catch (error) {
       return { ok: false, reason: errorMessage(error) };
     }
-  }, [readWorkBoard]);
+  }, [refetchWorkBoard]);
   // Preserve the current direct chat's harness/model so switching to OpenCode also
   // changes the next-chat default; otherwise fall back to the configured standard
   // profile. Snapshotted at draft-open time, while the session being left is still
@@ -1663,8 +1661,9 @@ export function App() {
 
   const chromeFullscreen = fullscreen || flushWindow;
   const turnActive = !!session?.activeTurnId || pendingForSession.length > 0;
-  if (!health || !modelSetup) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{error ? <><X size={14} className="text-destructive" aria-hidden="true" />{error}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
-  if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard adapters={health.adapters} onComplete={setModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
+  const startupError = error ?? (healthError ? errorMessage(healthError) : modelSetupError ? errorMessage(modelSetupError) : undefined);
+  if (!health || !modelSetup) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{startupError ? <><X size={14} className="text-destructive" aria-hidden="true" />{startupError}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
+  if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard adapters={health.adapters} onComplete={acceptModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
   const chromeTitle = view === "work" ? "Work" : view === "projects" ? "Projects" : view === "marketplace" ? "Marketplace" : view === "automations" ? "Automations" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
@@ -1729,7 +1728,7 @@ export function App() {
         board={workBoard}
         error={workError}
         refreshError={workRefreshError}
-        onRefresh={() => void readWorkBoard()}
+        onRefresh={() => { setWorkBriefingError(undefined); void refetchWorkBoard(); }}
         onAction={runWorkAction}
         onTaskAction={runWorkTaskAction}
         onTogglePin={toggleWorkTaskPin}
@@ -1745,7 +1744,7 @@ export function App() {
         onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
-      /> : view === "automations" ? <Suspense fallback={<PanelLoading label="Opening automations…"/>}><AutomationsPanel onBrowseCatalog={() => setView("marketplace")} /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={setModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
+      /> : view === "automations" ? <Suspense fallback={<PanelLoading label="Opening automations…"/>}><AutomationsPanel onBrowseCatalog={() => setView("marketplace")} /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
         sessions={visibleSessions}
         runtimes={forest?.workerRuntimes ?? []}
         reasons={forest?.reasons ?? []}
@@ -2110,7 +2109,7 @@ export function App() {
       onUseCurrentFolder={() => void newWorkspaceSession(false)}
       onClose={() => void newWorkspaceSession(false)}
     />
-    <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={setModelSetup} onClose={() => setModal(null)} onError={setError} />
+    <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={acceptModelSetup} onClose={() => setModal(null)} onError={setError} />
     <ShortcutsSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
     <MemoryDialog open={modal === "memory"} initialBody={memoryDraft} adapters={adapters} onClose={() => { setModal(null); setMemoryDraft(null); }} onError={setError} />
   </div>;
