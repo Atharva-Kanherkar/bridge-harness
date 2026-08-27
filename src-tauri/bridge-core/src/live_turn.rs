@@ -2616,14 +2616,42 @@ fn handle_agent_value(
                 compaction_controller::CompactionController::pending(&db, session_id)
             {
                 if pending.attempt == 1 {
+                    let repair_already_scheduled = db
+                        .query_row(
+                            "SELECT EXISTS(SELECT 1 FROM events WHERE kind='compaction.repair.scheduled' AND entity_id=?1 AND body=?2)",
+                            params![session_id, pending.requested_at],
+                            |row| row.get::<_, bool>(0),
+                        )
+                        .unwrap_or(false);
                     checkpoint_turn_handled = true;
-                    checkpoint_prompt_after_turn = Some(
-                        compaction_controller::CompactionController::checkpoint_prompt(
+                    if repair_already_scheduled {
+                        let shutdown = pending.reason
+                            == compaction_controller::CompactionReason::BeforeShutdown;
+                        let _ = compaction_controller::CompactionController::record_failure(
+                            &db,
                             session_id,
-                            &pending,
-                            Some("repair the invalid checkpoint response"),
-                        ),
-                    );
+                            "checkpoint repair turn completed without an assistant response",
+                            pending.attempt,
+                        );
+                        recover_compaction = true;
+                        finish_checkpointing = own_depth > 0;
+                        finish_requested_shutdown = shutdown;
+                    } else {
+                        let _ = store::event(
+                            &db,
+                            "compaction",
+                            "compaction.repair.scheduled",
+                            session_id,
+                            &pending.requested_at,
+                        );
+                        checkpoint_prompt_after_turn = Some(
+                            compaction_controller::CompactionController::checkpoint_prompt(
+                                session_id,
+                                &pending,
+                                Some("repair the invalid checkpoint response"),
+                            ),
+                        );
+                    }
                 } else if checkpoint_turn_active && !checkpoint_response_seen {
                     checkpoint_turn_handled = true;
                     let shutdown = pending.reason
@@ -9944,6 +9972,47 @@ mod submit_input_tests {
             1,
             "ordinary conversation resumes after the empty maintenance turn"
         );
+    }
+
+    #[test]
+    fn completion_only_repair_turn_stops_after_the_single_repair() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET harness='codex' WHERE id='chat'", [])
+            .unwrap();
+        begin_checkpoint(&core);
+        let handles = attach_handles(&core, false);
+        send_internal_checkpoint_turn(&core, "chat", "maintenance prompt").unwrap();
+        let current_turn = Arc::new(Mutex::new(Some("turn-1".into())));
+
+        handle_agent_value(
+            &core,
+            "chat",
+            &current_turn,
+            &codex_agent_message("not checkpoint JSON"),
+        );
+        handle_agent_value(&core, "chat", &current_turn, &codex_turn_completed());
+        assert_eq!(
+            handles.sent.lock().unwrap().len(),
+            2,
+            "the invalid response gets exactly one repair turn"
+        );
+
+        handle_agent_value(&core, "chat", &current_turn, &codex_turn_completed());
+
+        assert_eq!(handles.sent.lock().unwrap().len(), 2, "no third turn is sent");
+        assert!(
+            compaction_controller::CompactionController::pending(
+                &core.db.lock().unwrap(),
+                "chat",
+            )
+            .unwrap()
+            .is_none(),
+            "an empty repair turn settles the pending request"
+        );
+        assert_eq!(session_status(&core), "ready");
     }
 
     #[test]
