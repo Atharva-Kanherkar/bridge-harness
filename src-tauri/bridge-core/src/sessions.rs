@@ -623,10 +623,7 @@ impl BridgeCore {
             .active_branch(session_id)
             .map_err(|error| BridgeError::Invalid(error.to_string()))?;
         let meaningful = branch.iter().any(|entry| {
-            matches!(
-                entry.kind.as_str(),
-                "user.message" | "assistant.message" | "worker.result" | "tool.completed"
-            )
+            compaction_controller::CONVERSATION_KINDS.contains(&entry.kind.as_str())
         });
         compaction_controller::decide(&compaction_controller::TriggerState {
             reason: compaction_controller::CompactionReason::Manual,
@@ -680,10 +677,7 @@ impl BridgeCore {
             .active_branch(session_id)
             .map_err(|error| BridgeError::Invalid(error.to_string()))?;
         let meaningful = branch.iter().any(|entry| {
-            matches!(
-                entry.kind.as_str(),
-                "user.message" | "assistant.message" | "worker.result" | "tool.completed"
-            )
+            compaction_controller::CONVERSATION_KINDS.contains(&entry.kind.as_str())
         });
         if !meaningful {
             return Ok(None);
@@ -692,13 +686,20 @@ impl BridgeCore {
         if compaction_controller::CompactionController::pending(&db, session_id)?.is_some() {
             return Ok(None);
         }
-        let tokens =
-            compaction_controller::active_token_estimate(&db, session_id)?;
-        // A floor under the "meaningful work" gate above, not a replacement for
-        // it: two messages clear that gate but are not worth a checkpoint.
-        if tokens < SWITCH_SUMMARY_MIN_TOKENS {
+        // The floor reads the *conversation* estimate, not the full branch: a
+        // fresh chat's compiled prompt alone measures thousands of tokens, and
+        // a greeting was clearing the floor on the strength of context it did
+        // not write. The checkpoint request below still records the full
+        // estimate, because `tokensBefore` describes context pressure, not
+        // conversation size. A floor under the "meaningful work" gate above,
+        // not a replacement for it.
+        if compaction_controller::conversation_token_estimate(&db, session_id)?
+            < SWITCH_SUMMARY_MIN_TOKENS
+        {
             return Ok(None);
         }
+        let tokens =
+            compaction_controller::active_token_estimate(&db, session_id)?;
         let Some(prompt) = compaction_controller::CompactionController::begin(
             &db,
             session_id,
@@ -913,7 +914,7 @@ impl BridgeCore {
             .map(CarriedContext::describe)
             .unwrap_or_else(|| "no context carried (summary unavailable)".to_owned());
         let detail = format!(
-            "{subject} runtime changed from {}/{} to {}/{}. The next message starts a fresh provider session — {}.",
+            "{subject} runtime changed from {}/{} to {}/{}. The next message starts a fresh provider session; {}.",
             change.previous_harness,
             change.previous_model.as_deref().unwrap_or("automatic"),
             change.adapter_id,
@@ -1102,6 +1103,19 @@ pub(crate) fn persist_chat_model_selection(
     tier: CapabilityTier,
     (previous_harness, previous_model): (&str, Option<&str>),
 ) -> Result<usize, BridgeError> {
+    // A harness change is a different agent, so the backend binding goes the
+    // way of the provider session id: `read_binding` composes the binding's
+    // agent from the harness column, and a stale backend id left under the new
+    // harness reads as "codex was served by claude.agent-sdk" and refuses
+    // every later launch. A same-harness model change keeps the binding — the
+    // same agent resumes under the same backend, and the recorded version and
+    // installation stay true.
+    if previous_harness != adapter_id {
+        return Ok(db.execute(
+            "UPDATE sessions SET harness=?2,model=?3,requested_tier=?4,provider_session_id=NULL,backend_id=NULL,backend_version=NULL,backend_installation_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator') AND harness=?5 AND model IS ?6 AND active_turn_id IS NULL",
+            params![session_id, adapter_id, model, tier.as_str(), previous_harness, previous_model],
+        )?);
+    }
     Ok(db.execute(
         "UPDATE sessions SET harness=?2,model=?3,requested_tier=?4,provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator') AND harness=?5 AND model IS ?6 AND active_turn_id IS NULL",
         params![session_id, adapter_id, model, tier.as_str(), previous_harness, previous_model],
@@ -1705,6 +1719,63 @@ mod tests {
         );
     }
 
+    /// A harness change clears the backend binding with the provider session
+    /// id; a same-harness model change keeps it. The binding's agent is read
+    /// from the harness column, so a stale backend id under a new harness
+    /// bricks every later launch.
+    #[test]
+    fn switching_harness_clears_the_backend_binding_and_model_alone_keeps_it() {
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Claude, None, None).unwrap();
+        let session_id = only_session_id(&core);
+        let read_backend = || -> Option<String> {
+            core.db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT backend_id FROM sessions WHERE id=?1",
+                    params![session_id],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        let set_backend = |value: &str| {
+            core.db
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE sessions SET backend_id=?2,backend_version='1.0.0' WHERE id=?1",
+                    params![session_id, value],
+                )
+                .unwrap();
+        };
+        set_backend("claude.agent-sdk");
+
+        // Same harness, different model: the binding survives.
+        persist_chat_model_selection(
+            &core.db.lock().unwrap(),
+            &session_id,
+            "claude",
+            "opus",
+            CapabilityTier::Fast,
+            ("claude", None),
+        )
+        .unwrap();
+        assert_eq!(read_backend().as_deref(), Some("claude.agent-sdk"));
+
+        // Different harness: binding and provider session id both go.
+        persist_chat_model_selection(
+            &core.db.lock().unwrap(),
+            &session_id,
+            "codex",
+            "gpt-5.3-codex",
+            CapabilityTier::Fast,
+            ("claude", Some("opus")),
+        )
+        .unwrap();
+        assert_eq!(read_backend(), None, "a different agent has nothing to continue");
+    }
+
     #[test]
     fn switch_summary_is_skipped_without_a_hot_provider() {
         let (_scratch, core) = fixture();
@@ -1756,18 +1827,35 @@ mod tests {
                 .unwrap();
         };
 
+        // The field failure this floor missed the first time: a greeting-only
+        // chat measured 13k tokens because the *branch* estimate counts the
+        // injected instructions. Reproduce that shape — one bulky machine
+        // entry dwarfing a two-line conversation — and require the floor to
+        // read only the conversation.
+        append(
+            session_forest::EntryKind::SessionStatus,
+            serde_json::json!({"status": "ready", "detail": "Compiled orchestration prompt. ".repeat(700)}),
+        );
         append(session_forest::EntryKind::UserMessage, serde_json::json!({"text":"hi"}));
         append(
             session_forest::EntryKind::AssistantMessage,
-            serde_json::json!({"role":"assistant","text":"Hey — what are we building?"}),
+            serde_json::json!({"role":"assistant","text":"Hey! What are we building?"}),
         );
-        let greeting_tokens = {
+        let db_estimates = || {
             let db = core.db.lock().unwrap();
-            compaction_controller::active_token_estimate(&db, &session_id).unwrap()
+            (
+                compaction_controller::active_token_estimate(&db, &session_id).unwrap(),
+                compaction_controller::conversation_token_estimate(&db, &session_id).unwrap(),
+            )
         };
+        let (branch_tokens, conversation_tokens) = db_estimates();
         assert!(
-            greeting_tokens < SWITCH_SUMMARY_MIN_TOKENS,
-            "a greeting must sit under the floor, estimated {greeting_tokens}"
+            branch_tokens >= SWITCH_SUMMARY_MIN_TOKENS,
+            "the trap: the full branch already clears the floor, estimated {branch_tokens}"
+        );
+        assert!(
+            conversation_tokens < SWITCH_SUMMARY_MIN_TOKENS,
+            "the conversation itself sits under it, estimated {conversation_tokens}"
         );
         assert!(
             core.plan_switch_summary(&session_id).unwrap().is_none(),
@@ -1797,10 +1885,7 @@ mod tests {
                 }),
             );
         }
-        let working_tokens = {
-            let db = core.db.lock().unwrap();
-            compaction_controller::active_token_estimate(&db, &session_id).unwrap()
-        };
+        let (_, working_tokens) = db_estimates();
         assert!(
             working_tokens >= SWITCH_SUMMARY_MIN_TOKENS,
             "a session with real history must clear the floor, estimated {working_tokens}"

@@ -47,6 +47,15 @@ export function projectSessionConversation(entries: SessionEntry[], activeLeafId
     if (entry.semanticSchemaVersion < 1 || entry.semanticSchemaVersion > 2) {
       throw new Error(`Unsupported semantic event schema version ${entry.semanticSchemaVersion} on entry ${entry.id}`);
     }
+    // Lifecycle plumbing the live reducer has always dropped. The projection
+    // used to let it through, so `session.started` and `session.status`
+    // replayed as collapsed "used tools" groups before and around the user's
+    // messages, but only after a reload, which is exactly what made them read
+    // as a glitch. Deliberately narrower than the reducer's filter:
+    // `session.model_changed` is a bespoke row that reports what the switch
+    // carried, and `provider.unknown` replays as a collapsed raw entry a
+    // reviewer can inspect — both are wanted in replay, neither exists live.
+    if (isLifecycleNoise(entry.kind)) continue;
     if (entry.kind === "approval.resolved") {
       const nested = objectValue(entry.payload.data);
       const requestEventId = Number(entry.payload.requestEventId ?? nested.requestEventId);
@@ -185,6 +194,17 @@ const COMPACTION_REASONS: Record<string, string> = {
 export function compactionReasonLabel(reason?: string): string {
   if (!reason) return "";
   return COMPACTION_REASONS[reason] ?? reason;
+}
+
+/** Lifecycle plumbing with no conversational reading at all — filtered from
+ *  the durable projection. The live reducer drops a superset (every
+ *  `session.*`, plus `provider.unknown`, which replay renders as raw). */
+export function isLifecycleNoise(kind: string): boolean {
+  return (
+    (kind.startsWith("session.") && kind !== "session.model_changed") ||
+    kind.startsWith("turn.") ||
+    kind === "usage.updated"
+  );
 }
 
 export function reduceConversation(events: AgentEvent[]): ConversationItem[] {

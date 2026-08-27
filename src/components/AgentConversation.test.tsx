@@ -114,6 +114,40 @@ describe("AgentConversation", () => {
     expect(html.split("Before switching models").length - 1).toBe(1);
   });
 
+  // Lifecycle plumbing replayed as collapsed "Used tools" groups before and
+  // around the user's messages after a reload; a model change replayed as a
+  // group of one. Contract: fix-cross-harness-switch-and-shell-polish.md §3.
+  it("keeps lifecycle entries out of a replayed transcript", () => {
+    const machine = (id: string, kind: string, sequence: number, payload: Record<string, unknown> = {}): SessionEntry =>
+      ({ id, sessionId: "s", parentEntryId: sequence === 1 ? null : `e${sequence - 1}`, sequence, semanticSchemaVersion: 2, kind, payload, providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: "now" });
+    const entries = [
+      machine("e1", "session.started", 1, { status: "ready" }),
+      machine("e2", "user.message", 2, { text: "hi" }),
+      machine("e3", "session.status", 3, { status: "working" }),
+      machine("e4", "assistant.message", 4, { role: "assistant", text: "Hey! What are we building?" }),
+      machine("e5", "turn.completed", 5, {}),
+    ];
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={entries} activeLeafId="e5" />);
+    expect(html).toContain("What are we building?");
+    expect(html).not.toContain("Used tools");
+    expect(html).not.toContain("used tools");
+  });
+
+  it("renders a replayed model change as a divider, not a tools group", () => {
+    const changed: SessionEntry = { id: "e1", sessionId: "s", parentEntryId: null, sequence: 1, semanticSchemaVersion: 2, kind: "session.model_changed", payload: { role: "system", status: "ready", title: "Chat model changed", text: "Chat runtime changed.", data: { previousHarness: "codex", previousModel: "gpt-5.6-luna", harness: "claude", model: "opus", freshProviderSession: true } }, providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: "now" };
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={[changed]} activeLeafId="e1" />);
+    expect(html).toContain("Codex · GPT Luna → Claude · Opus");
+    expect(html).not.toContain("Used tools");
+  });
+
+  it("narrates a model switch with the incoming harness's mark, and no first-launch note anywhere", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} modelSwitch={{ harness: "claude", label: "Opus" }} />);
+    expect(html).toContain("Switching to Opus…");
+    expect(html).toContain("text-harness-claude");
+    expect(html).not.toContain("text-harness-codex");
+    expect(html).not.toContain("First time opening this chat");
+  });
+
   it("shows revision-bound verification without requiring a committed contract file", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} completion={{ attemptId:"a",contractId:"c",verdict:"waived",repository:{head:"abcdef1234567890",dirtyDigest:"clean"},passedRequired:1,totalRequired:2,markdownCommitted:false,waiverReason:"Browser unavailable",checks:[{checkId:"tests",kind:"deterministic",required:true,status:"passed",executor:"bridge.shell",command:"bun test",verifierFamily:null,detail:"159 passed",outputDigest:"d",artifactRefs:[]},{checkId:"journey",kind:"user_testing",required:true,status:"skipped",executor:"bridge.worker",command:null,verifierFamily:"claude",detail:"No browser",outputDigest:null,artifactRefs:[]}]} } />);
     expect(html).toContain("Verified with waiver");

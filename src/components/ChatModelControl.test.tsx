@@ -83,6 +83,27 @@ describe("ChatModelControl", () => {
     expect(panel().className).not.toContain("bottom-full");
   });
 
+  // Some catalogs bake the provider into the model label; prefixing the
+  // harness again stuttered: "OpenCode · OpenCode Go · MiMo V2.5".
+  it("drops the harness prefix when the model label already opens with it", async () => {
+    const stuttering: AdapterDescriptor[] = [{
+      id: "opencode", label: "OpenCode", available: true, authState: "signed_in", version: "test", capabilities: [], unavailableReason: null,
+      models: [{ id: "oc-go-mimo", label: "OpenCode Go · MiMo V2.5", tier: "fast", defaultForTier: true }], defaultModel: "oc-go-mimo",
+    }];
+    await act(async () => root.render(
+      <ChatModelControl adapters={stuttering} harness="opencode" model="oc-go-mimo" compact onChange={vi.fn()} />,
+    ));
+    expect(trigger().title).toBe("OpenCode Go · MiMo V2.5");
+    expect(trigger().title).not.toContain("OpenCode · OpenCode");
+  });
+
+  it("keeps the harness prefix when the model label does not carry it", async () => {
+    await act(async () => root.render(
+      <ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" compact onChange={vi.fn()} />,
+    ));
+    expect(trigger().title).toBe("Codex · GPT Balanced");
+  });
+
   it("opens the picker and calls onChange when a model is chosen", async () => {
     const onChange = vi.fn();
     await act(async () => root.render(

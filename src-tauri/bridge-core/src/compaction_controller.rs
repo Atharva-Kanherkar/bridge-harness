@@ -767,15 +767,45 @@ pub fn active_token_estimate(db: &Connection, session_id: &str) -> Result<i64, B
     let branch = SessionForest::new(db)
         .active_branch(session_id)
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    Ok(branch.iter().map(entry_token_estimate).sum())
+}
+
+/// The kinds that are the conversation itself, as opposed to the machinery
+/// around it. The same set `plan_switch_summary`'s "meaningful work" gate
+/// reads, kept in one place so the gate and the floor cannot drift.
+pub const CONVERSATION_KINDS: [&str; 4] = [
+    "user.message",
+    "assistant.message",
+    "worker.result",
+    "tool.completed",
+];
+
+/// [`active_token_estimate`] restricted to [`CONVERSATION_KINDS`].
+///
+/// The full-branch estimate answers "how full is this context?" — it counts
+/// injected instructions, lifecycle entries, everything — and a fresh chat
+/// with a compiled prompt measures thousands of tokens before anyone says a
+/// word. A floor on *conversation size* has to count only the conversation,
+/// or a greeting clears it on the strength of context it did not write.
+pub fn conversation_token_estimate(
+    db: &Connection,
+    session_id: &str,
+) -> Result<i64, BridgeError> {
+    let branch = SessionForest::new(db)
+        .active_branch(session_id)
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
     Ok(branch
         .iter()
-        .map(|entry| {
-            entry.token_estimate.unwrap_or_else(|| {
-                let bytes = entry.payload.to_string().len() as i64;
-                (bytes + 3) / 4
-            })
-        })
+        .filter(|entry| CONVERSATION_KINDS.contains(&entry.kind.as_str()))
+        .map(entry_token_estimate)
         .sum())
+}
+
+fn entry_token_estimate(entry: &SessionEntry) -> i64 {
+    entry.token_estimate.unwrap_or_else(|| {
+        let bytes = entry.payload.to_string().len() as i64;
+        (bytes + 3) / 4
+    })
 }
 
 #[cfg(test)]
@@ -930,6 +960,30 @@ mod tests {
             .expect("an honestly empty checkpoint is still a checkpoint");
         assert!(checkpoint.decisions.is_empty());
         assert!(checkpoint.files_touched.is_empty());
+    }
+
+    /// The two estimates answer different questions and must be allowed to
+    /// disagree: the branch estimate counts everything context carries, the
+    /// conversation estimate only what was said and done.
+    #[test]
+    fn conversation_estimate_ignores_machine_entries_the_branch_counts() {
+        let db = database();
+        SessionForest::new(&db)
+            .append(
+                "s",
+                EntryKind::SessionStatus,
+                json!({"status": "ready", "detail": "x".repeat(8_000)}),
+            )
+            .unwrap();
+        let branch = active_token_estimate(&db, "s").unwrap();
+        let conversation = conversation_token_estimate(&db, "s").unwrap();
+        assert!(
+            branch > conversation + 1_500,
+            "the machine entry counts toward the branch ({branch}) but not the conversation ({conversation})"
+        );
+        // The fixture's one user message is conversation, so the filtered
+        // estimate is not simply zero.
+        assert!(conversation > 0);
     }
 
     #[test]

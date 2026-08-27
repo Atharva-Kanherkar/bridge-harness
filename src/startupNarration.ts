@@ -17,8 +17,10 @@ export interface NarrationInput {
   streaming: boolean;
   harnessName: string;
   modelName: string;
-  /** The session has no stored provider id — this is its first launch. */
-  firstLaunch: boolean;
+  /** A model switch is in flight: the incoming model's display label. Wins
+   *  over every other label, and mounts the row even with no pending work —
+   *  the switch is Bridge's own activity, not the agent's. */
+  switchingToLabel: string | null;
   /** The furthest cold-start phase observed so far, or `null` if none has. */
   latestPhase: SessionStartupPhase | null;
   /** When `hasPendingWork` first became true, or `null` before that. */
@@ -39,7 +41,6 @@ export interface NarrationView {
   label: string;
   showElapsed: boolean;
   elapsedSeconds: number;
-  showFirstLaunchNote: boolean;
   reducedMotion: boolean;
 }
 
@@ -49,7 +50,6 @@ const MOUNTED_NONE: NarrationView = {
   label: "",
   showElapsed: false,
   elapsedSeconds: 0,
-  showFirstLaunchNote: false,
   reducedMotion: false,
 };
 
@@ -63,7 +63,23 @@ function phaseLabel(phase: SessionStartupPhase | null, harnessName: string, mode
 }
 
 export function computeNarration(input: NarrationInput): NarrationView {
-  const { hasPendingWork, streaming, harnessName, modelName, firstLaunch, latestPhase, startedAt, streamStartedAt, now, reducedMotion } = input;
+  const { hasPendingWork, streaming, harnessName, modelName, switchingToLabel, latestPhase, startedAt, streamStartedAt, now, reducedMotion } = input;
+  // A switch in flight owns the row outright: it mounts without pending work,
+  // never collapses (there is no stream to hand off to), and outranks the
+  // phase labels — whatever the old provider is doing behind the scenes, the
+  // truth on screen is that Bridge is switching models. Otherwise the old
+  // model kept claiming to read a message while it was being replaced.
+  if (switchingToLabel) {
+    const elapsedMs = startedAt !== null ? Math.max(0, now - startedAt) : 0;
+    return {
+      mounted: true,
+      collapsed: false,
+      label: `Switching to ${switchingToLabel}…`,
+      showElapsed: elapsedMs >= ELAPSED_VISIBLE_AFTER_MS,
+      elapsedSeconds: Math.floor(elapsedMs / 1000),
+      reducedMotion,
+    };
+  }
   // Once streaming starts the row keeps the animation node mounted a beat
   // longer so the handoff to the transcript's own shimmer never reads as a
   // flash — but it never lingers past `hasPendingWork` going false.
@@ -78,7 +94,6 @@ export function computeNarration(input: NarrationInput): NarrationView {
     label: collapsed ? "" : phaseLabel(latestPhase, harnessName, modelName),
     showElapsed: !collapsed && elapsedMs >= ELAPSED_VISIBLE_AFTER_MS,
     elapsedSeconds: Math.floor(elapsedMs / 1000),
-    showFirstLaunchNote: !collapsed && firstLaunch,
     reducedMotion,
   };
 }

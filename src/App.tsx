@@ -17,7 +17,7 @@ import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
 import { isHiddenSession } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
-import { ChatModelControl } from "./components/ChatModelControl";
+import { ChatModelControl, modelDisplayName } from "./components/ChatModelControl";
 export { ChatModelControl };
 import { SessionDock, type DockPaneDescriptor } from "./components/SessionDock";
 import { ChangesPanel } from "./components/ChangesPanel";
@@ -197,6 +197,8 @@ export function App() {
   // waits forever with no visible cause.
   const [pendingAdoptions, setPendingAdoptions] = useState<WorkerRepositoryBinding[]>([]);
   const [pending, setPending] = useState<{ key: string; sessionId: string; text: string; delivery?: "steered" | "queued" }[]>([]);
+  /** A model switch in flight, so the conversation can narrate it honestly. */
+  const [modelSwitch, setModelSwitch] = useState<{ sessionId: string; harness: string; label: string } | null>(null);
   // The composer's inline typeahead. Loaded once and kept fresh by Settings'
   // own save path (`onSuggestionSettingsChange`) — off by default, so no
   // request fires until the user opts in.
@@ -1175,9 +1177,15 @@ export function App() {
   async function changeChatModel(harness: Harness, model: string | null) {
     if (!session) return;
     setBusy(true); setError(undefined);
+    // The switch can take seconds (the outgoing provider may be asked for a
+    // handoff summary); the narration row wears this instead of claiming the
+    // old model is reading a message that does not exist.
+    // A null model means the adapter's default; "Switching to Automatic…"
+    // names nothing, so the harness carries the label instead.
+    setModelSwitch({ sessionId: session.id, harness, label: model ? modelDisplayName(adapters, harness, model) : harnessLabel(harness) });
     try { setState(await bridgeApi.updateChatModel(session.id, harness, model)); }
     catch (e) { setError(errorMessage(e)); }
-    finally { setBusy(false); }
+    finally { setBusy(false); setModelSwitch(null); }
   }
   async function submitNewWorkspace() {
     const name = title.trim(); if (!name) return;
@@ -1706,6 +1714,7 @@ export function App() {
                   continuationFidelity={session?.continuationFidelity}
                   preview={false}
                   working={turnActive}
+                  modelSwitch={modelSwitch?.sessionId === session?.id ? modelSwitch : null}
                   pendingMessages={pendingForSession}
                   onResolve={resolveApproval}
                   workspaceFiles={hasRepo ? workspaceFiles : undefined}

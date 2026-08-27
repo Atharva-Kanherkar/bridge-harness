@@ -23,7 +23,15 @@ function arms(count: number, inner: number, outer: number, offsetDegrees = 0): s
   }).join("");
 }
 
-type MarkShape = { path: string; strokeWidth: number; dot?: number };
+type MarkShape = {
+  path: string;
+  /** Stroked figure. Absent means the path is filled instead. */
+  strokeWidth?: number;
+  /** Filled with `evenodd`, so overlapping subpaths cancel into holes — the
+   *  construction a woven knot needs. */
+  evenOddFill?: boolean;
+  dot?: number;
+};
 type HarnessMarkDefinition = { shape: MarkShape; tint: string };
 
 // Arm counts are chosen for how each figure resolves at 14px — the size the
@@ -33,8 +41,15 @@ type HarnessMarkDefinition = { shape: MarkShape; tint: string };
 /** Eight arms through the centre — the ✳ Claude Code draws for itself. */
 const CLAUDE: MarkShape = { path: arms(8, 0, 9.2), strokeWidth: 2 };
 
-/** Six arms off a hollow centre, echoing a six-fold knot without tracing one. */
-const CODEX: MarkShape = { path: arms(6, 3.2, 9.2), strokeWidth: 2.4 };
+/** The six-lobe interlocking knot: six stadium outlines on a hexagonal ring
+ *  (length 8.6, thickness 4, centres at radius 6.8, long axis tangential),
+ *  filled `evenodd` so every crossing cancels into a lens-shaped hole. Reads
+ *  as the woven knot at size and as a clean hexagonal ring at 14px — chosen
+ *  against three other constructions by eye at both sizes. */
+const CODEX: MarkShape = {
+  path: "M20.80 9.70L20.80 14.30A2.00 2.00 0 0 1 16.80 14.30L16.80 9.70A2.00 2.00 0 0 1 20.80 9.70ZM18.39 18.47L14.41 20.77A2.00 2.00 0 0 1 12.41 17.31L16.39 15.01A2.00 2.00 0 0 1 18.39 18.47ZM9.59 20.77L5.61 18.47A2.00 2.00 0 0 1 7.61 15.01L11.59 17.31A2.00 2.00 0 0 1 9.59 20.77ZM3.20 14.30L3.20 9.70A2.00 2.00 0 0 1 7.20 9.70L7.20 14.30A2.00 2.00 0 0 1 3.20 14.30ZM5.61 5.53L9.59 3.23A2.00 2.00 0 0 1 11.59 6.69L7.61 8.99A2.00 2.00 0 0 1 5.61 5.53ZM14.41 3.23L18.39 5.53A2.00 2.00 0 0 1 16.39 8.99L12.41 6.69A2.00 2.00 0 0 1 14.41 3.23Z",
+  evenOddFill: true,
+};
 
 /** A ring of ticks around a solid core. Twelve rather than eight so it never
  *  reads as Claude's asterisk at a glance — detached ticks, not arms. */
@@ -81,13 +96,9 @@ export function HarnessMark({ harness, size = 14, live = false, className }: {
       className={cn("shrink-0", harnessTintClass(harness), live && "harness-mark-live", className)}
       aria-hidden="true"
     >
-      <path
-        d={shape.path}
-        stroke="currentColor"
-        strokeWidth={shape.strokeWidth}
-        strokeLinecap="round"
-        fill="none"
-      />
+      {shape.evenOddFill
+        ? <path d={shape.path} fill="currentColor" fillRule="evenodd"/>
+        : <path d={shape.path} stroke="currentColor" strokeWidth={shape.strokeWidth} strokeLinecap="round" fill="none"/>}
       {shape.dot && <circle cx="12" cy="12" r={shape.dot} fill="currentColor" />}
     </svg>
   );

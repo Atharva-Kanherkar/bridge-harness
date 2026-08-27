@@ -41,7 +41,10 @@ function groupItems(items: ConversationItem[]): Rendered[] {
       rawItems.push(item);
       continue;
     }
-    if (GROUPABLE.has(item.type) && item.data.staleBase !== true) {
+    // A model change is a milestone in the transcript, not tool activity — a
+    // group of one labeled "Used tools" is how a reload made it read as a
+    // glitch. It renders as its own quiet divider row instead.
+    if (GROUPABLE.has(item.type) && item.data.staleBase !== true && item.data.freshProviderSession !== true) {
       const last = out[out.length - 1];
       if (last?.kind === "group") { last.items.push(item); continue; }
       out.push({ kind: "group", key: `group-${item.key}`, items: [item] });
@@ -399,11 +402,11 @@ const ROW_VARIANTS = {
 /// Ties the pure narration computation in `startupNarration.ts` to the live
 /// `session-startup` subscription and a tick clock. Resets whenever the
 /// session id changes, so switching chats never carries over a stale phase.
-function useStartupNarration({ sessionId, harness, model, hasProviderSessionId, hasPendingWork, streaming }: {
+function useStartupNarration({ sessionId, harness, model, switchingToLabel, hasPendingWork, streaming }: {
   sessionId?: string;
   harness?: string | null;
   model?: string | null;
-  hasProviderSessionId: boolean;
+  switchingToLabel: string | null;
   hasPendingWork: boolean;
   streaming: boolean;
 }): NarrationView {
@@ -434,11 +437,12 @@ function useStartupNarration({ sessionId, harness, model, hasProviderSessionId, 
   }, [sessionId]);
 
   useEffect(() => {
-    if (hasPendingWork) { setStartedAt(value => value ?? Date.now()); return; }
+    // A model switch runs with no pending message, so it starts the clock too.
+    if (hasPendingWork || switchingToLabel) { setStartedAt(value => value ?? Date.now()); return; }
     setStartedAt(null);
     setStreamStartedAt(null);
     setPhase(null);
-  }, [hasPendingWork]);
+  }, [hasPendingWork, switchingToLabel]);
 
   useEffect(() => {
     if (streaming) setStreamStartedAt(value => value ?? Date.now());
@@ -447,10 +451,10 @@ function useStartupNarration({ sessionId, harness, model, hasProviderSessionId, 
   // The only reason to keep re-rendering while idle: the elapsed counter and
   // the collapse-after-first-token timer both read the clock.
   useEffect(() => {
-    if (!hasPendingWork) return;
+    if (!hasPendingWork && !switchingToLabel) return;
     const id = window.setInterval(() => setNow(Date.now()), 250);
     return () => window.clearInterval(id);
-  }, [hasPendingWork]);
+  }, [hasPendingWork, switchingToLabel]);
 
   return computeNarration({
     hasPendingWork,
@@ -460,7 +464,7 @@ function useStartupNarration({ sessionId, harness, model, hasProviderSessionId, 
     // `modelLabel` renders that absence as an em dash — which would read as
     // "— is reading your message…". Name the harness instead.
     modelName: model ? modelLabel(model) : harnessLabel(harness),
-    firstLaunch: !hasProviderSessionId,
+    switchingToLabel,
     latestPhase: phase,
     startedAt,
     streamStartedAt,
@@ -481,25 +485,20 @@ function useStartupNarration({ sessionId, harness, model, hasProviderSessionId, 
 function StartupStatusRow({ view, harness }: { view: NarrationView; harness?: string | null }) {
   if (!view.mounted) return null;
   return (
-    <div className="flex flex-col gap-1">
-      {view.showFirstLaunchNote && (
-        <p className="text-[11px] text-muted-foreground/70">First time opening this chat — startup can take a little longer.</p>
-      )}
-      <div className="flex items-center gap-2">
-        <HarnessMark harness={harness} live={!view.reducedMotion}/>
-        {!view.collapsed && <span className="min-w-0 truncate text-[12px] font-medium">
-          {/* Dimmer than the label: the counter is metadata, the label is the news. */}
-          {view.showElapsed && <span className="text-muted-foreground/70 tabular-nums">{view.elapsedSeconds}s · </span>}
-          <span className="text-shimmer">{view.label}</span>
-        </span>}
-      </div>
+    <div className="flex items-center gap-2">
+      <HarnessMark harness={harness} live={!view.reducedMotion}/>
+      {!view.collapsed && <span className="min-w-0 truncate text-[12px] font-medium">
+        {/* Dimmer than the label: the counter is metadata, the label is the news. */}
+        {view.showElapsed && <span className="text-muted-foreground/70 tabular-nums">{view.elapsedSeconds}s · </span>}
+        <span className="text-shimmer">{view.label}</span>
+      </span>}
     </div>
   );
 }
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onOpenSession, onExpandWorker, onWaiveCompletion, onRefreshBase, onRetryWorker, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: (eventId: number, decision: ApprovalDecision) => void; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onOpenSession, onExpandWorker, onWaiveCompletion, onRefreshBase, onRetryWorker, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, modelSwitch }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: (eventId: number, decision: ApprovalDecision) => void; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null }) {
   const visibleItems = useMemo(() => {
     const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
     const nextLiveItems = reduceConversation(events);
@@ -530,12 +529,12 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     sessionId: session?.id,
     harness: session?.harness,
     model: session?.model,
-    hasProviderSessionId: !!session?.providerSessionId,
+    switchingToLabel: modelSwitch?.label ?? null,
     hasPendingWork: !!working || pendingMessages.length > 0,
     streaming,
   });
   if (!session && !preview) return <Empty title="No chat yet" copy="Start a chat from the sidebar, or open a workspace agent."/>;
-  if (!visibleItems.length && !working && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} />;
+  if (!visibleItems.length && !working && !modelSwitch && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} />;
   const existingUserTexts = new Set(visibleItems.filter(item => item.type === "message" && item.role === "user").map(item => item.text.trim()));
   const optimistic = pendingMessages.filter(text => !existingUserTexts.has(text.trim()));
   const errorContext = { provider: providerLabel(session?.harness), snapshot: latestUsageSnapshot(events) };
@@ -582,7 +581,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
               <ItemView item={entry.item} workers={workers} now={now} onResolve={onResolve} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRefreshBase={onRefreshBase} onRetryWorker={onRetryWorker} onRemember={onRemember} errorContext={errorContext}/>
             </TranscriptRow>)}
         {pendingRows.map(row => <TranscriptRow key={row.key}><div className={BUBBLE}><MentionText text={row.text}/></div></TranscriptRow>)}
-        {startupNarration.mounted && <TranscriptRow key="working"><div className="flex justify-start"><StartupStatusRow view={startupNarration} harness={session?.harness}/></div></TranscriptRow>}
+        {startupNarration.mounted && <TranscriptRow key="working"><div className="flex justify-start"><StartupStatusRow view={startupNarration} harness={modelSwitch?.harness ?? session?.harness}/></div></TranscriptRow>}
       </AnimatePresence>
     </div>
   </ScrollFollow></FileLinkContext.Provider>;
@@ -715,6 +714,7 @@ function ItemView({ item, workers, now, onResolve, onOpenSession, onExpandWorker
   if (item.type === "approval") return <ApprovalCard item={item} onResolve={onResolve}/>;
   if (item.type === "delegation") return <DelegationRow item={item} workers={workers} now={now} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRetryWorker={onRetryWorker}/>;
   if (item.type === "checkpoint" || item.type === "compaction" || item.type === "branch-summary") return <ForestCard item={item}/>;
+  if (item.data.freshProviderSession === true) return <ModelChangedRow item={item}/>;
   if (item.type === "raw") return <RawEvent item={item}/>;
   if (item.type === "error") return <ErrorCard item={item} errorContext={errorContext}/>;
   return <ActivityGroup items={[item]}/>;
@@ -743,6 +743,24 @@ function ErrorCard({ item, errorContext }: { item: ConversationItem; errorContex
       {isUsage ? <Gauge size={14} aria-hidden="true" /> : <AlertTriangle size={14} aria-hidden="true" />}
     </motion.span>
     <div className="min-w-0"><b className="text-[12px]">{described.title}</b><p className="mt-1 text-[12px] leading-relaxed break-words text-muted-foreground">{described.message}</p></div>
+  </div>;
+}
+
+/// A model switch, as a milestone the transcript reads past: one hairline
+/// with the transition inline, in the same register as a group label. The
+/// carried-context sentence lives in `title`-adjacent text and the payload;
+/// the row keeps only the fact of the change.
+function ModelChangedRow({ item }: { item: ConversationItem }) {
+  const side = (harness: unknown, model: unknown) => [
+    harness ? harnessLabel(String(harness)) : undefined,
+    model ? modelLabel(String(model)) : undefined,
+  ].filter(Boolean).join(" · ");
+  const from = side(item.data.previousHarness, item.data.previousModel);
+  const to = side(item.data.harness, item.data.model);
+  return <div className="my-3 flex items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.08em] text-muted-foreground/70">
+    <span className="h-px flex-1 bg-border" aria-hidden="true"/>
+    <span className="shrink-0 normal-case tracking-normal">{from && to ? `${from} → ${to}` : item.title || "Model changed"}</span>
+    <span className="h-px flex-1 bg-border" aria-hidden="true"/>
   </div>;
 }
 

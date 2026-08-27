@@ -41,7 +41,14 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   const current = chatAdapters.find(adapter => adapter.id === harness);
   const currentModel = current?.models.find(option => option.id === model) ?? current?.models.find(option => option.defaultForTier) ?? current?.models[0];
   const modelLabel = (currentModel?.label ?? model ?? "Default").replace(UNLIMITED_SUFFIX, "");
-  const compactLabel = `${harnessLabel(harness)} · ${modelLabel}`;
+  // Some catalogs bake the provider into the model label ("OpenCode Go ·
+  // MiMo V2.5"), and prefixing the harness again read as a stutter:
+  // "OpenCode · OpenCode Go · MiMo V2.5". When the model label already opens
+  // with the harness label, it carries the whole pill by itself.
+  const harnessName = harnessLabel(harness);
+  const compactLabel = modelLabel.toLowerCase().startsWith(harnessName.toLowerCase())
+    ? modelLabel
+    : `${harnessName} · ${modelLabel}`;
   return <div className="relative">
     <button type="button" disabled={disabled} onClick={() => setOpen(value => !value)} className={`flex ${maxWidthClassName} items-center gap-1 rounded-full transition-colors disabled:opacity-45 ${compact ? "h-8 px-2 text-xs text-muted-foreground hover:bg-accent" : "h-[28px] px-2 text-[11.5px] text-foreground/90 hover:bg-accent"}`} title={disabled ? disabledReason ?? "Model selection is temporarily unavailable" : compactLabel} aria-label={`${roleLabel} model: ${harnessLabel(harness)} ${modelLabel}`}>
       <span className="whitespace-nowrap overflow-hidden text-ellipsis">{compactLabel}</span>
