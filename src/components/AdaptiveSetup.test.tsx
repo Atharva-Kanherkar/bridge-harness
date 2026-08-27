@@ -122,8 +122,9 @@ describe("adaptive setup surfaces", () => {
   });
 
   it("labels each evaluator execution state truthfully", () => {
-    expect(evaluatorExecutionLabel("not_run")).toBe("not_run — no executor");
-    expect(evaluatorExecutionLabel("deferred")).toBe("not_run — no executor");
+    expect(evaluatorExecutionLabel("not_run")).toBe("not run");
+    expect(evaluatorExecutionLabel("queued")).toBe("queued — bounded model evaluation has not run yet");
+    expect(evaluatorExecutionLabel("executed")).toBe("bounded model evaluation executed");
     expect(evaluatorExecutionLabel("deterministic_only")).toBe("deterministic only — no model evaluation requested");
     expect(evaluatorExecutionLabel("reused_existing_evidence")).toBe("reused existing evidence");
   });

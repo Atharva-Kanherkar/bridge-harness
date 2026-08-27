@@ -86,7 +86,7 @@ describe("adaptive setup journeys", () => {
     expect(container.textContent).toContain("insufficient evidence");
     expect(container.textContent).toContain("Cost comparison is unknown");
     expect(container.textContent).toContain("Policy");
-    expect(container.textContent).toContain("not_run — no executor");
+    expect(container.textContent).toContain("not run");
   });
 
   it("refetches learning state when a learning job changes", async () => {
