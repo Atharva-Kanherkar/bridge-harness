@@ -1,0 +1,118 @@
+# feat/startup-mark-and-switch-checkpoint — Test Contract
+
+Two related complaints about the cold-start experience shipped in #360:
+
+1. The startup row is a label plus a grey bar. It says nothing about *which* agent
+   is starting, and it has no life in it.
+2. Switching the model on a chat that had only exchanged "hi" produced a wall of
+   agent prose in the transcript — the outgoing model refusing to fabricate a
+   handoff checkpoint — followed by a `Compaction requested / before_downgrade /
+   before_downgrade` card.
+
+Locked before implementation.
+
+---
+
+## Part 1 — The startup row wears the harness's own mark
+
+### Functional Behavior
+
+- New `src/components/harnessMarks.tsx`, built like `connectorLogos.tsx`: inline
+  SVG, `currentColor`, `aria-hidden`, one record keyed by harness id, plus a
+  resolver. The mark is **never load-bearing** — the harness is always also named
+  in the label beside it, so an unrecognised id reads identically.
+- Marks are radially symmetric so a slow rotation reads as scintillation rather
+  than as a spinning logo: `claude` a ten-arm asterisk (the ✳ Claude Code itself
+  draws), `codex` a six-arm rounded star with a hollow centre, `opencode` a
+  four-arm cross with a centre dot. Any other harness id — the id space is open,
+  see `harnessLabel` — gets a gapped arc ring, which is a spinner and needs no
+  brand knowledge.
+- New tokens `--harness-claude` / `--harness-codex` / `--harness-opencode`
+  (light + dark) exposed through `@theme inline` as `--color-harness-*`. Unknown
+  ids tint with `text-muted-foreground`. The tint is transient — it exists only
+  while a session starts — and it identifies the harness, so it does not make the
+  achromatic ladder chromatic.
+- New keyframes `harness-turn` (slow linear rotation) and `harness-breathe`
+  (opacity) plus a `.harness-mark-live` class in `src/index.css`. The stylesheet's
+  global `prefers-reduced-motion` rule already freezes CSS animation; the
+  component *also* withholds the class when `view.reducedMotion`, so the static
+  frame is the intended one rather than whatever frame 1 happens to be.
+- The label's shimmer treatment is the one the `Thinking…` row already uses. That
+  giant arbitrary-value string is folded into a `.text-shimmer` class in
+  `src/index.css` and both call sites use it — same pixels, one definition.
+- Row reads **mark · elapsed · label**, elapsed first, matching the reference.
+  The counter is `tabular-nums` so ticking a second never reflows the label.
+- The mark is now the node that must never remount across the collapse handoff
+  (it takes the shimmer bar's old role). `thinking-shimmer` stays in the
+  stylesheet — four other call sites still use it.
+
+### Unit Tests
+
+- `harnessMarks.test.tsx`
+  - a known harness renders its own mark, tinted with its own token class
+  - an unknown harness id renders the fallback arc and the muted tint
+  - every mark is `aria-hidden` (the label carries the meaning)
+- `AgentConversation.test.tsx`
+  - the startup row renders the mark for the session's harness
+  - the mark carries `harness-mark-live` normally and does **not** under
+    reduced motion
+  - elapsed precedes the label in the rendered text
+  - collapsed (streaming has begun) keeps the mark and drops the label
+
+## Part 2 — A trivial chat is not asked for a handoff checkpoint, and the ask never reaches the transcript
+
+### Functional Behavior
+
+- **The reply is plumbing.** While a compaction is pending, the assistant
+  `message.completed` frame of the internal checkpoint turn is neither persisted
+  as `assistant.message` nor published as an agent event. It is consumed by
+  `CompactionController::handle_output` and nothing else. This follows the
+  delegation/peek/steer precedent in the same reader loop: a machine block is not
+  something to read. Applies to a valid checkpoint too — raw checkpoint JSON was
+  equally a leak.
+- **The ask is attributable and demands no fabrication.** `checkpoint_prompt`
+  names Bridge session maintenance as the asker, says why it is being asked, and
+  states that empty `decisions` and `filesTouched` are valid. An honest agent with
+  nothing to report can now answer honestly instead of refusing.
+- **Nothing to compact means no round trip.** `plan_switch_summary` skips when the
+  active branch's token estimate is below `SWITCH_SUMMARY_MIN_TOKENS`: below that
+  floor `start_chat`'s mechanical projection already carries the whole
+  conversation, so the round trip buys nothing and can only cost. The existing
+  "meaningful work" gate stays; this is a floor under it, not a replacement.
+- **The maintenance card reads in English and once.** `compaction.requested` /
+  `compaction.failed` map their `reason` through a display string
+  ("Before switching models") instead of showing `before_downgrade` twice —
+  once as body text and once as a `<code>` block.
+
+### Unit Tests
+
+- Rust `compaction_controller`
+  - `checkpoint_prompt` names Bridge as the asker and permits empty arrays
+  - the prompt still round-trips through `Checkpoint::parse_and_validate`
+- Rust `sessions`
+  - a branch below the token floor plans no switch summary
+  - a branch above it still plans one
+- Frontend `conversation.test.ts`
+  - `compaction.requested` carries an English reason, and the raw reason is not
+    duplicated into `data.reason` rendering
+- Frontend `AgentConversation`
+  - a compaction card renders its reason once
+
+### Integration / Smoke
+
+- `bun run check`, `bun run test`, `bun run build` all green.
+
+## Manual Tests (reviewer)
+
+1. Cold-start a Claude chat → asterisk mark, tinted, turning; `3s · Waiting for
+   Claude to answer…`; hands off without the mark restarting.
+2. Same for Codex and OpenCode; then an unknown harness id → arc spinner.
+3. macOS reduce-motion on → mark present, frozen, label static.
+4. Say "hi", switch the model → no agent prose in the transcript, no compaction
+   card, switch completes.
+5. Have a real working session (tools, files), switch the model → checkpoint
+   still happens and still carries a summary; no JSON in the transcript.
+
+## E2E
+
+N/A — desktop app; manual + unit coverage per above.
