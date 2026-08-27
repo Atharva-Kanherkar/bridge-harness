@@ -1,5 +1,5 @@
 import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { QueryClientProvider, useQuery, useQueryClient } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
@@ -8,7 +8,7 @@ import { bridgeApi } from "./api";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
 import { openExternalUrl } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
-import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
+import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
@@ -71,7 +71,9 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { InputGroup, InputGroupAddon, InputGroupInput } from "@/components/ui/input-group";
 import { Kbd } from "@/components/ui/kbd";
-import { createBridgeQueryClient, queryKeys } from "./queryClient";
+import { createBridgeQueryClient } from "./queryClient";
+import { useUiStore } from "./uiStore";
+import { useBridgeServerState } from "./serverState";
 
 const AutomationsPanel = lazy(() => import("./components/AutomationsPanel").then(module => ({ default: module.AutomationsPanel })));
 const MarketplaceScreen = lazy(() => import("./components/MarketplaceScreen").then(module => ({ default: module.MarketplaceScreen })));
@@ -125,24 +127,13 @@ export function App() {
 }
 
 function AppContent() {
-  const queryClient = useQueryClient();
-  const { data: health, error: healthError } = useQuery({
-    queryKey: queryKeys.health,
-    queryFn: () => bridgeApi.health(),
-  });
-  const { data: modelSetup, error: modelSetupError } = useQuery({
-    queryKey: queryKeys.modelSetup,
-    queryFn: () => bridgeApi.modelSetup(),
-  });
+  const modal = useUiStore(state => state.modal);
+  const openModal = useUiStore(state => state.openModal);
+  const closeModal = useUiStore(state => state.closeModal);
   const {
-    data: workBoard,
-    error: workBoardQueryError,
-    refetch: refetchWorkBoard,
-  } = useQuery({
-    queryKey: queryKeys.workBoard,
-    queryFn: () => bridgeApi.workBoard(),
-    enabled: false,
-  });
+    health, healthError, modelSetup, modelSetupError, workBoard,
+    workBoardQueryError, refetchWorkBoard, acceptModelSetup, invalidateHealth,
+  } = useBridgeServerState();
   const [state, setState] = useState<BridgeState>(emptyState);
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
@@ -174,7 +165,6 @@ function AppContent() {
   // Tabs mount on first visit and then stay mounted. Unmounting the Changes
   // and Code panels on every tab switch would throw away open files, expanded
   // diffs, and — now that both tabs can edit — unsaved text.
-  const [modal, setModal] = useState<"workspace" | "orchestrator" | "router" | "memory" | null>(null);
   // A too-long "Remember this" lands here so the dialog opens pre-filled for
   // trimming; it is never saved on the user's behalf.
   const [memoryDraft, setMemoryDraft] = useState<string | null>(null);
@@ -241,10 +231,6 @@ function AppContent() {
   const workError = workBoard === undefined ? workQueryError : undefined;
   const workRefreshError = workBoard === undefined ? undefined : workBriefingError ?? workQueryError;
 
-  const acceptModelSetup = useCallback((setup: ModelSetupState) => {
-    queryClient.setQueryData(queryKeys.modelSetup, setup);
-  }, [queryClient]);
-
   const reload = useCallback(async () => {
     setState(await bridgeApi.state());
     // Re-read with the state it was published alongside: `save_permission_policy`
@@ -260,9 +246,7 @@ function AppContent() {
     let offAdapters: (() => void) | undefined;
     let offProviderLogin: (() => void) | undefined;
     let active = true;
-    const reloadHealth = () => {
-      void queryClient.invalidateQueries({ queryKey: queryKeys.health });
-    };
+    const reloadHealth = invalidateHealth;
     void bridgeApi.onStateChanged(reload).then(fn => offState = fn);
     // The provider-login flow runs as an ordinary PTY under the "provider-login"
     // pseudo-workspace; when the vendor process exits, re-read health so a
@@ -312,7 +296,7 @@ function AppContent() {
       agentEventTimerRef.current = undefined;
       agentEventQueueRef.current = [];
     };
-  }, [queryClient, reload]);
+  }, [invalidateHealth, reload]);
   useThemePreference();
   useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
   // Navigating away from an unstarted draft discards it silently — nothing was
@@ -1213,7 +1197,7 @@ function AppContent() {
   function requestWorkspaceSession(workspaceId: string) {
     if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode before starting an orchestrator."); return; }
     setPendingWorkspaceId(workspaceId);
-    setModal("orchestrator");
+    openModal("orchestrator");
   }
   async function newWorkspaceSession(createWorktree: boolean, explicitWorkspaceId?: string, alreadyLocked = false) {
     if (!alreadyLocked) {
@@ -1235,7 +1219,7 @@ function AppContent() {
           worktreeBySessionRef.current.set(created.id, createWorktree);
           openSession(created.id);
         }
-        setModal(null); setPendingWorkspaceId(undefined);
+        closeModal(); setPendingWorkspaceId(undefined);
         return created?.id;
       } catch (e) { setError(errorMessage(e)); }
       finally { setBusy(false); }
@@ -1261,7 +1245,7 @@ function AppContent() {
     setBusy(true); setError(undefined);
     try {
       const next = await bridgeApi.createWorkspace(name);
-      setState(next); setModal(null); setTitle("");
+      setState(next); closeModal(); setTitle("");
     } catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); }
   }
@@ -1420,10 +1404,10 @@ function AppContent() {
   // "Remember this" on an assistant message. Over the cap the dialog opens with
   // the full text for the user to trim — never a clip, never a truncated save.
   const rememberMessage = useCallback(async (text: string) => {
-    if (rememberAction(text) === "open-dialog") { setMemoryDraft(text); setModal("memory"); return; }
+    if (rememberAction(text) === "open-dialog") { setMemoryDraft(text); openModal("memory"); return; }
     try { await bridgeApi.saveMemoryRecord(text, undefined, session?.id ?? undefined); }
     catch (e) { setError(errorMessage(e)); }
-  }, [session?.id]);
+  }, [openModal, session?.id]);
 
   /// Send guidance into a running worker.
   ///
@@ -1550,7 +1534,7 @@ function AppContent() {
         return;
       case "new-project":
         setTitle("");
-        setModal("workspace");
+        openModal("workspace");
         return;
       case "interrupt-turn":
         // Reachable mid-sentence, so it has to be inert when nothing is running.
@@ -1691,7 +1675,7 @@ function AppContent() {
       onOpenAutomations={() => setView("automations")}
       onOpenMissionControl={() => { setView("workspace"); setParadigm("grid"); }}
       onOpenWorkBoard={openWorkBoard}
-      onOpenMemory={() => setModal("memory")}
+      onOpenMemory={() => openModal("memory")}
       onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
       collapsed={sidebarCollapsed}
@@ -1741,7 +1725,7 @@ function AppContent() {
         activeSessionId={session?.id}
         busy={busy}
         onOpenSession={openSession}
-        onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
+        onNewWorkspace={() => { setTitle(""); openModal("workspace"); }}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
       /> : view === "automations" ? <Suspense fallback={<PanelLoading label="Opening automations…"/>}><AutomationsPanel onBrowseCatalog={() => setView("marketplace")} /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
@@ -1786,7 +1770,7 @@ function AppContent() {
           )}
           fullscreen={fullscreen}
           onToggleFullscreen={toggleLayoutFullscreen}
-          onOpenRouterSettings={!isDirectChat && workspace ? () => setModal("router") : undefined}
+          onOpenRouterSettings={!isDirectChat && workspace ? () => openModal("router") : undefined}
           onToggleRecall={() => {
             // Recall reads the conversation, so an expanded pane steps aside first.
             if (dockRef.current.expanded) dispatchDock({ type: "toggle-expanded" });
@@ -2072,7 +2056,7 @@ function AppContent() {
           // held on the draft (#350), created on submit — not started immediately.
           : { ...resolveDraftHarnessModel(), workspaceId: resolvedWelcomeWorkspaceId, createWorktree: true })}
         onStartChat={(text, initialAttachments) => void startChatOrShortcut(text, initialAttachments)}
-        onNewWorkspace={() => { setTitle(""); setModal("workspace"); }}
+        onNewWorkspace={() => { setTitle(""); openModal("workspace"); }}
       />}
     </main>
     </div>
@@ -2097,7 +2081,7 @@ function AppContent() {
       title={title}
       busy={busy}
       onTitleChange={setTitle}
-      onClose={() => setModal(null)}
+      onClose={closeModal}
       onSubmit={() => void submitNewWorkspace()}
     />
     <OrchestratorCreateDialog
@@ -2109,9 +2093,9 @@ function AppContent() {
       onUseCurrentFolder={() => void newWorkspaceSession(false)}
       onClose={() => void newWorkspaceSession(false)}
     />
-    <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={acceptModelSetup} onClose={() => setModal(null)} onError={setError} />
+    <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={acceptModelSetup} onClose={closeModal} onError={setError} />
     <ShortcutsSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
-    <MemoryDialog open={modal === "memory"} initialBody={memoryDraft} adapters={adapters} onClose={() => { setModal(null); setMemoryDraft(null); }} onError={setError} />
+    <MemoryDialog open={modal === "memory"} initialBody={memoryDraft} adapters={adapters} onClose={() => { closeModal(); setMemoryDraft(null); }} onError={setError} />
   </div>;
 }
 

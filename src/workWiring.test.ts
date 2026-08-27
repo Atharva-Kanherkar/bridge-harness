@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 // something.
 
 const APP = readFileSync(join(__dirname, "App.tsx"), "utf8");
+const SERVER_STATE = readFileSync(join(__dirname, "serverState.ts"), "utf8");
 const SIDEBAR = readFileSync(join(__dirname, "components", "BridgeSidebar.tsx"), "utf8");
 
 /** One `useCallback` body from App.tsx, ending at its dependency array.
@@ -52,7 +53,7 @@ describe("opening Work starts nothing", () => {
     // The acceptance criterion this slice rests on: opening Work must not select or
     // create a session, or start a model, connector, git command, or request. The
     // disabled query is the only read path.
-    const query = APP.slice(APP.indexOf("data: workBoard"), APP.indexOf("const [state"));
+    const query = SERVER_STATE.slice(SERVER_STATE.indexOf("const workBoard"));
     expect(query.match(/bridgeApi\.\w+/g)).toEqual(["bridgeApi.workBoard"]);
     expect(query).toContain("queryKey: queryKeys.workBoard");
     expect(query).toContain("enabled: false");
@@ -113,7 +114,7 @@ describe("the shell knows about Work", () => {
 describe("cached reads", () => {
   it("delegates request deduplication and stale response handling to TanStack Query", () => {
     expect(APP).toContain("QueryClientProvider");
-    expect(APP).toContain("refetch: refetchWorkBoard");
+    expect(APP).toContain("refetchWorkBoard");
     expect(APP).not.toContain("workReadGeneration");
     expect(APP).not.toContain("workBoardRef");
   });
