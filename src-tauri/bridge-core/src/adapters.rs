@@ -44,6 +44,28 @@ pub trait AdapterRuntime: Send {
     ) -> Result<(), BridgeError> {
         self.send_turn(text)
     }
+    /// Whether this provider can receive base64 image content blocks beside
+    /// the user's text. Kept in step with a `send_turn_with_images` override:
+    /// advertising `true` while keeping the default delivery would route
+    /// image turns straight into the refusal below.
+    fn supports_images(&self) -> bool {
+        false
+    }
+    /// Send a turn whose message carries image attachments as provider-shaped
+    /// content. `application_context` matches `send_turn_with_context`'s
+    /// trusted-context contract. The default errs rather than dropping: a
+    /// provider without the capability must fail loudly at the routing seam,
+    /// never quietly on the wire.
+    fn send_turn_with_images(
+        &self,
+        _text: &str,
+        _application_context: Option<&str>,
+        _images: &[bridge_protocol::messages::TurnImage],
+    ) -> Result<(), BridgeError> {
+        Err(BridgeError::Invalid(
+            "This provider does not accept image attachments".into(),
+        ))
+    }
     /// Whether this provider can take a user message while one of its own
     /// turns is still running, and fold it into that turn.
     ///

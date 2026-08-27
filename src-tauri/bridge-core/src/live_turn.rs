@@ -7598,7 +7598,7 @@ pub fn persist_submitted_user_turn(
     adapter_id: &str,
     display_text: &str,
 ) -> Result<Option<AgentEvent>, BridgeError> {
-    persist_submitted_user_turn_with_delivery(db, session_id, adapter_id, display_text, "submitted")
+    persist_submitted_user_turn_with_delivery(db, session_id, adapter_id, display_text, "submitted", &[])
 }
 
 /// The same durable user message, stamped with how it reached the provider.
@@ -7607,13 +7607,29 @@ pub fn persist_submitted_user_turn(
 /// then as delivered. Without it a queued message is indistinguishable from one
 /// the agent is already working on, which is the confusion this whole path
 /// exists to remove.
+///
+/// Image attachments ride along as data URIs in the event payload so the
+/// conversation can render them from durable history — a reload must not
+/// erase what the user sent.
 pub fn persist_submitted_user_turn_with_delivery(
     db: &Connection,
     session_id: &str,
     adapter_id: &str,
     display_text: &str,
     delivery: &str,
+    images: &[wire::TurnImage],
 ) -> Result<Option<AgentEvent>, BridgeError> {
+    let data = if images.is_empty() {
+        serde_json::json!({"delivery": delivery})
+    } else {
+        serde_json::json!({
+            "delivery": delivery,
+            "attachments": images.iter().map(|image| serde_json::json!({
+                "mediaType": image.media_type,
+                "dataUri": format!("data:{};base64,{}", image.media_type, image.base64_data),
+            })).collect::<Vec<_>>(),
+        })
+    };
     let user_event = agent::NormalizedEvent {
         kind: "message.completed".into(),
         item_id: Some(format!("user-{}", Uuid::new_v4())),
@@ -7621,7 +7637,7 @@ pub fn persist_submitted_user_turn_with_delivery(
         status: Some("completed".into()),
         title: None,
         text: Some(display_text.into()),
-        data: serde_json::json!({"delivery": delivery}),
+        data,
     };
     store::session_event(
         db,
@@ -7653,6 +7669,9 @@ struct PreparedInput {
     /// context off this, so a marker pulled in from a referenced file's body
     /// cannot be mistaken for one the user wrote.
     outbound: String,
+    /// Base64 image attachments that travel beside the text. Filled only for
+    /// turns that will reach a provider; everything else refuses them.
+    images: Vec<wire::TurnImage>,
     interceptions: Vec<secret_interception::SecretInterception>,
 }
 
@@ -7855,6 +7874,9 @@ fn prepare_input(
         display_text,
         provider_text,
         outbound,
+        // Filled by the caller (`submit_input_internal`) from the request, so
+        // preparation stays a pure function of the submitted text.
+        images: Vec::new(),
         interceptions,
     }))
 }
@@ -7903,11 +7925,29 @@ fn deliver_prepared_input(
     let credential_context = state
         .credential_broker
         .turn_context(session_id, &prepared.outbound);
-    if let Err(error) = deliver_sanitized_turn(
-        runtime.as_ref(),
-        &prepared.provider_text,
-        credential_context.as_deref(),
-    ) {
+    let has_images = !prepared.images.is_empty();
+    if has_images && !runtime.supports_images() {
+        // Refuse before touching the provider: a capability gap is a routing
+        // fact, not a provider failure, so it must not go down the
+        // recoverable-failure path that would mark the session degraded.
+        drop(adapters);
+        return Err(BridgeError::Invalid(
+            "This provider does not accept image attachments. Paste images in a chat running Claude, or send the text on its own.".into(),
+        ));
+    }
+    let delivered = if has_images {
+        // An image-only send still needs a non-empty text block: Anthropic
+        // content blocks require text of at least one character.
+        let provider_text = if prepared.provider_text.trim().is_empty() {
+            "(image)"
+        } else {
+            prepared.provider_text.as_str()
+        };
+        runtime.send_turn_with_images(provider_text, credential_context.as_deref(), &prepared.images)
+    } else {
+        deliver_sanitized_turn(runtime.as_ref(), &prepared.provider_text, credential_context.as_deref())
+    };
+    if let Err(error) = delivered {
         drop(adapters);
         record_recoverable_adapter_failure(state, session_id, &error)?;
         return Err(error);
@@ -7928,6 +7968,7 @@ fn deliver_prepared_input(
             &adapter_id,
             &prepared.display_text,
             delivery.stamp(),
+            &prepared.images,
         )? {
             core.events.publish(CoreEvent::Agent(event));
         }
@@ -7983,7 +8024,7 @@ pub fn send_turn(
 ) -> Result<(), BridgeError> {
     // The legacy entry point: always deliver now. Clients that want Bridge to
     // decide between starting, steering, and queueing call `submit_input`.
-    submit_input_internal(core, session_id, text, true).map(|_| ())
+    submit_input_internal(core, session_id, text, true, Vec::new()).map(|_| ())
 }
 
 /// The typed active-turn input contract: one call the client makes whatever the
@@ -7996,7 +8037,19 @@ pub fn submit_input(
     session_id: String,
     text: String,
 ) -> Result<wire::SubmitInputResult, BridgeError> {
-    submit_input_internal(core, session_id, text, false)
+    submit_input_internal(core, session_id, text, false, Vec::new())
+}
+
+/// The same contract for a turn that carries pasted image attachments. Every
+/// image either reaches a provider that supports them or the caller gets an
+/// explicit error — never a silent drop.
+pub fn submit_input_with_attachments(
+    core: &Arc<BridgeCore>,
+    session_id: String,
+    text: String,
+    attachments: Vec<wire::TurnImage>,
+) -> Result<wire::SubmitInputResult, BridgeError> {
+    submit_input_internal(core, session_id, text, false, attachments)
 }
 
 /// Relaunch a session's adapter so a user-initiated send can be delivered,
@@ -8302,6 +8355,7 @@ fn answer_pending_question(
         &adapter_id,
         &sanitized,
         "answered_question",
+        &[],
     )? {
         core.events.publish(CoreEvent::Agent(user_event));
     }
@@ -8318,9 +8372,12 @@ fn submit_input_internal(
     session_id: String,
     text: String,
     force_new_turn: bool,
+    attachments: Vec<wire::TurnImage>,
 ) -> Result<wire::SubmitInputResult, BridgeError> {
     let state = core;
-    if text.trim().is_empty() {
+    // An image-only send is legitimate: the images are the message. Text alone
+    // still may not be empty.
+    if text.trim().is_empty() && attachments.is_empty() {
         return Err(BridgeError::Invalid("Message cannot be empty".into()));
     }
     // A user who can watch a worker go down the wrong path has to be able to say
@@ -8351,6 +8408,22 @@ fn submit_input_internal(
     // input" — it is the reason the turn cannot reach a boundary at all. Check
     // before computing a route: answering it takes priority over whatever the
     // ordinary table would have chosen.
+    //
+    // An answer is provider-shaped question replies, which have nowhere for an
+    // image to go. With attachments in hand the send refuses instead of
+    // quietly answering with text and losing the bytes.
+    if !attachments.is_empty() {
+        let question_pending = {
+            let db = state.db.lock().unwrap();
+            latest_unresolved_approval(&db, &session_id, agent::OPENCODE_QUESTION_REQUEST_METHOD)
+                .is_some()
+        };
+        if question_pending {
+            return Err(BridgeError::Invalid(
+                "A question is waiting on your answer, so this image cannot be delivered. Answer the question first, then send the image.".into(),
+            ));
+        }
+    }
     if let Some(result) = answer_pending_question(core, &session_id, text.trim())? {
         return Ok(result);
     }
@@ -8376,6 +8449,14 @@ fn submit_input_internal(
         &text,
         route == session_input::InputRoute::NewTurn,
     )? {
+        InputPreparation::Handled { interceptions: _ } if !attachments.is_empty() => {
+            // Bridge-handled commands (`/usage`, `/pins`, `/clear`, …) never
+            // reach a provider, so there is nowhere an attachment can go.
+            // Refusing beats a silently swallowed image.
+            return Err(BridgeError::Invalid(
+                "Images cannot be attached while Bridge itself handles that command — send them with a normal message.".into(),
+            ));
+        }
         InputPreparation::Handled { interceptions } => {
             return Ok(wire::SubmitInputResult {
                 disposition: route.disposition(),
@@ -8383,7 +8464,10 @@ fn submit_input_internal(
                 interceptions: mirror_interceptions(&interceptions),
             })
         }
-        InputPreparation::Ready(prepared) => prepared,
+        InputPreparation::Ready(prepared) => PreparedInput {
+            images: attachments,
+            ..prepared
+        },
     };
     // The words stay the user's; the contract reminder is Bridge's. A worker
     // asked something mid-run will otherwise answer in prose and never emit its
@@ -8415,6 +8499,15 @@ fn submit_input_internal(
             );
         }
         session_input::InputRoute::Queue => {
+            // The durable queue stores text; there is no byte budget or shape
+            // for images on the boundary row. Holding them would mean either
+            // dropping the image silently or inventing a second queue format —
+            // so an image-carrying input refuses with the reason instead.
+            if !prepared.images.is_empty() {
+                return Err(BridgeError::Invalid(
+                    "Images cannot be held in the queue — wait for the current step to finish, then send again.".into(),
+                ));
+            }
             let queued = {
                 let db = state.db.lock().unwrap();
                 let queued = session_input::enqueue(
@@ -8438,6 +8531,7 @@ fn submit_input_internal(
                     &adapter_id,
                     &prepared.display_text,
                     "queued",
+                    &prepared.images,
                 )? {
                     core.events.publish(CoreEvent::Agent(event));
                 }
@@ -8546,6 +8640,9 @@ pub fn drain_queued_input(core: &Arc<BridgeCore>, session_id: &str) -> bool {
         provider_text: queued.provider_text.clone(),
         // Policy already ran at submission time; the queued row is the result.
         outbound: queued.display_text.clone(),
+        // The queue refuses image-carrying inputs at submission, so a drained
+        // row is always plain text by construction.
+        images: Vec::new(),
         interceptions: Vec::new(),
     };
     match deliver_prepared_input(core, session_id, &prepared, DeliveryMode::QueuedDelivery) {
@@ -9560,7 +9657,14 @@ mod submit_input_tests {
     /// the write so the queue's release path is reachable.
     pub(super) struct FakeRuntime {
         steering: bool,
+        /// Whether this fake advertises image support. `false` keeps the
+        /// trait default so the refusal path stays reachable in tests.
+        images: bool,
         sent: Arc<Mutex<Vec<String>>>,
+        /// Image blocks the provider actually received, as
+        /// `[{mediaType, base64Data}]` — recorded rather than discarded so a
+        /// test can assert the exact payload.
+        sent_images: Arc<Mutex<Vec<serde_json::Value>>>,
         /// Approval answers, as `(requestId, decision)`. Recorded rather than
         /// swallowed: "the provider was told accept" is the whole assertion for
         /// an auto-approved request.
@@ -9574,6 +9678,7 @@ mod submit_input_tests {
 
     pub(super) struct FakeHandles {
         pub(super) sent: Arc<Mutex<Vec<String>>>,
+        pub(super) sent_images: Arc<Mutex<Vec<serde_json::Value>>>,
         pub(super) responded: Arc<Mutex<Vec<(serde_json::Value, String)>>>,
         pub(super) answered: Arc<Mutex<Vec<(serde_json::Value, serde_json::Value)>>>,
         pub(super) rejected: Arc<Mutex<Vec<serde_json::Value>>>,
@@ -9582,14 +9687,27 @@ mod submit_input_tests {
 
     impl FakeRuntime {
         pub(super) fn new(steering: bool) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
+            Self::build(steering, false)
+        }
+
+        pub(super) fn new_with_images(
+            steering: bool,
+        ) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
+            Self::build(steering, true)
+        }
+
+        fn build(steering: bool, images: bool) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
             let sent = Arc::new(Mutex::new(Vec::new()));
+            let sent_images = Arc::new(Mutex::new(Vec::new()));
             let responded = Arc::new(Mutex::new(Vec::new()));
             let answered = Arc::new(Mutex::new(Vec::new()));
             let rejected = Arc::new(Mutex::new(Vec::new()));
             let refuse = Arc::new(AtomicBool::new(false));
             let runtime = FakeRuntime {
                 steering,
+                images,
                 sent: sent.clone(),
+                sent_images: sent_images.clone(),
                 responded: responded.clone(),
                 answered: answered.clone(),
                 rejected: rejected.clone(),
@@ -9599,6 +9717,7 @@ mod submit_input_tests {
                 Box::new(runtime),
                 FakeHandles {
                     sent,
+                    sent_images,
                     responded,
                     answered,
                     rejected,
@@ -9627,6 +9746,31 @@ mod submit_input_tests {
         }
         fn supports_active_turn_steering(&self) -> bool {
             self.steering
+        }
+        fn supports_images(&self) -> bool {
+            self.images
+        }
+        fn send_turn_with_images(
+            &self,
+            text: &str,
+            _application_context: Option<&str>,
+            images: &[bridge_protocol::messages::TurnImage],
+        ) -> Result<(), BridgeError> {
+            if self.refuse.load(Ordering::SeqCst) {
+                return Err(BridgeError::Adapter("provider pipe is closed".into()));
+            }
+            self.sent.lock().unwrap().push(text.to_owned());
+            self.sent_images
+                .lock()
+                .unwrap()
+                .push(serde_json::json!(images
+                    .iter()
+                    .map(|image| serde_json::json!({
+                        "mediaType": image.media_type,
+                        "base64Data": image.base64_data,
+                    }))
+                    .collect::<Vec<_>>()));
+            Ok(())
         }
         fn interrupt(&self) -> Result<(), BridgeError> {
             Ok(())
@@ -9668,6 +9812,31 @@ mod submit_input_tests {
         std::sync::MutexGuard<'static, ()>,
     );
 
+    fn attach_images(core: &Arc<BridgeCore>, steering: bool) -> FakeHandles {
+        let (runtime, handles) = FakeRuntime::new_with_images(steering);
+        core.adapters.lock().unwrap().insert("chat".into(), runtime);
+        handles
+    }
+
+    fn png_image() -> wire::TurnImage {
+        wire::TurnImage { media_type: "image/png".into(), base64_data: "iVBORw0".into() }
+    }
+
+    fn latest_user_message_payload(core: &Arc<BridgeCore>) -> Option<serde_json::Value> {
+        core.db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT payload FROM session_entries
+                 WHERE session_id='chat' AND kind='user.message'
+                 ORDER BY sequence DESC LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .ok()
+            .map(|payload| serde_json::from_str(&payload).unwrap())
+    }
+
     fn core_with_chat(status: &str) -> ChatFixture {
         let managed_root = managed_root_guard();
         let fixture = tempfile::tempdir().unwrap();
@@ -9698,6 +9867,159 @@ mod submit_input_tests {
         core.adapters.lock().unwrap().insert("chat".into(), runtime);
         handles
     }
+
+    // -- image attachments ---------------------------------------------------
+
+    #[test]
+    fn an_image_turn_reaches_a_supporting_provider_and_persists_the_attachment() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        let handles = attach_images(&core, false);
+
+        let outcome = submit_input_with_attachments(
+            &core,
+            "chat".into(),
+            "what is in this diagram?".into(),
+            vec![png_image()],
+        )
+        .unwrap();
+
+        assert_eq!(outcome.disposition, wire::InputDisposition::StartedNewTurn);
+        assert_eq!(handles.sent.lock().unwrap().last().unwrap(), "what is in this diagram?");
+        let images = handles.sent_images.lock().unwrap();
+        assert_eq!(
+            images.last().unwrap(),
+            &serde_json::json!([{"mediaType": "image/png", "base64Data": "iVBORw0"}]),
+            "the provider receives the image as provider-shaped content"
+        );
+        let payload = latest_user_message_payload(&core).expect("user turn persisted");
+        assert_eq!(payload["text"], "what is in this diagram?");
+        assert_eq!(
+            payload["data"]["attachments"][0]["dataUri"],
+            "data:image/png;base64,iVBORw0",
+            "the durable transcript can re-render the attachment after a reload"
+        );
+    }
+
+    #[test]
+    fn an_image_only_send_is_delivered_without_text() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        let handles = attach_images(&core, false);
+
+        submit_input_with_attachments(&core, "chat".into(), String::new(), vec![png_image()])
+            .unwrap();
+
+        // Anthropic content blocks require non-empty text; the placeholder
+        // keeps the frame valid while the transcript stays blank of text.
+        assert_eq!(handles.sent.lock().unwrap().last().unwrap(), "(image)");
+        assert!(!handles.sent_images.lock().unwrap().is_empty());
+        let payload = latest_user_message_payload(&core).unwrap();
+        assert_eq!(payload["text"], "");
+        assert_eq!(payload["data"]["attachments"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn an_image_turn_is_refused_for_a_provider_without_image_support() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        let handles = attach_handles(&core, false);
+
+        let error = submit_input_with_attachments(
+            &core,
+            "chat".into(),
+            "what is in this diagram?".into(),
+            vec![png_image()],
+        )
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains("does not accept image attachments"),
+            "refusal names the capability gap, not a generic failure: {error}"
+        );
+        assert!(handles.sent.lock().unwrap().is_empty(), "nothing reached the provider");
+        assert!(latest_user_message_payload(&core).is_none(), "nothing persisted");
+    }
+
+    #[test]
+    fn images_are_refused_when_the_turn_would_be_queued() {
+        let (_fixture, core, _managed_root) = core_with_chat("working");
+        attach_handles(&core, false);
+
+        let error = submit_input_with_attachments(
+            &core,
+            "chat".into(),
+            "while it works, look at this".into(),
+            vec![png_image()],
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("held in the queue"), "{error}");
+        let db = core.db.lock().unwrap();
+        let queued: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM queued_session_input WHERE session_id='chat'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        drop(db);
+        assert_eq!(queued, 0, "the refusal happens before anything is enqueued");
+    }
+
+    #[test]
+    fn images_are_refused_when_bridge_answers_the_command_itself() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        let handles = attach_images(&core, false);
+
+        let error = submit_input_with_attachments(
+            &core,
+            "chat".into(),
+            "/usage".into(),
+            vec![png_image()],
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("Bridge itself handles"), "{error}");
+        assert!(handles.sent_images.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn images_are_refused_while_a_question_is_waiting() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        let handles = attach_images(&core, true);
+        {
+            let db = core.db.lock().unwrap();
+            store::session_event(
+                &db,
+                "chat",
+                &agent::NormalizedEvent {
+                    kind: "approval.requested".into(),
+                    item_id: None,
+                    role: None,
+                    status: Some("pending".into()),
+                    title: Some("Question".into()),
+                    text: None,
+                    data: serde_json::json!({
+                        "requestMethod": agent::OPENCODE_QUESTION_REQUEST_METHOD,
+                        "requestId": "req-1",
+                        "questions": [{"prompt": "which database?"}],
+                    }),
+                },
+                &serde_json::json!({"adapter": "claude"}),
+            )
+            .unwrap();
+        }
+
+        let error = submit_input_with_attachments(
+            &core,
+            "chat".into(),
+            "the screenshot shows it".into(),
+            vec![png_image()],
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("question is waiting"), "{error}");
+        assert!(handles.answered.lock().unwrap().is_empty(), "the answer channel is untouched");
+    }
+
 
     fn session_status(core: &Arc<BridgeCore>) -> String {
         core.db
