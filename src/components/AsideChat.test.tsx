@@ -5,12 +5,19 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AsideChat } from "./AsideChat";
 import { bridgeApi } from "../api";
 import type { ComposerAttachment } from "../pasteAttachments";
-import type { AgentEvent, Session } from "../types";
+import type { AdapterDescriptor, AgentEvent, Session } from "../types";
 
 let container: HTMLDivElement;
 let root: Root;
 
 const aside: Session = { id: "aside-1", workspaceId: null, harness: "claude", label: "is this right?", status: "working", startedAt: "now", endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: "t1", model: "sonnet", requestedTier: "fast", restorationMode: "fresh", continuationFidelity: "native", title: "is this right?", kind: "direct" };
+
+const adapters: AdapterDescriptor[] = [
+  { id: "claude", label: "Claude", available: true, authState: "signed_in", version: "test", capabilities: [], sandboxModes: [], unavailableReason: null, defaultModel: "sonnet", models: [
+    { id: "sonnet", label: "Sonnet", tier: "standard", defaultForTier: true },
+    { id: "opus", label: "Opus", tier: "strong", defaultForTier: true },
+  ] },
+];
 
 const noop = () => undefined;
 const asyncNoop = async () => undefined;
@@ -19,10 +26,12 @@ async function mount(overrides: Partial<Parameters<typeof AsideChat>[0]> = {}) {
   await act(async () => root.render(
     <AsideChat
       session={aside}
+      adapters={adapters}
       events={[]}
       pendingMessages={["is this right?"]}
       working
       onSend={asyncNoop}
+      onChangeModel={noop}
       onResolve={noop}
       onPromote={noop}
       onClose={noop}
@@ -56,7 +65,25 @@ describe("AsideChat", () => {
     expect(dialog().getAttribute("aria-label")).toBe("Aside with Claude");
     expect(dialog().innerHTML).toContain("text-harness-claude");
     expect(dialog().textContent).toContain("is this right?");
-    expect(dialog().textContent).toContain("Claude · Sonnet · aside");
+    // The model now lives in an interactive control, followed by the aside tag.
+    expect(dialog().querySelector('[aria-label="Aside model: Claude Sonnet"]')).toBeTruthy();
+    expect(dialog().textContent).toContain("aside");
+  });
+
+  it("switches the side chat's model through its header control", async () => {
+    const onChangeModel = vi.fn();
+    await mount({ working: false, onChangeModel });
+    const pill = dialog().querySelector<HTMLButtonElement>('[aria-label="Aside model: Claude Sonnet"]')!;
+    await act(async () => { pill.click(); });
+    const opus = [...dialog().querySelectorAll("button")].find(button => button.textContent?.includes("Opus"))!;
+    await act(async () => { opus.click(); });
+    expect(onChangeModel).toHaveBeenCalledWith("claude", "opus");
+  });
+
+  it("disables the model control while the aside is working", async () => {
+    await mount({ working: true });
+    const pill = dialog().querySelector<HTMLButtonElement>('[aria-label="Aside model: Claude Sonnet"]')!;
+    expect(pill.disabled).toBe(true);
   });
 
   it("closes on Escape and on the scrim, but never from inside the panel", async () => {

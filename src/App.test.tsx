@@ -572,6 +572,58 @@ describe("the dock in the session view", () => {
     expect(container.querySelector("h1")!.textContent).toContain("is the plan sound?");
   });
 
+  // Contract: testing/fix-side-chat-model.md. A side chat begins on a resolved
+  // model, not the bare adapter default. Opened from a Claude chat, a $codex
+  // aside must start on Codex's Standard model (GPT Terra), where the old code
+  // used Codex's Fast defaultModel (GPT Luna).
+  it("begins a $codex side chat on the Standard model, not the Fast default", async () => {
+    await mountApp();
+    // Re-query the composer each time: the welcome textarea unmounts once the
+    // first shortcut opens a session and a fresh session composer takes over.
+    const type = async (text: string) => {
+      const box = composer()!;
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+        setter.call(box, text);
+        box.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+      await settle(4);
+    };
+    // A Claude chat to consult from, then a Codex side chat over it.
+    await type("$claude review the plan");
+    const createSpy = vi.spyOn(bridgeApi, "createChat");
+    await type("$codex sanity check");
+    const aside = container.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Codex"]');
+    expect(aside).not.toBeNull();
+    expect(createSpy).toHaveBeenCalledWith("codex", "gpt-5.6-terra", expect.anything());
+  });
+
+  // Contract: testing/fix-side-chat-model.md. The header picker switches the
+  // side chat's own model through update_chat_model, never the chat underneath.
+  it("switches the side chat's model through update_chat_model on the aside session", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    const box = composer()!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "$claude is the plan sound?");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await settle(8);
+    const aside = container.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Claude"]')!;
+    const pill = aside.querySelector<HTMLButtonElement>('[aria-label^="Aside model:"]')!;
+    expect(pill).not.toBeNull();
+    const updateSpy = vi.spyOn(bridgeApi, "updateChatModel");
+    await click(pill);
+    const opus = [...aside.querySelectorAll("button")].find(button => button.textContent?.includes("Opus"))!;
+    await click(opus);
+    const asideId = updateSpy.mock.calls[0]?.[0];
+    expect(updateSpy).toHaveBeenCalledWith(asideId, "claude", "opus");
+    expect(asideId).not.toBe("session-1");
+  });
+
   it("keeps AppTitleBar unchanged on every other view", async () => {
     await mountApp();
     await click(container.querySelector<HTMLButtonElement>('button[title^="Settings"]')!);

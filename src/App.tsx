@@ -51,6 +51,7 @@ import { formatElapsed, harnessLabel, slashOwnershipBadge, tierRuntimeLabel } fr
 import { scheduleSuggestion } from "./suggestionTypeahead";
 import { projectSessionConversation, reduceConversation, undeliveredPending } from "./conversation";
 import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
+import { resolveAsideModel } from "./asideModel";
 import { pickGreeting } from "./greetings";
 import { useThemePreference } from "./theme";
 import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
@@ -1067,11 +1068,22 @@ export function App() {
     // The same double-submit lock every create path takes: a second Enter
     // while the create awaits must not make a second aside.
     if (newChatPendingRef.current) return;
+    // The model the side chat begins on: carry the model of the chat it was
+    // asked from when the harness matches, else that harness's Standard model —
+    // never the bare adapter default (Codex's is a Fast model; OpenCode's is
+    // null until a provider loads, which is what made codex/opencode asides
+    // start on the wrong model or fail to cold start). See `resolveAsideModel`.
+    const source = state.sessions.find(item => item.id === carryFromSessionId);
+    const model = resolveAsideModel(adapter, source ? { harness: source.harness, model: source.model ?? null } : null);
+    if (!model && adapter.models.length === 0) {
+      setError(`${adapter.label} has no model available to start a side chat. Connect a provider model, then try again.`);
+      return;
+    }
     newChatPendingRef.current = true;
     setError(undefined);
     try {
       const title = text.length > 64 ? `${text.slice(0, 63).trimEnd()}…` : text;
-      const next = await bridgeApi.createChat(adapter.id as Harness, adapter.defaultModel ?? null, title);
+      const next = await bridgeApi.createChat(adapter.id as Harness, model, title);
       const created = [...next.sessions].reverse().find(item => !item.parentSessionId && !item.workspaceId);
       if (!created) { setState(next); return; }
       // Carry before the first send: the brief must be in the forest before
@@ -1804,12 +1816,19 @@ export function App() {
               the chat underneath never moves. See `openAside`. */}
           {asideSession && asideSession.id !== session.id && <AsideChat
             session={asideSession}
+            adapters={adapters}
             events={agentEvents}
             pendingMessages={asidePending}
             working={!!asideSession.activeTurnId || asideSession.status === "working"}
             onSend={async (text, attachments) => {
               try { await deliverPrompt(asideSession, text, attachments); }
               catch (e) { setError(errorMessage(e)); }
+            }}
+            onChangeModel={(harness, model) => {
+              // Same path the main chat's control uses, bound to the aside
+              // session so the switch never touches the chat underneath.
+              void bridgeApi.updateChatModel(asideSession.id, harness, model)
+                .then(setState).catch(e => setError(errorMessage(e)));
             }}
             onResolve={(eventId, decision) => {
               void bridgeApi.resolveApproval(asideSession.id, eventId, decision).then(reload).catch(e => setError(errorMessage(e)));
