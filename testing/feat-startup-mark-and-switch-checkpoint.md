@@ -81,7 +81,10 @@ Locked before implementation.
   hidden afterwards, because a persisted-then-hidden entry is still in the forest
   and the forest is what a reconnecting client replays.
   The reader-loop tests drive synthetic provider frames directly and verify valid
-  and invalid replies, streamed deltas, and a late reply after cancellation.
+  and invalid replies, streamed deltas, and a late reply after cancellation. If
+  the root adapter exits before the maintenance turn completes, its reader-exit
+  cleanup records the compaction failure, clears the pending marker, and stops
+  the session; a later resumed user turn must never inherit checkpoint mode.
 - **The ask is attributable and demands no fabrication.** `checkpoint_prompt`
   names Bridge session maintenance as the asker, says why it is being asked, and
   states that empty `decisions` and `filesTouched` are valid. An honest agent with
@@ -120,6 +123,8 @@ Locked before implementation.
   - streamed checkpoint message/reasoning frames never enter the transcript
   - cancellation keeps the maintenance-turn marker until `turn.completed`, so a
     late checkpoint reply is still suppressed
+  - root adapter exit before `turn.completed` records a compaction failure and
+    clears both the pending marker and `checkpointing` session status
 - Frontend `conversation.test.ts`
   - `compaction.requested` carries an English reason, and the raw reason is not
     duplicated into `data.reason` rendering
