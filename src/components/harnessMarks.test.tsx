@@ -24,6 +24,19 @@ describe("HarnessMark", () => {
     expect(markup("codex")).not.toContain("<circle");
   });
 
+  // The knot is a filled even-odd figure — six interlocking lobes whose
+  // crossings cancel into holes — not another stroked asterisk.
+  it("draws Codex as the woven knot, not a stroked star", () => {
+    const codex = markup("codex");
+    expect(codex).toContain('fill-rule="evenodd"');
+    expect(codex).not.toContain("stroke=");
+    // Six lobes: six closed subpaths.
+    const path = /d="([^"]+)"/.exec(codex)![1];
+    expect(path.match(/Z/g)?.length).toBe(6);
+    // The stroked marks stay stroked.
+    expect(markup("claude")).toContain('stroke="currentColor"');
+  });
+
   // The harness id space is open, so an agent Bridge has no mark for must still
   // get something honest rather than another harness's figure.
   it("falls back to the arc spinner and the muted tint for an unknown harness", () => {
