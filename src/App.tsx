@@ -48,7 +48,7 @@ import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
 import { formatElapsed, harnessLabel, slashOwnershipBadge, tierRuntimeLabel } from "./utils";
 import { scheduleSuggestion } from "./suggestionTypeahead";
-import { projectSessionConversation, reduceConversation } from "./conversation";
+import { projectSessionConversation, reduceConversation, undeliveredPending } from "./conversation";
 import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
 import { pickGreeting } from "./greetings";
 import { useThemePreference } from "./theme";
@@ -746,17 +746,18 @@ export function App() {
     return startSerialPoll(() => bridgeApi.refreshAccountUsage().catch(() => undefined), 30_000);
   }, [adaptersReady]);
 
-  // Drop an optimistic message once its real user turn arrives from the backend.
+  // Drop an optimistic message once its real user turn arrives from the
+  // backend. Judged per row in the row's own session and re-run on the global
+  // stream: an aside's pending rows used to be checked against the *selected*
+  // session's slice, so they never reconciled and the aside's startup row
+  // counted forever under an already-answered reply.
   useEffect(() => {
     setPending(current => {
-      if (!current.length) return current;
       const durable = forest?.entries?.length ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [];
-      const live = reduceConversation(sessionEvents);
-      const userTexts = new Set([...durable, ...live].filter(item => item.type === "message" && item.role === "user").map(item => item.text.trim()));
-      const next = current.filter(item => !userTexts.has(item.text.trim()));
-      return next.length === current.length ? current : next;
+      const durableUserTexts = new Set(durable.filter(item => item.type === "message" && item.role === "user").map(item => item.text.trim()));
+      return undeliveredPending(current, agentEvents, { sessionId: session?.id, durableUserTexts });
     });
-  }, [sessionEvents, forest]);
+  }, [agentEvents, forest, session?.id]);
 
   // Load available slash commands + skills from signed-in providers.
   useEffect(() => { void bridgeApi.listSlashCommands().then(setSlashCommands).catch(() => undefined); }, [adaptersReady]);
