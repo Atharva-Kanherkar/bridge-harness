@@ -1816,12 +1816,19 @@ export function App() {
               the chat underneath never moves. See `openAside`. */}
           {asideSession && asideSession.id !== session.id && <AsideChat
             session={asideSession}
+            adapters={adapters}
             events={agentEvents}
             pendingMessages={asidePending}
             working={!!asideSession.activeTurnId || asideSession.status === "working"}
             onSend={async (text, attachments) => {
               try { await deliverPrompt(asideSession, text, attachments); }
               catch (e) { setError(errorMessage(e)); }
+            }}
+            onChangeModel={(harness, model) => {
+              // Same path the main chat's control uses, bound to the aside
+              // session so the switch never touches the chat underneath.
+              void bridgeApi.updateChatModel(asideSession.id, harness, model)
+                .then(setState).catch(e => setError(errorMessage(e)));
             }}
             onResolve={(eventId, decision) => {
               void bridgeApi.resolveApproval(asideSession.id, eventId, decision).then(reload).catch(e => setError(errorMessage(e)));

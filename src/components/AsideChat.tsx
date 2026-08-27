@@ -4,15 +4,16 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { ArrowUpRight, X } from "lucide-react";
 import { AgentConversation } from "./AgentConversation";
 import { ComposerPill } from "./ComposerPill";
+import { ChatModelControl } from "./ChatModelControl";
 import { HarnessMark, harnessTintClass } from "./harnessMarks";
-import { harnessLabel, modelLabel } from "../utils";
+import { harnessLabel } from "../utils";
 import { bridgeApi } from "../api";
 import { mergeForestSnapshot } from "../forest";
 import { startSerialPoll } from "../polling";
 import { appendFileMention } from "../fileMentions";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "../pasteAttachments";
 import { cn } from "@/lib/utils";
-import type { AgentEvent, ApprovalDecision, Session, SessionForestSnapshot } from "../types";
+import type { AdapterDescriptor, AgentEvent, ApprovalDecision, Harness, Session, SessionForestSnapshot } from "../types";
 
 // An aside: a standalone chat the user delegated to another agent from inside
 // a conversation, shown as a panel floating over that conversation instead of
@@ -22,13 +23,17 @@ import type { AgentEvent, ApprovalDecision, Session, SessionForestSnapshot } fro
 // real chat in the sidebar after the panel closes. The panel is the delegation
 // surface, not the session's home; reopening later is ordinary navigation.
 
-export function AsideChat({ session, events, pendingMessages, working, onSend, onResolve, onPromote, onClose }: {
+export function AsideChat({ session, adapters, events, pendingMessages, working, onSend, onChangeModel, onResolve, onPromote, onClose }: {
   session: Session;
+  /** The chat adapters, for the header model picker. */
+  adapters: AdapterDescriptor[];
   /** The global live stream; the panel filters to its own session. */
   events: AgentEvent[];
   pendingMessages: string[];
   working: boolean;
   onSend: (text: string, attachments?: ComposerAttachment[]) => Promise<void>;
+  /** Pick which model the side chat runs on; applies on the next message. */
+  onChangeModel: (harness: Harness, model: string | null) => void;
   onResolve: (eventId: number, decision: ApprovalDecision) => void;
   /** Make the aside the active session and close the panel. */
   onPromote: () => void;
@@ -151,13 +156,25 @@ export function AsideChat({ session, events, pendingMessages, working, onSend, o
         aria-label={`Aside with ${harnessLabel(session.harness)}`}
         className="u-glass-popover animate-page-enter flex h-full max-h-[720px] w-full max-w-[640px] min-w-0 flex-col overflow-hidden rounded-2xl"
       >
-        <header className="flex h-11 shrink-0 select-none items-center gap-2.5 border-b border-border px-4">
+        <header className="flex min-h-[3.25rem] shrink-0 select-none items-center gap-2.5 border-b border-border px-4 py-1.5">
           <HarnessMark harness={session.harness} live={working} size={15}/>
           <div className="min-w-0 flex-1">
             <h2 className="m-0 truncate font-display text-[13px] font-semibold leading-tight text-foreground">{session.title || session.label}</h2>
-            <p className={cn("m-0 truncate text-[10px] leading-tight", harnessTintClass(session.harness))}>
-              {harnessLabel(session.harness)}{session.model ? ` · ${modelLabel(session.model)}` : ""} · aside
-            </p>
+            <div className="-ml-1 flex min-w-0 items-center gap-1">
+              <ChatModelControl
+                adapters={adapters}
+                harness={session.harness}
+                model={session.model ?? null}
+                disabled={working}
+                disabledReason={working ? "Wait for the current response before switching models" : undefined}
+                onChange={onChangeModel}
+                compact
+                roleLabel="Aside"
+                placement="down"
+                maxWidthClassName="max-w-[220px]"
+              />
+              <span className={cn("shrink-0 text-[10px] leading-tight", harnessTintClass(session.harness))}>aside</span>
+            </div>
           </div>
           <button
             type="button"
