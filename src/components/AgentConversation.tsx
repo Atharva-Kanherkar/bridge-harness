@@ -488,7 +488,8 @@ function StartupStatusRow({ view, harness }: { view: NarrationView; harness?: st
       <div className="flex items-center gap-2">
         <HarnessMark harness={harness} live={!view.reducedMotion}/>
         {!view.collapsed && <span className="min-w-0 truncate text-[12px] font-medium">
-          {view.showElapsed && <span className="text-muted-foreground tabular-nums">{view.elapsedSeconds}s · </span>}
+          {/* Dimmer than the label: the counter is metadata, the label is the news. */}
+          {view.showElapsed && <span className="text-muted-foreground/70 tabular-nums">{view.elapsedSeconds}s · </span>}
           <span className="text-shimmer">{view.label}</span>
         </span>}
       </div>
