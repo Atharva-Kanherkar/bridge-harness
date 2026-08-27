@@ -5,6 +5,7 @@ import "@xterm/xterm/css/xterm.css";
 import "katex/dist/katex.min.css";
 import "./index.css";
 import { App } from "./App";
+import { dismissBootSplash } from "./bootSplash";
 import { installExternalLinkHandler } from "./externalLinks";
 
 installExternalLinkHandler();
@@ -16,7 +17,9 @@ const root = ReactDOM.createRoot(document.getElementById("root")!);
 if (preview === "right-rail") {
   void import("./previews/RightRailPreview").then(({ RightRailPreview }) => {
     root.render(<RightRailPreview />);
+    dismissBootSplash();
   });
 } else {
   root.render(<App />);
+  dismissBootSplash();
 }
