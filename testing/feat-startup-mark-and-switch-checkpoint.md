@@ -22,11 +22,15 @@ Locked before implementation.
   resolver. The mark is **never load-bearing** — the harness is always also named
   in the label beside it, so an unrecognised id reads identically.
 - Marks are radially symmetric so a slow rotation reads as scintillation rather
-  than as a spinning logo: `claude` a ten-arm asterisk (the ✳ Claude Code itself
-  draws), `codex` a six-arm rounded star with a hollow centre, `opencode` a
-  four-arm cross with a centre dot. Any other harness id — the id space is open,
-  see `harnessLabel` — gets a gapped arc ring, which is a spinner and needs no
-  brand knowledge.
+  than as a spinning logo: `claude` an eight-arm asterisk (the ✳ Claude Code
+  itself draws), `codex` a six-arm rounded star off a hollow centre, `opencode` a
+  twelve-tick ring around a solid core. Any other harness id — the id space is
+  open, see `harnessLabel` — gets a gapped arc ring, which is a spinner and needs
+  no brand knowledge.
+- Arm counts are chosen by how each figure resolves at 14px, the only size this
+  row uses. Ten arms through the centre muddies into a blob there; eight stays an
+  asterisk. OpenCode's ticks are twelve rather than eight so it never reads as
+  Claude's mark at a glance.
 - New tokens `--harness-claude` / `--harness-codex` / `--harness-opencode`
   (light + dark) exposed through `@theme inline` as `--color-harness-*`. Unknown
   ids tint with `text-muted-foreground`. The tint is transient — it exists only
@@ -65,11 +69,16 @@ Locked before implementation.
 
 - **The reply is plumbing.** While a compaction is pending, the assistant
   `message.completed` frame of the internal checkpoint turn is neither persisted
-  as `assistant.message` nor published as an agent event. It is consumed by
+  as `assistant.message` nor published as an agent event; it is consumed by
   `CompactionController::handle_output` and nothing else. This follows the
   delegation/peek/steer precedent in the same reader loop: a machine block is not
   something to read. Applies to a valid checkpoint too — raw checkpoint JSON was
-  equally a leak.
+  equally a leak. The frame is recognised *before* the store call rather than
+  hidden afterwards, because a persisted-then-hidden entry is still in the forest
+  and the forest is what a reconnecting client replays.
+  **Not covered by a unit test:** the gate sits inside the reader loop, which
+  only runs against a live adapter runtime, and this crate's tests do not fake
+  one. Verified by reading and by manual test 4 below.
 - **The ask is attributable and demands no fabrication.** `checkpoint_prompt`
   names Bridge session maintenance as the asker, says why it is being asked, and
   states that empty `decisions` and `filesTouched` are valid. An honest agent with
@@ -79,10 +88,14 @@ Locked before implementation.
   floor `start_chat`'s mechanical projection already carries the whole
   conversation, so the round trip buys nothing and can only cost. The existing
   "meaningful work" gate stays; this is a floor under it, not a replacement.
-- **The maintenance card reads in English and once.** `compaction.requested` /
-  `compaction.failed` map their `reason` through a display string
-  ("Before switching models") instead of showing `before_downgrade` twice —
-  once as body text and once as a `<code>` block.
+- **The maintenance card reads in English and once.** `compaction.requested` maps
+  its `reason` through `compactionReasonLabel` ("Before switching models"), and
+  the `<code>` block below the body text goes away — `data.reason` was the only
+  source that text ever had, so the block could only ever repeat it, which is how
+  a switch came to show `before_downgrade` twice. `compaction.failed` is left
+  alone: its `reason` is the failure text, not a reason code — same field name,
+  different field. An unrecognised code passes through unchanged, because the
+  host owns that set and may add to it.
 
 ### Unit Tests
 
@@ -90,8 +103,14 @@ Locked before implementation.
   - `checkpoint_prompt` names Bridge as the asker and permits empty arrays
   - the prompt still round-trips through `Checkpoint::parse_and_validate`
 - Rust `sessions`
-  - a branch below the token floor plans no switch summary
-  - a branch above it still plans one
+  - the floor lands between the two cases it exists to separate: a greeting
+    estimates under `SWITCH_SUMMARY_MIN_TOKENS`, a branch with real history over
+    it. Pinned through `active_token_estimate` rather than by driving
+    `plan_switch_summary`, because the hot path needs a registered adapter
+    runtime and this crate's tests do not fake one — the neighbouring switch
+    tests call `begin` directly for the same reason. What is left uncovered is
+    the wiring of the floor into that function, which is three lines beside the
+    estimate it reads.
 - Frontend `conversation.test.ts`
   - `compaction.requested` carries an English reason, and the raw reason is not
     duplicated into `data.reason` rendering

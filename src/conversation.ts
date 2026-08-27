@@ -112,7 +112,9 @@ function projectSessionEntry(entry: SessionEntry): ConversationItem {
     case "compaction":
       return { ...base, type: "compaction", title: "Context compacted", text: stringValue(payload.summary) ?? "" };
     case "compaction.requested":
-      return { ...base, type: "compaction", title: "Compaction requested", text: stringValue(payload.reason) ?? "" };
+      return { ...base, type: "compaction", title: "Compaction requested", text: compactionReasonLabel(stringValue(payload.reason)) };
+    // `compaction.failed`'s `reason` is the failure text, not a reason code —
+    // same field name, different field. It stays as the host wrote it.
     case "compaction.failed":
       return { ...base, type: "compaction", status: "failed", title: "Compaction failed", text: stringValue(payload.reason) ?? "" };
     case "branch.summary":
@@ -160,6 +162,29 @@ function objectValue(value: unknown): Record<string, unknown> {
 
 function humanizeKind(kind: string): string {
   return kind.replace(/[._-]+/g, " ").replace(/^\w/, (letter) => letter.toUpperCase());
+}
+
+/**
+ * A compaction reason, in the language of the transcript it appears in.
+ *
+ * These are wire values (`before_downgrade`), and a card that shows one to the
+ * reader is showing plumbing. An unrecognised reason passes through unchanged:
+ * the host owns this set and may add to it, and a raw value read once is better
+ * than a wrong one read confidently.
+ */
+const COMPACTION_REASONS: Record<string, string> = {
+  context_pressure: "Context was nearly full",
+  response_reserve: "Reserving room for the reply",
+  phase_boundary: "At a phase boundary",
+  before_suspend: "Before suspending this session",
+  before_downgrade: "Before switching models",
+  before_shutdown: "Before shutting this session down",
+  manual: "Asked for by hand",
+};
+
+export function compactionReasonLabel(reason?: string): string {
+  if (!reason) return "";
+  return COMPACTION_REASONS[reason] ?? reason;
 }
 
 export function reduceConversation(events: AgentEvent[]): ConversationItem[] {

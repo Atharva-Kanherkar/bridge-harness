@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { delegationChildSessionId, delegationFacet, foldWorkerDelegations, projectSessionConversation, reduceConversation, selectActiveBranch, toolCallDisplay, type ConversationItem } from "./conversation";
+import { compactionReasonLabel, delegationChildSessionId, delegationFacet, foldWorkerDelegations, projectSessionConversation, reduceConversation, selectActiveBranch, toolCallDisplay, type ConversationItem } from "./conversation";
 import type { AgentEvent, SessionEntry } from "./types";
 
 const event = (id:number,kind:string,overrides:Partial<AgentEvent>={}):AgentEvent => ({ id,sessionId:"s",sequence:id,protocolVersion:1,kind,itemId:null,role:null,status:null,title:null,text:null,data:{},providerMeta:{},createdAt:"now",...overrides });
@@ -334,6 +334,33 @@ describe("toolCallDisplay", () => {
     expect(display.verb).toBe("edit");
     expect(display.target).toBe("lib.rs");
     expect(display.patch).toBe(patch);
+  });
+
+  // A maintenance reason is a wire value; a card that shows one to the reader is
+  // showing plumbing. Switching models used to put `before_downgrade` on screen.
+  it("says a compaction reason in English, and leaves an unknown one alone", () => {
+    const [requested] = projectSessionConversation(
+      [entry("e1", null, "compaction.requested", { reason: "before_downgrade", attempt: 0 }, 1)],
+      "e1",
+    );
+    expect(requested.text).toBe("Before switching models");
+    expect(requested.text).not.toContain("before_downgrade");
+    expect(compactionReasonLabel("context_pressure")).toBe("Context was nearly full");
+    // The host owns this set and may add to it: a raw value read once beats a
+    // wrong value read confidently.
+    expect(compactionReasonLabel("some_future_reason")).toBe("some_future_reason");
+    expect(compactionReasonLabel(undefined)).toBe("");
+  });
+
+  // `compaction.failed` puts the failure text under the same field name. Same
+  // key, different field — mapping it would be a category error.
+  it("keeps a compaction failure's own words", () => {
+    const [failed] = projectSessionConversation(
+      [entry("e1", null, "compaction.failed", { reason: "checkpoint metadata does not match its controller request" }, 1)],
+      "e1",
+    );
+    expect(failed.status).toBe("failed");
+    expect(failed.text).toBe("checkpoint metadata does not match its controller request");
   });
 
   it("does not mistake a title echoed as the body for output", () => {

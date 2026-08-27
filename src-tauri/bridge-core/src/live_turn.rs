@@ -2350,10 +2350,52 @@ fn handle_agent_value(
             }
         }
         for mut normalized_event in normalized {
+            // An internal checkpoint turn's reply answers Bridge, not the user:
+            // the machine block precedent this loop already follows for
+            // delegation, peek, and steer applies whole here, because the
+            // *entire* message is the machine block. Recognised before anything
+            // persists or publishes, so neither a valid checkpoint's JSON nor a
+            // refusal to write one can land in the conversation as prose.
+            let pending_compaction =
+                compaction_controller::CompactionController::pending(&db, session_id)
+                    .ok()
+                    .flatten();
+            let is_checkpoint_reply = normalized_event.kind == "message.completed"
+                && normalized_event.role.as_deref() == Some("assistant")
+                && pending_compaction.is_some();
+            if is_checkpoint_reply {
+                checkpoint_response_seen = true;
+                checkpoint_turn_handled = true;
+                let output = normalized_event.text.as_deref().unwrap_or_default();
+                match compaction_controller::CompactionController::handle_output(
+                    &db, session_id, output,
+                ) {
+                    Ok(compaction_controller::CheckpointOutcome::Repair { prompt }) => {
+                        checkpoint_prompt_after_turn = Some(prompt);
+                    }
+                    Ok(compaction_controller::CheckpointOutcome::Completed { .. }) => {
+                        finish_checkpointing = own_depth > 0;
+                        finish_requested_shutdown = pending_compaction.is_some_and(|pending| {
+                            pending.reason
+                                == compaction_controller::CompactionReason::BeforeShutdown
+                        });
+                    }
+                    Ok(compaction_controller::CheckpointOutcome::Failed) => {
+                        recover_compaction = true;
+                        finish_checkpointing = own_depth > 0;
+                        finish_requested_shutdown = pending_compaction.is_some_and(|pending| {
+                            pending.reason
+                                == compaction_controller::CompactionReason::BeforeShutdown
+                        });
+                    }
+                    Ok(compaction_controller::CheckpointOutcome::NotPending) | Err(_) => {}
+                }
+            }
             // A completed assistant message may carry delegation directives.
             // Spawn the workers (after the lock is released) and strip the raw
             // directive block so the conversation shows prose, not machine JSON.
             if !is_direct
+                && !is_checkpoint_reply
                 && normalized_event.kind == "message.completed"
                 && normalized_event.role.as_deref() == Some("assistant")
             {
@@ -2482,73 +2524,43 @@ fn handle_agent_value(
                     }
                 }
             }
-            if let Ok(event) = store::session_event(
-                &db,
-                session_id,
-                &normalized_event,
-                &serde_json::json!({"adapter":adapter_id,"method":value.get("method")}),
-            ) {
-                pending_telemetry.push(store::telemetry_span(
-                    &trace_id,
+            // `is_checkpoint_reply` frames never reach the store at all — a
+            // persisted-then-hidden entry would still be in the forest, and the
+            // forest is what a reconnecting client replays.
+            if !is_checkpoint_reply {
+                if let Ok(event) = store::session_event(
+                    &db,
                     session_id,
-                    &adapter_id,
                     &normalized_event,
-                    &event.created_at,
-                ));
-                // A policy match needs the durable sequence of the request it
-                // is answering. `session_event` returns sequence 0 for a frame it
-                // chose not to persist, and answering 0 would resolve whatever
-                // approval happens to sit at that sequence.
-                if auto_approve_this_event && event.sequence > 0 {
-                    pending_auto_approval = Some(event.sequence);
+                    &serde_json::json!({"adapter":adapter_id,"method":value.get("method")}),
+                ) {
+                    pending_telemetry.push(store::telemetry_span(
+                        &trace_id,
+                        session_id,
+                        &adapter_id,
+                        &normalized_event,
+                        &event.created_at,
+                    ));
+                    // A policy match needs the durable sequence of the request it
+                    // is answering. `session_event` returns sequence 0 for a frame it
+                    // chose not to persist, and answering 0 would resolve whatever
+                    // approval happens to sit at that sequence.
+                    if auto_approve_this_event && event.sequence > 0 {
+                        pending_auto_approval = Some(event.sequence);
+                    }
+                    // Publish while the database mutex is still held. This keeps
+                    // durable live delivery in commit/sequence order: another
+                    // thread cannot persist and publish sequence N+1 before N.
+                    state.events.publish(CoreEvent::Agent(event));
                 }
-                // Publish while the database mutex is still held. This keeps
-                // durable live delivery in commit/sequence order: another
-                // thread cannot persist and publish sequence N+1 before N.
-                state.events.publish(CoreEvent::Agent(event));
             }
             auto_approve_this_event = false;
-            if own_depth > 0 {
+            if own_depth > 0 && !is_checkpoint_reply {
                 if let Some(summary) = worker_progress_summary(&normalized_event) {
                     let _ = db.execute(
                         "UPDATE worker_runtime SET progress_summary=?2 WHERE session_id=?1 AND result_status='pending'",
                         params![session_id, summary],
                     );
-                }
-            }
-            let pending_compaction =
-                compaction_controller::CompactionController::pending(&db, session_id)
-                    .ok()
-                    .flatten();
-            if normalized_event.kind == "message.completed"
-                && normalized_event.role.as_deref() == Some("assistant")
-                && pending_compaction.is_some()
-            {
-                checkpoint_response_seen = true;
-                checkpoint_turn_handled = true;
-                let output = normalized_event.text.as_deref().unwrap_or_default();
-                match compaction_controller::CompactionController::handle_output(
-                    &db, session_id, output,
-                ) {
-                    Ok(compaction_controller::CheckpointOutcome::Repair { prompt }) => {
-                        checkpoint_prompt_after_turn = Some(prompt);
-                    }
-                    Ok(compaction_controller::CheckpointOutcome::Completed { .. }) => {
-                        finish_checkpointing = own_depth > 0;
-                        finish_requested_shutdown = pending_compaction.is_some_and(|pending| {
-                            pending.reason
-                                == compaction_controller::CompactionReason::BeforeShutdown
-                        });
-                    }
-                    Ok(compaction_controller::CheckpointOutcome::Failed) => {
-                        recover_compaction = true;
-                        finish_checkpointing = own_depth > 0;
-                        finish_requested_shutdown = pending_compaction.is_some_and(|pending| {
-                            pending.reason
-                                == compaction_controller::CompactionReason::BeforeShutdown
-                        });
-                    }
-                    Ok(compaction_controller::CheckpointOutcome::NotPending) | Err(_) => {}
                 }
             }
         }

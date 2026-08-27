@@ -749,8 +749,12 @@ function ForestCard({ item }: { item: ConversationItem }) {
   const label = item.type === "checkpoint" ? "Checkpoint" : item.type === "compaction" ? "Context" : "Branch";
   return <div className={`my-2 min-w-0 px-3 py-2.5 border border-border rounded-lg bg-card ${item.type}`}>
     <header className="flex gap-2 items-center"><GitFork size={13} className="shrink-0" aria-hidden="true" /><b className="min-w-0 truncate text-foreground">{item.title || label}</b><small className="ml-auto shrink-0 text-muted-foreground">{item.status || "durable"}</small></header>
+    {/* `data.reason` is the only source `item.text` has on the two entries that
+        carry one (`compaction.requested` reads it through
+        `compactionReasonLabel`, `compaction.failed` uses it verbatim), so the
+        <code> block that used to sit below this line could only ever repeat it
+        — which is how a model switch came to show `before_downgrade` twice. */}
     {item.text && <p className="mt-2 text-muted-foreground text-[12px]">{item.text}</p>}
-    {item.data.reason ? <code className="inline-block mt-2 font-mono text-[10px] break-all text-muted-foreground">{String(item.data.reason)}</code> : null}
   </div>;
 }
 

@@ -104,6 +104,16 @@ describe("AgentConversation", () => {
     }
   });
 
+  // The card used to print the reason twice: once as body text and once as a raw
+  // <code> block, which is how a model switch read `before_downgrade` twice.
+  it("states a compaction reason once, in English", () => {
+    const requested: SessionEntry = { id: "e1", sessionId: "s", parentEntryId: null, sequence: 1, semanticSchemaVersion: 2, kind: "compaction.requested", payload: { reason: "before_downgrade", attempt: 0 }, providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: "now" };
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={[requested]} activeLeafId="e1" />);
+    expect(html).toContain("Before switching models");
+    expect(html).not.toContain("before_downgrade");
+    expect(html.split("Before switching models").length - 1).toBe(1);
+  });
+
   it("shows revision-bound verification without requiring a committed contract file", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} completion={{ attemptId:"a",contractId:"c",verdict:"waived",repository:{head:"abcdef1234567890",dirtyDigest:"clean"},passedRequired:1,totalRequired:2,markdownCommitted:false,waiverReason:"Browser unavailable",checks:[{checkId:"tests",kind:"deterministic",required:true,status:"passed",executor:"bridge.shell",command:"bun test",verifierFamily:null,detail:"159 passed",outputDigest:"d",artifactRefs:[]},{checkId:"journey",kind:"user_testing",required:true,status:"skipped",executor:"bridge.worker",command:null,verifierFamily:"claude",detail:"No browser",outputDigest:null,artifactRefs:[]}]} } />);
     expect(html).toContain("Verified with waiver");
