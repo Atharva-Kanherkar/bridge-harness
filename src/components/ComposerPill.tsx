@@ -1,13 +1,22 @@
-import type { KeyboardEvent, MutableRefObject, ReactNode } from "react";
+import type { ClipboardEvent, KeyboardEvent, MutableRefObject, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Plus, Square } from "lucide-react";
+import { ArrowUp, Plus, Square, X } from "lucide-react";
 import { cn } from "@/lib/utils";
+import type { ComposerAttachment } from "@/pasteAttachments";
 
 export type ComposerPillProps = {
   value: string;
   onChange: (value: string) => void;
   onSubmit: () => void;
   onKeyDown?: (event: KeyboardEvent<HTMLTextAreaElement>) => void;
+  /// Intercepts the paste before the textarea's default text insertion. The
+  /// handler decides whether the paste stays text or becomes attachments —
+  /// calling `preventDefault` there is what stops the default insertion.
+  onPaste?: (event: ClipboardEvent<HTMLTextAreaElement>) => void;
+  /// Present when this surface accepts image attachments; renders the preview
+  /// chips above the input and lets Enter send with no text at all.
+  attachments?: ComposerAttachment[];
+  onRemoveAttachment?: (id: string) => void;
   placeholder?: string;
   disabled?: boolean;
   working?: boolean;
@@ -51,6 +60,9 @@ export function ComposerPill({
   onChange,
   onSubmit,
   onKeyDown,
+  onPaste,
+  attachments,
+  onRemoveAttachment,
   placeholder = "Ask Bridge…",
   disabled,
   working,
@@ -92,7 +104,9 @@ export function ComposerPill({
   // at all (`activeAction` omitted) the old behaviour stands.
   const steerable = !!working && !!activeAction;
   const locked = !!disabled || (!!working && !activeAction);
-  const canSend = !locked && value.trim().length > 0;
+  const hasAttachments = !!attachments && attachments.length > 0;
+  // An image is a message on its own: a send with no text must stay possible.
+  const canSend = !locked && (value.trim().length > 0 || hasAttachments);
   const submitLabel = steerable ? ACTIVE_ACTION_LABEL[activeAction] : "Send";
 
   useEffect(() => {
@@ -118,6 +132,32 @@ export function ComposerPill({
           if (canSend) onSubmit();
         }}
       >
+        {hasAttachments && (
+          <div className="flex flex-wrap items-center gap-2 px-1 pt-0.5">
+            {attachments!.map(attachment => (
+              <div
+                key={attachment.id}
+                className="group relative h-14 w-14 shrink-0 overflow-hidden rounded-lg border border-border bg-accent"
+              >
+                <img
+                  src={attachment.dataUri}
+                  alt={`Attached image, ${attachment.mediaType}`}
+                  className="h-full w-full object-cover"
+                />
+                {onRemoveAttachment && (
+                  <button
+                    type="button"
+                    onClick={() => onRemoveAttachment(attachment.id)}
+                    className="absolute right-0.5 top-0.5 grid h-4.5 w-4.5 place-items-center rounded-full bg-background/80 text-foreground opacity-90 transition-opacity hover:opacity-100"
+                    aria-label="Remove attached image"
+                  >
+                    <X className="h-3 w-3" strokeWidth={2} aria-hidden="true" />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
         <div className="relative">
           {/* The mirror overlay: `value` rendered invisibly so it occupies the
               same box the textarea's own text does, followed by the visible
@@ -155,6 +195,11 @@ export function ComposerPill({
             onClick={noteCaret}
             onKeyUp={noteCaret}
             onScroll={syncOverlayScroll}
+            onPaste={event => {
+              // The owner owns the policy: intercept-and-become-attachments
+              // (preventDefault) or fall through to normal text insertion.
+              onPaste?.(event);
+            }}
             onKeyDown={event => {
               onKeyDown?.(event);
               if (event.defaultPrevented) return;

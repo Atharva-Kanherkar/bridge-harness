@@ -1,9 +1,10 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
 import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
+import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
 import { openExternalUrl } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
 import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, Health, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
@@ -196,7 +197,11 @@ export function App() {
   // the user must be able to see and resolve that here — otherwise the session
   // waits forever with no visible cause.
   const [pendingAdoptions, setPendingAdoptions] = useState<WorkerRepositoryBinding[]>([]);
-  const [pending, setPending] = useState<{ key: string; sessionId: string; text: string; delivery?: "steered" | "queued" }[]>([]);
+  const [pending, setPending] = useState<{ key: string; sessionId: string; text: string; delivery?: "steered" | "queued"; attachment?: string }[]>([]);
+  // Image attachments pasted into the composer, waiting to ride the next send.
+  // Cleared on success, restored on failure — a refused send must not eat the
+  // user's clipboard work.
+  const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   /** A model switch in flight, so the conversation can narrate it honestly. */
   const [modelSwitch, setModelSwitch] = useState<{ sessionId: string; harness: string; label: string } | null>(null);
   // The composer's inline typeahead. Loaded once and kept fresh by Settings'
@@ -464,6 +469,10 @@ export function App() {
     [expandedWorkerId, state.sessions],
   );
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id).map(p => p.text), [pending, session?.id]);
+  const pendingForSessionAttachments = useMemo(
+    () => pending.filter(p => p.sessionId === session?.id && p.attachment).map(p => p.attachment as string),
+    [pending, session?.id],
+  );
   const conversationStarted = useMemo(() => {
     if (!session) return false;
     if (session.activeTurnId) return true;
@@ -1221,21 +1230,55 @@ export function App() {
   // chat app — there is no explicit "start" step. Slash commands belonging to
   // another provider auto-switch the direct-chat harness first. A `$harness`
   // prefix skips this session entirely — see `openHarnessShortcut`.
+  // The composer's paste policy: clipboard images become removable preview
+  // attachments (and the paste is intercepted before text insertion); every
+  // other paste — text, file-less markup — falls through untouched. Sized
+  // before decode: a silent multi-second paste for a huge screenshot reads as
+  // broken, so the user hears why instead.
+  const handleComposerPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const items = event.clipboardData?.items;
+    if (!items) return;
+    const files = imageFilesFromClipboard(items);
+    if (files.length === 0) return;
+    event.preventDefault();
+    if (files.some(isPasteTooLarge)) {
+      setError("That image is too large to paste (over 8 MB). Save it to the repo and reference it with @ instead.");
+      return;
+    }
+    void Promise.all(files.map(async file => ({
+      id: crypto.randomUUID(),
+      mediaType: mediaTypeOf(file),
+      dataUri: await readAsDataUri(file),
+    })))
+      .then(pasted => setAttachments(current => [...current, ...pasted]))
+      .catch(error => setError(errorMessage(error)));
+    composerRef.current?.focus();
+  };
+
   async function sendPrompt(forcedText?: string) {
     const submittedText = (forcedText ?? composer).trim();
-    if (!submittedText) return;
-    if (await openHarnessShortcut(submittedText)) { setComposer(""); return; }
+    const sentAttachments = attachments;
+    if (!submittedText && sentAttachments.length === 0) return;
+    // A harness shortcut is a chat launcher, not a turn — `$codex fix the lint`
+    // opens a chat whose first message is that text. An image has nowhere to
+    // go in that handoff, so with attachments in hand the words route into the
+    // session like any other message.
+    if (submittedText && sentAttachments.length === 0 && await openHarnessShortcut(submittedText)) { setComposer(""); return; }
     if (!session) return;
     const key = crypto.randomUUID();
     let target = session;
     let retryText = submittedText;
     setComposer("");
     setSlashIndex(0);
+    setAttachments([]);
     try {
       const prepared = await bridgeApi.prepareTurn(target.id, submittedText);
       const text = prepared.text;
       retryText = text;
-      setPending(current => [...current, { key, sessionId: target.id, text }]);
+      // The optimistic row shows the image immediately; the durable row the
+      // backend persists carries the same attachment data, so a reload
+      // replays it identically.
+      setPending(current => [...current, { key, sessionId: target.id, text, attachment: sentAttachments[0]?.dataUri }]);
       const resolved = await bridgeApi.resolveSlashCommand(target.id, text).catch(() => null);
       if (resolved?.switchHarness && target.kind === "direct") {
         const adapter = adapters.find(item => item.id === resolved.harness);
@@ -1251,7 +1294,7 @@ export function App() {
       // One call whatever the session is doing. The backend decides between
       // starting a turn, steering the live one, and durably queueing, and says
       // which — so the message can be shown in the state it is actually in.
-      const outcome = await bridgeApi.submitInput(target.id, text);
+      const outcome = await bridgeApi.submitInput(target.id, text, sentAttachments);
       if (outcome.disposition !== "startedNewTurn") {
         const delivery = outcome.disposition === "steeredActiveTurn" ? "steered" as const : "queued" as const;
         setPending(current => current.map(item => item.key === key ? { ...item, delivery } : item));
@@ -1261,7 +1304,7 @@ export function App() {
         await reload();
       }
     }
-    catch (e) { setComposer(retryText); setPending(current => current.filter(item => item.key !== key)); setError(errorMessage(e)); }
+    catch (e) { setComposer(retryText); setAttachments(sentAttachments); setPending(current => current.filter(item => item.key !== key)); setError(errorMessage(e)); }
   }
   const resolveApproval = useCallback(async (eventId: number, decision: ApprovalDecision) => {
     if (!session?.id) return;
@@ -1715,7 +1758,8 @@ export function App() {
                   preview={false}
                   working={turnActive}
                   modelSwitch={modelSwitch?.sessionId === session?.id ? modelSwitch : null}
-                  pendingMessages={pendingForSession}
+                   pendingMessages={pendingForSession}
+                   pendingAttachments={pendingForSessionAttachments}
                   onResolve={resolveApproval}
                   workspaceFiles={hasRepo ? workspaceFiles : undefined}
                   onOpenFile={hasRepo && workspace ? openFileInDock : undefined}
@@ -1812,6 +1856,9 @@ export function App() {
                     onChange={value => { setComposer(value); setSlashDismissed(false); setSlashIndex(0); setMentionDismissed(false); setMentionIndex(0); setHarnessShortcutDismissed(false); setHarnessShortcutIndex(0); }}
                     onSubmit={() => void sendPrompt()}
                     onKeyDown={onComposerKeyDown}
+                    onPaste={handleComposerPaste}
+                    attachments={attachments}
+                    onRemoveAttachment={id => setAttachments(current => current.filter(attachment => attachment.id !== id))}
                     autocomplete={mentionOpen ? {
                       controls: "file-mention-listbox",
                       activeDescendant: `file-mention-option-${mentionIndex}`,

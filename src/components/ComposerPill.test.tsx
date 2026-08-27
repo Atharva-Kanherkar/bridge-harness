@@ -235,4 +235,58 @@ describe("ComposerPill", () => {
       expect(event.defaultPrevented).toBe(false);
     });
   });
+
+  describe("image attachments", () => {
+    const chip = () => container.querySelector<HTMLButtonElement>('button[aria-label="Remove attached image"]');
+
+    it("hands the paste to the owner before the textarea can insert anything", () => {
+      const onPaste = vi.fn();
+      render({ value: "draft", onPaste });
+
+      // jsdom has no ClipboardEvent constructor; a plain paste event carries
+      // everything the forwarding contract needs.
+      const event = new Event("paste", { bubbles: true, cancelable: true });
+      act(() => { textarea().dispatchEvent(event as unknown as ClipboardEvent); });
+
+      expect(onPaste).toHaveBeenCalledTimes(1);
+    });
+
+    it("renders one removable chip per attachment, with its own id", () => {
+      const onRemoveAttachment = vi.fn();
+      render({
+        value: "",
+        attachments: [
+          { id: "a", mediaType: "image/png", dataUri: "data:image/png;base64,AAA" },
+          { id: "b", mediaType: "image/jpeg", dataUri: "data:image/jpeg;base64,BBB" },
+        ],
+        onRemoveAttachment,
+      });
+
+      expect(container.querySelectorAll("img")).toHaveLength(2);
+      const removeButtons = container.querySelectorAll<HTMLButtonElement>('button[aria-label="Remove attached image"]');
+      expect(removeButtons).toHaveLength(2);
+      act(() => removeButtons[1].click());
+      expect(onRemoveAttachment).toHaveBeenCalledWith("b");
+    });
+
+    it("lets Enter send when the message is only an image", () => {
+      const onSubmit = vi.fn();
+      render({ value: "", attachments: [{ id: "a", mediaType: "image/png", dataUri: "data:image/png;base64,AAA" }], onSubmit });
+
+      const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+      act(() => { textarea().dispatchEvent(event); });
+
+      expect(onSubmit).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps an image-only send blocked while the composer is locked", () => {
+      const onSubmit = vi.fn();
+      render({ value: "", disabled: true, attachments: [{ id: "a", mediaType: "image/png", dataUri: "data:image/png;base64,AAA" }], onSubmit });
+
+      const event = new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true });
+      act(() => { textarea().dispatchEvent(event); });
+
+      expect(onSubmit).not.toHaveBeenCalled();
+    });
+  });
 });
