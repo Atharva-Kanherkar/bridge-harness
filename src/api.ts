@@ -3,6 +3,8 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult } from "./protocol/generated/protocol";
+import type { TurnImage } from "./protocol/generated/protocol";
+import type { ComposerAttachment } from "./pasteAttachments";
 import type {
   ManagedAgentInspection,
   ManagedAgentList,
@@ -1364,13 +1366,19 @@ export const bridgeApi = {
   },
   // The active-turn input contract. Unlike sendTurn this is safe to call while
   // the agent is working: the backend decides between starting a turn, steering
-  // the live one, and durably queueing, and says which it did.
-  submitInput: async (sessionId: string, text: string): Promise<SubmitInputResult> => {
-    if (isTauri()) return call("sessions/submit_input", { sessionId, text });
+  // the live one, and durably queueing, and says which it did. Attachments ride
+  // beside the text; a provider that cannot take them refuses explicitly, which
+  // is how the composer surfaces "not supported" instead of dropping bytes.
+  submitInput: async (sessionId: string, text: string, attachments?: readonly ComposerAttachment[]): Promise<SubmitInputResult> => {
+    const images: TurnImage[] = (attachments ?? []).map(attachment => ({
+      mediaType: attachment.mediaType,
+      base64Data: attachment.dataUri.split(",")[1] ?? "",
+    }));
+    if (isTauri()) return call("sessions/submit_input", { sessionId, text, attachments: images.length > 0 ? images : undefined });
     const session = mockState.sessions.find(item => item.id === sessionId); if (!session) throw new Error("Structured adapter session is not running");
     if (session.activeTurnId) {
       const steering = mockHealth.adapters.some(adapter => adapter.id === session.harness && adapter.capabilities.includes("steering"));
-      appendAgent(sessionId, "message.completed", { itemId: `user-${nextEventId}`, role: "user", status: "completed", text, data: { delivery: steering ? "steered" : "queued" } });
+      appendAgent(sessionId, "message.completed", { itemId: `user-${nextEventId}`, role: "user", status: "completed", text, data: { delivery: steering ? "steered" : "queued", ...(images.length > 0 ? { attachments: images.map(image => ({ mediaType: image.mediaType, dataUri: `data:${image.mediaType};base64,${image.base64Data}` })) } : {}) } });
       emitState();
       return { disposition: steering ? "steeredActiveTurn" : "queuedForPhaseBoundary", queuedInputId: steering ? undefined : `mock-queue-${nextEventId}`, interceptions: [] };
     }

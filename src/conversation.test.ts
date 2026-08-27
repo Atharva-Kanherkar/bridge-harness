@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactionReasonLabel, delegationChildSessionId, undeliveredPending, delegationFacet, foldWorkerDelegations, projectSessionConversation, reduceConversation, selectActiveBranch, toolCallDisplay, type ConversationItem } from "./conversation";
+import { attachmentUris, compactionReasonLabel, delegationChildSessionId, undeliveredPending, delegationFacet, foldWorkerDelegations, projectSessionConversation, reduceConversation, selectActiveBranch, toolCallDisplay, type ConversationItem } from "./conversation";
 import type { AgentEvent, SessionEntry } from "./types";
 
 const event = (id:number,kind:string,overrides:Partial<AgentEvent>={}):AgentEvent => ({ id,sessionId:"s",sequence:id,protocolVersion:1,kind,itemId:null,role:null,status:null,title:null,text:null,data:{},providerMeta:{},createdAt:"now",...overrides });
@@ -368,6 +368,24 @@ describe("toolCallDisplay", () => {
   });
 });
 
+describe("attachmentUris", () => {
+  it("extracts image data URIs from a persisted user turn payload", () => {
+    expect(attachmentUris({
+      delivery: "submitted",
+      attachments: [{ mediaType: "image/png", dataUri: "data:image/png;base64,AAA" }],
+    })).toEqual(["data:image/png;base64,AAA"]);
+  });
+
+  it("returns nothing when there are no attachments", () => {
+    expect(attachmentUris({ delivery: "submitted" })).toEqual([]);
+  });
+
+  it("ignores malformed payloads instead of breaking the transcript row", () => {
+    expect(attachmentUris({ attachments: "nope" })).toEqual([]);
+    expect(attachmentUris({ attachments: [{ dataUri: "http://not-a-data-uri" }, null, {}] })).toEqual([]);
+  });
+});
+
 describe("undeliveredPending", () => {
   const userTurn = (id: number, sessionId: string, text: string) =>
     event(id, "message.completed", { sessionId, itemId: `u${id}`, role: "user", text });
@@ -403,4 +421,3 @@ describe("undeliveredPending", () => {
     expect(delivered).toEqual([]);
   });
 });
-

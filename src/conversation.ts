@@ -602,3 +602,20 @@ export function foldWorkerDelegations(items: ConversationItem[]): ConversationIt
   }
   return folded;
 }
+
+/**
+ * Image attachments persisted on a user turn, as renderable data URIs.
+ *
+ * The backend stamps `data.attachments = [{mediaType, dataUri}]` onto the
+ * user's message event so the conversation can re-render what was sent after
+ * a reload. Malformed payloads return [] — a bad attachment must never be
+ * able to break the transcript row it rides on.
+ */
+export function attachmentUris(data: Record<string, unknown>): string[] {
+  const attachments = data.attachments;
+  if (!Array.isArray(attachments)) return [];
+  return attachments.flatMap((attachment) => {
+    const dataUri = (attachment as { dataUri?: unknown } | null)?.dataUri;
+    return typeof dataUri === "string" && dataUri.startsWith("data:image/") ? [dataUri] : [];
+  });
+}

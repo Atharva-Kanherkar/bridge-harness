@@ -642,6 +642,17 @@ pub fn submit_input(
     live_turn::submit_input(core, session_id, text)
 }
 
+/// Same contract with pasted image attachments attached. Every image either
+/// reaches a provider that supports them or the caller sees an explicit error.
+pub fn submit_input_with_attachments(
+    core: &Arc<BridgeCore>,
+    session_id: String,
+    text: String,
+    attachments: Vec<wire::TurnImage>,
+) -> Result<wire::SubmitInputResult, BridgeError> {
+    live_turn::submit_input_with_attachments(core, session_id, text, attachments)
+}
+
 pub fn compact_session(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
     let prompt = core.begin_manual_compaction(session_id)?;
     live_turn::send_internal_checkpoint_turn(core, session_id, &prompt)

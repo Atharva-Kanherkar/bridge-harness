@@ -163,7 +163,7 @@ pub fn dispatch(
         }
         MethodName::SubmitInput => {
             let p: wire::SubmitInputParams = decode(method, params)?;
-            reply(api::submit_input(core, p.session_id, p.text))
+            reply(api::submit_input_with_attachments(core, p.session_id, p.text, p.attachments.unwrap_or_default()))
         }
         MethodName::CompactSession => {
             let p: wire::CompactSessionParams = decode(method, params)?;

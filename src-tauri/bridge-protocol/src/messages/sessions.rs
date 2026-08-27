@@ -311,11 +311,31 @@ pub struct SendTurnParams {
     pub text: String,
 }
 
+/// One image a user attached to a submitted turn.
+///
+/// Images travel as base64 in-band rather than by path: the clipboard source
+/// may never have touched the filesystem, and the wire stays provider-neutral
+/// — each adapter decides what the pair becomes (Anthropic image content
+/// blocks for Claude). Bytes are transport payload, so secret interception and
+/// `@file` context never see them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TurnImage {
+    /// RFC 2046 media type, e.g. `image/png`.
+    pub media_type: String,
+    /// Raw base64 of the encoded image, without the data-URI prefix.
+    pub base64_data: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SubmitInputParams {
     pub session_id: String,
     pub text: String,
+    /// Image attachments pasted or otherwise added in the composer. Absent
+    /// (or `None`) means none: older clients omit it and stay on plain text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attachments: Option<Vec<TurnImage>>,
 }
 
 /// What Bridge did with submitted user input. These three modes are the whole
@@ -599,12 +619,31 @@ mod tests {
             serde_json::to_value(&start).unwrap(),
             json!({"workspaceId": "w-1", "harness": "claude"})
         );
-        let submit = SubmitInputParams { session_id: "s-1".into(), text: "steer left".into() };
+        let submit = SubmitInputParams {
+            session_id: "s-1".into(),
+            text: "steer left".into(),
+            attachments: None,
+        };
         assert_eq!(
             serde_json::to_value(&submit).unwrap(),
-            json!({"sessionId": "s-1", "text": "steer left"})
+            json!({"sessionId": "s-1", "text": "steer left"}),
+            "empty attachments stay off the wire"
         );
         assert_eq!(round_trip(&submit), submit);
+        let with_image = SubmitInputParams {
+            session_id: "s-1".into(),
+            text: "what is this?".into(),
+            attachments: Some(vec![TurnImage { media_type: "image/png".into(), base64_data: "iVBORw0".into() }]),
+        };
+        assert_eq!(
+            serde_json::to_value(&with_image).unwrap(),
+            json!({
+                "sessionId": "s-1",
+                "text": "what is this?",
+                "attachments": [{"mediaType": "image/png", "base64Data": "iVBORw0"}]
+            })
+        );
+        assert_eq!(round_trip(&with_image), with_image);
         let turn = SendTurnParams { session_id: "s-1".into(), text: "ship it".into() };
         assert_eq!(
             serde_json::to_value(&turn).unwrap(),
@@ -711,6 +750,25 @@ mod tests {
         assert!(
             serde_json::from_value::<SubmitInputParams>(json!({"sessionId": "s"})).is_err(),
             "text is required"
+        );
+        // Attachment-less submits stay valid without the new field, and an
+        // explicit empty list is interchangeable with absence — both mean
+        // plain text.
+        let no_attachments =
+            serde_json::from_value::<SubmitInputParams>(json!({"sessionId": "s", "text": "hi"}))
+                .expect("older clients omit attachments");
+        assert!(no_attachments.attachments.is_none());
+        let empty_attachments = serde_json::from_value::<SubmitInputParams>(json!(
+            {"sessionId": "s", "text": "hi", "attachments": []}
+        ))
+        .expect("an explicit empty list is accepted");
+        assert!(empty_attachments.attachments.unwrap().is_empty());
+        assert!(
+            serde_json::from_value::<SubmitInputParams>(
+                json!({"sessionId": "s", "text": "hi", "attachments": [{"mediaType": "image/png"}]})
+            )
+            .is_err(),
+            "a half-formed attachment is a contract violation, not a silent drop"
         );
         assert!(
             serde_json::from_value::<SubmitInputParams>(
