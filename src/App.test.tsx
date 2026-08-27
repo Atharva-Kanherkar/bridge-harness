@@ -542,6 +542,36 @@ describe("the dock in the session view", () => {
     expect(panel.className).toContain("top-full");
   });
 
+  // Contract: testing/feat-aside-chat.md. A `$harness` shortcut typed inside
+  // an open chat is a delegation, not a navigation: the aside floats over the
+  // conversation, which stays selected and untouched underneath.
+  it("opens a $harness shortcut as an aside over the current chat", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    const titleBefore = container.querySelector("h1")!.textContent;
+    const box = composer()!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "$claude is the plan sound?");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    await settle(4);
+    const aside = container.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Claude"]')!;
+    expect(aside).not.toBeNull();
+    expect(aside.textContent).toContain("is the plan sound?");
+    // The chat underneath never moved.
+    expect(container.querySelector("h1")!.textContent).toBe(titleBefore);
+
+    // Promote: the aside becomes the active chat and the panel goes away.
+    const promote = [...aside.querySelectorAll("button")].find(button => button.textContent?.includes("Open as chat"))!;
+    await click(promote);
+    expect(container.querySelector('div[role="dialog"][aria-label^="Aside"]')).toBeNull();
+    expect(container.querySelector("h1")!.textContent).toContain("is the plan sound?");
+  });
+
   it("keeps AppTitleBar unchanged on every other view", async () => {
     await mountApp();
     await click(container.querySelector<HTMLButtonElement>('button[title^="Settings"]')!);

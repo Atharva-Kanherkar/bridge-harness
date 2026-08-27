@@ -253,6 +253,43 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
     .sort((a,b)=>a.sequence-b.sequence);
 }
 
+/**
+ * The optimistic pending rows that have not yet come back as real user turns.
+ *
+ * Delivery is judged per row, in the row's **own** session: a pending message
+ * for an aside must reconcile against the aside's slice of the live stream,
+ * never against whichever session happens to be selected. The selected
+ * session gets one extra source — its durable projection — because its forest
+ * is the only one the app holds in memory; every other session's user turn
+ * still arrives on the global live stream, which is enough.
+ *
+ * Returns the same array reference when nothing was delivered, so callers can
+ * keep referential equality for render stability.
+ */
+export function undeliveredPending<T extends { sessionId: string; text: string }>(
+  pending: readonly T[],
+  liveEvents: AgentEvent[],
+  selected: { sessionId?: string; durableUserTexts: ReadonlySet<string> },
+): T[] {
+  if (!pending.length) return pending as T[];
+  const liveTexts = new Map<string, Set<string>>();
+  const deliveredIn = (sessionId: string, text: string): boolean => {
+    let texts = liveTexts.get(sessionId);
+    if (!texts) {
+      texts = new Set(
+        reduceConversation(liveEvents.filter(event => event.sessionId === sessionId))
+          .filter(item => item.type === "message" && item.role === "user")
+          .map(item => item.text.trim()),
+      );
+      liveTexts.set(sessionId, texts);
+    }
+    if (texts.has(text)) return true;
+    return sessionId === selected.sessionId && selected.durableUserTexts.has(text);
+  };
+  const next = pending.filter(item => !deliveredIn(item.sessionId, item.text.trim()));
+  return next.length === pending.length ? (pending as T[]) : next;
+}
+
 export function stripWorkerResultBlocks(text: string): string {
   const lines = text.split("\n");
   const kept: string[] = [];
