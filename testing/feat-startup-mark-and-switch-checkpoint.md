@@ -68,17 +68,20 @@ Locked before implementation.
 ### Functional Behavior
 
 - **The reply is plumbing.** While a compaction is pending, the assistant
-  `message.completed` frame of the internal checkpoint turn is neither persisted
-  as `assistant.message` nor published as an agent event; it is consumed by
-  `CompactionController::handle_output` and nothing else. This follows the
+  message and reasoning frames of the internal checkpoint turn are neither
+  persisted nor published as agent events; only `message.completed` is consumed
+  by `CompactionController::handle_output`. This includes streamed deltas, which
+  would otherwise briefly put raw JSON or a refusal in the live transcript. The
+  maintenance-turn marker remains active after a timeout/cancellation until that
+  provider turn ends, so a late reply cannot race the terminal compaction entry
+  and become ordinary assistant prose. This follows the
   delegation/peek/steer precedent in the same reader loop: a machine block is not
   something to read. Applies to a valid checkpoint too — raw checkpoint JSON was
   equally a leak. The frame is recognised *before* the store call rather than
   hidden afterwards, because a persisted-then-hidden entry is still in the forest
   and the forest is what a reconnecting client replays.
-  **Not covered by a unit test:** the gate sits inside the reader loop, which
-  only runs against a live adapter runtime, and this crate's tests do not fake
-  one. Verified by reading and by manual test 4 below.
+  The reader-loop tests drive synthetic provider frames directly and verify valid
+  and invalid replies, streamed deltas, and a late reply after cancellation.
 - **The ask is attributable and demands no fabrication.** `checkpoint_prompt`
   names Bridge session maintenance as the asker, says why it is being asked, and
   states that empty `decisions` and `filesTouched` are valid. An honest agent with
@@ -110,12 +113,13 @@ Locked before implementation.
 - Rust `sessions`
   - the floor lands between the two cases it exists to separate: a greeting
     estimates under `SWITCH_SUMMARY_MIN_TOKENS`, a branch with real history over
-    it. Pinned through `active_token_estimate` rather than by driving
-    `plan_switch_summary`, because the hot path needs a registered adapter
-    runtime and this crate's tests do not fake one — the neighbouring switch
-    tests call `begin` directly for the same reason. What is left uncovered is
-    the wiring of the floor into that function, which is three lines beside the
-    estimate it reads.
+    it; `plan_switch_summary` itself must return `None` without appending a
+    request below the floor and `Some` above it.
+- Rust `live_turn`
+  - valid and invalid checkpoint replies never persist or publish assistant text
+  - streamed checkpoint message/reasoning frames never enter the transcript
+  - cancellation keeps the maintenance-turn marker until `turn.completed`, so a
+    late checkpoint reply is still suppressed
 - Frontend `conversation.test.ts`
   - `compaction.requested` carries an English reason, and the raw reason is not
     duplicated into `data.reason` rendering
