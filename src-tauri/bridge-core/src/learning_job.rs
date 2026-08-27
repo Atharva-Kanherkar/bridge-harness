@@ -1,4 +1,4 @@
-use crate::{learning_router, routing_policy, BridgeError};
+use crate::{learning_router, routing_evaluation, routing_policy, BridgeError};
 use chrono::{DateTime, Duration, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -296,15 +296,15 @@ fn active_policy_weights(db: &Connection, version: i64) -> Result<serde_json::Va
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
-struct DeferredEvaluationSummary {
-    pending: i64,
+struct ModelEvaluationSummary {
+    queued: i64,
     reused_existing: i64,
 }
 
-impl DeferredEvaluationSummary {
+impl ModelEvaluationSummary {
     fn execution_status(&self) -> &'static str {
-        if self.pending > 0 {
-            "deferred"
+        if self.queued > 0 {
+            "queued"
         } else if self.reused_existing > 0 {
             "reused_existing_evidence"
         } else {
@@ -313,34 +313,25 @@ impl DeferredEvaluationSummary {
     }
 }
 
-fn record_deferred_model_evaluations(
+/// Every outcome in this snapshot whose own result said nothing gets a
+/// `model_based` evaluation row, and the ones a judge can actually reach get a
+/// queued run behind it.
+///
+/// Three outcomes, and the row's status is the difference between them. A
+/// decision already carrying a completed independent verifier keeps that
+/// evidence and is not re-judged. A decision with an eligible cross-family
+/// evaluator is `queued`, and the executor settles it later. A decision with no
+/// eligible evaluator is `not_requested` — an absent judge is an absent
+/// opinion, never a low score.
+fn record_model_evaluations(
     db: &Connection,
     learning_run_id: &str,
     workspace_id: &str,
     previous_boundary: i64,
     boundary: i64,
-) -> Result<DeferredEvaluationSummary, BridgeError> {
-    let mut summary = DeferredEvaluationSummary::default();
-    let active_profile_version: Option<i64> = db
-        .query_row(
-            "SELECT active_version FROM model_setup_state WHERE id='default'",
-            [],
-            |row| row.get(0),
-        )
-        .optional()?;
-    let mut evaluator_profiles = Vec::<(i64, String, String)>::new();
-    if let Some(version) = active_profile_version {
-        let mut statement = db.prepare(
-            "SELECT version,provider,model FROM model_profiles
-             WHERE version=?1 AND purpose IN ('evaluator','reviewer','verifier')
-             ORDER BY CASE purpose WHEN 'evaluator' THEN 0 WHEN 'reviewer' THEN 1 ELSE 2 END",
-        )?;
-        evaluator_profiles = statement
-            .query_map(params![version], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?))
-            })?
-            .collect::<Result<Vec<_>, _>>()?;
-    }
+) -> Result<ModelEvaluationSummary, BridgeError> {
+    let mut summary = ModelEvaluationSummary::default();
+    let evaluator_profiles = routing_evaluation::eligible_evaluators(db, workspace_id)?;
     let mut statement = db.prepare(
         "SELECT d.id,d.parent_session_id,d.actual_provider,o.runtime_ms,o.cost_microusd,o.retry_count,o.edit_count,o.override_signal,
                 COALESCE((SELECT evidence_entry_ids FROM routing_evaluations e WHERE e.decision_id=d.id AND e.evaluator_kind='deterministic' ORDER BY e.created_at DESC LIMIT 1),'[]')
@@ -387,12 +378,10 @@ fn record_deferred_model_evaluations(
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()?;
-        let evaluator = evaluator_profiles.iter().find(|(_, provider, _)| {
-            actual_provider
-                .as_deref()
-                .is_none_or(|actual| !provider.eq_ignore_ascii_case(actual))
-        });
-        let (evaluator_version, status, score_bps, confidence_bps, evidence_ids, source) =
+        let evaluator =
+            routing_evaluation::cross_family(&evaluator_profiles, actual_provider.as_deref());
+        let evaluation_id = format!("model:{learning_run_id}:{decision_id}");
+        let (evaluator_version, status, score_bps, confidence_bps, evidence_ids, source, enqueue) =
             if let Some((check_status, verifier_family, output_digest, artifact_refs)) =
                 completed_eval
             {
@@ -403,7 +392,7 @@ fn record_deferred_model_evaluations(
                 }
                 (
                     format!("independent:{verifier_family}:completion-v1"),
-                    "completed",
+                    routing_evaluation::STATUS_COMPLETED,
                     Some(if check_status == "passed" {
                         10_000_i64
                     } else {
@@ -413,24 +402,27 @@ fn record_deferred_model_evaluations(
                     serde_json::to_string(&ids)
                         .map_err(|error| BridgeError::Invalid(error.to_string()))?,
                     "independent_completion_verifier",
+                    None,
                 )
-            } else if let Some((version, provider, model)) = evaluator {
+            } else if let Some(profile) = evaluator {
                 (
-                    format!("profile-v{version}:{provider}:{model}"),
-                    "pending_bounded_model_eval",
+                    profile.evaluator_version.clone(),
+                    routing_evaluation::STATUS_QUEUED,
                     None,
                     None,
                     deterministic_evidence_ids,
-                    "deferred_profile",
+                    "bounded_model_eval",
+                    Some(profile),
                 )
             } else {
                 (
                     "none".into(),
-                    "unavailable_independent_evaluator",
+                    routing_evaluation::STATUS_NOT_REQUESTED,
                     None,
                     None,
                     deterministic_evidence_ids,
                     "unavailable",
+                    None,
                 )
             };
         db.execute(
@@ -438,7 +430,7 @@ fn record_deferred_model_evaluations(
              VALUES(?1,?2,?3,'model_based',?4,?5,?6,?7,?8,?9,?10)
              ON CONFLICT(id) DO UPDATE SET evaluator_version=excluded.evaluator_version,score_bps=excluded.score_bps,confidence_bps=excluded.confidence_bps,evidence_entry_ids=excluded.evidence_entry_ids,bounded_metrics=excluded.bounded_metrics,status=excluded.status,created_at=excluded.created_at",
             params![
-                format!("model:{learning_run_id}:{decision_id}"),
+                evaluation_id,
                 learning_run_id,
                 decision_id,
                 evaluator_version,
@@ -459,13 +451,66 @@ fn record_deferred_model_evaluations(
                 Utc::now().to_rfc3339(),
             ],
         )?;
-        match status {
-            "pending_bounded_model_eval" => summary.pending += 1,
-            "completed" => summary.reused_existing += 1,
+        match (status, enqueue) {
+            (routing_evaluation::STATUS_QUEUED, Some(profile)) => {
+                routing_evaluation::enqueue(
+                    db,
+                    learning_run_id,
+                    &decision_id,
+                    workspace_id,
+                    &evaluation_id,
+                    profile,
+                    Utc::now(),
+                )?;
+                summary.queued += 1;
+            }
+            (routing_evaluation::STATUS_COMPLETED, _) => summary.reused_existing += 1,
             _ => {}
         }
     }
     Ok(summary)
+}
+
+/// Fold settled evaluation spend back into the learning run that queued it.
+///
+/// The report is written while its evaluations are still queued, so the honest
+/// numbers only exist later. Recomputing from the run rows rather than
+/// incrementing keeps this idempotent however many times an executor calls it.
+pub fn refresh_evaluated_usage(
+    db: &Connection,
+    learning_run_id: &str,
+) -> Result<(), BridgeError> {
+    let usage = routing_evaluation::observed_usage(db, learning_run_id)?;
+    let stored: Option<Option<String>> = db
+        .query_row(
+            "SELECT report FROM learning_job_runs WHERE id=?1",
+            params![learning_run_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(stored) = stored else {
+        return Ok(());
+    };
+    let report = stored
+        .as_deref()
+        .map(serde_json::from_str::<LearningReport>)
+        .transpose()
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?
+        .map(|mut report| {
+            report.evaluated_spend_microusd = usage.spend_microusd;
+            report.evaluated_tokens = usage.tokens;
+            if report.evaluation_execution == "queued" && usage.open == 0 && usage.settled > 0 {
+                report.evaluation_execution = "executed".into();
+            }
+            serde_json::to_string(&report)
+        })
+        .transpose()
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    db.execute(
+        "UPDATE learning_job_runs SET evaluated_spend_microusd=?2,evaluated_tokens=?3,report=COALESCE(?4,report) WHERE id=?1",
+        params![learning_run_id, usage.spend_microusd, usage.tokens, report],
+    )?;
+    Ok(())
 }
 
 fn fail_run(db: &Connection, id: &str, error: &BridgeError) -> Result<LearningRun, BridgeError> {
@@ -478,6 +523,7 @@ fn fail_run(db: &Connection, id: &str, error: &BridgeError) -> Result<LearningRu
         .ok()
         .and_then(|workspace_id| EvidenceSummary::load(db, workspace_id, boundary).ok())
         .unwrap_or_default();
+    let usage = routing_evaluation::observed_usage(db, id).unwrap_or_default();
     let report = LearningReport {
         reason: error.to_string(),
         evidence_boundary: boundary,
@@ -491,8 +537,8 @@ fn fail_run(db: &Connection, id: &str, error: &BridgeError) -> Result<LearningRu
         intervention_rate_bps: None,
         average_confidence_bps: None,
         cost_complete: false,
-        evaluated_spend_microusd: 0,
-        evaluated_tokens: 0,
+        evaluated_spend_microusd: usage.spend_microusd,
+        evaluated_tokens: usage.tokens,
         evaluation_execution: "not_run".into(),
         replay_passed: None,
         promotion_status: "failed".into(),
@@ -783,7 +829,7 @@ fn process_run(
         )
     } else {
         let evaluation_summary =
-            record_deferred_model_evaluations(db, id, &workspace_id, previous_boundary, boundary)?;
+            record_model_evaluations(db, id, &workspace_id, previous_boundary, boundary)?;
         evaluation_execution = evaluation_summary.execution_status().into();
         consumed_evidence = true;
         let base_weights = active_policy_weights(db, base_version)?;
@@ -831,6 +877,7 @@ fn process_run(
             }
         }
     };
+    let evaluated_usage = routing_evaluation::observed_usage(db, id)?;
     let report = LearningReport {
         reason,
         evidence_boundary: boundary,
@@ -847,8 +894,8 @@ fn process_run(
         average_confidence_bps: (summary.confidence_reported > 0)
             .then(|| summary.confidence_total / summary.confidence_reported),
         cost_complete: summary.count > 0 && summary.cost_reported == summary.count,
-        evaluated_spend_microusd: 0,
-        evaluated_tokens: 0,
+        evaluated_spend_microusd: evaluated_usage.spend_microusd,
+        evaluated_tokens: evaluated_usage.tokens,
         evaluation_execution,
         replay_passed,
         promotion_status: promotion_status.clone(),
@@ -858,8 +905,8 @@ fn process_run(
     let completed_at = Utc::now().to_rfc3339();
     let transaction = db.unchecked_transaction()?;
     transaction.execute(
-        "UPDATE learning_job_runs SET status=?2,report=?3,candidate_policy_version=?4,evaluated_spend_microusd=0,evaluated_tokens=0,replay_passed=?5,promotion_status=?6,lease_owner=NULL,lease_expires_at=NULL,completed_at=?7 WHERE id=?1",
-        params![id, status.as_str(), serde_json::to_string(&report).map_err(|error| BridgeError::Invalid(error.to_string()))?, candidate_policy_version, replay_passed, promotion_status, completed_at],
+        "UPDATE learning_job_runs SET status=?2,report=?3,candidate_policy_version=?4,evaluated_spend_microusd=?8,evaluated_tokens=?9,replay_passed=?5,promotion_status=?6,lease_owner=NULL,lease_expires_at=NULL,completed_at=?7 WHERE id=?1",
+        params![id, status.as_str(), serde_json::to_string(&report).map_err(|error| BridgeError::Invalid(error.to_string()))?, candidate_policy_version, replay_passed, promotion_status, completed_at, evaluated_usage.spend_microusd, evaluated_usage.tokens],
     )?;
     if consumed_evidence {
         transaction.execute(
@@ -2644,36 +2691,161 @@ mod tests {
         assert!(!unavailable.replay.passed);
     }
 
-    #[test]
-    fn insufficient_deterministic_evidence_queues_only_bounded_independent_eval() {
-        let db = database();
-        add_improving_fixture(&db, 1);
+    fn add_evaluator_profile(db: &Connection, provider: &str) {
         db.execute(
-            "UPDATE router_outcomes SET success_state='unknown',confidence_bps=4000 WHERE rowid=1",
-            [],
-        )
-        .unwrap();
-        db.execute(
-            "INSERT INTO model_setup_state(id,active_version,updated_at) VALUES('default',1,'now')",
+            "INSERT OR REPLACE INTO model_setup_state(id,active_version,updated_at) VALUES('default',1,'now')",
             [],
         )
         .unwrap();
         db.execute(
             "INSERT INTO model_profiles(version,purpose,canonical_role,provider,model,effort,pinned,learning_enabled,created_at)
-             VALUES(1,'evaluator','verification','claude','independent-evaluator','high',0,1,'now')",
-            [],
+             VALUES(1,'evaluator','verification',?1,'independent-evaluator','high',0,1,'now')",
+            params![provider],
         ).unwrap();
+    }
+
+    fn unknown_first_outcome(db: &Connection) {
+        db.execute(
+            "UPDATE router_outcomes SET success_state='unknown',confidence_bps=4000 WHERE rowid=1",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn insufficient_deterministic_evidence_queues_a_bounded_model_evaluation() {
+        let db = database();
+        add_improving_fixture(&db, 1);
+        unknown_first_outcome(&db);
+        add_evaluator_profile(&db, "claude");
         let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
-        let evaluation: (String, String, String) = db.query_row(
-            "SELECT evaluator_version,status,bounded_metrics FROM routing_evaluations WHERE learning_run_id=?1 AND evaluator_kind='model_based'",
+        let evaluation: (String, String, String, String) = db.query_row(
+            "SELECT evaluator_version,status,bounded_metrics,decision_id FROM routing_evaluations WHERE learning_run_id=?1 AND evaluator_kind='model_based'",
             params![run.id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         ).unwrap();
         assert!(evaluation.0.contains("claude:independent-evaluator"));
-        assert_eq!(evaluation.1, "pending_bounded_model_eval");
+        assert_eq!(evaluation.1, "queued", "a queued evaluation is a run, not a note");
         assert!(evaluation.2.contains("\"toolAccess\":\"none\""));
         assert!(evaluation.2.contains("\"transcriptIncluded\":false"));
         assert!(!evaluation.2.contains("fixture"));
+        let queued: (String, String, String) = db
+            .query_row(
+                "SELECT status,harness,evaluation_id FROM routing_evaluation_runs WHERE decision_id=?1",
+                params![evaluation.3],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(queued.0, "queued");
+        assert_eq!(queued.1, "claude", "the judge is never the family that did the work");
+        assert_eq!(queued.2, format!("model:{}:{}", run.id, evaluation.3));
+        assert_eq!(run.report.as_ref().unwrap().evaluation_execution, "queued");
+    }
+
+    #[test]
+    fn a_same_family_or_absent_evaluator_is_not_requested_rather_than_queued() {
+        for provider in ["codex", "opencode"] {
+            let db = database();
+            add_improving_fixture(&db, 1);
+            unknown_first_outcome(&db);
+            add_evaluator_profile(&db, provider);
+            let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+            let status: String = db.query_row(
+                "SELECT status FROM routing_evaluations WHERE learning_run_id=?1 AND evaluator_kind='model_based'",
+                params![run.id],
+                |row| row.get(0),
+            ).unwrap();
+            assert_eq!(status, "not_requested", "{provider} cannot judge codex work");
+            assert_eq!(
+                db.query_row("SELECT COUNT(*) FROM routing_evaluation_runs", [], |row| row
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0,
+                "{provider} must not queue a run it can never execute"
+            );
+        }
+    }
+
+    #[test]
+    fn evaluation_turned_off_leaves_the_workspace_exactly_as_it_was() {
+        let db = database();
+        add_improving_fixture(&db, 1);
+        unknown_first_outcome(&db);
+        add_evaluator_profile(&db, "claude");
+        crate::routing_evaluation::update_settings(&db, "w", "off", None, None).unwrap();
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        let report = run.report.as_ref().unwrap();
+        assert_eq!(report.evaluation_execution, "deterministic_only");
+        assert_eq!(report.evaluated_spend_microusd, 0);
+        assert_eq!(report.evaluated_tokens, 0);
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM routing_evaluation_runs", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn a_settled_evaluation_replaces_the_reports_zeroes_with_what_it_spent() {
+        let db = database();
+        add_improving_fixture(&db, 1);
+        unknown_first_outcome(&db);
+        add_evaluator_profile(&db, "claude");
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        assert_eq!(run.report.as_ref().unwrap().evaluated_spend_microusd, 0);
+        let claimed = crate::routing_evaluation::claim_due(&db, Utc::now()).unwrap().unwrap();
+        assert!(crate::routing_evaluation::settle(
+            &db,
+            &claimed.run_id,
+            &claimed.lease_owner,
+            "completed",
+            Some("judged"),
+            Some("digest"),
+            Some(6_000),
+            Some(8_200),
+            2_400,
+            5_100,
+            Utc::now(),
+        )
+        .unwrap());
+        refresh_evaluated_usage(&db, &run.id).unwrap();
+        let reloaded = load_run(&db, &run.id).unwrap().unwrap();
+        let report = reloaded.report.as_ref().unwrap();
+        assert_eq!(report.evaluated_spend_microusd, 5_100);
+        assert_eq!(report.evaluated_tokens, 2_400);
+        assert_eq!(report.evaluation_execution, "executed");
+        let (spend, tokens): (i64, i64) = db
+            .query_row(
+                "SELECT evaluated_spend_microusd,evaluated_tokens FROM learning_job_runs WHERE id=?1",
+                params![run.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((spend, tokens), (5_100, 2_400));
+    }
+
+    #[test]
+    fn a_queued_evaluation_promotes_nothing_that_no_evaluator_would_not_have() {
+        let with_judge = database();
+        add_improving_fixture(&with_judge, 1);
+        unknown_first_outcome(&with_judge);
+        add_evaluator_profile(&with_judge, "claude");
+        let queued = run_learning(&with_judge, LearningTriggerKind::Manual, "w").unwrap();
+
+        let without_judge = database();
+        add_improving_fixture(&without_judge, 1);
+        unknown_first_outcome(&without_judge);
+        let bare = run_learning(&without_judge, LearningTriggerKind::Manual, "w").unwrap();
+
+        assert_eq!(queued.status, bare.status);
+        assert_eq!(queued.promotion_status, bare.promotion_status);
+        assert_eq!(queued.replay_passed, bare.replay_passed);
+        assert_eq!(
+            queued.report.as_ref().unwrap().reason,
+            bare.report.as_ref().unwrap().reason,
+            "a verdict that has not been reached is not evidence"
+        );
     }
 
     #[test]

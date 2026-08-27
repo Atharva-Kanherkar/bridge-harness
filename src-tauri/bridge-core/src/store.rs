@@ -9,7 +9,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 40;
+const LATEST_SCHEMA_VERSION: i64 = 41;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -444,6 +444,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             38 => migration_38_routing_catalogs(&transaction)?,
             39 => migration_39_learning_tunables(&transaction)?,
             40 => migration_40_prompt_compilation_accounting(&transaction)?,
+            41 => migration_41_routing_evaluation_runs(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -1167,6 +1168,12 @@ fn migration_35_memory_extraction(transaction: &Transaction<'_>) -> Result<(), B
 
 fn migration_36_memory_packet(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     crate::memory_packet::install(transaction)
+}
+
+fn migration_41_routing_evaluation_runs(
+    transaction: &Transaction<'_>,
+) -> Result<(), BridgeError> {
+    crate::routing_evaluation::install(transaction)
 }
 
 fn migration_39_learning_tunables(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
@@ -3261,6 +3268,8 @@ mod tests {
             "worker_queue",
             "usage_ledger",
             "routing_evaluations",
+            "routing_evaluation_runs",
+            "routing_evaluation_settings",
             "learning_trigger_events",
         ];
         for table in tables {
@@ -3628,6 +3637,8 @@ mod tests {
             "routing_catalogs",
             "learning_tunables",
             "prompt_section_revisions",
+            "routing_evaluation_runs",
+            "routing_evaluation_settings",
         ] {
             assert!(
                 db.query_row(
