@@ -490,7 +490,12 @@ html[data-native-fullscreen] .u-traffic-inset {
   background-size: 200% 100%;
   background-clip: text;
   color: transparent;
-  animation: thinking-shimmer 2s linear infinite;
+  animation: text-shimmer-sweep 2s linear infinite;
+}
+
+@keyframes text-shimmer-sweep {
+  from { background-position: -200% 0; }
+  to { background-position: 200% 0; }
 }
 
 @keyframes page-mount {

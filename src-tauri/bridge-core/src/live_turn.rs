@@ -2404,15 +2404,12 @@ fn handle_agent_value(
                     Ok(compaction_controller::CheckpointOutcome::Repair { prompt }) => {
                         checkpoint_prompt_after_turn = Some(prompt);
                     }
-                    Ok(compaction_controller::CheckpointOutcome::Completed { .. }) => {
-                        finish_checkpointing = own_depth > 0;
-                        finish_requested_shutdown = pending_compaction.is_some_and(|pending| {
-                            pending.reason
-                                == compaction_controller::CompactionReason::BeforeShutdown
-                        });
-                    }
-                    Ok(compaction_controller::CheckpointOutcome::Failed) => {
-                        recover_compaction = true;
+                    Ok(outcome @ (compaction_controller::CheckpointOutcome::Completed { .. }
+                    | compaction_controller::CheckpointOutcome::Failed)) => {
+                        recover_compaction = matches!(
+                            outcome,
+                            compaction_controller::CheckpointOutcome::Failed
+                        );
                         finish_checkpointing = own_depth > 0;
                         finish_requested_shutdown = pending_compaction.is_some_and(|pending| {
                             pending.reason

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { HarnessMark, harnessTintClass, hasHarnessMark } from "./harnessMarks";
+import { HarnessMark, harnessTintClass } from "./harnessMarks";
 
 const markup = (harness?: string | null, live = false) =>
   renderToStaticMarkup(<HarnessMark harness={harness} live={live} />);
@@ -32,8 +32,6 @@ describe("HarnessMark", () => {
     expect(unknown).toContain("A8.6 8.6");
     expect(unknown).not.toContain("text-harness-");
     expect(markup(null)).toContain("A8.6 8.6");
-    expect(hasHarnessMark("some-acp-agent")).toBe(false);
-    expect(hasHarnessMark("claude")).toBe(true);
     expect(harnessTintClass("some-acp-agent")).toBe("text-muted-foreground");
   });
 

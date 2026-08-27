@@ -24,6 +24,7 @@ function arms(count: number, inner: number, outer: number, offsetDegrees = 0): s
 }
 
 type MarkShape = { path: string; strokeWidth: number; dot?: number };
+type HarnessMarkDefinition = { shape: MarkShape; tint: string };
 
 // Arm counts are chosen for how each figure resolves at 14px — the size the
 // startup row actually uses — not for how it looks blown up. Ten arms through
@@ -45,27 +46,16 @@ const UNKNOWN: MarkShape = {
   strokeWidth: 2.2,
 };
 
-const SHAPES: Record<string, MarkShape> = {
-  claude: CLAUDE,
-  codex: CODEX,
-  opencode: OPENCODE,
+/** Shape and tint stay together so adding a harness cannot update only one. */
+const MARKS: Record<string, HarnessMarkDefinition> = {
+  claude: { shape: CLAUDE, tint: "text-harness-claude" },
+  codex: { shape: CODEX, tint: "text-harness-codex" },
+  opencode: { shape: OPENCODE, tint: "text-harness-opencode" },
 };
-
-/** The tint each harness's mark wears. Literal classes so Tailwind sees them. */
-const TINTS: Record<string, string> = {
-  claude: "text-harness-claude",
-  codex: "text-harness-codex",
-  opencode: "text-harness-opencode",
-};
-
-/** Whether Bridge has a bespoke mark for this harness id. */
-export function hasHarnessMark(harness?: string | null): boolean {
-  return !!harness && harness in SHAPES;
-}
 
 /** The tint class for a harness id — muted ink for one Bridge does not know. */
 export function harnessTintClass(harness?: string | null): string {
-  return (harness && TINTS[harness]) || "text-muted-foreground";
+  return (harness && MARKS[harness]?.tint) || "text-muted-foreground";
 }
 
 /**
@@ -82,7 +72,7 @@ export function HarnessMark({ harness, size = 14, live = false, className }: {
   live?: boolean;
   className?: string;
 }) {
-  const shape = (harness && SHAPES[harness]) || UNKNOWN;
+  const shape = (harness && MARKS[harness]?.shape) || UNKNOWN;
   return (
     <svg
       width={size}
