@@ -623,10 +623,7 @@ impl BridgeCore {
             .active_branch(session_id)
             .map_err(|error| BridgeError::Invalid(error.to_string()))?;
         let meaningful = branch.iter().any(|entry| {
-            matches!(
-                entry.kind.as_str(),
-                "user.message" | "assistant.message" | "worker.result" | "tool.completed"
-            )
+            compaction_controller::CONVERSATION_KINDS.contains(&entry.kind.as_str())
         });
         compaction_controller::decide(&compaction_controller::TriggerState {
             reason: compaction_controller::CompactionReason::Manual,
@@ -680,10 +677,7 @@ impl BridgeCore {
             .active_branch(session_id)
             .map_err(|error| BridgeError::Invalid(error.to_string()))?;
         let meaningful = branch.iter().any(|entry| {
-            matches!(
-                entry.kind.as_str(),
-                "user.message" | "assistant.message" | "worker.result" | "tool.completed"
-            )
+            compaction_controller::CONVERSATION_KINDS.contains(&entry.kind.as_str())
         });
         if !meaningful {
             return Ok(None);
@@ -692,13 +686,20 @@ impl BridgeCore {
         if compaction_controller::CompactionController::pending(&db, session_id)?.is_some() {
             return Ok(None);
         }
-        let tokens =
-            compaction_controller::active_token_estimate(&db, session_id)?;
-        // A floor under the "meaningful work" gate above, not a replacement for
-        // it: two messages clear that gate but are not worth a checkpoint.
-        if tokens < SWITCH_SUMMARY_MIN_TOKENS {
+        // The floor reads the *conversation* estimate, not the full branch: a
+        // fresh chat's compiled prompt alone measures thousands of tokens, and
+        // a greeting was clearing the floor on the strength of context it did
+        // not write. The checkpoint request below still records the full
+        // estimate, because `tokensBefore` describes context pressure, not
+        // conversation size. A floor under the "meaningful work" gate above,
+        // not a replacement for it.
+        if compaction_controller::conversation_token_estimate(&db, session_id)?
+            < SWITCH_SUMMARY_MIN_TOKENS
+        {
             return Ok(None);
         }
+        let tokens =
+            compaction_controller::active_token_estimate(&db, session_id)?;
         let Some(prompt) = compaction_controller::CompactionController::begin(
             &db,
             session_id,
@@ -1826,18 +1827,35 @@ mod tests {
                 .unwrap();
         };
 
+        // The field failure this floor missed the first time: a greeting-only
+        // chat measured 13k tokens because the *branch* estimate counts the
+        // injected instructions. Reproduce that shape — one bulky machine
+        // entry dwarfing a two-line conversation — and require the floor to
+        // read only the conversation.
+        append(
+            session_forest::EntryKind::SessionStatus,
+            serde_json::json!({"status": "ready", "detail": "Compiled orchestration prompt. ".repeat(700)}),
+        );
         append(session_forest::EntryKind::UserMessage, serde_json::json!({"text":"hi"}));
         append(
             session_forest::EntryKind::AssistantMessage,
-            serde_json::json!({"role":"assistant","text":"Hey — what are we building?"}),
+            serde_json::json!({"role":"assistant","text":"Hey! What are we building?"}),
         );
-        let greeting_tokens = {
+        let db_estimates = || {
             let db = core.db.lock().unwrap();
-            compaction_controller::active_token_estimate(&db, &session_id).unwrap()
+            (
+                compaction_controller::active_token_estimate(&db, &session_id).unwrap(),
+                compaction_controller::conversation_token_estimate(&db, &session_id).unwrap(),
+            )
         };
+        let (branch_tokens, conversation_tokens) = db_estimates();
         assert!(
-            greeting_tokens < SWITCH_SUMMARY_MIN_TOKENS,
-            "a greeting must sit under the floor, estimated {greeting_tokens}"
+            branch_tokens >= SWITCH_SUMMARY_MIN_TOKENS,
+            "the trap: the full branch already clears the floor, estimated {branch_tokens}"
+        );
+        assert!(
+            conversation_tokens < SWITCH_SUMMARY_MIN_TOKENS,
+            "the conversation itself sits under it, estimated {conversation_tokens}"
         );
         assert!(
             core.plan_switch_summary(&session_id).unwrap().is_none(),
@@ -1867,10 +1885,7 @@ mod tests {
                 }),
             );
         }
-        let working_tokens = {
-            let db = core.db.lock().unwrap();
-            compaction_controller::active_token_estimate(&db, &session_id).unwrap()
-        };
+        let (_, working_tokens) = db_estimates();
         assert!(
             working_tokens >= SWITCH_SUMMARY_MIN_TOKENS,
             "a session with real history must clear the floor, estimated {working_tokens}"
