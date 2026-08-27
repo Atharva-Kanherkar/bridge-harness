@@ -82,7 +82,10 @@ Locked before implementation.
 - **The ask is attributable and demands no fabrication.** `checkpoint_prompt`
   names Bridge session maintenance as the asker, says why it is being asked, and
   states that empty `decisions` and `filesTouched` are valid. An honest agent with
-  nothing to report can now answer honestly instead of refusing.
+  nothing to report can now answer honestly instead of refusing. Because this
+  maintenance request runs in the existing tool-capable agent session, it also
+  explicitly forbids tool calls, commands, file changes, delegation, and every
+  other side effect: the turn may only return the checkpoint JSON.
 - **Nothing to compact means no round trip.** `plan_switch_summary` skips when the
   active branch's token estimate is below `SWITCH_SUMMARY_MIN_TOKENS`: below that
   floor `start_chat`'s mechanical projection already carries the whole
@@ -101,6 +104,8 @@ Locked before implementation.
 
 - Rust `compaction_controller`
   - `checkpoint_prompt` names Bridge as the asker and permits empty arrays
+  - the prompt explicitly forbids tools, commands, file changes, delegation,
+    and other actions during the maintenance turn
   - the prompt still round-trips through `Checkpoint::parse_and_validate`
 - Rust `sessions`
   - the floor lands between the two cases it exists to separate: a greeting
