@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compactionReasonLabel, delegationChildSessionId, delegationFacet, foldWorkerDelegations, projectSessionConversation, reduceConversation, selectActiveBranch, toolCallDisplay, type ConversationItem } from "./conversation";
+import { compactionReasonLabel, delegationChildSessionId, undeliveredPending, delegationFacet, foldWorkerDelegations, projectSessionConversation, reduceConversation, selectActiveBranch, toolCallDisplay, type ConversationItem } from "./conversation";
 import type { AgentEvent, SessionEntry } from "./types";
 
 const event = (id:number,kind:string,overrides:Partial<AgentEvent>={}):AgentEvent => ({ id,sessionId:"s",sequence:id,protocolVersion:1,kind,itemId:null,role:null,status:null,title:null,text:null,data:{},providerMeta:{},createdAt:"now",...overrides });
@@ -367,3 +367,40 @@ describe("toolCallDisplay", () => {
     expect(toolCallDisplay(call({ title: "bun test", text: "bun test", data: { type: "commandExecution" } })).output).toBeUndefined();
   });
 });
+
+describe("undeliveredPending", () => {
+  const userTurn = (id: number, sessionId: string, text: string) =>
+    event(id, "message.completed", { sessionId, itemId: `u${id}`, role: "user", text });
+  const row = (sessionId: string, text: string) => ({ key: text, sessionId, text });
+  const noneSelected = { sessionId: undefined, durableUserTexts: new Set<string>() };
+
+  // The field failure: an aside's pending "hi" checked against the selected
+  // session's slice never reconciled, so the aside's startup row counted
+  // forever under an already-answered reply.
+  it("reconciles each row in its own session, never across sessions", () => {
+    const pending = [row("aside-1", "hi"), row("main", "hi")];
+    const delivered = undeliveredPending(pending, [userTurn(1, "aside-1", "hi")], noneSelected);
+    expect(delivered).toEqual([row("main", "hi")]);
+  });
+
+  it("still reconciles the selected session through its durable texts alone", () => {
+    const pending = [row("main", "what store did we pick?")];
+    const delivered = undeliveredPending(pending, [], { sessionId: "main", durableUserTexts: new Set(["what store did we pick?"]) });
+    expect(delivered).toEqual([]);
+    // The durable source belongs to the selected session only.
+    const other = undeliveredPending([row("aside-1", "what store did we pick?")], [], { sessionId: "main", durableUserTexts: new Set(["what store did we pick?"]) });
+    expect(other).toHaveLength(1);
+  });
+
+  it("returns the same reference when nothing was delivered", () => {
+    const pending = [row("aside-1", "hi")];
+    expect(undeliveredPending(pending, [userTurn(1, "main", "hi")], noneSelected)).toBe(pending);
+    expect(undeliveredPending([], [], noneSelected)).toEqual([]);
+  });
+
+  it("matches on trimmed text, like the optimistic rows it clears", () => {
+    const delivered = undeliveredPending([row("s", "  hi  ")], [userTurn(1, "s", "hi")], noneSelected);
+    expect(delivered).toEqual([]);
+  });
+});
+
