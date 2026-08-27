@@ -914,7 +914,7 @@ impl BridgeCore {
             .map(CarriedContext::describe)
             .unwrap_or_else(|| "no context carried (summary unavailable)".to_owned());
         let detail = format!(
-            "{subject} runtime changed from {}/{} to {}/{}. The next message starts a fresh provider session — {}.",
+            "{subject} runtime changed from {}/{} to {}/{}. The next message starts a fresh provider session; {}.",
             change.previous_harness,
             change.previous_model.as_deref().unwrap_or("automatic"),
             change.adapter_id,

@@ -6,7 +6,7 @@ const base: NarrationInput = {
   streaming: false,
   harnessName: "OpenCode",
   modelName: "Sonnet",
-  firstLaunch: false,
+  switchingToLabel: null,
   latestPhase: null,
   startedAt: 0,
   streamStartedAt: null,
@@ -39,11 +39,29 @@ describe("computeNarration", () => {
     expect(at.elapsedSeconds).toBe(2);
   });
 
-  it("shows the first-launch note only while narrating and only for a first launch", () => {
-    const firstLaunch = computeNarration({ ...base, firstLaunch: true });
-    expect(firstLaunch.showFirstLaunchNote).toBe(true);
-    const notFirstLaunch = computeNarration({ ...base, firstLaunch: false });
-    expect(notFirstLaunch.showFirstLaunchNote).toBe(false);
+  // The switch state is Bridge's own activity: it mounts without pending
+  // work, outranks every phase label, and vanishes the moment it is cleared.
+  it("narrates a model switch even with no pending work", () => {
+    const view = computeNarration({ ...base, hasPendingWork: false, switchingToLabel: "Opus" });
+    expect(view.mounted).toBe(true);
+    expect(view.label).toBe("Switching to Opus…");
+  });
+
+  it("lets the switch outrank a cold-start phase and the reading label", () => {
+    const view = computeNarration({ ...base, latestPhase: "handshake", switchingToLabel: "GPT Luna" });
+    expect(view.label).toBe("Switching to GPT Luna…");
+  });
+
+  it("shows the switch's elapsed counter from 2s, like every other wait", () => {
+    expect(computeNarration({ ...base, switchingToLabel: "Opus", startedAt: 0, now: 1999 }).showElapsed).toBe(false);
+    const at = computeNarration({ ...base, switchingToLabel: "Opus", startedAt: 0, now: 2400 });
+    expect(at.showElapsed).toBe(true);
+    expect(at.elapsedSeconds).toBe(2);
+  });
+
+  it("unmounts as soon as the switch clears with nothing pending", () => {
+    const view = computeNarration({ ...base, hasPendingWork: false, switchingToLabel: null });
+    expect(view.mounted).toBe(false);
   });
 
   it("collapses the label the instant streaming starts, but keeps the row mounted", () => {
@@ -51,7 +69,6 @@ describe("computeNarration", () => {
     expect(view.mounted).toBe(true);
     expect(view.collapsed).toBe(true);
     expect(view.label).toBe("");
-    expect(view.showFirstLaunchNote).toBe(false);
   });
 
   it("unmounts 2s after the first token, not an instant sooner", () => {
