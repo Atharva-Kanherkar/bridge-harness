@@ -98,6 +98,14 @@ pub struct HandshakeResponse {
     pub server: ServerInfo,
     /// The method domains this server serves (sorted, deduplicated).
     pub capabilities: Vec<String>,
+    /// A content-addressed identity of the server's own executable, so a
+    /// launcher holding a newer binary can tell it is talking to a stale
+    /// daemon. `ServerInfo.version` cannot: it is the workspace version, a
+    /// constant on every dev build. Optional — a host that has none (tests,
+    /// the embedded host, older daemons) omits it, and a launcher treats the
+    /// absence as stale when it has a binary of its own to offer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub build_id: Option<String>,
 }
 
 /// Negotiate a connection. Rejection uses the stable
@@ -130,6 +138,9 @@ pub fn negotiate(request: &HandshakeRequest) -> Result<HandshakeResponse, RpcErr
             version: env!("CARGO_PKG_VERSION").into(),
         },
         capabilities: MethodName::domains().iter().map(|domain| (*domain).into()).collect(),
+        // The host fills this in: negotiation is about the protocol, and only
+        // the serving process knows which binary it is.
+        build_id: None,
     })
 }
 

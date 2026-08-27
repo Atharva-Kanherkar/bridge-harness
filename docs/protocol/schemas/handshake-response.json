@@ -38,6 +38,13 @@
     }
   },
   "properties": {
+    "buildId": {
+      "description": "A content-addressed identity of the server's own executable, so a launcher holding a newer binary can tell it is talking to a stale daemon. `ServerInfo.version` cannot: it is the workspace version, a constant on every dev build. Optional — a host that has none (tests, the embedded host, older daemons) omits it, and a launcher treats the absence as stale when it has a binary of its own to offer.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "capabilities": {
       "description": "The method domains this server serves (sorted, deduplicated).",
       "items": {

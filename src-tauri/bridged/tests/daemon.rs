@@ -144,6 +144,18 @@ fn a_session_is_created_driven_and_observed_end_to_end_over_the_socket() {
         .as_array()
         .unwrap()
         .contains(&json!("sessions")));
+    // The daemon names its own binary, so a launcher holding a newer build
+    // can tell this daemon is stale. The id is the test binary's here — what
+    // matters on the wire is presence and shape.
+    let build_id = handshake["result"]["buildId"]
+        .as_str()
+        .expect("the daemon reports the build identity of its own executable");
+    assert_eq!(build_id.len(), 16, "a fixed-width hex identity: {build_id}");
+    assert_eq!(
+        build_id,
+        bridge_core::binary::self_identity().unwrap(),
+        "this in-process daemon and this test share an executable"
+    );
 
     // Observe: the daemon read the token from the file it wrote.
     let on_disk =

@@ -83,6 +83,13 @@ pub struct DaemonState {
     pub connections: AtomicUsize,
     pub auth_token: String,
     pub handshake_timeout: Duration,
+    /// This process's executable identity, computed once at startup — while
+    /// the file at `current_exe()` is still the binary that is running — and
+    /// reported in every handshake so a launcher holding a newer build can
+    /// replace this daemon instead of silently running stale code. `None`
+    /// when the read failed; the launcher treats that as stale, which errs
+    /// toward a restart rather than toward staleness going unnoticed.
+    pub build_id: Option<String>,
 }
 
 /// The running daemon, as far as `main` is concerned.
@@ -204,6 +211,7 @@ impl Daemon {
             connections: AtomicUsize::new(0),
             auth_token,
             handshake_timeout: config.handshake_timeout,
+            build_id: bridge_core::binary::self_identity().ok(),
         });
 
         if let Some(addr) = config.health_addr {

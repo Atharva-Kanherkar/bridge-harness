@@ -283,10 +283,15 @@ fn expect_handshake(
         ));
     }
     match negotiate(&handshake) {
-        Ok(accepted) => Ok(RpcResponse::result(
-            id,
-            serde_json::to_value(accepted).expect("handshake response serializes"),
-        )),
+        Ok(mut accepted) => {
+            // Negotiation is about the protocol; only the serving process
+            // knows which binary it is, so the identity is stamped here.
+            accepted.build_id = state.build_id.clone();
+            Ok(RpcResponse::result(
+                id,
+                serde_json::to_value(accepted).expect("handshake response serializes"),
+            ))
+        }
         Err(error) => Err(RpcResponse::error(id, error)),
     }
 }

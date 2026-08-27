@@ -1484,6 +1484,7 @@ export interface HandshakeRequest {
 }
 
 export interface HandshakeResponse {
+  buildId?: string | null;
   capabilities: string[];
   protocolVersion: ProtocolVersion;
   server: ServerInfo;
