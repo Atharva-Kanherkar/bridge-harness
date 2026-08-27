@@ -2624,12 +2624,26 @@ fn handle_agent_value(
                             Some("repair the invalid checkpoint response"),
                         ),
                     );
+                } else if checkpoint_turn_active && !checkpoint_response_seen {
+                    checkpoint_turn_handled = true;
+                    let shutdown = pending.reason
+                        == compaction_controller::CompactionReason::BeforeShutdown;
+                    let _ = compaction_controller::CompactionController::record_failure(
+                        &db,
+                        session_id,
+                        "checkpoint turn completed without an assistant response",
+                        pending.attempt,
+                    );
+                    recover_compaction = true;
+                    finish_checkpointing = own_depth > 0;
+                    finish_requested_shutdown = shutdown;
                 }
             }
         }
         if turn_completed
             && checkpoint_prompt_after_turn.is_none()
             && !checkpoint_response_seen
+            && !checkpoint_turn_active
             && own_depth == 0
             && !is_direct
         {
@@ -9880,6 +9894,56 @@ mod submit_input_tests {
 
         handle_agent_value(&core, "chat", &current_turn, &codex_turn_completed());
         assert_eq!(session_status(&core), "ready", "turn completion clears the tombstone");
+    }
+
+    #[test]
+    fn completion_only_checkpoint_turn_does_not_capture_the_next_real_reply() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET harness='codex' WHERE id='chat'", [])
+            .unwrap();
+        let pending = begin_checkpoint(&core);
+        attach_handles(&core, false);
+        send_internal_checkpoint_turn(&core, "chat", "maintenance prompt").unwrap();
+        let current_turn = Arc::new(Mutex::new(Some("turn-1".into())));
+
+        handle_agent_value(&core, "chat", &current_turn, &codex_turn_completed());
+
+        assert_eq!(session_status(&core), "ready");
+        assert!(
+            compaction_controller::CompactionController::pending(
+                &core.db.lock().unwrap(),
+                "chat",
+            )
+            .unwrap()
+            .is_none(),
+            "a provider terminal without a reply still settles maintenance"
+        );
+        assert!(
+            core.db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM session_entries WHERE session_id='chat' AND kind='compaction.failed' AND json_extract(payload,'$.attempt')=?1)",
+                    params![pending.attempt],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap()
+        );
+
+        handle_agent_value(
+            &core,
+            "chat",
+            &current_turn,
+            &codex_agent_message("This is the next real answer."),
+        );
+        assert_eq!(
+            assistant_message_count(&core),
+            1,
+            "ordinary conversation resumes after the empty maintenance turn"
+        );
     }
 
     #[test]

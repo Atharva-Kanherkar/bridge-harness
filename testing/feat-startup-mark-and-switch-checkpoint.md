@@ -87,7 +87,9 @@ Locked before implementation.
   the session; a later resumed user turn must never inherit checkpoint mode.
   Likewise, if the live adapter ends the maintenance turn without producing an
   assistant checkpoint response, Bridge records the missing reply as a failure
-  before returning the session to ordinary turns.
+  before returning the session to ordinary turns. A repair is durably marked as
+  scheduled at the first boundary, so an empty repair turn fails instead of
+  scheduling repairs forever.
 - **The ask is attributable and demands no fabrication.** `checkpoint_prompt`
   names Bridge session maintenance as the asker, says why it is being asked, and
   states that empty `decisions` and `filesTouched` are valid. An honest agent with
@@ -130,6 +132,8 @@ Locked before implementation.
     clears both the pending marker and `checkpointing` session status
   - a completion-only maintenance turn clears an attempt-zero pending request,
     so the next real assistant reply is not consumed as checkpoint output
+  - an invalid first response schedules exactly one repair; if that repair turn
+    is also completion-only, it records failure without sending a third turn
 - Frontend `conversation.test.ts`
   - `compaction.requested` carries an English reason, and the raw reason is not
     duplicated into `data.reason` rendering
