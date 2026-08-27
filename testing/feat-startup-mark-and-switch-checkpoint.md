@@ -85,6 +85,9 @@ Locked before implementation.
   the root adapter exits before the maintenance turn completes, its reader-exit
   cleanup records the compaction failure, clears the pending marker, and stops
   the session; a later resumed user turn must never inherit checkpoint mode.
+  Likewise, if the live adapter ends the maintenance turn without producing an
+  assistant checkpoint response, Bridge records the missing reply as a failure
+  before returning the session to ordinary turns.
 - **The ask is attributable and demands no fabrication.** `checkpoint_prompt`
   names Bridge session maintenance as the asker, says why it is being asked, and
   states that empty `decisions` and `filesTouched` are valid. An honest agent with
@@ -125,6 +128,8 @@ Locked before implementation.
     late checkpoint reply is still suppressed
   - root adapter exit before `turn.completed` records a compaction failure and
     clears both the pending marker and `checkpointing` session status
+  - a completion-only maintenance turn clears an attempt-zero pending request,
+    so the next real assistant reply is not consumed as checkpoint output
 - Frontend `conversation.test.ts`
   - `compaction.requested` carries an English reason, and the raw reason is not
     duplicated into `data.reason` rendering
