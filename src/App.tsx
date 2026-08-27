@@ -20,6 +20,7 @@ import { SessionToolbar } from "./components/SessionToolbar";
 import { ChatModelControl, modelDisplayName } from "./components/ChatModelControl";
 export { ChatModelControl };
 import { SessionDock, type DockPaneDescriptor } from "./components/SessionDock";
+import { AsideChat } from "./components/AsideChat";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
 import type { BrowserSupervision } from "./components/BrowserSurface";
@@ -199,6 +200,8 @@ export function App() {
   const [pending, setPending] = useState<{ key: string; sessionId: string; text: string; delivery?: "steered" | "queued" }[]>([]);
   /** A model switch in flight, so the conversation can narrate it honestly. */
   const [modelSwitch, setModelSwitch] = useState<{ sessionId: string; harness: string; label: string } | null>(null);
+  /** An aside open over the current conversation - see `openHarnessShortcut`. */
+  const [asideChatId, setAsideChatId] = useState<string>();
   // The composer's inline typeahead. Loaded once and kept fresh by Settings'
   // own save path (`onSuggestionSettingsChange`) — off by default, so no
   // request fires until the user opts in.
@@ -462,6 +465,14 @@ export function App() {
   const expandedWorker = useMemo(
     () => state.sessions.find(candidate => candidate.id === expandedWorkerId),
     [expandedWorkerId, state.sessions],
+  );
+  const asideSession = useMemo(
+    () => state.sessions.find(candidate => candidate.id === asideChatId),
+    [asideChatId, state.sessions],
+  );
+  const asidePending = useMemo(
+    () => pending.filter(item => item.sessionId === asideChatId).map(item => item.text),
+    [pending, asideChatId],
   );
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id).map(p => p.text), [pending, session?.id]);
   const conversationStarted = useMemo(() => {
@@ -1018,12 +1029,45 @@ export function App() {
     const adapter = adapters.find(item => item.id.toLowerCase() === shortcut.harnessId.toLowerCase());
     if (!adapter) return false;
     if (!adapter.available) {
-      setError(`${adapter.label} isn't available${adapter.unavailableReason ? ` — ${adapter.unavailableReason}` : ""}.`);
+      setError(`${adapter.label} isn't available${adapter.unavailableReason ? `: ${adapter.unavailableReason}` : ""}.`);
       return true;
     }
-    const carryFromSessionId = session?.id;
-    await openNewChat(shortcut.rest, adapter, alreadyLocked, carryFromSessionId);
+    // Inside a conversation the shortcut is a delegation the user makes, not a
+    // navigation: the new agent opens as an aside floating over this chat, and
+    // this chat stays put. Only the Welcome surface, with nothing to stay in,
+    // still becomes the new chat.
+    if (session) {
+      await openAside(adapter, shortcut.rest, session.id);
+      return true;
+    }
+    await openNewChat(shortcut.rest, adapter, alreadyLocked);
     return true;
+  }
+
+  // Create the aside session, hand it the projected brief of the conversation
+  // it was asked from, send it the question, and float it over the chat. The
+  // aside is a real standalone chat: it lives in the sidebar afterwards, and
+  // closing the panel never ends it.
+  async function openAside(adapter: import("./types").AdapterDescriptor, text: string, carryFromSessionId: string): Promise<void> {
+    // The same double-submit lock every create path takes: a second Enter
+    // while the create awaits must not make a second aside.
+    if (newChatPendingRef.current) return;
+    newChatPendingRef.current = true;
+    setError(undefined);
+    try {
+      const title = text.length > 64 ? `${text.slice(0, 63).trimEnd()}…` : text;
+      const next = await bridgeApi.createChat(adapter.id as Harness, adapter.defaultModel ?? null, title);
+      const created = [...next.sessions].reverse().find(item => !item.parentSessionId && !item.workspaceId);
+      if (!created) { setState(next); return; }
+      // Carry before the first send: the brief must be in the forest before
+      // the cold start compiles its prompt, same as `submitNewChatDraft`.
+      try { await bridgeApi.carrySessionHandoff(created.id, carryFromSessionId); }
+      catch { /* context carry is best-effort; the aside starts regardless */ }
+      setState(next);
+      setAsideChatId(created.id);
+      await deliverPrompt(created, text);
+    } catch (e) { setError(errorMessage(e)); }
+    finally { newChatPendingRef.current = false; }
   }
   // Entry point for the Welcome screen's own composer, which has no session
   // to skip past — a `$harness` prefix there is the only branch either way.
@@ -1221,6 +1265,32 @@ export function App() {
   // chat app — there is no explicit "start" step. Slash commands belonging to
   // another provider auto-switch the direct-chat harness first. A `$harness`
   // prefix skips this session entirely — see `openHarnessShortcut`.
+  /// The delivery core both composers share: prepare, cold-start if needed,
+  /// submit, with optimistic pending bookkeeping. Slash-command handling stays
+  /// in `sendPrompt` - an aside is pinned to its harness on purpose.
+  async function deliverPrompt(target: Session, submittedText: string): Promise<void> {
+    const key = crypto.randomUUID();
+    const prepared = await bridgeApi.prepareTurn(target.id, submittedText);
+    const text = prepared.text;
+    try {
+      setPending(current => [...current, { key, sessionId: target.id, text }]);
+      if (!liveStatuses.includes(target.status)) {
+        startedRef.current.add(target.id);
+        setState(await bridgeApi.startChat(target.id));
+      }
+      // One call whatever the session is doing. The backend decides between
+      // starting a turn, steering the live one, and durably queueing, and says
+      // which — so the message can be shown in the state it is actually in.
+      const outcome = await bridgeApi.submitInput(target.id, text);
+      if (outcome.disposition !== "startedNewTurn") {
+        const delivery = outcome.disposition === "steeredActiveTurn" ? "steered" as const : "queued" as const;
+        setPending(current => current.map(item => item.key === key ? { ...item, delivery } : item));
+      }
+    } catch (e) {
+      setPending(current => current.filter(item => item.key !== key));
+      throw e;
+    }
+  }
   async function sendPrompt(forcedText?: string) {
     const submittedText = (forcedText ?? composer).trim();
     if (!submittedText) return;
@@ -1681,6 +1751,23 @@ export function App() {
               onSteer={steerWorker}
             />
           </div>}
+          {/* A user-made delegation floats over the chat it was asked from;
+              the chat underneath never moves. See `openAside`. */}
+          {asideSession && asideSession.id !== session.id && <AsideChat
+            session={asideSession}
+            events={agentEvents}
+            pendingMessages={asidePending}
+            working={!!asideSession.activeTurnId || asideSession.status === "working"}
+            onSend={async text => {
+              try { await deliverPrompt(asideSession, text); }
+              catch (e) { setError(errorMessage(e)); }
+            }}
+            onResolve={(eventId, decision) => {
+              void bridgeApi.resolveApproval(asideSession.id, eventId, decision).then(reload).catch(e => setError(errorMessage(e)));
+            }}
+            onPromote={() => { setAsideChatId(undefined); openSession(asideSession.id); }}
+            onClose={() => setAsideChatId(undefined)}
+          />}
           <div className={cn("flex-1 min-w-0 flex flex-col relative", dockExpandedVisible && "hidden")}>
             <>
               {recallOpen && (
