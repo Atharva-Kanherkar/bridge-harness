@@ -287,7 +287,9 @@ impl CompactionController {
              only what actually happened: leave `decisions` and `filesTouched` \
              as empty arrays if nothing was decided or changed, and say so \
              plainly in `summary` if this session has barely started. Invent \
-             nothing. Copy `sourceAgent`, `firstRetainedEntryId`, \
+             nothing. Do not call tools, run commands, change files, delegate, \
+             or take any other action; this maintenance turn may only return \
+             the checkpoint JSON. Copy `sourceAgent`, `firstRetainedEntryId`, \
              `tokensBefore`, and `reason` through exactly as given — they are \
              Bridge's own bookkeeping and are how this reply is matched to this \
              request. Nothing you write here reaches the user, and this turn is \
@@ -859,6 +861,19 @@ mod tests {
             prompt.contains("empty arrays") && prompt.contains("Invent nothing"),
             "and that an empty answer is a valid one: {prompt}"
         );
+        for forbidden_action in [
+            "Do not call tools",
+            "run commands",
+            "change files",
+            "delegate",
+            "any other action",
+            "may only return the checkpoint JSON",
+        ] {
+            assert!(
+                prompt.contains(forbidden_action),
+                "the maintenance turn must forbid {forbidden_action:?}: {prompt}"
+            );
+        }
         assert!(
             prompt.contains("reaches the user") && prompt.contains("not part of your conversation"),
             "and that this turn is not the conversation: {prompt}"
