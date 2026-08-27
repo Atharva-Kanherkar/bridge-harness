@@ -1835,6 +1835,24 @@ fn cleanup_reader_state(
     }
 }
 
+fn stop_direct_session_after_reader_exit(db: &Connection, session_id: &str) {
+    if let Ok(Some(pending)) =
+        compaction_controller::CompactionController::pending(db, session_id)
+    {
+        let _ = compaction_controller::CompactionController::record_failure(
+            db,
+            session_id,
+            "checkpoint turn ended because the adapter exited",
+            pending.attempt,
+        );
+    }
+    let _ = db.execute(
+        "UPDATE sessions SET status='stopped',ended_at=?2,active_turn_id=NULL
+         WHERE id=?1 AND status IN ('working','waiting','checkpointing')",
+        params![session_id, Utc::now().to_rfc3339()],
+    );
+}
+
 /// Drive one structured session's stdout: normalize every frame, then on exit
 /// mark the session stopped and unblock any parent that was waiting on it.
 fn spawn_reader_thread(
@@ -1976,7 +1994,7 @@ fn spawn_reader_thread(
                 )
                 .ok();
             if !is_worker {
-                let _ = db.execute("UPDATE sessions SET status='stopped',ended_at=?2,active_turn_id=NULL WHERE id=?1 AND status IN ('working','waiting')", params![session_id,Utc::now().to_rfc3339()]);
+                stop_direct_session_after_reader_exit(&db, &session_id);
             }
             workspace
         };
@@ -9862,6 +9880,62 @@ mod submit_input_tests {
 
         handle_agent_value(&core, "chat", &current_turn, &codex_turn_completed());
         assert_eq!(session_status(&core), "ready", "turn completion clears the tombstone");
+    }
+
+    #[test]
+    fn root_adapter_exit_clears_an_unfinished_checkpoint_turn() {
+        let (_fixture, core, _managed_root) = core_with_chat("working");
+        let pending = begin_checkpoint(&core);
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET status='checkpointing',started_at='launch',provider_session_id='fake' WHERE id='chat'",
+                [],
+            )
+            .unwrap();
+        attach_handles(&core, false);
+
+        spawn_reader_thread(
+            core.clone(),
+            "chat".into(),
+            "claude".into(),
+            "launch".into(),
+            "fake".into(),
+            0,
+            Arc::new(Mutex::new(Some("turn-1".into()))),
+            Box::new(std::io::Cursor::new(Vec::<u8>::new())),
+        );
+
+        for _ in 0..100 {
+            if session_status(&core) == "stopped" {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        assert_eq!(session_status(&core), "stopped");
+        assert!(
+            compaction_controller::CompactionController::pending(
+                &core.db.lock().unwrap(),
+                "chat",
+            )
+            .unwrap()
+            .is_none(),
+            "the next resumed turn must not inherit checkpoint mode"
+        );
+        assert!(
+            core.db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM session_entries WHERE session_id='chat' AND kind='compaction.failed' AND json_extract(payload,'$.attempt')=?1)",
+                    params![pending.attempt],
+                    |row| row.get::<_, bool>(0),
+                )
+                .unwrap(),
+            "reader exit records why the checkpoint disappeared"
+        );
     }
 
     /// Persist an `opencode.question` `approval.requested` for "chat" with
