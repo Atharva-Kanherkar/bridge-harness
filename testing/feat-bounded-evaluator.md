@@ -43,11 +43,18 @@ or what the router is allowed to select changes.
 ### The evaluator never sees a transcript
 
 - Evidence is built deterministically from the decision and its outcome: the acceptance
-  criteria, worker result status, per-test statuses, files-changed count, runtime,
-  retries, override signal, reported cost and tokens, and the bounded artifact ids the
-  deterministic evaluation already recorded. Session entries are not read.
-- The evidence text is capped, and its SHA-256 is recorded on the run so a verdict can
-  be tied to exactly the bytes that produced it.
+  criteria, per-check statuses, files-changed count, runtime, retries, override signal,
+  reported cost and tokens, and the bounded artifact ids the deterministic evaluation
+  already recorded. Session entries are not read.
+- Nothing the worker said about its own work reaches the bundle, and neither does the
+  acting harness or model name. A self-report and a model identity both move a judge,
+  so the judged artifact carries only what Bridge and the check executors recorded.
+  Cross-family selection still needs the acting family; the bundle does not.
+- The prompt is ordered so the untrusted half cannot become instruction: the acceptance
+  criteria first, then the evidence as one JSON-encoded object, then the rubric and the
+  answer contract last.
+- The evidence is capped, and its SHA-256 is recorded on the run so a verdict can be
+  tied to exactly the bytes that produced it.
 - The same decision produces byte-identical evidence on repeat builds.
 
 ### The judge is bounded, tool-free, and cross-family
@@ -64,11 +71,22 @@ or what the router is allowed to select changes.
 
 ### The gate owns the verdict
 
-- The model answers with exactly one fenced block tagged `bridge-outcome-verdict`
-  containing a JSON object with exactly the fields `scoreBps`, `confidenceBps`, and
-  `rationale`. Any other shape, an extra field, a missing block, a non-integer score,
-  a score outside 0-10000, a confidence outside 0-10000, or a rationale over its cap
-  settles the run `failed` and writes no score.
+- The model answers with a fenced block tagged `bridge-outcome-verdict` containing a
+  JSON object with exactly the fields `criteria` and `confidenceBps`. `criteria` holds
+  every id in the closed rubric set exactly once, each an object with exactly `id`,
+  `verdict`, and `evidence`, where `verdict` is `pass`, `fail`, or
+  `insufficient_evidence` and `evidence` is a short span quoted from the bundle.
+- The model never states a score. The gate derives `score_bps` from the pass and fail
+  verdicts alone; criteria answered `insufficient_evidence` leave the denominator
+  rather than counting against the work, and cap the recorded confidence in proportion
+  to how much of the rubric was actually decided.
+- The last fenced block wins, so an earlier one echoed out of the evidence cannot.
+  An unknown id, a duplicate id, a missing id, an unknown verdict, an extra field, a
+  missing block, a confidence outside 0-10000, or an evidence span over its cap is a
+  protocol deviation: the run settles `failed` and writes no score.
+- A verdict in which every criterion is `insufficient_evidence` settles `skipped` and
+  writes no score. Neither a failed run nor an undecidable one is ever recorded as a
+  zero, because a zero is a judgement about the work and neither of those is.
 - A settled `completed` run writes `score_bps` and `confidence_bps` onto the
   `model_based` row for that decision with status `completed`, and records the
   evaluator identity, the evidence digest, and that tool access was none.
@@ -98,6 +116,11 @@ No test performs a model call. The executor is written against an `EvaluationMod
 trait that tests implement with fixed strings, matching `ExtractionModel`. Leases,
 claims, and settlement are asserted through explicit timestamps passed in, never by
 sleeping.
+
+Bridge's own half is deterministic: the same decision builds the same bytes, and the
+same verdict derives the same score. The model's half is not. Whatever sampling
+parameters a run was given are recorded beside its verdict, and a score is treated as
+a measurement with error rather than a fact about the work.
 
 ## Out of Scope
 
