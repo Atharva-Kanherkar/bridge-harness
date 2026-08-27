@@ -133,6 +133,7 @@ pub fn resume_with_settings(
             write_mode: request.write_mode,
             read_only_sandbox: request.read_only_sandbox,
             briefing: request.briefing,
+            on_progress: request.on_progress,
         },
         Some(request.provider_session_id),
         settings,
@@ -179,6 +180,10 @@ fn launch(
         // instead of a generic exit.
         .stderr(Stdio::piped());
     crate::adapters::configure_process_group(&mut command);
+    if let Some(on_progress) = request.on_progress {
+        on_progress(crate::adapters::StartupPhase::Spawning);
+    }
+    let spawned_at = std::time::Instant::now();
     let mut child = command.spawn()?;
     let ledger = crate::process_ledger::record_launch("opencode.session", request.cwd, child.id());
     let stderr_tail = crate::adapters::StderrTail::capture(&mut child);
@@ -189,11 +194,15 @@ fn launch(
             return Err(error);
         }
     };
+    if let Some(on_progress) = request.on_progress {
+        on_progress(crate::adapters::StartupPhase::Handshake);
+    }
     if let Err(error) = wait_until_ready(&client, &base_url, &mut child) {
         stop_child(&mut child);
         drop_client_safely(client);
         return Err(error);
     }
+    crate::process_ledger::log_spawn_to_ready("opencode", "server_ready", spawned_at);
 
     let model = request.model.and_then(parse_model);
     let variant = request
@@ -260,6 +269,9 @@ fn launch(
         stop_child(&mut child);
         drop_client_safely(client);
         return Err(error);
+    }
+    if let Some(on_progress) = request.on_progress {
+        on_progress(crate::adapters::StartupPhase::SessionOpen);
     }
     let startup_messages = vec![json!({
         "type": "session.created",
@@ -365,8 +377,17 @@ fn build_authenticated_client(server_password: &str) -> Result<Client, BridgeErr
         .map_err(|error| BridgeError::Adapter(format!("Cannot create OpenCode client: {error}")))
 }
 
+/// Backoff between readiness probes: short while the server is most likely
+/// still booting, ramping up to the steady 100ms poll once it has had time to
+/// come up. `attempt` is zero-based (the delay taken *after* probe `attempt`).
+fn probe_backoff(attempt: usize) -> Duration {
+    const RAMP_MS: [u64; 4] = [10, 15, 25, 40];
+    Duration::from_millis(RAMP_MS.get(attempt).copied().unwrap_or(100))
+}
+
 fn wait_until_ready(client: &Client, base_url: &str, child: &mut Child) -> Result<(), BridgeError> {
     let deadline = Instant::now() + Duration::from_secs(8);
+    let mut attempt = 0usize;
     while Instant::now() < deadline {
         if let Some(status) = child.try_wait()? {
             return Err(BridgeError::Adapter(format!(
@@ -390,7 +411,8 @@ fn wait_until_ready(client: &Client, base_url: &str, child: &mut Child) -> Resul
             }
             return verify_server_requires_credentials(base_url);
         }
-        thread::sleep(Duration::from_millis(100));
+        thread::sleep(probe_backoff(attempt));
+        attempt += 1;
     }
     Err(BridgeError::Adapter(
         "OpenCode server did not become ready".into(),
@@ -1403,6 +1425,12 @@ mod tests {
     use crate::context_inventory::ContextObservationProvenance;
 
     #[test]
+    fn readiness_probe_backoff_ramps_then_flattens() {
+        let observed: Vec<u64> = (0..7).map(|attempt| probe_backoff(attempt).as_millis() as u64).collect();
+        assert_eq!(observed, vec![10, 15, 25, 40, 100, 100, 100]);
+    }
+
+    #[test]
     fn opencode_context_inventory_covers_start_resume_and_per_turn() {
         let body = prompt_body(
             None,
@@ -1636,6 +1664,7 @@ mod tests {
                 write_mode: None,
                 read_only_sandbox: None,
                 briefing: None,
+                on_progress: None,
             },
             &OpenCodeSettings {
                 executable_path: Some(executable),

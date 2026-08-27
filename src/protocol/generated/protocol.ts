@@ -291,6 +291,7 @@ export type BridgeNotification =
   | "session-output"
   | "terminal-exited"
   | "account-usage"
+  | "session-startup"
   | "stream-lagged";
 
 export const BRIDGE_NOTIFICATIONS = [
@@ -303,6 +304,7 @@ export const BRIDGE_NOTIFICATIONS = [
   { notification: "session-output", delivery: "transient" },
   { notification: "terminal-exited", delivery: "transient" },
   { notification: "account-usage", delivery: "transient" },
+  { notification: "session-startup", delivery: "transient" },
   { notification: "stream-lagged", delivery: "transient" },
 ] as const;
 

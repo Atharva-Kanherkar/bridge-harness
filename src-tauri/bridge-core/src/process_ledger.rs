@@ -114,6 +114,20 @@ pub fn record_launch_in_dir(root: &Path, kind: &str, label: &str, pid: u32) -> L
     LaunchGuard { path: Some(path) }
 }
 
+/// Record how long a harness took from child spawn to the readiness boundary
+/// it names, so cold-start regressions show up in logs without instrumenting
+/// every call site by hand. `boundary` is what was actually awaited — the
+/// harnesses do not all observe the same thing, and a number whose boundary is
+/// unstated is a number nobody can compare. Stderr, like every other
+/// diagnostic this app prints: the workspace installs no tracing subscriber,
+/// so a `tracing::info!` here would be discarded before it reached anyone.
+pub fn log_spawn_to_ready(harness: &str, boundary: &str, spawned_at: std::time::Instant) {
+    eprintln!(
+        "bridge: adapter spawn-to-ready harness={harness} boundary={boundary} elapsed_ms={}",
+        spawned_at.elapsed().as_millis()
+    );
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RecoveryOutcome {
     pub killed: usize,

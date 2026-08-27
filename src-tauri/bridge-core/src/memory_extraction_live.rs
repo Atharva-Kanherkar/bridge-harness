@@ -165,6 +165,7 @@ fn one_bounded_turn(
             write_mode: None,
             read_only_sandbox: None,
             briefing: Some(&policy),
+            on_progress: None,
         },
     );
     let started = match started {
