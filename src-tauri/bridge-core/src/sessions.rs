@@ -1742,6 +1742,13 @@ mod tests {
         let (_scratch, core) = fixture();
         core.create_chat(&Harness::Claude, None, None).unwrap();
         let session_id = only_session_id(&core);
+        core.adapters.lock().unwrap().insert(
+            session_id.clone(),
+            Box::new(RecordingRuntime {
+                interrupted: Default::default(),
+                usage_requested: Default::default(),
+            }),
+        );
         let append = |kind: session_forest::EntryKind, payload: serde_json::Value| {
             let db = core.db.lock().unwrap();
             session_forest::SessionForest::new(&db)
@@ -1762,6 +1769,22 @@ mod tests {
             greeting_tokens < SWITCH_SUMMARY_MIN_TOKENS,
             "a greeting must sit under the floor, estimated {greeting_tokens}"
         );
+        assert!(
+            core.plan_switch_summary(&session_id).unwrap().is_none(),
+            "the hot-path planner must apply the floor, not only compute an estimate below it"
+        );
+        let compaction_requests = || {
+            core.db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM session_entries WHERE session_id=?1 AND kind='compaction.requested'",
+                    params![session_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(compaction_requests(), 0, "the skipped summary must not touch the forest");
 
         // Now the same session with actual work in it. Sizes are the point, so
         // the payloads carry real bulk rather than a token_estimate override.
@@ -1782,6 +1805,11 @@ mod tests {
             working_tokens >= SWITCH_SUMMARY_MIN_TOKENS,
             "a session with real history must clear the floor, estimated {working_tokens}"
         );
+        assert!(
+            core.plan_switch_summary(&session_id).unwrap().is_some(),
+            "real history must still produce a checkpoint request"
+        );
+        assert_eq!(compaction_requests(), 1);
     }
 
     #[test]
