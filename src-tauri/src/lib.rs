@@ -522,6 +522,39 @@ async fn update_router_preferences(
 }
 
 #[tauri::command]
+async fn get_routing_evaluations(
+    workspace_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::RoutingEvaluationsResult, BridgeError> {
+    api::get_routing_evaluations(state.inner(), &workspace_id)
+}
+
+#[tauri::command]
+async fn get_evaluation_settings(
+    workspace_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::RoutingEvaluationSettings, BridgeError> {
+    api::get_evaluation_settings(state.inner(), &workspace_id)
+}
+
+#[tauri::command]
+async fn update_evaluation_settings(
+    workspace_id: String,
+    mode: String,
+    harness: Option<String>,
+    model: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::RoutingEvaluationSettings, BridgeError> {
+    api::update_evaluation_settings(
+        state.inner(),
+        &workspace_id,
+        &mode,
+        harness.as_deref(),
+        model.as_deref(),
+    )
+}
+
+#[tauri::command]
 async fn get_model_setup(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<model_profiles::ModelSetupState, BridgeError> {
@@ -1636,6 +1669,7 @@ fn setup_embedded(
     live_turn::start_learning_maintenance(core.clone());
     bridge_core::work_briefing_live::start_briefing_maintenance(core.clone());
     bridge_core::memory_extraction_live::start_extraction_maintenance(core.clone());
+    bridge_core::routing_evaluation_live::start_evaluation_maintenance(core.clone());
     live_turn::start_queued_input_maintenance(core.clone());
     live_turn::start_history_snapshot_maintenance(core);
     Ok(())
@@ -1733,6 +1767,9 @@ pub fn run() {
             enable_learning_trigger,
             approve_learning_run,
             rollback_routing_policy,
+            get_routing_evaluations,
+            get_evaluation_settings,
+            update_evaluation_settings,
             activate_session_entry,
             add_project,
             create_workspace,
