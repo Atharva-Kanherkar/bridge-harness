@@ -1180,7 +1180,9 @@ export function App() {
     // The switch can take seconds (the outgoing provider may be asked for a
     // handoff summary); the narration row wears this instead of claiming the
     // old model is reading a message that does not exist.
-    setModelSwitch({ sessionId: session.id, harness, label: modelDisplayName(adapters, harness, model) });
+    // A null model means the adapter's default; "Switching to Automatic…"
+    // names nothing, so the harness carries the label instead.
+    setModelSwitch({ sessionId: session.id, harness, label: model ? modelDisplayName(adapters, harness, model) : harnessLabel(harness) });
     try { setState(await bridgeApi.updateChatModel(session.id, harness, model)); }
     catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); setModelSwitch(null); }
