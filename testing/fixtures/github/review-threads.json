@@ -1,0 +1,53 @@
+{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "nodes": [
+            {
+              "id": "PRRT_thread_1",
+              "isResolved": false,
+              "isOutdated": false,
+              "path": "src/lib.rs",
+              "line": 42,
+              "originalLine": 40,
+              "comments": {
+                "nodes": [
+                  {
+                    "id": "PRRC_comment_1",
+                    "databaseId": 9001,
+                    "author": { "login": "reviewer" },
+                    "body": "Please keep this typed.",
+                    "createdAt": "2026-08-28T09:00:00Z",
+                    "url": "https://github.com/fixture/project/pull/103#discussion_r9001",
+                    "replyTo": null
+                  },
+                  {
+                    "id": "PRRC_comment_2",
+                    "databaseId": 9002,
+                    "author": { "login": "author" },
+                    "body": "Done.",
+                    "createdAt": "2026-08-28T09:05:00Z",
+                    "url": "https://github.com/fixture/project/pull/103#discussion_r9002",
+                    "replyTo": { "id": "PRRC_comment_1" }
+                  }
+                ]
+              }
+            },
+            {
+              "id": "PRRT_thread_2",
+              "isResolved": true,
+              "isOutdated": true,
+              "path": "src/old.rs",
+              "line": null,
+              "originalLine": 7,
+              "comments": {
+                "nodes": []
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
