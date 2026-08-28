@@ -183,7 +183,7 @@ pub struct UpdateConsolidationSettingsParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MemoryConsolidationRun {
-    /// One of `queued`, `running`, `completed`, `failed`, `cancelled`, `skipped`.
+    /// One of `queued`, `running`, `completed`, `failed`, or `cancelled`.
     pub status: String,
     pub applied_count: i64,
     pub refused_count: i64,

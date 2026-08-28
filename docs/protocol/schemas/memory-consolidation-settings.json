@@ -27,7 +27,7 @@
           "type": "integer"
         },
         "status": {
-          "description": "One of `queued`, `running`, `completed`, `failed`, `cancelled`, `skipped`.",
+          "description": "One of `queued`, `running`, `completed`, `failed`, or `cancelled`.",
           "type": "string"
         },
         "updatedAt": {

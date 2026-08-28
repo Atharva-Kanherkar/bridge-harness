@@ -52,7 +52,6 @@ pub const MODE_PROPOSE: &str = "propose";
 pub const STATUS_COMPLETED: &str = "completed";
 pub const STATUS_FAILED: &str = "failed";
 pub const STATUS_CANCELLED: &str = "cancelled";
-pub const STATUS_SKIPPED: &str = "skipped";
 
 /// Rewrite several records as one. Every target is superseded by the result.
 pub const OPERATION_MERGE: &str = "merge";
@@ -111,7 +110,7 @@ pub(crate) fn install(transaction: &Transaction<'_>) -> Result<(), BridgeError> 
         CREATE TABLE IF NOT EXISTS memory_consolidation_runs (
             id TEXT PRIMARY KEY,
             scope_key TEXT NOT NULL,
-            session_id TEXT NOT NULL,
+            session_id TEXT,
             status TEXT NOT NULL,
             due_at TEXT NOT NULL,
             adapter TEXT,
@@ -371,11 +370,59 @@ pub fn enqueue_after_turn(
     Ok(true)
 }
 
+/// Reaching the budget schedules a run rather than blocking one.
+///
+/// Nothing in the vocabulary can grow a scope: a merge and a retire shrink it,
+/// and correct, group, expire and keep leave it the size it was. So a full
+/// scope is the strongest reason to consolidate, not a reason to refuse — the
+/// job is what a user at the ceiling has instead of clearing it by hand, and
+/// the write-path refusals stay exactly as they are while it works. A scope
+/// with no conversation in it would otherwise never schedule anything, which is
+/// the case this covers; a turn already schedules its own run.
+///
+/// The debounce still applies, so this cannot start a run against a scope
+/// somebody is still talking to, and a turn arriving later replaces the pending
+/// run and pushes it out again.
+pub fn enqueue_when_full(db: &Connection, now: DateTime<Utc>) -> Result<bool, BridgeError> {
+    let current = settings(db, ACCOUNT_MEMORY_SCOPE)?;
+    if !current.enabled() || current.harness.is_none() || current.model.is_none() {
+        return Ok(false);
+    }
+    if held_records(db, ACCOUNT_MEMORY_SCOPE)? < current.max_records {
+        return Ok(false);
+    }
+    let open: Option<i64> = db
+        .query_row(
+            "SELECT 1 FROM memory_consolidation_runs
+             WHERE scope_key=?1 AND status IN ('queued','running') LIMIT 1",
+            params![ACCOUNT_MEMORY_SCOPE],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if open.is_some() {
+        return Ok(false);
+    }
+    let due_at = (now + Duration::seconds(current.debounce_seconds)).to_rfc3339();
+    db.execute(
+        "INSERT INTO memory_consolidation_runs(
+            id, scope_key, session_id, status, due_at, created_at, updated_at
+         ) VALUES(?1,?2,NULL,'queued',?3,?4,?4)",
+        params![
+            Uuid::new_v4().to_string(),
+            ACCOUNT_MEMORY_SCOPE,
+            due_at,
+            now.to_rfc3339()
+        ],
+    )?;
+    Ok(true)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClaimedConsolidation {
     pub run_id: String,
     pub scope_key: String,
-    pub session_id: String,
+    /// The turn that scheduled the run, absent when reaching the budget did.
+    pub session_id: Option<String>,
     pub lease_owner: String,
     pub harness: String,
     pub model: String,
@@ -383,19 +430,17 @@ pub struct ClaimedConsolidation {
 
 /// One due run, leased.
 ///
-/// Two gates settle a run instead of executing it, and neither is a failure. A
-/// scope that has since turned consolidation off settles `cancelled`: off means
-/// off, including for work already queued. A scope with no remaining budget
-/// settles `skipped`, because every operation the run produced would meet the
-/// same refusal every other writer meets — the budget is the user's to clear,
-/// and a background job quietly rescuing them is exactly the eviction this
-/// design refuses. Neither path makes a model call.
+/// Two gates settle a run instead of executing it, and neither is a failure nor
+/// a model call: a scope that has since turned consolidation off, because off
+/// means off including for work already queued, and a scope left without a
+/// harness and model to run on. A full scope is deliberately not one of them —
+/// see [`enqueue_when_full`].
 pub fn claim_due(
     db: &Connection,
     now: DateTime<Utc>,
 ) -> Result<Option<ClaimedConsolidation>, BridgeError> {
     loop {
-        let candidate: Option<(String, String, String)> = db
+        let candidate: Option<(String, String, Option<String>)> = db
             .query_row(
                 "SELECT id, scope_key, session_id FROM memory_consolidation_runs
                  WHERE (status='queued' AND due_at <= ?1)
@@ -409,12 +454,12 @@ pub fn claim_due(
             return Ok(None);
         };
         let current = settings(db, &scope_key)?;
-        if !current.enabled() || current.harness.is_none() || current.model.is_none() {
+        if !current.enabled() {
             settle_unclaimed(db, &run_id, STATUS_CANCELLED, "consolidation_disabled", now)?;
             continue;
         }
-        if held_records(db, &scope_key)? >= current.max_records {
-            settle_unclaimed(db, &run_id, STATUS_SKIPPED, "budget_exhausted", now)?;
+        if current.harness.is_none() || current.model.is_none() {
+            settle_unclaimed(db, &run_id, STATUS_CANCELLED, "consolidation_unconfigured", now)?;
             continue;
         }
         let lease_owner = Uuid::new_v4().to_string();
@@ -490,12 +535,9 @@ pub fn settle(
     refused_count: i64,
     now: DateTime<Utc>,
 ) -> Result<bool, BridgeError> {
-    if !matches!(
-        status,
-        STATUS_COMPLETED | STATUS_FAILED | STATUS_CANCELLED | STATUS_SKIPPED
-    ) {
+    if !matches!(status, STATUS_COMPLETED | STATUS_FAILED | STATUS_CANCELLED) {
         return Err(BridgeError::Invalid(format!(
-            "A consolidation run settles completed, failed, cancelled, or skipped — not '{status}'."
+            "A consolidation run settles completed, failed, or cancelled — not '{status}'."
         )));
     }
     let settled = db.execute(
@@ -544,7 +586,7 @@ pub fn last_run(
         "SELECT status, applied_count, refused_count, observed_tokens, spend_microusd,
                 detail, updated_at
          FROM memory_consolidation_runs
-         WHERE scope_key=?1 AND status IN ('completed','failed','cancelled','skipped')
+         WHERE scope_key=?1 AND status IN ('completed','failed','cancelled')
          ORDER BY created_at DESC, id DESC LIMIT 1",
         params![scope_key],
         |row| {
@@ -1381,30 +1423,114 @@ mod tests {
     }
 
     #[test]
-    fn an_exhausted_budget_settles_skipped_without_a_model_call() {
+    fn a_full_scope_is_due_for_consolidation_rather_than_blocked_by_it() {
         let (_dir, db) = consolidation_db();
         insert_chat(&db, "s1", "chat");
-        propose_mode(&db);
         update_settings(
             &db,
             ACCOUNT_MEMORY_SCOPE,
             MODE_PROPOSE,
             Some("claude"),
             Some("haiku"),
-            Some(1),
+            Some(2),
             None,
             Some(MIN_DEBOUNCE_SECONDS),
         )
         .unwrap();
-        pin(&db, "The only pin that fits");
+        let one = pin(&db, "Deploys with bun run build");
+        let two = pin(&db, "Uses bun run build to deploy");
+        assert_eq!(held_records(&db, ACCOUNT_MEMORY_SCOPE).unwrap(), 2, "the scope is full");
+        assert!(
+            memory_ledger::save(&db, "No room", None, None).is_err(),
+            "the write-path refusal is unchanged"
+        );
+
+        // Nothing is talking to this scope, so nothing enqueued a run. Reaching
+        // the ceiling is what schedules one.
+        let start = Utc::now();
+        assert!(enqueue_when_full(&db, start).unwrap());
+        assert!(
+            !enqueue_when_full(&db, start).unwrap(),
+            "the ceiling schedules one run, not one per tick"
+        );
+        assert!(
+            claim_due(&db, start).unwrap().is_none(),
+            "the debounce still keeps a full scope out of a live conversation"
+        );
+
+        let due = start + Duration::seconds(MIN_DEBOUNCE_SECONDS + 1);
+        let claimed = claim_due(&db, due).unwrap().expect("a full scope is claimable");
+        assert_eq!(claimed.session_id, None, "no turn stands behind a capacity run");
+        assert!(settle(
+            &db,
+            &claimed.run_id,
+            &claimed.lease_owner,
+            STATUS_COMPLETED,
+            None,
+            Some("claude"),
+            Some("haiku"),
+            None,
+            0,
+            0,
+            0,
+            0,
+            due,
+        )
+        .unwrap());
+
+        // And the run it was refused before can actually clear the ceiling.
+        let mut model = CannedModel(fenced(&format!(
+            r#"[{{"operation":"merge","targets":["{}","{}"],"body":"Deploys with bun run build"}}]"#,
+            one.id, two.id
+        )));
+        let (report, _, _) = run_consolidation(&db, &mut model, ACCOUNT_MEMORY_SCOPE, due).unwrap();
+        assert_eq!(report.applied, 1);
+        assert_eq!(
+            held_records(&db, ACCOUNT_MEMORY_SCOPE).unwrap(),
+            1,
+            "consolidation is what gets a full scope back under its budget"
+        );
+        assert!(memory_ledger::save(&db, "Room again", None, None).is_ok());
+    }
+
+    #[test]
+    fn an_off_or_unconfigured_scope_settles_without_a_model_call() {
+        let (_dir, db) = consolidation_db();
+        insert_chat(&db, "s1", "chat");
+        propose_mode(&db);
+        pin(&db, "One");
+        pin(&db, "Two");
         let start = Utc::now();
         assert!(enqueue_after_turn(&db, "s1", start).unwrap());
-        let due = start + Duration::seconds(MIN_DEBOUNCE_SECONDS + 1);
+        update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_OFF, None, None, None, None, None)
+            .unwrap();
+        let due = start + Duration::seconds(DEFAULT_DEBOUNCE_SECONDS + 1);
         assert!(claim_due(&db, due).unwrap().is_none());
         let last = last_run(&db, ACCOUNT_MEMORY_SCOPE).unwrap().unwrap();
-        assert_eq!(last.status, STATUS_SKIPPED, "an exhausted budget is not a failure");
-        assert_eq!(last.detail.as_deref(), Some("budget_exhausted"));
+        assert_eq!(last.status, STATUS_CANCELLED, "off is not a failure");
+        assert_eq!(last.detail.as_deref(), Some("consolidation_disabled"));
         assert_eq!(last.spend_microusd, 0);
+        assert!(
+            !enqueue_when_full(&db, due).unwrap(),
+            "an off scope does not schedule a capacity run either"
+        );
+
+        // A profile that went missing under a propose-mode scope is a gap
+        // rather than a decision, and it stops the run for its own reason.
+        propose_mode(&db);
+        assert!(enqueue_after_turn(&db, "s1", due).unwrap());
+        db.execute(
+            "UPDATE memory_consolidation_settings SET harness=NULL, model=NULL WHERE scope_key=?1",
+            params![ACCOUNT_MEMORY_SCOPE],
+        )
+        .unwrap();
+        let later = due + Duration::seconds(DEFAULT_DEBOUNCE_SECONDS + 1);
+        assert!(claim_due(&db, later).unwrap().is_none());
+        let last = last_run(&db, ACCOUNT_MEMORY_SCOPE).unwrap().unwrap();
+        assert_eq!(last.status, STATUS_CANCELLED);
+        assert_eq!(last.detail.as_deref(), Some("consolidation_unconfigured"));
+        assert!(!enqueue_when_full(&db, later).unwrap());
+
         let mut model = RefusingModel;
         let _ = &mut model;
     }
@@ -1435,7 +1561,11 @@ mod tests {
         );
         let second_window = second_turn + Duration::seconds(DEFAULT_DEBOUNCE_SECONDS + 1);
         let claimed = claim_due(&db, second_window).unwrap().unwrap();
-        assert_eq!(claimed.session_id, "s2", "the pending run follows the newest turn");
+        assert_eq!(
+            claimed.session_id.as_deref(),
+            Some("s2"),
+            "the pending run follows the newest turn"
+        );
     }
 
     #[test]
@@ -1453,22 +1583,6 @@ mod tests {
         assert!(!enqueue_after_turn(&db, "w1", now).unwrap());
         assert!(!enqueue_after_turn(&db, "missing", now).unwrap());
         assert!(enqueue_after_turn(&db, "s1", now).unwrap());
-    }
-
-    #[test]
-    fn turning_consolidation_off_cancels_a_queued_run_at_claim_time() {
-        let (_dir, db) = consolidation_db();
-        insert_chat(&db, "s1", "chat");
-        propose_mode(&db);
-        let start = Utc::now();
-        assert!(enqueue_after_turn(&db, "s1", start).unwrap());
-        update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_OFF, None, None, None, None, None)
-            .unwrap();
-        let due = start + Duration::seconds(DEFAULT_DEBOUNCE_SECONDS + 1);
-        assert!(claim_due(&db, due).unwrap().is_none());
-        let last = last_run(&db, ACCOUNT_MEMORY_SCOPE).unwrap().unwrap();
-        assert_eq!(last.status, STATUS_CANCELLED);
-        assert_eq!(last.detail.as_deref(), Some("consolidation_disabled"));
     }
 
     #[test]
@@ -1532,7 +1646,7 @@ mod tests {
             &db,
             &claimed.run_id,
             &claimed.lease_owner,
-            "retried",
+            "skipped",
             None,
             None,
             None,

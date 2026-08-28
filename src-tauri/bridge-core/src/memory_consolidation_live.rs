@@ -38,9 +38,10 @@ const MAX_WALL_SECONDS: i64 = 240;
 const POLL_SECONDS: u64 = 60;
 
 /// The cadence loop, started once per host beside the other maintenance
-/// threads. Every tick sweeps expiries and then claims at most one due run, so
-/// the deterministic half keeps working in a scope that never turns the bounded
-/// half on.
+/// threads. Every tick sweeps expiries, schedules a run for a scope that has
+/// reached its budget, and then claims at most one due run — so the
+/// deterministic half keeps working in a scope that never turns the bounded
+/// half on, and a full scope that nobody is talking to still gets consolidated.
 pub fn start_consolidation_maintenance(core: Arc<BridgeCore>) {
     std::thread::spawn(move || loop {
         std::thread::sleep(StdDuration::from_secs(POLL_SECONDS));
@@ -53,6 +54,10 @@ pub fn start_consolidation_maintenance(core: Arc<BridgeCore>) {
             core.events.publish(CoreEvent::MemoryChanged {
                 scope_key: memory_ledger::account_memory_scope().to_string(),
             });
+        }
+        {
+            let db = core.db.lock().unwrap();
+            let _ = memory_consolidation::enqueue_when_full(&db, now);
         }
         let claimed = {
             let db = core.db.lock().unwrap();
