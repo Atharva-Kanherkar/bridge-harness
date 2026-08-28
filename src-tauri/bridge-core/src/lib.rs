@@ -8,6 +8,7 @@
 
 pub mod acp_events;
 pub mod acp_registry;
+pub mod acp_session;
 pub mod adapters;
 pub mod agent;
 pub mod agent_config;

@@ -360,6 +360,7 @@ version = "0.1.0"
 dependencies = [
  "agent-client-protocol",
  "async-io",
+ "async-process",
  "base64 0.22.1",
  "bridge-protocol",
  "cap-std",
