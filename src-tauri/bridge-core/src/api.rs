@@ -28,7 +28,7 @@ use crate::{
 use bridge_protocol::messages as wire;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
 use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{de::DeserializeOwned, Serialize};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::io::{Read, Write};
@@ -84,6 +84,49 @@ pub fn health(core: &Arc<BridgeCore>) -> Result<Health, BridgeError> {
 
 pub fn get_state(core: &Arc<BridgeCore>) -> Result<BridgeState, BridgeError> {
     core.state_snapshot()
+}
+
+// --- github ----------------------------------------------------------------
+
+/// The GitHub reader's core DTOs and the protocol DTOs intentionally share
+/// their serialized shape. Converting at this boundary keeps the protocol
+/// crate independent of core while making a field rename fail loudly here.
+fn github_wire<T: DeserializeOwned, U: Serialize>(value: U) -> Result<T, BridgeError> {
+    serde_json::from_value(serde_json::to_value(value).map_err(|error| BridgeError::Invalid(error.to_string()))?)
+        .map_err(|error| BridgeError::Invalid(format!("GitHub protocol conversion failed: {error}")))
+}
+
+fn github_error(error: crate::github_surface::GithubSurfaceError) -> BridgeError {
+    BridgeError::Invalid(error.to_string())
+}
+
+pub fn github_status(core: &Arc<BridgeCore>, workspace_id: &str) -> Result<wire::GithubStatusResult, BridgeError> {
+    let availability = github_wire(core.github_surface.availability())?;
+    let repository = if matches!(availability, wire::GithubAvailability::Available) {
+        let path = locked_workspace_path(core, workspace_id)?;
+        core.github_surface.resolve_repository(Path::new(&path)).ok().map(github_wire).transpose()?
+    } else { None };
+    Ok(wire::GithubStatusResult { availability, repository })
+}
+
+pub fn github_prs(core: &Arc<BridgeCore>, workspace_id: &str) -> Result<wire::GithubPullRequestsResult, BridgeError> {
+    let path = locked_workspace_path(core, workspace_id)?;
+    let pull_requests = github_wire(core.github_surface.list_prs(Path::new(&path)).map_err(github_error)?)?;
+    Ok(wire::GithubPullRequestsResult { pull_requests })
+}
+
+pub fn github_pr(core: &Arc<BridgeCore>, workspace_id: &str, number: u64) -> Result<wire::GithubPullRequestResult, BridgeError> {
+    let path = locked_workspace_path(core, workspace_id)?;
+    let workspace = Path::new(&path);
+    let pull_request = github_wire(core.github_surface.pr_detail(workspace, number).map_err(github_error)?)?;
+    let review_threads = github_wire(core.github_surface.pr_review_threads(workspace, number).map_err(github_error)?)?;
+    Ok(wire::GithubPullRequestResult { pull_request, review_threads })
+}
+
+pub fn github_checks(core: &Arc<BridgeCore>, workspace_id: &str, number: u64) -> Result<wire::GithubChecksResult, BridgeError> {
+    let path = locked_workspace_path(core, workspace_id)?;
+    let checks = github_wire(core.github_surface.pr_checks(Path::new(&path), number).map_err(github_error)?)?;
+    Ok(wire::GithubChecksResult { checks })
 }
 
 // --- verified catalog --------------------------------------------------------

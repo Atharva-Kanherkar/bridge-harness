@@ -28,6 +28,7 @@ mod common;
 mod completion;
 mod config;
 mod forest;
+mod github;
 mod learning;
 mod marketplace;
 mod memory;
@@ -51,6 +52,7 @@ pub use common::*;
 pub use completion::*;
 pub use config::*;
 pub use forest::*;
+pub use github::*;
 pub use learning::*;
 pub use marketplace::*;
 pub use memory::*;
@@ -146,6 +148,11 @@ typed_methods![
     (GetState, _, BridgeState),
     // projects
     (AddProject, AddProjectParams, BridgeState),
+    // github
+    (GithubStatus, GithubStatusParams, GithubStatusResult),
+    (GithubPullRequests, GithubPrsParams, GithubPullRequestsResult),
+    (GithubPullRequest, GithubPrParams, GithubPullRequestResult),
+    (GithubChecks, GithubChecksParams, GithubChecksResult),
     // workspaces
     (CreateWorkspace, CreateWorkspaceParams, BridgeState),
     (ConnectWorkspaceFolder, ConnectWorkspaceFolderParams, BridgeState),

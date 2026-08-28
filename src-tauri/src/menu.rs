@@ -39,7 +39,11 @@ const CHAT_COMMANDS: &[Command] = &[
     Command("next-chat", "Next Chat", "Alt+CmdOrCtrl+Down"),
     Command("previous-chat", "Previous Chat", "Alt+CmdOrCtrl+Up"),
 ];
-const HELP_COMMANDS: &[Command] = &[Command("show-shortcuts", "Keyboard Shortcuts", "CmdOrCtrl+/")];
+const HELP_COMMANDS: &[Command] = &[Command(
+    "show-shortcuts",
+    "Keyboard Shortcuts",
+    "CmdOrCtrl+/",
+)];
 
 #[derive(Clone, Copy)]
 struct Command(&'static str, &'static str, &'static str);
@@ -143,10 +147,7 @@ pub fn build<R: Runtime>(handle: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         .items(&refs(&help_items))
         .build()?;
 
-    Menu::with_items(
-        handle,
-        &[&app, &file, &edit, &view, &go, &window, &help],
-    )
+    Menu::with_items(handle, &[&app, &file, &edit, &view, &go, &window, &help])
 }
 
 /// Forward a Bridge menu pick to the webview, which dispatches it exactly as

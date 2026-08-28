@@ -23,6 +23,34 @@
       "resultSchema": "bridge-state.json"
     },
     {
+      "command": "github_status",
+      "domain": "github",
+      "method": "github/github_status",
+      "paramsSchema": "github-status-params.json",
+      "resultSchema": "github-status-result.json"
+    },
+    {
+      "command": "github_prs",
+      "domain": "github",
+      "method": "github/github_prs",
+      "paramsSchema": "github-prs-params.json",
+      "resultSchema": "github-pull-requests-result.json"
+    },
+    {
+      "command": "github_pr",
+      "domain": "github",
+      "method": "github/github_pr",
+      "paramsSchema": "github-pr-params.json",
+      "resultSchema": "github-pull-request-result.json"
+    },
+    {
+      "command": "github_checks",
+      "domain": "github",
+      "method": "github/github_checks",
+      "paramsSchema": "github-checks-params.json",
+      "resultSchema": "github-checks-result.json"
+    },
+    {
       "command": "create_workspace",
       "domain": "workspaces",
       "method": "workspaces/create_workspace",

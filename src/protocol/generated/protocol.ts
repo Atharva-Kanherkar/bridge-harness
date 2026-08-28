@@ -10,6 +10,10 @@ export type BridgeMethod =
   | "health/health"
   | "state/get_state"
   | "projects/add_project"
+  | "github/github_status"
+  | "github/github_prs"
+  | "github/github_pr"
+  | "github/github_checks"
   | "workspaces/create_workspace"
   | "workspaces/connect_workspace_folder"
   | "workspaces/list_workspace_files"
@@ -147,6 +151,10 @@ export const BRIDGE_METHODS = [
   { method: "health/health", domain: "health", command: "health" },
   { method: "state/get_state", domain: "state", command: "get_state" },
   { method: "projects/add_project", domain: "projects", command: "add_project" },
+  { method: "github/github_status", domain: "github", command: "github_status" },
+  { method: "github/github_prs", domain: "github", command: "github_prs" },
+  { method: "github/github_pr", domain: "github", command: "github_pr" },
+  { method: "github/github_checks", domain: "github", command: "github_checks" },
   { method: "workspaces/create_workspace", domain: "workspaces", command: "create_workspace" },
   { method: "workspaces/connect_workspace_folder", domain: "workspaces", command: "connect_workspace_folder" },
   { method: "workspaces/list_workspace_files", domain: "workspaces", command: "list_workspace_files" },
@@ -340,6 +348,10 @@ export interface BridgeMethodParams {
   "health/health": undefined;
   "state/get_state": undefined;
   "projects/add_project": AddProjectParams;
+  "github/github_status": GithubStatusParams;
+  "github/github_prs": GithubPrsParams;
+  "github/github_pr": GithubPrParams;
+  "github/github_checks": GithubChecksParams;
   "workspaces/create_workspace": CreateWorkspaceParams;
   "workspaces/connect_workspace_folder": ConnectWorkspaceFolderParams;
   "workspaces/list_workspace_files": ListWorkspaceFilesParams;
@@ -479,6 +491,10 @@ export interface BridgeMethodResults {
   "health/health": HealthResult;
   "state/get_state": BridgeState;
   "projects/add_project": BridgeState;
+  "github/github_status": GithubStatusResult;
+  "github/github_prs": GithubPullRequestsResult;
+  "github/github_pr": GithubPullRequestResult;
+  "github/github_checks": GithubChecksResult;
   "workspaces/create_workspace": BridgeState;
   "workspaces/connect_workspace_folder": BridgeState;
   "workspaces/list_workspace_files": ListWorkspaceFilesResult;
@@ -696,6 +712,16 @@ export interface BrowserSkill {
 
 export type CapabilityTier = "fast" | "standard" | "strong";
 
+export interface CheckRollup {
+  cancelled: number;
+  failed: number;
+  inProgress: number;
+  passed: number;
+  queued: number;
+  skipped: number;
+  total: number;
+}
+
 export interface CheckRun {
   artifactRefs: string[];
   checkId: string;
@@ -782,6 +808,22 @@ export type Effort = "low" | "medium" | "high" | "xhigh";
 export type EvalKind = "deterministic" | "scrutiny" | "user_testing";
 
 export type ExternalLearningTriggerKind = "codex" | "claude" | "open_code";
+
+export interface GithubActor {
+  login: string;
+}
+
+export type GithubAvailability = { status: "available" } | { status: "notInstalled" } | { remediation: string; status: "notAuthenticated" };
+
+export type GithubCheckConclusion = "success" | "failure" | "cancelled" | "skipped" | "neutral" | "timedOut" | "actionRequired" | "startupFailure" | "stale";
+
+export type GithubCheckStatus = "queued" | "inProgress" | "completed";
+
+export interface GithubRepository {
+  host: string;
+  name: string;
+  owner: string;
+}
 
 export interface HarnessConfig {
   advanced?: unknown;
@@ -901,6 +943,8 @@ export interface MemoryRecord {
   updatedAt: string;
 }
 
+export type Mergeability = "mergeable" | "conflicting" | "unknown";
+
 export interface ModelOption {
   defaultForTier: boolean;
   id: string;
@@ -999,6 +1043,36 @@ export interface ProviderMemoryCommand {
   harness: string;
 }
 
+export interface PullRequestCheck {
+  conclusion?: GithubCheckConclusion | null;
+  logUrl: string;
+  name: string;
+  status: GithubCheckStatus;
+  workflow: string;
+}
+
+export interface PullRequestDetail {
+  baseBranch: string;
+  body: string;
+  summary: PullRequestSummary;
+}
+
+export type PullRequestState = "open" | "closed" | "merged";
+
+export interface PullRequestSummary {
+  author?: GithubActor | null;
+  checks: CheckRollup;
+  headBranch: string;
+  isDraft: boolean;
+  mergeStateStatus: string;
+  mergeability: Mergeability;
+  number: number;
+  reviewDecision: ReviewDecision;
+  state: PullRequestState;
+  title: string;
+  url: string;
+}
+
 export interface QueuedWorkerRequest {
   actualModel: string;
   attemptCount: JsSafeI64;
@@ -1058,6 +1132,28 @@ export type ResponseId = RequestId | null;
 export type RestorationMode = "hot" | "native" | "checkpoint_restored" | "fresh";
 
 export type ResumeEligibility = "native" | "checkpoint_restored" | "fresh";
+
+export interface ReviewComment {
+  author?: GithubActor | null;
+  body: string;
+  createdAt: string;
+  databaseId?: number | null;
+  id: string;
+  replyToId?: string | null;
+  url: string;
+}
+
+export type ReviewDecision = "none" | "approved" | "changesRequested" | "reviewRequired";
+
+export interface ReviewThread {
+  comments: ReviewComment[];
+  id: string;
+  isOutdated: boolean;
+  isResolved: boolean;
+  line?: number | null;
+  originalLine?: number | null;
+  path: string;
+}
 
 export type RiskTier = "low" | "medium" | "high";
 
@@ -1517,6 +1613,42 @@ export interface BridgeState {
 
 export interface AddProjectParams {
   path: string;
+}
+
+export interface GithubStatusParams {
+  workspaceId: string;
+}
+
+export interface GithubStatusResult {
+  availability: GithubAvailability;
+  repository?: GithubRepository | null;
+}
+
+export interface GithubPrsParams {
+  workspaceId: string;
+}
+
+export interface GithubPullRequestsResult {
+  pullRequests: PullRequestSummary[];
+}
+
+export interface GithubPrParams {
+  number: number;
+  workspaceId: string;
+}
+
+export interface GithubPullRequestResult {
+  pullRequest: PullRequestDetail;
+  reviewThreads: ReviewThread[];
+}
+
+export interface GithubChecksParams {
+  number: number;
+  workspaceId: string;
+}
+
+export interface GithubChecksResult {
+  checks: PullRequestCheck[];
 }
 
 export interface CreateWorkspaceParams {
