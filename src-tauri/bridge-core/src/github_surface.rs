@@ -429,8 +429,9 @@ impl GithubSurface {
             return Ok(checks);
         }
         // `gh pr checks` intentionally exits nonzero when checks are pending or
-        // failing. A nonempty JSON document is still a successful read.
-        let bytes = self.run_gh(
+        // failing. A nonempty JSON document is still a successful read, and a
+        // branch with no checks at all is an empty result, not an error.
+        let bytes = match self.run_gh(
             workspace,
             "pr checks",
             &[
@@ -443,7 +444,16 @@ impl GithubSurface {
                 PR_CHECK_FIELDS.into(),
             ],
             true,
-        )?;
+        ) {
+            Ok(bytes) => bytes,
+            Err(GithubSurfaceError::CommandFailed { stderr, .. })
+                if stderr.starts_with("no checks reported") =>
+            {
+                self.store(key, CachedResource::Checks(Vec::new()));
+                return Ok(Vec::new());
+            }
+            Err(error) => return Err(error),
+        };
         let raw: Vec<RawPullRequestCheck> = parse_json("pull-request checks", &bytes)?;
         let checks = raw
             .into_iter()
@@ -861,7 +871,9 @@ fn normalize_status_and_conclusion(
     conclusion: Option<&str>,
 ) -> Result<(CheckStatus, Option<CheckConclusion>), GithubSurfaceError> {
     match status {
-        "QUEUED" | "PENDING" | "WAITING" | "EXPECTED" => Ok((CheckStatus::Queued, None)),
+        "QUEUED" | "PENDING" | "WAITING" | "EXPECTED" | "REQUESTED" => {
+            Ok((CheckStatus::Queued, None))
+        }
         "IN_PROGRESS" => Ok((CheckStatus::InProgress, None)),
         "COMPLETED" => {
             let conclusion = conclusion
@@ -883,7 +895,9 @@ fn normalize_check_state(
     bucket: &str,
 ) -> Result<(CheckStatus, Option<CheckConclusion>), GithubSurfaceError> {
     match state {
-        "QUEUED" | "PENDING" | "WAITING" | "EXPECTED" => Ok((CheckStatus::Queued, None)),
+        "QUEUED" | "PENDING" | "WAITING" | "EXPECTED" | "REQUESTED" => {
+            Ok((CheckStatus::Queued, None))
+        }
         "IN_PROGRESS" => Ok((CheckStatus::InProgress, None)),
         "SUCCESS" | "PASS" => Ok((CheckStatus::Completed, Some(CheckConclusion::Success))),
         "FAILURE" | "ERROR" | "FAIL" => {
@@ -1044,7 +1058,11 @@ fn parse_remote_url(value: &str) -> Option<GithubRepository> {
     let value = value.trim().trim_end_matches('/').trim_end_matches(".git");
     if let Some((_, rest)) = value.split_once("://") {
         let (authority, path) = rest.split_once('/')?;
-        let host = authority.rsplit('@').next()?;
+        // An empty authority is a local URL such as file:///path/to/repo.
+        if authority.is_empty() {
+            return None;
+        }
+        let host = strip_port(authority.rsplit('@').next()?);
         return parse_repository_selector(&format!("{host}/{path}"));
     }
 
@@ -1056,6 +1074,17 @@ fn parse_remote_url(value: &str) -> Option<GithubRepository> {
         }
     }
     None
+}
+
+fn strip_port(host: &str) -> &str {
+    match host.rsplit_once(':') {
+        Some((bare, port))
+            if !port.is_empty() && port.bytes().all(|byte| byte.is_ascii_digit()) =>
+        {
+            bare
+        }
+        _ => host,
+    }
 }
 
 fn valid_repository_parts(host: &str, owner: &str, name: &str) -> bool {
@@ -1083,7 +1112,7 @@ mod tests {
             .canonicalize()
             .unwrap();
         let script = format!(
-            "#!/bin/sh\nroot=$(dirname \"$0\")\nprintf '%s\\n' \"$*\" >> \"$root/invocations.log\"\nif [ \"$1 $2\" = \"auth status\" ]; then exit {auth_exit}; fi\nif [ \"$1 $2 $3\" = \"repo set-default --view\" ]; then\n  if [ -n \"{default}\" ]; then printf '%s\\n' '{default}'; exit 0; fi\n  exit 1\nfi\nif [ \"$1 $2\" = \"pr list\" ]; then\n  fixture=prs.json\n  if [ -f \"$root/pr-list-fixture\" ]; then fixture=$(cat \"$root/pr-list-fixture\"); fi\n  cat '{fixtures}/'$fixture\n  exit 0\nfi\nif [ \"$1 $2\" = \"pr view\" ]; then cat '{fixtures}/pr-detail.json'; exit 0; fi\nif [ \"$1 $2\" = \"pr checks\" ]; then cat '{fixtures}/checks.json'; exit 1; fi\nif [ \"$1 $2\" = \"api graphql\" ]; then cat '{fixtures}/review-threads.json'; exit 0; fi\nexit 2\n",
+            "#!/bin/sh\nroot=$(dirname \"$0\")\nprintf '%s\\n' \"$*\" >> \"$root/invocations.log\"\nif [ \"$1 $2\" = \"auth status\" ]; then exit {auth_exit}; fi\nif [ \"$1 $2 $3\" = \"repo set-default --view\" ]; then\n  if [ -n \"{default}\" ]; then printf '%s\\n' '{default}'; exit 0; fi\n  exit 1\nfi\nif [ \"$1 $2\" = \"pr list\" ]; then\n  fixture=prs.json\n  if [ -f \"$root/pr-list-fixture\" ]; then fixture=$(cat \"$root/pr-list-fixture\"); fi\n  cat '{fixtures}/'$fixture\n  exit 0\nfi\nif [ \"$1 $2\" = \"pr view\" ]; then cat '{fixtures}/pr-detail.json'; exit 0; fi\nif [ \"$1 $2\" = \"pr checks\" ]; then\n  if [ -f \"$root/pr-checks-empty\" ]; then echo \"no checks reported on the 'fixture' branch\" >&2; exit 1; fi\n  cat '{fixtures}/checks.json'\n  exit 1\nfi\nif [ \"$1 $2\" = \"api graphql\" ]; then cat '{fixtures}/review-threads.json'; exit 0; fi\nexit 2\n",
             fixtures = fixtures.display()
         );
         fs::write(&binary, script).unwrap();
@@ -1302,7 +1331,12 @@ mod tests {
                 .selector(),
             "github.example.com/owner/repo"
         );
+        assert_eq!(
+            parse_remote_url("ssh://git@github.com:22/owner/repo.git"),
+            Some(expected("owner", "repo"))
+        );
         assert_eq!(parse_remote_url("../local/repo"), None);
+        assert_eq!(parse_remote_url("file:///Users/fixture/repo"), None);
     }
 
     #[test]
@@ -1376,6 +1410,30 @@ mod tests {
             1,
             "a nonzero checks rollup exit still yielded valid JSON"
         );
+    }
+
+    #[test]
+    fn pr_checks_on_a_branch_without_checks_are_an_empty_list() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        fs::write(fake.path().join("pr-checks-empty"), "").unwrap();
+        let surface = GithubSurface::discover_on_path(fake.path());
+        assert_eq!(surface.pr_checks(repository.path(), 103).unwrap(), vec![]);
+        assert_eq!(surface.pr_checks(repository.path(), 103).unwrap(), vec![]);
+        assert_eq!(
+            invocation_count(&fake, "pr checks"),
+            1,
+            "an empty checks result is cacheable"
+        );
+    }
+
+    #[test]
+    fn requested_checks_count_as_queued() {
+        let raw = br#"[{"number":1,"title":"Requested","state":"OPEN","isDraft":false,"author":null,"headRefName":"requested","reviewDecision":"","mergeable":"UNKNOWN","mergeStateStatus":"UNKNOWN","statusCheckRollup":[{"__typename":"CheckRun","status":"REQUESTED","conclusion":""}],"url":"https://example.invalid"}]"#;
+        let raw: Vec<RawPullRequestSummary> = parse_json("pull-request list", raw).unwrap();
+        let summary = PullRequestSummary::try_from(raw.into_iter().next().unwrap()).unwrap();
+        assert_eq!(summary.checks.queued, 1);
+        assert_eq!(summary.checks.total, 1);
     }
 
     #[test]
