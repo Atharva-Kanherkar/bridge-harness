@@ -188,6 +188,7 @@ fn harness_ids_round_trip_with_identical_wire_values() {
     for harness in [
         model::Harness::Claude,
         model::Harness::Codex,
+        model::Harness::Cursor,
         model::Harness::OpenCode,
         model::Harness::Shell,
         model::Harness::from_stored("gemini"),
@@ -217,18 +218,24 @@ fn builtin_harnesses_keep_the_wire_values_protocol_0_8_published() {
 
 #[test]
 fn a_registry_agent_sharing_a_builtin_name_is_one_identity_not_two() {
-    // The live ACP registry ships an entry whose id is `opencode`, and Bridge
-    // ships an OpenCode adapter. They are the same agent reached two ways, so
-    // they are one harness with one id and one history. An earlier draft
-    // spelled the registry one `acp:opencode`, which made a single agent look
-    // like two competing products and leaked the transport into identity.
-    let from_registry = model::Harness::from_stored("opencode");
-    assert_eq!(from_registry, model::Harness::OpenCode);
-    assert_eq!(
-        serde_json::to_value(&from_registry).unwrap(),
-        serde_json::json!("opencode")
-    );
-    assert!(model::Harness::parse("acp:opencode").is_err());
+    // The live ACP registry ships entries whose ids are `opencode` and
+    // `cursor`, and Bridge ships an adapter for each. They are the same agents
+    // reached two ways, so each is one harness with one id and one history. An
+    // earlier draft spelled the registry one `acp:opencode`, which made a
+    // single agent look like two competing products and leaked the transport
+    // into identity.
+    for (stored, expected) in [
+        ("opencode", model::Harness::OpenCode),
+        ("cursor", model::Harness::Cursor),
+    ] {
+        let from_registry = model::Harness::from_stored(stored);
+        assert_eq!(from_registry, expected);
+        assert_eq!(
+            serde_json::to_value(&from_registry).unwrap(),
+            serde_json::json!(stored)
+        );
+        assert!(model::Harness::parse(&format!("acp:{stored}")).is_err());
+    }
 
     // An agent with no bespoke adapter is named by its own id, not by how it
     // is run — so writing one later changes nothing about its sessions.
@@ -305,6 +312,7 @@ fn a_stored_harness_id_is_idempotent_through_its_canonical_form() {
     let ids = [
         "claude",
         "codex",
+        "cursor",
         "opencode",
         "shell",
         "gemini",
