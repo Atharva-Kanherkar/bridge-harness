@@ -90,8 +90,13 @@ propose. Nothing here can grant a permission, widen a scope, or skip an approval
 - A run is enqueued per scope, debounced: a new turn in that scope while a run is
   pending replaces it rather than queueing a second, so consolidation never runs
   against a conversation still in progress.
-- Enqueueing is gated on remaining budget. With the budget exhausted the run settles
-  as skipped, not failed, and no model call is made.
+- A scope at or over its budget is due for consolidation rather than blocked by it.
+  No operation in the vocabulary can grow a scope, so refusing to run while the
+  scope is full leaves the ceiling as a wall the user has to clear by hand;
+  reaching it schedules a run instead. The debounce still applies, so a full scope
+  is not consolidated in the middle of a conversation.
+- The only paths that settle a run without a model call are consolidation being off
+  and consolidation being unconfigured. Neither is a failure.
 - Runs are leased with an expiry, claimed at most once, and settle exactly once, with
   observed tokens and spend recorded, as extraction runs already do.
 - Turning consolidation off settles queued runs rather than executing them.
