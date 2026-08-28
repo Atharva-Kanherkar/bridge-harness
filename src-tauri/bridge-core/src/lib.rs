@@ -42,6 +42,8 @@ pub mod managed_agents;
 pub mod managed_payload;
 pub mod managed_runtime;
 pub mod marketplace;
+pub mod memory_consolidation;
+pub mod memory_consolidation_live;
 pub mod memory_extraction;
 pub mod memory_extraction_live;
 pub mod memory_ledger;

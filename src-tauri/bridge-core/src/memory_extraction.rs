@@ -490,7 +490,7 @@ pub fn gate_and_insert(
             .map(str::trim)
             .filter(|value| !value.is_empty())
             .map(|value| value.chars().take(MAX_RATIONALE_CHARS).collect::<String>());
-        memory_ledger::insert_proposal(
+        match memory_ledger::insert_proposal(
             db,
             &scope_key,
             &body,
@@ -498,8 +498,14 @@ pub fn gate_and_insert(
             confidence,
             rationale.as_deref(),
             session_id,
-        )?;
-        report.written += 1;
+        ) {
+            Ok(_) => report.written += 1,
+            // The scope is at its budget. A proposal that would overflow is
+            // refused before it is stored and the run says so; nothing is
+            // evicted to make it fit, and nothing is dropped in silence.
+            Err(BridgeError::Invalid(_)) => report.refused += 1,
+            Err(error) => return Err(error),
+        }
     }
     Ok(report)
 }

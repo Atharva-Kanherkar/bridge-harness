@@ -801,6 +801,84 @@ pub fn update_extraction_settings(
     extraction_settings_wire(&db, settings)
 }
 
+fn consolidation_settings_wire(
+    db: &rusqlite::Connection,
+    settings: crate::memory_consolidation::ConsolidationSettings,
+) -> Result<wire::MemoryConsolidationSettings, BridgeError> {
+    let last_run = crate::memory_consolidation::last_run(db, &settings.scope_key)?.map(|run| {
+        wire::MemoryConsolidationRun {
+            status: run.status,
+            applied_count: run.applied_count,
+            refused_count: run.refused_count,
+            observed_tokens: run.observed_tokens,
+            spend_microusd: run.spend_microusd,
+            detail: run.detail,
+            updated_at: run.updated_at,
+        }
+    });
+    let held_records = crate::memory_consolidation::held_records(db, &settings.scope_key)?;
+    Ok(wire::MemoryConsolidationSettings {
+        scope_key: settings.scope_key,
+        mode: settings.mode,
+        harness: settings.harness,
+        model: settings.model,
+        max_records: settings.max_records,
+        allow_removal: settings.allow_removal,
+        debounce_seconds: settings.debounce_seconds,
+        held_records,
+        last_run,
+    })
+}
+
+pub fn get_consolidation_settings(
+    core: &Arc<BridgeCore>,
+) -> Result<wire::MemoryConsolidationSettings, BridgeError> {
+    let db = core.db.lock().unwrap();
+    let settings =
+        crate::memory_consolidation::settings(&db, memory_ledger::account_memory_scope())?;
+    consolidation_settings_wire(&db, settings)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn update_consolidation_settings(
+    core: &Arc<BridgeCore>,
+    mode: &str,
+    harness: Option<&str>,
+    model: Option<&str>,
+    max_records: Option<i64>,
+    allow_removal: Option<bool>,
+    debounce_seconds: Option<i64>,
+) -> Result<wire::MemoryConsolidationSettings, BridgeError> {
+    let db = core.db.lock().unwrap();
+    let settings = crate::memory_consolidation::update_settings(
+        &db,
+        memory_ledger::account_memory_scope(),
+        mode,
+        harness,
+        model,
+        max_records,
+        allow_removal,
+        debounce_seconds,
+    )?;
+    consolidation_settings_wire(&db, settings)
+}
+
+/// The scope as it stood at one instant. History is a read, never a rewrite:
+/// nothing here reopens a closed interval or resurrects a tombstoned record.
+pub fn list_memory_records_as_of(
+    core: &Arc<BridgeCore>,
+    scope_key: &str,
+    at: &str,
+) -> Result<bridge_protocol::messages::ListMemoryRecordsResult, BridgeError> {
+    let at = chrono::DateTime::parse_from_rfc3339(at.trim())
+        .map_err(|error| {
+            BridgeError::Invalid(format!("'{at}' is not an RFC 3339 instant: {error}"))
+        })?
+        .with_timezone(&chrono::Utc);
+    let db = core.db.lock().unwrap();
+    memory_ledger::list_as_of(&db, scope_key, at)
+}
+
 pub fn get_memory_injection(
     core: &Arc<BridgeCore>,
 ) -> Result<wire::MemoryInjectionSettings, BridgeError> {
@@ -3157,9 +3235,10 @@ mod tests {
         {
             let db = core.db.lock().unwrap();
             db.execute(
-                "INSERT INTO memory_records(id, scope_key, kind, body, provenance, status, created_at, updated_at)
-                 VALUES('p1','account:local','fact','One','model_proposal','proposed','now','now'),
-                        ('p2','account:local','fact','Two','model_proposal','proposed','now','now')",
+                "INSERT INTO memory_records(id, scope_key, kind, body, provenance, status,
+                     valid_from, valid_to, created_at, updated_at)
+                 VALUES('p1','account:local','fact','One','model_proposal','proposed','now','now','now','now'),
+                        ('p2','account:local','fact','Two','model_proposal','proposed','now','now','now','now')",
                 [],
             )
             .unwrap();

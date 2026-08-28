@@ -331,6 +331,27 @@
       "resultSchema": "memory-packet-audit.json"
     },
     {
+      "command": "list_memory_records_as_of",
+      "domain": "memory",
+      "method": "memory/list_memory_records_as_of",
+      "paramsSchema": "list-memory-records-as-of-params.json",
+      "resultSchema": "list-memory-records-result.json"
+    },
+    {
+      "command": "get_consolidation_settings",
+      "domain": "memory",
+      "method": "memory/get_consolidation_settings",
+      "paramsSchema": null,
+      "resultSchema": "memory-consolidation-settings.json"
+    },
+    {
+      "command": "update_consolidation_settings",
+      "domain": "memory",
+      "method": "memory/update_consolidation_settings",
+      "paramsSchema": "update-consolidation-settings-params.json",
+      "resultSchema": "memory-consolidation-settings.json"
+    },
+    {
       "command": "resolve_approval",
       "domain": "approvals",
       "method": "approvals/resolve_approval",

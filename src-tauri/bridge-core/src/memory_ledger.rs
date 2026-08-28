@@ -10,7 +10,7 @@ use bridge_protocol::messages::{
     ListMemoryRecordsResult, MemoryRecord, ACCOUNT_MEMORY_SCOPE, MAX_MEMORY_BODY_CHARS,
     MAX_MEMORY_LIST_LIMIT,
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use uuid::Uuid;
 
@@ -24,6 +24,9 @@ const STATUS_PROPOSED: &str = "proposed";
 const STATUS_REJECTED: &str = "rejected";
 const STATUS_SUPERSEDED: &str = "superseded";
 const STATUS_DELETED: &str = "deleted";
+/// Reached only by the sweep. Distinct from superseded, which names a
+/// successor, and from deleted, which is the user saying to forget.
+pub const STATUS_EXPIRED: &str = "expired";
 
 pub fn account_memory_scope() -> &'static str {
     ACCOUNT_MEMORY_SCOPE
@@ -101,6 +104,44 @@ pub(crate) fn install_trust_fields(transaction: &Transaction<'_>) -> Result<(), 
     Ok(())
 }
 
+/// Schema 42 (record half): validity stops being a flag.
+///
+/// `valid_from` is the instant a record's claim began to hold and `valid_to`
+/// the instant it stopped; an active record's end is open. A record that never
+/// reached active carries an empty interval, `valid_to = valid_from`, so the
+/// as-of read is pure containment and needs no status list beside it.
+///
+/// The backfill opens every existing interval at creation, leaves every active
+/// record open, and closes the rest at the last instant the row was touched —
+/// which for a superseded or tombstoned record is when it stopped holding.
+/// `max` guards the one case that would produce a backwards interval, a row
+/// whose `updated_at` predates its `created_at`.
+pub(crate) fn install_validity_intervals(
+    transaction: &Transaction<'_>,
+) -> Result<(), BridgeError> {
+    crate::store::add_column_if_missing(transaction, "memory_records", "valid_from", "TEXT")?;
+    crate::store::add_column_if_missing(transaction, "memory_records", "valid_to", "TEXT")?;
+    crate::store::add_column_if_missing(transaction, "memory_records", "expires_at", "TEXT")?;
+    crate::store::add_column_if_missing(transaction, "memory_records", "conflict_group", "TEXT")?;
+    transaction.execute_batch(
+        "UPDATE memory_records SET valid_from = created_at WHERE valid_from IS NULL;
+         UPDATE memory_records
+            SET valid_to = CASE
+                WHEN status = 'active' THEN NULL
+                WHEN status IN ('proposed','rejected') THEN valid_from
+                ELSE max(valid_from, updated_at)
+            END
+          WHERE valid_to IS NULL;
+         CREATE INDEX IF NOT EXISTS idx_memory_records_scope_interval
+             ON memory_records(scope_key, valid_from, valid_to);
+         CREATE INDEX IF NOT EXISTS idx_memory_records_expiry
+             ON memory_records(status, expires_at);
+         CREATE INDEX IF NOT EXISTS idx_memory_records_conflict
+             ON memory_records(scope_key, conflict_group, status);",
+    )?;
+    Ok(())
+}
+
 /// Reject empty, whitespace, and anything that is not a named scope.
 pub fn parse_scope_key(raw: &str) -> Result<String, BridgeError> {
     let trimmed = raw.trim();
@@ -175,13 +216,18 @@ fn map_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MemoryRecord> {
         confidence_bps: row.get::<_, Option<i64>>(7)?.map(|value| value as u32),
         rationale: row.get(8)?,
         supersedes: row.get(9)?,
-        created_at: row.get(10)?,
-        updated_at: row.get(11)?,
+        valid_from: row.get(10)?,
+        valid_to: row.get(11)?,
+        expires_at: row.get(12)?,
+        conflict_group: row.get(13)?,
+        created_at: row.get(14)?,
+        updated_at: row.get(15)?,
     })
 }
 
 const RECORD_COLUMNS: &str = "id, scope_key, kind, body, provenance, status, source_session_id, \
-     confidence_bps, rationale, supersedes, created_at, updated_at";
+     confidence_bps, rationale, supersedes, valid_from, valid_to, expires_at, conflict_group, \
+     created_at, updated_at";
 
 fn session_exists(db: &Connection, session_id: &str) -> Result<bool, BridgeError> {
     let found: Option<i64> = db
@@ -217,6 +263,7 @@ pub fn save(
             Some(session_id.to_string())
         }
     };
+    crate::memory_consolidation::enforce_scope_budget(db, &scope_key)?;
     let now = Utc::now().to_rfc3339();
     let record = MemoryRecord {
         id: Uuid::new_v4().to_string(),
@@ -229,13 +276,20 @@ pub fn save(
         confidence_bps: None,
         rationale: None,
         supersedes: None,
+        valid_from: now.clone(),
+        valid_to: None,
+        // An explicit save is the user saying this holds until they say
+        // otherwise. Nothing the ledger derives puts an end on it.
+        expires_at: None,
+        conflict_group: None,
         created_at: now.clone(),
         updated_at: now,
     };
     db.execute(
         "INSERT INTO memory_records(
-            id, scope_key, kind, body, provenance, status, source_session_id, created_at, updated_at
-         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            id, scope_key, kind, body, provenance, status, source_session_id,
+            valid_from, created_at, updated_at
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
         params![
             record.id,
             record.scope_key,
@@ -244,6 +298,7 @@ pub fn save(
             record.provenance,
             record.status,
             record.source_session_id,
+            record.valid_from,
             record.created_at,
             record.updated_at,
         ],
@@ -291,8 +346,10 @@ pub fn forget(db: &Connection, record_id: &str) -> Result<MemoryRecord, BridgeEr
         ));
     }
     let updated_at = Utc::now().to_rfc3339();
+    // A tombstone is the claim ceasing to hold, so it closes the interval at
+    // the same instant. History still answers what the user believed before.
     let changed = db.execute(
-        "UPDATE memory_records SET status=?1, updated_at=?2 WHERE id=?3 AND status=?4",
+        "UPDATE memory_records SET status=?1, valid_to=?2, updated_at=?2 WHERE id=?3 AND status=?4",
         params![STATUS_DELETED, updated_at, record_id, STATUS_ACTIVE],
     )?;
     if changed == 0 {
@@ -329,13 +386,16 @@ pub(crate) fn insert_proposal(
     rationale: Option<&str>,
     source_session_id: &str,
 ) -> Result<MemoryRecord, BridgeError> {
+    crate::memory_consolidation::enforce_scope_budget(db, scope_key)?;
     let now = Utc::now().to_rfc3339();
     let id = Uuid::new_v4().to_string();
+    // A proposal has never held, so its interval is empty rather than open:
+    // an as-of read of any instant must not return something nobody approved.
     db.execute(
         "INSERT INTO memory_records(
             id, scope_key, kind, body, provenance, status, source_session_id,
-            confidence_bps, rationale, created_at, updated_at
-         ) VALUES(?1,?2,?3,?4,'model_proposal','proposed',?5,?6,?7,?8,?8)",
+            confidence_bps, rationale, valid_from, valid_to, created_at, updated_at
+         ) VALUES(?1,?2,?3,?4,'model_proposal','proposed',?5,?6,?7,?8,?8,?8,?8)",
         params![
             id,
             scope_key,
@@ -369,9 +429,17 @@ pub(crate) fn body_already_known(
     Ok(found.is_some())
 }
 
-/// `proposed -> active`. The only path to active a proposal has.
+/// `proposed -> active`. The only path to active a proposal has, and the
+/// instant the record's claim starts holding: approval opens the interval that
+/// the proposal was written with closed.
 pub fn approve(db: &Connection, record_id: &str) -> Result<MemoryRecord, BridgeError> {
-    transition(db, record_id, STATUS_PROPOSED, STATUS_ACTIVE, "approve")
+    let record = transition(db, record_id, STATUS_PROPOSED, STATUS_ACTIVE, "approve")?;
+    db.execute(
+        "UPDATE memory_records SET valid_from=?2, valid_to=NULL WHERE id=?1",
+        params![record.id, record.updated_at],
+    )?;
+    load(db, &record.id)?
+        .ok_or_else(|| BridgeError::Invalid("The approved record was not written.".into()))
 }
 
 /// `proposed -> rejected`. Terminal short of a fresh proposal.
@@ -431,33 +499,249 @@ pub fn supersede(
     };
     let now = Utc::now().to_rfc3339();
     let transaction = db.unchecked_transaction()?;
-    let replacement_id = Uuid::new_v4().to_string();
-    transaction.execute(
-        "INSERT INTO memory_records(
-            id, scope_key, kind, body, provenance, status, source_session_id,
-            created_at, updated_at, supersedes
-         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
-        params![
-            replacement_id,
-            old.scope_key,
-            kind,
-            body,
-            PROVENANCE_USER_EXPLICIT,
-            STATUS_ACTIVE,
-            old.source_session_id,
-            now,
-            now,
-            old.id,
-        ],
-    )?;
-    transaction.execute(
-        "UPDATE memory_records SET status=?1, superseded_by=?2, updated_at=?3 WHERE id=?4",
-        params![STATUS_SUPERSEDED, replacement_id, now, old.id],
+    let replacement_id = write_supersession(
+        &transaction,
+        &[old.clone()],
+        &old.scope_key,
+        &body,
+        &kind,
+        PROVENANCE_USER_EXPLICIT,
+        old.source_session_id.as_deref(),
+        old.conflict_group.as_deref(),
+        &now,
     )?;
     transaction.commit()?;
     load(db, &replacement_id)?.ok_or_else(|| {
         BridgeError::Invalid("The superseding record was not written.".into())
     })
+}
+
+/// One successor, any number of predecessors, one instant.
+///
+/// This is the whole temporal contract in one place: the successor's interval
+/// opens exactly where every predecessor's closes, so there is no gap in which
+/// nothing held and no overlap in which two things did. A merge is expressed
+/// as a supersession of every record it replaces, which is why the predecessor
+/// list is a slice — provenance and the chain survive it, and each source stays
+/// reachable through its own `superseded_by`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write_supersession(
+    transaction: &Transaction<'_>,
+    predecessors: &[MemoryRecord],
+    scope_key: &str,
+    body: &str,
+    kind: &str,
+    provenance: &str,
+    source_session_id: Option<&str>,
+    conflict_group: Option<&str>,
+    at: &str,
+) -> Result<String, BridgeError> {
+    let replacement_id = Uuid::new_v4().to_string();
+    transaction.execute(
+        "INSERT INTO memory_records(
+            id, scope_key, kind, body, provenance, status, source_session_id,
+            valid_from, created_at, updated_at, supersedes, conflict_group
+         ) VALUES(?1,?2,?3,?4,?5,'active',?6,?7,?7,?7,?8,?9)",
+        params![
+            replacement_id,
+            scope_key,
+            kind,
+            body,
+            provenance,
+            source_session_id,
+            at,
+            predecessors.first().map(|record| record.id.clone()),
+            conflict_group,
+        ],
+    )?;
+    for predecessor in predecessors {
+        transaction.execute(
+            "UPDATE memory_records
+             SET status=?1, superseded_by=?2, valid_to=?3, updated_at=?3
+             WHERE id=?4 AND status=?5",
+            params![
+                STATUS_SUPERSEDED,
+                replacement_id,
+                at,
+                predecessor.id,
+                STATUS_ACTIVE
+            ],
+        )?;
+    }
+    Ok(replacement_id)
+}
+
+/// The scope as it stood at one instant: exactly the records whose validity
+/// interval contains it.
+///
+/// The interval is half-open, `[valid_from, valid_to)`, so a record replaced at
+/// an instant is not returned for that instant and its successor is — the
+/// boundary belongs to whichever claim held afterwards. Read as of now this
+/// returns the active set, which is why nothing that reads the ledger today
+/// changes behaviour.
+pub fn list_as_of(
+    db: &Connection,
+    scope_key: &str,
+    at: DateTime<Utc>,
+) -> Result<ListMemoryRecordsResult, BridgeError> {
+    let scope_key = parse_scope_key(scope_key)?;
+    let at = at.to_rfc3339();
+    let mut statement = db.prepare(&format!(
+        "SELECT {RECORD_COLUMNS}
+         FROM memory_records
+         WHERE scope_key=?1 AND valid_from <= ?2 AND (valid_to IS NULL OR valid_to > ?2)
+         ORDER BY updated_at DESC, id DESC
+         LIMIT ?3",
+    ))?;
+    let records = statement
+        .query_map(params![scope_key, at, MAX_MEMORY_LIST_LIMIT as i64], map_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(ListMemoryRecordsResult { scope_key, records })
+}
+
+/// Move every active record whose expiry has arrived to `expired`, closing its
+/// interval at the expiry rather than at the moment the sweep ran.
+///
+/// The instant is an argument and never a clock read inside the query, so a
+/// record expiring exactly at the sweep instant is expired and one expiring
+/// after it is not — a boundary a test can pin. Passing an expiry is a
+/// lifecycle transition, not a deletion: the body, the provenance and the
+/// interval all survive, so the user can still see why it stopped applying.
+/// Leaving the index needs no second mechanism, because the FTS triggers
+/// already key on active status.
+pub fn sweep_expired(db: &Connection, now: DateTime<Utc>) -> Result<Vec<String>, BridgeError> {
+    let now = now.to_rfc3339();
+    let mut statement = db.prepare(
+        "SELECT id FROM memory_records
+         WHERE status=?1 AND expires_at IS NOT NULL AND expires_at <= ?2
+         ORDER BY expires_at, id",
+    )?;
+    let expiring: Vec<String> = statement
+        .query_map(params![STATUS_ACTIVE, now], |row| row.get(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if expiring.is_empty() {
+        return Ok(expiring);
+    }
+    db.execute(
+        "UPDATE memory_records
+         SET status=?1, valid_to=expires_at, updated_at=?2
+         WHERE status=?3 AND expires_at IS NOT NULL AND expires_at <= ?2",
+        params![STATUS_EXPIRED, now, STATUS_ACTIVE],
+    )?;
+    Ok(expiring)
+}
+
+/// Put an end on an active record without closing it now. The sweep is what
+/// applies it, so setting one is reversible by the user until it arrives.
+pub(crate) fn set_expiry(
+    db: &Connection,
+    record_id: &str,
+    expires_at: &str,
+    at: &str,
+) -> Result<bool, BridgeError> {
+    let changed = db.execute(
+        "UPDATE memory_records SET expires_at=?2, updated_at=?3 WHERE id=?1 AND status=?4",
+        params![record_id, expires_at, at, STATUS_ACTIVE],
+    )?;
+    Ok(changed > 0)
+}
+
+/// Put competing claims about one subject into a group and leave one of them
+/// answering for it.
+///
+/// At most one member of a group is active at a time, so activating a member
+/// closes whichever member was active exactly where the survivor's claim
+/// continues — the same boundary rule supersession follows, and the reason a
+/// packet can never carry two contradictory facts. The survivor is the most
+/// recently touched active member: it is the scope's latest word on the
+/// subject. A group whose members all expire or are rejected simply has no
+/// active member, which is a legible state and not an error.
+pub(crate) fn assign_conflict_group(
+    db: &Connection,
+    scope_key: &str,
+    conflict_group: &str,
+    targets: &[MemoryRecord],
+    at: &str,
+) -> Result<String, BridgeError> {
+    let mut members: Vec<MemoryRecord> = targets.to_vec();
+    let mut statement = db.prepare(&format!(
+        "SELECT {RECORD_COLUMNS} FROM memory_records
+         WHERE scope_key=?1 AND conflict_group=?2 AND status=?3",
+    ))?;
+    let existing = statement
+        .query_map(params![scope_key, conflict_group, STATUS_ACTIVE], map_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    for record in existing {
+        if !members.iter().any(|known| known.id == record.id) {
+            members.push(record);
+        }
+    }
+    // Chosen before anything is stamped: assigning the group touches every
+    // member's `updated_at`, so deciding afterwards would be deciding by
+    // whichever row the loop happened to write last.
+    let survivor = members
+        .iter()
+        .max_by(|left, right| {
+            left.updated_at
+                .cmp(&right.updated_at)
+                .then(left.created_at.cmp(&right.created_at))
+                .then(left.id.cmp(&right.id))
+        })
+        .map(|record| record.id.clone())
+        .ok_or_else(|| {
+            BridgeError::Invalid(format!(
+                "Conflict group '{conflict_group}' has no active member to answer for it."
+            ))
+        })?;
+    let transaction = db.unchecked_transaction()?;
+    for member in &members {
+        transaction.execute(
+            "UPDATE memory_records SET conflict_group=?2, updated_at=?3
+             WHERE id=?1 AND scope_key=?4",
+            params![member.id, conflict_group, at, scope_key],
+        )?;
+    }
+    transaction.execute(
+        "UPDATE memory_records
+         SET status=?1, superseded_by=?2, valid_to=?3, updated_at=?3
+         WHERE scope_key=?4 AND conflict_group=?5 AND status=?6 AND id<>?2",
+        params![
+            STATUS_SUPERSEDED,
+            survivor,
+            at,
+            scope_key,
+            conflict_group,
+            STATUS_ACTIVE
+        ],
+    )?;
+    transaction.commit()?;
+    Ok(survivor)
+}
+
+/// Every active record in one scope, oldest first. The consolidation job's
+/// entire view of the world.
+pub(crate) fn active_records(
+    db: &Connection,
+    scope_key: &str,
+    limit: i64,
+) -> Result<Vec<MemoryRecord>, BridgeError> {
+    let mut statement = db.prepare(&format!(
+        "SELECT {RECORD_COLUMNS} FROM memory_records
+         WHERE scope_key=?1 AND status=?2
+         ORDER BY created_at, id
+         LIMIT ?3",
+    ))?;
+    let records = statement
+        .query_map(params![scope_key, STATUS_ACTIVE, limit], map_row)?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(records)
+}
+
+pub(crate) fn load_record(
+    db: &Connection,
+    record_id: &str,
+) -> Result<Option<MemoryRecord>, BridgeError> {
+    load(db, record_id)
 }
 
 /// FTS over active pins in one scope. Same guarded query shape as session
@@ -483,7 +767,8 @@ pub fn search(
     let mut statement = db.prepare(
         "SELECT m.id, m.scope_key, m.kind, m.body, m.provenance, m.status,
                 m.source_session_id, m.confidence_bps, m.rationale,
-                m.supersedes, m.created_at, m.updated_at
+                m.supersedes, m.valid_from, m.valid_to, m.expires_at, m.conflict_group,
+                m.created_at, m.updated_at
          FROM memory_record_fts f
          JOIN memory_records m ON m.id = f.record_id
          WHERE f.scope_key = ?1 AND memory_record_fts MATCH ?2 AND m.status = ?3
@@ -594,8 +879,9 @@ mod tests {
 
     fn insert_proposed(db: &Connection, id: &str, body: &str) {
         db.execute(
-            "INSERT INTO memory_records(id, scope_key, kind, body, provenance, status, created_at, updated_at)
-             VALUES(?1, ?2, 'preference', ?3, 'model_proposal', 'proposed', 'now', 'now')",
+            "INSERT INTO memory_records(id, scope_key, kind, body, provenance, status,
+                 valid_from, valid_to, created_at, updated_at)
+             VALUES(?1, ?2, 'preference', ?3, 'model_proposal', 'proposed', 'now', 'now', 'now', 'now')",
             params![id, ACCOUNT_MEMORY_SCOPE, body],
         )
         .unwrap();
@@ -706,8 +992,8 @@ mod tests {
         let (_dir, db) = ledger_db();
         save(&db, "Account pin about deploys", None, None).unwrap();
         db.execute(
-            "INSERT INTO memory_records(id, scope_key, kind, body, provenance, status, created_at, updated_at)
-             VALUES('w1', 'workspace:other', 'fact', 'Workspace deploys secret detail', 'user_explicit', 'active', 'now', 'now')",
+            "INSERT INTO memory_records(id, scope_key, kind, body, provenance, status, valid_from, created_at, updated_at)
+             VALUES('w1', 'workspace:other', 'fact', 'Workspace deploys secret detail', 'user_explicit', 'active', 'now', 'now', 'now')",
             [],
         )
         .unwrap();
@@ -804,8 +1090,9 @@ mod tests {
         save(&db, "about me pin", None, None).unwrap();
         db.execute(
             "INSERT INTO memory_records(
-                id, scope_key, kind, body, provenance, status, source_session_id, created_at, updated_at
-             ) VALUES('other','workspace:other','fact','other desk','user_explicit','active',NULL,'now','now')",
+                id, scope_key, kind, body, provenance, status, source_session_id,
+                valid_from, created_at, updated_at
+             ) VALUES('other','workspace:other','fact','other desk','user_explicit','active',NULL,'now','now','now')",
             [],
         )
         .unwrap();
@@ -865,6 +1152,79 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM memory_records", [], |row| row.get(0))
             .unwrap();
         assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn the_backfill_opens_every_interval_at_creation_and_leaves_active_records_open() {
+        let (_dir, db) = ledger_db();
+        db.execute_batch(
+            "INSERT INTO memory_records(id, scope_key, kind, body, provenance, status, created_at, updated_at)
+             VALUES('legacy-active','account:local','fact','Still true','user_explicit','active','2026-01-01T00:00:00+00:00','2026-01-01T00:00:00+00:00'),
+                    ('legacy-old','account:local','fact','Was true','user_explicit','superseded','2026-01-01T00:00:00+00:00','2026-02-01T00:00:00+00:00'),
+                    ('legacy-gone','account:local','fact','Forgotten','user_explicit','deleted','2026-01-01T00:00:00+00:00','2026-03-01T00:00:00+00:00'),
+                    ('legacy-proposed','account:local','fact','Never approved','model_proposal','proposed','2026-01-01T00:00:00+00:00','2026-01-01T00:00:00+00:00'),
+                    ('legacy-rejected','account:local','fact','Turned down','model_proposal','rejected','2026-01-01T00:00:00+00:00','2026-04-01T00:00:00+00:00'),
+                    ('legacy-backwards','account:local','fact','Odd clock','user_explicit','superseded','2026-05-01T00:00:00+00:00','2026-01-01T00:00:00+00:00');
+             UPDATE memory_records SET valid_from=NULL, valid_to=NULL;",
+        )
+        .unwrap();
+        {
+            let transaction = db.unchecked_transaction().unwrap();
+            install_validity_intervals(&transaction).unwrap();
+            transaction.commit().unwrap();
+        }
+        let interval = |id: &str| -> (String, Option<String>) {
+            db.query_row(
+                "SELECT valid_from, valid_to FROM memory_records WHERE id=?1",
+                params![id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap()
+        };
+        let born = "2026-01-01T00:00:00+00:00".to_string();
+        assert_eq!(interval("legacy-active"), (born.clone(), None), "active stays open");
+        assert_eq!(
+            interval("legacy-old"),
+            (born.clone(), Some("2026-02-01T00:00:00+00:00".into()))
+        );
+        assert_eq!(
+            interval("legacy-gone"),
+            (born.clone(), Some("2026-03-01T00:00:00+00:00".into()))
+        );
+        for never_held in ["legacy-proposed", "legacy-rejected"] {
+            assert_eq!(
+                interval(never_held),
+                (born.clone(), Some(born.clone())),
+                "{never_held}: a claim nobody approved carries an empty interval"
+            );
+        }
+        assert_eq!(
+            interval("legacy-backwards"),
+            ("2026-05-01T00:00:00+00:00".into(), Some("2026-05-01T00:00:00+00:00".into())),
+            "no backfilled interval ends before it begins"
+        );
+
+        let listed = list(&db, ACCOUNT_MEMORY_SCOPE, None).unwrap().records;
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, "legacy-active");
+        let as_of = list_as_of(&db, ACCOUNT_MEMORY_SCOPE, Utc::now()).unwrap().records;
+        assert_eq!(
+            as_of.iter().map(|record| record.id.clone()).collect::<Vec<_>>(),
+            vec!["legacy-active".to_string()],
+            "reading now returns exactly what the ledger already returned"
+        );
+
+        {
+            let transaction = db.unchecked_transaction().unwrap();
+            install_validity_intervals(&transaction).unwrap();
+            transaction.commit().unwrap();
+        }
+        assert_eq!(
+            interval("legacy-active"),
+            (born.clone(), None),
+            "the backfill is idempotent and never reopens a closed interval"
+        );
+        assert_eq!(interval("legacy-old"), (born, Some("2026-02-01T00:00:00+00:00".into())));
     }
 
     #[test]

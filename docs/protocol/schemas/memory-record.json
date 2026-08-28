@@ -14,8 +14,22 @@
         "null"
       ]
     },
+    "conflictGroup": {
+      "description": "Records making competing claims about one subject share this key. At most one member of a group is active, so a packet can never carry two.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "createdAt": {
       "type": "string"
+    },
+    "expiresAt": {
+      "description": "When set, the instant after which the record stops applying. The sweep closes the interval at this instant rather than at the moment it ran.",
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "id": {
       "type": "string"
@@ -53,6 +67,17 @@
     },
     "updatedAt": {
       "type": "string"
+    },
+    "validFrom": {
+      "description": "The instant this record's claim began to hold. Validity is an interval, not a flag: a record that never reached active carries an empty one, where `validTo` equals `validFrom`.",
+      "type": "string"
+    },
+    "validTo": {
+      "description": "The instant the claim stopped holding. Absent while the record is active; a supersession, a tombstone, or an expiry closes it, and a closed record stays queryable as history.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "required": [
@@ -63,7 +88,8 @@
     "provenance",
     "scopeKey",
     "status",
-    "updatedAt"
+    "updatedAt",
+    "validFrom"
   ],
   "title": "MemoryRecord",
   "type": "object"

@@ -19,6 +19,10 @@ use uuid::Uuid;
 const MAX_PACKET_CHARS: usize = 4_000;
 const EXCLUDE_UNSAFE: &str = "unsafe_body";
 const EXCLUDE_OVER_BUDGET: &str = "over_budget";
+/// A second member of a conflict group reaching the same packet is the failure
+/// the group exists to prevent, so the packet excludes it by code rather than
+/// trusting the ledger's one-active-member rule to have held.
+const EXCLUDE_CONFLICT_GROUP: &str = "conflict_group";
 
 pub(crate) fn install(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     transaction.execute_batch(
@@ -115,7 +119,7 @@ pub fn for_session(
         return Ok(None);
     }
     let mut statement = db.prepare(
-        "SELECT id, body, kind, provenance, status, confidence_bps
+        "SELECT id, body, kind, provenance, status, confidence_bps, conflict_group
          FROM memory_records
          WHERE scope_key=?1 AND status<>'deleted'
          ORDER BY updated_at DESC, id DESC
@@ -128,6 +132,7 @@ pub fn for_session(
         provenance: String,
         status: String,
         confidence_bps: Option<i64>,
+        conflict_group: Option<String>,
     }
     let rows: Vec<Row> = statement
         .query_map(params![scope_key], |row| {
@@ -138,6 +143,7 @@ pub fn for_session(
                 provenance: row.get(3)?,
                 status: row.get(4)?,
                 confidence_bps: row.get(5)?,
+                conflict_group: row.get(6)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()?;
@@ -157,6 +163,7 @@ pub fn for_session(
             "proposed" => exclusions.push((row.id, "proposed")),
             "rejected" => exclusions.push((row.id, "rejected")),
             "superseded" => exclusions.push((row.id, "superseded")),
+            "expired" => exclusions.push((row.id, "expired")),
             other => {
                 debug_assert!(false, "unreachable status {other}");
                 exclusions.push((row.id, "unknown_status"));
@@ -174,9 +181,21 @@ pub fn for_session(
             .then(b.confidence_bps.unwrap_or(-1).cmp(&a.confidence_bps.unwrap_or(-1)))
     });
 
+    // One subject, one answer. The ledger already leaves at most one member of
+    // a group active, so a second one here means something wrote around that
+    // rule; the packet still refuses to inject two contradictory facts, and
+    // says which one it dropped and why.
+    let mut spoken_for: Vec<String> = Vec::new();
     let mut used = 0usize;
     let mut selected: Vec<SelectedMemory> = Vec::new();
     for row in eligible {
+        if let Some(group) = row.conflict_group.clone() {
+            if spoken_for.contains(&group) {
+                exclusions.push((row.id, EXCLUDE_CONFLICT_GROUP));
+                continue;
+            }
+            spoken_for.push(group);
+        }
         let reason = if row.provenance == "user_explicit" {
             "explicit pin".to_string()
         } else {
@@ -357,10 +376,23 @@ mod tests {
     }
 
     fn insert(db: &Connection, id: &str, body: &str, provenance: &str, status: &str, confidence: Option<i64>) {
+        insert_grouped(db, id, body, provenance, status, confidence, None)
+    }
+
+    fn insert_grouped(
+        db: &Connection,
+        id: &str,
+        body: &str,
+        provenance: &str,
+        status: &str,
+        confidence: Option<i64>,
+        group: Option<&str>,
+    ) {
         db.execute(
-            "INSERT INTO memory_records(id, scope_key, kind, body, provenance, status, confidence_bps, created_at, updated_at)
-             VALUES(?1,'account:local','preference',?2,?3,?4,?5,'now','now')",
-            params![id, body, provenance, status, confidence],
+            "INSERT INTO memory_records(id, scope_key, kind, body, provenance, status, confidence_bps,
+                 conflict_group, valid_from, created_at, updated_at)
+             VALUES(?1,'account:local','preference',?2,?3,?4,?5,?6,'now','now','now')",
+            params![id, body, provenance, status, confidence, group],
         )
         .unwrap();
     }
@@ -402,6 +434,69 @@ mod tests {
         assert_eq!(code_for("r1"), "rejected");
         assert_eq!(code_for("s1"), "superseded");
         assert_eq!(code_for("u1"), "unsafe_body");
+    }
+
+    #[test]
+    fn a_conflict_group_contributes_at_most_one_member_to_a_packet() {
+        let (_dir, db) = packet_db();
+        insert_grouped(
+            &db,
+            "loser",
+            "Ships from the main branch",
+            "model_proposal",
+            "active",
+            Some(4000),
+            Some("subject:release"),
+        );
+        insert_grouped(
+            &db,
+            "winner",
+            "Ships from a release branch",
+            "user_explicit",
+            "active",
+            None,
+            Some("subject:release"),
+        );
+        insert_grouped(
+            &db,
+            "other",
+            "Reviews diffs before merging",
+            "user_explicit",
+            "active",
+            None,
+            Some("subject:review"),
+        );
+        let packet = for_session(&db, "account:local", "session-1").unwrap().unwrap();
+        let selected: Vec<&str> =
+            packet.selected.iter().map(|item| item.record_id.as_str()).collect();
+        assert_eq!(
+            selected,
+            vec!["winner", "other"],
+            "one member per group, and a different subject is a different group"
+        );
+        assert!(!packet.text.contains("main branch"), "the losing claim never reaches the prompt");
+        let exclusions = audit_exclusions(&db);
+        assert_eq!(
+            exclusions.iter().find(|(id, _)| id == "loser").unwrap().1,
+            "conflict_group"
+        );
+    }
+
+    #[test]
+    fn an_expired_record_is_excluded_by_its_own_code() {
+        let (_dir, db) = packet_db();
+        insert(&db, "live", "Prefers Conventional Commits", "user_explicit", "active", None);
+        insert(&db, "gone", "Team is on a code freeze", "user_explicit", "expired", None);
+        let packet = for_session(&db, "account:local", "session-1").unwrap().unwrap();
+        assert_eq!(packet.selected.len(), 1);
+        assert_eq!(packet.selected[0].record_id, "live");
+        assert!(!packet.text.contains("code freeze"));
+        let exclusions = audit_exclusions(&db);
+        assert_eq!(
+            exclusions.iter().find(|(id, _)| id == "gone").unwrap().1,
+            "expired",
+            "an expiry is its own reason, not a supersession and not a deletion"
+        );
     }
 
     #[test]

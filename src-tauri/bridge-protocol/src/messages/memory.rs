@@ -56,8 +56,35 @@ pub struct MemoryRecord {
     /// Set when this record replaced an earlier one through supersede.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub supersedes: Option<String>,
+    /// The instant this record's claim began to hold. Validity is an interval,
+    /// not a flag: a record that never reached active carries an empty one,
+    /// where `validTo` equals `validFrom`.
+    pub valid_from: String,
+    /// The instant the claim stopped holding. Absent while the record is
+    /// active; a supersession, a tombstone, or an expiry closes it, and a
+    /// closed record stays queryable as history.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub valid_to: Option<String>,
+    /// When set, the instant after which the record stops applying. The sweep
+    /// closes the interval at this instant rather than at the moment it ran.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<String>,
+    /// Records making competing claims about one subject share this key. At
+    /// most one member of a group is active, so a packet can never carry two.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub conflict_group: Option<String>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+/// Read a scope as it stood at an instant: exactly the records whose validity
+/// interval contains it. As of now this is the active set.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListMemoryRecordsAsOfParams {
+    pub scope_key: String,
+    /// RFC 3339. The instant to read the scope at.
+    pub at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -127,6 +154,64 @@ pub struct MemoryExtractionSettings {
     /// The newest run in this scope, spend observed — never a simulated zero.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_run: Option<MemoryExtractionRun>,
+}
+
+/// Consolidation is opt-in per scope. `off` is the default and means nothing
+/// automatic; `propose` runs the pinned profile once a scope has been quiet
+/// for the debounce window. The job is bookkeeping rather than judgement, so
+/// the profile it points at is deliberately the user's choice of a cheap one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UpdateConsolidationSettingsParams {
+    pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    /// How many records the scope may hold before every write is refused.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max_records: Option<i64>,
+    /// Whether a proposal may ask for removal. Off by default; with it off an
+    /// operation asking for removal is refused rather than downgraded.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allow_removal: Option<bool>,
+    /// How long a scope must stay quiet before a queued run becomes due.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub debounce_seconds: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryConsolidationRun {
+    /// One of `queued`, `running`, `completed`, `failed`, `cancelled`, `skipped`.
+    pub status: String,
+    pub applied_count: i64,
+    pub refused_count: i64,
+    pub observed_tokens: i64,
+    pub spend_microusd: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct MemoryConsolidationSettings {
+    pub scope_key: String,
+    pub mode: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    pub max_records: i64,
+    pub allow_removal: bool,
+    pub debounce_seconds: i64,
+    /// What the scope currently holds against `maxRecords`. A write that would
+    /// take this past the budget is refused; nothing is ever evicted for it.
+    pub held_records: i64,
+    /// The newest settled run in this scope, spend observed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_run: Option<MemoryConsolidationRun>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
