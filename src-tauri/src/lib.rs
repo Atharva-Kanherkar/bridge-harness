@@ -2230,11 +2230,12 @@ mod tests {
                 _ => ParameterShape::String,
             },
             "bool" => ParameterShape::Boolean,
-            "i64" | "u16" | "u32" => ParameterShape::Integer(
+            "i64" | "u16" | "u32" | "u64" => ParameterShape::Integer(
                 match leaf {
                     "i64" => "int64",
                     "u16" => "uint16",
                     "u32" => "uint32",
+                    "u64" => "uint64",
                     _ => unreachable!(),
                 }
                 .into(),
