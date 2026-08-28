@@ -1,0 +1,21 @@
+{
+  "number": 103,
+  "title": "Changes requested",
+  "body": "Please review the typed GitHub surface.",
+  "state": "OPEN",
+  "isDraft": false,
+  "author": { "login": "review-author" },
+  "headRefName": "fix/review",
+  "baseRefName": "main",
+  "reviewDecision": "CHANGES_REQUESTED",
+  "mergeable": "CONFLICTING",
+  "mergeStateStatus": "DIRTY",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "status": "COMPLETED",
+      "conclusion": "FAILURE"
+    }
+  ],
+  "url": "https://github.com/fixture/project/pull/103"
+}
