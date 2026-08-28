@@ -31,17 +31,11 @@ impl RunningDaemon {
         let accept_loop = std::thread::spawn(move || {
             bridged::serve(&serve_daemon, listener).expect("accept loop serves");
         });
-        RunningDaemon {
-            daemon,
-            accept_loop: Some(accept_loop),
-        }
+        RunningDaemon { daemon, accept_loop: Some(accept_loop) }
     }
 
     fn stop(mut self) {
-        self.daemon
-            .state
-            .shutting_down
-            .store(true, Ordering::SeqCst);
+        self.daemon.state.shutting_down.store(true, Ordering::SeqCst);
         if let Some(handle) = self.accept_loop.take() {
             handle.join().unwrap();
         }
@@ -62,7 +56,11 @@ impl ProxyHost {
     /// Attach-only supervision (no daemon binary): exactly the app's daemon
     /// mode against an externally managed daemon.
     fn start(data_dir: &Path) -> ProxyHost {
-        let launcher = Launcher::new(data_dir.to_path_buf(), data_dir.join("no-extension"), None);
+        let launcher = Launcher::new(
+            data_dir.to_path_buf(),
+            data_dir.join("no-extension"),
+            None,
+        );
         let proxy = Arc::new(DaemonProxy::default());
         let emitted: Arc<Mutex<Vec<(String, Value)>>> = Arc::default();
         let stop = Arc::new(AtomicBool::new(false));
@@ -76,12 +74,7 @@ impl ProxyHost {
                 });
             })
         };
-        ProxyHost {
-            proxy,
-            emitted,
-            stop,
-            supervisor: Some(supervisor),
-        }
+        ProxyHost { proxy, emitted, stop, supervisor: Some(supervisor) }
     }
 
     fn wait_attached(&self, attached: bool) {
@@ -96,12 +89,7 @@ impl ProxyHost {
     }
 
     fn emitted_kinds(&self) -> Vec<String> {
-        self.emitted
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(kind, _)| kind.clone())
-            .collect()
+        self.emitted.lock().unwrap().iter().map(|(kind, _)| kind.clone()).collect()
     }
 
     fn shutdown(mut self) {
@@ -203,11 +191,7 @@ fn daemon_notifications_reach_the_webview_with_unchanged_names_and_payloads() {
             terminal_id: "t1".into(),
             data: "hello".into(),
         });
-    daemon
-        .daemon
-        .core
-        .events
-        .publish(bridge_core::events::CoreEvent::StateChanged);
+    daemon.daemon.core.events.publish(bridge_core::events::CoreEvent::StateChanged);
 
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
@@ -224,10 +208,7 @@ fn daemon_notifications_reach_the_webview_with_unchanged_names_and_payloads() {
             assert_eq!(state_changed.1, Value::Null);
             break;
         }
-        assert!(
-            Instant::now() < deadline,
-            "notifications never arrived: {emitted:?}"
-        );
+        assert!(Instant::now() < deadline, "notifications never arrived: {emitted:?}");
         std::thread::sleep(Duration::from_millis(25));
     }
 
@@ -333,9 +314,7 @@ fn a_pending_approval_is_recovered_after_a_daemon_restart() {
         .unwrap();
     let replayed = events.as_array().unwrap();
     assert!(
-        replayed
-            .iter()
-            .any(|event| event["kind"] == "approval.requested"),
+        replayed.iter().any(|event| event["kind"] == "approval.requested"),
         "approval lost across restart: {replayed:?}"
     );
 

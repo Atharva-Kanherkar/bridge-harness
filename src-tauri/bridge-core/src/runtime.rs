@@ -277,7 +277,7 @@ impl BridgeCore {
                 scratch.join("no-extension"),
                 scratch.join("browser-site-metrics.json"),
             ),
-            github_surface: crate::github_surface::GithubSurface::discover(),
+            github_surface: crate::github_surface::GithubSurface::unavailable_for_tests(),
             worker_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
             events: EventBus::new(),

@@ -39,11 +39,7 @@ const CHAT_COMMANDS: &[Command] = &[
     Command("next-chat", "Next Chat", "Alt+CmdOrCtrl+Down"),
     Command("previous-chat", "Previous Chat", "Alt+CmdOrCtrl+Up"),
 ];
-const HELP_COMMANDS: &[Command] = &[Command(
-    "show-shortcuts",
-    "Keyboard Shortcuts",
-    "CmdOrCtrl+/",
-)];
+const HELP_COMMANDS: &[Command] = &[Command("show-shortcuts", "Keyboard Shortcuts", "CmdOrCtrl+/")];
 
 #[derive(Clone, Copy)]
 struct Command(&'static str, &'static str, &'static str);

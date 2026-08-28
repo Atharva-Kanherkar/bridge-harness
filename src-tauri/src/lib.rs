@@ -8,17 +8,20 @@ pub mod menu;
 pub mod window_chrome;
 
 use bridge_core::api;
-use bridge_core::live_turn;
 use bridge_core::managed_agents;
-use bridge_core::model::*;
+use bridge_core::live_turn;
 use bridge_core::work_observation;
+use bridge_core::model::*;
 use bridge_core::{
-    agent_config, automations, browser_bridge, marketplace, opencode_adapter, prompt_studio,
-    secret_interception, skill_marketplace, slash,
+    agent_config, automations, browser_bridge, marketplace, opencode_adapter,
+    prompt_studio, secret_interception, skill_marketplace, slash,
 };
-use bridge_core::{start_health_server, BootConfig, BridgeCore, BridgeError};
 use bridge_protocol::messages::{self as wire, CarrySessionHandoffResult, PromptTargetChoice};
-use std::{path::PathBuf, sync::Arc};
+use bridge_core::{start_health_server, BootConfig, BridgeCore, BridgeError};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+};
 use tauri::{AppHandle, Emitter, Listener, Manager, State};
 
 // Every command below delegates to `bridge_core::api` — the host-agnostic body
@@ -44,53 +47,27 @@ async fn health(state: State<'_, Arc<BridgeCore>>) -> Result<api::Health, Bridge
 }
 
 #[tauri::command]
-async fn github_status(
-    workspace_id: String,
-    state: State<'_, Arc<BridgeCore>>,
-) -> Result<wire::GithubStatusResult, BridgeError> {
+async fn github_status(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubStatusResult, BridgeError> {
     let core = state.inner().clone();
-    blocking("GitHub status", move || {
-        api::github_status(&core, &workspace_id)
-    })
-    .await
+    blocking("GitHub status", move || api::github_status(&core, &workspace_id)).await
 }
 
 #[tauri::command]
-async fn github_prs(
-    workspace_id: String,
-    state: State<'_, Arc<BridgeCore>>,
-) -> Result<wire::GithubPullRequestsResult, BridgeError> {
+async fn github_prs(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubPullRequestsResult, BridgeError> {
     let core = state.inner().clone();
-    blocking("GitHub pull-request list", move || {
-        api::github_prs(&core, &workspace_id)
-    })
-    .await
+    blocking("GitHub pull-request list", move || api::github_prs(&core, &workspace_id)).await
 }
 
 #[tauri::command]
-async fn github_pr(
-    workspace_id: String,
-    number: u64,
-    state: State<'_, Arc<BridgeCore>>,
-) -> Result<wire::GithubPullRequestResult, BridgeError> {
+async fn github_pr(workspace_id: String, number: u64, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubPullRequestResult, BridgeError> {
     let core = state.inner().clone();
-    blocking("GitHub pull request", move || {
-        api::github_pr(&core, &workspace_id, number)
-    })
-    .await
+    blocking("GitHub pull request", move || api::github_pr(&core, &workspace_id, number)).await
 }
 
 #[tauri::command]
-async fn github_checks(
-    workspace_id: String,
-    number: u64,
-    state: State<'_, Arc<BridgeCore>>,
-) -> Result<wire::GithubChecksResult, BridgeError> {
+async fn github_checks(workspace_id: String, number: u64, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubChecksResult, BridgeError> {
     let core = state.inner().clone();
-    blocking("GitHub checks", move || {
-        api::github_checks(&core, &workspace_id, number)
-    })
-    .await
+    blocking("GitHub checks", move || api::github_checks(&core, &workspace_id, number)).await
 }
 
 #[tauri::command]
@@ -101,14 +78,9 @@ async fn browser_bridge_state(
 }
 
 #[tauri::command]
-async fn install_browser_native_host(
-    state: State<'_, Arc<BridgeCore>>,
-) -> Result<String, BridgeError> {
+async fn install_browser_native_host(state: State<'_, Arc<BridgeCore>>) -> Result<String, BridgeError> {
     let core = state.inner().clone();
-    blocking("Native host registration", move || {
-        api::install_browser_native_host(&core)
-    })
-    .await
+    blocking("Native host registration", move || api::install_browser_native_host(&core)).await
 }
 
 #[tauri::command]
@@ -176,10 +148,7 @@ async fn start_remote_browser(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<serde_json::Value, BridgeError> {
     let core = state.inner().clone();
-    blocking("Remote browser", move || {
-        api::start_remote_browser(&core, &initial_url)
-    })
-    .await
+    blocking("Remote browser", move || api::start_remote_browser(&core, &initial_url)).await
 }
 
 #[tauri::command]
@@ -209,11 +178,7 @@ async fn task_action(
 ) -> Result<(), BridgeError> {
     api::work_task_action(
         state.inner(),
-        &bridge_protocol::messages::TaskActionParams {
-            task_id,
-            action,
-            snoozed_until,
-        },
+        &bridge_protocol::messages::TaskActionParams { task_id, action, snoozed_until },
     )
 }
 
@@ -238,11 +203,7 @@ async fn task_prepare_session(
 ) -> Result<bridge_protocol::messages::WorkTaskDraft, BridgeError> {
     api::work_task_prepare_session(
         state.inner(),
-        &bridge_protocol::messages::TaskPrepareSessionParams {
-            task_id,
-            harness,
-            model,
-        },
+        &bridge_protocol::messages::TaskPrepareSessionParams { task_id, harness, model },
     )
 }
 
@@ -315,10 +276,7 @@ async fn skill_suggestions(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<Vec<skill_marketplace::CapabilitySuggestion>, BridgeError> {
     let core = state.inner().clone();
-    blocking("Skill suggestion", move || {
-        api::skill_suggestions(&core, &query, provider)
-    })
-    .await
+    blocking("Skill suggestion", move || api::skill_suggestions(&core, &query, provider)).await
 }
 
 #[tauri::command]
@@ -341,10 +299,7 @@ async fn execute_skill_change(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<Vec<skill_marketplace::SkillActionResult>, BridgeError> {
     let core = state.inner().clone();
-    blocking("Skill installer", move || {
-        api::execute_skill_change(&core, &confirmation_id)
-    })
-    .await
+    blocking("Skill installer", move || api::execute_skill_change(&core, &confirmation_id)).await
 }
 
 #[tauri::command]
@@ -352,10 +307,7 @@ async fn automation_catalog(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<automations::AutomationCatalog, BridgeError> {
     let core = state.inner().clone();
-    blocking("Automation discovery", move || {
-        api::automation_catalog(&core)
-    })
-    .await
+    blocking("Automation discovery", move || api::automation_catalog(&core)).await
 }
 
 #[tauri::command]
@@ -433,10 +385,7 @@ async fn get_session_forest(
     // Git may be slow on large repositories or during index contention. Never
     // run it on the macOS event loop or while holding the global SQLite lock.
     let core = state.inner().clone();
-    blocking("Repository refresh", move || {
-        api::get_session_forest(&core, &session_id)
-    })
-    .await
+    blocking("Repository refresh", move || api::get_session_forest(&core, &session_id)).await
 }
 
 #[tauri::command]
@@ -650,10 +599,7 @@ async fn suggest_completion(
 ) -> Result<bridge_protocol::messages::SuggestCompletionResult, BridgeError> {
     let core = state.inner().clone();
     blocking("Inline suggestion", move || {
-        api::suggest_completion(
-            &core,
-            &bridge_protocol::messages::SuggestCompletionParams { text },
-        )
+        api::suggest_completion(&core, &bridge_protocol::messages::SuggestCompletionParams { text })
     })
     .await
 }
@@ -671,10 +617,7 @@ async fn save_harness_config(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<agent_config::ConfigState, BridgeError> {
     let core = state.inner().clone();
-    blocking("Harness configuration", move || {
-        api::save_harness_config(&core, config)
-    })
-    .await
+    blocking("Harness configuration", move || api::save_harness_config(&core, config)).await
 }
 
 #[tauri::command]
@@ -683,10 +626,7 @@ async fn reset_harness_config(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<agent_config::ConfigState, BridgeError> {
     let core = state.inner().clone();
-    blocking("Harness reset", move || {
-        api::reset_harness_config(&core, &id)
-    })
-    .await
+    blocking("Harness reset", move || api::reset_harness_config(&core, &id)).await
 }
 
 #[tauri::command]
@@ -695,10 +635,7 @@ async fn refresh_opencode_catalog(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
     let core = state.inner().clone();
-    blocking("OpenCode discovery", move || {
-        api::refresh_opencode_catalog(&core, directory)
-    })
-    .await
+    blocking("OpenCode discovery", move || api::refresh_opencode_catalog(&core, directory)).await
 }
 
 #[tauri::command]
@@ -947,10 +884,7 @@ async fn activate_session_entry(
 }
 
 #[tauri::command]
-async fn add_project(
-    path: String,
-    state: State<'_, Arc<BridgeCore>>,
-) -> Result<BridgeState, BridgeError> {
+async fn add_project(path: String, state: State<'_, Arc<BridgeCore>>) -> Result<BridgeState, BridgeError> {
     api::add_project(state.inner(), &path)
 }
 
@@ -1061,10 +995,8 @@ async fn start_session(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
     let core = state.inner().clone();
-    blocking("Session start", move || {
-        api::start_session(&core, workspace_id, harness, model)
-    })
-    .await
+    blocking("Session start", move || api::start_session(&core, workspace_id, harness, model))
+        .await
 }
 
 /// Start (or hot-return) a session by id. A `direct` chat runs the stored
@@ -1142,10 +1074,7 @@ async fn prepare_turn(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<secret_interception::SanitizedTurn, BridgeError> {
     let core = state.inner().clone();
-    blocking("Turn preparation", move || {
-        api::prepare_turn(&core, session_id, text)
-    })
-    .await
+    blocking("Turn preparation", move || api::prepare_turn(&core, session_id, text)).await
 }
 
 #[tauri::command]
@@ -1155,10 +1084,7 @@ async fn send_turn(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
     let core = state.inner().clone();
-    blocking("Turn delivery", move || {
-        api::send_turn(&core, session_id, text)
-    })
-    .await
+    blocking("Turn delivery", move || api::send_turn(&core, session_id, text)).await
 }
 
 /// The active-turn input contract. Unlike `send_turn`, this one is safe to call
@@ -1187,10 +1113,8 @@ async fn list_workspace_files(
 ) -> Result<Vec<String>, BridgeError> {
     // Listing is pure filesystem work; keep it off the async runtime.
     let core = state.inner().clone();
-    blocking("Workspace file listing", move || {
-        api::list_workspace_files(&core, &session_id)
-    })
-    .await
+    blocking("Workspace file listing", move || api::list_workspace_files(&core, &session_id))
+        .await
 }
 
 /// List a workspace's files for the editor's tree and file palette.
@@ -1232,13 +1156,7 @@ async fn write_workspace_file(
 ) -> Result<bridge_core::workspace_files::WriteOutcome, BridgeError> {
     let core = state.inner().clone();
     blocking("Workspace file write", move || {
-        api::write_workspace_file(
-            &core,
-            &workspace_id,
-            &path,
-            &content,
-            base_sha256.as_deref(),
-        )
+        api::write_workspace_file(&core, &workspace_id, &path, &content, base_sha256.as_deref())
     })
     .await
 }
@@ -1309,10 +1227,7 @@ async fn get_memory_injection(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::MemoryInjectionSettings, BridgeError> {
     let core = state.inner().clone();
-    blocking("Get memory injection", move || {
-        api::get_memory_injection(&core)
-    })
-    .await
+    blocking("Get memory injection", move || api::get_memory_injection(&core)).await
 }
 
 #[tauri::command]
@@ -1451,10 +1366,7 @@ async fn retry_worker_task(
 }
 
 #[tauri::command]
-async fn interrupt_turn(
-    session_id: String,
-    state: State<'_, Arc<BridgeCore>>,
-) -> Result<(), BridgeError> {
+async fn interrupt_turn(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
     api::interrupt_turn(state.inner(), &session_id)
 }
 
@@ -1463,7 +1375,9 @@ async fn interrupt_turn(
 /// command; Codex is asked on a live session and answers on its event stream.
 /// Both results are broadcast on the `account-usage` channel.
 #[tauri::command]
-async fn refresh_account_usage(state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
+async fn refresh_account_usage(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
     api::refresh_account_usage(state.inner())
 }
 
@@ -1505,10 +1419,7 @@ async fn refresh_workspace(
     // Git status scans run entirely off the async runtime so a slow scan
     // cannot delay message submission or streaming writes.
     let core = state.inner().clone();
-    blocking("Workspace refresh", move || {
-        api::refresh_workspace(&core, &workspace_id)
-    })
-    .await
+    blocking("Workspace refresh", move || api::refresh_workspace(&core, &workspace_id)).await
 }
 
 #[tauri::command]
@@ -1623,22 +1534,20 @@ fn select_host(
             setup_embedded(app, data, extension_path)?;
             HostMode::Embedded
         }
-        preference => {
-            match start_daemon_host(app.handle().clone(), data.clone(), extension_path.clone()) {
-                Ok(proxy) => HostMode::Daemon(proxy),
-                // Auto keeps the migration promise: a machine where the daemon
-                // cannot run still gets a working app on the embedded runtime.
-                Err(error) if preference == daemon_host::HostPreference::Auto => {
-                    eprintln!("bridge: daemon host unavailable ({error}); running embedded");
-                    setup_embedded(app, data, extension_path)?;
-                    HostMode::Embedded
-                }
-                Err(error) => {
-                    eprintln!("bridge: {error}");
-                    return Err(error.into());
-                }
+        preference => match start_daemon_host(app.handle().clone(), data.clone(), extension_path.clone()) {
+            Ok(proxy) => HostMode::Daemon(proxy),
+            // Auto keeps the migration promise: a machine where the daemon
+            // cannot run still gets a working app on the embedded runtime.
+            Err(error) if preference == daemon_host::HostPreference::Auto => {
+                eprintln!("bridge: daemon host unavailable ({error}); running embedded");
+                setup_embedded(app, data, extension_path)?;
+                HostMode::Embedded
             }
-        }
+            Err(error) => {
+                eprintln!("bridge: {error}");
+                return Err(error.into());
+            }
+        },
     };
     let _ = host.set(mode);
     Ok(())
@@ -2132,10 +2041,7 @@ mod tests {
             .filter(|body| !body.contains("api::"))
             .map(|body| body.trim_start().lines().next().unwrap_or_default())
             .collect();
-        assert!(
-            stray.is_empty(),
-            "commands not delegating to bridge_core::api: {stray:?}"
-        );
+        assert!(stray.is_empty(), "commands not delegating to bridge_core::api: {stray:?}");
     }
 
     #[test]
@@ -3044,7 +2950,9 @@ mod tests {
     }
 
     fn event_kinds(db: &rusqlite::Connection) -> Vec<String> {
-        let mut statement = db.prepare("SELECT kind FROM events ORDER BY id").unwrap();
+        let mut statement = db
+            .prepare("SELECT kind FROM events ORDER BY id")
+            .unwrap();
         let rows = statement
             .query_map([], |row| row.get::<_, String>(0))
             .unwrap()
@@ -3335,9 +3243,7 @@ mod tests {
         );
         // Nothing terminal was recorded and nothing was consumed.
         let entries = store::session_entries(&db, "parent").unwrap();
-        assert!(entries
-            .iter()
-            .all(|entry| entry.kind != "delegation.rejected"));
+        assert!(entries.iter().all(|entry| entry.kind != "delegation.rejected"));
         let approval = entries.into_iter().last().unwrap();
         assert_eq!(approval.kind, "approval.requested");
         assert_eq!(approval.payload["approvalId"], pending.approval_id);
@@ -3441,17 +3347,15 @@ mod tests {
             .into_iter()
             .last()
             .unwrap();
-        assert!(
-            !resolve_policy_delegation_approval(
-                &db,
-                "parent",
-                approval.sequence,
-                "decline",
-                &approval.payload,
-            )
-            .unwrap()
-            .accepted
-        );
+        assert!(!resolve_policy_delegation_approval(
+            &db,
+            "parent",
+            approval.sequence,
+            "decline",
+            &approval.payload,
+        )
+        .unwrap()
+        .accepted);
         assert_eq!(
             db.query_row("SELECT COUNT(*) FROM sessions", [], |row| row
                 .get::<_, i64>(0))

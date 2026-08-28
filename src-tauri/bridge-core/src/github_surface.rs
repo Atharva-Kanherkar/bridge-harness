@@ -259,6 +259,11 @@ impl GithubSurface {
         Self::from_binary(crate::binary::resolve("gh"), cache_ttl)
     }
 
+    #[cfg(test)]
+    pub(crate) fn unavailable_for_tests() -> Self {
+        Self::from_binary(None, DEFAULT_CACHE_TTL)
+    }
+
     fn from_binary(binary: Option<PathBuf>, cache_ttl: Duration) -> Self {
         let availability = probe_availability(binary.as_deref());
         Self {
