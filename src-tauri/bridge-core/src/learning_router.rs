@@ -365,6 +365,33 @@ fn default_policy_version() -> i64 {
     1
 }
 
+/// Serialize a value with object keys in canonical (sorted) order.
+///
+/// `serde_json::Map` keeps insertion order whenever *any* workspace crate
+/// enables serde_json's `preserve_order` — the ACP protocol crate does — and
+/// sorts keys when none does. Bytes built from map iteration are therefore a
+/// build artifact, not a stable identity. Fingerprints and catalog hashes are
+/// lookup keys persisted across upgrades, so they hash canonical bytes: the
+/// sorted order every pre-existing row was hashed under.
+fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(object) => {
+            let mut entries: Vec<(&String, &serde_json::Value)> = object.iter().collect();
+            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            serde_json::Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key.clone(), canonical_json(value)))
+                    .collect(),
+            )
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(canonical_json).collect())
+        }
+        other => other.clone(),
+    }
+}
+
 fn task_fingerprint(request: &DelegationRequest) -> String {
     let body = serde_json::json!({
         "role": request.role,
@@ -375,7 +402,7 @@ fn task_fingerprint(request: &DelegationRequest) -> String {
         "verification": request.verification,
         "outputContract": request.output_contract,
     });
-    format!("{:x}", Sha256::digest(body.to_string().as_bytes()))
+    format!("{:x}", Sha256::digest(canonical_json(&body).to_string().as_bytes()))
 }
 
 fn repository_revision(db: &Connection, session_id: &str) -> Result<Option<String>, BridgeError> {
@@ -1133,7 +1160,7 @@ fn persist_decision(db: &Connection, decision: &RouterDecision) -> Result<(), Br
     // was stored twice per decision: once in its own column and once embedded
     // in the decision blob. It now lives once per distinct catalog, keyed by
     // hash; decision rows carry the hash, and the blob omits the snapshot.
-    let catalog_body = decision.catalog_snapshot.to_string();
+    let catalog_body = canonical_json(&decision.catalog_snapshot).to_string();
     let catalog_hash = {
         use sha2::{Digest, Sha256};
         format!("{:x}", Sha256::digest(catalog_body.as_bytes()))

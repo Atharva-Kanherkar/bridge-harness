@@ -907,6 +907,7 @@ impl AcpSession {
             .map_err(|_| self.closed_error())?;
         let replayed = reply_rx.recv().map_err(|_| self.closed_error())??;
         let before = ledger.suppressed();
+        ledger.begin_replay();
         let events = replayed
             .into_iter()
             .filter(|event| ledger.admit(event))
@@ -1048,7 +1049,6 @@ async fn drive_connection<T>(
             *exit = Some(error.message);
         }
     }
-    shared.closed.store(true, Ordering::Release);
     let stopping = *shared.stopping.lock().expect("acp stopping slot poisoned");
     let terminal = match stopping {
         Some(reason) => stopped_event(reason),
@@ -1064,6 +1064,11 @@ async fn drive_connection<T>(
         .lock()
         .expect("acp event queue poisoned")
         .push(terminal);
+    // The terminal event is queued before `closed` flips: a consumer whose
+    // exit condition is "closed and the queue drained empty" must never be
+    // able to observe closed-and-empty while the terminal event is still on
+    // its way.
+    shared.closed.store(true, Ordering::Release);
 }
 
 /// The connection ended because a caller asked it to. Distinguished from a
@@ -1316,7 +1321,15 @@ fn park_approval(
         .lock()
         .expect("acp approvals poisoned")
         .insert(request_id, ParkedApproval { responder, options });
-    shared.publish_event(permission_request_event(request_id, request));
+    // Straight to the live queue, never the replay buffer: a parked responder
+    // is live state the agent is blocked on, and an approval diverted into a
+    // reload's replay would be returned as history — or deduplicated away —
+    // while the agent waits forever for an answer no surface ever showed.
+    shared
+        .events
+        .lock()
+        .expect("acp event queue poisoned")
+        .push(permission_request_event(request_id, request));
 }
 
 /// Write one JSON-RPC message per line. Newline-delimited JSON, not
@@ -1428,7 +1441,20 @@ where
     R: AsyncRead + Send + Unpin + 'static,
 {
     let mut lines = BufReader::new(reader).lines();
-    while let Some(Ok(line)) = lines.next().await {
+    while let Some(line) = lines.next().await {
+        // A line that is not valid UTF-8 is an Err item, and the stream stays
+        // readable after it. Stopping the drain on one would refill the pipe
+        // and block the agent in write(2) — the exact deadlock this loop
+        // exists to prevent — so the bad line is recorded as such and the
+        // drain keeps going. A real I/O error still ends it: that pipe is
+        // gone, and spinning on it would busy-loop the connection thread.
+        let line = match line {
+            Ok(line) => line,
+            Err(error) if error.kind() == std::io::ErrorKind::InvalidData => {
+                "[a stderr line that was not valid UTF-8 was dropped]".to_owned()
+            }
+            Err(_) => break,
+        };
         let mut tail = shared.stderr.lock().expect("acp stderr tail poisoned");
         tail.push(line.as_bytes(), STDERR_TAIL_BYTES);
         tail.push(b"\n", STDERR_TAIL_BYTES);
@@ -2411,8 +2437,23 @@ mod tests {
             "a stop the caller asked for is a status, saw {events:?}"
         );
         assert!(
-            !events.iter().any(|event| event.kind == "runtime.failed"),
+            !events
+                .iter()
+                .any(|event| event.kind == "error" || event.kind == "runtime.failed"),
             "a deliberate stop must not read as a crash"
+        );
+    }
+
+    #[test]
+    fn a_connection_that_dies_undeliberately_ends_with_the_supervisors_error_shape() {
+        let (session, agent) = connect_with_capabilities(json!({}));
+        agent.wire.hang_up();
+        assert!(wait_until(|| session.is_closed()));
+        let events = session.drain();
+        assert!(
+            events.iter().any(|event| event.kind == "error"
+                && event.status.as_deref() == Some("failed")),
+            "provider death must land on the failure arm every adapter shares, saw {events:?}"
         );
     }
 

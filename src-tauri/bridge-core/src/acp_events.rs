@@ -30,7 +30,7 @@ use agent_client_protocol::schema::v1::{
 };
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// The `requestMethod` marker on an ACP permission normalized to
 /// `approval.requested`.
@@ -140,11 +140,25 @@ pub fn session_update_event(update: &SessionUpdate) -> NormalizedEvent {
         }
         SessionUpdate::UsageUpdate(usage) => {
             let mut event = with_data("usage.updated", frame);
+            // ACP's usage is a context gauge, not an input/output split, so the
+            // payload carries the aliases the usage ledger actually reads:
+            // context_percent from the gauge, and the cumulative cost only when
+            // it is denominated in the currency the ledger assumes. The raw
+            // fields travel beside them for anything that wants the gauge.
+            let context_percent = (usage.size > 0)
+                .then(|| (usage.used.saturating_mul(100) / usage.size) as i64);
+            let total_cost_usd = usage
+                .cost
+                .as_ref()
+                .filter(|cost| cost.currency.eq_ignore_ascii_case("USD"))
+                .map(|cost| cost.amount);
             event.data = json!({
                 "usage": {
                     "used_tokens": usage.used,
                     "context_window": usage.size,
                 },
+                "context_percent": context_percent,
+                "total_cost_usd": total_cost_usd,
                 "cost": usage.cost,
                 "update": event.data,
             });
@@ -213,8 +227,14 @@ pub fn turn_completed_event(outcome: AcpTurnOutcome) -> NormalizedEvent {
 /// The runtime stopped being able to serve the session. Carries the bounded
 /// failure context, never a transcript, matching what the built-in adapters
 /// already report.
+///
+/// Kind `error` with status `failed`, because that is the one shape the
+/// session supervisor's failure arm recognizes — the spelling every built-in
+/// adapter normalizes provider death to. A private kind here would be
+/// persisted as an ordinary transcript entry while the session stayed
+/// `working` forever.
 pub fn runtime_failed_event(code: &str, reason: &str) -> NormalizedEvent {
-    let mut event = NormalizedEvent::new("runtime.failed");
+    let mut event = NormalizedEvent::new("error");
     event.status = Some("failed".into());
     event.text = Some(reason.to_owned());
     event.data = json!({"code": code});
@@ -265,6 +285,9 @@ pub struct AcpReplayLedger {
     held: BTreeSet<String>,
     admitted: Vec<String>,
     suppressed: usize,
+    /// How many times each content fingerprint has occurred in the replay
+    /// currently being reconciled. Cleared by [`Self::begin_replay`].
+    occurrences: BTreeMap<String, usize>,
 }
 
 impl AcpReplayLedger {
@@ -274,14 +297,34 @@ impl AcpReplayLedger {
             held: held.into_iter().collect(),
             admitted: Vec::new(),
             suppressed: 0,
+            occurrences: BTreeMap::new(),
         }
     }
 
-    /// Whether this replayed event is new. Repeats within one replay are
-    /// suppressed too: an agent that replays the same chunk twice is still only
-    /// one entry.
+    /// Start reconciling one replay. Occurrence counting is per replay: the
+    /// second "yes" in a conversation is the second occurrence of that content
+    /// in *this* replay, matched against the second occurrence the forest
+    /// already holds.
+    pub fn begin_replay(&mut self) {
+        self.occurrences.clear();
+    }
+
+    /// Whether this replayed event is new.
+    ///
+    /// Identity is content plus occurrence: two genuinely distinct events with
+    /// identical content — a user who typed "yes" twice, repeated content-only
+    /// tool progress — are the first and second occurrence of one fingerprint,
+    /// so a reload of history the forest holds still admits nothing while a
+    /// conversation that really said the same thing twice keeps both.
     pub fn admit(&mut self, event: &NormalizedEvent) -> bool {
-        let fingerprint = replay_fingerprint(event);
+        let base = replay_fingerprint(event);
+        let occurrence = self.occurrences.entry(base.clone()).or_insert(0);
+        *occurrence += 1;
+        let fingerprint = if *occurrence == 1 {
+            base
+        } else {
+            format!("{base}#{occurrence}")
+        };
         if !self.held.insert(fingerprint.clone()) {
             self.suppressed += 1;
             return false;
@@ -666,12 +709,27 @@ mod tests {
     }
 
     #[test]
-    fn a_repeated_chunk_inside_one_replay_is_admitted_once() {
+    fn identical_content_twice_in_one_conversation_is_two_events_and_reloads_as_two() {
+        // A user who says "echo" twice said it twice: dropping the second copy
+        // silently rewrites history. But a *reload* of that same conversation
+        // must still admit nothing — occurrence counting keeps both promises.
         let event = session_update_event(&SessionUpdate::AgentMessageChunk(chunk("echo")));
         let mut ledger = AcpReplayLedger::default();
+        ledger.begin_replay();
         assert!(ledger.admit(&event));
-        assert!(!ledger.admit(&event));
-        assert_eq!(ledger.suppressed(), 1);
+        assert!(ledger.admit(&event), "a second occurrence is a second event");
+        assert_eq!(ledger.suppressed(), 0);
+
+        let held: Vec<String> = ledger.held().map(str::to_owned).collect();
+        let mut reload = AcpReplayLedger::from_held(held);
+        reload.begin_replay();
+        assert!(!reload.admit(&event));
+        assert!(!reload.admit(&event), "the reloaded second occurrence is already held");
+        assert_eq!(reload.suppressed(), 2);
+        assert!(
+            reload.admit(&event),
+            "a third occurrence the forest does not hold is genuinely new"
+        );
     }
 
     #[test]

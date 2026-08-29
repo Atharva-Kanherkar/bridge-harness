@@ -401,12 +401,16 @@ impl BackendDriver for AcpDriver {
     ///
     /// ACP offers the client a list of options and expects one of their ids
     /// back, or an explicit cancellation; there is no approved and no denied on
-    /// this wire. So `decision` here is an option id, and the one reserved
-    /// spelling is [`ACP_CANCELLED_DECISION`] — an agent that ends a turn while
-    /// a permission is outstanding gets the cancellation the protocol requires
-    /// rather than a selection Bridge invented.
+    /// this wire. So `decision` here is an option id, and the reserved
+    /// spellings are [`ACP_CANCELLED_DECISION`] and Bridge's own approval
+    /// vocabulary's "cancel" — an agent that ends a turn while a permission is
+    /// outstanding gets the cancellation the protocol requires rather than a
+    /// selection Bridge invented. The caller that resolves a Bridge approval
+    /// still has to translate "accept"/"decline" into one of the agent's
+    /// offered ids before this frame is built; an untranslated word here would
+    /// select an option the agent never offered.
     fn decision_frame(&self, request_id: &Value, decision: &str) -> Value {
-        let outcome = if decision == ACP_CANCELLED_DECISION {
+        let outcome = if decision == ACP_CANCELLED_DECISION || decision == "cancel" {
             json!({"outcome": "cancelled"})
         } else {
             json!({"outcome": "selected", "optionId": decision})
