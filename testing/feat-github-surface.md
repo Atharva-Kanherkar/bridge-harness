@@ -103,3 +103,29 @@ N/A — no HTTP endpoint is introduced, and automated tests must not depend on a
 developer's GitHub login. Optional manual review may instantiate the surface in
 a scratch Rust example and compare the typed output with `gh pr list`, but it is
 not a release gate.
+
+---
+
+## Epic close-out — manual pass (record before closing #339)
+
+Slice 5 rehomed the surface into the GitHub dock pane and added the workflow
+glue (CI-finished toasts, jump-to-diff, PR checkout into a task worktree). The
+full loop below is the epic's release gate; run it in the desktop app against a
+real repository and check the boxes with the date.
+
+- [ ] Open the GitHub dock pane (⌥⌘7 or the sidebar PR row) → the PR list
+      renders with review + rollup chips.
+- [ ] Watch a running PR: rollup flips live; on the terminal state exactly one
+      CI toast appears; clicking it lands on that PR in the pane.
+- [ ] Click a review comment's `path:line` → the editor opens at that line; on
+      a workspace that is not on the PR head branch, the "isn't checked out
+      here" hint shows and nothing crashes.
+- [ ] "Check out" the PR → a task worktree on the head branch appears in the
+      workspace tree; repeating it reuses the same worktree; the current
+      checkout keeps its dirty state.
+- [ ] Fix the flagged line in the task worktree, push, "Re-run failed" from the
+      pane, watch checks go green, and merge from Bridge behind the native
+      confirmation.
+- [ ] `bun run dev` (mock mode): list/detail render, checkout narrates fresh
+      then reused, and the simulated CI completion (~6s after the first PR list
+      read) exercises the toast → deep-link path.
