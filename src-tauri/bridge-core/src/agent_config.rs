@@ -497,6 +497,118 @@ pub fn default_orchestrator(db: &Connection) -> Option<AgentDefinition> {
     })
 }
 
+/// Fold configured labels and ids into the leading-composer token vocabulary.
+/// Kept host-side as well as in the UI because the browser's suggestion is not
+/// authority: dispatch always resolves the submitted token from persisted data.
+pub fn normalize_agent_token(value: &str) -> String {
+    let mut normalized = String::new();
+    let mut separator = false;
+    for character in value.trim().trim_start_matches('#').chars() {
+        if character.is_ascii_alphanumeric() {
+            if separator && !normalized.is_empty() {
+                normalized.push('-');
+            }
+            normalized.push(character.to_ascii_lowercase());
+            separator = false;
+        } else {
+            separator = true;
+        }
+    }
+    normalized
+}
+
+fn role_aliases(role: &str) -> &'static [&'static str] {
+    match role {
+        "research" => &["researcher", "research"],
+        "implementation" => &["implementer", "implementation"],
+        "verification" => &["verifier", "reviewer", "verification"],
+        "planning" => &["planner", "planning"],
+        "documentation" => &["documenter", "documentation", "docs"],
+        "orchestrator" => &["orchestrator"],
+        _ => &[],
+    }
+}
+
+fn agent_identity_matches(agent: &AgentDefinition, token: &str) -> bool {
+    normalize_agent_token(&agent.id) == token || normalize_agent_token(&agent.name) == token
+}
+
+fn agent_alias_matches(agent: &AgentDefinition, token: &str) -> bool {
+    normalize_agent_token(&agent.role) == token || role_aliases(&agent.role).contains(&token)
+}
+
+/// Resolve one direct-worker token from the current persisted configuration.
+/// Exact configured names/ids take precedence over role aliases, which lets a
+/// custom agent named `Verifier` remain addressable even when several verifier
+/// agents make the generic role alias ambiguous.
+pub fn resolve_worker_agent(db: &Connection, token: &str) -> Result<AgentDefinition, BridgeError> {
+    let token = normalize_agent_token(token);
+    if token.is_empty() {
+        return Err(BridgeError::Invalid(
+            "Agent shortcut cannot be empty".into(),
+        ));
+    }
+    let config = state(db)?;
+    let identity_matches = config
+        .agents
+        .iter()
+        .filter(|agent| agent_identity_matches(agent, &token))
+        .collect::<Vec<_>>();
+    let matches = if identity_matches.is_empty() {
+        config
+            .agents
+            .iter()
+            .filter(|agent| agent_alias_matches(agent, &token))
+            .collect::<Vec<_>>()
+    } else {
+        identity_matches
+    };
+    let eligible = matches
+        .iter()
+        .filter(|agent| agent.enabled && agent.role != "orchestrator")
+        .copied()
+        .collect::<Vec<_>>();
+    if eligible.len() > 1 {
+        let mut names = eligible
+            .iter()
+            .map(|agent| agent.name.as_str())
+            .collect::<Vec<_>>();
+        names.sort_unstable();
+        return Err(BridgeError::Invalid(format!(
+            "Agent shortcut #{token} is ambiguous; use a configured name or id ({})",
+            names.join(", ")
+        )));
+    }
+    if let Some(agent) = eligible.first() {
+        let harness_enabled = config
+            .harnesses
+            .iter()
+            .find(|harness| harness.id == agent.harness)
+            .is_none_or(|harness| harness.enabled);
+        if !harness_enabled {
+            return Err(BridgeError::Invalid(format!(
+                "Agent {} cannot run because its {} harness is disabled",
+                agent.name, agent.harness
+            )));
+        }
+        return Ok((*agent).clone());
+    }
+    if matches.iter().any(|agent| agent.role == "orchestrator") {
+        return Err(BridgeError::Invalid(
+            "The orchestrator cannot be a direct worker target; choose a specialist agent".into(),
+        ));
+    }
+    if let Some(agent) = matches.first() {
+        return Err(BridgeError::Invalid(format!(
+            "Agent {} is disabled; enable it in Settings before dispatching it",
+            agent.name
+        )));
+    }
+    Err(BridgeError::Invalid(format!(
+        "Unknown agent shortcut #{token}; choose an enabled specialist from autocomplete"
+    )))
+}
+
 pub fn prompt_suffix(db: &Connection, harness: &str, role: &str) -> String {
     [
         harness_prompt(db, "bridge"),
@@ -545,6 +657,109 @@ mod tests {
         assert_eq!(permission_policy(&db).unwrap(), PermissionPolicy::default());
         assert!(!permission_policy(&db).unwrap().bypass_all);
         assert!(!state(&db).unwrap().permission_policy.bypass_all);
+    }
+
+    fn custom_agent(id: &str, name: &str, role: &str) -> AgentDefinition {
+        AgentDefinition {
+            id: id.into(),
+            name: name.into(),
+            description: String::new(),
+            role: role.into(),
+            harness: "bridge".into(),
+            model: None,
+            effort: Effort::Medium,
+            system_prompt: String::new(),
+            enabled: true,
+            is_default: false,
+            is_built_in: false,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn worker_agent_resolution_uses_names_ids_and_unambiguous_aliases() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        let verifier = resolve_worker_agent(&db, "#ReViEwEr").unwrap();
+        assert_eq!(verifier.id, "bridge-verification");
+        assert_eq!(
+            resolve_worker_agent(&db, "bridge.verification").unwrap().id,
+            "bridge-verification"
+        );
+
+        save_agent(
+            &db,
+            custom_agent("custom-release", "Release QA", "research"),
+        )
+        .unwrap();
+        assert_eq!(
+            resolve_worker_agent(&db, "RELEASE.QA").unwrap().id,
+            "custom-release"
+        );
+    }
+
+    #[test]
+    fn exact_agent_identity_wins_when_its_role_alias_is_ambiguous() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        save_agent(
+            &db,
+            custom_agent("custom-verifier", "Security Verifier", "verification"),
+        )
+        .unwrap();
+        assert!(resolve_worker_agent(&db, "verifier")
+            .unwrap_err()
+            .to_string()
+            .contains("ambiguous"));
+        assert_eq!(
+            resolve_worker_agent(&db, "security-verifier").unwrap().id,
+            "custom-verifier"
+        );
+    }
+
+    #[test]
+    fn worker_agent_resolution_rejects_unknown_disabled_orchestrator_and_disabled_harness() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        assert!(resolve_worker_agent(&db, "missing")
+            .unwrap_err()
+            .to_string()
+            .contains("Unknown"));
+        assert!(resolve_worker_agent(&db, "orchestrator")
+            .unwrap_err()
+            .to_string()
+            .contains("cannot be a direct worker"));
+
+        let mut disabled = custom_agent("custom-disabled", "Dormant Agent", "research");
+        disabled.enabled = false;
+        save_agent(&db, disabled).unwrap();
+        assert!(resolve_worker_agent(&db, "dormant-agent")
+            .unwrap_err()
+            .to_string()
+            .contains("disabled"));
+
+        let mut harness = state(&db)
+            .unwrap()
+            .harnesses
+            .into_iter()
+            .find(|item| item.id == "codex")
+            .unwrap();
+        harness.enabled = false;
+        save_harness(&db, harness).unwrap();
+        let mut unavailable = custom_agent("custom-codex", "Codex Specialist", "research");
+        unavailable.harness = "codex".into();
+        save_agent(&db, unavailable).unwrap();
+        assert!(resolve_worker_agent(&db, "codex-specialist")
+            .unwrap_err()
+            .to_string()
+            .contains("harness is disabled"));
+    }
+
+    #[test]
+    fn normalize_agent_tokens_matches_composer_normalization() {
+        assert_eq!(
+            normalize_agent_token("  #Release.QA Agent  "),
+            "release-qa-agent"
+        );
+        assert_eq!(normalize_agent_token("---"), "");
     }
 
     #[test]
