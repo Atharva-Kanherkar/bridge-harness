@@ -16,6 +16,12 @@ const TARGETS: { id: PromptTargetChoice; label: string }[] = [
 ];
 const TARGET_IDS = new Set(TARGETS.map(item => item.id));
 
+const TARGET_GROUPS: { label: string; targets: { id: PromptTargetChoice; label: string }[] }[] = [
+  { label: "Orchestrator", targets: TARGETS.filter(item => item.id === "orchestrator") },
+  { label: "Workers", targets: TARGETS.filter(item => item.id.startsWith("worker:")) },
+  { label: "Direct", targets: TARGETS.filter(item => item.id === "direct_session") },
+];
+
 // Same vocabulary the compiler/mock lint requires: a draft that drops one of
 // these markers still compiles, but the behavior the marker names quietly
 // stops working.
@@ -40,8 +46,8 @@ function docKeyFor(target: PromptTargetChoice, sectionId: string): string {
 }
 
 /** Structural validation only — every entry that survives this pass is
- * guaranteed to be a `{ target, sectionId, text }` triple, so applying it
- * later can never encounter a shape surprise mid-import. */
+ *  guaranteed to be a `{ target, sectionId, text }` triple, so applying it
+ *  later can never encounter a shape surprise mid-import. */
 function parseOverridesFile(raw: unknown, stacksByTarget: Record<PromptTargetChoice, PromptStackView>): { target: PromptTargetChoice; sectionId: string; text: string }[] {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
     throw new Error("Import file must be a JSON object keyed by prompt target.");
@@ -87,6 +93,21 @@ export function PromptStudio() {
 
   const stack = stacks[target];
 
+  // One load of every stack at mount so each target row can carry an honest
+  // "has overrides" dot; every mutation below already keeps stacks fresh.
+  useEffect(() => {
+    let active = true;
+    void Promise.all(TARGETS.map(item => bridgeApi.promptStack(item.id))).then(all => {
+      if (!active) return;
+      setStacks(current => {
+        const next = { ...current };
+        TARGETS.forEach((item, index) => { next[item.id] = all[index]; });
+        return next;
+      });
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+
   useEffect(() => {
     let active = true;
     bridgeApi.promptStack(target).then(next => {
@@ -129,6 +150,7 @@ export function PromptStudio() {
     ? dedupeWarnings([...section.lintWarnings, ...draftLintWarnings(section.id, draftText)])
     : [];
   const isEmptyTarget = stack !== undefined && stack.sections.length === 0;
+  const overriddenInTarget = stack?.sections.filter(item => item.state.state !== "default") ?? [];
 
   async function withBusy(action: () => Promise<void>) {
     setBusy(true);
@@ -255,114 +277,63 @@ const handleImportFile = (files: FileList | null) => {
     });
   };
 
+  // Target buttons keep their label as the entire text content — dots and
+  // counts render as siblings, never inside the button.
   return <div className="flex h-full min-h-0">
-    <nav aria-label="Prompt targets" className="w-40 shrink-0 border-r border-border/60 p-3">
-      {TARGETS.map(item => <button
-        type="button"
-        key={item.id}
-        aria-current={target === item.id}
-        onClick={() => setTarget(item.id)}
-        className={cn(
-          "flex h-9 w-full items-center rounded-xl px-3 text-left text-[13px] transition-colors",
-          target === item.id ? "bg-foreground/[0.08] text-foreground" : "text-muted-foreground hover:bg-foreground/[0.045] hover:text-foreground",
-        )}
-      >{item.label}</button>)}
-    </nav>
-
-    {isEmptyTarget ? <div className="flex flex-1 items-center justify-center p-8">
-      <p role="status" className="max-w-sm text-center text-xs text-muted-foreground">
-        Direct sessions run on the provider's own system prompt. There is nothing here for Bridge to override.
-      </p>
-    </div> : <>
-      <div className="w-60 shrink-0 overflow-y-auto border-r border-border/60 p-3">
-        <h3 className="mb-2 text-[11px] font-medium text-muted-foreground">Sections</h3>
-        {!stack ? <p className="text-xs text-muted-foreground">Loading…</p> : <ul role="listbox" aria-label={`${targetLabel} prompt sections`} className="space-y-1">
-          {stack.sections.map(item => <li key={item.id}>
-            <button
-              type="button"
-              role="option"
-              aria-selected={sectionId === item.id}
-              onClick={() => setSectionId(item.id)}
-              className={cn("flex w-full items-center gap-2 rounded-xl px-3 py-2 text-left text-[12.5px]", sectionId === item.id ? "bg-foreground/[0.08] text-foreground" : "text-muted-foreground hover:bg-foreground/[0.045] hover:text-foreground")}
-            >
-              <span className="min-w-0 flex-1 truncate font-mono">{item.id}</span>
-              {docKeyFor(target, item.id) in drafts && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-info" aria-label="Unsaved draft" />}
-              <span className="shrink-0 text-[10px] text-muted-foreground/80">{item.tokenEstimate} tok</span>
-              {item.state.state === "deleted" && <span className="shrink-0 rounded-full bg-destructive/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-destructive">Deleted</span>}
-              {item.state.state === "overridden" && <span className="shrink-0 rounded-full bg-warning/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-warning">Modified</span>}
-            </button>
-          </li>)}
-        </ul>}
-        {stack && stack.sections.some(item => item.state.state !== "default") && <button
-          type="button"
-          disabled={busy}
-          onClick={() => void handleResetAll()}
-          className="mt-3 inline-flex h-8 items-center gap-1.5 rounded-xl px-2.5 text-[11px] text-muted-foreground hover:bg-foreground/[0.05] disabled:opacity-40"
-        ><RotateCcw size={12} aria-hidden="true" />Reset all for {targetLabel}</button>}
-      </div>
-
-      <div className="flex min-w-0 flex-1 flex-col overflow-y-auto p-4">
-        {error && <p role="alert" className="mb-2 text-xs text-destructive">{error}</p>}
-        {!stack ? <p className="text-xs text-muted-foreground">Loading…</p> : !section ? <p className="text-xs text-muted-foreground">Select a section to edit.</p> : <>
-          <div className="mb-2 flex items-center justify-between gap-2">
-            <h3 className="font-mono text-[13px] text-foreground">{section.id}</h3>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                disabled={busy || !canReset}
-                onClick={() => void handleReset(section.id)}
-                className="inline-flex h-8 items-center gap-1.5 rounded-xl px-2.5 text-[11px] text-muted-foreground hover:bg-foreground/[0.05] disabled:opacity-40"
-              ><RotateCcw size={12} aria-hidden="true" />Reset {section.id}</button>
-              <button
-                type="button"
-                disabled={busy || !isDirty}
-                onClick={() => void handleSave()}
-                className="inline-flex h-8 items-center gap-1.5 rounded-xl bg-foreground px-3 text-[11px] font-medium text-background disabled:opacity-40"
-              ><Save size={12} aria-hidden="true" />Save {section.id}</button>
-            </div>
-          </div>
-          {warnings.length > 0 && <div role="status" className="mb-2 flex flex-col gap-1 rounded-xl border border-warning/40 bg-warning/10 p-2.5 text-[11px] text-warning">
-            {warnings.map(warning => <p key={warning.marker}>{warning.message}</p>)}
-          </div>}
-          <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-border">
-            <CodeEditor
-              key={editorInstanceKey}
-              docKey={editorInstanceKey!}
-              doc={draftText}
-              path="prompt.md"
-              readOnly={isDeleted}
-              onChange={value => setDrafts(current => ({ ...current, [docKey!]: value }))}
-              onSave={() => void handleSave()}
-              className="h-full"
-            />
-          </div>
-          {section.revisions.length > 0 && <div className="mt-3 shrink-0 border-t border-border/60 pt-2">
-            <h4 className="mb-1 text-[11px] font-medium text-muted-foreground">History</h4>
-            <ul className="max-h-32 space-y-1 overflow-y-auto">
-              {[...section.revisions].reverse().map(revision => <li key={revision.id} className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-                <span className="min-w-0 flex-1 truncate">{revision.operation} · {revision.createdAt}</span>
+    <aside className="flex w-60 shrink-0 flex-col overflow-hidden border-r border-border/60">
+      <nav aria-label="Prompt targets" className="min-h-0 flex-1 overflow-y-auto p-3">
+        <h2 className="px-2 pb-2 text-[10.5px] font-semibold uppercase tracking-[0.09em] text-muted-foreground/80">Prompt Studio</h2>
+        {TARGET_GROUPS.map(group => <div key={group.label} className="mb-3 last:mb-0">
+          <p className="px-2 pb-1 text-[9.5px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/50">{group.label}</p>
+          <div className="space-y-0.5">
+            {group.targets.map(item => {
+              const itemStack = stacks[item.id];
+              const hasOverrides = itemStack?.sections.some(sectionItem => sectionItem.state.state !== "default") ?? false;
+              return <div key={item.id} className="flex items-center gap-1.5">
+                {hasOverrides && <span aria-hidden className="ml-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-warning/80" />}
                 <button
                   type="button"
-                  disabled={busy}
-                  aria-label={`Restore ${section.id} to revision ${revision.id} (${revision.operation})`}
-                  onClick={() => void handleRestore(section.id, revision.id)}
-                  className="shrink-0 rounded-lg px-2 py-0.5 text-[10.5px] text-info hover:bg-foreground/[0.05] disabled:opacity-40"
-                >Restore</button>
+                  aria-current={target === item.id}
+                  onClick={() => setTarget(item.id)}
+                  className={cn(
+                    "flex h-8 flex-1 items-center rounded-lg px-2.5 text-left text-[12.5px] transition-colors",
+                    target === item.id ? "bg-foreground/[0.07] font-medium text-foreground" : "text-muted-foreground hover:bg-foreground/[0.045] hover:text-foreground",
+                  )}
+                >{item.label}</button>
+              </div>;
+            })}
+          </div>
+          {group.targets.some(item => item.id === target) && stack && stack.sections.length > 0 && (
+            <ul role="listbox" aria-label={`${targetLabel} prompt sections`} className="ml-4 mt-1 space-y-0.5 border-l border-border/60 pb-1 pl-2">
+              {stack.sections.map(item => <li key={item.id}>
+                <button
+                  type="button"
+                  role="option"
+                  aria-selected={sectionId === item.id}
+                  onClick={() => setSectionId(item.id)}
+                  className={cn("flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12px]", sectionId === item.id ? "bg-foreground/[0.07] text-foreground" : "text-muted-foreground hover:bg-foreground/[0.045] hover:text-foreground")}
+                >
+                  <span className="min-w-0 flex-1 truncate font-mono text-[11.5px]">{item.id}</span>
+                  {docKeyFor(target, item.id) in drafts && <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-info" aria-label="Unsaved draft" />}
+                  <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground/70">{item.tokenEstimate} tok</span>
+                  {item.state.state === "deleted" && <span className="shrink-0 rounded-full bg-destructive/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-destructive">Deleted</span>}
+                  {item.state.state === "overridden" && <span className="shrink-0 rounded-full bg-warning/15 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wide text-warning">Modified</span>}
+                </button>
               </li>)}
             </ul>
-          </div>}
-        </>}
-      </div>
-    </>}
+          )}
+        </div>)}
+      </nav>
 
-    <aside aria-label="Compiled prompt preview and overrides" className="flex w-72 shrink-0 flex-col overflow-y-auto border-l border-border/60 p-3">
-      <div className="mb-3 flex flex-wrap items-center gap-2 border-b border-border/60 pb-3">
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => void handleExport()}
-          className="inline-flex h-8 items-center gap-1.5 rounded-xl px-2.5 text-[11px] text-muted-foreground hover:bg-foreground/[0.05] disabled:opacity-40"
-        ><Download size={12} aria-hidden="true" />Export overrides</button>
+      <div className="shrink-0 border-t border-border/60 p-3">
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void handleExport()}
+            className="inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-[11px] text-muted-foreground transition-colors hover:bg-foreground/[0.05] hover:text-foreground disabled:opacity-40"
+          ><Download size={12} aria-hidden="true" />Export overrides</button>
+        </div>
         <input
           ref={fileInputRef}
           type="file"
@@ -370,48 +341,142 @@ const handleImportFile = (files: FileList | null) => {
           aria-label="Import prompt overrides"
           disabled={busy}
           onChange={event => { const { files } = event.target; event.target.value = ""; void handleImportFile(files); }}
-          className="block w-full text-[10.5px] text-muted-foreground file:mr-2 file:rounded-lg file:border-0 file:bg-foreground/[0.08] file:px-2 file:py-1 file:text-[10.5px] file:text-foreground"
+          className="mt-1.5 block w-full text-[10.5px] text-muted-foreground file:mr-2 file:rounded-lg file:border-0 file:bg-foreground/[0.07] file:px-2 file:py-1 file:text-[10.5px] file:text-foreground"
         />
-        {importResults && <ul className="w-full space-y-0.5 text-[10px]">
+        {importResults && <ul className="mt-1.5 space-y-0.5 text-[10px]">
           {importResults.map(item => <li key={item.key} className={item.ok ? "text-muted-foreground" : "text-destructive"}>{item.key}: {item.ok ? "saved" : `failed (${item.message})`}</li>)}
         </ul>}
+        {overriddenInTarget.length > 0 && <button
+          type="button"
+          disabled={busy}
+          onClick={() => void handleResetAll()}
+          className="mt-1.5 inline-flex h-7 items-center gap-1.5 rounded-lg px-2 text-[11px] text-muted-foreground transition-colors hover:bg-foreground/[0.05] hover:text-foreground disabled:opacity-40"
+        ><RotateCcw size={12} aria-hidden="true" />Reset all for {targetLabel}</button>}
       </div>
-
-      <h3 className="mb-2 text-[11px] font-medium text-muted-foreground">Compiled preview</h3>
-      {previewError && <p role="alert" className="mb-2 text-[11px] text-destructive">{previewError}</p>}
-      {!preview ? <p className="text-[11px] text-muted-foreground">Loading preview…</p> : <div className="space-y-3">
-        <div>
-          <h4 className="text-[10.5px] font-semibold uppercase tracking-wide text-foreground">Exact Bridge bytes</h4>
-          <dl className="mt-1 grid grid-cols-2 gap-x-2 gap-y-0.5 font-mono text-[10px] text-muted-foreground">
-            <dt>Hash</dt><dd className="truncate">{preview.prefixHash}</dd>
-            <dt>ID</dt><dd className="truncate">{preview.prefixId}</dd>
-            <dt>Bytes (exact)</dt><dd>{preview.prefixBytes}</dd>
-            <dt>Tokens (est.)</dt><dd>{preview.prefixTokenEstimate}</dd>
-          </dl>
-          <p className="mt-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Stable prefix — exact bytes</p>
-          <pre className="mt-0.5 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-foreground/[0.03] p-2 font-mono text-[10px]">{preview.stablePrefix}</pre>
-          <p className="mt-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground">Variable suffix — exact bytes</p>
-          <pre className="mt-0.5 max-h-24 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-foreground/[0.03] p-2 font-mono text-[10px]">{preview.variableSuffix}</pre>
-        </div>
-
-        {prefixChanged && <p role="status" className="rounded-lg border border-warning/40 bg-warning/10 p-2 text-[10.5px] text-warning">
-          Bridge prefix changed — the next turn is likely a cache miss on the Bridge prefix. Provider-side cache effects are estimated, not measured.
-        </p>}
-
-        <div>
-          <h4 className="text-[10.5px] font-semibold uppercase tracking-wide text-foreground">Provider layers (not exact)</h4>
-          <ul className="mt-1 space-y-1">
-            {preview.providerLayers.map(layer => <li key={`${layer.layer}:${layer.adapter}`} className="rounded-lg border border-border/60 p-1.5 text-[10.5px]">
-              <div className="flex items-center justify-between gap-2">
-                <span className="font-mono">{layer.adapter}</span>
-                <span className="rounded-full bg-foreground/[0.08] px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-muted-foreground">{layer.source}</span>
-              </div>
-              {layer.detail && <p className="mt-0.5 text-muted-foreground">{layer.detail}</p>}
-            </li>)}
-          </ul>
-        </div>
-      </div>}
     </aside>
+
+    <div className="flex min-w-0 flex-1 flex-col overflow-y-auto px-6 pb-10 pt-5">
+      {error && <p role="alert" className="mb-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-[12px] text-destructive">{error}</p>}
+      {isEmptyTarget ? <div className="flex flex-1 items-center justify-center p-8">
+        <p role="status" className="max-w-sm text-center text-xs leading-relaxed text-muted-foreground">
+          Direct sessions run on the provider's own system prompt. There is nothing here for Bridge to override.
+        </p>
+      </div> : !stack ? <p className="text-xs text-muted-foreground">Loading…</p> : !section ? <p className="text-xs text-muted-foreground">Select a section to edit.</p> : <>
+        <header className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+          <div className="flex min-w-0 items-baseline gap-2">
+            <span className="shrink-0 text-[12px] text-muted-foreground">{targetLabel}</span>
+            <span aria-hidden className="text-muted-foreground/40">/</span>
+            <h3 className="truncate font-mono text-[13.5px] font-medium text-foreground">{section.id}</h3>
+          </div>
+          {section.state.state === "overridden" && <span className="rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide text-warning">Modified</span>}
+          {isDeleted && <span className="rounded-full border border-destructive/30 bg-destructive/10 px-2 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide text-destructive">Deleted</span>}
+          <div className="ml-auto flex items-center gap-2">
+            <span className="font-mono text-[11px] tabular-nums text-muted-foreground/70">{section.tokenEstimate} tok · est</span>
+            <button
+              type="button"
+              disabled={busy || !canReset}
+              onClick={() => void handleReset(section.id)}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-[11.5px] text-muted-foreground transition-colors hover:bg-foreground/[0.05] hover:text-foreground disabled:opacity-40"
+            ><RotateCcw size={12} aria-hidden="true" />Reset {section.id}</button>
+            <button
+              type="button"
+              disabled={busy || !isDirty}
+              onClick={() => void handleSave()}
+              className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-foreground px-3.5 text-[11.5px] font-medium text-background transition-colors disabled:opacity-40"
+            ><Save size={12} aria-hidden="true" />Save {section.id}</button>
+          </div>
+        </header>
+
+        {warnings.length > 0 && <div role="status" className="mb-3 flex flex-col gap-1 rounded-r-lg border-l-2 border-warning/70 bg-warning/10 px-3.5 py-2.5 text-[11.5px] leading-relaxed text-warning">
+          {warnings.map(warning => <p key={warning.marker}>{warning.message}</p>)}
+        </div>}
+
+        <div className="u-surface flex min-h-[24rem] flex-1 flex-col overflow-hidden rounded-xl">
+          <div className="flex h-8 shrink-0 items-center gap-2 border-b border-border/60 bg-muted/40 px-3.5">
+            <span className="font-mono text-[10.5px] text-muted-foreground/80">prompt.md</span>
+            {isDirty && <span className="ml-auto flex items-center gap-1.5 text-[10.5px] text-muted-foreground">
+              <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-info" />Unsaved draft
+            </span>}
+          </div>
+          <CodeEditor
+            key={editorInstanceKey}
+            docKey={editorInstanceKey!}
+            doc={draftText}
+            path="prompt.md"
+            readOnly={isDeleted}
+            onChange={value => setDrafts(current => ({ ...current, [docKey!]: value }))}
+            onSave={() => void handleSave()}
+            className="min-h-0 flex-1"
+          />
+        </div>
+
+        {section.revisions.length > 0 && <section aria-label={`${section.id} revision history`} className="mt-7 shrink-0">
+          <h4 className="mb-3 text-[10.5px] font-semibold uppercase tracking-[0.09em] text-muted-foreground/80">History</h4>
+          <ol className="flex">
+            <li className="relative min-w-0 flex-1 pt-4">
+              <span aria-hidden className="absolute left-2 right-0 top-[4px] h-px bg-border/70" />
+              <span aria-hidden className="absolute left-0 top-0 h-2 w-2 rounded-full border-2 border-foreground bg-foreground" />
+              <p className="truncate text-[12px] font-medium text-foreground">Now</p>
+              <p className="truncate text-[10.5px] text-muted-foreground/70">{isDirty ? "unsaved draft" : "current text"}</p>
+            </li>
+            {[...section.revisions].reverse().map((revision, index, reversed) => <li key={revision.id} className="group relative min-w-0 flex-1 pt-4">
+              <span aria-hidden className={cn("absolute top-[4px] h-px bg-border/70", index === reversed.length - 1 ? "left-0 right-[calc(100%-0.5rem)]" : "left-0 right-0")} />
+              <span aria-hidden className="absolute left-0 top-0 h-2 w-2 rounded-full border-2 border-muted-foreground/60 bg-background group-hover:border-foreground/80" />
+              <p className="truncate text-[12px] font-medium text-foreground">{revision.operation}</p>
+              <p className="truncate text-[10.5px] text-muted-foreground/70">{revision.createdAt}</p>
+              <button
+                type="button"
+                disabled={busy}
+                aria-label={`Restore ${section.id} to revision ${revision.id} (${revision.operation})`}
+                onClick={() => void handleRestore(section.id, revision.id)}
+                className="mt-0.5 rounded-md text-[10.5px] text-info opacity-0 transition-opacity hover:underline focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-40"
+              >Restore</button>
+            </li>)}
+          </ol>
+        </section>}
+
+        <aside aria-label="Compiled prompt preview and overrides" className="mt-7 shrink-0">
+          <details open className="u-surface rounded-xl">
+            <summary className="cursor-pointer select-none px-4 py-2.5 text-[10.5px] font-semibold uppercase tracking-[0.09em] text-muted-foreground/80 marker:content-[''] [&::-webkit-details-marker]:hidden">Compiled preview</summary>
+            <div className="border-t border-border/60 px-4 py-3">
+              {previewError && <p role="alert" className="mb-2 text-[11px] text-destructive">{previewError}</p>}
+              {!preview ? <p className="text-[11px] text-muted-foreground">Loading preview…</p> : <div className="space-y-3">
+                <div>
+                  <h4 className="text-[10.5px] font-semibold uppercase tracking-wide text-foreground">Exact Bridge bytes</h4>
+                  <dl className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 font-mono text-[10px] text-muted-foreground">
+                    <dt>Hash</dt><dd className="truncate">{preview.prefixHash}</dd>
+                    <dt>ID</dt><dd className="truncate">{preview.prefixId}</dd>
+                    <dt>Bytes (exact)</dt><dd>{preview.prefixBytes}</dd>
+                    <dt>Tokens (est.)</dt><dd>{preview.prefixTokenEstimate}</dd>
+                  </dl>
+                  <p className="mt-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">Stable prefix — exact bytes</p>
+                  <pre className="mt-0.5 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-foreground/[0.03] p-2 font-mono text-[10px]">{preview.stablePrefix}</pre>
+                  <p className="mt-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">Variable suffix — exact bytes</p>
+                  <pre className="mt-0.5 max-h-24 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-foreground/[0.03] p-2 font-mono text-[10px]">{preview.variableSuffix}</pre>
+                </div>
+
+                {prefixChanged && <p role="status" className="rounded-lg border border-warning/40 bg-warning/10 p-2 text-[10.5px] leading-relaxed text-warning">
+                  Bridge prefix changed — the next turn is likely a cache miss on the Bridge prefix. Provider-side cache effects are estimated, not measured.
+                </p>}
+
+                <div>
+                  <h4 className="text-[10.5px] font-semibold uppercase tracking-wide text-foreground">Provider layers (not exact)</h4>
+                  <ul className="mt-1 space-y-1">
+                    {preview.providerLayers.map(layer => <li key={`${layer.layer}:${layer.adapter}`} className="rounded-lg border border-border/60 p-1.5 text-[10.5px]">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-mono">{layer.adapter}</span>
+                        <span className="rounded-full bg-foreground/[0.08] px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-muted-foreground">{layer.source}</span>
+                      </div>
+                      {layer.detail && <p className="mt-0.5 text-muted-foreground">{layer.detail}</p>}
+                    </li>)}
+                  </ul>
+                </div>
+              </div>}
+            </div>
+          </details>
+        </aside>
+      </>}
+    </div>
     <p aria-live="polite" className="sr-only">{announcement}</p>
   </div>;
 }
