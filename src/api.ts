@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
+import { normalizeAgentToken } from "./agentMention";
 import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult } from "./protocol/generated/protocol";
 import type { TurnImage } from "./protocol/generated/protocol";
@@ -14,6 +15,7 @@ import type {
   ManagedAgentStatus,
   ListWorkspaceBranchesResult,
   ReadWorkspaceFileResult,
+  DispatchAgentShortcutResult,
   SubmitInputResult,
   WorkspaceChangesResult,
   WorkBoard,
@@ -1434,6 +1436,32 @@ export const bridgeApi = {
     }
     await bridgeApi.sendTurn(sessionId, text);
     return { disposition: "startedNewTurn", interceptions: [] };
+  },
+  dispatchAgentShortcut: async (sessionId: string, token: string, objective: string): Promise<DispatchAgentShortcutResult> => {
+    if (isTauri()) return call("sessions/dispatch_agent_shortcut", { sessionId, token, objective });
+    if (!objective.trim()) throw new Error("Agent shortcut objective cannot be empty; add what the specialist should do");
+    const session = mockState.sessions.find(item => item.id === sessionId);
+    if (!session?.workspaceId) throw new Error("Agent shortcuts need a connected workspace");
+    const normalized = normalizeAgentToken(token);
+    const aliases: Record<string, string> = { researcher: "research", implementer: "implementation", verifier: "verification", reviewer: "verification", planner: "planning", documenter: "documentation", docs: "documentation" };
+    const role = aliases[normalized] ?? normalized;
+    const exact = mockConfigState.agents.filter(agent => normalizeAgentToken(agent.id ?? "") === normalized || normalizeAgentToken(agent.name) === normalized);
+    const matches = exact.length > 0 ? exact : mockConfigState.agents.filter(agent => agent.role === role);
+    if (matches.length !== 1) throw new Error(matches.length > 1 ? `Agent shortcut #${normalized} is ambiguous` : `Unknown agent shortcut #${normalized}`);
+    const selected = matches[0];
+    if (!selected.enabled) throw new Error(`Agent shortcut #${normalized} targets disabled agent ${selected.name}`);
+    if (selected.role === "orchestrator") throw new Error(`Agent shortcut #${normalized} cannot target an orchestrator`);
+    if (!mockConfigState.harnesses.some(harness => harness.id === selected.harness && harness.enabled)) throw new Error(`Agent shortcut #${normalized} uses disabled harness ${selected.harness}`);
+    appendAgent(sessionId, "message.completed", { itemId: `user-${nextEventId}`, role: "user", status: "completed", text: objective.trim(), data: { delivery: "directAgent", directDispatch: true, agentId: selected.id, agentRole: selected.role } });
+    emitState();
+    return {
+      disposition: selected.role === "implementation" ? "awaitingApproval" : "launched",
+      childSessionId: selected.role === "implementation" ? undefined : `mock-worker-${nextEventId}`,
+      agentId: selected.id ?? "",
+      agentName: selected.name,
+      role: selected.role,
+      interceptions: [],
+    };
   },
   interruptTurn: (sessionId: string): Promise<void> => isTauri() ? unit(call("sessions/interrupt_turn", { sessionId })) : Promise.resolve(),
   // The user's half of the retry decision. Bridge stopped taking this turn on

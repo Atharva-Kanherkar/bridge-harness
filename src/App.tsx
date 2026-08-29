@@ -2,13 +2,14 @@ import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useMemo, u
 import { QueryClientProvider } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
+import { agentMentionQuery, agentShortcutCandidates, parseAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
 import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
 import { openExternalUrl } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
-import type { AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
@@ -186,6 +187,9 @@ function AppContent() {
   const [mentionDismissed, setMentionDismissed] = useState(false);
   const [harnessShortcutIndex, setHarnessShortcutIndex] = useState(0);
   const [harnessShortcutDismissed, setHarnessShortcutDismissed] = useState(false);
+  const [agentShortcutIndex, setAgentShortcutIndex] = useState(0);
+  const [agentShortcutDismissed, setAgentShortcutDismissed] = useState(false);
+  const [configuredAgents, setConfiguredAgents] = useState<AgentDefinition[]>([]);
   const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
   const [busy, setBusy] = useState(false);
   const [browserSupervision, setBrowserSupervision] = useState<BrowserSupervision>();
@@ -218,6 +222,7 @@ function AppContent() {
   // Shown once per fallback episode, not on every debounce firing while the
   // configured model stays in cooldown.
   const [fallbackNotice, setFallbackNotice] = useState<string>();
+  const [agentDispatchNotice, setAgentDispatchNotice] = useState<string>();
   const fallbackNoticeShownRef = useRef(false);
   const [usageByProvider, setUsageByProvider] = useState<Partial<Record<UsageProvider, UsageSnapshot>>>({});
   const [usageSamples, setUsageSamples] = useState<Partial<Record<UsageProvider, UsageRateSample[]>>>({});
@@ -235,11 +240,14 @@ function AppContent() {
   const workRefreshError = workBoard === undefined ? undefined : workBriefingError ?? workQueryError;
 
   const reload = useCallback(async () => {
-    setState(await bridgeApi.state());
+    const [nextState, config] = await Promise.all([bridgeApi.state(), bridgeApi.configState()]);
+    setState(nextState);
     // Re-read with the state it was published alongside: `save_permission_policy`
     // publishes StateChanged precisely so the badge repaints, and another window
     // flipping the switch has to reach this one too.
-    setPermissionPolicy((await bridgeApi.configState()).permissionPolicy);
+    setPermissionPolicy(config.permissionPolicy);
+    const enabledHarnesses = new Set(config.harnesses.filter(harness => harness.enabled).map(harness => harness.id));
+    setConfiguredAgents(config.agents.filter(agent => enabledHarnesses.has(agent.harness)));
   }, []);
   useEffect(() => {
     void reload().catch(value => setError(errorMessage(value)));
@@ -364,6 +372,7 @@ function AppContent() {
   const workspace = session?.workspaceId ? state.workspaces.find(w => w.id === session.workspaceId) : undefined;
   const hasRepo = !!workspace?.path;
   const isDirectChat = session?.kind === "direct";
+  useEffect(() => { setAgentDispatchNotice(undefined); }, [session?.id]);
 
   // The dock is a workspace possession: width, active pane, and expand state
   // belong to the tree being worked on, so direct chats key by session instead.
@@ -645,6 +654,16 @@ function AppContent() {
   }, [mentionQuery, workspaceFileOptions]);
   const mentionOpen = mentionQuery != null && fileMatches.length > 0 && !mentionDismissed;
   const mentionListRef = useRef<HTMLDivElement>(null);
+  // #agent shortcut: leading-only, and only while the target token is being
+  // typed. The host resolves the selected token again from persisted config;
+  // these rows are discovery, never execution authority.
+  const agentShortcutQueryValue = agentMentionQuery(composer);
+  const agentShortcutMatches = useMemo(() => {
+    if (agentShortcutQueryValue == null || !session?.workspaceId) return [];
+    return agentShortcutCandidates(configuredAgents, agentShortcutQueryValue);
+  }, [agentShortcutQueryValue, configuredAgents, session?.workspaceId]);
+  const agentShortcutOpen = agentShortcutQueryValue != null && agentShortcutMatches.length > 0 && !agentShortcutDismissed;
+  const agentShortcutListRef = useRef<HTMLDivElement>(null);
   // $harness shortcut: a bare `$token` at the start of the composer with
   // nothing typed after it yet offers the available harnesses to complete to.
   const harnessShortcutQueryValue = harnessShortcutQuery(composer);
@@ -720,6 +739,19 @@ function AppContent() {
     const active = root.querySelector<HTMLElement>(`[data-slash-index="${slashIndex}"]`);
     active?.scrollIntoView({ block: "nearest" });
   }, [slashOpen, slashIndex]);
+
+  useEffect(() => {
+    if (!agentShortcutOpen) return;
+    setAgentShortcutIndex(index => Math.min(index, Math.max(0, agentShortcutMatches.length - 1)));
+  }, [agentShortcutOpen, agentShortcutMatches.length]);
+
+  useEffect(() => {
+    if (!agentShortcutOpen) return;
+    const root = agentShortcutListRef.current;
+    if (!root) return;
+    const active = root.querySelector<HTMLElement>(`[data-agent-shortcut-index="${agentShortcutIndex}"]`);
+    active?.scrollIntoView({ block: "nearest" });
+  }, [agentShortcutOpen, agentShortcutIndex]);
 
   useEffect(() => {
     if (!harnessShortcutOpen) return;
@@ -1399,6 +1431,31 @@ function AppContent() {
     // session like any other message.
     if (submittedText && sentAttachments.length === 0 && await openHarnessShortcut(submittedText)) { setComposer(""); return; }
     if (!session) return;
+    const agentMention = submittedText ? parseAgentMention(submittedText) : null;
+    if (agentMention) {
+      if (sentAttachments.length > 0) {
+        setError("Agent shortcuts do not accept image attachments. Put the file in the workspace and reference it with @ instead.");
+        return;
+      }
+      setComposer("");
+      setAgentShortcutIndex(0);
+      setAgentDispatchNotice(undefined);
+      setError(undefined);
+      try {
+        const outcome = await bridgeApi.dispatchAgentShortcut(session.id, agentMention.token, agentMention.objective);
+        const action = outcome.disposition === "awaitingApproval"
+          ? "is waiting for write-scope approval"
+          : outcome.disposition === "queued"
+            ? "is queued for the next worker slot"
+            : "was launched";
+        setAgentDispatchNotice(`${outcome.agentName} (${outcome.role}) ${action}.`);
+        await reload();
+      } catch (e) {
+        setComposer(submittedText);
+        setError(errorMessage(e));
+      }
+      return;
+    }
     const key = crypto.randomUUID();
     let target = session;
     let retryText = submittedText;
@@ -1562,8 +1619,22 @@ function AppContent() {
     setHarnessShortcutIndex(0);
     setHarnessShortcutDismissed(true);
   }
+  // Selecting a worker only completes the directive. Sending remains an
+  // explicit second action, so the user can write and review the objective.
+  function applyAgentShortcut(candidate: AgentShortcutCandidate) {
+    setComposer(`#${candidate.token} `);
+    setAgentShortcutIndex(0);
+    setAgentShortcutDismissed(true);
+    composerRef.current?.focus();
+  }
   function onComposerKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (e.nativeEvent.isComposing) return;
+    if (agentShortcutOpen) {
+      if (e.key === "ArrowDown") { e.preventDefault(); setAgentShortcutIndex(index => Math.min(index + 1, agentShortcutMatches.length - 1)); return; }
+      if (e.key === "ArrowUp") { e.preventDefault(); setAgentShortcutIndex(index => Math.max(index - 1, 0)); return; }
+      if (e.key === "Escape") { e.preventDefault(); setAgentShortcutDismissed(true); return; }
+      if ((e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) || e.key === "Tab") { e.preventDefault(); applyAgentShortcut(agentShortcutMatches[Math.min(agentShortcutIndex, agentShortcutMatches.length - 1)]); return; }
+    }
     if (mentionOpen) {
       if (e.key === "ArrowDown") { e.preventDefault(); setMentionIndex(index => Math.min(index + 1, fileMatches.length - 1)); return; }
       if (e.key === "ArrowUp") { e.preventDefault(); setMentionIndex(index => Math.max(index - 1, 0)); return; }
@@ -1954,6 +2025,12 @@ function AppContent() {
                     <span>{fallbackNotice}</span>
                   </div>
                 </div>}
+                {agentDispatchNotice && <div className="mx-auto mb-2 flex max-w-2xl justify-center px-4 sm:px-6">
+                  <div className="u-glass-soft inline-flex items-center gap-2 min-h-[30px] px-3.5 rounded-full text-muted-foreground text-xs" role="status">
+                    <Bot size={12} aria-hidden="true" />
+                    <span>{agentDispatchNotice}</span>
+                  </div>
+                </div>}
                 {/* A worker gets a steering composer, not the chat composer: what
                     you type amends the objective its orchestrator gave it, and
                     the orchestrator is told so it does not fight the change. */}
@@ -1961,7 +2038,27 @@ function AppContent() {
                   <div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-2.5 text-[12px] text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. It takes its objective from its orchestrator — steer it here to amend that objective.</span></div>
                   <SteerComposer sessionId={session.id} steerable={!!workerSteerable} onSteer={steerWorker} className="pt-2"/>
                 </div> : <div className="relative mx-auto max-w-2xl">
-                  {!slashOpen && !mentionOpen && !harnessShortcutOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-border px-3 py-2 text-left last:border-0 hover:bg-accent"><span className="mt-0.5 rounded border border-success/25 bg-success/10 px-1.5 py-0.5 text-[8.5px] uppercase text-success">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-foreground">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-muted-foreground">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
+                  {!slashOpen && !mentionOpen && !agentShortcutOpen && !harnessShortcutOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-border px-3 py-2 text-left last:border-0 hover:bg-accent"><span className="mt-0.5 rounded border border-success/25 bg-success/10 px-1.5 py-0.5 text-[8.5px] uppercase text-success">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-foreground">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-muted-foreground">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
+                  {agentShortcutOpen && <div id="agent-shortcut-listbox" role="listbox" aria-label="Specialist agents" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
+                    <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70 border-b border-border flex items-center gap-2">
+                      <span>Dispatch a specialist</span>
+                      <span className="normal-case tracking-normal text-muted-foreground/50">{agentShortcutMatches.length}</span>
+                    </div>
+                    <div ref={agentShortcutListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain" onWheel={e => e.stopPropagation()}>
+                      {agentShortcutMatches.map((candidate, index) => {
+                        const agent = candidate.agent;
+                        const model = agent.model ?? (agent.harness === "bridge" ? "automatic model" : "default model");
+                        const access = agent.role === "implementation" ? "isolated write" : "read only";
+                        return <button id={`agent-shortcut-option-${index}`} role="option" aria-selected={index === agentShortcutIndex} key={agent.id ?? `${agent.name}:${agent.role}`} type="button" data-agent-shortcut-index={index} onMouseEnter={() => setAgentShortcutIndex(index)} onMouseDown={e => { e.preventDefault(); applyAgentShortcut(candidate); }} className={`min-h-12 w-full flex items-start gap-3 px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-ring ${index === agentShortcutIndex ? "bg-accent" : "hover:bg-accent"}`}>
+                          <Bot size={13} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+                          <span className="min-w-0 flex-1">
+                            <span className="flex items-baseline gap-2"><b className="font-mono text-[12px] font-medium text-foreground">#{candidate.token}</b><span className="truncate text-[11px] text-muted-foreground">{agent.name}</span></span>
+                            <small className="mt-0.5 block truncate text-[9.5px] leading-4 text-muted-foreground">{agent.role} · {agent.harness} / {model} · {access} · {agent.effort} effort</small>
+                          </span>
+                        </button>;
+                      })}
+                    </div>
+                  </div>}
                   {mentionOpen && <div id="file-mention-listbox" role="listbox" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
                     <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70 border-b border-border flex items-center gap-2">
                       <span>Reference a file</span>
@@ -2016,13 +2113,16 @@ function AppContent() {
                   <ComposerPill
                     layout="dock"
                     value={composer}
-                    onChange={value => { setComposer(value); setSlashDismissed(false); setSlashIndex(0); setMentionDismissed(false); setMentionIndex(0); setHarnessShortcutDismissed(false); setHarnessShortcutIndex(0); }}
+                    onChange={value => { setComposer(value); setSlashDismissed(false); setSlashIndex(0); setMentionDismissed(false); setMentionIndex(0); setAgentShortcutDismissed(false); setAgentShortcutIndex(0); setHarnessShortcutDismissed(false); setHarnessShortcutIndex(0); }}
                     onSubmit={() => void sendPrompt()}
                     onKeyDown={onComposerKeyDown}
                     onPaste={handleComposerPaste}
                     attachments={attachments}
                     onRemoveAttachment={id => setAttachments(current => current.filter(attachment => attachment.id !== id))}
-                    autocomplete={mentionOpen ? {
+                    autocomplete={agentShortcutOpen ? {
+                      controls: "agent-shortcut-listbox",
+                      activeDescendant: `agent-shortcut-option-${agentShortcutIndex}`,
+                    } : mentionOpen ? {
                       controls: "file-mention-listbox",
                       activeDescendant: `file-mention-option-${mentionIndex}`,
                     } : undefined}
