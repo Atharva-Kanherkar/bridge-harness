@@ -24,6 +24,9 @@ export { ChatModelControl };
 import { SessionDock, type DockPaneDescriptor } from "./components/SessionDock";
 import { AsideChat } from "./components/AsideChat";
 import { ChangesPanel } from "./components/ChangesPanel";
+import { GitHubPane } from "./components/GitHubPane";
+import { GithubToasts, type CiToast } from "./components/GithubToasts";
+import { ciToastKey, jumpFallbackHint } from "./githubSurface";
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
 import type { BrowserSupervision } from "./components/BrowserSurface";
 import type { TerminalActivity } from "./components/TerminalPane";
@@ -401,6 +404,7 @@ function AppContent() {
     { id: "browser", label: "Browser", icon: Monitor, available: true, alert: browserSupervision?.attention || undefined },
     { id: "transcript", label: "Transcript", icon: Braces, available: true },
     { id: "tasks", label: "Tasks", icon: Activity, available: true, badge: dockTaskBadge.running || undefined, alert: dockTaskBadge.attention || undefined },
+    { id: "github", label: "GitHub", icon: GitPullRequest, available: hasRepo && !!workspace, unavailableReason: "GitHub needs a repository. This chat has no worktree with a remote." },
   ];
   const dockExpandedVisible = dock.open && dock.expanded && !fullscreen;
 
@@ -441,6 +445,66 @@ function AppContent() {
     revealNonce.current += 1;
     setCodeReveal({ path, line, nonce: revealNonce.current });
     dispatchDock({ type: "open-pane", pane: "code" });
+  }
+
+  // ── GitHub surface glue ────────────────────────────────────────────────────
+  // Deep links into the GitHub dock pane (sidebar rows, CI toasts), the
+  // CI-finished notification stack, and jump-to-diff from a review comment.
+  const githubIntentNonce = useRef(0);
+  const [githubIntent, setGithubIntent] = useState<{ number: number; nonce: number }>();
+  const [githubToasts, setGithubToasts] = useState<CiToast[]>([]);
+  const [githubJumpHint, setGithubJumpHint] = useState<string>();
+
+  function openPullRequestPane(number: number) {
+    githubIntentNonce.current += 1;
+    setGithubIntent({ number, nonce: githubIntentNonce.current });
+    setView("workspace");
+    setParadigm("single");
+    dispatchDock({ type: "open-pane", pane: "github" });
+  }
+
+  function openCiToast(toast: CiToast) {
+    setGithubToasts(current => current.filter(item => item.key !== toast.key));
+    const payload = toast.payload;
+    if (workspace?.id !== payload.workspaceId) {
+      // The PR lives in another workspace; land in one of its chats first so
+      // the pane reads the right repo.
+      const target = state.sessions.find(candidate => candidate.workspaceId === payload.workspaceId && !candidate.parentSessionId);
+      if (!target) {
+        setError(`CI finished on ${payload.headBranch}, but its workspace has no open chat to show it in.`);
+        return;
+      }
+      openSession(target.id);
+    }
+    openPullRequestPane(payload.number);
+  }
+
+  useEffect(() => {
+    let active = true;
+    let off: (() => void) | undefined;
+    void bridgeApi.onGithubCiFinished(payload => {
+      if (!active) return;
+      const key = ciToastKey(payload);
+      // The poller dedups per terminal check set; this guard only keeps a
+      // re-delivered payload from stacking the same card twice.
+      setGithubToasts(current => current.some(item => item.key === key) ? current : [...current.slice(-3), { key, payload }]);
+    }).then(unlisten => { if (active) off = unlisten; else unlisten(); });
+    return () => { active = false; off?.(); };
+  }, []);
+
+  // The fallback hint is a pointer, not a state — it fades on its own.
+  useEffect(() => {
+    if (!githubJumpHint) return;
+    const timer = window.setTimeout(() => setGithubJumpHint(undefined), 8000);
+    return () => window.clearTimeout(timer);
+  }, [githubJumpHint]);
+
+  /** Jump-to-diff from a review comment: open the editor at the commented
+   * file/line. When the PR head branch is not what this workspace has checked
+   * out, the file still opens (read it, don't edit it) with a hint saying so. */
+  function jumpToReviewComment(path: string, line: number | undefined, headBranch: string) {
+    openFileInDock(path, line);
+    setGithubJumpHint(jumpFallbackHint(workspace?.branch ?? null, headBranch) ?? undefined);
   }
   // A focused worker is watchable, its approvals are resolvable, and it can be
   // steered — the composer says "steer", not "message", because the worker still
@@ -1663,6 +1727,7 @@ function AppContent() {
       chats={topSessions}
       workspaces={state.workspaces}
       workspaceId={workspace?.id}
+      onOpenPullRequest={openPullRequestPane}
       activeSessionId={session?.id}
       projectsActive={view === "projects"}
       automationsActive={view === "automations"}
@@ -2028,6 +2093,7 @@ function AppContent() {
                  and relative paths, and none of that survives a change of tree.
                  Without the key a save would aim the old path at the new
                  workspace. */
+              if (pane === "github") return <GitHubPane key={workspace.id} workspaceId={workspace.id} workspaceBranch={workspace.branch ?? null} intent={githubIntent} onJumpToFile={jumpToReviewComment} />;
               if (pane === "changes") return <ChangesPanel key={workspace.id} workspace={workspace} onQuote={quoteToComposer} onOpenFile={openFileInDock} />;
               if (pane === "code") return <Suspense fallback={<PanelLoading label="Opening editor…"/>}><CodePanel key={workspace.id} workspaceId={workspace.id} visible={dock.open && dock.pane === "code"} reveal={codeReveal} driftSignal={`${workspace.dirtyFiles}:${workspace.additions}:${workspace.deletions}`} onSaved={() => void refreshWorkspaceStats(workspace.id)}/></Suspense>;
               return <Suspense fallback={<PanelLoading label="Opening terminal…"/>}><TerminalPane key={workspace.id} workspaceId={workspace.id} workspacePath={workspace.path ?? undefined} visible={dock.open && dock.pane === "terminal" && !fullscreen} onActivity={setTerminalActivity}/></Suspense>;
@@ -2080,6 +2146,14 @@ function AppContent() {
         </Alert>
       );
     })()}
+    {/* Behind the error alert on purpose: a failure to act outranks CI news. */}
+    <GithubToasts
+      toasts={githubToasts}
+      hint={githubJumpHint}
+      onOpen={openCiToast}
+      onDismiss={key => setGithubToasts(current => current.filter(toast => toast.key !== key))}
+      onDismissHint={() => setGithubJumpHint(undefined)}
+    />
 
     <WorkspaceCreateDialog
       open={modal === "workspace"}
