@@ -468,6 +468,14 @@ impl GithubSurface {
         Ok(checks)
     }
 
+    pub fn invalidate_checks(&self, workspace: &Path, number: u64) {
+        if let Ok(repository) = self.resolve_repository(workspace) {
+            self.cache.lock().unwrap_or_else(|poisoned| poisoned.into_inner()).remove(&CacheKey {
+                repository: repository.selector(), resource: Resource::Checks(number),
+            });
+        }
+    }
+
     pub fn pr_review_threads(
         &self,
         workspace: &Path,

@@ -58,6 +58,7 @@ const unit = (result: Promise<null>): Promise<void> => result.then(() => undefin
 const now = new Date().toISOString();
 const stateListeners = new Set<() => void>();
 const memoryListeners = new Set<(payload: MemoryChangedPayload) => void>();
+type GithubChecksChangedPayload = { workspaceId: string; number: number };
 const mockRouterPreferences = new Map<string, RouterPreferences>();
 const mockVerifierManifests = new Map<string, VerifierManifest>();
 let mockModelSetup: ModelSetupState = { complete: false, activeVersion: null, profiles: [] };
@@ -1491,6 +1492,10 @@ export const bridgeApi = {
    *  never shows that phase, so browser/mock mode has nothing to replay. */
   onSessionStartup: async (handler: (payload: SessionStartupPayload) => void): Promise<UnlistenFn> => {
     if (isTauri()) return subscribe<SessionStartupPayload>("session-startup", handler);
+    return () => undefined;
+  },
+  onGithubChecksChanged: async (handler: (payload: GithubChecksChangedPayload) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe<GithubChecksChangedPayload>("github/checks_changed", handler);
     return () => undefined;
   },
 };

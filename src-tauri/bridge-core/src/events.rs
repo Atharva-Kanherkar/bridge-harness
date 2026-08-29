@@ -69,6 +69,8 @@ pub enum CoreEvent {
         session_id: String,
         phase: crate::adapters::StartupPhase,
     },
+    /// GitHub check state changed; clients refetch their authoritative PR data.
+    GithubChecksChanged { workspace_id: String, number: u64 },
 }
 
 impl CoreEvent {
@@ -87,6 +89,7 @@ impl CoreEvent {
             CoreEvent::AccountUsage { .. } => NotificationName::AccountUsage,
             CoreEvent::ManagedAgentChanged { .. } => NotificationName::ManagedAgentChanged,
             CoreEvent::SessionStartup { .. } => NotificationName::SessionStartup,
+            CoreEvent::GithubChecksChanged { .. } => NotificationName::GithubChecksChanged,
         }
     }
 
@@ -125,6 +128,9 @@ impl CoreEvent {
             } => serde_json::json!({
                 "provider": provider,
                 "rateLimits": rate_limits,
+            }),
+            CoreEvent::GithubChecksChanged { workspace_id, number } => serde_json::json!({
+                "workspaceId": workspace_id, "number": number,
             }),
         }
     }
@@ -265,6 +271,7 @@ impl EventBus {
                 | CoreEvent::TerminalExited { .. }
                 | CoreEvent::AccountUsage { .. }
                 | CoreEvent::SessionStartup { .. } => {}
+                | CoreEvent::GithubChecksChanged { .. } => {}
             }
         }
         let _ = self.sender.send(event);

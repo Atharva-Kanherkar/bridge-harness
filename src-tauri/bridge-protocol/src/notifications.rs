@@ -86,6 +86,7 @@ notifications![
     // client that missed one simply never shows that phase, unlike the
     // refetch hints above there is no "latest state" worth resending.
     (SessionStartup, "session-startup", Transient),
+    (GithubChecksChanged, "github/checks_changed", Transient),
     // Host-synthesized: the live channel dropped events for this connection.
     // Durable history is intact — replay every watched session from its last
     // cursor via `sessions/replay_session_events`; refetch hints are resent

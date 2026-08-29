@@ -75,6 +75,7 @@ pub struct BridgeCore {
     /// Read-only `gh` CLI surface. It owns no credentials and is deliberately
     /// separate from model adapters and their sidecars.
     pub github_surface: crate::github_surface::GithubSurface,
+    pub github_poller: crate::github_poll::GithubPoller,
     /// Last time each session produced adapter output, used by the worker
     /// stall watchdog to detect a live-but-silent worker. Monotonic, in-memory
     /// only — process death is already handled by the reader-thread EOF path.
@@ -278,6 +279,7 @@ impl BridgeCore {
                 scratch.join("browser-site-metrics.json"),
             ),
             github_surface: crate::github_surface::GithubSurface::unavailable_for_tests(),
+            github_poller: crate::github_poll::GithubPoller::default(),
             worker_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
             events: EventBus::new(),
@@ -382,6 +384,7 @@ impl BridgeCore {
             credential_broker,
             browser_bridge,
             github_surface: crate::github_surface::GithubSurface::discover(),
+            github_poller: crate::github_poll::GithubPoller::default(),
             worker_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
             events,

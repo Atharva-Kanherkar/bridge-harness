@@ -111,7 +111,9 @@ pub fn github_status(core: &Arc<BridgeCore>, workspace_id: &str) -> Result<wire:
 
 pub fn github_prs(core: &Arc<BridgeCore>, workspace_id: &str) -> Result<wire::GithubPullRequestsResult, BridgeError> {
     let path = locked_workspace_path(core, workspace_id)?;
-    let pull_requests = github_wire(core.github_surface.list_prs(Path::new(&path)).map_err(github_error)?)?;
+    let summaries = core.github_surface.list_prs(Path::new(&path)).map_err(github_error)?;
+    core.github_poller.watch(workspace_id, Path::new(&path).to_path_buf(), &summaries);
+    let pull_requests = github_wire(summaries)?;
     Ok(wire::GithubPullRequestsResult { pull_requests })
 }
 

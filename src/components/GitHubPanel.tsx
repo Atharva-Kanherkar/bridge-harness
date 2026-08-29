@@ -37,6 +37,17 @@ export function GitHubPanel({ workspaceId }: { workspaceId?: string }) {
     setSelected({ result, checks });
   };
 
+  useEffect(() => {
+    if (!workspaceId) return;
+    let active = true;
+    void bridgeApi.onGithubChecksChanged(({ workspaceId: changedWorkspace, number }) => {
+      if (!active || changedWorkspace !== workspaceId) return;
+      void bridgeApi.githubPullRequests(workspaceId).then(value => { if (active) setPullRequests(value); });
+      if (selected?.result.pullRequest.summary.number === number) void open(number);
+    }).then(unlisten => { if (!active) unlisten(); });
+    return () => { active = false; };
+  }, [workspaceId, selected]);
+
   if (!workspaceId) return null;
   if (error) return <p className="mx-2 mb-2 text-xs text-muted-foreground">GitHub is unavailable.</p>;
   if (!status) return <p className="mx-2 mb-2 flex items-center gap-1 text-xs text-muted-foreground"><LoaderCircle className="animate-spin" size={12} /> Checking GitHub…</p>;
