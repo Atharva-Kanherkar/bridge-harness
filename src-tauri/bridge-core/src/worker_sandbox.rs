@@ -134,6 +134,29 @@ fn runtime_network_policy_denies(value: Option<&str>) -> bool {
     matches!(value.map(str::trim), Some("deny") | Some("denied"))
 }
 
+/// Resolve the host's GitHub CLI token so a sandboxed, networked worker's `gh`
+/// can authenticate. Inside the read-only sandbox `HOME` (and the Claude config
+/// dir) are redirected to the per-worker output directory and the macOS keychain
+/// is out of reach, so `gh` finds no credentials of its own and every call —
+/// even reading a private PR — comes back 401. Passing the token as `GH_TOKEN`
+/// is the one thing that lets a review worker read the PR and post its comment.
+///
+/// Best-effort: `None` when `gh` is missing or logged out, so a machine without
+/// GitHub set up is unaffected. This runs from the unsandboxed core process,
+/// which still has the keychain — the only place the token is reachable.
+pub fn github_cli_token() -> Option<String> {
+    let gh = which::which("gh").ok()?;
+    let output = std::process::Command::new(gh)
+        .args(["auth", "token"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let token = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    (!token.is_empty()).then_some(token)
+}
+
 fn seatbelt_profile(
     workspace: &Path,
     output: &Path,

@@ -112,6 +112,13 @@ fn launch(
             .env("HOME", sandbox.output_dir())
             .env("TMPDIR", sandbox.output_dir())
             .env("BRIDGE_WORKER_OUTPUT_DIR", sandbox.output_dir());
+        // The redirected HOME leaves `gh` with no config or keychain; a networked
+        // worker (e.g. a PR review) needs the host token or every `gh` call 401s.
+        if sandbox.network_allowed() {
+            if let Some(token) = crate::worker_sandbox::github_cli_token() {
+                command.env("GH_TOKEN", token);
+            }
+        }
     }
     crate::adapters::configure_process_group(&mut command);
     if let Some(on_progress) = on_progress {

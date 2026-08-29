@@ -189,6 +189,14 @@ fn launch(
                 command.env("CLAUDE_CODE_OAUTH_TOKEN", token);
             }
         }
+        // The redirected config dir leaves `gh` with no credentials or keychain;
+        // a networked worker (e.g. a PR review) needs the host token or every
+        // `gh` call 401s.
+        if sandbox.network_allowed() {
+            if let Some(token) = crate::worker_sandbox::github_cli_token() {
+                command.env("GH_TOKEN", token);
+            }
+        }
     }
     // Claude Code has no per-run effort flag; the closest real knob is the
     // extended-thinking budget, which we scale by the routed effort tier.
