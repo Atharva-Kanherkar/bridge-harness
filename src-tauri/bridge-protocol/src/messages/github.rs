@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GithubStatusParams {
     pub workspace_id: String,
+    #[serde(default)]
+    pub refresh: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -83,6 +85,24 @@ pub struct GithubActor {
     pub login: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubLabel {
+    pub name: String,
+    pub color: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubComment {
+    pub id: String,
+    pub author: Option<GithubActor>,
+    pub body: String,
+    pub created_at: String,
+    pub url: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckRollup {
@@ -117,6 +137,22 @@ pub struct PullRequestDetail {
     pub summary: PullRequestSummary,
     pub body: String,
     pub base_branch: String,
+    pub comments: Vec<GithubComment>,
+    pub labels: Vec<GithubLabel>,
+    pub additions: u64,
+    pub deletions: u64,
+    pub changed_files: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestFile {
+    pub path: String,
+    pub previous_path: Option<String>,
+    pub status: String,
+    pub additions: u64,
+    pub deletions: u64,
+    pub patch: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -154,6 +190,80 @@ pub struct GithubPullRequestsResult {
 pub struct GithubPullRequestResult {
     pub pull_request: PullRequestDetail,
     pub review_threads: Vec<ReviewThread>,
+    pub files: Vec<PullRequestFile>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum IssueState {
+    Open,
+    Closed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueSummary {
+    pub number: u64,
+    pub title: String,
+    pub state: IssueState,
+    pub author: Option<GithubActor>,
+    pub labels: Vec<GithubLabel>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueDetail {
+    pub summary: IssueSummary,
+    pub body: String,
+    pub comments: Vec<GithubComment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GithubIssuesParams {
+    pub workspace_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubIssuesResult {
+    pub issues: Vec<IssueSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GithubIssueParams {
+    pub workspace_id: String,
+    pub number: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubIssueResult {
+    pub issue: IssueDetail,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GithubRepositoryParams {
+    pub workspace_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubRepositoryResult {
+    pub name_with_owner: String,
+    pub description: String,
+    pub visibility: String,
+    pub default_branch: String,
+    pub primary_language: Option<String>,
+    pub url: String,
+    pub open_issues: u64,
+    pub open_pull_requests: u64,
+    pub labels: Vec<GithubLabel>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -233,6 +343,20 @@ pub enum ReviewEvent {
     Comment,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum LabelTarget {
+    PullRequest,
+    Issue,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum LabelOperation {
+    Add,
+    Remove,
+}
+
 /// One mutating GitHub action. The `kind` tag selects the variant; every write
 /// path is expressed here so a client cannot smuggle a free-form `gh` argument.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -249,6 +373,12 @@ pub enum GithubAction {
         body: String,
     },
     Rerun { number: u64 },
+    Label {
+        target: LabelTarget,
+        number: u64,
+        label: String,
+        operation: LabelOperation,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -323,6 +453,10 @@ mod tests {
 
     #[test]
     fn github_read_payloads_use_camel_case_and_inert_data_shapes() {
+        let status_params = GithubStatusParams { workspace_id: "workspace-1".into(), refresh: true };
+        assert_eq!(serde_json::to_value(&status_params).unwrap(), json!({"workspaceId": "workspace-1", "refresh": true}));
+        assert_eq!(round_trip(&status_params), status_params);
+        assert_eq!(serde_json::from_value::<GithubStatusParams>(json!({"workspaceId": "workspace-1"})).unwrap().refresh, false);
         let params = GithubPrParams {
             workspace_id: "workspace-1".into(),
             number: 341,
@@ -343,6 +477,13 @@ mod tests {
             repository: None,
         };
         assert_eq!(round_trip(&status), status);
+
+        let issue = GithubIssueParams { workspace_id: "workspace-1".into(), number: 17 };
+        assert_eq!(serde_json::to_value(&issue).unwrap(), json!({"workspaceId": "workspace-1", "number": 17}));
+        assert_eq!(round_trip(&issue), issue);
+        assert!(serde_json::from_value::<GithubRepositoryParams>(
+            json!({"workspaceId": "w", "extra": true})
+        ).is_err());
     }
 
     #[test]
@@ -375,6 +516,18 @@ mod tests {
             confirmed: false,
         };
         assert_eq!(round_trip(&reply), reply);
+
+        let label = GithubAction::Label {
+            target: LabelTarget::PullRequest,
+            number: 341,
+            label: "bug".into(),
+            operation: LabelOperation::Add,
+        };
+        assert_eq!(
+            serde_json::to_value(&label).unwrap(),
+            json!({"kind": "label", "target": "pullRequest", "number": 341, "label": "bug", "operation": "add"})
+        );
+        assert_eq!(round_trip(&label), label);
 
         // Unknown fields are rejected at both the params and the action level.
         assert!(serde_json::from_value::<GithubActParams>(

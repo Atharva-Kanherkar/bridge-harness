@@ -111,8 +111,55 @@
             "number"
           ],
           "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "label"
+              ],
+              "type": "string"
+            },
+            "label": {
+              "type": "string"
+            },
+            "number": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "operation": {
+              "$ref": "#/definitions/LabelOperation"
+            },
+            "target": {
+              "$ref": "#/definitions/LabelTarget"
+            }
+          },
+          "required": [
+            "kind",
+            "label",
+            "number",
+            "operation",
+            "target"
+          ],
+          "type": "object"
         }
       ]
+    },
+    "LabelOperation": {
+      "enum": [
+        "add",
+        "remove"
+      ],
+      "type": "string"
+    },
+    "LabelTarget": {
+      "enum": [
+        "pullRequest",
+        "issue"
+      ],
+      "type": "string"
     },
     "MergeStrategy": {
       "enum": [

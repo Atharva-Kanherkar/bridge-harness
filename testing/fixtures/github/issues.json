@@ -1,0 +1,12 @@
+[
+  {
+    "number": 17,
+    "title": "Keep GitHub work inside Bridge",
+    "state": "OPEN",
+    "author": { "login": "atharva" },
+    "labels": [{ "name": "enhancement", "color": "a2eeef", "description": "New feature" }],
+    "createdAt": "2026-08-20T10:00:00Z",
+    "updatedAt": "2026-08-29T10:00:00Z",
+    "url": "https://github.com/fixture/project/issues/17"
+  }
+]

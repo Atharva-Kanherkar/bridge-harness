@@ -28,9 +28,12 @@ import type {
   GithubActResult,
   GithubCheckoutResult,
   GithubChecksResult,
+  GithubIssueResult,
+  GithubIssuesResult,
   GithubMergeConfigResult,
   GithubPullRequestResult,
   GithubPullRequestsResult,
+  GithubRepositoryResult,
   GithubStatusResult,
   SuggestCompletionResult,
   SuggestionSettings,
@@ -699,14 +702,20 @@ function browserWorkBoard(): WorkBoard {
 }
 
 export const bridgeApi = {
-  githubStatus: (workspaceId: string): Promise<GithubStatusResult> =>
-    isTauri() ? call("github/github_status", { workspaceId }) : Promise.resolve(mockGithubStatus(workspaceId)),
+  githubStatus: (workspaceId: string, refresh = false): Promise<GithubStatusResult> =>
+    isTauri() ? call("github/github_status", { workspaceId, refresh }) : Promise.resolve(mockGithubStatus(workspaceId)),
   githubPullRequests: (workspaceId: string): Promise<GithubPullRequestsResult> =>
     isTauri() ? call("github/github_prs", { workspaceId }) : Promise.resolve(mockGithubPullRequests(workspaceId)),
   githubPullRequest: (workspaceId: string, number: number): Promise<GithubPullRequestResult> =>
     isTauri() ? call("github/github_pr", { workspaceId, number }) : Promise.resolve(mockGithubPullRequest(workspaceId, number)),
   githubChecks: (workspaceId: string, number: number): Promise<GithubChecksResult> =>
     isTauri() ? call("github/github_checks", { workspaceId, number }) : Promise.resolve(mockGithubChecks(workspaceId, number)),
+  githubIssues: (workspaceId: string): Promise<GithubIssuesResult> =>
+    isTauri() ? call("github/github_issues", { workspaceId }) : Promise.resolve(mockGithubIssues()),
+  githubIssue: (workspaceId: string, number: number): Promise<GithubIssueResult> =>
+    isTauri() ? call("github/github_issue", { workspaceId, number }) : Promise.resolve(mockGithubIssue(number)),
+  githubRepository: (workspaceId: string): Promise<GithubRepositoryResult> =>
+    isTauri() ? call("github/github_repository", { workspaceId }) : Promise.resolve(mockGithubRepository()),
   githubMergeConfig: (workspaceId: string): Promise<GithubMergeConfigResult> =>
     isTauri() ? call("github/github_merge_config", { workspaceId }) : Promise.resolve(mockGithubMergeConfig()),
   githubAct: (workspaceId: string, action: GithubAction, confirmed: boolean): Promise<GithubActResult> =>
@@ -1596,8 +1605,59 @@ const mockGithubAct = (action: GithubAction, confirmed: boolean): GithubActResul
 const mockGithubChecks = (_workspaceId: string, number: number): GithubChecksResult => ({ checks: [{ name: "test", status: "completed", conclusion: number === 340 ? "failure" : "success", logUrl: "https://github.com/Atharva-Kanherkar/bridge-harness/actions", workflow: "CI" }] });
 const mockGithubPullRequest = (workspaceId: string, number: number): GithubPullRequestResult => {
   const summary = mockGithubPullRequests(workspaceId).pullRequests.find(pr => pr.number === number) ?? mockGithubPullRequests(workspaceId).pullRequests[0];
-  return { pullRequest: { summary, body: "GitHub content remains plain text, including <script>alert('inert')</script>.", baseBranch: "main" }, reviewThreads: [{ id: "thread-1", isResolved: false, isOutdated: false, path: "src/api.ts", line: 42, originalLine: null, comments: [{ id: "comment-1", databaseId: 1, author: { login: "reviewer" }, body: "Please keep <b>remote HTML</b> inert.", createdAt: now, url: summary.url, replyToId: null }] }] };
+  return {
+    pullRequest: {
+      summary,
+      body: "GitHub content remains plain text, including <script>alert('inert')</script>.",
+      baseBranch: "main",
+      comments: [{ id: "conversation-1", author: { login: "maintainer" }, body: "This is the main PR conversation.", createdAt: now, url: summary.url }],
+      labels: [{ name: "enhancement", color: "a2eeef", description: "New feature" }],
+      additions: 18,
+      deletions: 4,
+      changedFiles: 2,
+    },
+    reviewThreads: [{ id: "thread-1", isResolved: false, isOutdated: false, path: "src/api.ts", line: 42, originalLine: null, comments: [{ id: "comment-1", databaseId: 1, author: { login: "reviewer" }, body: "Please keep <b>remote HTML</b> inert.", createdAt: now, url: summary.url, replyToId: null }] }],
+    files: [
+      { path: "src/api.ts", previousPath: null, status: "modified", additions: 14, deletions: 4, patch: "@@ -1,2 +1,3 @@\n-old line\n+new line\n context" },
+      { path: "assets/github.png", previousPath: null, status: "added", additions: 0, deletions: 0, patch: null },
+    ],
+  };
 };
+
+const mockGithubIssues = (): GithubIssuesResult => ({ issues: [{
+  number: 339,
+  title: "Native GitHub surface",
+  state: "open",
+  author: { login: "atharva" },
+  labels: [{ name: "enhancement", color: "a2eeef", description: "New feature" }],
+  createdAt: now,
+  updatedAt: now,
+  url: "https://github.com/Atharva-Kanherkar/bridge-harness/issues/339",
+}] });
+
+const mockGithubIssue = (number: number): GithubIssueResult => {
+  const summary = mockGithubIssues().issues.find(issue => issue.number === number) ?? mockGithubIssues().issues[0];
+  return { issue: {
+    summary,
+    body: "Manage GitHub without leaving Bridge. Remote <script>HTML stays inert</script>.",
+    comments: [{ id: "issue-comment-1", author: { login: "reviewer" }, body: "Issue comment", createdAt: now, url: summary.url }],
+  } };
+};
+
+const mockGithubRepository = (): GithubRepositoryResult => ({
+  nameWithOwner: "Atharva-Kanherkar/bridge-harness",
+  description: "A native control room for coding-agent work.",
+  visibility: "PUBLIC",
+  defaultBranch: "main",
+  primaryLanguage: "Rust",
+  url: "https://github.com/Atharva-Kanherkar/bridge-harness",
+  openIssues: 24,
+  openPullRequests: 5,
+  labels: [
+    { name: "bug", color: "d73a4a", description: "Something is broken" },
+    { name: "enhancement", color: "a2eeef", description: "New feature" },
+  ],
+});
 
 /** Not SHA-256 — just a stable content token with the same conflict semantics. */
 function mockHash(content: string): string {

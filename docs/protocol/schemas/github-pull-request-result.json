@@ -62,6 +62,58 @@
       ],
       "type": "object"
     },
+    "GithubComment": {
+      "properties": {
+        "author": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/GithubActor"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "body": {
+          "type": "string"
+        },
+        "createdAt": {
+          "type": "string"
+        },
+        "id": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "body",
+        "createdAt",
+        "id",
+        "url"
+      ],
+      "type": "object"
+    },
+    "GithubLabel": {
+      "properties": {
+        "color": {
+          "type": "string"
+        },
+        "description": {
+          "type": "string"
+        },
+        "name": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "color",
+        "description",
+        "name"
+      ],
+      "type": "object"
+    },
     "Mergeability": {
       "enum": [
         "mergeable",
@@ -72,20 +124,91 @@
     },
     "PullRequestDetail": {
       "properties": {
+        "additions": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
         "baseBranch": {
           "type": "string"
         },
         "body": {
           "type": "string"
         },
+        "changedFiles": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "comments": {
+          "items": {
+            "$ref": "#/definitions/GithubComment"
+          },
+          "type": "array"
+        },
+        "deletions": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "labels": {
+          "items": {
+            "$ref": "#/definitions/GithubLabel"
+          },
+          "type": "array"
+        },
         "summary": {
           "$ref": "#/definitions/PullRequestSummary"
         }
       },
       "required": [
+        "additions",
         "baseBranch",
         "body",
+        "changedFiles",
+        "comments",
+        "deletions",
+        "labels",
         "summary"
+      ],
+      "type": "object"
+    },
+    "PullRequestFile": {
+      "properties": {
+        "additions": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "deletions": {
+          "format": "uint64",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "patch": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "path": {
+          "type": "string"
+        },
+        "previousPath": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "status": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "additions",
+        "deletions",
+        "path",
+        "status"
       ],
       "type": "object"
     },
@@ -260,6 +383,12 @@
     }
   },
   "properties": {
+    "files": {
+      "items": {
+        "$ref": "#/definitions/PullRequestFile"
+      },
+      "type": "array"
+    },
     "pullRequest": {
       "$ref": "#/definitions/PullRequestDetail"
     },
@@ -271,6 +400,7 @@
     }
   },
   "required": [
+    "files",
     "pullRequest",
     "reviewThreads"
   ],

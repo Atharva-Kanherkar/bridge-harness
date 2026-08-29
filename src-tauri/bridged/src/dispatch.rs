@@ -37,7 +37,7 @@ pub fn dispatch(
 
         MethodName::GithubStatus => {
             let p: wire::GithubStatusParams = decode(method, params)?;
-            reply(api::github_status(core, &p.workspace_id))
+            reply(api::github_status(core, &p.workspace_id, p.refresh))
         }
         MethodName::GithubPullRequests => {
             let p: wire::GithubPrsParams = decode(method, params)?;
@@ -46,6 +46,18 @@ pub fn dispatch(
         MethodName::GithubPullRequest => {
             let p: wire::GithubPrParams = decode(method, params)?;
             reply(api::github_pr(core, &p.workspace_id, p.number))
+        }
+        MethodName::GithubIssues => {
+            let p: wire::GithubIssuesParams = decode(method, params)?;
+            reply(api::github_issues(core, &p.workspace_id))
+        }
+        MethodName::GithubIssue => {
+            let p: wire::GithubIssueParams = decode(method, params)?;
+            reply(api::github_issue(core, &p.workspace_id, p.number))
+        }
+        MethodName::GithubRepository => {
+            let p: wire::GithubRepositoryParams = decode(method, params)?;
+            reply(api::github_repository(core, &p.workspace_id))
         }
         MethodName::GithubChecks => {
             let p: wire::GithubChecksParams = decode(method, params)?;
@@ -805,5 +817,30 @@ mod tests {
         )
         .expect_err("unknown fields are refused");
         assert_eq!(error.code, ErrorCode::InvalidParams.code());
+    }
+
+    #[test]
+    fn github_repository_workspace_methods_route_through_the_daemon() {
+        let fixture = tempfile::tempdir().unwrap();
+        let core = core(fixture.path());
+
+        for (method, params) in [
+            (
+                MethodName::GithubIssues,
+                json!({"workspaceId": "missing"}),
+            ),
+            (
+                MethodName::GithubIssue,
+                json!({"workspaceId": "missing", "number": 7}),
+            ),
+            (
+                MethodName::GithubRepository,
+                json!({"workspaceId": "missing"}),
+            ),
+        ] {
+            let error = dispatch(&core, method, Some(params))
+                .expect_err("unknown workspaces must reach the core surface");
+            assert_eq!(error.code, ErrorCode::Database.code());
+        }
     }
 }

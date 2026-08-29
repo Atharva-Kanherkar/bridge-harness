@@ -3,17 +3,19 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "properties": {
-    "refresh": {
-      "default": false,
-      "type": "boolean"
+    "number": {
+      "format": "uint64",
+      "minimum": 0.0,
+      "type": "integer"
     },
     "workspaceId": {
       "type": "string"
     }
   },
   "required": [
+    "number",
     "workspaceId"
   ],
-  "title": "GithubStatusParams",
+  "title": "GithubIssueParams",
   "type": "object"
 }

@@ -47,9 +47,9 @@ async fn health(state: State<'_, Arc<BridgeCore>>) -> Result<api::Health, Bridge
 }
 
 #[tauri::command]
-async fn github_status(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubStatusResult, BridgeError> {
+async fn github_status(workspace_id: String, refresh: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubStatusResult, BridgeError> {
     let core = state.inner().clone();
-    blocking("GitHub status", move || api::github_status(&core, &workspace_id)).await
+    blocking("GitHub status", move || api::github_status(&core, &workspace_id, refresh)).await
 }
 
 #[tauri::command]
@@ -68,6 +68,24 @@ async fn github_pr(workspace_id: String, number: u64, state: State<'_, Arc<Bridg
 async fn github_checks(workspace_id: String, number: u64, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubChecksResult, BridgeError> {
     let core = state.inner().clone();
     blocking("GitHub checks", move || api::github_checks(&core, &workspace_id, number)).await
+}
+
+#[tauri::command]
+async fn github_issues(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubIssuesResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub issue list", move || api::github_issues(&core, &workspace_id)).await
+}
+
+#[tauri::command]
+async fn github_issue(workspace_id: String, number: u64, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubIssueResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub issue", move || api::github_issue(&core, &workspace_id, number)).await
+}
+
+#[tauri::command]
+async fn github_repository(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubRepositoryResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub repository", move || api::github_repository(&core, &workspace_id)).await
 }
 
 #[tauri::command]
@@ -1695,6 +1713,9 @@ pub fn run() {
             github_prs,
             github_pr,
             github_checks,
+            github_issues,
+            github_issue,
+            github_repository,
             github_merge_config,
             github_act,
             github_checkout,
