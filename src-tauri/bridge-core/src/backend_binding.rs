@@ -173,7 +173,7 @@ impl std::fmt::Display for BackendError {
 
 impl std::error::Error for BackendError {}
 
-/// The built-in backend table: the three integrations #161 proved, and nothing
+/// The built-in backend table: the integrations Bridge has proved, and nothing
 /// else. The fourth column is the `transport` its
 /// [`builtin_compatibility::BuiltInAgentContract`] declares, carried here so
 /// `the_backend_table_and_the_built_in_contracts_cannot_drift` can compare the
@@ -190,6 +190,12 @@ const BUILT_IN_BACKENDS: &[(&str, &str, BackendKind, &str)] = &[
         "codex.app-server",
         BackendKind::StructuredServer,
         "codex_app_server_stdio",
+    ),
+    (
+        "cursor",
+        "cursor.acp",
+        BackendKind::Acp,
+        "cursor_agent_acp_stdio",
     ),
     (
         "opencode",
@@ -210,8 +216,8 @@ impl BackendResolver {
         Self::default()
     }
 
-    /// The three integrations #161 proved, each bound to the adapter that has
-    /// been running it. One candidate per agent today — the point of the
+    /// Every proven integration, each bound to the adapter that has been
+    /// running it. One candidate per agent today — the point of the
     /// structure is that a second one does not require changing it.
     pub fn built_in() -> Self {
         let mut resolver = Self::empty();
@@ -888,11 +894,12 @@ mod tests {
     }
 
     #[test]
-    fn built_in_agents_resolve_to_the_integrations_161_proved() {
+    fn built_in_agents_resolve_to_the_proven_integrations() {
         let resolver = BackendResolver::built_in();
         let expected = [
             ("claude", "claude.agent-sdk", BackendKind::SdkSidecar),
             ("codex", "codex.app-server", BackendKind::StructuredServer),
+            ("cursor", "cursor.acp", BackendKind::Acp),
             ("opencode", "opencode.server", BackendKind::StructuredServer),
         ];
         assert_eq!(
@@ -940,7 +947,7 @@ mod tests {
         assert_eq!(
             contracts.len(),
             BUILT_IN_BACKENDS.len(),
-            "every #162 contract needs exactly one backend and vice versa"
+            "every built-in contract needs exactly one backend and vice versa"
         );
         for contract in contracts {
             let row = BUILT_IN_BACKENDS
@@ -956,7 +963,7 @@ mod tests {
         for (agent, ..) in BUILT_IN_BACKENDS {
             assert!(
                 contracts.iter().any(|contract| contract.id == *agent),
-                "{agent} has a backend row but no #162 contract"
+                "{agent} has a backend row but no built-in contract"
             );
         }
     }

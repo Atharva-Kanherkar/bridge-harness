@@ -287,7 +287,7 @@ impl AdapterContextInventory {
     }
 }
 
-pub const CONTEXT_INVENTORY_ADAPTERS: [&str; 3] = ["claude", "codex", "opencode"];
+pub const CONTEXT_INVENTORY_ADAPTERS: [&str; 4] = ["claude", "codex", "cursor", "opencode"];
 
 /// Static fail-closed contract used by registry conformance and by callers that
 /// need the lifecycle shape before a provider process exists.
@@ -301,6 +301,7 @@ pub fn adapter_context_inventory_contract(
             &crate::marketplace::ClaudeSdkConfiguration::default(),
         ),
         "codex" => crate::codex_adapter::codex_context_inventory(lifecycle_phase),
+        "cursor" => crate::cursor_adapter::cursor_context_inventory(lifecycle_phase),
         "opencode" => crate::opencode_adapter::opencode_context_inventory(lifecycle_phase),
         unknown => Err(BridgeError::Invalid(format!(
             "Adapter {unknown} has no provider context inventory contract"
