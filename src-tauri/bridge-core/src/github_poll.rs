@@ -33,13 +33,29 @@ impl GithubPoller {
         for ((workspace_id, number), watched) in pending {
             core.github_surface.invalidate_checks(&watched.path, number);
             let Ok(checks) = core.github_surface.pr_checks(&watched.path, number) else { continue };
-            let complete = checks.iter().all(|check| check.status == CheckStatus::Completed);
-            let changed = self.watched.lock().unwrap().get(&(workspace_id.clone(), number)).and_then(|value| value.checks.as_ref()).is_some_and(|previous| previous != &checks);
-            if let Some(entry) = self.watched.lock().unwrap().get_mut(&(workspace_id.clone(), number)) { entry.checks = Some(checks); }
-            if changed { core.events.publish(CoreEvent::GithubChecksChanged { workspace_id: workspace_id.clone(), number }); }
-            if complete { self.watched.lock().unwrap().remove(&(workspace_id, number)); }
+            let complete = all_checks_complete(&checks);
+            let mut watched_map = self.watched.lock().unwrap();
+            // The entry may have been dropped by a concurrent `watch()` call
+            // (e.g. the workspace's PR list was refetched); nothing to update.
+            let Some(entry) = watched_map.get_mut(&(workspace_id.clone(), number)) else { continue };
+            let changed = entry.checks.as_ref().is_some_and(|previous| previous != &checks);
+            entry.checks = Some(checks);
+            if complete {
+                watched_map.remove(&(workspace_id.clone(), number));
+            }
+            drop(watched_map);
+            if changed {
+                core.events.publish(CoreEvent::GithubChecksChanged { workspace_id, number });
+            }
         }
     }
+}
+
+/// An empty result can mean the checks API has not yet caught up with the
+/// rollup that put this PR on the watch list (the two are backed by separate
+/// `gh` calls), so it must not be read as vacuously "all complete".
+fn all_checks_complete(checks: &[PullRequestCheck]) -> bool {
+    !checks.is_empty() && checks.iter().all(|check| check.status == CheckStatus::Completed)
 }
 
 pub fn start_github_poll_maintenance(core: Arc<BridgeCore>) {
@@ -47,4 +63,38 @@ pub fn start_github_poll_maintenance(core: Arc<BridgeCore>) {
         core.github_poller.poll_once(&core);
         std::thread::sleep(FOCUSED_CADENCE);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn check(status: CheckStatus) -> PullRequestCheck {
+        PullRequestCheck {
+            name: "build".into(),
+            status,
+            conclusion: None,
+            log_url: String::new(),
+            workflow: "ci".into(),
+        }
+    }
+
+    #[test]
+    fn an_empty_result_is_not_treated_as_complete() {
+        // A watched PR only ever has an empty `pr_checks` result because of an
+        // eventual-consistency gap right after it was added to the watch list
+        // (the rollup that triggered watching already saw pending checks), not
+        // because it genuinely has zero checks.
+        assert!(!all_checks_complete(&[]));
+    }
+
+    #[test]
+    fn all_completed_checks_are_complete() {
+        assert!(all_checks_complete(&[check(CheckStatus::Completed), check(CheckStatus::Completed)]));
+    }
+
+    #[test]
+    fn a_pending_check_is_not_complete() {
+        assert!(!all_checks_complete(&[check(CheckStatus::Completed), check(CheckStatus::InProgress)]));
+    }
 }
