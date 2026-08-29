@@ -3506,7 +3506,13 @@ pub fn launch_worker_outcome(
                 &error.to_string(),
             );
             drop(db);
-            report_worker_launch_failure(core, parent_session_id, "routing", &error.to_string());
+            report_worker_launch_failure(
+                core,
+                parent_session_id,
+                "routing",
+                &error.to_string(),
+                !is_direct_agent_turn(turn_id),
+            );
             return WorkerLaunchOutcome::Failed;
         }
     };
@@ -3528,6 +3534,7 @@ pub fn launch_worker_outcome(
             parent_session_id,
             "capability",
             &format!("{harness} is disabled in Settings"),
+            !is_direct_agent_turn(turn_id),
         );
         return WorkerLaunchOutcome::Failed;
     }
@@ -3557,6 +3564,7 @@ pub fn launch_worker_outcome(
                 parent_session_id,
                 "model_resolution",
                 &error.to_string(),
+                !is_direct_agent_turn(turn_id),
             );
             return WorkerLaunchOutcome::Failed;
         }
@@ -3623,6 +3631,7 @@ pub fn launch_worker_outcome(
                     parent_session_id,
                     "verification_target",
                     &reason,
+                    !is_direct_agent_turn(turn_id),
                 );
                 return WorkerLaunchOutcome::Failed;
             }
@@ -3632,6 +3641,7 @@ pub fn launch_worker_outcome(
                     parent_session_id,
                     "verification_target",
                     &format!("Could not record or bind the implementation revision: {error}"),
+                    !is_direct_agent_turn(turn_id),
                 );
                 return WorkerLaunchOutcome::Failed;
             }
@@ -3699,6 +3709,7 @@ pub fn launch_worker_outcome(
                     reason.as_str(),
                     reason.remediation()
                 ),
+                !is_direct_agent_turn(turn_id),
             );
             return WorkerLaunchOutcome::Failed;
         }
@@ -3713,7 +3724,13 @@ pub fn launch_worker_outcome(
                 &error.to_string(),
             );
             drop(db);
-            report_worker_launch_failure(core, parent_session_id, "policy", &error.to_string());
+            report_worker_launch_failure(
+                core,
+                parent_session_id,
+                "policy",
+                &error.to_string(),
+                !is_direct_agent_turn(turn_id),
+            );
             return WorkerLaunchOutcome::Failed;
         }
     };
@@ -3904,6 +3921,7 @@ pub fn launch_worker_outcome(
                     parent_session_id,
                     "worktree",
                     &format!("Could not prepare or queue isolated worker worktree: {error}"),
+                    !is_direct_agent_turn(turn_id),
                 );
                 return WorkerLaunchOutcome::Failed;
             }
@@ -5621,6 +5639,7 @@ fn report_worker_launch_failure(
     parent_session_id: &str,
     phase: &str,
     reason: &str,
+    notify_provider: bool,
 ) {
     let state = core.clone();
     let fleet = fleet_digest(&state.db.lock().unwrap(), parent_session_id);
@@ -5632,12 +5651,13 @@ fn report_worker_launch_failure(
         "instruction": "No worker started. Do not wait for a result. Tell the user what failed, then retry only if a different route can address the failure."
     })
     .to_string();
-    let delivered = state
-        .adapters
-        .lock()
-        .unwrap()
-        .get(parent_session_id)
-        .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+    let delivered = notify_provider
+        && state
+            .adapters
+            .lock()
+            .unwrap()
+            .get(parent_session_id)
+            .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
     let event = agent::NormalizedEvent {
         kind: "delegation.rejected".into(),
         item_id: Some(format!("launch-failed-{}", Uuid::new_v4())),
@@ -5662,6 +5682,28 @@ fn report_worker_launch_failure(
         core.events.publish(CoreEvent::Agent(stored));
     }
     core.events.publish(CoreEvent::StateChanged);
+}
+
+fn report_worker_launch_failure_for_child(
+    core: &Arc<BridgeCore>,
+    parent_session_id: &str,
+    child_session_id: &str,
+    phase: &str,
+    reason: &str,
+) {
+    let notify_provider = spawned_turn_id(
+        &core.db.lock().unwrap(),
+        parent_session_id,
+        child_session_id,
+    )
+    .is_none_or(|turn_id| !is_direct_agent_turn(&turn_id));
+    report_worker_launch_failure(
+        core,
+        parent_session_id,
+        phase,
+        reason,
+        notify_provider,
+    );
 }
 
 pub fn record_actual_execution_best_effort(
@@ -5734,7 +5776,13 @@ fn fail_reserved_worker(core: &Arc<BridgeCore>, session_id: &str, label: &str, r
             )
             .ok();
         if let Some(parent_session_id) = parent_session_id {
-            report_worker_launch_failure(core, &parent_session_id, "settlement", reason);
+            report_worker_launch_failure_for_child(
+                core,
+                &parent_session_id,
+                session_id,
+                "settlement",
+                reason,
+            );
         }
         return;
     }
@@ -5765,7 +5813,13 @@ fn fail_reserved_worker(core: &Arc<BridgeCore>, session_id: &str, label: &str, r
                 )
                 .ok();
             if let Some(parent_session_id) = parent_session_id {
-                report_worker_launch_failure(core, &parent_session_id, "settlement", reason);
+                report_worker_launch_failure_for_child(
+                    core,
+                    &parent_session_id,
+                    session_id,
+                    "settlement",
+                    reason,
+                );
             }
         }
     }
@@ -5800,7 +5854,13 @@ fn abort_unbindable_verifier(
         // reason for the parent to sit in `waiting`.
         let _ = completion::reconcile_parent_readiness(&db, parent_session_id);
     }
-    report_worker_launch_failure(core, parent_session_id, phase, reason);
+    report_worker_launch_failure_for_child(
+        core,
+        parent_session_id,
+        &reservation.session_id,
+        phase,
+        reason,
+    );
 }
 
 fn delete_reserved_worker(db: &Connection, session_id: &str) -> Result<(), BridgeError> {
@@ -12981,5 +13041,33 @@ mod direct_agent_shortcut_tests {
             handles.sent.lock().unwrap().is_empty(),
             "direct reservation notices must never start an orchestrator provider turn"
         );
+    }
+
+    #[test]
+    fn direct_launch_failures_are_persisted_without_notifying_the_parent_provider() {
+        let (_fixture, core, handles, _managed_root) = core_with_workspace();
+        let error = dispatch_agent_shortcut(
+            &core,
+            "parent".into(),
+            "verifier".into(),
+            "verify the current workspace".into(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("could not be dispatched"), "{error}");
+        assert!(
+            handles.sent.lock().unwrap().is_empty(),
+            "a failed direct reservation must not turn into an orchestrator provider turn"
+        );
+        let notified = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT json_extract(payload,'$.data.orchestratorNotified') FROM session_entries WHERE session_id='parent' AND kind='delegation.rejected' ORDER BY sequence DESC LIMIT 1",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap();
+        assert!(!notified);
     }
 }
