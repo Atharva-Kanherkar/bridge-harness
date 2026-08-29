@@ -199,7 +199,7 @@ export interface LearningReport {
   candidatePolicyVersion: number | null; qualityBps: number | null; averageCostMicrousd: number | null;
   averageLatencyMs: number | null; retryRateBps: number | null; interventionRateBps: number | null;
   averageConfidenceBps: number | null; costComplete: boolean; evaluatedSpendMicrousd: number;
-  evaluatedTokens: number; evaluationExecution: "not_run" | "deterministic_only" | "reused_existing_evidence" | "deferred"; replayPassed: boolean | null; promotionStatus: string;
+  evaluatedTokens: number; evaluationExecution: "not_run" | "deterministic_only" | "reused_existing_evidence" | "queued" | "executed" | "evaluation_failed" | "deferred"; replayPassed: boolean | null; promotionStatus: string;
   policyDiff: Record<string, unknown>; recommendationOnly: boolean;
 }
 export interface LearningRun {

@@ -227,6 +227,15 @@ impl Aggregate {
     }
 }
 
+/// The rows a candidate policy is built and replayed against.
+///
+/// A completed bounded evaluation supplies the score and the confidence for a
+/// decision whose own outcome said nothing; a queued, running, failed, or
+/// skipped one supplies neither, so a policy can never be promoted on the
+/// strength of a verdict that has not been reached. The test-backed exception
+/// and the precedence rule itself belong to
+/// [`crate::learning_router::resolved_confidence_bps`] — this repeats them in
+/// SQL only so the replay reads the same number the online histories do.
 pub(crate) fn load_evidence(
     db: &Connection,
     workspace_id: &str,
@@ -237,7 +246,7 @@ pub(crate) fn load_evidence(
                 o.candidate,COALESCE(d.actual_effort,''),o.success_state,
                 (SELECT e.score_bps FROM routing_evaluations e WHERE e.decision_id=d.id AND e.evaluator_kind='model_based' AND e.status='completed' ORDER BY e.created_at DESC LIMIT 1),
                 o.cost_microusd,o.runtime_ms,o.retry_count,o.human_intervention,
-                COALESCE((SELECT e.confidence_bps FROM routing_evaluations e WHERE e.decision_id=d.id AND e.evaluator_kind='model_based' AND e.status='completed' ORDER BY e.created_at DESC LIMIT 1),o.confidence_bps),
+                CASE WHEN o.confidence_bps=?4 THEN o.confidence_bps ELSE COALESCE((SELECT e.confidence_bps FROM routing_evaluations e WHERE e.decision_id=d.id AND e.evaluator_kind='model_based' AND e.status='completed' ORDER BY e.created_at DESC LIMIT 1),o.confidence_bps) END,
                 d.decision,o.recorded_at
          FROM router_outcomes o JOIN router_decisions d ON d.id=o.decision_id
          WHERE d.workspace_id=?1 AND o.rowid<=?2
@@ -245,7 +254,12 @@ pub(crate) fn load_evidence(
          LIMIT ?3",
     )?;
     let rows = statement.query_map(
-        params![workspace_id, boundary, MAX_REPLAY_EVIDENCE_ROWS],
+        params![
+            workspace_id,
+            boundary,
+            MAX_REPLAY_EVIDENCE_ROWS,
+            crate::learning_router::CONFIDENCE_TEST_BACKED_BPS,
+        ],
         |row| {
         let decision_body = row.get::<_, String>(14)?;
         let decision = serde_json::from_str(&decision_body).map_err(|error| {
@@ -639,6 +653,112 @@ mod tests {
         partial.confidence_total = crate::learning_router::CONFIDENCE_TEST_BACKED_BPS;
         partial.confidence_minimum = Some(crate::learning_router::CONFIDENCE_TEST_BACKED_BPS);
         assert!(!partial.eligible_for_learning(), "silence is not confidence");
+    }
+
+    fn evidence_db() -> rusqlite::Connection {
+        let db = crate::store::open(std::path::Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO workspaces(id,title,status,created_at) VALUES('w','Router','idle','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('parent','w','codex','Parent','idle','reported')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('child','w','codex','Child','completed','reported')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,task_family,task_fingerprint,mode,
+                 manual_override,executed_candidate,decision,actual_provider,created_at)
+             VALUES('d1','w','parent','t','implementation','fp','shadow',0,'codex:gpt',?1,'codex',?2)",
+            params![
+                serde_json::json!({
+                    "schemaVersion": crate::learning_router::ROUTER_SCHEMA_VERSION,
+                    "id": "d1",
+                    "workspaceId": "w",
+                    "parentSessionId": "parent",
+                    "turnId": "t",
+                    "taskFamily": "implementation",
+                    "taskFingerprint": "fp",
+                    "mode": "shadow",
+                    "manualOverride": false,
+                    "baselineCandidate": "codex:gpt",
+                    "recommendedCandidate": "codex:gpt",
+                    "executedCandidate": "codex:gpt",
+                    "explanation": "fixture",
+                    "candidates": [],
+                    "actualProvider": "codex",
+                    "createdAt": "now",
+                })
+                .to_string(),
+                chrono::Utc::now().to_rfc3339()
+            ],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,
+                 runtime_ms,normalized_cost,retry_count,human_intervention,success_state,
+                 acceptance_state,confidence_bps,recorded_at)
+             VALUES('d1','child','codex:gpt',0,'cancelled',10,0,0,0,'unknown','unknown',?1,?2)",
+            params![
+                crate::learning_router::CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS,
+                chrono::Utc::now().to_rfc3339()
+            ],
+        )
+        .unwrap();
+        db
+    }
+
+    fn model_row(db: &rusqlite::Connection, status: &str, score: i64, confidence: i64) {
+        db.execute("DELETE FROM routing_evaluations", []).unwrap();
+        db.execute(
+            "INSERT INTO routing_evaluations(id,decision_id,evaluator_kind,evaluator_version,
+                 score_bps,confidence_bps,evidence_entry_ids,bounded_metrics,status,created_at)
+             VALUES('m','d1','model_based','pinned:claude:judge',?1,?2,'[]','{}',?3,'now')",
+            params![score, confidence, status],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn only_a_completed_model_evaluation_is_evidence() {
+        let db = evidence_db();
+        for status in ["queued", "running", "failed", "skipped", "not_requested"] {
+            model_row(&db, status, 9_000, 8_800);
+            let evidence = load_evidence(&db, "w", 10).unwrap();
+            assert_eq!(evidence.len(), 1);
+            assert_eq!(evidence[0].success, None, "{status} decides nothing");
+            assert_eq!(
+                evidence[0].confidence_bps,
+                Some(crate::learning_router::CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS),
+                "{status} is not confidence"
+            );
+        }
+        model_row(&db, "completed", 9_000, 8_800);
+        let evidence = load_evidence(&db, "w", 10).unwrap();
+        assert_eq!(evidence[0].success, Some(true));
+        assert_eq!(evidence[0].confidence_bps, Some(8_800));
+    }
+
+    #[test]
+    fn a_test_backed_row_keeps_its_confidence_against_a_verdict() {
+        let db = evidence_db();
+        db.execute(
+            "UPDATE router_outcomes SET confidence_bps=?1 WHERE decision_id='d1'",
+            params![crate::learning_router::CONFIDENCE_TEST_BACKED_BPS],
+        )
+        .unwrap();
+        model_row(&db, "completed", 0, 1_200);
+        let evidence = load_evidence(&db, "w", 10).unwrap();
+        assert_eq!(
+            evidence[0].confidence_bps,
+            Some(crate::learning_router::CONFIDENCE_TEST_BACKED_BPS)
+        );
     }
 
     #[test]

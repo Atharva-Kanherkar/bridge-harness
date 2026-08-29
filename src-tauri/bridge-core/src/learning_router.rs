@@ -117,6 +117,69 @@ pub fn tunables(db: &Connection, workspace_id: &str) -> LearningTunables {
 pub const CONFIDENCE_TEST_BACKED_BPS: i64 = 9_500;
 pub const CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS: i64 = 7_000;
 pub const CONFIDENCE_NO_SIGNAL_BPS: i64 = 4_000;
+
+/// Which number the learner uses for one outcome.
+///
+/// The three constants are still the floor, and a workspace with no evaluator
+/// keeps exactly the behaviour it had. Where a bounded evaluation completed,
+/// its confidence replaces the middle constant, which is the whole point of
+/// running one. A test-backed outcome is the exception: a passing or failing
+/// test is knowledge, and a judge's opinion of it is not, so no verdict may
+/// move that row in either direction.
+pub const fn resolved_confidence_bps(deterministic_bps: i64, evaluated_bps: Option<i64>) -> i64 {
+    match evaluated_bps {
+        Some(evaluated) if deterministic_bps != CONFIDENCE_TEST_BACKED_BPS => evaluated,
+        _ => deterministic_bps,
+    }
+}
+
+/// The confidence of the newest completed bounded evaluation for a decision.
+/// Queued, running, failed, and skipped evaluations are not evidence and are
+/// invisible here.
+pub fn evaluated_confidence_bps(
+    db: &Connection,
+    decision_id: &str,
+) -> Result<Option<i64>, BridgeError> {
+    db.query_row(
+        "SELECT confidence_bps FROM routing_evaluations
+         WHERE decision_id=?1 AND evaluator_kind='model_based' AND status='completed'
+           AND confidence_bps IS NOT NULL
+         ORDER BY created_at DESC LIMIT 1",
+        params![decision_id],
+        |row| row.get::<_, Option<i64>>(0),
+    )
+    .optional()
+    .map(Option::flatten)
+    .map_err(BridgeError::from)
+}
+
+/// Fold a freshly recorded verdict into the outcome the online histories read.
+/// The deterministic row keeps the constant the outcome earned on its own, so
+/// this stays the same answer however many times it runs.
+pub fn refresh_outcome_confidence(
+    db: &Connection,
+    decision_id: &str,
+) -> Result<(), BridgeError> {
+    let deterministic_bps: Option<i64> = db
+        .query_row(
+            "SELECT confidence_bps FROM routing_evaluations
+             WHERE decision_id=?1 AND evaluator_kind='deterministic'
+             ORDER BY created_at DESC LIMIT 1",
+            params![decision_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    let Some(deterministic_bps) = deterministic_bps else {
+        return Ok(());
+    };
+    let resolved = resolved_confidence_bps(deterministic_bps, evaluated_confidence_bps(db, decision_id)?);
+    db.execute(
+        "UPDATE router_outcomes SET confidence_bps=?2 WHERE decision_id=?1",
+        params![decision_id, resolved],
+    )?;
+    Ok(())
+}
 pub const DECAY_HALF_LIFE_DAYS: f64 = 30.0;
 pub const EVIDENCE_WINDOW_DAYS: i64 = 120;
 
@@ -1314,7 +1377,7 @@ pub fn record_worker_outcome(
     } else {
         "unknown"
     };
-    let confidence_bps = if has_failed_test || has_passed_test {
+    let deterministic_confidence_bps = if has_failed_test || has_passed_test {
         CONFIDENCE_TEST_BACKED_BPS
     } else if matches!(
         result.status,
@@ -1324,6 +1387,10 @@ pub fn record_worker_outcome(
     } else {
         CONFIDENCE_NO_SIGNAL_BPS
     };
+    let confidence_bps = resolved_confidence_bps(
+        deterministic_confidence_bps,
+        evaluated_confidence_bps(db, &decision_id)?,
+    );
     let evidence_entry_ids = db
         .query_row(
             "SELECT request FROM worker_completion_inputs WHERE child_session_id=?1",
@@ -1369,7 +1436,7 @@ pub fn record_worker_outcome(
             format!("deterministic:{decision_id}"),
             decision_id,
             match success_state { "success" => Some(10_000_i64), "failure" => Some(0_i64), _ => None },
-            confidence_bps,
+            deterministic_confidence_bps,
             serde_json::to_string(&evidence_entry_ids).map_err(|error| BridgeError::Invalid(error.to_string()))?,
             serde_json::json!({
                 "successState": success_state,
@@ -1727,6 +1794,109 @@ mod tests {
         .unwrap();
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('parent','w','codex','Parent','working','reported')", []).unwrap();
         db
+    }
+
+    fn scored_decision(db: &Connection, id: &str, deterministic_bps: i64) {
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES(?1,'w','codex','Child','completed','reported')",
+            params![format!("{id}-child")],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,task_family,mode,
+                 manual_override,executed_candidate,decision,actual_provider,created_at)
+             VALUES(?1,'w','parent','t','implementation','shadow',0,'codex:gpt','{}','codex','now')",
+            params![id],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,
+                 runtime_ms,normalized_cost,retry_count,human_intervention,success_state,
+                 acceptance_state,confidence_bps,recorded_at)
+             VALUES(?1,?2,'codex:gpt',0,'cancelled',10,0,0,0,'unknown','unknown',?3,'now')",
+            params![id, format!("{id}-child"), deterministic_bps],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO routing_evaluations(id,decision_id,evaluator_kind,evaluator_version,
+                 confidence_bps,evidence_entry_ids,bounded_metrics,status,created_at)
+             VALUES(?1,?2,'deterministic','worker-result-v1',?3,'[]','{}','completed','now')",
+            params![format!("deterministic:{id}"), id, deterministic_bps],
+        )
+        .unwrap();
+    }
+
+    fn model_evaluation(db: &Connection, decision_id: &str, confidence_bps: i64, status: &str) {
+        db.execute(
+            "INSERT INTO routing_evaluations(id,decision_id,evaluator_kind,evaluator_version,
+                 score_bps,confidence_bps,evidence_entry_ids,bounded_metrics,status,created_at)
+             VALUES(?1,?2,'model_based','pinned:claude:judge',6000,?3,'[]','{}',?4,'now')",
+            params![format!("model:{decision_id}"), decision_id, confidence_bps, status],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn confidence_falls_back_to_the_constants_and_never_overrides_a_test() {
+        assert_eq!(
+            resolved_confidence_bps(CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS, None),
+            CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS,
+            "a workspace with no evaluator behaves exactly as it did"
+        );
+        assert_eq!(
+            resolved_confidence_bps(CONFIDENCE_NO_SIGNAL_BPS, Some(8_800)),
+            8_800
+        );
+        assert_eq!(
+            resolved_confidence_bps(CONFIDENCE_TEST_BACKED_BPS, Some(2_000)),
+            CONFIDENCE_TEST_BACKED_BPS,
+            "a judge does not get to lower a result that has a test"
+        );
+        assert_eq!(
+            resolved_confidence_bps(CONFIDENCE_TEST_BACKED_BPS, Some(10_000)),
+            CONFIDENCE_TEST_BACKED_BPS,
+            "nor to raise it"
+        );
+    }
+
+    #[test]
+    fn only_a_completed_evaluation_moves_an_outcomes_confidence() {
+        let db = routing_db();
+        scored_decision(&db, "d1", CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS);
+        for status in ["queued", "running", "failed", "skipped", "not_requested"] {
+            db.execute("DELETE FROM routing_evaluations WHERE evaluator_kind='model_based'", [])
+                .unwrap();
+            model_evaluation(&db, "d1", 1_500, status);
+            assert_eq!(evaluated_confidence_bps(&db, "d1").unwrap(), None, "{status}");
+            refresh_outcome_confidence(&db, "d1").unwrap();
+            assert_eq!(outcome_confidence(&db, "d1"), CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS, "{status}");
+        }
+        db.execute("DELETE FROM routing_evaluations WHERE evaluator_kind='model_based'", [])
+            .unwrap();
+        model_evaluation(&db, "d1", 8_800, "completed");
+        assert_eq!(evaluated_confidence_bps(&db, "d1").unwrap(), Some(8_800));
+        refresh_outcome_confidence(&db, "d1").unwrap();
+        assert_eq!(outcome_confidence(&db, "d1"), 8_800);
+        refresh_outcome_confidence(&db, "d1").unwrap();
+        assert_eq!(outcome_confidence(&db, "d1"), 8_800, "refreshing twice is the same answer");
+    }
+
+    #[test]
+    fn a_test_backed_outcome_keeps_its_confidence_through_a_refresh() {
+        let db = routing_db();
+        scored_decision(&db, "d1", CONFIDENCE_TEST_BACKED_BPS);
+        model_evaluation(&db, "d1", 3_000, "completed");
+        refresh_outcome_confidence(&db, "d1").unwrap();
+        assert_eq!(outcome_confidence(&db, "d1"), CONFIDENCE_TEST_BACKED_BPS);
+    }
+
+    fn outcome_confidence(db: &Connection, decision_id: &str) -> i64 {
+        db.query_row(
+            "SELECT confidence_bps FROM router_outcomes WHERE decision_id=?1",
+            params![decision_id],
+            |row| row.get(0),
+        )
+        .unwrap()
     }
 
     #[test]

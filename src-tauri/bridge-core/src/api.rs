@@ -18,7 +18,8 @@ use crate::{
     adapters, agent, agent_config, agent_integration, automations, binary, browser_bridge,
     completion, delegation, git, handoff, learning_job, learning_router, live_turn, marketplace,
     memory_ledger,
-    model_profiles, opencode_adapter, prompt_studio, prompts, secret_interception,
+    model_profiles, opencode_adapter, prompt_studio, prompts, routing_evaluation,
+    secret_interception,
     session_recall, session_supervisor,
     sessions, skill_marketplace, slash, store,
     suggestion_engine, verification_pipeline, verified_catalog, work, work_actions,
@@ -2660,6 +2661,73 @@ pub fn rollback_routing_policy(
         serde_json::to_value(&result).unwrap_or_default(),
     ));
     Ok(result)
+}
+
+/// How many runs the surface reads at once. A workspace accumulates one
+/// evaluation per unknown outcome, and the panel wants the recent ones.
+const EVALUATION_RUN_PAGE: i64 = 50;
+
+fn evaluation_settings_wire(
+    settings: routing_evaluation::EvaluationSettings,
+) -> wire::RoutingEvaluationSettings {
+    wire::RoutingEvaluationSettings {
+        scope_key: settings.scope_key,
+        mode: settings.mode,
+        harness: settings.harness,
+        model: settings.model,
+    }
+}
+
+pub fn get_routing_evaluations(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+) -> Result<wire::RoutingEvaluationsResult, BridgeError> {
+    let db = core.db.lock().unwrap();
+    let settings = routing_evaluation::settings(&db, workspace_id)?;
+    let runs = routing_evaluation::list_runs(&db, workspace_id, EVALUATION_RUN_PAGE)?
+        .into_iter()
+        .map(|run| wire::RoutingEvaluationRun {
+            run_id: run.run_id,
+            decision_id: run.decision_id,
+            status: run.status,
+            harness: run.harness,
+            model: run.model,
+            evaluator_version: run.evaluator_version,
+            evidence_digest: run.evidence_digest,
+            score_bps: run.score_bps,
+            confidence_bps: run.confidence_bps,
+            observed_tokens: run.observed_tokens,
+            spend_microusd: run.spend_microusd,
+            detail: run.detail,
+            created_at: run.created_at,
+            updated_at: run.updated_at,
+        })
+        .collect();
+    Ok(wire::RoutingEvaluationsResult {
+        settings: evaluation_settings_wire(settings),
+        runs,
+    })
+}
+
+pub fn get_evaluation_settings(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+) -> Result<wire::RoutingEvaluationSettings, BridgeError> {
+    let db = core.db.lock().unwrap();
+    Ok(evaluation_settings_wire(routing_evaluation::settings(&db, workspace_id)?))
+}
+
+pub fn update_evaluation_settings(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+    mode: &str,
+    harness: Option<&str>,
+    model: Option<&str>,
+) -> Result<wire::RoutingEvaluationSettings, BridgeError> {
+    let db = core.db.lock().unwrap();
+    let settings =
+        routing_evaluation::update_settings(&db, workspace_id, mode, harness, model)?;
+    Ok(evaluation_settings_wire(settings))
 }
 
 // --- model profiles --------------------------------------------------------------

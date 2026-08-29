@@ -405,6 +405,25 @@ pub fn dispatch(
             ))
         }
 
+        MethodName::GetRoutingEvaluations => {
+            let p: wire::GetRoutingEvaluationsParams = decode(method, params)?;
+            reply(api::get_routing_evaluations(core, &p.workspace_id))
+        }
+        MethodName::GetEvaluationSettings => {
+            let p: wire::GetEvaluationSettingsParams = decode(method, params)?;
+            reply(api::get_evaluation_settings(core, &p.workspace_id))
+        }
+        MethodName::UpdateEvaluationSettings => {
+            let p: wire::UpdateEvaluationSettingsParams = decode(method, params)?;
+            reply(api::update_evaluation_settings(
+                core,
+                &p.workspace_id,
+                &p.mode,
+                p.harness.as_deref(),
+                p.model.as_deref(),
+            ))
+        }
+
         MethodName::GetModelSetup => reply(api::get_model_setup(core)),
         MethodName::RecommendedModelProfiles => reply(api::recommended_model_profiles(core)),
         MethodName::SaveModelProfiles => {

@@ -68,6 +68,8 @@ pub mod prompts;
 mod protocol_mirror;
 pub mod restoration;
 pub mod router_replay;
+pub mod routing_evaluation;
+pub mod routing_evaluation_live;
 pub mod routing_policy;
 mod runtime;
 pub mod secret_interception;

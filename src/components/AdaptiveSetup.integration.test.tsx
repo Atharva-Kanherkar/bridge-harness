@@ -86,7 +86,7 @@ describe("adaptive setup journeys", () => {
     expect(container.textContent).toContain("insufficient evidence");
     expect(container.textContent).toContain("Cost comparison is unknown");
     expect(container.textContent).toContain("Policy");
-    expect(container.textContent).toContain("not_run — no executor");
+    expect(container.textContent).toContain("not run");
   });
 
   it("refetches learning state when a learning job changes", async () => {
@@ -198,14 +198,16 @@ describe("adaptive setup journeys", () => {
     ).toBe(false);
   });
 
-  it("disables evaluator spend and token ceilings", async () => {
+  it("offers editable evaluator spend and token ceilings", async () => {
     await act(async () => {
       root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
       await flush();
     });
     const disabledCeilings = [...container.querySelectorAll("input[type=number]")].filter(input => (input as HTMLInputElement).disabled);
-    expect(disabledCeilings).toHaveLength(2);
-    expect(container.textContent).toContain("No executor yet");
+    expect(disabledCeilings).toHaveLength(0);
+    expect(container.textContent).toContain("Spend ceiling");
+    expect(container.textContent).toContain("Token ceiling");
+    expect(container.textContent).not.toContain("No executor yet");
     expect(container.textContent).toContain("not Bridge's memory engine");
   });
 

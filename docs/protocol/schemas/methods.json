@@ -562,6 +562,27 @@
       "resultDeferred": "bridge_core::learning_job::LearningState"
     },
     {
+      "command": "get_routing_evaluations",
+      "domain": "routing",
+      "method": "routing/get_routing_evaluations",
+      "paramsSchema": "get-routing-evaluations-params.json",
+      "resultSchema": "routing-evaluations-result.json"
+    },
+    {
+      "command": "get_evaluation_settings",
+      "domain": "routing",
+      "method": "routing/get_evaluation_settings",
+      "paramsSchema": "get-evaluation-settings-params.json",
+      "resultSchema": "routing-evaluation-settings.json"
+    },
+    {
+      "command": "update_evaluation_settings",
+      "domain": "routing",
+      "method": "routing/update_evaluation_settings",
+      "paramsSchema": "update-evaluation-settings-params.json",
+      "resultSchema": "routing-evaluation-settings.json"
+    },
+    {
       "command": "get_model_setup",
       "domain": "models",
       "method": "models/get_model_setup",
