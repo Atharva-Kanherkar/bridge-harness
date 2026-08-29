@@ -18,6 +18,7 @@ import {
   LoaderCircle,
   MessageSquare,
   RefreshCw,
+  Sparkles,
   SquareArrowOutUpRight,
   Tag,
 } from "lucide-react";
@@ -52,6 +53,9 @@ import type {
 export type GitHubPaneProps = {
   workspaceId: string;
   workspaceBranch: string | null;
+  /** The active orchestrator session, so a subagent review attaches to it
+   * rather than minting an orphan session. */
+  sessionId?: string;
   /** An outside ask (sidebar row, CI toast) to open one PR. Nonce distinguishes
    * "open it again" from a re-render. */
   intent?: { number: number; nonce: number };
@@ -147,7 +151,7 @@ function DetailSkeleton({ label }: { label: string }) {
   </div>;
 }
 
-export function GitHubPane({ workspaceId, workspaceBranch, intent, onJumpToFile }: GitHubPaneProps) {
+export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, onJumpToFile }: GitHubPaneProps) {
   const [status, setStatus] = useState<GithubStatusResult>();
   const [prs, setPrs] = useState<PullRequestListItem[]>();
   const [issues, setIssues] = useState<GithubIssuesResult["issues"]>();
@@ -314,6 +318,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, intent, onJumpToFile 
     body = <PullRequestDetail
       workspaceId={workspaceId}
       workspaceBranch={workspaceBranch}
+      sessionId={sessionId}
       repository={status.repository}
       number={selected}
       detail={detail}
@@ -548,9 +553,18 @@ function RepositoryOverview({ overview }: { overview: GithubRepositoryResult }) 
 
 type PendingAction = { statement: string; requiresBody: boolean; build: (body: string) => GithubAction };
 
+/** The harnesses a subagent review can run under. The model comes from the
+ * Reviewer profile in settings, so the user only picks the agent. */
+const REVIEW_HARNESSES: ReadonlyArray<{ id: string; label: string }> = [
+  { id: "claude", label: "Claude" },
+  { id: "codex", label: "Codex" },
+  { id: "opencode", label: "OpenCode" },
+];
+
 type PullRequestDetailProps = {
   workspaceId: string;
   workspaceBranch: string | null;
+  sessionId?: string;
   repository?: GithubRepository | null;
   number: number;
   detail?: Detail;
@@ -561,8 +575,11 @@ type PullRequestDetailProps = {
   onJumpToFile: (path: string, line: number | undefined, headBranch: string) => void;
 };
 
-function PullRequestDetail({ workspaceId, workspaceBranch, repository, number, detail, error, availableLabels, onBack, onActed, onJumpToFile }: PullRequestDetailProps) {
+function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository, number, detail, error, availableLabels, onBack, onActed, onJumpToFile }: PullRequestDetailProps) {
   const [pending, setPending] = useState<PendingAction>();
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewNotice, setReviewNotice] = useState<{ tone: "success" | "error"; text: string }>();
   const [pendingBody, setPendingBody] = useState("");
   const [mergeOpen, setMergeOpen] = useState(false);
   const [mergeConfig, setMergeConfig] = useState<GithubMergeConfigResult>();
@@ -575,7 +592,21 @@ function PullRequestDetail({ workspaceId, workspaceBranch, repository, number, d
   const [labelsOpen, setLabelsOpen] = useState(false);
 
   const repoLabel = repository ? `${repository.owner}/${repository.name}` : "this repository";
-  const closeOverlays = () => { setPending(undefined); setPendingBody(""); setMergeOpen(false); setMergeConfig(undefined); setStrategy(undefined); setCheckoutOpen(false); setLabelsOpen(false); };
+  const closeOverlays = () => { setPending(undefined); setPendingBody(""); setMergeOpen(false); setMergeConfig(undefined); setStrategy(undefined); setCheckoutOpen(false); setLabelsOpen(false); setReviewOpen(false); };
+
+  // Hand the PR to a read-only subagent that posts its review as a comment via
+  // `gh`. Non-blocking: the notice reports how the launch was routed and the
+  // worker runs on in the agent tree while the user stays in the pane.
+  const startReview = async (harness: string) => {
+    setReviewBusy(true); setReviewNotice(undefined);
+    try {
+      const result = await bridgeApi.githubReview(workspaceId, number, harness, sessionId);
+      setReviewOpen(false);
+      setReviewNotice({ tone: result.status === "failed" ? "error" : "success", text: result.message });
+    } catch (value) {
+      setReviewNotice({ tone: "error", text: value instanceof Error ? value.message : String(value) });
+    } finally { setReviewBusy(false); }
+  };
 
   // The only path that reaches `github/act`. A refused `gh` write surfaces its
   // message verbatim and leaves the PR untouched — no optimistic edit.
@@ -667,15 +698,28 @@ function PullRequestDetail({ workspaceId, workspaceBranch, repository, number, d
           })}
         />}
 
-        {summary.state === "open" && <div className="mt-3 flex flex-wrap items-center gap-1.5">
+        {summary.state === "open" && <>
+          <div className="mt-3 flex flex-wrap items-center gap-1.5">
           <button type="button" onClick={() => void openMerge()} disabled={busy} className="rounded-md border border-success/25 bg-success/10 px-2.5 py-1 text-[11.5px] font-medium text-success transition-colors hover:bg-success/20 disabled:opacity-50">Merge</button>
           <button type="button" disabled={busy} className={actionButton} onClick={() => setPending({ statement: `submit approval on PR #${number} on ${repoLabel}`, requiresBody: false, build: () => ({ kind: "review", number, event: "approve", body: "" }) })}>Approve</button>
           <button type="button" disabled={busy} className={actionButton} onClick={() => setPending({ statement: `submit requested changes on PR #${number} on ${repoLabel}`, requiresBody: true, build: body => ({ kind: "review", number, event: "requestChanges", body }) })}>Request changes</button>
+          <button type="button" disabled={busy || reviewBusy} aria-haspopup="menu" aria-expanded={reviewOpen} className={actionButton} onClick={() => { setReviewNotice(undefined); setReviewOpen(value => !value); }}>
+            <span className="inline-flex items-center gap-1.5"><Sparkles size={12} aria-hidden="true" /> {reviewBusy ? "Starting review…" : "Review"}</span>
+          </button>
           {rerunnable && <button type="button" disabled={busy} className={actionButton} onClick={() => setPending({ statement: `re-run failed checks on PR #${number} on ${repoLabel}`, requiresBody: false, build: () => ({ kind: "rerun", number }) })}>Re-run failed</button>}
           {!checkedOutHere && <button type="button" disabled={busy} className={actionButton} onClick={() => { setActionError(undefined); setCheckoutOpen(true); }}>
             <span className="inline-flex items-center gap-1.5"><FolderGit2 size={12} aria-hidden="true" /> Check out</span>
           </button>}
-        </div>}
+          </div>
+          {reviewOpen && <div className="mt-2 grid gap-1 rounded-lg border border-border bg-card p-1.5" role="menu" aria-label="Review harness">
+            <p className="px-2 pb-0.5 pt-1 text-[10px] font-semibold tracking-[0.1em] text-muted-foreground/65">RUN REVIEW WITH</p>
+            {REVIEW_HARNESSES.map(choice => <button key={choice.id} type="button" role="menuitem" disabled={reviewBusy} onClick={() => void startReview(choice.id)} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-[11.5px] text-foreground transition-colors hover:bg-accent disabled:opacity-50">
+              <Sparkles size={11} className="text-muted-foreground" aria-hidden="true" />
+              <span className="min-w-0 flex-1 truncate">{choice.label}</span>
+            </button>)}
+          </div>}
+          {reviewNotice && <p role="status" className={cn("mt-2 rounded-md border px-2.5 py-1.5 text-[11.5px]", reviewNotice.tone === "success" ? "border-success/25 bg-success/10 text-success" : "border-destructive/25 bg-destructive/10 text-destructive")}>{reviewNotice.text}</p>}
+        </>}
       </div>
 
       {actionError && <p role="alert" className="border-b border-border bg-destructive/10 px-4 py-2 text-[11.5px] text-destructive">{actionError}</p>}

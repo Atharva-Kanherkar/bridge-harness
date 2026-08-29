@@ -71,6 +71,10 @@ pub fn dispatch(
             let p: wire::GithubActParams = decode(method, params)?;
             reply(api::github_act(core, &p.workspace_id, p.action, p.confirmed))
         }
+        MethodName::GithubReview => {
+            let p: wire::GithubReviewParams = decode(method, params)?;
+            reply(api::github_review(core, &p.workspace_id, p.number, &p.harness, p.session_id))
+        }
         MethodName::GithubCheckout => {
             let p: wire::GithubCheckoutParams = decode(method, params)?;
             reply(api::github_checkout(core, &p.workspace_id, p.number))

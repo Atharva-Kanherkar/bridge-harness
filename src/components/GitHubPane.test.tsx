@@ -285,6 +285,36 @@ describe("GitHubPane", () => {
     expect(host!.textContent).toContain("Reusing the task worktree already on ");
   });
 
+  it("starts a subagent review with the picked harness and shows a success notice", async () => {
+    mockReads();
+    const review = vi.spyOn(bridgeApi, "githubReview").mockResolvedValue({
+      status: "launched", sessionId: "child-1", message: "Review started with codex — comments will post to PR #1 shortly.",
+    });
+    await mount({ sessionId: "sess-1" });
+    await click(buttonByText("Safe GitHub surface"));
+
+    // The button is present for an open PR; opening it reveals the harness picker.
+    await click(buttonByText("Review"));
+    expect(host!.textContent).toContain("RUN REVIEW WITH");
+    expect(review).not.toHaveBeenCalled();
+
+    await click(buttonByText("Codex"));
+    expect(review).toHaveBeenCalledWith("w", 1, "codex", "sess-1");
+    expect(host!.textContent).toContain("Review started with codex");
+  });
+
+  it("surfaces a failed review launch as an error notice", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubReview").mockResolvedValue({
+      status: "failed", sessionId: null, message: "The review worker could not launch; the reason is on the conversation.",
+    });
+    await mount({ sessionId: "sess-1" });
+    await click(buttonByText("Safe GitHub surface"));
+    await click(buttonByText("Review"));
+    await click(buttonByText("Claude"));
+    expect(host!.textContent).toContain("could not launch");
+  });
+
   it("hides the checkout affordance when the PR head is already checked out here", async () => {
     mockReads();
     await mount({ workspaceBranch: "feat/safe" });

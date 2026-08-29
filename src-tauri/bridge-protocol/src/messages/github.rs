@@ -400,6 +400,35 @@ pub struct GithubActResult {
     pub message: String,
 }
 
+// --- subagent PR review (slice 6) -------------------------------------------
+
+/// Ask a Bridge subagent to review a pull request and post its findings as a
+/// comment via `gh`. The worker is research-role, read-only, network-on; the
+/// user picks the harness at click time and the model comes from the Reviewer
+/// model profile in settings.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GithubReviewParams {
+    pub workspace_id: String,
+    pub number: u64,
+    /// The harness that runs the review worker (`claude` | `codex` | `opencode`).
+    pub harness: String,
+    /// The parent orchestrator session to attach the worker to. When absent (or
+    /// unknown to this workspace) the backend creates a fresh orchestrator.
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubReviewResult {
+    /// One of `launched` | `queued` | `awaitingApproval` | `failed`.
+    pub status: String,
+    /// The child worker session id when the review actually launched.
+    pub session_id: Option<String>,
+    /// A short human statement of the outcome.
+    pub message: String,
+}
+
 // --- checkout into a task worktree (slice 5) --------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
