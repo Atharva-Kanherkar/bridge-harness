@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Prompt Studio — Ledger (graphite)</title>
+<style>
+  :root {
+    --bg: #171716; --rail: #121211; --card: #1f1f1e; --popover: #262624; --fg: #ececea;
+    --muted: #a8a8a3; --faint: #78786f; --border: #232321; --hairline: #1e1e1c;
+    --muted-bg: #212120; --code: #0e0e0d; --code-hl: rgba(236,236,234,.07);
+    --primary: #ececea; --primary-fg: #171716;
+    --ring: #6a9bcc; --success: #5db872; --warning: #d4a957; --danger: #e5695e;
+    --syn-comment: #78786f; --syn-keyword: #b9a0dc; --syn-string: #86c08a;
+    --syn-number: #ddb877; --syn-function: #86abdc; --syn-punct: #9a9a94;
+    --sans: "Geist Variable", "Geist", ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+    --mono: "Geist Mono Variable", "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { background: var(--bg); }
+  body {
+    font-family: var(--sans); color: var(--fg); background: var(--bg);
+    -webkit-font-smoothing: antialiased; font-size: 13px; line-height: 1.5;
+    height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+  }
+  ::selection { background: rgba(106,155,204,.28); }
+
+  /* ── Top bar ──────────────────────────────────────── */
+  .topbar {
+    display: flex; align-items: center; gap: 16px; padding: 14px 24px 12px;
+    border-bottom: 1px solid var(--border); flex-shrink: 0;
+  }
+  .topbar h1 { font-size: 13px; font-weight: 600; letter-spacing: -.01em; }
+  .segmented {
+    display: inline-flex; gap: 2px; padding: 2px; border-radius: 10px;
+    background: var(--muted-bg); border: 1px solid var(--border); margin-left: 8px;
+  }
+  .seg {
+    font: inherit; font-size: 11.5px; font-weight: 500; letter-spacing: -.006em;
+    color: var(--muted); background: none; border: 0; border-radius: 8px;
+    padding: 3px 12px; cursor: pointer;
+  }
+  .seg:hover { color: var(--fg); }
+  .seg.on { color: var(--fg); background: var(--card); box-shadow: 0 1px 2px rgba(0,0,0,.4); }
+  .topbar .tools { margin-left: auto; display: flex; gap: 4px; }
+  .icon-btn {
+    font: inherit; font-size: 11.5px; color: var(--muted); background: none;
+    border: 0; border-radius: 8px; padding: 5px 10px; cursor: pointer;
+  }
+  .icon-btn:hover { color: var(--fg); background: rgba(236,236,234,.06); }
+
+  .body { flex: 1; min-height: 0; display: flex; }
+
+  /* ── Ledger ───────────────────────────────────────── */
+  .ledger { width: 300px; flex-shrink: 0; padding: 20px; overflow-y: auto; }
+  .ledger h3, .panel h3 {
+    font-size: 10.5px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--faint); margin-bottom: 12px;
+  }
+  .ledger-row {
+    width: 100%; text-align: left; background: none; border: 0; border-radius: 11px;
+    padding: 10px 12px; cursor: pointer; font: inherit; color: var(--muted);
+    display: block; transition: background .12s;
+  }
+  .ledger-row:hover { background: rgba(236,236,234,.045); }
+  .ledger-row.on { background: var(--card); box-shadow: 0 0 0 1px var(--border); color: var(--fg); }
+  .lr-top { display: flex; align-items: baseline; gap: 8px; }
+  .lr-id { font-family: var(--mono); font-size: 12px; }
+  .lr-state {
+    font-size: 9px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase;
+    padding: 1.5px 7px; border-radius: 999px; margin-left: auto;
+  }
+  .lr-state.modified { color: var(--warning); background: rgba(212,169,87,.13); }
+  .lr-state.default { color: var(--faint); background: rgba(236,236,234,.06); }
+  .lr-bar { height: 2.5px; border-radius: 999px; background: rgba(236,236,234,.1); margin: 9px 0 6px; overflow: hidden; }
+  .lr-bar i { display: block; height: 100%; border-radius: inherit; background: var(--fg); opacity: .55; }
+  .lr-row.on .lr-bar i { background: var(--ring); opacity: 1; }
+  .lr-meta { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .ledger-foot { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--hairline); }
+  .foot-line { display: flex; justify-content: space-between; align-items: center; font-size: 11.5px; color: var(--muted); padding: 3px 0; }
+  .foot-line b { font-family: var(--mono); font-weight: 500; font-size: 11px; color: var(--fg); font-variant-numeric: tabular-nums; }
+  .danger-action { color: var(--danger); background: none; border: 0; font: inherit; font-size: 11.5px; cursor: pointer; padding: 3px 0; }
+  .danger-action:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+  /* ── Workspace ────────────────────────────────────── */
+  .work { flex: 1; min-width: 0; display: flex; flex-direction: column; border-left: 1px solid var(--border); }
+  .work-head {
+    display: flex; align-items: center; gap: 10px; padding: 14px 24px;
+    border-bottom: 1px solid var(--hairline); flex-shrink: 0;
+  }
+  .crumb { display: flex; align-items: baseline; gap: 8px; font-size: 12px; color: var(--faint); }
+  .crumb b { font-family: var(--mono); font-weight: 500; font-size: 12.5px; color: var(--fg); }
+  .work-head .right { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .btn { font: inherit; font-size: 12px; font-weight: 500; padding: 6px 14px; border-radius: 9px; border: 1px solid transparent; cursor: pointer; }
+  .btn.ghost { background: none; color: var(--muted); }
+  .btn.ghost:hover { color: var(--fg); background: rgba(236,236,234,.06); }
+  .btn.primary { background: var(--primary); color: var(--primary-fg); }
+
+  .editor { flex: 1; min-height: 0; background: var(--code); display: flex; overflow: hidden; }
+  .gutter {
+    flex-shrink: 0; padding: 16px 0; text-align: right; user-select: none;
+    border-right: 1px solid var(--hairline); color: rgba(168,168,163,.4);
+    font-family: var(--mono); font-size: 10.5px; line-height: 1.8; min-width: 44px;
+  }
+  .gutter span { display: block; padding-right: 12px; }
+  .editor pre { padding: 16px 20px; font-family: var(--mono); font-size: 12px; line-height: 1.8; color: var(--fg); overflow: auto; flex: 1; }
+  .c { color: var(--syn-comment); font-style: italic; }
+  .k { color: var(--syn-keyword); }
+  .s { color: var(--syn-string); }
+  .n { color: var(--syn-number); }
+  .f { color: var(--syn-function); }
+  .p { color: var(--syn-punct); }
+
+  /* ── Compilation panel ────────────────────────────── */
+  .panel { width: 320px; flex-shrink: 0; border-left: 1px solid var(--border); overflow-y: auto; padding: 20px; }
+  .stat-row { display: flex; gap: 0; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; background: var(--card); }
+  .stat { flex: 1; padding: 12px 0 10px; text-align: center; }
+  .stat + .stat { border-left: 1px solid var(--hairline); }
+  .stat b { display: block; font-family: var(--mono); font-size: 15px; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+  .stat span { font-size: 9.5px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+  .hash-chip {
+    display: flex; align-items: center; gap: 8px; margin-top: 10px; padding: 7px 11px;
+    border: 1px solid var(--border); border-radius: 9px; background: var(--muted-bg);
+    font-family: var(--mono); font-size: 10.5px; color: var(--muted);
+  }
+  .hash-chip .tag { font-size: 9px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+  .hash-chip .val { color: var(--fg); }
+  .prefix-note {
+    margin-top: 10px; font-size: 11px; line-height: 1.55; color: var(--warning);
+    border: 1px solid rgba(212,169,87,.25); background: rgba(212,169,87,.08);
+    border-radius: 9px; padding: 8px 11px;
+  }
+  .sub { margin-top: 22px; }
+  .strata { display: flex; flex-direction: column; gap: 6px; }
+  .stratum {
+    border: 1px solid var(--border); border-radius: 10px; background: var(--card); padding: 9px 12px;
+    position: relative; overflow: hidden;
+  }
+  .stratum i {
+    position: absolute; inset: 0 auto 0 0; background: rgba(236,236,234,.055); border-right: 1px solid var(--hairline);
+  }
+  .stratum .row1 { position: relative; display: flex; align-items: center; gap: 8px; }
+  .stratum .name { font-family: var(--mono); font-size: 11px; }
+  .stratum .src {
+    margin-left: auto; font-size: 9px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--faint); border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px;
+  }
+  .stratum .row2 { position: relative; font-size: 10.5px; color: var(--faint); margin-top: 2px; font-variant-numeric: tabular-nums; }
+  .stratum.mine { border-color: rgba(106,155,204,.35); }
+  .stratum.mine .src { color: var(--ring); border-color: rgba(106,155,204,.35); }
+
+  /* revision timeline */
+  .vt { position: relative; padding-left: 15px; }
+  .vt::before { content: ""; position: absolute; left: 3.5px; top: 6px; bottom: 6px; width: 1px; background: var(--border); }
+  .vt-node { position: relative; padding: 0 0 14px; }
+  .vt-node::before {
+    content: ""; position: absolute; left: -15px; top: 5px; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--bg); border: 1.5px solid var(--faint);
+  }
+  .vt-node.op-save::before { border-color: var(--fg); }
+  .vt-node.op-restore::before { border-color: var(--ring); }
+  .vt-node.now::before { background: var(--ring); border-color: var(--ring); }
+  .vt-op { font-size: 12px; font-weight: 500; display: flex; align-items: baseline; gap: 8px; }
+  .vt-when { font-size: 10.5px; color: var(--faint); font-family: var(--mono); }
+  .vt-restore { font-size: 10.5px; color: var(--ring); background: none; border: 0; padding: 0; cursor: pointer; opacity: 0; }
+  .vt-node:hover .vt-restore { opacity: 1; }
+  .vt-restore:hover { text-decoration: underline; text-underline-offset: 2px; }
+</style>
+</head>
+<body>
+
+  <header class="topbar">
+    <h1>Prompt Studio</h1>
+    <div class="segmented" role="tablist">
+      <button class="seg on">Orchestrator</button>
+      <button class="seg">Research</button>
+      <button class="seg">Implementation</button>
+      <button class="seg">Verification</button>
+      <button class="seg">Planning</button>
+      <button class="seg">Docs</button>
+      <button class="seg">Direct</button>
+    </div>
+    <div class="tools">
+      <button class="icon-btn">Export</button>
+      <button class="icon-btn">Import</button>
+    </div>
+  </header>
+
+  <div class="body">
+    <aside class="ledger">
+      <h3>Sections</h3>
+      <button class="ledger-row on">
+        <div class="lr-top"><span class="lr-id">bridge_role</span><span class="lr-state modified">Modified</span></div>
+        <div class="lr-bar"><i style="width:35%"></i></div>
+        <div class="lr-meta"><span>812 tok</span><span>35%</span></div>
+      </button>
+      <button class="ledger-row">
+        <div class="lr-top"><span class="lr-id">delegation_protocol</span><span class="lr-state default">Default</span></div>
+        <div class="lr-bar"><i style="width:65%"></i></div>
+        <div class="lr-meta"><span>1,488 tok</span><span>65%</span></div>
+      </button>
+      <div class="ledger-foot">
+        <div class="foot-line"><span>Stack total</span><b>2,300 tok</b></div>
+        <div class="foot-line"><span>Customized</span><b>1 of 2</b></div>
+        <button class="danger-action">Reset orchestrator…</button>
+      </div>
+    </aside>
+
+    <section class="work">
+      <div class="work-head">
+        <div class="crumb">orchestrator <span style="color:var(--faint)">/</span> <b>bridge_role</b></div>
+        <div class="right">
+          <button class="btn ghost">Reset</button>
+          <button class="btn primary">Save ⌘S</button>
+        </div>
+      </div>
+      <div class="editor">
+        <div class="gutter"><span>1</span><span>2</span><span>3</span><span>4</span><span>5</span><span>6</span><span>7</span><span>8</span><span>9</span><span>10</span><span>11</span><span>12</span></div>
+<pre><span class="c">&lt;!-- The orchestrator brief. Compiled first in the stable prefix. --&gt;</span>
+<span class="k">You are Bridge's starter orchestrator.</span>
+
+You are a planner and router. Bridge chooses provider runtimes; you
+route only with durable role, capability-tier, and effort vocabulary.
+
+<span class="p">##</span> Operating rules
+<span class="p">-</span> Handle questions and trivial one-shot local actions yourself.
+<span class="p">-</span> Delegate multi-step implementation, fixes, refactors, research,
+  verification, planning, and documentation.</pre>
+      </div>
+    </section>
+
+    <aside class="panel">
+      <h3>Compilation</h3>
+      <div class="stat-row">
+        <div class="stat"><b>61,204</b><span>bytes</span></div>
+        <div class="stat"><b>15,321</b><span>tok est</span></div>
+        <div class="stat"><b>2</b><span>sections</span></div>
+      </div>
+      <div class="hash-chip"><span class="tag">prefix</span><span class="val">b7f2c91a</span><span style="margin-left:auto;color:var(--faint)">stable</span></div>
+      <div class="prefix-note">Prefix changed — next turn is likely a cache miss on the Bridge prefix.</div>
+
+      <div class="sub">
+        <h3>Layers</h3>
+        <div class="strata">
+          <div class="stratum mine"><i style="width:52%"></i>
+            <div class="row1"><span class="name">bridge</span><span class="src">exact</span></div>
+            <div class="row2">61,204 B · stable prefix 58,931 B</div>
+          </div>
+          <div class="stratum"><i style="width:34%"></i>
+            <div class="row1"><span class="name">claude-agent</span><span class="src">disclosed</span></div>
+            <div class="row2">21,400 B · system prompt</div>
+          </div>
+          <div class="stratum"><i style="width:22%"></i>
+            <div class="row1"><span class="name">codex</span><span class="src">estimated</span></div>
+            <div class="row2">~13,900 B · instructions</div>
+          </div>
+          <div class="stratum"><i style="width:14%"></i>
+            <div class="row1"><span class="name">opencode</span><span class="src">estimated</span></div>
+            <div class="row2">~9,200 B · agent brief</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="sub">
+        <h3>History</h3>
+        <div class="vt">
+          <div class="vt-node now"><div class="vt-op">Draft</div><div class="vt-when">editing now</div></div>
+          <div class="vt-node op-save"><div class="vt-op">Save <button class="vt-restore">Restore</button></div><div class="vt-when">14:02</div></div>
+          <div class="vt-node op-save"><div class="vt-op">Save <button class="vt-restore">Restore</button></div><div class="vt-when">Aug 28</div></div>
+          <div class="vt-node op-restore"><div class="vt-op">Restore <button class="vt-restore">Restore</button></div><div class="vt-when">Aug 25</div></div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+</body>
+</html>

@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Prompt Studio — Manuscript (paper)</title>
+<style>
+  :root {
+    --bg: #fafaf9; --rail: #f3f3f1; --card: #ffffff; --fg: #1f1f1d; --muted: #5d5d57;
+    --faint: #8e8e87; --border: #e7e7e4; --hairline: #eeeee9; --code: #f3f3f1;
+    --primary: #1f1f1d; --primary-fg: #fafaf9;
+    --ring: #3d6fa5; --success: #2f7d4f; --warning: #8f5e05; --danger: #be3d3d;
+    --syn-comment: #8e8e87; --syn-keyword: #6b4e9e; --syn-string: #2f6b3d;
+    --syn-number: #8a5a10; --syn-function: #2c5c90; --syn-punct: #5d5d57;
+    --sans: "Geist Variable", "Geist", ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+    --mono: "Geist Mono Variable", "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { background: var(--bg); }
+  body {
+    font-family: var(--sans); color: var(--fg); background: var(--bg);
+    -webkit-font-smoothing: antialiased; font-size: 13px; line-height: 1.5;
+    height: 100vh; display: flex; overflow: hidden;
+  }
+  ::selection { background: rgba(61,111,165,.24); }
+
+  /* ── Rail ─────────────────────────────────────────── */
+  .rail {
+    width: 248px; flex-shrink: 0; background: var(--rail);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; padding: 20px 12px 12px;
+  }
+  .rail-title {
+    font-size: 11px; font-weight: 600; letter-spacing: .1em; text-transform: uppercase;
+    color: var(--faint); padding: 0 10px 14px;
+  }
+  .group { padding: 10px 0 4px; }
+  .group + .group { border-top: 1px solid var(--hairline); }
+  .group-label {
+    font-size: 10px; font-weight: 600; letter-spacing: .08em; text-transform: uppercase;
+    color: var(--faint); padding: 6px 10px;
+  }
+  .item {
+    display: flex; align-items: center; gap: 8px; width: 100%;
+    padding: 6px 10px; border: 0; background: none; border-radius: 8px;
+    font: inherit; font-size: 12.5px; color: var(--muted); cursor: pointer; text-align: left;
+  }
+  .item:hover { color: var(--fg); background: rgba(31,31,29,.04); }
+  .item .count { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .item.active { color: var(--fg); font-weight: 500; background: rgba(31,31,29,.06); }
+  .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--faint); flex-shrink: 0; }
+  .dot.modified { background: var(--warning); }
+  .dot.draft { background: var(--ring); }
+
+  /* nested sections under the open target */
+  .sections { margin: 2px 0 6px 15px; padding-left: 12px; border-left: 1px solid var(--border); }
+  .section-link {
+    display: flex; align-items: baseline; gap: 8px; padding: 5px 10px; border: 0; background: none;
+    border-radius: 7px; font-family: var(--mono); font-size: 11.5px; color: var(--muted);
+    cursor: pointer; width: 100%; text-align: left;
+  }
+  .section-link:hover { color: var(--fg); background: rgba(31,31,29,.04); }
+  .section-link.current { color: var(--fg); background: var(--card); box-shadow: 0 0 0 1px var(--border); }
+  .section-link .tok { margin-left: auto; font-size: 10px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .rail-foot { margin-top: auto; padding: 10px 10px 4px; border-top: 1px solid var(--hairline); display: flex; gap: 12px; }
+  .quiet-action { font-size: 11px; color: var(--muted); background: none; border: 0; cursor: pointer; padding: 2px 0; }
+  .quiet-action:hover { color: var(--fg); text-decoration: underline; text-underline-offset: 3px; }
+
+  /* ── Document ─────────────────────────────────────── */
+  .doc { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+  .doc-head {
+    display: flex; align-items: center; gap: 12px;
+    padding: 22px 40px 0;
+  }
+  .crumb { display: flex; align-items: baseline; gap: 8px; font-size: 12px; color: var(--faint); min-width: 0; }
+  .crumb b { font-family: var(--mono); font-weight: 500; font-size: 13.5px; color: var(--fg); }
+  .chip {
+    font-size: 10px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--warning); border: 1px solid rgba(143,94,5,.28); background: rgba(143,94,5,.07);
+    padding: 2.5px 8px; border-radius: 999px;
+  }
+  .chip.plain { color: var(--muted); border-color: var(--border); background: transparent; }
+  .doc-actions { margin-left: auto; display: flex; align-items: center; gap: 8px; }
+  .tok-note { font-family: var(--mono); font-size: 11px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .btn {
+    font: inherit; font-size: 12px; font-weight: 500; padding: 6px 14px; border-radius: 9px;
+    border: 1px solid transparent; cursor: pointer;
+  }
+  .btn.ghost { background: none; color: var(--muted); }
+  .btn.ghost:hover { color: var(--fg); background: rgba(31,31,29,.05); }
+  .btn.primary { background: var(--primary); color: var(--primary-fg); }
+  .btn.primary .kbd { opacity: .55; font-weight: 400; }
+  .kbd { font-family: var(--mono); font-size: 10px; }
+
+  .notice {
+    margin: 14px 40px 0; padding: 10px 14px; border-left: 2px solid var(--warning);
+    color: var(--warning); font-size: 12px; background: rgba(143,94,5,.05); border-radius: 0 8px 8px 0;
+  }
+
+  .editor {
+    flex: 1; min-height: 0; margin: 18px 40px 0; overflow: hidden;
+    border: 1px solid var(--border); border-radius: 14px; background: var(--card);
+    display: flex; flex-direction: column;
+  }
+  .editor-bar {
+    display: flex; align-items: center; gap: 8px; padding: 8px 14px;
+    border-bottom: 1px solid var(--hairline); background: var(--rail);
+  }
+  .editor-bar .file { font-family: var(--mono); font-size: 10.5px; color: var(--faint); }
+  .editor-bar .saved { margin-left: auto; font-size: 10.5px; color: var(--faint); display: flex; align-items: center; gap: 5px; }
+  .saved .pulse { width: 5px; height: 5px; border-radius: 50%; background: var(--ring); }
+  .editor pre {
+    flex: 1; overflow: auto; padding: 18px 22px; font-family: var(--mono);
+    font-size: 12.5px; line-height: 1.75; color: var(--fg); white-space: pre-wrap;
+  }
+  .c { color: var(--syn-comment); font-style: italic; }
+  .k { color: var(--syn-keyword); }
+  .s { color: var(--syn-string); }
+  .n { color: var(--syn-number); }
+  .f { color: var(--syn-function); }
+  .p { color: var(--syn-punct); }
+  .fence { display: block; padding: 2px 0; }
+
+  /* ── History timeline ─────────────────────────────── */
+  .history { padding: 18px 40px 26px; }
+  .history h3 {
+    font-size: 10.5px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--faint); margin-bottom: 12px;
+  }
+  .timeline { display: flex; align-items: flex-start; gap: 0; }
+  .t-node { flex: 1; min-width: 0; position: relative; padding-top: 14px; }
+  .t-node::before { /* connector */
+    content: ""; position: absolute; top: 3.5px; left: 0; right: 0; height: 1px; background: var(--border);
+  }
+  .t-node:first-child::before { left: 5px; }
+  .t-node:last-child::before { right: calc(100% - 5px); }
+  .t-node .t-dot {
+    position: absolute; top: 0; left: 0; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--bg); border: 1.5px solid var(--faint);
+  }
+  .t-node.current .t-dot { border-color: var(--fg); background: var(--fg); }
+  .t-node .t-op { font-size: 12px; font-weight: 500; }
+  .t-node .t-when { font-size: 11px; color: var(--faint); margin-top: 1px; }
+  .t-node .t-restore {
+    margin-top: 5px; font-size: 11px; color: var(--ring); background: none; border: 0; cursor: pointer;
+    padding: 0; opacity: 0; transition: opacity .12s;
+  }
+  .t-node:hover .t-restore { opacity: 1; }
+  .t-node.current .t-restore { visibility: hidden; }
+</style>
+</head>
+<body>
+
+  <nav class="rail">
+    <div class="rail-title">Prompt Studio</div>
+
+    <div class="group">
+      <div class="group-label">Orchestrator</div>
+      <button class="item active"><span class="dot modified"></span>Orchestrator<span class="count">2</span></button>
+      <div class="sections">
+        <button class="section-link current">bridge_role<span class="tok">812</span></button>
+        <button class="section-link">delegation_protocol<span class="tok">1,488</span></button>
+      </div>
+    </div>
+
+    <div class="group">
+      <div class="group-label">Workers</div>
+      <button class="item"><span class="dot"></span>Research<span class="count">1</span></button>
+      <button class="item"><span class="dot"></span>Implementation<span class="count">1</span></button>
+      <button class="item"><span class="dot"></span>Verification<span class="count">1</span></button>
+      <button class="item"><span class="dot"></span>Planning<span class="count">1</span></button>
+      <button class="item"><span class="dot"></span>Documentation<span class="count">1</span></button>
+    </div>
+
+    <div class="group">
+      <div class="group-label">Direct</div>
+      <button class="item"><span class="dot"></span>Direct session<span class="count">1</span></button>
+    </div>
+
+    <div class="rail-foot">
+      <button class="quiet-action">Export</button>
+      <button class="quiet-action">Import</button>
+      <button class="quiet-action" style="margin-left:auto">Reset…</button>
+    </div>
+  </nav>
+
+  <main class="doc">
+    <div class="doc-head">
+      <div class="crumb">Orchestrator <span style="color:var(--border)">/</span> <b>bridge_role</b></div>
+      <span class="chip">Modified</span>
+      <div class="doc-actions">
+        <span class="tok-note">812 tok · est</span>
+        <button class="btn ghost">Reset</button>
+        <button class="btn primary">Save <span class="kbd">⌘S</span></button>
+      </div>
+    </div>
+
+    <div class="notice">Typed delegation may stop working because <code style="font-family:var(--mono)">bridge-delegate</code> is missing.</div>
+
+    <div class="editor">
+      <div class="editor-bar">
+        <span class="file">prompt.md</span>
+        <span class="saved"><span class="pulse"></span>Unsaved draft</span>
+      </div>
+<pre><span class="c">&lt;!-- The orchestrator brief. Compiled first in the stable prefix. --&gt;</span>
+<span class="k">You are Bridge's starter orchestrator.</span>
+
+You are a planner and router. Bridge chooses provider runtimes; you
+route only with durable role, capability-tier, and effort vocabulary.
+
+<span class="p">##</span> Operating rules
+<span class="p">-</span> Handle questions and trivial one-shot local actions yourself.
+<span class="p">-</span> Delegate multi-step implementation, fixes, refactors, research,
+  verification, planning, and documentation.
+<span class="p">-</span> Use the cheapest capable tier: <span class="n">fast</span> for narrow low-risk work,
+  <span class="n">standard</span> for ordinary multi-file work, and <span class="n">strong</span> only for
+  high-risk, ambiguous, or unusually difficult work.
+
+<span class="p">##</span> Typed delegation request
+Emit exactly one fenced <span class="f">bridge-delegate</span> JSON object:</pre>
+    </div>
+
+    <div class="history">
+      <h3>History</h3>
+      <div class="timeline">
+        <div class="t-node current">
+          <span class="t-dot"></span>
+          <div class="t-op">Draft</div>
+          <div class="t-when">editing now</div>
+        </div>
+        <div class="t-node">
+          <span class="t-dot"></span>
+          <div class="t-op">Save</div>
+          <div class="t-when">2 hours ago</div>
+          <button class="t-restore">Restore</button>
+        </div>
+        <div class="t-node">
+          <span class="t-dot"></span>
+          <div class="t-op">Save</div>
+          <div class="t-when">yesterday</div>
+          <button class="t-restore">Restore</button>
+        </div>
+        <div class="t-node">
+          <span class="t-dot"></span>
+          <div class="t-op">Restore</div>
+          <div class="t-when">3 days ago</div>
+          <button class="t-restore">Restore</button>
+        </div>
+      </div>
+    </div>
+  </main>
+
+</body>
+</html>
