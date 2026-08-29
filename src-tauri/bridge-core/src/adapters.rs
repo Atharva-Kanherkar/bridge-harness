@@ -1,6 +1,6 @@
 use crate::{
     briefing_policy::BriefingRuntimePolicy,
-    agent, claude_adapter, codex_adapter,
+    agent, claude_adapter, codex_adapter, cursor_adapter,
     delegation::WriteMode,
     model::{AdapterDescriptor, CapabilityTier, ModelOption, SandboxMode},
     opencode_adapter,
@@ -529,6 +529,11 @@ impl AdapterRegistry {
             opencode_settings,
             on_opencode_discovered,
         )))?;
+        // Cursor discovers itself the same way, and for a stronger reason: its
+        // protocol support cannot be read off the filesystem and has to be
+        // proved with a handshake, which is not something application setup can
+        // wait on.
+        registry.register(Box::new(cursor_adapter::CursorAdapter::new(None)))?;
         Ok(registry)
     }
 

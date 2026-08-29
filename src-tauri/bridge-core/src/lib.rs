@@ -31,6 +31,7 @@ pub mod context;
 pub mod context_breakdown;
 pub mod context_inventory;
 pub mod credential_broker;
+pub mod cursor_adapter;
 pub mod delegation;
 pub mod events;
 pub mod frame_queue;

@@ -68,6 +68,34 @@
       "defaultModelId": "gpt-5.6-luna"
     },
     {
+      "id": "cursor",
+      "label": "Cursor",
+      "transport": "cursor_agent_acp_stdio",
+      "runtimeSource": "cursor-agent acp",
+      "credentialOwner": "vendor",
+      "nativeResume": "when_session_advertises",
+      "capabilities": [
+        "messages",
+        "streaming",
+        "reasoning",
+        "plans",
+        "tools",
+        "commands",
+        "file_changes",
+        "approvals",
+        "usage",
+        "history"
+      ],
+      "sandboxModes": [
+        "read_only",
+        "workspace_write",
+        "danger_full_access"
+      ],
+      "modelSource": "runtime_catalog",
+      "modelIds": [],
+      "defaultModelId": null
+    },
+    {
       "id": "opencode",
       "label": "OpenCode",
       "transport": "opencode_authenticated_loopback_http",

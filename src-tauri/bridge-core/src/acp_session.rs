@@ -61,11 +61,12 @@ use agent_client_protocol::{
             CancelNotification, ContentBlock, InitializeRequest, InitializeResponse,
             LoadSessionRequest, NewSessionRequest, PromptRequest, RequestPermissionOutcome,
             RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
-            SelectedPermissionOutcome, SessionId, SessionNotification, TextContent,
+            SelectedPermissionOutcome, SessionConfigOption, SessionConfigOptionValue, SessionId,
+            SessionModeState, SessionNotification, SetSessionConfigOptionRequest, TextContent,
         },
         ProtocolVersion,
     },
-    AcpAgent, AcpAgentConfig, Agent, Client, ConnectionTo, Handled, Lines, Responder,
+    AcpAgent, AcpAgentConfig, Agent, Client, ConnectionTo, ErrorCode, Handled, Lines, Responder,
     UntypedMessage,
 };
 use futures::{
@@ -254,6 +255,25 @@ impl AcpCapabilities {
     }
 }
 
+/// The mode and configuration state a session was opened with.
+///
+/// Held as the protocol crate's own types rather than a Bridge shape. Models,
+/// modes and thought levels are advertised through one generic selector
+/// mechanism whose meaning is entirely the agent's: the identifier namespaces
+/// differ per agent, several selectors can share a category, and a client that
+/// normalizes them into its own vocabulary loses the one thing it must send
+/// back unchanged. So this module records what arrived and leaves reading it to
+/// the harness that knows the agent.
+///
+/// Both fields degrade to empty rather than failing the handshake — the crate
+/// deserializes them with `DefaultOnError`, so an agent whose selector shape
+/// this build cannot parse still opens a session.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AcpSessionState {
+    pub modes: Option<SessionModeState>,
+    pub config_options: Vec<SessionConfigOption>,
+}
+
 /// Why an ACP session could not do what was asked. One code per condition, so a
 /// caller can act on them without matching on prose — the same shape
 /// [`crate::agent_integration::IntegrationError`] already uses.
@@ -272,6 +292,12 @@ pub enum AcpError {
     },
     /// The agent answered with a protocol version Bridge did not ask for.
     ProtocolVersion { requested: u16, offered: u16 },
+    /// The agent is installed and talking, and refused to open a session until
+    /// someone signs in. Separated from [`Self::HandshakeFailed`] because the
+    /// remedy is entirely different and the protocol reserves a code for it:
+    /// reported as a crash, a signed-out agent sends a user to look for a bug
+    /// that is not there.
+    AuthenticationRequired { reason: String },
     /// A method whose capability the agent never advertised. Refused here
     /// rather than sent and rejected: an advertisement is the whole contract,
     /// and speculatively calling past it is how a client learns to guess.
@@ -305,6 +331,7 @@ impl AcpError {
             Self::HandshakeTimeout { .. } => "acp_handshake_timeout",
             Self::HandshakeFailed { .. } => "acp_handshake_failed",
             Self::ProtocolVersion { .. } => "acp_protocol_version",
+            Self::AuthenticationRequired { .. } => "acp_authentication_required",
             Self::Unsupported { .. } => "acp_capability_unsupported",
             Self::UnknownProviderSession { .. } => "acp_unknown_provider_session",
             Self::UnknownApproval { .. } => "acp_unknown_approval",
@@ -341,6 +368,9 @@ impl std::fmt::Display for AcpError {
                 formatter,
                 "Bridge asked for protocol version {requested} and the agent answered with {offered}"
             ),
+            Self::AuthenticationRequired { reason } => {
+                write!(formatter, "the agent requires authentication: {reason}")
+            }
             Self::Unsupported { capability, method } => write!(
                 formatter,
                 "the agent did not advertise {capability}, so {method} was not called"
@@ -421,6 +451,11 @@ enum AcpCommand {
         mode: ReloadMode,
         provider_session_id: String,
         reply: mpsc::SyncSender<Result<Vec<NormalizedEvent>, AcpError>>,
+    },
+    SetConfigOption {
+        option_id: String,
+        value: SessionConfigOptionValue,
+        reply: mpsc::SyncSender<Result<(), AcpError>>,
     },
     Shutdown,
 }
@@ -558,6 +593,7 @@ pub struct AcpSession {
     process_id: Option<u32>,
     provider_session_id: String,
     capabilities: AcpCapabilities,
+    session_state: AcpSessionState,
     shared: Arc<Shared>,
     connection: ConnectionTo<Agent>,
     commands: futures_mpsc::UnboundedSender<AcpCommand>,
@@ -673,6 +709,7 @@ impl AcpSession {
                 process_id,
                 provider_session_id: ready.provider_session_id,
                 capabilities: ready.capabilities,
+                session_state: ready.session_state,
                 shared,
                 connection: ready.connection,
                 commands: commands_tx,
@@ -704,6 +741,18 @@ impl AcpSession {
 
     pub const fn capabilities(&self) -> &AcpCapabilities {
         &self.capabilities
+    }
+
+    /// What the agent said the session itself starts out offering.
+    ///
+    /// Separate from [`Self::capabilities`] because it comes from a different
+    /// answer: capabilities are what the *agent* can do, session state is what
+    /// *this session* was opened with. Recorded verbatim rather than
+    /// interpreted — an agent's model and mode identifiers are its own
+    /// namespace, and a caller that reconstructs one instead of echoing it
+    /// back is inventing a value the agent never offered.
+    pub const fn session_state(&self) -> &AcpSessionState {
+        &self.session_state
     }
 
     /// Whether the connection has ended. Exposed so a caller can decide to
@@ -811,6 +860,28 @@ impl AcpSession {
             .expect("acp event queue poisoned")
             .push(approval_settled_event(request_id, "selected"));
         Ok(())
+    }
+
+    /// Set one of the session configuration options the agent advertised.
+    ///
+    /// The option id and the value are the agent's own: a selector's values
+    /// live in a namespace this crate has no model of, so both are passed
+    /// through untouched. A caller that has not read the option off
+    /// [`Self::session_state`] has nothing legitimate to send here.
+    pub fn set_config_option(
+        &self,
+        option_id: &str,
+        value: SessionConfigOptionValue,
+    ) -> Result<(), AcpError> {
+        let (reply_tx, reply_rx) = mpsc::sync_channel(1);
+        self.commands
+            .unbounded_send(AcpCommand::SetConfigOption {
+                option_id: option_id.to_owned(),
+                value,
+                reply: reply_tx,
+            })
+            .map_err(|_| self.closed_error())?;
+        reply_rx.recv().map_err(|_| self.closed_error())?
     }
 
     /// Reload a prior provider session, replaying its history.
@@ -994,6 +1065,7 @@ impl SupervisedChild {
 /// What the connection thread hands back once the agent is usable.
 struct AcpReady {
     capabilities: AcpCapabilities,
+    session_state: AcpSessionState,
     provider_session_id: String,
     connection: ConnectionTo<Agent>,
 }
@@ -1097,6 +1169,7 @@ async fn serve(
     };
     drop(ready.send(Ok(AcpReady {
         capabilities: opened.capabilities,
+        session_state: opened.session_state,
         provider_session_id: opened.session_id.0.to_string(),
         connection: cx.clone(),
     })));
@@ -1128,14 +1201,44 @@ async fn serve(
                 let replayed = run_reload(launch, shared, &cx, mode, &provider_session_id).await;
                 drop(reply.send(replayed));
             }
+            AcpCommand::SetConfigOption {
+                option_id,
+                value,
+                reply,
+            } => {
+                let outcome =
+                    run_set_config_option(&cx, &opened.session_id, &option_id, value).await;
+                drop(reply.send(outcome));
+            }
             AcpCommand::Shutdown => break,
         }
     }
     Ok(())
 }
 
+async fn run_set_config_option(
+    cx: &ConnectionTo<Agent>,
+    session_id: &SessionId,
+    option_id: &str,
+    value: SessionConfigOptionValue,
+) -> Result<(), AcpError> {
+    cx.send_request(SetSessionConfigOptionRequest::new(
+        session_id.clone(),
+        option_id.to_owned(),
+        value,
+    ))
+    .block_task()
+    .await
+    .map(drop)
+    .map_err(|error| AcpError::Agent {
+        code: error.code.into(),
+        message: error.message,
+    })
+}
+
 struct OpenedSession {
     capabilities: AcpCapabilities,
+    session_state: AcpSessionState,
     session_id: SessionId,
 }
 
@@ -1179,12 +1282,28 @@ async fn open_session(
         .send_request(NewSessionRequest::new(launch.cwd.clone()))
         .block_task()
         .await
-        .map_err(|error| AcpError::HandshakeFailed {
-            reason: error.message,
-            output: shared.failure_context(),
+        .map_err(|error| {
+            // The protocol reserves one code for "sign in first", and the
+            // message beside it is the agent's own prose. Keyed on the code so
+            // a caller can act on the condition rather than pattern-match
+            // sentences.
+            if i32::from(error.code) == i32::from(ErrorCode::AuthRequired) {
+                AcpError::AuthenticationRequired {
+                    reason: error.message,
+                }
+            } else {
+                AcpError::HandshakeFailed {
+                    reason: error.message,
+                    output: shared.failure_context(),
+                }
+            }
         })?;
     Ok(OpenedSession {
         capabilities,
+        session_state: AcpSessionState {
+            modes: opened.modes,
+            config_options: opened.config_options.unwrap_or_default(),
+        },
         session_id: opened.session_id,
     })
 }

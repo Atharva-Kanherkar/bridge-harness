@@ -111,7 +111,7 @@ impl JsonSchema for JsSafeU64 {
 /// bespoke code for. An id outside it is an ordinary agent Bridge runs through
 /// a generic transport, and an id can move into this list later without its
 /// sessions changing identity.
-pub const BUILTIN_HARNESS_IDS: [&str; 4] = ["claude", "codex", "opencode", "shell"];
+pub const BUILTIN_HARNESS_IDS: [&str; 5] = ["claude", "codex", "cursor", "opencode", "shell"];
 
 /// Upper bound on a harness id. The live ACP registry's longest is 18
 /// characters (`github-copilot-cli`); 64 leaves room without letting an
@@ -809,10 +809,13 @@ mod tests {
 
     #[test]
     fn builtin_harness_ids_serialize_exactly_as_protocol_0_8() {
-        // These four strings are persisted in the `sessions.harness` column and
+        // These strings are persisted in the `sessions.harness` column and
         // keyed on in the adapter registry. Opening the identifier must not
-        // have moved one.
-        assert_eq!(BUILTIN_HARNESS_IDS, ["claude", "codex", "opencode", "shell"]);
+        // have moved one, and adding a bespoke adapter only ever appends.
+        assert_eq!(
+            BUILTIN_HARNESS_IDS,
+            ["claude", "codex", "cursor", "opencode", "shell"]
+        );
         for builtin in BUILTIN_HARNESS_IDS {
             let id = HarnessId::parse(builtin).unwrap();
             assert_eq!(serde_json::to_value(&id).unwrap(), serde_json::json!(builtin));
