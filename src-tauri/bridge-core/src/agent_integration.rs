@@ -301,6 +301,10 @@ pub trait BackendDriver: Send + Sync {
     fn turn_frame(&self, text: &str) -> Value;
     /// The answer to a permission request. The decision is the caller's; this
     /// only says how to spell it on the wire.
+    ///
+    /// What `decision` *means* belongs to the shape, not to this trait. Most
+    /// shapes take an allow/deny word; an ACP server takes one of the option
+    /// ids it offered, and refuses anything else.
     fn decision_frame(&self, request_id: &Value, decision: &str) -> Value;
     /// The frame that picks a prior provider session back up. Never called for
     /// a driver declaring [`ResumeSupport::None`].
@@ -315,6 +319,12 @@ pub struct SdkSidecarDriver;
 /// authenticated loopback server.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct StructuredServerDriver;
+
+/// The one decision an ACP permission answer accepts that is not an option id.
+///
+/// Every other value is echoed back as the selected `optionId`, because the
+/// only ids an agent honours are the ones it offered.
+pub const ACP_CANCELLED_DECISION: &str = "cancelled";
 
 /// An official Agent Client Protocol server.
 #[derive(Debug, Clone, Copy, Default)]
@@ -387,8 +397,25 @@ impl BackendDriver for AcpDriver {
             "params": {"prompt": [{"type": "text", "text": text}]}
         })
     }
+    /// A permission answer is an outcome object, not a decision word.
+    ///
+    /// ACP offers the client a list of options and expects one of their ids
+    /// back, or an explicit cancellation; there is no approved and no denied on
+    /// this wire. So `decision` here is an option id, and the reserved
+    /// spellings are [`ACP_CANCELLED_DECISION`] and Bridge's own approval
+    /// vocabulary's "cancel" — an agent that ends a turn while a permission is
+    /// outstanding gets the cancellation the protocol requires rather than a
+    /// selection Bridge invented. The caller that resolves a Bridge approval
+    /// still has to translate "accept"/"decline" into one of the agent's
+    /// offered ids before this frame is built; an untranslated word here would
+    /// select an option the agent never offered.
     fn decision_frame(&self, request_id: &Value, decision: &str) -> Value {
-        json!({"jsonrpc": "2.0", "id": request_id, "result": {"outcome": decision}})
+        let outcome = if decision == ACP_CANCELLED_DECISION || decision == "cancel" {
+            json!({"outcome": "cancelled"})
+        } else {
+            json!({"outcome": "selected", "optionId": decision})
+        };
+        json!({"jsonrpc": "2.0", "id": request_id, "result": {"outcome": outcome}})
     }
     fn resume_frame(&self, provider_session_id: &str) -> Value {
         json!({
@@ -1136,10 +1163,46 @@ mod tests {
             "surfacing a permission request must not answer it"
         );
 
-        // The caller decides, and only then does an answer go out.
-        session.respond(&json!(7), "allow").unwrap();
+        // The caller decides, and only then does an answer go out. On this
+        // shape the decision is one of the option ids the agent offered, and it
+        // is spelled as a selection outcome rather than a bare word.
+        session.respond(&json!(7), "allow-once").unwrap();
         let frames = sent.lock().unwrap();
-        assert_eq!(frames[1].pointer("/result/outcome").unwrap(), "allow");
+        assert_eq!(
+            frames[1].pointer("/result/outcome").unwrap(),
+            &json!({"outcome": "selected", "optionId": "allow-once"})
+        );
+    }
+
+    #[test]
+    fn an_acp_permission_is_answered_with_a_selection_or_a_cancellation() {
+        let driver = AcpDriver;
+        assert_eq!(
+            driver
+                .decision_frame(&json!(11), "reject-always")
+                .pointer("/result/outcome")
+                .unwrap(),
+            &json!({"outcome": "selected", "optionId": "reject-always"}),
+            "an option id travels back verbatim under a selected outcome"
+        );
+        assert_eq!(
+            driver
+                .decision_frame(&json!(11), ACP_CANCELLED_DECISION)
+                .pointer("/result/outcome")
+                .unwrap(),
+            &json!({"outcome": "cancelled"}),
+            "the one reserved decision is the protocol's own cancellation"
+        );
+        let frame = driver.decision_frame(&json!(11), "allow-once");
+        assert_eq!(frame.pointer("/id").unwrap(), &json!(11));
+        assert!(
+            frame
+                .pointer("/result/outcome")
+                .unwrap()
+                .get("outcome")
+                .is_some(),
+            "the answer is always an outcome object, never a decision word"
+        );
     }
 
     #[test]

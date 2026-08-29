@@ -21,6 +21,12 @@ pub enum NativeResumeContract {
     WhenRuntimeAvailable,
     WhenProtocolAdvertises,
     WhenCatalogDiscovered,
+    /// Offered only where the agent advertised `session/resume` at the
+    /// handshake. Distinct from `when_protocol_advertises`, which is Codex's
+    /// runtime feature list: this is a capability the agent states per build,
+    /// and an agent that advertises history replay without it gets a
+    /// checkpoint handoff rather than a resume Bridge cannot perform.
+    WhenSessionAdvertises,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -89,6 +95,26 @@ const CLAUDE_CAPABILITIES: &[&str] = &[
 
 const OPENCODE_CAPABILITIES: &[&str] = CODEX_CAPABILITIES;
 
+/// Cursor is reached through the shared ACP client, so its surface is whatever
+/// that client normalizes. `interrupt` is here because a cancel is a real
+/// protocol notification the runtime sends, and image attachments are not,
+/// because the client sends a text content block and advertising more than it
+/// sends would route an image turn into a refusal at the seam. The adapter
+/// descriptor reads this list rather than restating it.
+pub(crate) const CURSOR_CAPABILITIES: &[&str] = &[
+    "messages",
+    "streaming",
+    "reasoning",
+    "plans",
+    "tools",
+    "commands",
+    "file_changes",
+    "approvals",
+    "usage",
+    "history",
+    "interrupt",
+];
+
 const BUILT_IN_AGENTS: &[BuiltInAgentContract] = &[
     BuiltInAgentContract {
         id: "claude",
@@ -120,6 +146,19 @@ const BUILT_IN_AGENTS: &[BuiltInAgentContract] = &[
             "gpt-5.3-codex",
         ],
         default_model_id: Some("gpt-5.6-luna"),
+    },
+    BuiltInAgentContract {
+        id: "cursor",
+        label: "Cursor",
+        transport: "cursor_agent_acp_stdio",
+        runtime_source: "cursor-agent acp",
+        credential_owner: CredentialOwner::Vendor,
+        native_resume: NativeResumeContract::WhenSessionAdvertises,
+        capabilities: CURSOR_CAPABILITIES,
+        sandbox_modes: ALL_SANDBOXES,
+        model_source: ModelSource::RuntimeCatalog,
+        model_ids: &[],
+        default_model_id: None,
     },
     BuiltInAgentContract {
         id: "opencode",
@@ -269,7 +308,7 @@ mod builtin_compatibility_tests {
             .iter()
             .map(|agent| agent.id)
             .collect::<Vec<_>>();
-        assert_eq!(ids, ["claude", "codex", "opencode"]);
+        assert_eq!(ids, ["claude", "codex", "cursor", "opencode"]);
         assert_eq!(ids.iter().copied().collect::<HashSet<_>>().len(), ids.len());
     }
 
@@ -292,6 +331,10 @@ mod builtin_compatibility_tests {
         );
         assert_eq!(
             built_in_agent_contracts()[2].transport,
+            "cursor_agent_acp_stdio"
+        );
+        assert_eq!(
+            built_in_agent_contracts()[3].transport,
             "opencode_authenticated_loopback_http"
         );
     }
@@ -347,7 +390,7 @@ mod builtin_compatibility_tests {
         assert_eq!(actual, expected);
         let value: serde_json::Value = serde_json::from_str(&actual).unwrap();
         assert_eq!(value["schemaVersion"], SCHEMA_VERSION);
-        assert_eq!(value["agents"].as_array().unwrap().len(), 3);
+        assert_eq!(value["agents"].as_array().unwrap().len(), 4);
         let lowercase = actual.to_ascii_lowercase();
         for forbidden in [
             "api_key",

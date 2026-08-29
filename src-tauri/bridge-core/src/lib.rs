@@ -6,7 +6,9 @@
 //! that state; hosts (the Tauri shell today, a headless daemon later) wrap it
 //! in their own transport.
 
+pub mod acp_events;
 pub mod acp_registry;
+pub mod acp_session;
 pub mod adapters;
 pub mod agent;
 pub mod agent_config;
@@ -29,6 +31,7 @@ pub mod context;
 pub mod context_breakdown;
 pub mod context_inventory;
 pub mod credential_broker;
+pub mod cursor_adapter;
 pub mod delegation;
 pub mod events;
 pub mod frame_queue;

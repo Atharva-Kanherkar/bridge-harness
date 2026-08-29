@@ -767,10 +767,11 @@ mod tests {
 
     #[test]
     fn a_registry_entry_sharing_a_builtin_name_is_the_same_agent() {
-        // `opencode` is a real entry in the live index, and Bridge also ships an
-        // OpenCode adapter. One agent reached two ways — so one id, one session
-        // history, and one entry a user ever sees. Installing from the registry
-        // must not mint a second, competing "OpenCode".
+        // `cursor` and `opencode` are real entries in the live index, and Bridge
+        // also ships an adapter for each. One agent reached two ways — so one
+        // id, one session history, and one entry a user ever sees. Installing
+        // from the registry must not mint a second, competing copy, and writing
+        // a bespoke adapter for an entry that was already there must not either.
         let index = index();
         let shared: Vec<&str> = index
             .agents
@@ -780,7 +781,7 @@ mod tests {
             .collect();
         assert_eq!(
             shared,
-            vec!["opencode"],
+            vec!["cursor", "opencode"],
             "the set of registry ids Bridge already has a bespoke adapter for changed"
         );
         for id in shared {

@@ -21,6 +21,16 @@ which = "7"
 thiserror = "2"
 tiny_http = "0.12"
 tokio = { version = "1", features = ["sync"] }
+# The Agent Client Protocol SDK. Pinned exactly: the API moved wholesale
+# between 1.0 and 2.0 within a month, and a silent minor bump would rewrite the
+# connection shape underneath the ACP client layer. The crate pulls no async
+# runtime of its own — futures, async-io and async-process only — which is
+# what lets `acp_session` drive a connection on a plain thread like every other
+# adapter here.
+agent-client-protocol = "=2.0.0"
+futures = "0.3"
+async-io = "2"
+async-process = "2"
 sha2 = "0.10"
 # Signature verification for Bridge Verified catalog snapshots. Verification
 # only — Bridge never signs on the desktop. Ed25519 because it has no parameter

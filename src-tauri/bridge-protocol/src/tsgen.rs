@@ -174,10 +174,32 @@ pub fn artifacts() -> Vec<Artifact> {
     artifacts
 }
 
+/// Serialize an artifact with object keys in a canonical order.
+///
+/// `serde_json::Map` keeps insertion order when *any* crate in the build
+/// enables serde_json's `preserve_order`, and sorts keys when none does. Cargo
+/// unifies features across the whole workspace, so which of the two a build
+/// gets depends on the dependencies of unrelated crates — and a checked-in
+/// artifact must not change its bytes because something elsewhere gained a
+/// dependency. Sorting here pins the output under either resolution.
 fn pretty(value: &Value) -> String {
-    let mut text = serde_json::to_string_pretty(value).unwrap();
+    let mut text = serde_json::to_string_pretty(&canonical(value)).unwrap();
     text.push('\n');
     text
+}
+
+fn canonical(value: &Value) -> Value {
+    match value {
+        Value::Object(object) => {
+            let mut entries: Vec<(&String, &Value)> = object.iter().collect();
+            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            Value::Object(
+                entries.into_iter().map(|(key, value)| (key.clone(), canonical(value))).collect(),
+            )
+        }
+        Value::Array(items) => Value::Array(items.iter().map(canonical).collect()),
+        other => other.clone(),
+    }
 }
 
 // ---------------------------------------------------------------------------
