@@ -1,4 +1,4 @@
-import type { GithubPullRequestsResult } from "./protocol/generated/protocol";
+import type { GithubChecksResult, GithubPullRequestsResult } from "./protocol/generated/protocol";
 
 // Pure logic for the GitHub surface: rollup classification, CI-finished
 // notification rendering, and the jump-to-diff fallback decision. Kept out of
@@ -13,6 +13,10 @@ export function rollupState(pr: Pick<PullRequestListItem, "checks">): RollupStat
   if (pr.checks.queued || pr.checks.inProgress) return "running";
   if (pr.checks.passed) return "passing";
   return "none";
+}
+
+export function checksNeedPolling(checks: GithubChecksResult["checks"]): boolean {
+  return checks.some(check => check.status === "queued" || check.status === "inProgress");
 }
 
 /** The `github/ci_finished` wire payload. */

@@ -7,26 +7,35 @@ import {
   CircleSlash,
   CircleX,
   ExternalLink,
+  FileDiff,
   FolderGit2,
+  GitBranch,
   GitMerge,
   GitPullRequest,
   GitPullRequestDraft,
+  Info,
+  ListTodo,
   LoaderCircle,
   MessageSquare,
   RefreshCw,
   SquareArrowOutUpRight,
+  Tag,
 } from "lucide-react";
 import { bridgeApi } from "../api";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
-import { rollupState, type PullRequestListItem, type RollupState } from "../githubSurface";
+import { checksNeedPolling, rollupState, type PullRequestListItem, type RollupState } from "../githubSurface";
 import type {
   GithubAction,
   GithubCheckoutResult,
   GithubChecksResult,
+  GithubIssueResult,
+  GithubIssuesResult,
+  GithubLabel,
   GithubMergeConfigResult,
   GithubPullRequestResult,
   GithubRepository,
+  GithubRepositoryResult,
   GithubStatusResult,
   MergeStrategy,
   ReviewDecision,
@@ -48,6 +57,8 @@ export type GitHubPaneProps = {
 };
 
 type Detail = { result: GithubPullRequestResult; checks: GithubChecksResult };
+type SurfaceTab = "pulls" | "issues" | "repository";
+type PullRequestTab = "conversation" | "changes" | "checks";
 
 const ROLLUP: Record<RollupState, { icon: typeof CircleCheck; className: string; label: string }> = {
   failing: { icon: CircleX, className: "text-destructive", label: "Failing" },
@@ -87,36 +98,58 @@ function PaneNotice({ icon: Icon, title, children }: { icon: typeof GitPullReque
 export function GitHubPane({ workspaceId, workspaceBranch, intent, onJumpToFile }: GitHubPaneProps) {
   const [status, setStatus] = useState<GithubStatusResult>();
   const [prs, setPrs] = useState<PullRequestListItem[]>();
-  const [listError, setListError] = useState<string>();
+  const [issues, setIssues] = useState<GithubIssuesResult["issues"]>();
+  const [repositoryOverview, setRepositoryOverview] = useState<GithubRepositoryResult>();
+  const [surfaceTab, setSurfaceTab] = useState<SurfaceTab>("pulls");
+  const [surfaceError, setSurfaceError] = useState<string>();
+  const [tabErrors, setTabErrors] = useState<Partial<Record<SurfaceTab, string>>>({});
   const [refreshing, setRefreshing] = useState(false);
 
   const [selected, setSelected] = useState<number>();
   const [detail, setDetail] = useState<Detail>();
   const [detailError, setDetailError] = useState<string>();
+  const [selectedIssue, setSelectedIssue] = useState<number>();
+  const [issueDetail, setIssueDetail] = useState<GithubIssueResult>();
+  const [issueError, setIssueError] = useState<string>();
 
   const alive = useRef(true);
+  const refreshingChecks = useRef(false);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
-  const loadList = useCallback(async () => {
+  const loadSurface = useCallback(async () => {
     setRefreshing(true);
     try {
       const next = await bridgeApi.githubStatus(workspaceId);
       if (!alive.current) return;
       setStatus(next);
-      setListError(undefined);
+      setSurfaceError(undefined);
       if (next.availability.status === "available") {
-        const list = await bridgeApi.githubPullRequests(workspaceId);
-        if (alive.current) setPrs(list.pullRequests);
+        const [pullsResult, issuesResult, repositoryResult] = await Promise.allSettled([
+          bridgeApi.githubPullRequests(workspaceId),
+          bridgeApi.githubIssues(workspaceId),
+          bridgeApi.githubRepository(workspaceId),
+        ]);
+        if (!alive.current) return;
+        const errors: Partial<Record<SurfaceTab, string>> = {};
+        if (pullsResult.status === "fulfilled") setPrs(pullsResult.value.pullRequests);
+        else errors.pulls = pullsResult.reason instanceof Error ? pullsResult.reason.message : String(pullsResult.reason);
+        if (issuesResult.status === "fulfilled") setIssues(issuesResult.value.issues);
+        else errors.issues = issuesResult.reason instanceof Error ? issuesResult.reason.message : String(issuesResult.reason);
+        if (repositoryResult.status === "fulfilled") setRepositoryOverview(repositoryResult.value);
+        else errors.repository = repositoryResult.reason instanceof Error ? repositoryResult.reason.message : String(repositoryResult.reason);
+        setTabErrors(errors);
       }
     } catch (error) {
-      if (alive.current) setListError(error instanceof Error ? error.message : String(error));
+      if (alive.current) setSurfaceError(error instanceof Error ? error.message : String(error));
     } finally {
       if (alive.current) setRefreshing(false);
     }
   }, [workspaceId]);
 
-  const openDetail = useCallback(async (number: number) => {
+  const openDetail = useCallback(async (number: number, retain = false) => {
+    setSurfaceTab("pulls");
     setSelected(number);
+    if (!retain) setDetail(undefined);
     setDetailError(undefined);
     try {
       const [result, checks] = await Promise.all([
@@ -129,11 +162,48 @@ export function GitHubPane({ workspaceId, workspaceBranch, intent, onJumpToFile 
     }
   }, [workspaceId]);
 
+  const openIssue = useCallback(async (number: number, retain = false) => {
+    setSurfaceTab("issues");
+    setSelectedIssue(number);
+    if (!retain) setIssueDetail(undefined);
+    setIssueError(undefined);
+    try {
+      const result = await bridgeApi.githubIssue(workspaceId, number);
+      if (alive.current) setIssueDetail(result);
+    } catch (error) {
+      if (alive.current) setIssueError(error instanceof Error ? error.message : String(error));
+    }
+  }, [workspaceId]);
+
+  const refreshChecks = useCallback(async (number: number) => {
+    if (refreshingChecks.current) return;
+    refreshingChecks.current = true;
+    try {
+      const [checks, list] = await Promise.all([
+        bridgeApi.githubChecks(workspaceId, number),
+        bridgeApi.githubPullRequests(workspaceId),
+      ]);
+      if (!alive.current) return;
+      setPrs(list.pullRequests);
+      setDetail(current => current && current.result.pullRequest.summary.number === number ? { ...current, checks } : current);
+      setDetailError(undefined);
+    } catch (error) {
+      if (alive.current) setDetailError(error instanceof Error ? error.message : String(error));
+    } finally { refreshingChecks.current = false; }
+  }, [workspaceId]);
+
   useEffect(() => {
-    setStatus(undefined); setPrs(undefined); setListError(undefined);
+    setStatus(undefined); setPrs(undefined); setIssues(undefined); setRepositoryOverview(undefined); setSurfaceError(undefined); setTabErrors({});
     setSelected(undefined); setDetail(undefined); setDetailError(undefined);
-    void loadList();
-  }, [loadList]);
+    setSelectedIssue(undefined); setIssueDetail(undefined); setIssueError(undefined);
+    void loadSurface();
+  }, [loadSurface]);
+
+  useEffect(() => {
+    if (selected === undefined || !detail || !checksNeedPolling(detail.checks.checks)) return;
+    const timer = window.setInterval(() => { void refreshChecks(selected); }, 8_000);
+    return () => window.clearInterval(timer);
+  }, [selected, detail, refreshChecks]);
 
   // Live refresh: a check transition or a terminal rollup re-reads whatever is
   // on screen. Handlers read the latest selection through a ref so one stable
@@ -145,35 +215,34 @@ export function GitHubPane({ workspaceId, workspaceBranch, intent, onJumpToFile 
     const offs: Array<() => void> = [];
     const refetch = (payload: { workspaceId: string; number: number }) => {
       if (!active || payload.workspaceId !== workspaceId) return;
-      void bridgeApi.githubPullRequests(workspaceId).then(value => { if (active) setPrs(value.pullRequests); }).catch(() => undefined);
-      if (selectedRef.current === payload.number) void openDetail(payload.number);
+      if (selectedRef.current === payload.number) void refreshChecks(payload.number);
+      else void bridgeApi.githubPullRequests(workspaceId).then(value => { if (active) setPrs(value.pullRequests); }).catch(() => undefined);
     };
     void bridgeApi.onGithubChecksChanged(refetch).then(off => { if (active) offs.push(off); else off(); });
     void bridgeApi.onGithubCiFinished(refetch).then(off => { if (active) offs.push(off); else off(); });
     return () => { active = false; offs.forEach(off => off()); };
-  }, [workspaceId, openDetail]);
+  }, [workspaceId, refreshChecks]);
 
   // Deep links (sidebar row, CI toast) land here.
   const seenIntent = useRef(0);
   useEffect(() => {
     if (!intent || intent.nonce === seenIntent.current) return;
     seenIntent.current = intent.nonce;
-    setDetail(undefined);
     void openDetail(intent.number);
   }, [intent, openDetail]);
 
   const repoLabel = status?.repository ? `${status.repository.owner}/${status.repository.name}` : undefined;
 
   let body: React.ReactNode;
-  if (listError) {
-    body = <PaneNotice icon={CircleX} title="GitHub is unreachable">{listError}</PaneNotice>;
+  if (surfaceError) {
+    body = <PaneNotice icon={CircleX} title="GitHub is unreachable">{surfaceError}</PaneNotice>;
   } else if (!status) {
     body = <PaneNotice icon={LoaderCircle} title="Checking GitHub…"><span className="inline-flex items-center gap-1.5"><LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> Resolving the CLI and repository.</span></PaneNotice>;
   } else if (status.availability.status === "notInstalled") {
     body = <PaneNotice icon={CircleSlash} title="GitHub CLI is not installed">Bridge drives GitHub through <code className="font-mono text-foreground/90">gh</code> — install it and sign in, and this pane fills in by itself.</PaneNotice>;
   } else if (status.availability.status === "notAuthenticated") {
     body = <PaneNotice icon={CircleDot} title="Sign in to GitHub">Run <code className="rounded-md border border-border bg-card px-1.5 py-0.5 font-mono text-[11.5px] text-foreground/90">{status.availability.remediation}</code> in a terminal, then refresh.</PaneNotice>;
-  } else if (selected !== undefined) {
+  } else if (surfaceTab === "pulls" && selected !== undefined) {
     body = <PullRequestDetail
       workspaceId={workspaceId}
       workspaceBranch={workspaceBranch}
@@ -181,37 +250,81 @@ export function GitHubPane({ workspaceId, workspaceBranch, intent, onJumpToFile 
       number={selected}
       detail={detail}
       error={detailError}
-      onBack={() => { setSelected(undefined); setDetail(undefined); setDetailError(undefined); void loadList(); }}
-      onActed={() => { void loadList(); void openDetail(selected); }}
+      availableLabels={repositoryOverview?.labels ?? []}
+      onBack={() => { setSelected(undefined); setDetail(undefined); setDetailError(undefined); }}
+      onActed={() => { void loadSurface(); void openDetail(selected, true); }}
       onJumpToFile={onJumpToFile}
     />;
-  } else if (!prs) {
+  } else if (surfaceTab === "pulls" && tabErrors.pulls && !prs) {
+    body = <PaneNotice icon={CircleX} title="Pull requests did not load">{tabErrors.pulls}</PaneNotice>;
+  } else if (surfaceTab === "pulls" && !prs) {
     body = <PaneNotice icon={LoaderCircle} title="Loading pull requests…" />;
-  } else if (!prs.length) {
+  } else if (surfaceTab === "pulls" && prs?.length === 0) {
     body = <PaneNotice icon={GitPullRequest} title="No open pull requests">{repoLabel ? `${repoLabel} has nothing waiting on you.` : "This repository has nothing waiting on you."}</PaneNotice>;
-  } else {
+  } else if (surfaceTab === "pulls" && prs) {
     body = <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4">
       <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
         {prs.map(pr => <PullRequestRow key={pr.number} pr={pr} onOpen={() => void openDetail(pr.number)} />)}
       </div>
     </div>;
+  } else if (surfaceTab === "issues" && selectedIssue !== undefined) {
+    body = <IssueDetail
+      workspaceId={workspaceId}
+      repository={status.repository}
+      number={selectedIssue}
+      detail={issueDetail}
+      error={issueError}
+      availableLabels={repositoryOverview?.labels ?? []}
+      onBack={() => { setSelectedIssue(undefined); setIssueDetail(undefined); setIssueError(undefined); }}
+      onActed={() => { void loadSurface(); void openIssue(selectedIssue, true); }}
+    />;
+  } else if (surfaceTab === "issues" && tabErrors.issues && !issues) {
+    body = <PaneNotice icon={CircleX} title="Issues did not load">{tabErrors.issues}</PaneNotice>;
+  } else if (surfaceTab === "issues" && !issues) {
+    body = <PaneNotice icon={LoaderCircle} title="Loading issues…" />;
+  } else if (surfaceTab === "issues" && issues?.length === 0) {
+    body = <PaneNotice icon={ListTodo} title="No open issues">This repository has no open issues.</PaneNotice>;
+  } else if (surfaceTab === "issues" && issues) {
+    body = <IssueList issues={issues} onOpen={number => void openIssue(number)} />;
+  } else if (tabErrors.repository && !repositoryOverview) {
+    body = <PaneNotice icon={CircleX} title="Repository did not load">{tabErrors.repository}</PaneNotice>;
+  } else if (!repositoryOverview) {
+    body = <PaneNotice icon={LoaderCircle} title="Loading repository…" />;
+  } else {
+    body = <RepositoryOverview overview={repositoryOverview} />;
   }
 
-  return <section className="relative flex h-full w-full flex-col" aria-label="GitHub pull requests">
-    <header className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3.5">
-      <GitPullRequest size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-      <span className="truncate text-[12px] font-medium text-foreground">Pull requests</span>
-      {repoLabel && <span className="truncate font-mono text-[11px] text-muted-foreground">{repoLabel}</span>}
+  return <section className="relative flex h-full w-full flex-col" aria-label="GitHub repository">
+    <header className="flex min-h-10 shrink-0 items-center gap-2 border-b border-border px-3.5">
+      <FolderGit2 size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+      {repoLabel && <span className="min-w-0 truncate font-mono text-[11px] text-muted-foreground">{repoLabel}</span>}
+      <nav className="u-segmented ml-auto flex shrink-0 p-0.5" aria-label="GitHub sections">
+        {([
+          ["pulls", "Pull requests", GitPullRequest],
+          ["issues", "Issues", ListTodo],
+          ["repository", "Repository", Info],
+        ] as const).map(([id, label, Icon]) => <button
+          key={id}
+          type="button"
+          aria-label={label}
+          aria-pressed={surfaceTab === id}
+          data-active={surfaceTab === id}
+          title={label}
+          onClick={() => { setSurfaceTab(id); setSelected(undefined); setSelectedIssue(undefined); }}
+          className="u-segmented-item grid size-6 place-items-center rounded-md text-muted-foreground"
+        ><Icon size={12} aria-hidden="true" /></button>)}
+      </nav>
       <button
         type="button"
-        onClick={() => { void loadList(); if (selected !== undefined) void openDetail(selected); }}
-        aria-label="Refresh pull requests"
+        onClick={() => { void loadSurface(); if (selected !== undefined) void openDetail(selected, true); if (selectedIssue !== undefined) void openIssue(selectedIssue, true); }}
+        aria-label="Refresh GitHub"
         title="Refresh"
-        className="ml-auto grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
       >
         <RefreshCw size={12.5} className={cn(refreshing && "animate-spin")} aria-hidden="true" />
       </button>
     </header>
+    {tabErrors[surfaceTab] && ((surfaceTab === "pulls" && prs) || (surfaceTab === "issues" && issues) || (surfaceTab === "repository" && repositoryOverview)) && <p role="alert" className="border-b border-border bg-warning/10 px-4 py-2 text-[11px] text-warning">Refresh failed: {tabErrors[surfaceTab]}</p>}
     {body}
   </section>;
 }
@@ -244,6 +357,91 @@ function PullRequestRow({ pr, onOpen }: { pr: PullRequestListItem; onOpen: () =>
   </button>;
 }
 
+function LabelBadge({ label }: { label: GithubLabel }) {
+  return <Badge variant="outline" size="sm" title={label.description || label.name}>{label.name}</Badge>;
+}
+
+function LabelControls({ available, current, disabled, onChange }: {
+  available: GithubLabel[];
+  current: GithubLabel[];
+  disabled: boolean;
+  onChange: (label: string, operation: "add" | "remove") => void;
+}) {
+  const selected = new Set(current.map(label => label.name));
+  return <div className="mt-2 grid gap-1 rounded-lg border border-border bg-card p-1.5" aria-label="Repository labels">
+    {available.length ? available.map(label => {
+      const active = selected.has(label.name);
+      return <button key={label.name} type="button" disabled={disabled} onClick={() => onChange(label.name, active ? "remove" : "add")} className="flex items-center gap-2 rounded-md px-2 py-1 text-left text-[11px] text-foreground transition-colors hover:bg-accent disabled:opacity-50">
+        <Tag size={11} className={active ? "text-primary" : "text-muted-foreground"} aria-hidden="true" />
+        <span className="min-w-0 flex-1 truncate">{label.name}</span>
+        <span className="text-[10px] text-muted-foreground">{active ? "Remove" : "Add"}</span>
+      </button>;
+    }) : <p className="px-2 py-1 text-[11px] text-muted-foreground">No repository labels.</p>}
+  </div>;
+}
+
+function PatchView({ patch }: { patch: string }) {
+  return <pre className="max-h-80 overflow-auto bg-background/50 py-2 font-mono text-[10.5px] leading-5" aria-label="File patch">{patch.split("\n").map((line, index) => <span key={`${index}-${line}`} className={cn("block whitespace-pre px-3", line.startsWith("+") && !line.startsWith("+++") && "bg-success/10 text-success", line.startsWith("-") && !line.startsWith("---") && "bg-destructive/10 text-destructive", line.startsWith("@@") && "bg-info/10 text-info")}>
+    {line || " "}
+  </span>)}</pre>;
+}
+
+function CommentList({ comments }: { comments: Array<{ id: string; author?: { login: string } | null; body: string; createdAt: string }> }) {
+  return <div className="space-y-2">{comments.map(comment => <article key={comment.id} className="rounded-lg border border-border bg-card px-3 py-2.5">
+    <p className="text-[11px] font-medium text-foreground">{comment.author?.login ?? "ghost"}</p>
+    <p className="mt-1 whitespace-pre-wrap text-[12px] leading-relaxed text-foreground/90">{comment.body}</p>
+  </article>)}</div>;
+}
+
+function ChecksList({ checks }: { checks: GithubChecksResult["checks"] }) {
+  return <section aria-label="Checks">
+    <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.1em] text-muted-foreground/65">CHECKS</h3>
+    {checks.length ? <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
+      {checks.map(check => {
+        const tone = checkTone(check.conclusion, check.status);
+        const ToneIcon = tone.icon;
+        return <div key={`${check.workflow}-${check.name}`} className="flex items-center gap-2.5 px-3 py-2">
+          <ToneIcon size={13.5} className={cn("shrink-0", tone.className)} aria-hidden="true" />
+          <span className="min-w-0 flex-1 truncate text-[12px] text-foreground">{check.name}</span>
+          <span className="shrink-0 text-[10.5px] text-muted-foreground">{check.conclusion ?? check.status}</span>
+          {check.logUrl && <a href={check.logUrl} target="_blank" rel="noreferrer" aria-label={`Open logs for ${check.name}`} title="Open logs" className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"><ExternalLink size={12.5} aria-hidden="true" /></a>}
+        </div>;
+      })}
+    </div> : <p className="text-[12px] text-muted-foreground">No checks reported.</p>}
+  </section>;
+}
+
+function IssueList({ issues, onOpen }: { issues: GithubIssuesResult["issues"]; onOpen: (number: number) => void }) {
+  return <div className="min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4">
+    <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
+      {issues.map(issue => <button key={issue.number} type="button" onClick={() => onOpen(issue.number)} className="flex w-full items-start gap-2.5 px-3 py-2.5 text-left transition-colors hover:bg-accent/50">
+        <CircleDot size={14} className="mt-0.5 shrink-0 text-success" aria-hidden="true" />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-[12.5px] font-medium text-foreground">{issue.title}</span>
+          <span className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground"><span>#{issue.number}</span><span>·</span><span>{issue.author?.login ?? "ghost"}</span></span>
+          {!!issue.labels.length && <span className="mt-1.5 flex flex-wrap gap-1">{issue.labels.map(label => <LabelBadge key={label.name} label={label} />)}</span>}
+        </span>
+      </button>)}
+    </div>
+  </div>;
+}
+
+function RepositoryOverview({ overview }: { overview: GithubRepositoryResult }) {
+  const facts = [
+    ["Default branch", overview.defaultBranch, GitBranch],
+    ["Language", overview.primaryLanguage ?? "Not reported", FileDiff],
+    ["Open issues", String(overview.openIssues), ListTodo],
+    ["Open pull requests", String(overview.openPullRequests), GitPullRequest],
+  ] as const;
+  return <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4">
+    <div className="u-glass-soft rounded-xl border border-border p-4">
+      <div className="flex items-start gap-3"><span className="grid size-9 shrink-0 place-items-center rounded-lg border border-border bg-card"><FolderGit2 size={16} aria-hidden="true" /></span><div className="min-w-0"><h2 className="truncate font-display text-base font-semibold text-foreground">{overview.nameWithOwner}</h2><p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">{overview.description || "No repository description."}</p></div><Badge variant="outline" size="sm">{overview.visibility.toLowerCase()}</Badge></div>
+      <div className="mt-4 grid grid-cols-2 gap-2">{facts.map(([label, value, Icon]) => <div key={label} className="rounded-lg border border-border bg-card px-3 py-2.5"><p className="flex items-center gap-1.5 text-[10.5px] text-muted-foreground"><Icon size={11} aria-hidden="true" />{label}</p><p className="mt-1 truncate font-mono text-[12px] text-foreground">{value}</p></div>)}</div>
+      <section className="mt-4"><h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.1em] text-muted-foreground/65">LABELS</h3><div className="flex flex-wrap gap-1.5">{overview.labels.length ? overview.labels.map(label => <LabelBadge key={label.name} label={label} />) : <p className="text-[12px] text-muted-foreground">No labels.</p>}</div></section>
+    </div>
+  </div>;
+}
+
 // ── Detail ───────────────────────────────────────────────────────────────────
 
 type PendingAction = { statement: string; requiresBody: boolean; build: (body: string) => GithubAction };
@@ -255,12 +453,13 @@ type PullRequestDetailProps = {
   number: number;
   detail?: Detail;
   error?: string;
+  availableLabels: GithubLabel[];
   onBack: () => void;
   onActed: () => void;
   onJumpToFile: (path: string, line: number | undefined, headBranch: string) => void;
 };
 
-function PullRequestDetail({ workspaceId, workspaceBranch, repository, number, detail, error, onBack, onActed, onJumpToFile }: PullRequestDetailProps) {
+function PullRequestDetail({ workspaceId, workspaceBranch, repository, number, detail, error, availableLabels, onBack, onActed, onJumpToFile }: PullRequestDetailProps) {
   const [pending, setPending] = useState<PendingAction>();
   const [pendingBody, setPendingBody] = useState("");
   const [mergeOpen, setMergeOpen] = useState(false);
@@ -270,9 +469,11 @@ function PullRequestDetail({ workspaceId, workspaceBranch, repository, number, d
   const [checkout, setCheckout] = useState<GithubCheckoutResult>();
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string>();
+  const [tab, setTab] = useState<PullRequestTab>("conversation");
+  const [labelsOpen, setLabelsOpen] = useState(false);
 
   const repoLabel = repository ? `${repository.owner}/${repository.name}` : "this repository";
-  const closeOverlays = () => { setPending(undefined); setPendingBody(""); setMergeOpen(false); setMergeConfig(undefined); setStrategy(undefined); setCheckoutOpen(false); };
+  const closeOverlays = () => { setPending(undefined); setPendingBody(""); setMergeOpen(false); setMergeConfig(undefined); setStrategy(undefined); setCheckoutOpen(false); setLabelsOpen(false); };
 
   // The only path that reaches `github/act`. A refused `gh` write surfaces its
   // message verbatim and leaves the PR untouched — no optimistic edit.
@@ -316,7 +517,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, repository, number, d
     </button>
   </div>;
 
-  if (error) return <div className="flex min-h-0 flex-1 flex-col">{header}<PaneNotice icon={CircleX} title={`Pull request #${number} did not load`}>{error}</PaneNotice></div>;
+  if (error && !detail) return <div className="flex min-h-0 flex-1 flex-col">{header}<PaneNotice icon={CircleX} title={`Pull request #${number} did not load`}>{error}</PaneNotice></div>;
   if (!detail) return <div className="flex min-h-0 flex-1 flex-col">{header}<PaneNotice icon={LoaderCircle} title={`Opening #${number}…`} /></div>;
 
   const { pullRequest, reviewThreads } = detail.result;
@@ -346,6 +547,22 @@ function PullRequestDetail({ workspaceId, workspaceBranch, repository, number, d
           {summary.headBranch} <span aria-hidden="true">→</span> {pullRequest.baseBranch}
           {checkedOutHere && <span className="ml-1.5 text-success">· checked out here</span>}
         </p>
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">
+          {pullRequest.labels.map(label => <LabelBadge key={label.name} label={label} />)}
+          <button type="button" onClick={() => setLabelsOpen(value => !value)} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+            <Tag size={10.5} aria-hidden="true" /> Manage labels
+          </button>
+        </div>
+        {labelsOpen && <LabelControls
+          available={availableLabels}
+          current={pullRequest.labels}
+          disabled={busy}
+          onChange={(label, operation) => setPending({
+            statement: `${operation === "add" ? "add" : "remove"} label ${JSON.stringify(label)} ${operation === "add" ? "to" : "from"} PR #${number} on ${repoLabel}`,
+            requiresBody: false,
+            build: () => ({ kind: "label", target: "pullRequest", number, label, operation }),
+          })}
+        />}
 
         {summary.state === "open" && <div className="mt-3 flex flex-wrap items-center gap-1.5">
           <button type="button" onClick={() => void openMerge()} disabled={busy} className="rounded-md border border-success/25 bg-success/10 px-2.5 py-1 text-[11.5px] font-medium text-success transition-colors hover:bg-success/20 disabled:opacity-50">Merge</button>
@@ -359,32 +576,49 @@ function PullRequestDetail({ workspaceId, workspaceBranch, repository, number, d
       </div>
 
       {actionError && <p role="alert" className="border-b border-border bg-destructive/10 px-4 py-2 text-[11.5px] text-destructive">{actionError}</p>}
+      {error && <p role="alert" className="border-b border-border bg-warning/10 px-4 py-2 text-[11.5px] text-warning">Live refresh failed: {error}</p>}
       {checkout && <p className="border-b border-border bg-success/10 px-4 py-2 text-[11.5px] text-success">
         {checkout.reused ? "Reusing the task worktree already on " : "Checked out into a task worktree on "}
         <span className="font-mono">{checkout.branch}</span>
         <span className="block truncate font-mono text-[10.5px] text-success/80" title={checkout.path}>{checkout.path}</span>
       </p>}
 
-      <div className="space-y-5 px-4 py-4">
-        <section aria-label="Checks">
-          <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.1em] text-muted-foreground/65">CHECKS</h3>
-          {detail.checks.checks.length ? <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
-            {detail.checks.checks.map(check => {
-              const tone = checkTone(check.conclusion, check.status);
-              const ToneIcon = tone.icon;
-              return <div key={`${check.workflow}-${check.name}`} className="flex items-center gap-2.5 px-3 py-2">
-                <ToneIcon size={13.5} className={cn("shrink-0", tone.className)} aria-hidden="true" />
-                <span className="min-w-0 flex-1 truncate text-[12px] text-foreground">{check.name}</span>
-                <span className="shrink-0 text-[10.5px] text-muted-foreground">{check.conclusion ?? check.status}</span>
-                {check.logUrl && <a href={check.logUrl} target="_blank" rel="noreferrer" aria-label={`Open logs for ${check.name}`} title="Open logs" className="shrink-0 text-muted-foreground transition-colors hover:text-foreground"><ExternalLink size={12.5} aria-hidden="true" /></a>}
-              </div>;
-            })}
-          </div> : <p className="text-[12px] text-muted-foreground">No checks reported.</p>}
-        </section>
+      <div className="sticky top-0 z-[1] flex border-b border-border bg-background/95 px-4" role="tablist" aria-label="Pull request detail">
+        {(["conversation", "changes", "checks"] as const).map(value => <button key={value} type="button" role="tab" aria-selected={tab === value} onClick={() => setTab(value)} className={cn("border-b-2 border-transparent px-2.5 py-2 text-[11.5px] capitalize text-muted-foreground", tab === value && "border-primary text-foreground")}>
+          {value}{value === "changes" ? ` ${pullRequest.changedFiles}` : value === "checks" ? ` ${detail.checks.checks.length}` : ""}
+        </button>)}
+      </div>
 
+      <div className="space-y-5 px-4 py-4">
+        {tab === "checks" && <ChecksList checks={detail.checks.checks} />}
+
+        {tab === "changes" && <section aria-label="Changed files">
+          <div className="mb-3 flex items-center gap-2 text-[11px] text-muted-foreground">
+            <FileDiff size={13} aria-hidden="true" />
+            <span>{pullRequest.changedFiles} changed files</span>
+            <span className="ml-auto font-mono text-success">+{pullRequest.additions}</span>
+            <span className="font-mono text-destructive">−{pullRequest.deletions}</span>
+          </div>
+          {detail.result.files.length ? <div className="space-y-3">{detail.result.files.map(file => <article key={file.path} className="overflow-hidden rounded-lg border border-border bg-card">
+            <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground">{file.path}</span>
+              <Badge variant="outline" size="sm">{file.status}</Badge>
+              <span className="font-mono text-[10.5px] text-success">+{file.additions}</span>
+              <span className="font-mono text-[10.5px] text-destructive">−{file.deletions}</span>
+            </div>
+            {file.patch ? <PatchView patch={file.patch} /> : <p className="px-3 py-4 text-center text-[11.5px] text-muted-foreground">Binary file or patch unavailable from GitHub.</p>}
+          </article>)}</div> : <p className="text-[12px] text-muted-foreground">No changed files reported.</p>}
+        </section>}
+
+        {tab === "conversation" && <>
         <section aria-label="Description">
           <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.1em] text-muted-foreground/65">DESCRIPTION</h3>
           <p className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-foreground/90">{pullRequest.body || "No description provided."}</p>
+        </section>
+
+        <section aria-label="Conversation comments">
+          <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.1em] text-muted-foreground/65">CONVERSATION</h3>
+          {pullRequest.comments.length ? <CommentList comments={pullRequest.comments} /> : <p className="text-[12px] text-muted-foreground">No conversation comments.</p>}
         </section>
 
         <section aria-label="Review threads">
@@ -429,6 +663,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, repository, number, d
             })}
           </div> : <p className="text-[12px] text-muted-foreground">No review threads.</p>}
         </section>
+        </>}
       </div>
     </div>
 
@@ -472,6 +707,62 @@ function PullRequestDetail({ workspaceId, workspaceBranch, repository, number, d
         </>}
       </div>
     </div>}
+  </div>;
+}
+
+function IssueDetail({ workspaceId, repository, number, detail, error, availableLabels, onBack, onActed }: {
+  workspaceId: string;
+  repository?: GithubRepository | null;
+  number: number;
+  detail?: GithubIssueResult;
+  error?: string;
+  availableLabels: GithubLabel[];
+  onBack: () => void;
+  onActed: () => void;
+}) {
+  const [pending, setPending] = useState<PendingAction>();
+  const [labelsOpen, setLabelsOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [actionError, setActionError] = useState<string>();
+  const repoLabel = repository ? `${repository.owner}/${repository.name}` : "this repository";
+  const header = <div className="flex shrink-0 items-center border-b border-border px-2 py-1.5"><button type="button" onClick={onBack} className="inline-flex items-center gap-1.5 rounded-md px-1.5 py-1 text-[11.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><ArrowLeft size={12.5} aria-hidden="true" /> All issues</button></div>;
+
+  const submit = async (action: GithubAction) => {
+    setBusy(true); setActionError(undefined);
+    try {
+      const outcome = await bridgeApi.githubAct(workspaceId, action, true);
+      if (!outcome.executed) { setActionError(outcome.message); return; }
+      setPending(undefined); setLabelsOpen(false); onActed();
+    } catch (value) {
+      setActionError(value instanceof Error ? value.message : String(value));
+    } finally { setBusy(false); }
+  };
+
+  if (error && !detail) return <div className="flex min-h-0 flex-1 flex-col">{header}<PaneNotice icon={CircleX} title={`Issue #${number} did not load`}>{error}</PaneNotice></div>;
+  if (!detail) return <div className="flex min-h-0 flex-1 flex-col">{header}<PaneNotice icon={LoaderCircle} title={`Opening issue #${number}…`} /></div>;
+  const { issue } = detail;
+
+  return <div className="relative flex min-h-0 flex-1 flex-col">
+    {header}
+    <div className="min-h-0 flex-1 overflow-y-auto">
+      <div className="border-b border-border px-4 py-3.5">
+        <div className="flex items-center gap-2 text-[11px] text-muted-foreground"><CircleDot size={13} className="text-success" aria-hidden="true" /><span>#{issue.summary.number}</span><span className="capitalize">{issue.summary.state}</span></div>
+        <h2 className="mt-1.5 font-display text-[15px] font-semibold leading-snug text-foreground">{issue.summary.title}</h2>
+        <p className="mt-1 text-[11px] text-muted-foreground">Opened by {issue.summary.author?.login ?? "ghost"}</p>
+        <div className="mt-2 flex flex-wrap items-center gap-1.5">{issue.summary.labels.map(label => <LabelBadge key={label.name} label={label} />)}<button type="button" onClick={() => setLabelsOpen(value => !value)} className="inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10.5px] text-muted-foreground hover:bg-accent hover:text-foreground"><Tag size={10.5} aria-hidden="true" /> Manage labels</button></div>
+        {labelsOpen && <LabelControls available={availableLabels} current={issue.summary.labels} disabled={busy} onChange={(label, operation) => setPending({
+          statement: `${operation === "add" ? "add" : "remove"} label ${JSON.stringify(label)} ${operation === "add" ? "to" : "from"} issue #${number} on ${repoLabel}`,
+          requiresBody: false,
+          build: () => ({ kind: "label", target: "issue", number, label, operation }),
+        })} />}
+      </div>
+      {actionError && <p role="alert" className="border-b border-border bg-destructive/10 px-4 py-2 text-[11.5px] text-destructive">{actionError}</p>}
+      <div className="space-y-5 px-4 py-4">
+        <section aria-label="Issue description"><h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.1em] text-muted-foreground/65">DESCRIPTION</h3><p className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-foreground/90">{issue.body || "No description provided."}</p></section>
+        <section aria-label="Issue comments"><h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.1em] text-muted-foreground/65">COMMENTS</h3>{issue.comments.length ? <CommentList comments={issue.comments} /> : <p className="text-[12px] text-muted-foreground">No comments.</p>}</section>
+      </div>
+    </div>
+    {pending && <ConfirmOverlay statement={pending.statement} requiresBody={false} body="" onBody={() => undefined} busy={busy} onCancel={() => setPending(undefined)} onConfirm={() => void submit(pending.build(""))} />}
   </div>;
 }
 

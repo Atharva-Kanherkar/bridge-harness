@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ciNotificationText, ciToastKey, jumpFallbackHint, rollupState } from "./githubSurface";
+import { checksNeedPolling, ciNotificationText, ciToastKey, jumpFallbackHint, rollupState } from "./githubSurface";
 
 const checks = (partial: Partial<{ total: number; queued: number; inProgress: number; passed: number; failed: number }>) => ({
   checks: { total: 0, queued: 0, inProgress: 0, passed: 0, failed: 0, skipped: 0, cancelled: 0, ...partial },
@@ -12,6 +12,15 @@ describe("rollupState", () => {
     expect(rollupState(checks({ queued: 1, total: 1 }))).toBe("running");
     expect(rollupState(checks({ passed: 2, total: 2 }))).toBe("passing");
     expect(rollupState(checks({}))).toBe("none");
+  });
+});
+
+describe("checksNeedPolling", () => {
+  it("polls only while at least one check is non-terminal", () => {
+    expect(checksNeedPolling([{ name: "build", status: "queued", conclusion: null, logUrl: "", workflow: "CI" }])).toBe(true);
+    expect(checksNeedPolling([{ name: "build", status: "inProgress", conclusion: null, logUrl: "", workflow: "CI" }])).toBe(true);
+    expect(checksNeedPolling([{ name: "build", status: "completed", conclusion: "success", logUrl: "", workflow: "CI" }])).toBe(false);
+    expect(checksNeedPolling([])).toBe(false);
   });
 });
 
