@@ -14,6 +14,8 @@ export type BridgeMethod =
   | "github/github_prs"
   | "github/github_pr"
   | "github/github_checks"
+  | "github/github_merge_config"
+  | "github/github_act"
   | "workspaces/create_workspace"
   | "workspaces/connect_workspace_folder"
   | "workspaces/list_workspace_files"
@@ -155,6 +157,8 @@ export const BRIDGE_METHODS = [
   { method: "github/github_prs", domain: "github", command: "github_prs" },
   { method: "github/github_pr", domain: "github", command: "github_pr" },
   { method: "github/github_checks", domain: "github", command: "github_checks" },
+  { method: "github/github_merge_config", domain: "github", command: "github_merge_config" },
+  { method: "github/github_act", domain: "github", command: "github_act" },
   { method: "workspaces/create_workspace", domain: "workspaces", command: "create_workspace" },
   { method: "workspaces/connect_workspace_folder", domain: "workspaces", command: "connect_workspace_folder" },
   { method: "workspaces/list_workspace_files", domain: "workspaces", command: "list_workspace_files" },
@@ -354,6 +358,8 @@ export interface BridgeMethodParams {
   "github/github_prs": GithubPrsParams;
   "github/github_pr": GithubPrParams;
   "github/github_checks": GithubChecksParams;
+  "github/github_merge_config": GithubMergeConfigParams;
+  "github/github_act": GithubActParams;
   "workspaces/create_workspace": CreateWorkspaceParams;
   "workspaces/connect_workspace_folder": ConnectWorkspaceFolderParams;
   "workspaces/list_workspace_files": ListWorkspaceFilesParams;
@@ -497,6 +503,8 @@ export interface BridgeMethodResults {
   "github/github_prs": GithubPullRequestsResult;
   "github/github_pr": GithubPullRequestResult;
   "github/github_checks": GithubChecksResult;
+  "github/github_merge_config": GithubMergeConfigResult;
+  "github/github_act": GithubActResult;
   "workspaces/create_workspace": BridgeState;
   "workspaces/connect_workspace_folder": BridgeState;
   "workspaces/list_workspace_files": ListWorkspaceFilesResult;
@@ -811,6 +819,8 @@ export type EvalKind = "deterministic" | "scrutiny" | "user_testing";
 
 export type ExternalLearningTriggerKind = "codex" | "claude" | "open_code";
 
+export type GithubAction = { kind: "merge"; number: number; strategy: MergeStrategy } | { body: string; event: ReviewEvent; kind: "review"; number: number } | { body: string; commentId: number; kind: "reply"; number: number } | { kind: "rerun"; number: number };
+
 export interface GithubActor {
   login: string;
 }
@@ -944,6 +954,14 @@ export interface MemoryRecord {
   supersedes?: string | null;
   updatedAt: string;
 }
+
+export interface MergeStrategies {
+  merge: boolean;
+  rebase: boolean;
+  squash: boolean;
+}
+
+export type MergeStrategy = "merge" | "squash" | "rebase";
 
 export type Mergeability = "mergeable" | "conflicting" | "unknown";
 
@@ -1146,6 +1164,8 @@ export interface ReviewComment {
 }
 
 export type ReviewDecision = "none" | "approved" | "changesRequested" | "reviewRequired";
+
+export type ReviewEvent = "approve" | "requestChanges" | "comment";
 
 export interface ReviewThread {
   comments: ReviewComment[];
@@ -1651,6 +1671,26 @@ export interface GithubChecksParams {
 
 export interface GithubChecksResult {
   checks: PullRequestCheck[];
+}
+
+export interface GithubMergeConfigParams {
+  workspaceId: string;
+}
+
+export interface GithubMergeConfigResult {
+  defaultStrategy: MergeStrategy;
+  strategies: MergeStrategies;
+}
+
+export interface GithubActParams {
+  action: GithubAction;
+  confirmed: boolean;
+  workspaceId: string;
+}
+
+export interface GithubActResult {
+  executed: boolean;
+  message: string;
 }
 
 export interface CreateWorkspaceParams {
