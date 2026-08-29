@@ -100,10 +100,11 @@ fn github_error(error: crate::github_surface::GithubSurfaceError) -> BridgeError
     BridgeError::Invalid(error.to_string())
 }
 
-pub fn github_status(core: &Arc<BridgeCore>, workspace_id: &str) -> Result<wire::GithubStatusResult, BridgeError> {
-    let availability = github_wire(core.github_surface.availability())?;
+pub fn github_status(core: &Arc<BridgeCore>, workspace_id: &str, refresh: bool) -> Result<wire::GithubStatusResult, BridgeError> {
+    let availability = github_wire(if refresh { core.github_surface.refresh_availability() } else { core.github_surface.availability() })?;
     let repository = if matches!(availability, wire::GithubAvailability::Available) {
         let path = locked_workspace_path(core, workspace_id)?;
+        if refresh { core.github_surface.invalidate_repository(Path::new(&path)); }
         core.github_surface.resolve_repository(Path::new(&path)).ok().map(github_wire).transpose()?
     } else { None };
     Ok(wire::GithubStatusResult { availability, repository })

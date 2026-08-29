@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GithubStatusParams {
     pub workspace_id: String,
+    #[serde(default)]
+    pub refresh: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -451,6 +453,10 @@ mod tests {
 
     #[test]
     fn github_read_payloads_use_camel_case_and_inert_data_shapes() {
+        let status_params = GithubStatusParams { workspace_id: "workspace-1".into(), refresh: true };
+        assert_eq!(serde_json::to_value(&status_params).unwrap(), json!({"workspaceId": "workspace-1", "refresh": true}));
+        assert_eq!(round_trip(&status_params), status_params);
+        assert_eq!(serde_json::from_value::<GithubStatusParams>(json!({"workspaceId": "workspace-1"})).unwrap().refresh, false);
         let params = GithubPrParams {
             workspace_id: "workspace-1".into(),
             number: 341,

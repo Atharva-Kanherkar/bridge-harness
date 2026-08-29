@@ -484,6 +484,16 @@ impl GithubSurface {
         refreshed
     }
 
+    pub fn invalidate_repository(&self, workspace: &Path) {
+        if let Ok(repository) = self.resolve_repository(workspace) {
+            let selector = repository.selector();
+            self.cache
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .retain(|key, _| key.repository != selector);
+        }
+    }
+
     fn require_binary(&self) -> Result<&Path, GithubSurfaceError> {
         let status = self.availability();
         if status != GithubAvailability::Available {
@@ -2527,6 +2537,19 @@ mod tests {
         let log = fs::read_to_string(fake.path().join("invocations.log")).unwrap();
         assert!(log.contains(&format!("--json {PR_LIST_FIELDS}")));
         assert!(log.contains(&format!("--json {PR_DETAIL_FIELDS}")));
+    }
+
+    #[test]
+    fn explicit_repository_refresh_bypasses_the_ttl_cache() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        surface.list_prs(repository.path()).unwrap();
+        surface.list_prs(repository.path()).unwrap();
+        assert_eq!(invocation_count(&fake, "pr list"), 1);
+        surface.invalidate_repository(repository.path());
+        surface.list_prs(repository.path()).unwrap();
+        assert_eq!(invocation_count(&fake, "pr list"), 2);
     }
 
     fn invocations(fake: &TempDir) -> String {

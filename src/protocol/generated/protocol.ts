@@ -1707,6 +1707,7 @@ export interface AddProjectParams {
 }
 
 export interface GithubStatusParams {
+  refresh?: boolean;
   workspaceId: string;
 }
 

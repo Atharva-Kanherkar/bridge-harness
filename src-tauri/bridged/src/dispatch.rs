@@ -37,7 +37,7 @@ pub fn dispatch(
 
         MethodName::GithubStatus => {
             let p: wire::GithubStatusParams = decode(method, params)?;
-            reply(api::github_status(core, &p.workspace_id))
+            reply(api::github_status(core, &p.workspace_id, p.refresh))
         }
         MethodName::GithubPullRequests => {
             let p: wire::GithubPrsParams = decode(method, params)?;

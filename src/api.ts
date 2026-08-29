@@ -702,8 +702,8 @@ function browserWorkBoard(): WorkBoard {
 }
 
 export const bridgeApi = {
-  githubStatus: (workspaceId: string): Promise<GithubStatusResult> =>
-    isTauri() ? call("github/github_status", { workspaceId }) : Promise.resolve(mockGithubStatus(workspaceId)),
+  githubStatus: (workspaceId: string, refresh = false): Promise<GithubStatusResult> =>
+    isTauri() ? call("github/github_status", { workspaceId, refresh }) : Promise.resolve(mockGithubStatus(workspaceId)),
   githubPullRequests: (workspaceId: string): Promise<GithubPullRequestsResult> =>
     isTauri() ? call("github/github_prs", { workspaceId }) : Promise.resolve(mockGithubPullRequests(workspaceId)),
   githubPullRequest: (workspaceId: string, number: number): Promise<GithubPullRequestResult> =>

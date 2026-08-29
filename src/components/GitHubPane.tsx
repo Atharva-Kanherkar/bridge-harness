@@ -116,10 +116,10 @@ export function GitHubPane({ workspaceId, workspaceBranch, intent, onJumpToFile 
   const refreshingChecks = useRef(false);
   useEffect(() => { alive.current = true; return () => { alive.current = false; }; }, []);
 
-  const loadSurface = useCallback(async () => {
+  const loadSurface = useCallback(async (fresh = false) => {
     setRefreshing(true);
     try {
-      const next = await bridgeApi.githubStatus(workspaceId);
+      const next = await bridgeApi.githubStatus(workspaceId, fresh);
       if (!alive.current) return;
       setStatus(next);
       setSurfaceError(undefined);
@@ -316,7 +316,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, intent, onJumpToFile 
       </nav>
       <button
         type="button"
-        onClick={() => { void loadSurface(); if (selected !== undefined) void openDetail(selected, true); if (selectedIssue !== undefined) void openIssue(selectedIssue, true); }}
+        onClick={() => { void loadSurface(true); if (selected !== undefined) void openDetail(selected, true); if (selectedIssue !== undefined) void openIssue(selectedIssue, true); }}
         aria-label="Refresh GitHub"
         title="Refresh"
         className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"

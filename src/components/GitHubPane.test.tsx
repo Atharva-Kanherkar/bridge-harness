@@ -148,11 +148,13 @@ describe("GitHubPane", () => {
 
   it("keeps loaded content visible when a refresh fails", async () => {
     const list = mockReads();
+    const statusRead = vi.mocked(bridgeApi.githubStatus);
     await mount();
     list.mockRejectedValueOnce(new Error("temporary GitHub outage"));
     await click(host!.querySelector('button[aria-label="Refresh GitHub"]') as HTMLButtonElement);
     expect(host!.textContent).toContain("Safe GitHub surface");
     expect(host!.textContent).toContain("Refresh failed: temporary GitHub outage");
+    expect(statusRead).toHaveBeenLastCalledWith("w", true);
   });
 
   it("renders explicit unavailable, sign-in, empty, and error states", async () => {
