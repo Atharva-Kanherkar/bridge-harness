@@ -43,6 +43,11 @@ methods![
     (GetState, "state", "get_state"),
     // projects
     (AddProject, "projects", "add_project"),
+    // github — read-only repository pull-request surface
+    (GithubStatus, "github", "github_status"),
+    (GithubPullRequests, "github", "github_prs"),
+    (GithubPullRequest, "github", "github_pr"),
+    (GithubChecks, "github", "github_checks"),
     // workspaces
     (CreateWorkspace, "workspaces", "create_workspace"),
     (ConnectWorkspaceFolder, "workspaces", "connect_workspace_folder"),

@@ -23,6 +23,10 @@ import type {
   WorkTask,
   WorkTaskDraft,
   WriteWorkspaceFileResult,
+  GithubChecksResult,
+  GithubPullRequestResult,
+  GithubPullRequestsResult,
+  GithubStatusResult,
   SuggestCompletionResult,
   SuggestionSettings,
   SuggestionSettingsSnapshot,
@@ -680,6 +684,14 @@ function browserWorkBoard(): WorkBoard {
 }
 
 export const bridgeApi = {
+  githubStatus: (workspaceId: string): Promise<GithubStatusResult> =>
+    isTauri() ? call("github/github_status", { workspaceId }) : Promise.resolve(mockGithubStatus(workspaceId)),
+  githubPullRequests: (workspaceId: string): Promise<GithubPullRequestsResult> =>
+    isTauri() ? call("github/github_prs", { workspaceId }) : Promise.resolve(mockGithubPullRequests(workspaceId)),
+  githubPullRequest: (workspaceId: string, number: number): Promise<GithubPullRequestResult> =>
+    isTauri() ? call("github/github_pr", { workspaceId, number }) : Promise.resolve(mockGithubPullRequest(workspaceId, number)),
+  githubChecks: (workspaceId: string, number: number): Promise<GithubChecksResult> =>
+    isTauri() ? call("github/github_checks", { workspaceId, number }) : Promise.resolve(mockGithubChecks(workspaceId, number)),
   browserBridgeState: (): Promise<BrowserBridgeSnapshot> => isTauri() ? call("browser/browser_bridge_state") as Promise<BrowserBridgeSnapshot> : Promise.resolve(structuredClone(mockBrowserBridge)),
   installBrowserNativeHost: async (): Promise<string> => {
     if (isTauri()) return call("browser/install_browser_native_host");
@@ -1500,6 +1512,20 @@ const mockFiles = new Map<string, string>([
   ["src-tauri/bridge-core/src/policy.rs", "pub fn allow(path: &str, owner: &str) -> bool {\n    !path.is_empty() && !owner.is_empty()\n}\n"],
   ["scripts/prepare-daemon.sh", "#!/bin/sh\nset -eu\ncargo build --release --bin bridged\n"],
 ]);
+
+const mockGithubPullRequests = (_workspaceId: string): GithubPullRequestsResult => ({
+  pullRequests: [
+    { number: 341, title: "Render the native GitHub read surface", state: "open", isDraft: false, author: { login: "atharva" }, headBranch: "feat/github-read-surface", reviewDecision: "reviewRequired", mergeability: "mergeable", mergeStateStatus: "CLEAN", checks: { total: 2, queued: 0, inProgress: 0, passed: 2, failed: 0, skipped: 0, cancelled: 0 }, url: "https://github.com/Atharva-Kanherkar/bridge-harness/pull/341" },
+    { number: 340, title: "Add the deterministic gh reader", state: "open", isDraft: false, author: { login: "bridge" }, headBranch: "feat/github-surface-core", reviewDecision: "approved", mergeability: "mergeable", mergeStateStatus: "CLEAN", checks: { total: 2, queued: 0, inProgress: 0, passed: 1, failed: 1, skipped: 0, cancelled: 0 }, url: "https://github.com/Atharva-Kanherkar/bridge-harness/pull/340" },
+  ],
+});
+
+const mockGithubStatus = (_workspaceId: string): GithubStatusResult => ({ availability: { status: "available" }, repository: { host: "github.com", owner: "Atharva-Kanherkar", name: "bridge-harness" } });
+const mockGithubChecks = (_workspaceId: string, number: number): GithubChecksResult => ({ checks: [{ name: "test", status: "completed", conclusion: number === 340 ? "failure" : "success", logUrl: "https://github.com/Atharva-Kanherkar/bridge-harness/actions", workflow: "CI" }] });
+const mockGithubPullRequest = (workspaceId: string, number: number): GithubPullRequestResult => {
+  const summary = mockGithubPullRequests(workspaceId).pullRequests.find(pr => pr.number === number) ?? mockGithubPullRequests(workspaceId).pullRequests[0];
+  return { pullRequest: { summary, body: "GitHub content remains plain text, including <script>alert('inert')</script>.", baseBranch: "main" }, reviewThreads: [{ id: "thread-1", isResolved: false, isOutdated: false, path: "src/api.ts", line: 42, originalLine: null, comments: [{ id: "comment-1", databaseId: 1, author: { login: "reviewer" }, body: "Please keep <b>remote HTML</b> inert.", createdAt: now, url: summary.url, replyToId: null }] }] };
+};
 
 /** Not SHA-256 — just a stable content token with the same conflict semantics. */
 function mockHash(content: string): string {

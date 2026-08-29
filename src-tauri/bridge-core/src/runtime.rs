@@ -72,6 +72,9 @@ pub struct BridgeCore {
     pub skill_consents: Arc<Mutex<HashMap<String, skill_marketplace::SkillConsent>>>,
     pub credential_broker: Arc<credential_broker::CredentialBroker>,
     pub browser_bridge: Arc<browser_bridge::BrowserBridgeSupervisor>,
+    /// Read-only `gh` CLI surface. It owns no credentials and is deliberately
+    /// separate from model adapters and their sidecars.
+    pub github_surface: crate::github_surface::GithubSurface,
     /// Last time each session produced adapter output, used by the worker
     /// stall watchdog to detect a live-but-silent worker. Monotonic, in-memory
     /// only — process death is already handled by the reader-thread EOF path.
@@ -274,6 +277,7 @@ impl BridgeCore {
                 scratch.join("no-extension"),
                 scratch.join("browser-site-metrics.json"),
             ),
+            github_surface: crate::github_surface::GithubSurface::unavailable_for_tests(),
             worker_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
             events: EventBus::new(),
@@ -377,6 +381,7 @@ impl BridgeCore {
             skill_consents: Arc::new(Mutex::new(HashMap::new())),
             credential_broker,
             browser_bridge,
+            github_surface: crate::github_surface::GithubSurface::discover(),
             worker_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
             events,

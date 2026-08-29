@@ -35,6 +35,23 @@ pub fn dispatch(
         MethodName::Health => reply(api::health(core)),
         MethodName::GetState => reply(api::get_state(core)),
 
+        MethodName::GithubStatus => {
+            let p: wire::GithubStatusParams = decode(method, params)?;
+            reply(api::github_status(core, &p.workspace_id))
+        }
+        MethodName::GithubPullRequests => {
+            let p: wire::GithubPrsParams = decode(method, params)?;
+            reply(api::github_prs(core, &p.workspace_id))
+        }
+        MethodName::GithubPullRequest => {
+            let p: wire::GithubPrParams = decode(method, params)?;
+            reply(api::github_pr(core, &p.workspace_id, p.number))
+        }
+        MethodName::GithubChecks => {
+            let p: wire::GithubChecksParams = decode(method, params)?;
+            reply(api::github_checks(core, &p.workspace_id, p.number))
+        }
+
         MethodName::AddProject => {
             let p: wire::AddProjectParams = decode(method, params)?;
             reply(api::add_project(core, &p.path))

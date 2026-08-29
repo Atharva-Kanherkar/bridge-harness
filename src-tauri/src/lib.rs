@@ -16,7 +16,7 @@ use bridge_core::{
     agent_config, automations, browser_bridge, marketplace, opencode_adapter,
     prompt_studio, secret_interception, skill_marketplace, slash,
 };
-use bridge_protocol::messages::{CarrySessionHandoffResult, PromptTargetChoice};
+use bridge_protocol::messages::{self as wire, CarrySessionHandoffResult, PromptTargetChoice};
 use bridge_core::{start_health_server, BootConfig, BridgeCore, BridgeError};
 use std::{
     path::PathBuf,
@@ -44,6 +44,30 @@ where
 #[tauri::command]
 async fn health(state: State<'_, Arc<BridgeCore>>) -> Result<api::Health, BridgeError> {
     api::health(state.inner())
+}
+
+#[tauri::command]
+async fn github_status(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubStatusResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub status", move || api::github_status(&core, &workspace_id)).await
+}
+
+#[tauri::command]
+async fn github_prs(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubPullRequestsResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub pull-request list", move || api::github_prs(&core, &workspace_id)).await
+}
+
+#[tauri::command]
+async fn github_pr(workspace_id: String, number: u64, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubPullRequestResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub pull request", move || api::github_pr(&core, &workspace_id, number)).await
+}
+
+#[tauri::command]
+async fn github_checks(workspace_id: String, number: u64, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubChecksResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub checks", move || api::github_checks(&core, &workspace_id, number)).await
 }
 
 #[tauri::command]
@@ -1648,6 +1672,10 @@ pub fn run() {
     let embedded_commands: Box<dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync> =
         Box::new(tauri::generate_handler![
             health,
+            github_status,
+            github_prs,
+            github_pr,
+            github_checks,
             browser_bridge_state,
             install_browser_native_host,
             browser_action,
@@ -2202,11 +2230,12 @@ mod tests {
                 _ => ParameterShape::String,
             },
             "bool" => ParameterShape::Boolean,
-            "i64" | "u16" | "u32" => ParameterShape::Integer(
+            "i64" | "u16" | "u32" | "u64" => ParameterShape::Integer(
                 match leaf {
                     "i64" => "int64",
                     "u16" => "uint16",
                     "u32" => "uint32",
+                    "u64" => "uint64",
                     _ => unreachable!(),
                 }
                 .into(),

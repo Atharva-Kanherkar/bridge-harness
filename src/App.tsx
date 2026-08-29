@@ -1662,6 +1662,7 @@ function AppContent() {
       onCloseMobile={() => setNavOpen(false)}
       chats={topSessions}
       workspaces={state.workspaces}
+      workspaceId={workspace?.id}
       activeSessionId={session?.id}
       projectsActive={view === "projects"}
       automationsActive={view === "automations"}
