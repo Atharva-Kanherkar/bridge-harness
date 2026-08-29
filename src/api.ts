@@ -23,7 +23,10 @@ import type {
   WorkTask,
   WorkTaskDraft,
   WriteWorkspaceFileResult,
+  GithubAction,
+  GithubActResult,
   GithubChecksResult,
+  GithubMergeConfigResult,
   GithubPullRequestResult,
   GithubPullRequestsResult,
   GithubStatusResult,
@@ -701,6 +704,10 @@ export const bridgeApi = {
     isTauri() ? call("github/github_pr", { workspaceId, number }) : Promise.resolve(mockGithubPullRequest(workspaceId, number)),
   githubChecks: (workspaceId: string, number: number): Promise<GithubChecksResult> =>
     isTauri() ? call("github/github_checks", { workspaceId, number }) : Promise.resolve(mockGithubChecks(workspaceId, number)),
+  githubMergeConfig: (workspaceId: string): Promise<GithubMergeConfigResult> =>
+    isTauri() ? call("github/github_merge_config", { workspaceId }) : Promise.resolve(mockGithubMergeConfig()),
+  githubAct: (workspaceId: string, action: GithubAction, confirmed: boolean): Promise<GithubActResult> =>
+    isTauri() ? call("github/github_act", { workspaceId, action, confirmed }) : Promise.resolve(mockGithubAct(action, confirmed)),
   browserBridgeState: (): Promise<BrowserBridgeSnapshot> => isTauri() ? call("browser/browser_bridge_state") as Promise<BrowserBridgeSnapshot> : Promise.resolve(structuredClone(mockBrowserBridge)),
   installBrowserNativeHost: async (): Promise<string> => {
     if (isTauri()) return call("browser/install_browser_native_host");
@@ -1535,6 +1542,9 @@ const mockGithubPullRequests = (_workspaceId: string): GithubPullRequestsResult 
 });
 
 const mockGithubStatus = (_workspaceId: string): GithubStatusResult => ({ availability: { status: "available" }, repository: { host: "github.com", owner: "Atharva-Kanherkar", name: "bridge-harness" } });
+const mockGithubMergeConfig = (): GithubMergeConfigResult => ({ strategies: { merge: true, squash: true, rebase: false }, defaultStrategy: "squash" });
+const mockGithubAct = (action: GithubAction, confirmed: boolean): GithubActResult =>
+  confirmed ? { executed: true, message: `Ran ${action.kind}.` } : { executed: false, message: `Declined: ${action.kind}` };
 const mockGithubChecks = (_workspaceId: string, number: number): GithubChecksResult => ({ checks: [{ name: "test", status: "completed", conclusion: number === 340 ? "failure" : "success", logUrl: "https://github.com/Atharva-Kanherkar/bridge-harness/actions", workflow: "CI" }] });
 const mockGithubPullRequest = (workspaceId: string, number: number): GithubPullRequestResult => {
   const summary = mockGithubPullRequests(workspaceId).pullRequests.find(pr => pr.number === number) ?? mockGithubPullRequests(workspaceId).pullRequests[0];
