@@ -6,6 +6,7 @@
   "isDraft": false,
   "author": { "login": "review-author" },
   "headRefName": "fix/review",
+  "headRefOid": "current-head-sha",
   "baseRefName": "main",
   "reviewDecision": "CHANGES_REQUESTED",
   "mergeable": "CONFLICTING",

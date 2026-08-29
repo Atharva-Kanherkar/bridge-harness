@@ -1,5 +1,5 @@
 [
   { "databaseId": 42, "status": "completed", "conclusion": "failure" },
   { "databaseId": 43, "status": "completed", "conclusion": "success" },
-  { "databaseId": 44, "status": "in_progress", "conclusion": "" }
+  { "databaseId": 44, "status": "in_progress", "conclusion": null }
 ]

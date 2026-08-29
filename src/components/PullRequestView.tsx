@@ -65,7 +65,9 @@ export function PullRequestView({ workspaceId, repository, result, checks, onAct
 
   const allowed = (config: GithubMergeConfigResult): MergeStrategy[] =>
     (["merge", "squash", "rebase"] as const).filter(name => config.strategies[name]);
-  const failing = checks.checks.some(check => check.conclusion === "failure");
+  const rerunnable = checks.checks.some(check =>
+    check.conclusion === "failure" || check.conclusion === "timedOut" || check.conclusion === "startupFailure"
+  );
 
   return <section className="u-glass-popover fixed inset-y-3 right-3 z-50 flex w-[min(42rem,calc(100vw-1.5rem))] flex-col overflow-hidden rounded-xl border border-border shadow-2xl" aria-label={`Pull request #${number}`}>
     <header className="flex items-start gap-3 border-b border-border px-4 py-3">
@@ -77,7 +79,7 @@ export function PullRequestView({ workspaceId, repository, result, checks, onAct
       <button type="button" onClick={() => void openMerge()} disabled={busy} className="rounded-md bg-success/15 px-2.5 py-1 text-xs font-medium text-success hover:bg-success/25 disabled:opacity-50">Merge</button>
       <button type="button" onClick={() => setPending({ statement: `submit approval on PR #${number} on ${repoLabel}`, requiresBody: false, build: () => ({ kind: "review", number, event: "approve", body: "" }) })} disabled={busy} className="rounded-md bg-accent px-2.5 py-1 text-xs font-medium hover:bg-accent/70 disabled:opacity-50">Approve</button>
       <button type="button" onClick={() => setPending({ statement: `submit requested changes on PR #${number} on ${repoLabel}`, requiresBody: true, build: body => ({ kind: "review", number, event: "requestChanges", body }) })} disabled={busy} className="rounded-md bg-accent px-2.5 py-1 text-xs font-medium hover:bg-accent/70 disabled:opacity-50">Request changes</button>
-      {failing && <button type="button" onClick={() => setPending({ statement: `re-run failed checks on PR #${number} on ${repoLabel}`, requiresBody: false, build: () => ({ kind: "rerun", number }) })} disabled={busy} className="rounded-md bg-accent px-2.5 py-1 text-xs font-medium hover:bg-accent/70 disabled:opacity-50">Re-run failed checks</button>}
+      {rerunnable && <button type="button" onClick={() => setPending({ statement: `re-run failed checks on PR #${number} on ${repoLabel}`, requiresBody: false, build: () => ({ kind: "rerun", number }) })} disabled={busy} className="rounded-md bg-accent px-2.5 py-1 text-xs font-medium hover:bg-accent/70 disabled:opacity-50">Re-run failed checks</button>}
     </div>}
 
     {error && <p role="alert" className="border-b border-border bg-destructive/10 px-4 py-2 text-xs text-destructive">{error}</p>}
@@ -91,7 +93,7 @@ export function PullRequestView({ workspaceId, repository, result, checks, onAct
       })}</div> : <p className="text-muted-foreground">No review threads.</p>}</section>
     </div>
 
-    {pending && <ConfirmOverlay statement={pending.statement} requiresBody={pending.requiresBody} body={pendingBody} onBody={setPendingBody} busy={busy} onCancel={closeOverlays} onConfirm={() => void submit(pending.build(pendingBody.trim()))} />}
+    {pending && <ConfirmOverlay statement={pending.statement} requiresBody={pending.requiresBody} body={pendingBody} onBody={setPendingBody} busy={busy} onCancel={closeOverlays} onConfirm={() => void submit(pending.build(pendingBody))} />}
 
     {mergeOpen && <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/70 p-4" role="dialog" aria-label="Confirm merge">
       <div className="u-glass-popover w-full max-w-sm rounded-xl border border-border p-4 shadow-2xl">

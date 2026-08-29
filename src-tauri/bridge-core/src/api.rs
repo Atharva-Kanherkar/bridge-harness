@@ -156,14 +156,17 @@ pub fn github_act(
     let path = locked_workspace_path(core, workspace_id)?;
     let workspace = Path::new(&path);
     let is_rerun = matches!(action, crate::github_surface::GithubAction::Rerun { .. });
-    let message = core.github_surface.act(workspace, &action).map_err(github_error)?;
+    let outcome = core.github_surface.act(workspace, &action);
     // A re-run makes the checks queue again; re-list so the slice-3 poller picks
     // the PR back up and the rollup returns to "running" without a manual nudge.
+    // This also runs after a partial rerun failure: one run may already be
+    // queued even if a later `gh run rerun` is refused.
     if is_rerun {
         if let Ok(summaries) = core.github_surface.list_prs(workspace) {
             core.github_poller.watch(workspace_id, workspace.to_path_buf(), &summaries);
         }
     }
+    let message = outcome.map_err(github_error)?;
     Ok(wire::GithubActResult { executed: true, message })
 }
 
