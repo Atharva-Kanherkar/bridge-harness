@@ -25,7 +25,8 @@ are already on `main`; this slice only adds write paths and their confirmation c
   config, exactly as the read surface already resolves it.
 - **Merge default strategy.** GitHub's REST API does not expose a per-repo *default*
   merge method, only which are *allowed*. Bridge preselects `squash` when allowed, else
-  `merge`, else `rebase` — the community-common default — and documents this.
+  `merge`, else `rebase` — the community-common default. A response that allows none is
+  an unavailable configuration, never a fabricated merge choice.
 - **Reply attribution.** This surface posts *ordinary user replies* (typed into the
   composer) verbatim — they are untouched, per the issue. The automated
   `_Created by [Claude](https://claude.com/claude-code)_` sign-off applies to the
@@ -36,7 +37,8 @@ are already on `main`; this slice only adds write paths and their confirmation c
 - `github/merge_config { workspaceId }` → `{ strategies: { merge, squash, rebase }, defaultStrategy }`.
   - Reads `gh api repos/{owner}/{name}` (`--hostname` for non-github.com), maps
     `allow_merge_commit` / `allow_squash_merge` / `allow_rebase_merge`.
-  - `defaultStrategy` = squash if allowed, else merge, else rebase.
+  - `defaultStrategy` = squash if allowed, else merge, else rebase. No allowed strategy
+    returns a clear typed configuration error.
 - `github/act { workspaceId, action, confirmed }` → `{ executed, message }`.
   - `confirmed == false` → `{ executed: false, message: "Declined: <statement>" }`, **zero `gh` spawns**.
   - `action = merge { number, strategy }` → `gh pr merge <n> --repo <sel> --{merge|squash|rebase}`.
@@ -45,11 +47,13 @@ are already on `main`; this slice only adds write paths and their confirmation c
     - `requestChanges` → `gh pr review <n> --repo <sel> --request-changes --body <body>`.
     - `comment` → `gh pr review <n> --repo <sel> --comment --body <body>`.
   - `action = reply { number, commentId, body }` →
-    `gh api --method POST repos/{owner}/{name}/pulls/{n}/comments/{commentId}/replies -f body=<body>`.
-  - `action = rerun { number }` → resolve head branch, `gh run list --repo <sel> --branch <head>
+    `gh api [--hostname <host>] --method POST repos/{owner}/{name}/pulls/{n}/comments/{commentId}/replies -f body=<body>`;
+    typed reply text is passed through verbatim.
+  - `action = rerun { number }` → resolve the current PR head SHA, `gh run list --repo <sel> --commit <sha>
     --json databaseId,status,conclusion --limit 20`, then `gh run rerun <id> --repo <sel> --failed`
-    for each run whose conclusion is a failure. No failed runs → `{ executed: true, message: "No failed runs to re-run." }`, no rerun spawn.
-  - After a successful rerun, the surface re-arms slice-3 polling for the PR
+    for each run whose conclusion is a failure. Only runs for the current head commit are eligible; a
+    `null` conclusion is an active run, not a parser failure. No failed runs → `{ executed: true, message: "No failed runs to re-run." }`, no rerun spawn.
+  - After a rerun attempt, the surface invalidates cached PR resources and re-arms slice-3 polling for the PR
     (re-list + `GithubPoller::watch`) so the rollup flips back to "running" and is watched.
 - Every `gh` write is an argv array; identifiers come from workspace state or prior `gh` JSON, never interpolated into a shell.
 
@@ -64,7 +68,10 @@ branch on `pr merge` / `pr review` / `api ... replies` / `run list` / `run rerun
   branch-protection stderr; `GithubSurfaceError::CommandFailed` carries the stderr unchanged; no retry (single `pr merge` invocation).
 - `review_builds_the_correct_event_argv` — approve omits `--body` when empty; request-changes includes `--request-changes --body`; comment includes `--comment --body`.
 - `reply_posts_to_the_review_comment_replies_endpoint` — argv targets `.../comments/<id>/replies` with `-f body=`.
-- `rerun_acts_only_on_failed_runs` — `run list` fixture with one failed + one passing run ⇒ exactly one `run rerun <failedId> --failed`; a fixture with no failed runs ⇒ zero `run rerun` spawns.
+- `reply_uses_workspace_hostname_for_github_enterprise` — a GHES remote sends `gh api --hostname <host>`.
+- `completed_action_invalidates_all_cached_pull_request_resources` — an immediate list/detail/check/thread refresh runs fresh `gh` reads after a write.
+- `rerun_acts_only_on_failed_runs` — `run list` fixture with one current-head failed + one passing + one active-null run ⇒ exactly one `run rerun <failedId> --failed`; a fixture with no failed runs ⇒ zero `run rerun` spawns.
+- `rerun_skips_stale_branch_runs_and_refreshes_after_partial_failure` — old-head runs are ignored; if a later rerun refusal follows an earlier success, caches still invalidate and polling re-arms.
 
 `github_policy`:
 
@@ -101,8 +108,9 @@ Protocol (`bridge-protocol`):
 - `a gh refusal renders verbatim` — `githubAct` rejects with a branch-protection message ⇒
   the exact text appears in the panel; PR state is not mutated optimistically.
 - `reply composer submits the reply action` — type into a thread's composer, confirm ⇒
-  `githubAct` called with `{ kind:"reply", number, commentId, body }`.
+  `githubAct` called with `{ kind:"reply", number, commentId, body }`, preserving leading and trailing whitespace.
 - `approve and request-changes submit the review action` — request-changes requires a body.
+- `re-run is offered for any rerunnable terminal conclusion` — failures, timeouts, and startup failures are actionable.
 
 `src/components/GitHubPanel.test.tsx` (existing) stays green.
 
