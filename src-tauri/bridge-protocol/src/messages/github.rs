@@ -270,11 +270,56 @@ pub struct GithubActResult {
     pub message: String,
 }
 
+// --- checkout into a task worktree (slice 5) --------------------------------
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GithubCheckoutParams {
+    pub workspace_id: String,
+    pub number: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubCheckoutResult {
+    /// The workspace node the checkout registered (or found) — always distinct
+    /// from the source workspace the PR was viewed from.
+    pub workspace_id: String,
+    pub path: String,
+    pub branch: String,
+    /// `true` when a previous checkout's worktree/node was reused.
+    pub reused: bool,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::messages::common::round_trip;
     use serde_json::json;
+
+    #[test]
+    fn github_checkout_payloads_round_trip_camel_case_and_reject_unknown_fields() {
+        let params = GithubCheckoutParams {
+            workspace_id: "workspace-1".into(),
+            number: 344,
+        };
+        assert_eq!(
+            serde_json::to_value(&params).unwrap(),
+            json!({"workspaceId": "workspace-1", "number": 344})
+        );
+        assert_eq!(round_trip(&params), params);
+        assert!(serde_json::from_value::<GithubCheckoutParams>(
+            json!({"workspaceId": "w", "number": 1, "extra": true})
+        )
+        .is_err());
+        let result = GithubCheckoutResult {
+            workspace_id: "workspace-2".into(),
+            path: "/data/worktrees/github/pr-344-feat-x".into(),
+            branch: "feat/x".into(),
+            reused: true,
+        };
+        assert_eq!(round_trip(&result), result);
+    }
 
     #[test]
     fn github_read_payloads_use_camel_case_and_inert_data_shapes() {

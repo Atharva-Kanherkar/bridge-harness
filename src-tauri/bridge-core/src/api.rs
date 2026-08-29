@@ -170,6 +170,51 @@ pub fn github_act(
     Ok(wire::GithubActResult { executed: true, message })
 }
 
+/// Check a PR's head branch out into a task worktree of its own — a new
+/// workspace node beside the source workspace, never a mutation of it. The
+/// resolved PR data (head branch, title) comes from the surface, not the
+/// client, so a stale panel cannot check out the wrong branch.
+pub fn github_checkout(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+    number: u64,
+) -> Result<wire::GithubCheckoutResult, BridgeError> {
+    let path = locked_workspace_path(core, workspace_id)?;
+    let workspace = Path::new(&path);
+    let detail = core
+        .github_surface
+        .pr_detail(workspace, number)
+        .map_err(github_error)?;
+    let head_branch = detail.summary.head_branch.clone();
+    let title = detail.summary.title.clone();
+    let remote = crate::github_surface::resolve_remote_name(workspace);
+    let project_id: Option<String> = core.db.lock().unwrap().query_row(
+        "SELECT project_id FROM workspaces WHERE id=?1",
+        params![workspace_id],
+        |row| row.get(0),
+    )?;
+    let checkout = crate::worktree_coordinator::WorktreeCoordinator::checkout_pull_request(
+        &core.db,
+        &core.worktrees,
+        workspace,
+        &remote,
+        number,
+        &head_branch,
+        &title,
+        project_id.as_deref(),
+    )?;
+    if !checkout.reused {
+        // A new node in the workspace tree; every client refetches state.
+        core.events.publish(CoreEvent::StateChanged);
+    }
+    Ok(wire::GithubCheckoutResult {
+        workspace_id: checkout.workspace_id,
+        path: checkout.path.to_string_lossy().into_owned(),
+        branch: checkout.branch,
+        reused: checkout.reused,
+    })
+}
+
 // --- verified catalog --------------------------------------------------------
 
 /// The Bridge Verified catalog in force, and how it came to be trusted.

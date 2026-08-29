@@ -155,6 +155,7 @@ typed_methods![
     (GithubChecks, GithubChecksParams, GithubChecksResult),
     (GithubMergeConfig, GithubMergeConfigParams, GithubMergeConfigResult),
     (GithubAct, GithubActParams, GithubActResult),
+    (GithubCheckout, GithubCheckoutParams, GithubCheckoutResult),
     // workspaces
     (CreateWorkspace, CreateWorkspaceParams, BridgeState),
     (ConnectWorkspaceFolder, ConnectWorkspaceFolderParams, BridgeState),

@@ -50,6 +50,7 @@ methods![
     (GithubChecks, "github", "github_checks"),
     (GithubMergeConfig, "github", "github_merge_config"),
     (GithubAct, "github", "github_act"),
+    (GithubCheckout, "github", "github_checkout"),
     // workspaces
     (CreateWorkspace, "workspaces", "create_workspace"),
     (ConnectWorkspaceFolder, "workspaces", "connect_workspace_folder"),

@@ -1396,6 +1396,15 @@ fn branch_remote_candidates(workspace: &Path) -> Vec<String> {
     remotes
 }
 
+/// The remote a PR checkout fetches from: the branch's push/upstream remote
+/// when one is configured, falling back to `origin`.
+pub fn resolve_remote_name(workspace: &Path) -> String {
+    branch_remote_candidates(workspace)
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| "origin".to_owned())
+}
+
 fn repository_for_remote(workspace: &Path, remote: &str) -> Option<GithubRepository> {
     let url = git_stdout(workspace, ["remote", "get-url", "--push", remote])
         .or_else(|| git_stdout(workspace, ["remote", "get-url", remote]))?;
