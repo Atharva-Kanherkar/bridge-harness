@@ -84,7 +84,8 @@
         "file_changes",
         "approvals",
         "usage",
-        "history"
+        "history",
+        "interrupt"
       ],
       "sandboxModes": [
         "read_only",

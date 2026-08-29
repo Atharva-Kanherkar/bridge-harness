@@ -96,11 +96,12 @@ const CLAUDE_CAPABILITIES: &[&str] = &[
 const OPENCODE_CAPABILITIES: &[&str] = CODEX_CAPABILITIES;
 
 /// Cursor is reached through the shared ACP client, so its surface is whatever
-/// that client normalizes. `interrupt` is absent from neither list by accident:
-/// it is here, and image attachments are not, because the client sends a text
-/// content block and advertising more than it sends would route an image turn
-/// into a refusal at the seam.
-const CURSOR_CAPABILITIES: &[&str] = &[
+/// that client normalizes. `interrupt` is here because a cancel is a real
+/// protocol notification the runtime sends, and image attachments are not,
+/// because the client sends a text content block and advertising more than it
+/// sends would route an image turn into a refusal at the seam. The adapter
+/// descriptor reads this list rather than restating it.
+pub(crate) const CURSOR_CAPABILITIES: &[&str] = &[
     "messages",
     "streaming",
     "reasoning",
@@ -111,6 +112,7 @@ const CURSOR_CAPABILITIES: &[&str] = &[
     "approvals",
     "usage",
     "history",
+    "interrupt",
 ];
 
 const BUILT_IN_AGENTS: &[BuiltInAgentContract] = &[

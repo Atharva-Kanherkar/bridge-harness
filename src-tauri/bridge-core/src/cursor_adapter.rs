@@ -73,6 +73,7 @@ use crate::{
         AdapterContextInventory, ContextInventoryScope, ContextLifecyclePhase, ContextSegmentClass,
         ContextSegmentObservation,
     },
+    delegation::WriteMode,
     model::{AdapterDescriptor, AuthState, CapabilityTier, ModelOption, SandboxMode},
     BridgeError,
 };
@@ -668,10 +669,12 @@ struct OfferedOption {
 /// Choose which offered option answers a Bridge approval decision.
 ///
 /// Selection is by kind, because that is the protocol's shared vocabulary;
-/// the return value is the id, because that is the agent's. Bridge's
-/// `acceptForSession` maps onto the standing allow where the agent offered one
-/// and falls back to the single-use allow where it did not, and a decision with
-/// no matching kind is refused rather than answered with the nearest thing.
+/// the return value is the id, because that is the agent's. Fallbacks only
+/// ever narrow: Bridge's `acceptForSession` settles for the single-use allow
+/// where no standing one was offered, but a one-time `accept` is never
+/// widened into `allow_always` — a user's Allow-once click must not become a
+/// standing grant that silences every later request. A decision with no
+/// matching kind is refused rather than answered with the nearest thing.
 fn option_for_decision<'a>(decision: &str, options: &'a [OfferedOption]) -> Option<&'a str> {
     let by_kind = |wanted: &str| {
         options
@@ -680,7 +683,7 @@ fn option_for_decision<'a>(decision: &str, options: &'a [OfferedOption]) -> Opti
             .map(|option| option.id.as_str())
     };
     match decision {
-        "accept" => by_kind("allow_once").or_else(|| by_kind("allow_always")),
+        "accept" => by_kind("allow_once"),
         "acceptForSession" => by_kind("allow_always").or_else(|| by_kind("allow_once")),
         "decline" | "cancel" => by_kind("reject_once").or_else(|| by_kind("reject_always")),
         _ => None,
@@ -699,7 +702,18 @@ pub struct CursorRuntime {
     provider_session_id: String,
     current_turn: Arc<Mutex<Option<String>>>,
     approvals: Arc<Mutex<BTreeMap<u64, Vec<OfferedOption>>>>,
-    events: mpsc::Sender<String>,
+    /// `None` once the runtime has stopped or the pump has ended. Dropping
+    /// this sender is what lets the reader reach end of file: the supervisor's
+    /// reader thread — the thread that removes this runtime and settles the
+    /// session — blocks until every sender is gone, and a sender held for the
+    /// runtime's whole lifetime would park it forever on a provider that died
+    /// on its own. Shared with the pump so provider death clears it too.
+    events: Arc<Mutex<Option<mpsc::Sender<String>>>>,
+    /// The compiled instruction stack, delivered as the preamble of the first
+    /// turn. ACP has no system-prompt channel, so the first prompt is the one
+    /// place the delegation protocol, memory packet, and restoration context
+    /// can actually reach the agent.
+    pending_instructions: Mutex<Option<String>>,
     pumping: Arc<AtomicBool>,
     context_inventory: Mutex<Vec<AdapterContextInventory>>,
     stopped: bool,
@@ -746,9 +760,29 @@ impl AdapterRuntime for CursorRuntime {
         if self.session.is_closed() {
             return Err(self.closed());
         }
+        let events = self
+            .events
+            .lock()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| self.closed())?;
+        // ACP has no turn identifiers, so the turn.started every other harness
+        // emits is synthesized here with Bridge's own id. The supervisor's
+        // turn.started arm is the only writer of active_turn_id, the prompt
+        // binding, and the per-turn delegation budget key — a harness that
+        // never emits one leaves every per-turn ceiling unbound.
+        let turn_id = format!("turn-{}", uuid::Uuid::new_v4());
+        let mut started = NormalizedEvent::new("turn.started");
+        started.data = json!({"turnId": turn_id});
+        events
+            .send(encode_event(&started))
+            .map_err(|_| self.closed())?;
+        let preamble = self.pending_instructions.lock().unwrap().take();
+        let text = match preamble {
+            Some(instructions) => format!("{instructions}\n\n{text}"),
+            None => text.to_owned(),
+        };
         let session = self.session.clone();
-        let events = self.events.clone();
-        let text = text.to_owned();
         thread::Builder::new()
             .name("cursor-turn".into())
             .spawn(move || {
@@ -817,6 +851,10 @@ impl AdapterRuntime for CursorRuntime {
         // been delivered; clearing the flag only tells it to stop looking for
         // more once the queue is empty.
         self.pumping.store(false, Ordering::Release);
+        // Release the runtime's own sender so the reader can reach end of
+        // file: the pump's clone goes when the pump returns, and this one must
+        // not outlive the stop that made further events impossible.
+        drop(self.events.lock().unwrap().take());
     }
 }
 
@@ -918,33 +956,40 @@ fn decode_event(value: &Value) -> Option<NormalizedEvent> {
 fn pump_events(
     session: Arc<AcpSession>,
     events: mpsc::Sender<String>,
+    runtime_sender: Arc<Mutex<Option<mpsc::Sender<String>>>>,
     approvals: Arc<Mutex<BTreeMap<u64, Vec<OfferedOption>>>>,
     pumping: Arc<AtomicBool>,
 ) {
-    loop {
+    'pump: loop {
         let drained = session.drain();
         let idle = drained.is_empty();
         for event in &drained {
             record_approval(&approvals, event);
             if events.send(encode_event(event)).is_err() {
-                return;
+                break 'pump;
             }
         }
         if idle {
             if session.is_closed() || !pumping.load(Ordering::Acquire) {
-                // One last pass: the terminal event is pushed as the connection
-                // thread finishes, which can land after the check above.
+                // One last pass: the terminal event is pushed before the
+                // connection marks itself closed, so a drain after observing
+                // closed cannot miss it.
                 for event in session.drain() {
                     record_approval(&approvals, &event);
                     if events.send(encode_event(&event)).is_err() {
-                        return;
+                        break 'pump;
                     }
                 }
-                return;
+                break 'pump;
             }
             thread::sleep(EVENT_POLL_INTERVAL);
         }
     }
+    // The pump ending means no further events can exist. Releasing the
+    // runtime's sender here — not only on an explicit stop — is what lets the
+    // reader reach end of file when the provider dies on its own, and it is
+    // the reader's thread that removes the runtime and settles the session.
+    drop(runtime_sender.lock().unwrap().take());
 }
 
 fn record_approval(
@@ -990,6 +1035,7 @@ fn launch(
     profile: &CursorProfile,
     cwd: &str,
     model: Option<&str>,
+    instructions: Option<&str>,
     on_progress: Option<crate::adapters::StartupProgress<'_>>,
 ) -> Result<StartedAdapter, BridgeError> {
     let key = configured_key();
@@ -1019,14 +1065,16 @@ fn launch(
     let (sender, receiver) = mpsc::channel();
     let approvals = Arc::new(Mutex::new(BTreeMap::new()));
     let pumping = Arc::new(AtomicBool::new(true));
+    let runtime_sender = Arc::new(Mutex::new(Some(sender.clone())));
     thread::Builder::new()
         .name("cursor-events".into())
         .spawn({
             let session = session.clone();
             let sender = sender.clone();
+            let runtime_sender = runtime_sender.clone();
             let approvals = approvals.clone();
             let pumping = pumping.clone();
-            move || pump_events(session, sender, approvals, pumping)
+            move || pump_events(session, sender, runtime_sender, approvals, pumping)
         })
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
     let runtime = CursorRuntime {
@@ -1034,7 +1082,13 @@ fn launch(
         session,
         current_turn: Arc::new(Mutex::new(None)),
         approvals,
-        events: sender,
+        events: runtime_sender,
+        pending_instructions: Mutex::new(
+            instructions
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_owned),
+        ),
         pumping,
         context_inventory: Mutex::new(cursor_context_inventory(ContextLifecyclePhase::Start)?),
         stopped: false,
@@ -1089,10 +1143,20 @@ fn apply_model(
         .map_err(|error| BridgeError::Invalid(error.to_string()))
 }
 
+/// The id of the selector [`model_selector`] read the models from.
+///
+/// The same predicate on purpose: an agent that declares a non-select option
+/// under the model category — an "auto-select" toggle, say — must not receive
+/// a model identifier addressed to it while the models came from somewhere
+/// else, because Cursor answers a value from the wrong namespace with an
+/// invalid-params error for every model at once.
 fn model_selector_id(options: &[SessionConfigOption]) -> Option<String> {
     options
         .iter()
-        .find(|option| matches!(option.category, Some(SessionConfigOptionCategory::Model)))
+        .find(|option| {
+            matches!(option.category, Some(SessionConfigOptionCategory::Model))
+                && matches!(option.kind, SessionConfigKind::Select(_))
+        })
         .map(|option| option.id.0.to_string())
 }
 
@@ -1246,11 +1310,42 @@ impl crate::adapters::HarnessAdapter for CursorAdapter {
         }
     }
 
+    /// Start a session, refusing anything this harness cannot actually hold.
+    ///
+    /// An adapter that quietly drops an isolation request runs an agent with
+    /// more authority than the policy engine granted it, and Bridge has already
+    /// logged that the isolation was prepared — so a scope Cursor cannot
+    /// enforce is refused at the boundary, the way OpenCode refuses a read-only
+    /// worker its transport cannot sandbox. The vendor CLI is spawned by the
+    /// protocol crate rather than through `worker_sandbox`, so there is no
+    /// seatbelt to put around it here.
     fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+        if request.read_only_sandbox.is_some()
+            || matches!(request.write_mode, Some(WriteMode::ReadOnly))
+        {
+            return Err(BridgeError::Invalid(
+                "Cursor read-only workers are unsupported because its CLI is spawned by the agent \
+                 protocol client rather than inside the offline sandbox; refusing to start without \
+                 isolation"
+                    .into(),
+            ));
+        }
+        if request.briefing.is_some() {
+            return Err(BridgeError::Invalid(
+                "Cursor cannot run a briefing: it has no certified permission representation, so \
+                 an empty tool scope cannot be enforced on it".into(),
+            ));
+        }
         let profile = self
             .profile()
             .map_err(|reason| BridgeError::Invalid(reason.reason()))?;
-        launch(&profile, request.cwd, request.model, request.on_progress)
+        launch(
+            &profile,
+            request.cwd,
+            request.model,
+            request.instructions,
+            request.on_progress,
+        )
     }
 
     /// Unreachable while [`Self::supports_native_resume`] is false — the
@@ -1292,23 +1387,15 @@ const RESUME_UNAVAILABLE: &str =
 
 /// What the harness can do, in Bridge's capability vocabulary.
 ///
-/// `history` is here because the agent advertises `session/load`; `steering` is
-/// not, because a second prompt against a live turn would be a second turn.
-/// Image attachments are absent for the same kind of reason: the agent accepts
-/// them, and the shared client sends a text content block, so advertising them
-/// would route an image turn into a refusal.
-const CAPABILITIES: [&str; 10] = [
-    "messages",
-    "streaming",
-    "reasoning",
-    "plans",
-    "tools",
-    "commands",
-    "file_changes",
-    "approvals",
-    "usage",
-    "history",
-];
+/// The published contract owns this list; the descriptor mirrors it, and a
+/// conformance test compares the two. `history` is here because the agent
+/// advertises `session/load`, and `interrupt` because a cancel is a real
+/// protocol notification the runtime sends. `steering` is not, because a
+/// second prompt against a live turn would be a second turn. Image attachments
+/// are absent for the same kind of reason: the agent accepts them, and the
+/// shared client sends a text content block, so advertising them would route
+/// an image turn into a refusal.
+const CAPABILITIES: &[&str] = crate::builtin_compatibility::CURSOR_CAPABILITIES;
 
 #[cfg(test)]
 mod tests {
@@ -1955,6 +2042,20 @@ mod tests {
         );
         assert_eq!(option_for_decision("shipit", &single_use), None);
 
+        // The widening direction stays closed: an agent that offers only a
+        // standing allow gets no answer to a one-time Accept, because turning
+        // one approval into a session-wide grant is a decision the user did
+        // not make.
+        let standing_only = [
+            offered("allow-always", "allow_always"),
+            offered("reject-once", "reject_once"),
+        ];
+        assert_eq!(option_for_decision("accept", &standing_only), None);
+        assert_eq!(
+            option_for_decision("acceptForSession", &standing_only),
+            Some("allow-always")
+        );
+
         // An option whose kind this build has no name for is never selected by
         // its id looking familiar.
         let unknown_kind = [offered("allow-once", "some_future_kind")];
@@ -2190,6 +2291,47 @@ mod tests {
     }
 
     #[test]
+    fn a_scope_this_harness_cannot_enforce_is_refused_rather_than_run_without_it() {
+        // The policy engine admits a read-only worker and Bridge records that
+        // isolation was prepared. Starting the vendor CLI outside the sandbox
+        // anyway would give the agent authority nobody granted it, so the
+        // refusal happens at the boundary — the way OpenCode refuses one.
+        let adapter = CursorAdapter::with_probe(Ok(probed_profile()));
+        let request = |write_mode, briefing| StartRequest {
+            cwd: "/workspace",
+            model: None,
+            effort: None,
+            instructions: None,
+            write_mode,
+            read_only_sandbox: None,
+            briefing,
+            on_progress: None,
+        };
+        let Err(error) = adapter.start(request(Some(WriteMode::ReadOnly), None)) else {
+            panic!("a read-only worker must not run unsandboxed");
+        };
+        assert!(error.to_string().contains("refusing to start without isolation"), "{error}");
+
+        let policy =
+            crate::briefing_policy::BriefingRuntimePolicy::compile_scoped(Vec::new(), limits())
+                .expect("an empty scope compiles");
+        let Err(error) = adapter.start(request(None, Some(&policy))) else {
+            panic!("a briefing needs an authority cursor does not have");
+        };
+        assert!(error.to_string().contains("cannot run a briefing"), "{error}");
+    }
+
+    fn limits() -> bridge_protocol::messages::WorkBriefLimits {
+        bridge_protocol::messages::WorkBriefLimits {
+            max_wall_seconds: 60,
+            max_turns: 1,
+            max_tool_calls: 1,
+            max_output_tokens: None,
+            cost_ceiling_microusd: None,
+        }
+    }
+
+    #[test]
     fn a_started_session_selects_its_model_by_the_identifier_it_was_given() {
         let directory = temp_directory();
         let profile = probed_in(directory.path());
@@ -2198,6 +2340,7 @@ mod tests {
             &profile,
             workspace.path().to_str().expect("a utf-8 workspace path"),
             Some("claude-4.5-sonnet"),
+            None,
             None,
         )
         .expect("the fake CLI starts a session");
@@ -2252,6 +2395,7 @@ mod tests {
             &profile,
             workspace.path().to_str().expect("a utf-8 workspace path"),
             Some("cursor-fast"),
+            None,
             None,
         ) else {
             panic!("a model the session never advertised must not start one");

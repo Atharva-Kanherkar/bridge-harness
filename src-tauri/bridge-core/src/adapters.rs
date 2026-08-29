@@ -511,12 +511,14 @@ impl AdapterRegistry {
         Self::built_in_with_opencode_notify(opencode_settings, None)
     }
 
-    /// `on_opencode_discovered` fires once the background OpenCode catalog
-    /// discovery finishes (successfully or not), so the host can tell the
-    /// frontend to re-read adapter availability.
+    /// `on_discovered` fires once a background adapter discovery finishes
+    /// (successfully or not), so the host can tell the frontend to re-read
+    /// adapter availability. Every adapter that discovers itself off-thread
+    /// gets one: a probe that lands silently leaves its harness greyed out in
+    /// the picker until some unrelated read happens to refresh health.
     pub fn built_in_with_opencode_notify(
         opencode_settings: opencode_adapter::OpenCodeSettings,
-        on_opencode_discovered: Option<Box<dyn FnOnce() + Send>>,
+        on_discovered: Option<Box<dyn Fn() + Send + Sync>>,
     ) -> Result<Self, BridgeError> {
         let mut registry = Self {
             adapters: HashMap::new(),
@@ -525,15 +527,23 @@ impl AdapterRegistry {
         registry.register(Box::new(ClaudeAdapter {
             streams: Mutex::new(HashMap::new()),
         }))?;
+        let on_discovered: Option<Arc<dyn Fn() + Send + Sync>> = on_discovered.map(Arc::from);
+        let notify = |shared: &Option<Arc<dyn Fn() + Send + Sync>>| {
+            shared
+                .clone()
+                .map(|shared| Box::new(move || shared()) as Box<dyn FnOnce() + Send>)
+        };
         registry.register(Box::new(OpenCodeAdapter::new(
             opencode_settings,
-            on_opencode_discovered,
+            notify(&on_discovered),
         )))?;
         // Cursor discovers itself the same way, and for a stronger reason: its
         // protocol support cannot be read off the filesystem and has to be
         // proved with a handshake, which is not something application setup can
         // wait on.
-        registry.register(Box::new(cursor_adapter::CursorAdapter::new(None)))?;
+        registry.register(Box::new(cursor_adapter::CursorAdapter::new(notify(
+            &on_discovered,
+        ))))?;
         Ok(registry)
     }
 
