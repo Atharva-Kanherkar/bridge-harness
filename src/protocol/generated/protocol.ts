@@ -19,6 +19,7 @@ export type BridgeMethod =
   | "github/github_repository"
   | "github/github_merge_config"
   | "github/github_act"
+  | "github/github_review"
   | "github/github_checkout"
   | "workspaces/create_workspace"
   | "workspaces/connect_workspace_folder"
@@ -166,6 +167,7 @@ export const BRIDGE_METHODS = [
   { method: "github/github_repository", domain: "github", command: "github_repository" },
   { method: "github/github_merge_config", domain: "github", command: "github_merge_config" },
   { method: "github/github_act", domain: "github", command: "github_act" },
+  { method: "github/github_review", domain: "github", command: "github_review" },
   { method: "github/github_checkout", domain: "github", command: "github_checkout" },
   { method: "workspaces/create_workspace", domain: "workspaces", command: "create_workspace" },
   { method: "workspaces/connect_workspace_folder", domain: "workspaces", command: "connect_workspace_folder" },
@@ -373,6 +375,7 @@ export interface BridgeMethodParams {
   "github/github_repository": GithubRepositoryParams;
   "github/github_merge_config": GithubMergeConfigParams;
   "github/github_act": GithubActParams;
+  "github/github_review": GithubReviewParams;
   "github/github_checkout": GithubCheckoutParams;
   "workspaces/create_workspace": CreateWorkspaceParams;
   "workspaces/connect_workspace_folder": ConnectWorkspaceFolderParams;
@@ -522,6 +525,7 @@ export interface BridgeMethodResults {
   "github/github_repository": GithubRepositoryResult;
   "github/github_merge_config": GithubMergeConfigResult;
   "github/github_act": GithubActResult;
+  "github/github_review": GithubReviewResult;
   "github/github_checkout": GithubCheckoutResult;
   "workspaces/create_workspace": BridgeState;
   "workspaces/connect_workspace_folder": BridgeState;
@@ -1795,6 +1799,19 @@ export interface GithubActParams {
 export interface GithubActResult {
   executed: boolean;
   message: string;
+}
+
+export interface GithubReviewParams {
+  harness: string;
+  number: number;
+  sessionId?: string | null;
+  workspaceId: string;
+}
+
+export interface GithubReviewResult {
+  message: string;
+  sessionId?: string | null;
+  status: string;
 }
 
 export interface GithubCheckoutParams {

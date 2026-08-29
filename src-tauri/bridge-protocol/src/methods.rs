@@ -53,6 +53,7 @@ methods![
     (GithubRepository, "github", "github_repository"),
     (GithubMergeConfig, "github", "github_merge_config"),
     (GithubAct, "github", "github_act"),
+    (GithubReview, "github", "github_review"),
     (GithubCheckout, "github", "github_checkout"),
     // workspaces
     (CreateWorkspace, "workspaces", "create_workspace"),

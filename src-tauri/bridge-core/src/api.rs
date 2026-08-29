@@ -189,6 +189,132 @@ pub fn github_act(
     Ok(wire::GithubActResult { executed: true, message })
 }
 
+/// Review a pull request with a Bridge subagent and post the review as a
+/// comment via `gh`. The worker is research-role (read-only, network-on), so it
+/// is exempt from the write-scope approval gate and gets a read-only seatbelt
+/// sandbox — posting through `gh` leaves the tree clean and fires no approval
+/// card. The harness is the user's click-time pick; the model comes from the
+/// Reviewer model profile when its provider matches that harness, otherwise the
+/// launch path resolves the harness's tier default.
+pub fn github_review(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+    number: u64,
+    harness: &str,
+    session_id: Option<String>,
+) -> Result<wire::GithubReviewResult, BridgeError> {
+    let harness = crate::delegation::normalize_harness(harness)
+        .ok_or_else(|| BridgeError::Invalid(format!("unsupported harness: {harness}")))?;
+    // Validate the workspace exists before spending a session on it.
+    core.workspace_path(workspace_id)?;
+
+    // Resolve the Reviewer model profile. Its tier/effort shape the worker; its
+    // model is only used when the profile's provider matches the chosen harness,
+    // otherwise the launch path picks the harness's tier default.
+    let resolved = {
+        let db = core.db.lock().unwrap();
+        crate::model_profiles::resolve_profile(
+            &db,
+            &core.adapter_registry.descriptors(),
+            crate::model_profiles::ProfilePurpose::Reviewer,
+        )?
+    };
+    let (capability_tier, effort, model) = match resolved {
+        Some(profile) => {
+            let model = (profile.provider == harness).then(|| profile.model.clone());
+            (profile.tier, profile.effort, model)
+        }
+        // Model setup is incomplete: fall back to a strong reviewer tier and let
+        // the launch path resolve the harness's tier default.
+        None => (CapabilityTier::Strong, delegation::Effort::High, None),
+    };
+
+    // Establish the parent orchestrator session. Reuse the caller's session when
+    // it exists and belongs to this workspace; otherwise mint a fresh one.
+    let parent_session_id = match session_id {
+        Some(existing)
+            if session_belongs_to_workspace(core, &existing, workspace_id)? =>
+        {
+            existing
+        }
+        _ => {
+            // Mirror `create_workspace_session` but keep the planned id: an
+            // orchestrator session (depth 0) with no isolated worktree — the
+            // worker gets its own read-only sandbox at launch.
+            let operation = core.workspace_operation(workspace_id);
+            let _operation = operation.lock().unwrap();
+            let plan = core.plan_workspace_session(workspace_id, false)?;
+            let new_id = plan.session_id().to_owned();
+            core.persist_workspace_session(plan, None)?;
+            new_id
+        }
+    };
+
+    // A turn id is a free-form string here — the launch path takes any id, as the
+    // user-driven retry (`retry-<uuid>`) does; no turn row is a precondition.
+    let turn_id = format!("github-review-{}", Uuid::new_v4());
+
+    let objective = format!(
+        "Review pull request #{number} in this repository. Run `gh pr view {number}` and \
+         `gh pr diff {number}` to read the change, then post a concise, constructive code \
+         review as a comment using `gh pr comment {number} --body \"...\"`. Cite concrete \
+         files and line numbers; call out correctness bugs, risky changes, and missing tests. \
+         Do NOT approve, merge, request-changes, or close the PR — only post a comment."
+    );
+
+    let directive = delegation::DelegationRequest {
+        schema_version: delegation::SCHEMA_VERSION,
+        role: delegation::WorkerRole::Research,
+        objective,
+        acceptance_criteria: vec![
+            format!("A review comment is posted on PR #{number} via gh"),
+            "The review cites concrete files or lines".into(),
+        ],
+        known_facts: Vec::new(),
+        decisions: Vec::new(),
+        evidence_ids: Vec::new(),
+        relevant_files: Vec::new(),
+        owned_paths: Vec::new(),
+        write_mode: delegation::WriteMode::ReadOnly,
+        capability_tier,
+        effort,
+        network_access: true,
+        writable_output_paths: Vec::new(),
+        verification: Vec::new(),
+        output_contract: delegation::OutputContract::ResearchResult,
+        harness: Some(harness.clone()),
+        model,
+    };
+    directive
+        .validate()
+        .map_err(BridgeError::Invalid)?;
+
+    let outcome = live_turn::launch_worker_outcome(core, &parent_session_id, &turn_id, &directive, true);
+    let result = match outcome {
+        live_turn::WorkerLaunchOutcome::Launched(child_session_id) => wire::GithubReviewResult {
+            status: "launched".into(),
+            session_id: Some(child_session_id),
+            message: format!("Review started with {harness} — comments will post to PR #{number} shortly."),
+        },
+        live_turn::WorkerLaunchOutcome::Queued => wire::GithubReviewResult {
+            status: "queued".into(),
+            session_id: None,
+            message: format!("Review queued with {harness}; it will start when a worker slot frees up."),
+        },
+        live_turn::WorkerLaunchOutcome::AwaitingApproval => wire::GithubReviewResult {
+            status: "awaitingApproval".into(),
+            session_id: None,
+            message: "Review is pending an approval; resolve it to let the worker start.".into(),
+        },
+        live_turn::WorkerLaunchOutcome::Failed => wire::GithubReviewResult {
+            status: "failed".into(),
+            session_id: None,
+            message: "The review worker could not launch; the reason is on the conversation.".into(),
+        },
+    };
+    Ok(result)
+}
+
 /// Check a PR's head branch out into a task worktree of its own — a new
 /// workspace node beside the source workspace, never a mutation of it. The
 /// resolved PR data (head branch, title) comes from the surface, not the
@@ -392,6 +518,26 @@ fn with_optional_workspace_lock<T>(
 /// slow read-only git command cannot stall checkout, writes, or chat start.
 fn locked_workspace_path(core: &BridgeCore, workspace_id: &str) -> Result<String, BridgeError> {
     with_workspace_lock(core, workspace_id, || core.workspace_path(workspace_id))
+}
+
+/// Whether a session exists and is rooted in the given workspace — the guard for
+/// reusing a caller-supplied parent session before attaching a worker to it.
+fn session_belongs_to_workspace(
+    core: &BridgeCore,
+    session_id: &str,
+    workspace_id: &str,
+) -> Result<bool, BridgeError> {
+    let owner: Option<String> = core
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT workspace_id FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(owner.as_deref() == Some(workspace_id))
 }
 
 /// Checkout must not move HEAD under a running agent, an open terminal, or a

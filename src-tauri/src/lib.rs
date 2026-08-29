@@ -101,6 +101,12 @@ async fn github_act(workspace_id: String, action: wire::GithubAction, confirmed:
 }
 
 #[tauri::command]
+async fn github_review(workspace_id: String, number: u64, harness: String, session_id: Option<String>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubReviewResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub PR review", move || api::github_review(&core, &workspace_id, number, &harness, session_id)).await
+}
+
+#[tauri::command]
 async fn github_checkout(workspace_id: String, number: u64, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubCheckoutResult, BridgeError> {
     let core = state.inner().clone();
     blocking("GitHub PR checkout", move || api::github_checkout(&core, &workspace_id, number)).await
@@ -1718,6 +1724,7 @@ pub fn run() {
             github_repository,
             github_merge_config,
             github_act,
+            github_review,
             github_checkout,
             browser_bridge_state,
             install_browser_native_host,

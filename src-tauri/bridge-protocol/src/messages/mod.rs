@@ -158,6 +158,7 @@ typed_methods![
     (GithubRepository, GithubRepositoryParams, GithubRepositoryResult),
     (GithubMergeConfig, GithubMergeConfigParams, GithubMergeConfigResult),
     (GithubAct, GithubActParams, GithubActResult),
+    (GithubReview, GithubReviewParams, GithubReviewResult),
     (GithubCheckout, GithubCheckoutParams, GithubCheckoutResult),
     // workspaces
     (CreateWorkspace, CreateWorkspaceParams, BridgeState),

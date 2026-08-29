@@ -8,7 +8,6 @@ import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
 import { harnessLabel } from "../utils";
 import { SidebarFilterMenu } from "./SidebarFilterMenu";
-import { GitHubPanel } from "./GitHubPanel";
 import {
   GROUP_ROW_CAP,
   NO_PROJECT_GROUP_KEY,
@@ -240,10 +239,6 @@ export type BridgeSidebarProps = {
   /** Only for `Group by → Project` labels; the tree itself lives on the projects
    * screen now. */
   workspaces: Workspace[];
-  /** The repository whose open pull requests belong in this rail. */
-  workspaceId?: string;
-  /** Deep-link a rail PR row into the GitHub dock pane. */
-  onOpenPullRequest?: (number: number) => void;
   activeSessionId?: string;
   projectsActive: boolean;
   automationsActive: boolean;
@@ -278,8 +273,6 @@ export type BridgeSidebarProps = {
 export function BridgeSidebar({
   chats,
   workspaces,
-  workspaceId,
-  onOpenPullRequest,
   activeSessionId,
   projectsActive,
   automationsActive,
@@ -534,7 +527,6 @@ export function BridgeSidebar({
         )}
 
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
-          {!collapsed && <GitHubPanel workspaceId={workspaceId} onOpen={onOpenPullRequest} />}
           {!collapsed && (
             <SectionLabel action={
               <span className="flex items-center gap-0.5">

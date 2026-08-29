@@ -977,19 +977,21 @@ pub fn workspace_changeset(path: &Path) -> Result<WorkspaceChangeset, BridgeErro
         let patch = if binary {
             String::new()
         } else {
-            run(
-                path,
-                [
-                    "-c",
-                    "core.quotePath=false",
-                    "diff",
-                    "--no-renames",
-                    "HEAD",
-                    "--",
-                    file_path.as_str(),
-                ],
+            strip_diff_header(
+                &run(
+                    path,
+                    [
+                        "-c",
+                        "core.quotePath=false",
+                        "diff",
+                        "--no-renames",
+                        "HEAD",
+                        "--",
+                        file_path.as_str(),
+                    ],
+                )
+                .unwrap_or_default(),
             )
-            .unwrap_or_default()
         };
         seen.insert(file_path.clone());
         files.push(workspace_file_change(
@@ -1017,7 +1019,11 @@ pub fn workspace_changeset(path: &Path) -> Result<WorkspaceChangeset, BridgeErro
         }
         let (patch, additions, binary) = untracked_file_patch(path, &file_path);
         files.push(workspace_file_change(
-            file_path, additions, 0, patch, binary,
+            file_path,
+            additions,
+            0,
+            strip_diff_header(&patch),
+            binary,
         ));
     }
 
@@ -1044,6 +1050,21 @@ fn workspace_file_change(
         importance,
         labels,
         low_signal,
+    }
+}
+
+/// Drop the `diff --git`/`index`/`--- a/…`/`+++ b/…` file-header block that
+/// precedes the first `@@` hunk. The Changes panel already shows the file path
+/// in its own row, so the header's `a/…`, `b/…` and `/dev/null` variants only
+/// read as duplicated, confusing paths stacked on top of the diff. A patch with
+/// no hunk (mode-only change, empty new file) carries nothing worth rendering.
+fn strip_diff_header(patch: &str) -> String {
+    if patch.starts_with("@@") {
+        return patch.to_owned();
+    }
+    match patch.find("\n@@") {
+        Some(index) => patch[index + 1..].to_owned(),
+        None => String::new(),
     }
 }
 
@@ -1081,9 +1102,38 @@ fn untracked_file_patch(worktree: &Path, relative_path: &str) -> (String, i64, b
     (patch, additions, false)
 }
 
+/// How many lines an untracked file contributes as additions, or 0 when it is
+/// binary or unreadable. Mirrors `untracked_file_patch`'s count without paying
+/// for the extra `git diff --no-index` the patch view needs.
+fn untracked_addition_count(worktree: &Path, relative_path: &str) -> i64 {
+    match std::fs::read(worktree.join(relative_path)) {
+        Ok(bytes) if !bytes.contains(&0) => String::from_utf8_lossy(&bytes).lines().count() as i64,
+        _ => 0,
+    }
+}
+
 pub fn stats(path: &Path) -> Result<(i64, i64, i64), BridgeError> {
-    let porcelain = run(path, ["status", "--porcelain"])?;
-    let dirty = porcelain.lines().count() as i64;
+    // `git diff --numstat HEAD` only sees tracked changes, and plain
+    // `--porcelain` collapses a new directory to one line. Enumerate untracked
+    // files in full so brand-new files (the common case when an agent writes
+    // code) count toward both the file total and additions — matching
+    // `workspace_changeset`, which the Changes panel reads. Without this the
+    // chip reads "N files +0 −0".
+    let porcelain = run(
+        path,
+        [
+            "-c",
+            "core.quotePath=false",
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+        ],
+    )?;
+    let dirty = porcelain
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .count() as i64;
+
     let diff = run(path, ["diff", "--numstat", "HEAD"])?;
     let mut adds = 0;
     let mut dels = 0;
@@ -1094,6 +1144,17 @@ pub fn stats(path: &Path) -> Result<(i64, i64, i64), BridgeError> {
             dels += p[1].parse::<i64>().unwrap_or(0)
         }
     }
+
+    for line in porcelain.lines() {
+        if line.len() <= 3 || &line[0..2] != "??" {
+            continue;
+        }
+        let file_path = line[3..].trim().trim_matches('"');
+        if !file_path.is_empty() {
+            adds += untracked_addition_count(path, file_path);
+        }
+    }
+
     Ok((dirty, adds, dels))
 }
 thread_local! {
@@ -1778,5 +1839,41 @@ mod tests {
             .unwrap();
         assert_eq!(shared.deletions, 1);
         assert_eq!(shared.additions, 0);
+    }
+
+    #[test]
+    fn workspace_changeset_strips_git_file_headers_from_patches() {
+        let (_fixture, repo) = repository();
+        // A tracked edit and a brand-new untracked file: both patches used to
+        // carry `diff --git`/`--- a/…`/`+++ b/…`/`/dev/null` header lines that
+        // rendered as duplicated paths above the diff.
+        std::fs::write(repo.join("shared.txt"), "base\nedited\n").unwrap();
+        std::fs::write(repo.join("fresh.txt"), "one\ntwo\n").unwrap();
+
+        let changeset = workspace_changeset(&repo).unwrap();
+        for name in ["shared.txt", "fresh.txt"] {
+            let file = changeset.files.iter().find(|f| f.path == name).unwrap();
+            assert!(file.patch.starts_with("@@"), "{name} patch keeps its header: {:?}", file.patch);
+            for noise in ["diff --git", "--- a/", "+++ b/", "/dev/null"] {
+                assert!(!file.patch.contains(noise), "{name} patch still shows `{noise}`");
+            }
+        }
+        // Content survives the strip.
+        assert!(changeset.files.iter().find(|f| f.path == "fresh.txt").unwrap().patch.contains("+one"));
+    }
+
+    #[test]
+    fn stats_counts_untracked_file_additions() {
+        let (_fixture, repo) = repository();
+        // Two brand-new files git's `diff --numstat HEAD` never sees. The chip
+        // used to read "N files +0 −0" because only tracked diffs were counted.
+        std::fs::write(repo.join("alpha.txt"), "a\nb\nc\n").unwrap();
+        std::fs::create_dir_all(repo.join("nested")).unwrap();
+        std::fs::write(repo.join("nested/beta.txt"), "x\ny\n").unwrap();
+
+        let (dirty, adds, dels) = stats(&repo).unwrap();
+        assert_eq!(dirty, 2, "both new files count, even inside a new directory");
+        assert_eq!(adds, 5, "3 + 2 added lines from untracked files");
+        assert_eq!(dels, 0);
     }
 }

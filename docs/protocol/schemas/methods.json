@@ -86,6 +86,13 @@
       "resultSchema": "github-act-result.json"
     },
     {
+      "command": "github_review",
+      "domain": "github",
+      "method": "github/github_review",
+      "paramsSchema": "github-review-params.json",
+      "resultSchema": "github-review-result.json"
+    },
+    {
       "command": "github_checkout",
       "domain": "github",
       "method": "github/github_checkout",
