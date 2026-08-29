@@ -192,6 +192,22 @@ export function GitHubPane({ workspaceId, workspaceBranch, intent, onJumpToFile 
     } finally { refreshingChecks.current = false; }
   }, [workspaceId]);
 
+  // The timer path reads one PR's checks and nothing else. Refetching the
+  // whole list every 8 seconds hammered `gh pr list` on large repositories
+  // and kept daemon connections busy; list refreshes belong to the
+  // checks-changed/ci-finished events, where the server saw a real change.
+  const pollChecks = useCallback(async (number: number) => {
+    if (refreshingChecks.current) return;
+    refreshingChecks.current = true;
+    try {
+      const checks = await bridgeApi.githubChecks(workspaceId, number);
+      if (!alive.current) return;
+      setDetail(current => current && current.result.pullRequest.summary.number === number ? { ...current, checks } : current);
+    } catch {
+      // Keep the last good checks; the next tick or event retries.
+    } finally { refreshingChecks.current = false; }
+  }, [workspaceId]);
+
   useEffect(() => {
     setStatus(undefined); setPrs(undefined); setIssues(undefined); setRepositoryOverview(undefined); setSurfaceError(undefined); setTabErrors({});
     setSelected(undefined); setDetail(undefined); setDetailError(undefined);
@@ -201,9 +217,9 @@ export function GitHubPane({ workspaceId, workspaceBranch, intent, onJumpToFile 
 
   useEffect(() => {
     if (selected === undefined || !detail || !checksNeedPolling(detail.checks.checks)) return;
-    const timer = window.setInterval(() => { void refreshChecks(selected); }, 8_000);
+    const timer = window.setInterval(() => { void pollChecks(selected); }, 8_000);
     return () => window.clearInterval(timer);
-  }, [selected, detail, refreshChecks]);
+  }, [selected, detail, pollChecks]);
 
   // Live refresh: a check transition or a terminal rollup re-reads whatever is
   // on screen. Handlers read the latest selection through a ref so one stable
@@ -380,10 +396,41 @@ function LabelControls({ available, current, disabled, onChange }: {
   </div>;
 }
 
-function PatchView({ patch }: { patch: string }) {
-  return <pre className="max-h-80 overflow-auto bg-background/50 py-2 font-mono text-[10.5px] leading-5" aria-label="File patch">{patch.split("\n").map((line, index) => <span key={`${index}-${line}`} className={cn("block whitespace-pre px-3", line.startsWith("+") && !line.startsWith("+++") && "bg-success/10 text-success", line.startsWith("-") && !line.startsWith("---") && "bg-destructive/10 text-destructive", line.startsWith("@@") && "bg-info/10 text-info")}>
-    {line || " "}
-  </span>)}</pre>;
+/** Every rendered patch line is a DOM node; unbounded patches froze the
+ * webview on large PRs. Files above the eager threshold start collapsed and
+ * single patches render at most this many lines. */
+export const EAGER_PATCH_FILE_LIMIT = 6;
+export const PATCH_LINE_LIMIT = 600;
+
+function PatchView({ patch, fullDiffUrl }: { patch: string; fullDiffUrl: string }) {
+  const lines = patch.split("\n");
+  const shown = lines.length > PATCH_LINE_LIMIT ? lines.slice(0, PATCH_LINE_LIMIT) : lines;
+  return <>
+    <pre className="max-h-80 overflow-auto bg-background/50 py-2 font-mono text-[10.5px] leading-5" aria-label="File patch">{shown.map((line, index) => <span key={`${index}-${line}`} className={cn("block whitespace-pre px-3", line.startsWith("+") && !line.startsWith("+++") && "bg-success/10 text-success", line.startsWith("-") && !line.startsWith("---") && "bg-destructive/10 text-destructive", line.startsWith("@@") && "bg-info/10 text-info")}>
+      {line || " "}
+    </span>)}</pre>
+    {shown.length < lines.length && <a href={fullDiffUrl} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 border-t border-border px-3 py-2 text-[11px] text-muted-foreground transition-colors hover:text-foreground">
+      <ExternalLink size={11} aria-hidden="true" />
+      Patch truncated at {PATCH_LINE_LIMIT} lines — view the full diff on GitHub
+    </a>}
+  </>;
+}
+
+function FileChange({ file, defaultOpen, fullDiffUrl }: {
+  file: GithubPullRequestResult["files"][number];
+  defaultOpen: boolean;
+  fullDiffUrl: string;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return <article className="overflow-hidden rounded-lg border border-border bg-card">
+    <button type="button" onClick={() => setOpen(value => !value)} aria-expanded={open} className={cn("flex w-full items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-accent/50", open && "border-b border-border")}>
+      <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground">{file.path}</span>
+      <Badge variant="outline" size="sm">{file.status}</Badge>
+      <span className="font-mono text-[10.5px] text-success">+{file.additions}</span>
+      <span className="font-mono text-[10.5px] text-destructive">−{file.deletions}</span>
+    </button>
+    {open && (file.patch ? <PatchView patch={file.patch} fullDiffUrl={fullDiffUrl} /> : <p className="px-3 py-4 text-center text-[11.5px] text-muted-foreground">Binary file or patch unavailable from GitHub.</p>)}
+  </article>;
 }
 
 function CommentList({ comments }: { comments: Array<{ id: string; author?: { login: string } | null; body: string; createdAt: string }> }) {
@@ -599,15 +646,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, repository, number, d
             <span className="ml-auto font-mono text-success">+{pullRequest.additions}</span>
             <span className="font-mono text-destructive">−{pullRequest.deletions}</span>
           </div>
-          {detail.result.files.length ? <div className="space-y-3">{detail.result.files.map(file => <article key={file.path} className="overflow-hidden rounded-lg border border-border bg-card">
-            <div className="flex items-center gap-2 border-b border-border px-3 py-2">
-              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground">{file.path}</span>
-              <Badge variant="outline" size="sm">{file.status}</Badge>
-              <span className="font-mono text-[10.5px] text-success">+{file.additions}</span>
-              <span className="font-mono text-[10.5px] text-destructive">−{file.deletions}</span>
-            </div>
-            {file.patch ? <PatchView patch={file.patch} /> : <p className="px-3 py-4 text-center text-[11.5px] text-muted-foreground">Binary file or patch unavailable from GitHub.</p>}
-          </article>)}</div> : <p className="text-[12px] text-muted-foreground">No changed files reported.</p>}
+          {detail.result.files.length ? <div className="space-y-3">{detail.result.files.map(file => <FileChange key={file.path} file={file} defaultOpen={detail.result.files.length <= EAGER_PATCH_FILE_LIMIT} fullDiffUrl={`${summary.url}/files`} />)}</div> : <p className="text-[12px] text-muted-foreground">No changed files reported.</p>}
         </section>}
 
         {tab === "conversation" && <>

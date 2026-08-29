@@ -32,7 +32,14 @@ use std::time::{Duration, Instant};
 /// sequentially, so one slow call (a Git scan, adapter teardown) must not
 /// stall every other panel of the UI; a small pool restores the concurrency
 /// the embedded host had. Bounded well below the daemon's connection cap.
-const POOL_SIZE: usize = 4;
+///
+/// The pool is partitioned: `github` domain methods shell out to `gh` and can
+/// take ten-plus seconds against large repositories, so they get their own
+/// lanes. Blind sharing let one slow GitHub read queue sessions, health, and
+/// work-board invokes behind it — the whole app appeared to hang.
+const GENERAL_LANES: usize = 4;
+const GITHUB_LANES: usize = 2;
+const POOL_SIZE: usize = GENERAL_LANES + GITHUB_LANES;
 
 /// Bound the blocking-runtime work retained by an invoke burst. A short queue
 /// absorbs normal UI fan-out; requests beyond it fail promptly instead of
@@ -159,6 +166,35 @@ struct Link {
     clients: Vec<Arc<DaemonClient>>,
 }
 
+/// The connection indexes `method` may use. GitHub methods are confined to
+/// the reserved lanes and everything else stays off them, so a slow `gh`
+/// call can never occupy a connection a session or health invoke needs. A
+/// degraded pool (reconnect built fewer connections) falls back to sharing.
+fn lane_range(method: MethodName, total: usize) -> std::ops::Range<usize> {
+    if total <= GENERAL_LANES {
+        return 0..total;
+    }
+    if method.domain() == "github" {
+        GENERAL_LANES..total
+    } else {
+        0..GENERAL_LANES
+    }
+}
+
+/// Prefer an idle lane, scanning from the rotation point so load still
+/// spreads; only when every lane is mid-call does blind rotation apply.
+fn pick_lane(
+    lanes: &std::ops::Range<usize>,
+    rotation: usize,
+    busy: impl Fn(usize) -> bool,
+) -> usize {
+    let width = lanes.len().max(1);
+    (0..width)
+        .map(|offset| lanes.start + (rotation + offset) % width)
+        .find(|index| !busy(*index))
+        .unwrap_or(lanes.start + rotation % width)
+}
+
 /// The shared handle invokes call through. The supervisor installs a [`Link`]
 /// when attached and clears it when the connection dies; calls that observe a
 /// dead connection clear it too, so the supervisor reconnects promptly.
@@ -210,8 +246,10 @@ impl DaemonProxy {
         let link = self
             .wait_for_link(link_wait)
             .ok_or_else(|| "The Bridge daemon is not reachable; still reconnecting".to_owned())?;
-        let client =
-            link.clients[self.next.fetch_add(1, Ordering::Relaxed) % link.clients.len()].clone();
+        let lanes = lane_range(method, link.clients.len());
+        let rotation = self.next.fetch_add(1, Ordering::Relaxed);
+        let index = pick_lane(&lanes, rotation, |index| link.clients[index].busy());
+        let client = link.clients[index].clone();
         match client.call(method, params) {
             Ok(value) => Ok(value),
             // The code is the whole point of the 3000-range contract, and this
@@ -890,6 +928,31 @@ mod tests {
         assert_eq!(staged_binary(fixture.path()), None);
         std::fs::write(&expected, b"current").unwrap();
         assert_eq!(staged_binary(fixture.path()), Some(expected));
+    }
+
+    #[test]
+    fn github_methods_are_confined_to_their_reserved_lanes() {
+        // Full pool: github stays on the reserved lanes, the rest stays off.
+        assert_eq!(
+            lane_range(MethodName::GithubPullRequests, POOL_SIZE),
+            GENERAL_LANES..POOL_SIZE
+        );
+        assert_eq!(lane_range(MethodName::Health, POOL_SIZE), 0..GENERAL_LANES);
+        // A degraded pool (reconnect built fewer connections) shares.
+        assert_eq!(lane_range(MethodName::GithubPullRequests, 2), 0..2);
+        assert_eq!(lane_range(MethodName::Health, 2), 0..2);
+    }
+
+    #[test]
+    fn an_idle_lane_is_preferred_over_a_busy_rotation_target() {
+        // Rotation points at lane 1, which is busy; lane 2 is idle.
+        assert_eq!(pick_lane(&(0..4), 1, |index| index == 1), 2);
+        // Nothing busy: pure rotation.
+        assert_eq!(pick_lane(&(0..4), 5, |_| false), 1);
+        // Everything busy: fall back to rotation instead of stalling.
+        assert_eq!(pick_lane(&(0..4), 6, |_| true), 2);
+        // Offsets apply within the partition, not the whole pool.
+        assert_eq!(pick_lane(&(4..6), 0, |index| index == 4), 5);
     }
 
     #[test]

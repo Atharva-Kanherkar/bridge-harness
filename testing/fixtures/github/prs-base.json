@@ -1,0 +1,55 @@
+[
+  {
+    "number": 101,
+    "title": "Open and green",
+    "state": "OPEN",
+    "isDraft": false,
+    "author": {
+      "login": "octocat"
+    },
+    "headRefName": "feat/green",
+    "url": "https://github.com/fixture/project/pull/101"
+  },
+  {
+    "number": 102,
+    "title": "Draft with CI running",
+    "state": "OPEN",
+    "isDraft": true,
+    "author": {
+      "login": "draft-author"
+    },
+    "headRefName": "feat/draft",
+    "url": "https://github.com/fixture/project/pull/102"
+  },
+  {
+    "number": 103,
+    "title": "Changes requested",
+    "state": "OPEN",
+    "isDraft": false,
+    "author": {
+      "login": "review-author"
+    },
+    "headRefName": "fix/review",
+    "url": "https://github.com/fixture/project/pull/103"
+  },
+  {
+    "number": 104,
+    "title": "Failing CI",
+    "state": "OPEN",
+    "isDraft": false,
+    "author": {
+      "login": "ci-author"
+    },
+    "headRefName": "fix/ci",
+    "url": "https://github.com/fixture/project/pull/104"
+  },
+  {
+    "number": 105,
+    "title": "Merge conflict",
+    "state": "OPEN",
+    "isDraft": false,
+    "author": null,
+    "headRefName": "fix/conflict",
+    "url": "https://github.com/fixture/project/pull/105"
+  }
+]
