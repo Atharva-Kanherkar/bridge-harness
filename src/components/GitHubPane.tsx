@@ -24,6 +24,8 @@ import {
 import { bridgeApi } from "../api";
 import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
+import { Markdown } from "./Markdown";
+import { relativeTime } from "./workDashboard";
 import { checksNeedPolling, rollupState, type PullRequestListItem, type RollupState } from "../githubSurface";
 import type {
   GithubAction,
@@ -87,11 +89,61 @@ function checkTone(conclusion: string | null | undefined, status: string) {
 }
 
 /** Centered empty/availability state — the pane never renders blank. */
-function PaneNotice({ icon: Icon, title, children }: { icon: typeof GitPullRequest; title: string; children?: React.ReactNode }) {
+function PaneNotice({ icon: Icon, title, spin, children }: { icon: typeof GitPullRequest; title: string; spin?: boolean; children?: React.ReactNode }) {
   return <div className="flex h-full flex-col items-center justify-center gap-2 px-8 text-center">
-    <span className="grid size-10 place-items-center rounded-xl border border-border bg-card text-muted-foreground"><Icon size={18} strokeWidth={1.6} aria-hidden="true" /></span>
+    <span className="grid size-10 place-items-center rounded-xl border border-border bg-card text-muted-foreground"><Icon size={18} strokeWidth={1.6} className={cn(spin && "animate-spin")} aria-hidden="true" /></span>
     <p className="mt-1 text-[13px] font-medium text-foreground">{title}</p>
     <div className="max-w-[26rem] text-[12px] leading-relaxed text-muted-foreground">{children}</div>
+  </div>;
+}
+
+/** GitHub-authored markdown at the pane's compact type scale. Rendering goes
+ * through the app's Markdown component — React text nodes only, with fenced
+ * HTML confined to a fully sandboxed iframe — so remote content stays inert. */
+function GithubMarkdown({ text }: { text: string }) {
+  return <div className="[&>.md]:text-[12.5px] [&>.md]:leading-relaxed"><Markdown text={text} /></div>;
+}
+
+/** A comment's relative age; omitted entirely when the timestamp is junk —
+ * a raw ISO string (or "unknown") is noise, not information. */
+function CommentTime({ iso }: { iso: string }) {
+  if (Number.isNaN(Date.parse(iso))) return null;
+  return <time dateTime={iso} title={new Date(iso).toLocaleString()} className="text-[10.5px] text-muted-foreground">{relativeTime(iso, new Date())}</time>;
+}
+
+const SKELETON_BAR = "animate-pulse rounded bg-muted-foreground/10";
+const SKELETON_WIDTHS = ["w-3/5", "w-2/5", "w-1/2", "w-3/4", "w-2/5", "w-2/3"] as const;
+
+/** Placeholder rows shaped like the list they precede, instead of a bare
+ * spinner in an empty pane. */
+function ListSkeleton({ label }: { label: string }) {
+  return <div role="status" aria-label={label} className="min-h-0 flex-1 overflow-y-auto px-3 py-3 sm:px-4">
+    <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
+      {SKELETON_WIDTHS.map((width, index) => <div key={index} className="flex items-start gap-2.5 px-3 py-2.5">
+        <span className={cn("mt-0.5 size-[15px] shrink-0 rounded-full", SKELETON_BAR)} />
+        <span className="min-w-0 flex-1">
+          <span className={cn("block h-3", SKELETON_BAR, width)} />
+          <span className={cn("mt-1.5 block h-2.5 w-1/4", SKELETON_BAR)} />
+        </span>
+      </div>)}
+    </div>
+  </div>;
+}
+
+/** Placeholder shaped like a PR/issue detail: meta line, title, branch line,
+ * then a few body bars. */
+function DetailSkeleton({ label }: { label: string }) {
+  return <div role="status" aria-label={label} className="min-h-0 flex-1 overflow-y-auto">
+    <div className="border-b border-border px-4 pb-3 pt-3.5">
+      <span className={cn("block h-3 w-28", SKELETON_BAR)} />
+      <span className={cn("mt-2 block h-4 w-4/5", SKELETON_BAR)} />
+      <span className={cn("mt-2 block h-3 w-2/5", SKELETON_BAR)} />
+    </div>
+    <div className="space-y-2.5 px-4 py-4">
+      <span className={cn("block h-3 w-full", SKELETON_BAR)} />
+      <span className={cn("block h-3 w-11/12", SKELETON_BAR)} />
+      <span className={cn("block h-3 w-3/5", SKELETON_BAR)} />
+    </div>
   </div>;
 }
 
@@ -253,7 +305,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, intent, onJumpToFile 
   if (surfaceError) {
     body = <PaneNotice icon={CircleX} title="GitHub is unreachable">{surfaceError}</PaneNotice>;
   } else if (!status) {
-    body = <PaneNotice icon={LoaderCircle} title="Checking GitHub…"><span className="inline-flex items-center gap-1.5"><LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> Resolving the CLI and repository.</span></PaneNotice>;
+    body = <PaneNotice icon={LoaderCircle} spin title="Checking GitHub…">Resolving the CLI and repository.</PaneNotice>;
   } else if (status.availability.status === "notInstalled") {
     body = <PaneNotice icon={CircleSlash} title="GitHub CLI is not installed">Bridge drives GitHub through <code className="font-mono text-foreground/90">gh</code> — install it and sign in, and this pane fills in by itself.</PaneNotice>;
   } else if (status.availability.status === "notAuthenticated") {
@@ -274,7 +326,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, intent, onJumpToFile 
   } else if (surfaceTab === "pulls" && tabErrors.pulls && !prs) {
     body = <PaneNotice icon={CircleX} title="Pull requests did not load">{tabErrors.pulls}</PaneNotice>;
   } else if (surfaceTab === "pulls" && !prs) {
-    body = <PaneNotice icon={LoaderCircle} title="Loading pull requests…" />;
+    body = <ListSkeleton label="Loading pull requests" />;
   } else if (surfaceTab === "pulls" && prs?.length === 0) {
     body = <PaneNotice icon={GitPullRequest} title="No open pull requests">{repoLabel ? `${repoLabel} has nothing waiting on you.` : "This repository has nothing waiting on you."}</PaneNotice>;
   } else if (surfaceTab === "pulls" && prs) {
@@ -297,7 +349,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, intent, onJumpToFile 
   } else if (surfaceTab === "issues" && tabErrors.issues && !issues) {
     body = <PaneNotice icon={CircleX} title="Issues did not load">{tabErrors.issues}</PaneNotice>;
   } else if (surfaceTab === "issues" && !issues) {
-    body = <PaneNotice icon={LoaderCircle} title="Loading issues…" />;
+    body = <ListSkeleton label="Loading issues" />;
   } else if (surfaceTab === "issues" && issues?.length === 0) {
     body = <PaneNotice icon={ListTodo} title="No open issues">This repository has no open issues.</PaneNotice>;
   } else if (surfaceTab === "issues" && issues) {
@@ -305,7 +357,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, intent, onJumpToFile 
   } else if (tabErrors.repository && !repositoryOverview) {
     body = <PaneNotice icon={CircleX} title="Repository did not load">{tabErrors.repository}</PaneNotice>;
   } else if (!repositoryOverview) {
-    body = <PaneNotice icon={LoaderCircle} title="Loading repository…" />;
+    body = <DetailSkeleton label="Loading repository" />;
   } else {
     body = <RepositoryOverview overview={repositoryOverview} />;
   }
@@ -435,8 +487,11 @@ function FileChange({ file, defaultOpen, fullDiffUrl }: {
 
 function CommentList({ comments }: { comments: Array<{ id: string; author?: { login: string } | null; body: string; createdAt: string }> }) {
   return <div className="space-y-2">{comments.map(comment => <article key={comment.id} className="rounded-lg border border-border bg-card px-3 py-2.5">
-    <p className="text-[11px] font-medium text-foreground">{comment.author?.login ?? "ghost"}</p>
-    <p className="mt-1 whitespace-pre-wrap text-[12px] leading-relaxed text-foreground/90">{comment.body}</p>
+    <p className="flex items-baseline gap-2 text-[11px]">
+      <span className="font-medium text-foreground">{comment.author?.login ?? "ghost"}</span>
+      <CommentTime iso={comment.createdAt} />
+    </p>
+    <div className="mt-1"><GithubMarkdown text={comment.body} /></div>
   </article>)}</div>;
 }
 
@@ -465,7 +520,7 @@ function IssueList({ issues, onOpen }: { issues: GithubIssuesResult["issues"]; o
         <CircleDot size={14} className="mt-0.5 shrink-0 text-success" aria-hidden="true" />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-[12.5px] font-medium text-foreground">{issue.title}</span>
-          <span className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground"><span>#{issue.number}</span><span>·</span><span>{issue.author?.login ?? "ghost"}</span></span>
+          <span className="mt-1 flex items-center gap-1.5 text-[11px] text-muted-foreground"><span>#{issue.number}</span><span aria-hidden="true">·</span><span>{issue.author?.login ?? "ghost"}</span>{!Number.isNaN(Date.parse(issue.updatedAt)) && <><span aria-hidden="true">·</span><span>updated {relativeTime(issue.updatedAt, new Date())}</span></>}</span>
           {!!issue.labels.length && <span className="mt-1.5 flex flex-wrap gap-1">{issue.labels.map(label => <LabelBadge key={label.name} label={label} />)}</span>}
         </span>
       </button>)}
@@ -565,7 +620,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, repository, number, d
   </div>;
 
   if (error && !detail) return <div className="flex min-h-0 flex-1 flex-col">{header}<PaneNotice icon={CircleX} title={`Pull request #${number} did not load`}>{error}</PaneNotice></div>;
-  if (!detail) return <div className="flex min-h-0 flex-1 flex-col">{header}<PaneNotice icon={LoaderCircle} title={`Opening #${number}…`} /></div>;
+  if (!detail) return <div className="flex min-h-0 flex-1 flex-col">{header}<DetailSkeleton label={`Opening pull request #${number}`} /></div>;
 
   const { pullRequest, reviewThreads } = detail.result;
   const summary = pullRequest.summary;
@@ -586,6 +641,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, repository, number, d
           <StateIcon size={13} aria-hidden="true" className={cn(summary.isDraft ? "text-muted-foreground/70" : summary.state === "merged" ? "text-info" : summary.state === "closed" ? "text-destructive" : "text-success")} />
           <span className="tabular-nums">#{summary.number}</span>
           <span className="capitalize">{summary.isDraft ? "draft" : summary.state}</span>
+          <span className="truncate">by {summary.author?.login ?? "ghost"}</span>
           {review && <Badge variant={review.variant} size="sm">{review.label}</Badge>}
           <a href={summary.url} target="_blank" rel="noreferrer" aria-label={`Open #${summary.number} on GitHub`} title="Open on GitHub" className="ml-auto text-muted-foreground transition-colors hover:text-foreground"><SquareArrowOutUpRight size={12.5} aria-hidden="true" /></a>
         </div>
@@ -652,7 +708,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, repository, number, d
         {tab === "conversation" && <>
         <section aria-label="Description">
           <h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.1em] text-muted-foreground/65">DESCRIPTION</h3>
-          <p className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-foreground/90">{pullRequest.body || "No description provided."}</p>
+          {pullRequest.body ? <GithubMarkdown text={pullRequest.body} /> : <p className="text-[12px] italic text-muted-foreground">No description provided.</p>}
         </section>
 
         <section aria-label="Conversation comments">
@@ -684,10 +740,11 @@ function PullRequestDetail({ workspaceId, workspaceBranch, repository, number, d
                 </div>
                 <div className="space-y-2.5 px-3 py-2.5">
                   {thread.comments.map(comment => <div key={comment.id}>
-                    <p className="flex items-baseline gap-1.5 text-[11px]">
+                    <p className="flex items-baseline gap-2 text-[11px]">
                       <span className="font-medium text-foreground">{comment.author?.login ?? "ghost"}</span>
+                      <CommentTime iso={comment.createdAt} />
                     </p>
-                    <p className="mt-0.5 whitespace-pre-wrap text-[12px] leading-relaxed text-foreground/90">{comment.body}</p>
+                    <div className="mt-0.5"><GithubMarkdown text={comment.body} /></div>
                   </div>)}
                   {rootId !== null && <button
                     type="button"
@@ -778,7 +835,7 @@ function IssueDetail({ workspaceId, repository, number, detail, error, available
   };
 
   if (error && !detail) return <div className="flex min-h-0 flex-1 flex-col">{header}<PaneNotice icon={CircleX} title={`Issue #${number} did not load`}>{error}</PaneNotice></div>;
-  if (!detail) return <div className="flex min-h-0 flex-1 flex-col">{header}<PaneNotice icon={LoaderCircle} title={`Opening issue #${number}…`} /></div>;
+  if (!detail) return <div className="flex min-h-0 flex-1 flex-col">{header}<DetailSkeleton label={`Opening issue #${number}`} /></div>;
   const { issue } = detail;
 
   return <div className="relative flex min-h-0 flex-1 flex-col">
@@ -797,7 +854,7 @@ function IssueDetail({ workspaceId, repository, number, detail, error, available
       </div>
       {actionError && <p role="alert" className="border-b border-border bg-destructive/10 px-4 py-2 text-[11.5px] text-destructive">{actionError}</p>}
       <div className="space-y-5 px-4 py-4">
-        <section aria-label="Issue description"><h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.1em] text-muted-foreground/65">DESCRIPTION</h3><p className="whitespace-pre-wrap text-[12.5px] leading-relaxed text-foreground/90">{issue.body || "No description provided."}</p></section>
+        <section aria-label="Issue description"><h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.1em] text-muted-foreground/65">DESCRIPTION</h3>{issue.body ? <GithubMarkdown text={issue.body} /> : <p className="text-[12px] italic text-muted-foreground">No description provided.</p>}</section>
         <section aria-label="Issue comments"><h3 className="mb-2 text-[10.5px] font-semibold tracking-[0.1em] text-muted-foreground/65">COMMENTS</h3>{issue.comments.length ? <CommentList comments={issue.comments} /> : <p className="text-[12px] text-muted-foreground">No comments.</p>}</section>
       </div>
     </div>

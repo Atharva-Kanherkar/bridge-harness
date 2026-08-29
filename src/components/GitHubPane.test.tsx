@@ -176,6 +176,47 @@ describe("GitHubPane", () => {
     expect(host!.textContent).toContain("Patch truncated at 600 lines");
   });
 
+  it("shows a list skeleton while pull requests load", async () => {
+    vi.spyOn(bridgeApi, "githubStatus").mockResolvedValue(status);
+    const never = new Promise<never>(() => {});
+    vi.spyOn(bridgeApi, "githubPullRequests").mockReturnValue(never);
+    vi.spyOn(bridgeApi, "githubIssues").mockReturnValue(never);
+    vi.spyOn(bridgeApi, "githubRepository").mockReturnValue(never);
+    await mount();
+    expect(host!.querySelector('[role="status"][aria-label="Loading pull requests"]')).not.toBeNull();
+  });
+
+  it("shows a detail skeleton while a pull request opens", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubPullRequest").mockReturnValue(new Promise(() => {}));
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    expect(host!.querySelector('[role="status"][aria-label="Opening pull request #1"]')).not.toBeNull();
+  });
+
+  it("renders bodies and comments as markdown with parseable timestamps only", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubPullRequest").mockResolvedValue({
+      ...detail,
+      pullRequest: {
+        ...detail.pullRequest,
+        body: "Some **bold** intro\n\n```ts\nconst x = 1;\n```",
+        comments: [
+          { id: "c1", author: { login: "maintainer" }, body: "A `code` remark", createdAt: "2026-08-29T10:00:00Z", url: "https://example.test" },
+          { id: "c2", author: { login: "other" }, body: "plain words", createdAt: "not-a-date", url: "https://example.test" },
+        ],
+      },
+    });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    const description = host!.querySelector('[aria-label="Description"]')!;
+    expect(description.querySelector("strong")?.textContent).toBe("bold");
+    expect(description.querySelector(".code-block")).not.toBeNull();
+    const comments = host!.querySelector('[aria-label="Conversation comments"]')!;
+    expect(comments.querySelector("code")?.textContent).toBe("code");
+    expect(comments.querySelectorAll("time")).toHaveLength(1);
+  });
+
   it("keeps loaded content visible when a refresh fails", async () => {
     const list = mockReads();
     const statusRead = vi.mocked(bridgeApi.githubStatus);
