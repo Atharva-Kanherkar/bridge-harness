@@ -336,18 +336,22 @@ describe("browser-mode live agent-event fan-out", () => {
   });
 
   it("hands each subscriber its own clone, sequence already assigned", async () => {
-    const received: import("./types").AgentEvent[] = [];
-    const off = await bridgeApi.onAgentEvent(event => received.push(event));
+    const first: import("./types").AgentEvent[] = [];
+    const second: import("./types").AgentEvent[] = [];
+    const offFirst = await bridgeApi.onAgentEvent(event => first.push(event));
+    const offSecond = await bridgeApi.onAgentEvent(event => second.push(event));
     const created = await bridgeApi.createChat("claude", "sonnet", "clone probe");
     const chat = [...created.sessions].reverse().find(item => item.title === "clone probe")!;
     await bridgeApi.startChat(chat.id);
-    off();
+    offFirst();
+    offSecond();
 
-    const event = received.find(item => item.sessionId === chat.id)!;
+    const event = first.find(item => item.sessionId === chat.id)!;
     expect(event.sequence).toBeGreaterThan(0);
-    // Mutating the delivered copy must not corrupt the stored mock row.
+    // Mutating one subscriber's copy must not corrupt another's — the same
+    // isolation a wire round-trip gives.
     event.kind = "tampered";
-    const state = await bridgeApi.state();
-    expect(state.agentEvents.some(item => item.kind === "tampered")).toBe(false);
+    const twin = second.find(item => item.sessionId === chat.id)!;
+    expect(twin.kind).toBe("session.started");
   });
 });
