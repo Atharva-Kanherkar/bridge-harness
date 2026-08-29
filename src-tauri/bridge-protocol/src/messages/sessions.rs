@@ -377,6 +377,39 @@ pub struct SubmitInputResult {
     pub interceptions: Vec<SecretInterception>,
 }
 
+/// `sessions/dispatch_agent_shortcut` accepts only identity and user intent.
+/// Role, model, effort, write scope, and policy are deliberately absent: the
+/// host re-resolves all of them from persisted configuration.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DispatchAgentShortcutParams {
+    pub session_id: String,
+    pub token: String,
+    pub objective: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum AgentShortcutDisposition {
+    Launched,
+    Queued,
+    AwaitingApproval,
+}
+
+/// The reservation outcome the composer can render without asking an
+/// orchestrator to interpret a worker lifecycle event.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DispatchAgentShortcutResult {
+    pub disposition: AgentShortcutDisposition,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub child_session_id: Option<String>,
+    pub agent_id: String,
+    pub agent_name: String,
+    pub role: String,
+    pub interceptions: Vec<SecretInterception>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct StopSessionParams {

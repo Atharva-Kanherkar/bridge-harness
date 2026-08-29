@@ -282,6 +282,13 @@
       "resultSchema": "submit-input-result.json"
     },
     {
+      "command": "dispatch_agent_shortcut",
+      "domain": "sessions",
+      "method": "sessions/dispatch_agent_shortcut",
+      "paramsSchema": "dispatch-agent-shortcut-params.json",
+      "resultSchema": "dispatch-agent-shortcut-result.json"
+    },
+    {
       "command": "compact_session",
       "domain": "sessions",
       "method": "sessions/compact_session",
