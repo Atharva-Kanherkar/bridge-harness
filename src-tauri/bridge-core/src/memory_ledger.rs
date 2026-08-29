@@ -432,13 +432,28 @@ pub(crate) fn body_already_known(
 /// `proposed -> active`. The only path to active a proposal has, and the
 /// instant the record's claim starts holding: approval opens the interval that
 /// the proposal was written with closed.
+///
+/// One statement, like every other transition here: a status flip and an
+/// interval open that could land separately would leave a crash window in
+/// which a record is active with an empty interval — held by the ledger but
+/// invisible to every as-of read, forever.
 pub fn approve(db: &Connection, record_id: &str) -> Result<MemoryRecord, BridgeError> {
-    let record = transition(db, record_id, STATUS_PROPOSED, STATUS_ACTIVE, "approve")?;
-    db.execute(
-        "UPDATE memory_records SET valid_from=?2, valid_to=NULL WHERE id=?1",
-        params![record.id, record.updated_at],
+    let record_id = record_id.trim();
+    if record_id.is_empty() {
+        return Err(BridgeError::Invalid("Memory approve needs a record id.".into()));
+    }
+    let updated_at = Utc::now().to_rfc3339();
+    let changed = db.execute(
+        "UPDATE memory_records SET status=?1, updated_at=?2, valid_from=?2, valid_to=NULL
+         WHERE id=?3 AND status=?4",
+        params![STATUS_ACTIVE, updated_at, record_id, STATUS_PROPOSED],
     )?;
-    load(db, &record.id)?
+    if changed == 0 {
+        return Err(BridgeError::Invalid(format!(
+            "Only a {STATUS_PROPOSED} memory record can be {STATUS_ACTIVE}; '{record_id}' is not one."
+        )));
+    }
+    load(db, record_id)?
         .ok_or_else(|| BridgeError::Invalid("The approved record was not written.".into()))
 }
 
@@ -586,15 +601,25 @@ pub fn list_as_of(
 ) -> Result<ListMemoryRecordsResult, BridgeError> {
     let scope_key = parse_scope_key(scope_key)?;
     let at = at.to_rfc3339();
+    // A tombstone is the one closure a user asked for by name. Its interval
+    // still closes at the forget instant so nothing overlaps, but the body a
+    // user said to forget does not come back through the history read — the
+    // FTS purge already removes it from search, and this read honours the
+    // same request. Superseded and expired records stay queryable: those
+    // closures are lifecycle, not a deletion.
     let mut statement = db.prepare(&format!(
         "SELECT {RECORD_COLUMNS}
          FROM memory_records
-         WHERE scope_key=?1 AND valid_from <= ?2 AND (valid_to IS NULL OR valid_to > ?2)
+         WHERE scope_key=?1 AND status<>?4
+           AND valid_from <= ?2 AND (valid_to IS NULL OR valid_to > ?2)
          ORDER BY updated_at DESC, id DESC
          LIMIT ?3",
     ))?;
     let records = statement
-        .query_map(params![scope_key, at, MAX_MEMORY_LIST_LIMIT as i64], map_row)?
+        .query_map(
+            params![scope_key, at, MAX_MEMORY_LIST_LIMIT as i64, STATUS_DELETED],
+            map_row,
+        )?
         .collect::<Result<Vec<_>, _>>()?;
     Ok(ListMemoryRecordsResult { scope_key, records })
 }

@@ -27,7 +27,7 @@ propose. Nothing here can grant a permission, widen a scope, or skip an approval
   it stopped. An active record's end is open.
 - Superseding closes the predecessor's interval exactly where the successor's opens.
   There is no gap in which neither held, and no overlap in which both did.
-- A closed record stays queryable as history. Nothing in this slice deletes a row, and
+- A superseded or expired record stays queryable as history. Nothing in this slice deletes a row, and
   the existing tombstone remains the only path to removal.
 - Reading a scope as of an instant returns exactly the records whose interval contains
   it. As of now, that is the same set the ledger returns today, so nothing that reads

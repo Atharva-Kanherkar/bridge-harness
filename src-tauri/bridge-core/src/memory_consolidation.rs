@@ -93,7 +93,9 @@ const MAX_TARGETS_PER_OPERATION: usize = 10;
 const MAX_SUBJECT_CHARS: usize = 80;
 const MIN_EXPIRY_DAYS: i64 = 1;
 const MAX_EXPIRY_DAYS: i64 = 3_650;
-const ENQUEUEABLE_SESSION_KINDS: [&str; 2] = ["chat", "orchestrator"];
+/// The kinds real conversations are stored under: `direct` single-agent chats
+/// and `orchestrator` workspace sessions. No production path writes `chat`.
+const ENQUEUEABLE_SESSION_KINDS: [&str; 2] = ["direct", "orchestrator"];
 
 pub(crate) fn install(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     transaction.execute_batch(
@@ -292,14 +294,24 @@ pub fn held_records(db: &Connection, scope_key: &str) -> Result<i64, BridgeError
 /// what to do next, and what to do next is reduce the scope, never let
 /// something be dropped on their behalf.
 pub(crate) fn enforce_scope_budget(db: &Connection, scope_key: &str) -> Result<(), BridgeError> {
+    // Only the account scope has a configurable budget in this release, so
+    // only the account scope pays one: an unraisable default ceiling on a
+    // scope whose settings cannot be edited would be a wall with no door.
+    if scope_key != ACCOUNT_MEMORY_SCOPE {
+        return Ok(());
+    }
     let budget = settings(db, scope_key)?.max_records;
     let held = held_records(db, scope_key)?;
     if held < budget {
         return Ok(());
     }
+    // The remedies named here must all actually work in a full scope: forget
+    // clears an active pin, reviewing clears a proposal, and consolidation
+    // only ever reorganises active records — so a proposal-heavy scope is
+    // pointed at its review queue, not at a job that cannot reach it.
     Err(BridgeError::Invalid(format!(
         "Memory scope '{scope_key}' holds {held} of {budget} records and nothing was written. \
-         Forget or consolidate a record to make room."
+         Forget a pinned record, review pending proposals, or let consolidation make room."
     )))
 }
 
@@ -323,7 +335,7 @@ pub fn enqueue_after_turn(
         )
         .optional()?;
     let Some(kind) = kind else { return Ok(false) };
-    let kind = kind.unwrap_or_else(|| "chat".to_string());
+    let kind = kind.unwrap_or_else(|| "direct".to_string());
     if !ENQUEUEABLE_SESSION_KINDS.contains(&kind.as_str()) {
         return Ok(false);
     }
@@ -331,14 +343,28 @@ pub fn enqueue_after_turn(
     if !current.enabled() {
         return Ok(false);
     }
+    // At the budget the calculus flips: every write is being refused, and the
+    // pending consolidation is the one thing that can make room. A busy
+    // conversation must not keep pushing it out of reach — the debounce that
+    // already elapsed stands, and the run becomes due on its original clock.
+    let at_budget = held_records(db, ACCOUNT_MEMORY_SCOPE)? >= current.max_records;
     let due_at = (now + Duration::seconds(current.debounce_seconds)).to_rfc3339();
     let now = now.to_rfc3339();
-    let replaced = db.execute(
-        "UPDATE memory_consolidation_runs
-         SET session_id=?2, due_at=?3, updated_at=?4
-         WHERE scope_key=?1 AND status='queued'",
-        params![ACCOUNT_MEMORY_SCOPE, session_id, due_at, now],
-    )?;
+    let replaced = if at_budget {
+        db.execute(
+            "UPDATE memory_consolidation_runs
+             SET session_id=?2, updated_at=?3
+             WHERE scope_key=?1 AND status='queued'",
+            params![ACCOUNT_MEMORY_SCOPE, session_id, now],
+        )?
+    } else {
+        db.execute(
+            "UPDATE memory_consolidation_runs
+             SET session_id=?2, due_at=?3, updated_at=?4
+             WHERE scope_key=?1 AND status='queued'",
+            params![ACCOUNT_MEMORY_SCOPE, session_id, due_at, now],
+        )?
+    };
     if replaced > 0 {
         return Ok(true);
     }
@@ -760,9 +786,15 @@ fn fenced_payload(text: &str) -> Option<&str> {
     while let Some(start) = search.rfind(FENCE_TAG) {
         let after = &search[start + FENCE_TAG.len()..];
         if after.starts_with(['\n', '\r']) {
-            let end = after.find("```")?;
-            found = Some(after[..end].trim());
-            break;
+            // The closing fence must open a line: a ``` inside a record body
+            // quoted into the answer does not end the block, and a tag with no
+            // closing fence at all is not a block — the scan keeps walking back
+            // to an earlier complete one instead of giving up on the whole
+            // answer.
+            if let Some(end) = after.find("\n```") {
+                found = Some(after[..end].trim());
+                break;
+            }
         }
         search = &search[..start];
     }
@@ -1245,9 +1277,42 @@ mod tests {
     }
 
     #[test]
+    fn a_forgotten_body_does_not_come_back_through_history() {
+        let (_dir, db) = consolidation_db();
+        let secret = pin(&db, "A pin the user later thought better of");
+        let kept = pin(&db, "A pin they kept");
+        let while_it_held = DateTime::parse_from_rfc3339(&secret.valid_from)
+            .unwrap()
+            .with_timezone(&Utc);
+        memory_ledger::forget(&db, &secret.id).unwrap();
+
+        // Superseded and expired records are lifecycle history and stay
+        // readable; a tombstone is the one closure the user asked for by name,
+        // and unpin means the body is gone from search *and* from history.
+        for instant in [while_it_held, Utc::now()] {
+            let records = memory_ledger::list_as_of(&db, ACCOUNT_MEMORY_SCOPE, instant)
+                .unwrap()
+                .records;
+            assert!(
+                records.iter().all(|record| record.id != secret.id),
+                "a forgotten pin is readable at {instant}"
+            );
+        }
+        assert_eq!(
+            memory_ledger::list_as_of(&db, ACCOUNT_MEMORY_SCOPE, Utc::now())
+                .unwrap()
+                .records
+                .into_iter()
+                .map(|record| record.id)
+                .collect::<Vec<_>>(),
+            vec![kept.id],
+        );
+    }
+
+    #[test]
     fn a_proposal_is_never_returned_by_an_as_of_read() {
         let (_dir, db) = consolidation_db();
-        insert_chat(&db, "s1", "chat");
+        insert_chat(&db, "s1", "direct");
         let proposal = memory_ledger::insert_proposal(
             &db,
             ACCOUNT_MEMORY_SCOPE,
@@ -1374,7 +1439,7 @@ mod tests {
     #[test]
     fn an_over_budget_scope_refuses_every_write_and_evicts_nothing() {
         let (_dir, db) = consolidation_db();
-        insert_chat(&db, "s1", "chat");
+        insert_chat(&db, "s1", "direct");
         update_settings(
             &db,
             ACCOUNT_MEMORY_SCOPE,
@@ -1392,7 +1457,11 @@ mod tests {
         let refusal = memory_ledger::save(&db, "Third pin", None, None).unwrap_err().to_string();
         assert!(refusal.contains("holds 2 of 2 records"), "{refusal}");
         assert!(refusal.contains("account:local"), "{refusal}");
-        assert!(refusal.contains("Forget or consolidate"), "{refusal}");
+        // Every remedy named has to be one that works in a full scope:
+        // consolidation only reorganises active records, so a scope full of
+        // proposals needs the review queue named too.
+        assert!(refusal.contains("Forget a pinned record"), "{refusal}");
+        assert!(refusal.contains("review pending proposals"), "{refusal}");
         assert_eq!(
             active_ids(&db),
             vec![second.id.clone(), first.id.clone()],
@@ -1425,7 +1494,7 @@ mod tests {
     #[test]
     fn a_full_scope_is_due_for_consolidation_rather_than_blocked_by_it() {
         let (_dir, db) = consolidation_db();
-        insert_chat(&db, "s1", "chat");
+        insert_chat(&db, "s1", "direct");
         update_settings(
             &db,
             ACCOUNT_MEMORY_SCOPE,
@@ -1496,7 +1565,7 @@ mod tests {
     #[test]
     fn an_off_or_unconfigured_scope_settles_without_a_model_call() {
         let (_dir, db) = consolidation_db();
-        insert_chat(&db, "s1", "chat");
+        insert_chat(&db, "s1", "direct");
         propose_mode(&db);
         pin(&db, "One");
         pin(&db, "Two");
@@ -1538,8 +1607,8 @@ mod tests {
     #[test]
     fn a_new_turn_replaces_the_pending_run_rather_than_queueing_another() {
         let (_dir, db) = consolidation_db();
-        insert_chat(&db, "s1", "chat");
-        insert_chat(&db, "s2", "chat");
+        insert_chat(&db, "s1", "direct");
+        insert_chat(&db, "s2", "direct");
         propose_mode(&db);
         let start = Utc::now();
         assert!(enqueue_after_turn(&db, "s1", start).unwrap());
@@ -1571,7 +1640,7 @@ mod tests {
     #[test]
     fn hidden_session_kinds_and_an_off_scope_enqueue_nothing() {
         let (_dir, db) = consolidation_db();
-        insert_chat(&db, "s1", "chat");
+        insert_chat(&db, "s1", "direct");
         let now = Utc::now();
         assert!(!enqueue_after_turn(&db, "s1", now).unwrap(), "off means nothing is queued");
         propose_mode(&db);
@@ -1588,7 +1657,7 @@ mod tests {
     #[test]
     fn a_run_is_leased_settled_once_and_its_spend_observed() {
         let (_dir, db) = consolidation_db();
-        insert_chat(&db, "s1", "chat");
+        insert_chat(&db, "s1", "direct");
         propose_mode(&db);
         pin(&db, "Something to consolidate");
         pin(&db, "Something else to consolidate");
@@ -1663,7 +1732,7 @@ mod tests {
     #[test]
     fn an_expired_lease_is_reclaimable_by_a_second_worker() {
         let (_dir, db) = consolidation_db();
-        insert_chat(&db, "s1", "chat");
+        insert_chat(&db, "s1", "direct");
         propose_mode(&db);
         pin(&db, "One");
         pin(&db, "Two");
@@ -1684,7 +1753,7 @@ mod tests {
     #[test]
     fn every_operation_outside_the_vocabulary_is_refused_and_counted() {
         let (_dir, db) = consolidation_db();
-        insert_chat(&db, "s1", "chat");
+        insert_chat(&db, "s1", "direct");
         let keeper = pin(&db, "A pin worth keeping");
         let other = pin(&db, "Another pin");
         let proposal = memory_ledger::insert_proposal(
@@ -1822,7 +1891,7 @@ mod tests {
     #[test]
     fn the_candidate_list_is_the_scope_and_nothing_else() {
         let (_dir, db) = consolidation_db();
-        insert_chat(&db, "s1", "chat");
+        insert_chat(&db, "s1", "direct");
         crate::store::append_session_entry(
             &db,
             "s1",

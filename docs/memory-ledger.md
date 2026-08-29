@@ -25,7 +25,7 @@ The server always writes `account:local`. The client cannot pass a scope on save
 
 Every record carries `valid_from`, the instant its claim began to hold, and `valid_to`, the instant it stopped. An active record’s end is open. A record that never reached active — a proposal, a rejection — carries an empty interval where `valid_to` equals `valid_from`, so it was never true at any instant.
 
-Superseding closes the predecessor exactly where the successor opens: one instant, no gap in which neither held and no overlap in which both did. A tombstone closes the interval at the tombstone. Nothing deletes a row, so a closed record stays queryable as history and the tombstone remains the only path to removal.
+Superseding closes the predecessor exactly where the successor opens: one instant, no gap in which neither held and no overlap in which both did. A tombstone closes the interval at the tombstone. Nothing deletes a row, so a superseded or expired record stays queryable as history and the tombstone remains the only path to removal; a tombstoned body is the one thing history does not hand back, because forgetting it is what the user asked for.
 
 `memory/list_memory_records_as_of` reads a scope at an instant and returns exactly the records whose half-open interval `[valid_from, valid_to)` contains it. Read as of now, that is the active set, which is why nothing that already read the ledger changed behaviour.
 

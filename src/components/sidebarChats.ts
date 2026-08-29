@@ -20,6 +20,10 @@ export const SUGGESTION_SESSION_KIND = "suggestion";
  * `bridge_core::routing_evaluation::EVALUATION_SESSION_KIND`. */
 export const EVALUATION_SESSION_KIND = "outcome_evaluation";
 
+/** The session kind a memory consolidation run uses. Mirrors
+ * `bridge_core::memory_consolidation::CONSOLIDATION_SESSION_KIND`. */
+export const CONSOLIDATION_SESSION_KIND = "consolidation";
+
 /** Is this a session Bridge runs for itself, that a human should never meet in a list?
  *
  * A predicate rather than an ordering rule: a run that merely sorted last would
@@ -30,6 +34,7 @@ const HIDDEN_SESSION_KINDS = [
   SUGGESTION_SESSION_KIND,
   EXTRACTION_SESSION_KIND,
   EVALUATION_SESSION_KIND,
+  CONSOLIDATION_SESSION_KIND,
 ];
 
 export function isHiddenSession(chat: Pick<Session, "kind">): boolean {

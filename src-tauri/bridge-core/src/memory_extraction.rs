@@ -27,7 +27,9 @@ const MAX_DIGEST_CHARS: usize = 24_000;
 const MAX_DIGEST_ENTRIES: usize = 30;
 const MAX_PIN_CONTEXT: usize = 20;
 const LEASE_MINUTES: i64 = 10;
-const ENQUEUEABLE_SESSION_KINDS: [&str; 2] = ["chat", "orchestrator"];
+/// The kinds real conversations are stored under: `direct` single-agent chats
+/// and `orchestrator` workspace sessions. No production path writes `chat`.
+const ENQUEUEABLE_SESSION_KINDS: [&str; 2] = ["direct", "orchestrator"];
 
 pub(crate) fn install(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     transaction.execute_batch(
@@ -156,7 +158,7 @@ pub fn enqueue_after_turn(db: &Connection, session_id: &str) -> Result<bool, Bri
         )
         .optional()?;
     let Some(kind) = kind else { return Ok(false) };
-    let kind = kind.unwrap_or_else(|| "chat".to_string());
+    let kind = kind.unwrap_or_else(|| "direct".to_string());
     if !ENQUEUEABLE_SESSION_KINDS.contains(&kind.as_str()) {
         return Ok(false);
     }
@@ -619,7 +621,7 @@ mod tests {
     #[test]
     fn remember_mode_enqueues_nothing_and_calls_no_model() {
         let (_dir, db) = extraction_db();
-        insert_chat(&db, "s1", "chat");
+        insert_chat(&db, "s1", "direct");
         insert_message(&db, "s1", "e1", 1, "user.message", "I prefer tabs");
         assert!(!enqueue_after_turn(&db, "s1").unwrap());
         let mut model = RefusingModel;
@@ -636,7 +638,7 @@ mod tests {
         assert!(!enqueue_after_turn(&db, "b1").unwrap());
         assert!(!enqueue_after_turn(&db, "x1").unwrap());
         assert!(!enqueue_after_turn(&db, "w1").unwrap());
-        insert_chat(&db, "s1", "chat");
+        insert_chat(&db, "s1", "direct");
         assert!(enqueue_after_turn(&db, "s1").unwrap());
         assert!(!enqueue_after_turn(&db, "s1").unwrap(), "one open run per session");
     }
@@ -645,7 +647,7 @@ mod tests {
     fn proposals_land_proposed_and_never_active() {
         let (_dir, db) = extraction_db();
         propose_mode(&db);
-        insert_chat(&db, "s1", "chat");
+        insert_chat(&db, "s1", "direct");
         insert_message(&db, "s1", "e1", 1, "user.message", "Always run bun run check before pushing");
         let mut model = CannedModel(fenced(
             r#"[{"body":"Runs bun run check before pushing","kind":"constraint","confidenceBps":9000,"rationale":"Said directly"}]"#,
@@ -668,7 +670,7 @@ mod tests {
     fn a_claimed_status_or_scope_makes_the_proposal_invalid_not_honored() {
         let (_dir, db) = extraction_db();
         propose_mode(&db);
-        insert_chat(&db, "s1", "chat");
+        insert_chat(&db, "s1", "direct");
         insert_message(&db, "s1", "e1", 1, "user.message", "hello");
         let mut model = CannedModel(fenced(
             r#"[{"body":"Sneaky","kind":"preference","status":"active"},
@@ -685,7 +687,7 @@ mod tests {
     fn the_gate_refuses_secrets_and_dedupes_known_bodies() {
         let (_dir, db) = extraction_db();
         propose_mode(&db);
-        insert_chat(&db, "s1", "chat");
+        insert_chat(&db, "s1", "direct");
         insert_message(&db, "s1", "e1", 1, "user.message", "hello");
         memory_ledger::save(&db, "Prefers tabs over spaces", None, None).unwrap();
         let mut model = CannedModel(fenced(
@@ -703,7 +705,7 @@ mod tests {
     fn at_most_ten_proposals_survive_a_run() {
         let (_dir, db) = extraction_db();
         propose_mode(&db);
-        insert_chat(&db, "s1", "chat");
+        insert_chat(&db, "s1", "direct");
         insert_message(&db, "s1", "e1", 1, "user.message", "hello");
         let elements: Vec<String> = (0..14)
             .map(|index| format!(r#"{{"body":"Distinct fact number {index}","kind":"fact"}}"#))
@@ -716,7 +718,7 @@ mod tests {
     #[test]
     fn the_digest_is_bounded_and_names_its_entries() {
         let (_dir, db) = extraction_db();
-        insert_chat(&db, "s1", "chat");
+        insert_chat(&db, "s1", "direct");
         insert_message(&db, "s1", "e1", 1, "user.message", "I always deploy on Fridays");
         insert_message(&db, "s1", "e2", 2, "assistant.message", "Noted.");
         memory_ledger::save(&db, "Existing pin", None, None).unwrap();
@@ -731,7 +733,7 @@ mod tests {
     fn a_run_is_leased_settled_and_its_spend_observed() {
         let (_dir, db) = extraction_db();
         propose_mode(&db);
-        insert_chat(&db, "s1", "chat");
+        insert_chat(&db, "s1", "direct");
         assert!(enqueue_after_turn(&db, "s1").unwrap());
         let now = Utc::now();
         let claimed = claim_due(&db, now).unwrap().unwrap();
@@ -778,7 +780,7 @@ mod tests {
     fn a_queued_run_does_not_erase_the_last_observed_spend() {
         let (_dir, db) = extraction_db();
         propose_mode(&db);
-        insert_chat(&db, "s1", "chat");
+        insert_chat(&db, "s1", "direct");
         assert!(enqueue_after_turn(&db, "s1").unwrap());
         let claimed = claim_due(&db, Utc::now()).unwrap().unwrap();
         settle(
@@ -786,7 +788,7 @@ mod tests {
             Some("claude"), Some("m"), Some("digest"), 420, 1_700, 2,
         )
         .unwrap();
-        insert_chat(&db, "s2", "chat");
+        insert_chat(&db, "s2", "direct");
         assert!(enqueue_after_turn(&db, "s2").unwrap());
         let last = last_run(&db, ACCOUNT_MEMORY_SCOPE).unwrap().unwrap();
         assert_eq!(last.status, "completed", "a queued row is not a report");
@@ -797,7 +799,7 @@ mod tests {
     fn turning_propose_off_cancels_queued_runs_at_claim_time() {
         let (_dir, db) = extraction_db();
         propose_mode(&db);
-        insert_chat(&db, "s1", "chat");
+        insert_chat(&db, "s1", "direct");
         assert!(enqueue_after_turn(&db, "s1").unwrap());
         update_settings(&db, ACCOUNT_MEMORY_SCOPE, MODE_REMEMBER, None, None).unwrap();
         assert!(claim_due(&db, Utc::now()).unwrap().is_none());
@@ -810,7 +812,7 @@ mod tests {
     fn an_expired_lease_is_reclaimable() {
         let (_dir, db) = extraction_db();
         propose_mode(&db);
-        insert_chat(&db, "s1", "chat");
+        insert_chat(&db, "s1", "direct");
         assert!(enqueue_after_turn(&db, "s1").unwrap());
         let start = Utc::now();
         let first = claim_due(&db, start).unwrap().unwrap();
