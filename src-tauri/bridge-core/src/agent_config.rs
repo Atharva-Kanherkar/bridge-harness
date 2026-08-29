@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 const MAX_PROMPT_BYTES: usize = 64 * 1024;
-const VALID_HARNESSES: [&str; 4] = ["bridge", "codex", "claude", "opencode"];
+const VALID_HARNESSES: [&str; 5] = ["bridge", "codex", "claude", "cursor", "opencode"];
 const VALID_ROLES: [&str; 6] = [
     "orchestrator",
     "research",
@@ -97,6 +97,7 @@ fn default_harnesses() -> Vec<HarnessConfig> {
         ("bridge", "Bridge"),
         ("codex", "Codex"),
         ("claude", "Claude Code"),
+        ("cursor", "Cursor"),
         ("opencode", "OpenCode"),
     ]
     .into_iter()
@@ -709,6 +710,45 @@ mod tests {
             .unwrap()
             .system_prompt
             .is_empty());
+    }
+
+    /// A harness Bridge registers an adapter for is a harness a user can
+    /// configure. Cursor reached the registry, the backend table and the
+    /// compatibility contract while this list stayed at three, which left it
+    /// runnable but with no row to set a model, an effort or a prompt on.
+    #[test]
+    fn every_bespoke_adapter_can_be_configured() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        let configured: Vec<String> = state(&db)
+            .unwrap()
+            .harnesses
+            .into_iter()
+            .map(|harness| harness.id)
+            .collect();
+        for adapter in bridge_protocol::messages::BUILTIN_HARNESS_IDS {
+            // `shell` is a terminal, not an agent anyone points a prompt at.
+            if adapter == "shell" {
+                continue;
+            }
+            assert!(
+                configured.iter().any(|id| id == adapter),
+                "{adapter} is a registered adapter with no configuration row: {configured:?}"
+            );
+        }
+        let mut cursor = state(&db)
+            .unwrap()
+            .harnesses
+            .into_iter()
+            .find(|item| item.id == "cursor")
+            .expect("cursor is configurable");
+        cursor.default_model = Some("composer-1".into());
+        save_harness(&db, cursor).unwrap();
+        assert_eq!(
+            harness_config(&db, "cursor")
+                .and_then(|config| config.default_model)
+                .as_deref(),
+            Some("composer-1")
+        );
     }
 
     #[test]

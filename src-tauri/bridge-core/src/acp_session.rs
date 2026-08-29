@@ -722,8 +722,15 @@ impl AcpSession {
                 if let Some(process_id) = process_id {
                     terminate_process_group(process_id);
                 }
-                let _ = finished_rx.recv_timeout(REAP_TIMEOUT);
-                drop(thread.join());
+                // Join only a thread that said it finished. The wait is
+                // bounded precisely because the transport may be wedged, and
+                // joining one that never answered would block a failed
+                // handshake forever on exactly the condition the timeout
+                // exists to survive — the same reason `shutdown` leaves a
+                // wedged connection thread detached.
+                if finished_rx.recv_timeout(REAP_TIMEOUT).is_ok() {
+                    drop(thread.join());
+                }
                 Err(error)
             }
         }
@@ -778,6 +785,22 @@ impl AcpSession {
             .lock()
             .expect("acp event queue poisoned")
             .evicted
+    }
+
+    /// What the queue holds and what it has dropped, in the shape the adapter
+    /// registry's health surface already reads from every other harness.
+    ///
+    /// The byte fields stay zero because this queue bounds by item count
+    /// rather than bytes — reporting a fabricated size would be worse than
+    /// reporting none, and the number that matters here is the eviction count.
+    pub fn queue_metrics(&self) -> crate::frame_queue::QueueMetricsSnapshot {
+        let queue = self.shared.events.lock().expect("acp event queue poisoned");
+        crate::frame_queue::QueueMetricsSnapshot {
+            depth: queue.events.len(),
+            bytes: 0,
+            high_water_bytes: 0,
+            dropped_transient: queue.evicted,
+        }
     }
 
     /// Why the runtime is in trouble: the exit status when it has one, its
@@ -2641,6 +2664,39 @@ mod tests {
         assert_eq!(
             drained[0].kind, "approval.requested",
             "a durable event outlives the deltas around it"
+        );
+    }
+
+    #[test]
+    fn a_queue_holding_only_durable_events_still_makes_room_and_counts_the_loss() {
+        // The eviction preference is transient-first, not transient-only: a
+        // queue with nothing streaming in it has to drop the oldest durable
+        // event rather than refuse the newest one, and the count is what turns
+        // a shortened stream into a reported one instead of a silent hole.
+        let mut queue = EventQueue::default();
+        for index in 0..EVENT_QUEUE_CAPACITY {
+            let mut event = NormalizedEvent::new("tool.started");
+            event.item_id = Some(index.to_string());
+            queue.push(event);
+        }
+        assert_eq!(queue.evicted, 0, "nothing was dropped before the queue filled");
+
+        let mut newest = NormalizedEvent::new("tool.started");
+        newest.item_id = Some("newest".into());
+        queue.push(newest);
+        assert_eq!(queue.evicted, 1);
+
+        let drained = queue.drain();
+        assert_eq!(drained.len(), EVENT_QUEUE_CAPACITY);
+        assert_eq!(
+            drained[0].item_id.as_deref(),
+            Some("1"),
+            "the oldest durable event is the one that made room"
+        );
+        assert_eq!(
+            drained.last().and_then(|event| event.item_id.as_deref()),
+            Some("newest"),
+            "the newest event is kept, never refused"
         );
     }
 

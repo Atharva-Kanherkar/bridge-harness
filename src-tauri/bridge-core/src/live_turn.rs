@@ -2294,6 +2294,68 @@ fn handle_agent_value(
                         &event.data,
                     );
                 }
+                // An agent-protocol permission Bridge answered on the agent's
+                // behalf, which is the one settlement no card-driven path
+                // wrote a resolution for. A cancel — a user pressing stop
+                // mid-approval, or a shutdown — answers every parked responder
+                // so the agent is unblocked, and without this the card it
+                // raised stays pending forever with live buttons that then
+                // fail. Only the cancelled outcome is settled here: a
+                // `selected` outcome came from `resolve_approval`, which
+                // already wrote the resolution itself.
+                "approval.settled" if event.status.as_deref() == Some("cancelled") => {
+                    if let Some(request_id) = event
+                        .data
+                        .get("requestId")
+                        .and_then(serde_json::Value::as_u64)
+                    {
+                        if let Some(target_event_id) = find_unresolved_approval_by_request_id(
+                            &db,
+                            session_id,
+                            crate::acp_events::ACP_PERMISSION_REQUEST_METHOD,
+                            &request_id.to_string(),
+                        ) {
+                            let resolved = agent::NormalizedEvent {
+                                kind: "approval.resolved".into(),
+                                item_id: None,
+                                role: None,
+                                status: Some("cancelled".into()),
+                                title: Some("Approval cancelled".into()),
+                                text: None,
+                                data: serde_json::json!({"requestEventId": target_event_id, "decision": "cancel"}),
+                            };
+                            let _ = store::session_event(
+                                &db,
+                                session_id,
+                                &resolved,
+                                &serde_json::json!({"adapter": adapter_id}),
+                            );
+                            if own_depth > 0 {
+                                let _ = session_supervisor::SessionSupervisor::transition(
+                                    &db,
+                                    session_id,
+                                    worker_lifecycle::WorkerLifecycleState::Working,
+                                    Some("approval_resolved"),
+                                );
+                            } else {
+                                let _ = db.execute(
+                                    "UPDATE sessions SET status='working' WHERE id=?1 AND status='waiting'",
+                                    params![session_id],
+                                );
+                            }
+                            if let Some(workspace_id) = &workspace_id {
+                                let _ = db.execute(
+                                    "UPDATE workspaces SET status=CASE
+                                        WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status='waiting') THEN 'waiting'
+                                        WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status='working') THEN 'working'
+                                        ELSE 'ready' END
+                                     WHERE id=?1",
+                                    params![workspace_id],
+                                );
+                            }
+                        }
+                    }
+                }
                 // OpenCode's own record that a question is gone — answered,
                 // declined, or settled by an entirely different client on the
                 // same session. Resolve the matching row by the provider's
@@ -8117,10 +8179,15 @@ fn find_unresolved_approval_by_request_id(
     request_id: &str,
 ) -> Option<i64> {
     db.query_row(
+        // The id is compared as text on both sides: a provider question
+        // carries a string request id and an agent-protocol permission carries
+        // a number, and `json_extract` hands back each with its own type — an
+        // integer never compares equal to a string in SQLite, so the numeric
+        // half would silently match nothing.
         "SELECT e.sequence FROM session_entries e
          WHERE e.session_id=?1 AND e.kind='approval.requested'
            AND json_extract(e.payload,'$.data.requestMethod')=?2
-           AND json_extract(e.payload,'$.data.requestId')=?3
+           AND CAST(json_extract(e.payload,'$.data.requestId') AS TEXT)=?3
            AND NOT EXISTS (
                SELECT 1 FROM session_entries r
                WHERE r.session_id=e.session_id AND r.kind='approval.resolved'
@@ -12096,6 +12163,100 @@ mod permission_policy_tests {
             .unwrap();
         assert_eq!(runtime.lifecycle_state, "working");
         assert_eq!(runtime.waiting_reason, None);
+    }
+
+    /// A permission the agent protocol cancelled on Bridge's behalf — a user
+    /// pressing stop mid-approval — retires its card. The agent has already
+    /// been answered; a card left pending would keep offering buttons whose
+    /// only outcome is "no longer outstanding".
+    #[test]
+    fn a_cancelled_agent_protocol_permission_retires_the_card_it_raised() {
+        let (_fixture, core, _managed_root) = core_with_session(false);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "UPDATE sessions SET harness='cursor', status='waiting' WHERE id='chat'",
+                [],
+            )
+            .unwrap();
+            let requested = agent::NormalizedEvent {
+                kind: "approval.requested".into(),
+                item_id: Some("t9".into()),
+                role: None,
+                status: Some("pending".into()),
+                title: Some("rm -rf build".into()),
+                text: None,
+                // The request id is a number on this wire, not a string.
+                data: serde_json::json!({
+                    "requestId": 7,
+                    "requestMethod": crate::acp_events::ACP_PERMISSION_REQUEST_METHOD,
+                    "options": [{"id": "allow-once", "name": "Allow once", "kind": "allow_once"}],
+                }),
+            };
+            store::session_event(
+                &db,
+                "chat",
+                &requested,
+                &serde_json::json!({"adapter": "cursor"}),
+            )
+            .unwrap();
+        }
+        let requested_at: i64 = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT sequence FROM session_entries WHERE session_id='chat' AND kind='approval.requested'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        deliver(
+            &core,
+            &serde_json::json!({
+                "kind": "approval.settled",
+                "status": "cancelled",
+                "data": {"requestId": 7, "outcome": "cancelled"},
+            }),
+        );
+
+        let resolved: i64 = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM session_entries
+                 WHERE session_id='chat' AND kind='approval.resolved'
+                   AND json_extract(payload,'$.data.requestEventId')=?1",
+                params![requested_at],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(resolved, 1, "the cancelled permission left a pending card");
+
+        // Delivering the same settlement twice is one resolution, not two:
+        // the lookup only ever finds a card nothing has resolved yet.
+        deliver(
+            &core,
+            &serde_json::json!({
+                "kind": "approval.settled",
+                "status": "cancelled",
+                "data": {"requestId": 7, "outcome": "cancelled"},
+            }),
+        );
+        let resolved_again: i64 = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM session_entries
+                 WHERE session_id='chat' AND kind='approval.resolved'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(resolved_again, 1);
     }
 
     /// One answer per request. The approval is published to every client before

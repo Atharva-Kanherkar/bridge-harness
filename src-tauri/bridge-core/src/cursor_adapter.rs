@@ -744,6 +744,14 @@ impl AdapterRuntime for CursorRuntime {
         self.current_turn.clone()
     }
 
+    /// The shared client's queue depth and eviction count, on the same seam
+    /// every other harness reports through. Without it a Cursor stream
+    /// shortened under pressure is exactly the silent hole the queue's own
+    /// eviction counter exists to prevent.
+    fn event_queue_metrics(&self) -> Option<crate::frame_queue::QueueMetricsSnapshot> {
+        Some(self.session.queue_metrics())
+    }
+
     fn context_inventory(&self) -> Vec<AdapterContextInventory> {
         self.context_inventory.lock().unwrap().clone()
     }
@@ -1182,18 +1190,24 @@ fn launch_error(error: &AcpError, key: Option<&str>) -> BridgeError {
 /// descriptor after that is a cache lookup.
 pub struct CursorAdapter {
     probe: Arc<RwLock<Option<CachedProbe>>>,
+    /// Held for the length of one probe. A probe costs a vendor process and a
+    /// handshake, and the background pass and a caller that arrived before it
+    /// landed both reach for one — without this they race and spawn two.
+    probing: Arc<Mutex<()>>,
 }
 
 impl CursorAdapter {
     pub fn new(on_discovered: Option<Box<dyn FnOnce() + Send>>) -> Self {
         let adapter = Self {
             probe: Arc::new(RwLock::new(None)),
+            probing: Arc::new(Mutex::new(())),
         };
         let probe = adapter.probe.clone();
+        let probing = adapter.probing.clone();
         let _ = thread::Builder::new()
             .name("cursor-discover".into())
             .spawn(move || {
-                drop(store_probe(&probe));
+                drop(store_probe(&probe, &probing));
                 if let Some(notify) = on_discovered {
                     notify();
                 }
@@ -1211,7 +1225,7 @@ impl CursorAdapter {
                 return cached.outcome.clone();
             }
         }
-        store_probe(&self.probe)
+        store_probe(&self.probe, &self.probing)
     }
 
     fn cached(&self) -> Option<Result<CursorProfile, CursorUnavailable>> {
@@ -1242,16 +1256,31 @@ impl CursorAdapter {
                 version,
                 outcome,
             }))),
+            probing: Arc::new(Mutex::new(())),
         }
     }
 }
 
 /// Locate, probe, and record. Shared by the background pass and by a caller
 /// that arrived before it finished.
+///
+/// One probe at a time, and whoever waits behind one re-reads the cache first:
+/// the answer the holder just wrote is the answer the waiter came for, and
+/// spawning a second vendor process to ask the same question again would cost
+/// another handshake for a result already on the shelf.
 fn store_probe(
     cache: &Arc<RwLock<Option<CachedProbe>>>,
+    gate: &Arc<Mutex<()>>,
 ) -> Result<CursorProfile, CursorUnavailable> {
+    let _in_flight = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let located = locate();
+    if let Ok(executable) = located.as_ref() {
+        if let Some(cached) = cache.read().unwrap().as_ref() {
+            if cached.describes(executable) {
+                return cached.outcome.clone();
+            }
+        }
+    }
     let (executable, version, outcome) = match located {
         Ok(executable) => {
             let outcome = probe(&executable, PROBE_TIMEOUT);
