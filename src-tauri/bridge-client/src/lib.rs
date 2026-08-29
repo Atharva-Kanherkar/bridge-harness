@@ -300,6 +300,14 @@ impl DaemonClient {
         NotificationSubscription { receiver, lagged }
     }
 
+    /// Whether a call is in flight on this connection right now. The daemon
+    /// serves each connection sequentially, so a caller holding several
+    /// clients can use this to land new work on an idle one instead of
+    /// queueing behind a slow request.
+    pub fn busy(&self) -> bool {
+        *self.call_gate.busy.lock().unwrap()
+    }
+
     /// Call a registry method with the client's default timeout.
     pub fn call(&self, method: MethodName, params: Option<Value>) -> Result<Value, ClientError> {
         self.call_raw(method.as_str(), params, self.call_timeout)

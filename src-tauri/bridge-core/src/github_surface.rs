@@ -18,6 +18,20 @@ use thiserror::Error;
 pub const AUTH_REMEDIATION: &str = "gh auth login";
 pub const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(15);
 
+/// Hard ceiling on any single `gh` invocation. A hung `gh` (credential
+/// prompt, stuck network read) otherwise blocks a daemon connection forever —
+/// the desktop shell round-robins unrelated invokes onto that connection and
+/// the whole app appears to hang.
+pub const GH_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// How many of the newest pull requests get the expensive computed fields.
+/// GitHub prices `statusCheckRollup`/`mergeable`/`reviewDecision` per PR in
+/// its GraphQL budget and answers 502/504 once the query grows past roughly
+/// 30 check-heavy pull requests, so the rich read stays well under that.
+const PR_ENRICH_LIMIT: &str = "25";
+
+/// Cheap identity fields only — reliable at `--limit 100` on any repository.
+const PR_LIST_BASE_FIELDS: &str = "number,title,state,isDraft,author,headRefName,url";
 const PR_LIST_FIELDS: &str = "number,title,state,isDraft,author,headRefName,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,url";
 const PR_DETAIL_FIELDS: &str = "number,title,body,state,isDraft,author,headRefName,baseRefName,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,url,comments,labels,additions,deletions,changedFiles";
 const PR_CHECK_FIELDS: &str = "name,state,bucket,link,workflow";
@@ -425,6 +439,7 @@ pub struct GithubSurface {
     availability: Mutex<GithubAvailability>,
     cache_ttl: Duration,
     cache: Mutex<HashMap<CacheKey, CacheEntry>>,
+    command_timeout: Duration,
 }
 
 impl std::fmt::Debug for GithubSurface {
@@ -465,6 +480,7 @@ impl GithubSurface {
             availability: Mutex::new(availability),
             cache_ttl,
             cache: Mutex::new(HashMap::new()),
+            command_timeout: GH_COMMAND_TIMEOUT,
         }
     }
 
@@ -537,11 +553,11 @@ impl GithubSurface {
 
     fn default_repository(&self, workspace: &Path) -> Option<GithubRepository> {
         let binary = self.require_binary().ok()?;
-        let output = Command::new(binary)
+        let mut command = Command::new(binary);
+        command
             .current_dir(workspace)
-            .args(["repo", "set-default", "--view"])
-            .output()
-            .ok()?;
+            .args(["repo", "set-default", "--view"]);
+        let output = run_with_timeout(command, self.command_timeout).ok().flatten()?;
         if !output.status.success() {
             return None;
         }
@@ -564,27 +580,55 @@ impl GithubSurface {
         let bytes = self.run_gh(
             workspace,
             "pr list",
-            &[
-                "pr".into(),
-                "list".into(),
-                "--repo".into(),
-                repository.selector(),
-                "--state".into(),
-                "open".into(),
-                "--limit".into(),
-                "100".into(),
-                "--json".into(),
-                PR_LIST_FIELDS.into(),
-            ],
+            &pr_list_args(&repository, PR_LIST_BASE_FIELDS, "100"),
             false,
         )?;
         let raw: Vec<RawPullRequestSummary> = parse_json("pull-request list", &bytes)?;
-        let pull_requests = raw
+        let mut pull_requests = raw
             .into_iter()
             .map(PullRequestSummary::try_from)
             .collect::<Result<Vec<_>, _>>()?;
+        self.enrich_prs(workspace, &repository, &mut pull_requests);
         self.store(key, CachedResource::PullRequests(pull_requests.clone()));
         Ok(pull_requests)
+    }
+
+    /// Overlay the expensive computed fields (review decision, mergeability,
+    /// merge-state, check rollup) onto the newest [`PR_ENRICH_LIMIT`] pull
+    /// requests. GitHub prices these per PR in its GraphQL budget and answers
+    /// 502/504 once enough pull requests carry checks, so the rich read is
+    /// bounded and its failure degrades the list instead of erroring it.
+    fn enrich_prs(
+        &self,
+        workspace: &Path,
+        repository: &GithubRepository,
+        pull_requests: &mut [PullRequestSummary],
+    ) {
+        if pull_requests.is_empty() {
+            return;
+        }
+        let Ok(bytes) = self.run_gh(
+            workspace,
+            "pr list",
+            &pr_list_args(repository, PR_LIST_FIELDS, PR_ENRICH_LIMIT),
+            false,
+        ) else {
+            return;
+        };
+        let Ok(raw) = parse_json::<Vec<RawPullRequestSummary>>("pull-request list", &bytes) else {
+            return;
+        };
+        let mut rich = HashMap::new();
+        for entry in raw {
+            if let Ok(summary) = PullRequestSummary::try_from(entry) {
+                rich.insert(summary.number, summary);
+            }
+        }
+        for pull_request in pull_requests {
+            if let Some(summary) = rich.remove(&pull_request.number) {
+                *pull_request = summary;
+            }
+        }
     }
 
     pub fn pr_detail(
@@ -1125,10 +1169,17 @@ impl GithubSurface {
         args: &[String],
         accept_nonzero_json: bool,
     ) -> Result<Vec<u8>, GithubSurfaceError> {
-        let output = Command::new(self.require_binary()?)
-            .current_dir(workspace)
-            .args(args)
-            .output()?;
+        let mut command = Command::new(self.require_binary()?);
+        command.current_dir(workspace).args(args);
+        let Some(output) = run_with_timeout(command, self.command_timeout)? else {
+            return Err(GithubSurfaceError::CommandFailed {
+                operation,
+                stderr: format!(
+                    "timed out after {}s and was killed",
+                    self.command_timeout.as_secs_f64()
+                ),
+            });
+        };
         if output.status.success() || (accept_nonzero_json && !output.stdout.is_empty()) {
             return Ok(output.stdout);
         }
@@ -1271,9 +1322,15 @@ struct RawPullRequestSummary {
     is_draft: bool,
     author: Option<RawActor>,
     head_ref_name: String,
+    // The computed fields are absent from the cheap base list read; their
+    // defaults are the honest "not fetched" readings.
+    #[serde(default)]
     review_decision: String,
-    mergeable: String,
+    #[serde(default)]
+    mergeable: Option<String>,
+    #[serde(default)]
     merge_state_status: String,
+    #[serde(default)]
     status_check_rollup: Vec<RawCheckRollup>,
     url: String,
 }
@@ -1493,7 +1550,10 @@ impl TryFrom<RawPullRequestSummary> for PullRequestSummary {
             }),
             head_branch: raw.head_ref_name,
             review_decision: parse_review_decision(&raw.review_decision)?,
-            mergeability: parse_mergeability(&raw.mergeable)?,
+            mergeability: raw
+                .mergeable
+                .as_deref()
+                .map_or(Ok(Mergeability::Unknown), parse_mergeability)?,
             merge_state_status: raw.merge_state_status,
             checks: normalize_rollup(raw.status_check_rollup)?,
             url: raw.url,
@@ -1862,12 +1922,77 @@ fn parse_conclusion(value: &str) -> Result<CheckConclusion, GithubSurfaceError> 
     }
 }
 
+fn pr_list_args(repository: &GithubRepository, fields: &str, limit: &str) -> Vec<String> {
+    vec![
+        "pr".into(),
+        "list".into(),
+        "--repo".into(),
+        repository.selector(),
+        "--state".into(),
+        "open".into(),
+        "--limit".into(),
+        limit.into(),
+        "--json".into(),
+        fields.into(),
+    ]
+}
+
+/// Run a command to completion within `timeout`, capturing output. `Ok(None)`
+/// means the deadline expired and the child was killed. Readers drain the
+/// pipes on their own threads so a chatty child cannot deadlock the wait.
+fn run_with_timeout(mut command: Command, timeout: Duration) -> std::io::Result<Option<Output>> {
+    use std::io::Read;
+    use std::process::Stdio;
+    let mut child = command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let mut stdout_pipe = child.stdout.take().expect("stdout is piped");
+    let mut stderr_pipe = child.stderr.take().expect("stderr is piped");
+    let stdout_reader = std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        let _ = stdout_pipe.read_to_end(&mut buffer);
+        buffer
+    });
+    let stderr_reader = std::thread::spawn(move || {
+        let mut buffer = Vec::new();
+        let _ = stderr_pipe.read_to_end(&mut buffer);
+        buffer
+    });
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        if let Some(status) = child.try_wait()? {
+            break status;
+        }
+        if Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            // The readers are deliberately not joined: a grandchild that
+            // inherited the pipe (credential helper, `sleep` in tests) keeps
+            // it open past the kill, and the whole point here is to return at
+            // the deadline. The threads end when the pipe finally closes.
+            return Ok(None);
+        }
+        std::thread::sleep(Duration::from_millis(25));
+    };
+    let stdout = stdout_reader.join().unwrap_or_default();
+    let stderr = stderr_reader.join().unwrap_or_default();
+    Ok(Some(Output {
+        status,
+        stdout,
+        stderr,
+    }))
+}
+
 fn probe_availability(binary: Option<&Path>) -> GithubAvailability {
     let Some(binary) = binary else {
         return GithubAvailability::NotInstalled;
     };
-    match Command::new(binary).args(["auth", "status"]).output() {
-        Ok(output) if output.status.success() => GithubAvailability::Available,
+    let mut command = Command::new(binary);
+    command.args(["auth", "status"]);
+    match run_with_timeout(command, GH_COMMAND_TIMEOUT) {
+        Ok(Some(output)) if output.status.success() => GithubAvailability::Available,
         Ok(_) => GithubAvailability::NotAuthenticated {
             remediation: AUTH_REMEDIATION.into(),
         },
@@ -2046,7 +2171,7 @@ mod tests {
                 "printf '%s\\n' \"$*\" >> \"$root/invocations.log\"\n",
                 "if [ \"$1 $2\" = \"auth status\" ]; then exit {auth_exit}; fi\n",
                 "if [ \"$1 $2 $3\" = \"repo set-default --view\" ]; then if [ -n \"{default}\" ]; then printf '%s\\n' '{default}'; exit 0; fi; exit 1; fi\n",
-                "if [ \"$1 $2\" = \"pr list\" ]; then fixture=prs.json; if [ -f \"$root/pr-list-fixture\" ]; then fixture=$(cat \"$root/pr-list-fixture\"); fi; cat '{fixtures}/'$fixture; exit 0; fi\n",
+                "if [ \"$1 $2\" = \"pr list\" ]; then case \"$*\" in *statusCheckRollup*) if [ -f \"$root/pr-list-rich-fail\" ]; then echo 'HTTP 502: 502 Bad Gateway (https://api.github.com/graphql)' >&2; exit 1; fi; fixture=prs.json;; *) fixture=prs-base.json;; esac; if [ -f \"$root/pr-list-fixture\" ]; then fixture=$(cat \"$root/pr-list-fixture\"); fi; cat '{fixtures}/'$fixture; exit 0; fi\n",
                 "if [ \"$1 $2\" = \"pr view\" ]; then cat '{fixtures}/pr-detail.json'; exit 0; fi\n",
                 "if [ \"$1 $2\" = \"issue list\" ]; then cat '{fixtures}/issues.json'; exit 0; fi\n",
                 "if [ \"$1 $2\" = \"issue view\" ]; then cat '{fixtures}/issue-detail.json'; exit 0; fi\n",
@@ -2346,6 +2471,49 @@ mod tests {
     }
 
     #[test]
+    fn a_failed_enrichment_degrades_to_the_base_list() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        // The rich read answers what GitHub answers on large repositories.
+        fs::write(fake.path().join("pr-list-rich-fail"), "").unwrap();
+        let surface = GithubSurface::discover_on_path(fake.path());
+        let pull_requests = surface.list_prs(repository.path()).unwrap();
+        assert_eq!(pull_requests.len(), 5, "the list itself still loads");
+        for pull_request in &pull_requests {
+            assert_eq!(pull_request.review_decision, ReviewDecision::None);
+            assert_eq!(pull_request.mergeability, Mergeability::Unknown);
+            assert_eq!(pull_request.checks, CheckRollup::default());
+        }
+        assert_eq!(invocation_count(&fake, "pr list"), 2);
+    }
+
+    #[test]
+    fn a_hung_gh_is_killed_and_reported_instead_of_blocking() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        fs::write(
+            fake.path().join("gh"),
+            "#!/bin/sh\nif [ \"$1 $2\" = \"auth status\" ]; then exit 0; fi\nsleep 30\n",
+        )
+        .unwrap();
+        let mut surface = GithubSurface::discover_on_path(fake.path());
+        surface.command_timeout = Duration::from_millis(200);
+        let started = Instant::now();
+        let error = surface.list_prs(repository.path()).unwrap_err();
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "the call returns at the deadline, not when the child feels like it"
+        );
+        match error {
+            GithubSurfaceError::CommandFailed { operation, stderr } => {
+                assert_eq!(operation, "pr list");
+                assert!(stderr.contains("timed out"), "got: {stderr}");
+            }
+            other => panic!("expected CommandFailed, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn pr_files_parse_text_and_binary_changes() {
         let repository = repository_with_origin();
         let fake = fake_gh(true, None);
@@ -2528,14 +2696,17 @@ mod tests {
         let first = surface.list_prs(repository.path()).unwrap();
         let second = surface.list_prs(repository.path()).unwrap();
         assert_eq!(first, second);
-        assert_eq!(invocation_count(&fake, "pr list"), 1);
+        // One fresh load is two spawns: the cheap base list plus the bounded
+        // rich enrichment.
+        assert_eq!(invocation_count(&fake, "pr list"), 2);
 
         surface.pr_detail(repository.path(), 103).unwrap();
         assert_eq!(invocation_count(&fake, "pr view"), 1);
-        assert_eq!(invocation_count(&fake, "pr list"), 1);
+        assert_eq!(invocation_count(&fake, "pr list"), 2);
 
         let log = fs::read_to_string(fake.path().join("invocations.log")).unwrap();
-        assert!(log.contains(&format!("--json {PR_LIST_FIELDS}")));
+        assert!(log.contains(&format!("--limit 100 --json {PR_LIST_BASE_FIELDS}")));
+        assert!(log.contains(&format!("--limit {PR_ENRICH_LIMIT} --json {PR_LIST_FIELDS}")));
         assert!(log.contains(&format!("--json {PR_DETAIL_FIELDS}")));
     }
 
@@ -2546,10 +2717,10 @@ mod tests {
         let surface = GithubSurface::discover_on_path(fake.path());
         surface.list_prs(repository.path()).unwrap();
         surface.list_prs(repository.path()).unwrap();
-        assert_eq!(invocation_count(&fake, "pr list"), 1);
+        assert_eq!(invocation_count(&fake, "pr list"), 2);
         surface.invalidate_repository(repository.path());
         surface.list_prs(repository.path()).unwrap();
-        assert_eq!(invocation_count(&fake, "pr list"), 2);
+        assert_eq!(invocation_count(&fake, "pr list"), 4);
     }
 
     fn invocations(fake: &TempDir) -> String {
@@ -2764,7 +2935,7 @@ mod tests {
         surface.pr_detail(repository.path(), 103).unwrap();
         surface.pr_checks(repository.path(), 103).unwrap();
         surface.pr_review_threads(repository.path(), 103).unwrap();
-        assert_eq!(invocation_count(&fake, "pr list"), 2);
+        assert_eq!(invocation_count(&fake, "pr list"), 4);
         assert_eq!(invocation_count(&fake, "pr view"), 2);
         assert_eq!(invocation_count(&fake, "pr checks"), 2);
         assert_eq!(invocation_count(&fake, "api graphql"), 2);
@@ -2820,7 +2991,7 @@ mod tests {
         surface.pr_detail(repository.path(), 103).unwrap();
         surface.pr_checks(repository.path(), 103).unwrap();
         surface.pr_review_threads(repository.path(), 103).unwrap();
-        assert_eq!(invocation_count(&fake, "pr list"), 2);
+        assert_eq!(invocation_count(&fake, "pr list"), 4);
         assert_eq!(invocation_count(&fake, "pr view"), 3);
         assert_eq!(invocation_count(&fake, "pr checks"), 2);
         assert_eq!(invocation_count(&fake, "api graphql"), 2);

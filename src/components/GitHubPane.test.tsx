@@ -133,17 +133,47 @@ describe("GitHubPane", () => {
 
   it("polls running checks and stops after they become terminal", async () => {
     vi.useFakeTimers();
-    mockReads();
+    const list = mockReads();
     const checks = vi.spyOn(bridgeApi, "githubChecks")
       .mockResolvedValueOnce({ checks: [{ name: "build", status: "inProgress", conclusion: null, workflow: "CI", logUrl: "" }] })
       .mockResolvedValue({ checks: [{ name: "build", status: "completed", conclusion: "success", workflow: "CI", logUrl: "" }] });
     await mount();
     await click(buttonByText("Safe GitHub surface"));
     const before = checks.mock.calls.length;
+    const listBefore = list.mock.calls.length;
     await act(async () => { await vi.advanceTimersByTimeAsync(8_000); await flush(); });
     expect(checks.mock.calls.length).toBe(before + 1);
     await act(async () => { await vi.advanceTimersByTimeAsync(16_000); await flush(); });
     expect(checks.mock.calls.length).toBe(before + 1);
+    // The timer reads one PR's checks only; the expensive list refetch is
+    // reserved for checks-changed/ci-finished events.
+    expect(list.mock.calls.length).toBe(listBefore);
+  });
+
+  it("collapses patches above the eager threshold and caps giant patches", async () => {
+    mockReads();
+    const bigPatch = Array.from({ length: 700 }, (_, index) => `+line ${index}`).join("\n");
+    const files = Array.from({ length: 7 }, (_, index) => ({
+      path: `src/file-${index}.ts`, previousPath: null, status: "modified",
+      additions: 1, deletions: 0, patch: index === 0 ? bigPatch : "@@ -1 +1 @@\n+x",
+    }));
+    vi.spyOn(bridgeApi, "githubPullRequest").mockResolvedValue({
+      ...detail,
+      pullRequest: { ...detail.pullRequest, changedFiles: files.length },
+      files,
+    });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    await click(host!.querySelector('button[role="tab"]:nth-of-type(2)') as HTMLButtonElement);
+    expect(host!.textContent).toContain("src/file-0.ts");
+    expect(host!.querySelector('pre[aria-label="File patch"]')).toBeNull();
+
+    await click(buttonByText("src/file-0.ts"));
+    const patch = host!.querySelector('pre[aria-label="File patch"]');
+    expect(patch).not.toBeNull();
+    expect(host!.textContent).toContain("+line 599");
+    expect(host!.textContent).not.toContain("+line 600");
+    expect(host!.textContent).toContain("Patch truncated at 600 lines");
   });
 
   it("keeps loaded content visible when a refresh fails", async () => {
