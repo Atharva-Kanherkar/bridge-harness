@@ -744,6 +744,14 @@ impl AdapterRuntime for CursorRuntime {
         self.current_turn.clone()
     }
 
+    /// The shared client's queue depth and eviction count, on the same seam
+    /// every other harness reports through. Without it a Cursor stream
+    /// shortened under pressure is exactly the silent hole the queue's own
+    /// eviction counter exists to prevent.
+    fn event_queue_metrics(&self) -> Option<crate::frame_queue::QueueMetricsSnapshot> {
+        Some(self.session.queue_metrics())
+    }
+
     fn context_inventory(&self) -> Vec<AdapterContextInventory> {
         self.context_inventory.lock().unwrap().clone()
     }
