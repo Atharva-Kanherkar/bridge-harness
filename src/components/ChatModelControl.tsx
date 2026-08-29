@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Check, ChevronDown } from "lucide-react";
 import type { AdapterDescriptor, Harness } from "../types";
 import { harnessLabel } from "../utils";
@@ -37,6 +37,21 @@ export type ChatModelControlProps = {
 
 export function ChatModelControl({ adapters, harness, model, disabled, disabledReason, onChange, compact, roleLabel = "Chat", maxWidthClassName = "max-w-[220px]", placement = "up" }: ChatModelControlProps) {
   const [open, setOpen] = useState(false);
+  // Escape closes the picker and nothing else. Captured on window so it wins
+  // against modal hosts with their own window-level Escape (the aside panel
+  // closes itself on Escape — without this, dismissing the picker tore down
+  // the whole aside).
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      setOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [open]);
   const chatAdapters = adapters.filter(adapter => ["codex", "claude", "opencode"].includes(adapter.id));
   const current = chatAdapters.find(adapter => adapter.id === harness);
   const currentModel = current?.models.find(option => option.id === model) ?? current?.models.find(option => option.defaultForTier) ?? current?.models[0];

@@ -1804,15 +1804,19 @@ function AppContent() {
             events={agentEvents}
             pendingMessages={asidePending}
             working={!!asideSession.activeTurnId || asideSession.status === "working"}
+            modelSwitch={modelSwitch?.sessionId === asideSession.id ? modelSwitch : null}
             onSend={async (text, attachments) => {
               try { await deliverPrompt(asideSession, text, attachments); }
               catch (e) { setError(errorMessage(e)); }
             }}
-            onChangeModel={(harness, model) => {
+            onChangeModel={async (harness, model) => {
               // Same path the main chat's control uses, bound to the aside
-              // session so the switch never touches the chat underneath.
-              void bridgeApi.updateChatModel(asideSession.id, harness, model)
-                .then(setState).catch(e => setError(errorMessage(e)));
+              // session so the switch never touches the chat underneath —
+              // and narrated the same way, inside the aside's conversation.
+              // Rethrows so the panel can wear the failure itself.
+              setModelSwitch({ sessionId: asideSession.id, harness, label: model ? modelDisplayName(adapters, harness, model) : harnessLabel(harness) });
+              try { setState(await bridgeApi.updateChatModel(asideSession.id, harness, model)); }
+              finally { setModelSwitch(null); }
             }}
             onResolve={(eventId, decision) => {
               void bridgeApi.resolveApproval(asideSession.id, eventId, decision).then(reload).catch(e => setError(errorMessage(e)));

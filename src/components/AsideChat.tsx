@@ -11,6 +11,7 @@ import { bridgeApi } from "../api";
 import { mergeForestSnapshot } from "../forest";
 import { startSerialPoll } from "../polling";
 import { appendFileMention } from "../fileMentions";
+import { activeTurnAction } from "../sessionInput";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "../pasteAttachments";
 import { cn } from "@/lib/utils";
 import type { AdapterDescriptor, AgentEvent, ApprovalDecision, Harness, Session, SessionForestSnapshot } from "../types";
@@ -23,7 +24,7 @@ import type { AdapterDescriptor, AgentEvent, ApprovalDecision, Harness, Session,
 // real chat in the sidebar after the panel closes. The panel is the delegation
 // surface, not the session's home; reopening later is ordinary navigation.
 
-export function AsideChat({ session, adapters, events, pendingMessages, working, onSend, onChangeModel, onResolve, onPromote, onClose }: {
+export function AsideChat({ session, adapters, events, pendingMessages, working, modelSwitch = null, onSend, onChangeModel, onResolve, onPromote, onClose }: {
   session: Session;
   /** The chat adapters, for the header model picker. */
   adapters: AdapterDescriptor[];
@@ -31,9 +32,14 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   events: AgentEvent[];
   pendingMessages: string[];
   working: boolean;
+  /** This aside's model switch in flight, for the same "Switching to …"
+   *  narration the main conversation shows. */
+  modelSwitch?: { harness: string; label: string } | null;
   onSend: (text: string, attachments?: ComposerAttachment[]) => Promise<void>;
-  /** Pick which model the side chat runs on; applies on the next message. */
-  onChangeModel: (harness: Harness, model: string | null) => void;
+  /** Pick which model the side chat runs on; applies on the next message.
+   *  May reject — the panel wears the failure itself, because the main error
+   *  banner sits behind the scrim where nobody is looking. */
+  onChangeModel: (harness: Harness, model: string | null) => void | Promise<void>;
   onResolve: (eventId: number, decision: ApprovalDecision) => void;
   /** Make the aside the active session and close the panel. */
   onPromote: () => void;
@@ -165,9 +171,13 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
                 adapters={adapters}
                 harness={session.harness}
                 model={session.model ?? null}
-                disabled={working}
+                disabled={working || !!modelSwitch}
                 disabledReason={working ? "Wait for the current response before switching models" : undefined}
-                onChange={onChangeModel}
+                onChange={(harness, model) => {
+                  setComposerError(undefined);
+                  void Promise.resolve(onChangeModel(harness, model))
+                    .catch(error => setComposerError(error instanceof Error ? error.message : String(error)));
+                }}
                 compact
                 roleLabel="Aside"
                 placement="down"
@@ -203,6 +213,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
             activeLeafId={forest?.head?.activeEntryId ?? null}
             working={working}
             pendingMessages={pendingMessages}
+            modelSwitch={modelSwitch}
             onResolve={onResolve}
           />
         </div>
@@ -220,7 +231,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
             onRemoveAttachment={id => setAttachments(current => current.filter(attachment => attachment.id !== id))}
             placeholder={`Ask ${harnessLabel(session.harness)}…`}
             working={working}
-            activeAction="queue"
+            activeAction={activeTurnAction(adapters.find(adapter => adapter.id === session.harness)?.capabilities)}
             onPlusClick={() => void attachFile()}
             inputRef={inputRef}
           />

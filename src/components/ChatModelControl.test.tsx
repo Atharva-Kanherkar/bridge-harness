@@ -114,6 +114,31 @@ describe("ChatModelControl", () => {
     await act(async () => option.click());
     expect(onChange).toHaveBeenCalledWith("opencode", "ox-alpha-free");
   });
+
+  it("closes an open picker on Escape without letting the key reach modal hosts", async () => {
+    // The aside panel closes itself on a window-level Escape; the picker must
+    // swallow the key while it is open or dismissing it tears down the aside.
+    const hostEscape = vi.fn();
+    window.addEventListener("keydown", hostEscape);
+    try {
+      await act(async () => root.render(
+        <ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" compact onChange={vi.fn()} />,
+      ));
+      await act(async () => trigger().click());
+      expect(panel()).toBeTruthy();
+      // Dispatched from inside the control, the way a real keypress lands on
+      // the focused element: the picker's capture listener beats the host's
+      // bubble listener.
+      await act(async () => { trigger().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+      expect(container.querySelector(".u-glass-popover")).toBeNull();
+      expect(hostEscape).not.toHaveBeenCalled();
+      // With the picker closed, Escape flows to the host again.
+      await act(async () => { trigger().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+      expect(hostEscape).toHaveBeenCalledTimes(1);
+    } finally {
+      window.removeEventListener("keydown", hostEscape);
+    }
+  });
 });
 
 describe("modelDisplayName", () => {

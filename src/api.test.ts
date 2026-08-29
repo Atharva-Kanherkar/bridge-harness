@@ -311,3 +311,47 @@ describe("Context breakdown (issue #245)", () => {
     expect(breakdown.digest.length).toBeGreaterThan(0);
   });
 });
+
+describe("browser-mode live agent-event fan-out", () => {
+  it("delivers mock turn events to onAgentEvent subscribers until unsubscribed", async () => {
+    const seen: string[] = [];
+    const off = await bridgeApi.onAgentEvent(event => seen.push(event.kind));
+
+    const created = await bridgeApi.createChat("claude", "sonnet", "fan-out probe");
+    const chat = [...created.sessions].reverse().find(item => item.title === "fan-out probe")!;
+    await bridgeApi.startChat(chat.id);
+    const outcome = await bridgeApi.submitInput(chat.id, "does the stream reach me?");
+
+    // The aside's whole render path hangs without these: the optimistic
+    // pending row reconciles against the live user turn, and the reply is
+    // only ever a live frame for a non-selected session.
+    expect(outcome.disposition).toBe("startedNewTurn");
+    expect(seen).toContain("session.started");
+    expect(seen).toContain("message.completed");
+    const before = seen.length;
+
+    off();
+    await bridgeApi.submitInput(chat.id, "and after unsubscribe?");
+    expect(seen.length).toBe(before);
+  });
+
+  it("hands each subscriber its own clone, sequence already assigned", async () => {
+    const first: import("./types").AgentEvent[] = [];
+    const second: import("./types").AgentEvent[] = [];
+    const offFirst = await bridgeApi.onAgentEvent(event => first.push(event));
+    const offSecond = await bridgeApi.onAgentEvent(event => second.push(event));
+    const created = await bridgeApi.createChat("claude", "sonnet", "clone probe");
+    const chat = [...created.sessions].reverse().find(item => item.title === "clone probe")!;
+    await bridgeApi.startChat(chat.id);
+    offFirst();
+    offSecond();
+
+    const event = first.find(item => item.sessionId === chat.id)!;
+    expect(event.sequence).toBeGreaterThan(0);
+    // Mutating one subscriber's copy must not corrupt another's — the same
+    // isolation a wire round-trip gives.
+    event.kind = "tampered";
+    const twin = second.find(item => item.sessionId === chat.id)!;
+    expect(twin.kind).toBe("session.started");
+  });
+});
