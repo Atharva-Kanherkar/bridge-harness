@@ -20,10 +20,23 @@ struct WatchedPullRequest {
 impl GithubPoller {
     pub fn watch(&self, workspace_id: &str, path: PathBuf, pull_requests: &[PullRequestSummary]) {
         let mut watched = self.watched.lock().unwrap();
-        watched.retain(|(workspace, _), _| workspace != workspace_id);
+        // Carry each surviving PR's last-seen checks across the re-list. A list
+        // refetch happens on every checks-changed event, so resetting baselines
+        // here would blind the very next poll's change detection — one real
+        // transition per refetch would go unannounced.
+        let mut previous = HashMap::new();
+        watched.retain(|(workspace, number), entry| {
+            if workspace == workspace_id {
+                previous.insert(*number, entry.checks.take());
+                false
+            } else {
+                true
+            }
+        });
         for pull_request in pull_requests {
             if pull_request.checks.queued > 0 || pull_request.checks.in_progress > 0 {
-                watched.insert((workspace_id.into(), pull_request.number), WatchedPullRequest { path: path.clone(), checks: None });
+                let checks = previous.remove(&pull_request.number).flatten();
+                watched.insert((workspace_id.into(), pull_request.number), WatchedPullRequest { path: path.clone(), checks });
             }
         }
     }
@@ -38,7 +51,7 @@ impl GithubPoller {
             // The entry may have been dropped by a concurrent `watch()` call
             // (e.g. the workspace's PR list was refetched); nothing to update.
             let Some(entry) = watched_map.get_mut(&(workspace_id.clone(), number)) else { continue };
-            let changed = entry.checks.as_ref().is_some_and(|previous| previous != &checks);
+            let changed = rollup_changed(entry.checks.as_deref(), &checks, complete);
             entry.checks = Some(checks);
             if complete {
                 watched_map.remove(&(workspace_id.clone(), number));
@@ -56,6 +69,16 @@ impl GithubPoller {
 /// `gh` calls), so it must not be read as vacuously "all complete".
 fn all_checks_complete(checks: &[PullRequestCheck]) -> bool {
     !checks.is_empty() && checks.iter().all(|check| check.status == CheckStatus::Completed)
+}
+
+/// Whether this observation is news worth publishing. With a baseline, any
+/// difference is. Without one — the first poll after `watch()` — the PR was
+/// pending when the rollup put it on the list, so *completion* is a real
+/// transition even though there is nothing to diff against; a PR whose checks
+/// finish between the list fetch and the first poll must not be silently
+/// dropped from the watch list with its badge still reading "running".
+fn rollup_changed(previous: Option<&[PullRequestCheck]>, next: &[PullRequestCheck], complete: bool) -> bool {
+    previous.map_or(complete, |previous| previous != next)
 }
 
 pub fn start_github_poll_maintenance(core: Arc<BridgeCore>) {
@@ -96,5 +119,65 @@ mod tests {
     #[test]
     fn a_pending_check_is_not_complete() {
         assert!(!all_checks_complete(&[check(CheckStatus::Completed), check(CheckStatus::InProgress)]));
+    }
+
+    #[test]
+    fn completion_on_the_first_observation_is_published() {
+        // The watch-time rollup said pending; all-complete now is a real
+        // transition even with no stored baseline to diff against.
+        let done = [check(CheckStatus::Completed)];
+        assert!(rollup_changed(None, &done, true));
+    }
+
+    #[test]
+    fn a_pending_first_observation_is_not_news() {
+        let running = [check(CheckStatus::InProgress)];
+        assert!(!rollup_changed(None, &running, false));
+    }
+
+    #[test]
+    fn a_baseline_difference_is_published_and_equality_is_not() {
+        let running = vec![check(CheckStatus::InProgress)];
+        let done = [check(CheckStatus::Completed)];
+        assert!(rollup_changed(Some(&running), &done, true));
+        assert!(!rollup_changed(Some(&running), &running.clone(), false));
+    }
+
+    #[test]
+    fn a_relist_keeps_the_baseline_for_surviving_pull_requests() {
+        use crate::github_surface::{CheckRollup, Mergeability, PullRequestState, PullRequestSummary, ReviewDecision};
+        fn pending_summary(number: u64) -> PullRequestSummary {
+            PullRequestSummary {
+                number,
+                title: "t".into(),
+                state: PullRequestState::Open,
+                is_draft: false,
+                author: None,
+                head_branch: "b".into(),
+                review_decision: ReviewDecision::None,
+                mergeability: Mergeability::Mergeable,
+                merge_state_status: String::new(),
+                checks: CheckRollup { in_progress: 1, total: 1, ..Default::default() },
+                url: String::new(),
+            }
+        }
+        let poller = GithubPoller::default();
+        let path = PathBuf::from("/tmp/repo");
+        poller.watch("ws", path.clone(), &[pending_summary(7)]);
+        poller
+            .watched
+            .lock()
+            .unwrap()
+            .get_mut(&("ws".into(), 7))
+            .unwrap()
+            .checks = Some(vec![check(CheckStatus::InProgress)]);
+        // The panel refetches the list on every checks-changed event; that
+        // refetch must not blind the next poll's change detection.
+        poller.watch("ws", path, &[pending_summary(7)]);
+        let watched = poller.watched.lock().unwrap();
+        assert_eq!(
+            watched.get(&("ws".into(), 7)).unwrap().checks,
+            Some(vec![check(CheckStatus::InProgress)]),
+        );
     }
 }
