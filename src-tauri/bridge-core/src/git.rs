@@ -139,6 +139,53 @@ pub fn remove_worktree(repo: &Path, path: &Path) -> Result<(), BridgeError> {
     Ok(())
 }
 
+pub fn fetch_branch(repo: &Path, remote: &str, branch: &str) -> Result<(), BridgeError> {
+    run(
+        repo,
+        [
+            "fetch",
+            "--quiet",
+            remote,
+            &format!("+refs/heads/{branch}:refs/remotes/{remote}/{branch}"),
+        ],
+    )?;
+    Ok(())
+}
+
+/// Add a worktree on an already-fetched branch — the PR-checkout shape, unlike
+/// [`create_worktree`] which cuts a *new* branch from HEAD. Reuses the local
+/// branch when one exists (git itself refuses if it is checked out elsewhere,
+/// which is exactly the isolation we want to keep); otherwise creates it
+/// tracking `remote/branch`.
+pub fn create_worktree_on_branch(
+    repo: &Path,
+    path: &Path,
+    branch: &str,
+    remote: &str,
+) -> Result<(), BridgeError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let local = format!("refs/heads/{branch}");
+    if run(repo, ["show-ref", "--verify", "--quiet", &local]).is_ok() {
+        run(repo, ["worktree", "add", &path.to_string_lossy(), branch])?;
+    } else {
+        run(
+            repo,
+            [
+                "worktree",
+                "add",
+                "--track",
+                "-b",
+                branch,
+                &path.to_string_lossy(),
+                &format!("{remote}/{branch}"),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitCheckpoint {

@@ -65,6 +65,13 @@
       "resultSchema": "github-act-result.json"
     },
     {
+      "command": "github_checkout",
+      "domain": "github",
+      "method": "github/github_checkout",
+      "paramsSchema": "github-checkout-params.json",
+      "resultSchema": "github-checkout-result.json"
+    },
+    {
       "command": "create_workspace",
       "domain": "workspaces",
       "method": "workspaces/create_workspace",

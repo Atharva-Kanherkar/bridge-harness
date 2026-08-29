@@ -16,6 +16,7 @@ export type BridgeMethod =
   | "github/github_checks"
   | "github/github_merge_config"
   | "github/github_act"
+  | "github/github_checkout"
   | "workspaces/create_workspace"
   | "workspaces/connect_workspace_folder"
   | "workspaces/list_workspace_files"
@@ -159,6 +160,7 @@ export const BRIDGE_METHODS = [
   { method: "github/github_checks", domain: "github", command: "github_checks" },
   { method: "github/github_merge_config", domain: "github", command: "github_merge_config" },
   { method: "github/github_act", domain: "github", command: "github_act" },
+  { method: "github/github_checkout", domain: "github", command: "github_checkout" },
   { method: "workspaces/create_workspace", domain: "workspaces", command: "create_workspace" },
   { method: "workspaces/connect_workspace_folder", domain: "workspaces", command: "connect_workspace_folder" },
   { method: "workspaces/list_workspace_files", domain: "workspaces", command: "list_workspace_files" },
@@ -305,6 +307,7 @@ export type BridgeNotification =
   | "account-usage"
   | "session-startup"
   | "github/checks_changed"
+  | "github/ci_finished"
   | "stream-lagged";
 
 export const BRIDGE_NOTIFICATIONS = [
@@ -319,6 +322,7 @@ export const BRIDGE_NOTIFICATIONS = [
   { notification: "account-usage", delivery: "transient" },
   { notification: "session-startup", delivery: "transient" },
   { notification: "github/checks_changed", delivery: "transient" },
+  { notification: "github/ci_finished", delivery: "transient" },
   { notification: "stream-lagged", delivery: "transient" },
 ] as const;
 
@@ -360,6 +364,7 @@ export interface BridgeMethodParams {
   "github/github_checks": GithubChecksParams;
   "github/github_merge_config": GithubMergeConfigParams;
   "github/github_act": GithubActParams;
+  "github/github_checkout": GithubCheckoutParams;
   "workspaces/create_workspace": CreateWorkspaceParams;
   "workspaces/connect_workspace_folder": ConnectWorkspaceFolderParams;
   "workspaces/list_workspace_files": ListWorkspaceFilesParams;
@@ -505,6 +510,7 @@ export interface BridgeMethodResults {
   "github/github_checks": GithubChecksResult;
   "github/github_merge_config": GithubMergeConfigResult;
   "github/github_act": GithubActResult;
+  "github/github_checkout": GithubCheckoutResult;
   "workspaces/create_workspace": BridgeState;
   "workspaces/connect_workspace_folder": BridgeState;
   "workspaces/list_workspace_files": ListWorkspaceFilesResult;
@@ -1691,6 +1697,18 @@ export interface GithubActParams {
 export interface GithubActResult {
   executed: boolean;
   message: string;
+}
+
+export interface GithubCheckoutParams {
+  number: number;
+  workspaceId: string;
+}
+
+export interface GithubCheckoutResult {
+  branch: string;
+  path: string;
+  reused: boolean;
+  workspaceId: string;
 }
 
 export interface CreateWorkspaceParams {

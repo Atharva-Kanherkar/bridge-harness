@@ -242,6 +242,8 @@ export type BridgeSidebarProps = {
   workspaces: Workspace[];
   /** The repository whose open pull requests belong in this rail. */
   workspaceId?: string;
+  /** Deep-link a rail PR row into the GitHub dock pane. */
+  onOpenPullRequest?: (number: number) => void;
   activeSessionId?: string;
   projectsActive: boolean;
   automationsActive: boolean;
@@ -277,6 +279,7 @@ export function BridgeSidebar({
   chats,
   workspaces,
   workspaceId,
+  onOpenPullRequest,
   activeSessionId,
   projectsActive,
   automationsActive,
@@ -531,7 +534,7 @@ export function BridgeSidebar({
         )}
 
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
-          {!collapsed && <GitHubPanel workspaceId={workspaceId} />}
+          {!collapsed && <GitHubPanel workspaceId={workspaceId} onOpen={onOpenPullRequest} />}
           {!collapsed && (
             <SectionLabel action={
               <span className="flex items-center gap-0.5">

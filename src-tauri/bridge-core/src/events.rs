@@ -71,6 +71,17 @@ pub enum CoreEvent {
     },
     /// GitHub check state changed; clients refetch their authoritative PR data.
     GithubChecksChanged { workspace_id: String, number: u64 },
+    /// A watched PR's checks reached a terminal state. Carries enough to
+    /// render the notification without a refetch; authoritative state still
+    /// comes from `github/github_checks`.
+    GithubCiFinished {
+        workspace_id: String,
+        number: u64,
+        head_branch: String,
+        title: String,
+        failed: u32,
+        total: u32,
+    },
 }
 
 impl CoreEvent {
@@ -90,6 +101,7 @@ impl CoreEvent {
             CoreEvent::ManagedAgentChanged { .. } => NotificationName::ManagedAgentChanged,
             CoreEvent::SessionStartup { .. } => NotificationName::SessionStartup,
             CoreEvent::GithubChecksChanged { .. } => NotificationName::GithubChecksChanged,
+            CoreEvent::GithubCiFinished { .. } => NotificationName::GithubCiFinished,
         }
     }
 
@@ -131,6 +143,10 @@ impl CoreEvent {
             }),
             CoreEvent::GithubChecksChanged { workspace_id, number } => serde_json::json!({
                 "workspaceId": workspace_id, "number": number,
+            }),
+            CoreEvent::GithubCiFinished { workspace_id, number, head_branch, title, failed, total } => serde_json::json!({
+                "workspaceId": workspace_id, "number": number, "headBranch": head_branch,
+                "title": title, "failed": failed, "total": total,
             }),
         }
     }
@@ -271,7 +287,8 @@ impl EventBus {
                 | CoreEvent::TerminalExited { .. }
                 | CoreEvent::AccountUsage { .. }
                 | CoreEvent::SessionStartup { .. } => {}
-                | CoreEvent::GithubChecksChanged { .. } => {}
+                | CoreEvent::GithubChecksChanged { .. }
+                | CoreEvent::GithubCiFinished { .. } => {}
             }
         }
         let _ = self.sender.send(event);
@@ -355,6 +372,14 @@ mod tests {
             CoreEvent::GithubChecksChanged {
                 workspace_id: "w".into(),
                 number: 1,
+            },
+            CoreEvent::GithubCiFinished {
+                workspace_id: "w".into(),
+                number: 1,
+                head_branch: "feat/x".into(),
+                title: "t".into(),
+                failed: 1,
+                total: 2,
             },
         ];
         for event in &events {

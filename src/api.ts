@@ -5,6 +5,7 @@ import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, A
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult } from "./protocol/generated/protocol";
 import type { TurnImage } from "./protocol/generated/protocol";
 import type { ComposerAttachment } from "./pasteAttachments";
+import type { GithubCiFinishedPayload } from "./githubSurface";
 import type {
   ManagedAgentInspection,
   ManagedAgentList,
@@ -25,6 +26,7 @@ import type {
   WriteWorkspaceFileResult,
   GithubAction,
   GithubActResult,
+  GithubCheckoutResult,
   GithubChecksResult,
   GithubMergeConfigResult,
   GithubPullRequestResult,
@@ -62,6 +64,7 @@ const now = new Date().toISOString();
 const stateListeners = new Set<() => void>();
 const memoryListeners = new Set<(payload: MemoryChangedPayload) => void>();
 type GithubChecksChangedPayload = { workspaceId: string; number: number };
+const githubCiListeners = new Set<(payload: GithubCiFinishedPayload) => void>();
 // Browser-mode stand-in for the daemon's global `agent-event` fan-out. Every
 // surface that renders live turns (the aside panel above all — its optimistic
 // pending rows reconcile only against this stream) subscribes here outside
@@ -708,6 +711,8 @@ export const bridgeApi = {
     isTauri() ? call("github/github_merge_config", { workspaceId }) : Promise.resolve(mockGithubMergeConfig()),
   githubAct: (workspaceId: string, action: GithubAction, confirmed: boolean): Promise<GithubActResult> =>
     isTauri() ? call("github/github_act", { workspaceId, action, confirmed }) : Promise.resolve(mockGithubAct(action, confirmed)),
+  githubCheckout: (workspaceId: string, number: number): Promise<GithubCheckoutResult> =>
+    isTauri() ? call("github/github_checkout", { workspaceId, number }) : Promise.resolve(mockGithubCheckout(workspaceId, number)),
   browserBridgeState: (): Promise<BrowserBridgeSnapshot> => isTauri() ? call("browser/browser_bridge_state") as Promise<BrowserBridgeSnapshot> : Promise.resolve(structuredClone(mockBrowserBridge)),
   installBrowserNativeHost: async (): Promise<string> => {
     if (isTauri()) return call("browser/install_browser_native_host");
@@ -1514,6 +1519,11 @@ export const bridgeApi = {
     if (isTauri()) return subscribe<GithubChecksChangedPayload>("github/checks_changed", handler);
     return () => undefined;
   },
+  onGithubCiFinished: async (handler: (payload: GithubCiFinishedPayload) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe<GithubCiFinishedPayload>("github/ci_finished", handler);
+    githubCiListeners.add(handler);
+    return () => githubCiListeners.delete(handler);
+  },
 };
 
 /* ── Browser-mode file system ──────────────────────────────────────────────
@@ -1534,7 +1544,45 @@ const mockFiles = new Map<string, string>([
   ["scripts/prepare-daemon.sh", "#!/bin/sh\nset -eu\ncargo build --release --bin bridged\n"],
 ]);
 
-const mockGithubPullRequests = (_workspaceId: string): GithubPullRequestsResult => ({
+// Browser-mode CI simulation: the first PR-list read arms one CI-finished
+// event a few seconds out, so the toast → deep-link flow is exercisable in
+// `bun run dev` without a daemon. Never in vitest — a stray timer there would
+// fire into an unmounted tree.
+let mockCiSimulated = false;
+const simulateMockCiFinished = (workspaceId: string) => {
+  // `process` exists under vitest (node and jsdom pools) but not in the Vite
+  // browser build, so this arms in `bun run dev` only.
+  if (mockCiSimulated || typeof process !== "undefined") return;
+  mockCiSimulated = true;
+  window.setTimeout(() => {
+    const payload: GithubCiFinishedPayload = {
+      workspaceId,
+      number: 340,
+      headBranch: "feat/github-surface-core",
+      title: "Add the deterministic gh reader",
+      failed: 1,
+      total: 2,
+    };
+    githubCiListeners.forEach(listener => listener(payload));
+  }, 6000);
+};
+
+const mockCheckouts = new Map<number, GithubCheckoutResult>();
+const mockGithubCheckout = (_workspaceId: string, number: number): GithubCheckoutResult => {
+  const existing = mockCheckouts.get(number);
+  if (existing) return { ...existing, reused: true };
+  const branch = mockGithubPullRequests(_workspaceId).pullRequests.find(pr => pr.number === number)?.headBranch ?? "main";
+  const fresh: GithubCheckoutResult = {
+    workspaceId: `ws-pr-${number}`,
+    path: `~/.bridge/worktrees/github/pr-${number}-${branch.replace(/[^a-z0-9]+/gi, "-")}`,
+    branch,
+    reused: false,
+  };
+  mockCheckouts.set(number, fresh);
+  return fresh;
+};
+
+const mockGithubPullRequests = (workspaceId: string): GithubPullRequestsResult => (simulateMockCiFinished(workspaceId), {
   pullRequests: [
     { number: 341, title: "Render the native GitHub read surface", state: "open", isDraft: false, author: { login: "atharva" }, headBranch: "feat/github-read-surface", reviewDecision: "reviewRequired", mergeability: "mergeable", mergeStateStatus: "CLEAN", checks: { total: 2, queued: 0, inProgress: 0, passed: 2, failed: 0, skipped: 0, cancelled: 0 }, url: "https://github.com/Atharva-Kanherkar/bridge-harness/pull/341" },
     { number: 340, title: "Add the deterministic gh reader", state: "open", isDraft: false, author: { login: "bridge" }, headBranch: "feat/github-surface-core", reviewDecision: "approved", mergeability: "mergeable", mergeStateStatus: "CLEAN", checks: { total: 2, queued: 0, inProgress: 0, passed: 1, failed: 1, skipped: 0, cancelled: 0 }, url: "https://github.com/Atharva-Kanherkar/bridge-harness/pull/340" },

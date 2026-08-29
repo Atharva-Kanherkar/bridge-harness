@@ -87,6 +87,11 @@ notifications![
     // refetch hints above there is no "latest state" worth resending.
     (SessionStartup, "session-startup", Transient),
     (GithubChecksChanged, "github/checks_changed", Transient),
+    // A watched PR's check rollup reached a terminal state. Transient: the
+    // poller's own dedup guarantees at-most-once per terminal check set, and a
+    // client that missed it still sees the final rollup on its next refetch —
+    // replaying a stale "CI finished" toast would be worse than dropping it.
+    (GithubCiFinished, "github/ci_finished", Transient),
     // Host-synthesized: the live channel dropped events for this connection.
     // Durable history is intact — replay every watched session from its last
     // cursor via `sessions/replay_session_events`; refetch hints are resent

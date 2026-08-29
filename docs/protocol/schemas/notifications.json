@@ -47,6 +47,10 @@
     },
     {
       "delivery": "transient",
+      "notification": "github/ci_finished"
+    },
+    {
+      "delivery": "transient",
       "notification": "stream-lagged"
     }
   ]
