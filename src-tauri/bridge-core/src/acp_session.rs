@@ -722,8 +722,15 @@ impl AcpSession {
                 if let Some(process_id) = process_id {
                     terminate_process_group(process_id);
                 }
-                let _ = finished_rx.recv_timeout(REAP_TIMEOUT);
-                drop(thread.join());
+                // Join only a thread that said it finished. The wait is
+                // bounded precisely because the transport may be wedged, and
+                // joining one that never answered would block a failed
+                // handshake forever on exactly the condition the timeout
+                // exists to survive — the same reason `shutdown` leaves a
+                // wedged connection thread detached.
+                if finished_rx.recv_timeout(REAP_TIMEOUT).is_ok() {
+                    drop(thread.join());
+                }
                 Err(error)
             }
         }

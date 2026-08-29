@@ -1157,7 +1157,17 @@ pub fn resolve_orchestrator_selection(
     let descriptors = registry.descriptors();
     let configured_agent = agent_config::default_orchestrator(db);
     if let Some(agent) = configured_agent.as_ref() {
-        if agent.enabled && matches!(agent.harness.as_str(), "codex" | "claude" | "opencode") {
+        // Any harness the registry actually runs may be the configured
+        // orchestrator, rather than a list that has to be edited every time an
+        // adapter is added — a named harness with no adapter behind it (the
+        // `bridge` pseudo-harness) has nothing to resolve a model against, and
+        // an adapter that is registered but unavailable falls through on
+        // `resolve_model` below exactly as it did before.
+        if agent.enabled
+            && descriptors
+                .iter()
+                .any(|descriptor| descriptor.id == agent.harness)
+        {
             let harness_config = agent_config::harness_config(db, &agent.harness);
             let preferred_model = agent
                 .model
