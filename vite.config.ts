@@ -14,7 +14,8 @@ export default defineConfig(({ mode }) => ({
   server: { port: 1420, strictPort: true, host: "127.0.0.1" },
   envPrefix: ["VITE_", "TAURI_ENV_"],
   build: { target: "safari13", minify: mode === "development" ? false : "esbuild", sourcemap: mode === "development" },
-  // Bridge creates task worktrees inside the repo. They are checkouts of other
+  // Bridge and its coding agents create task worktrees inside the repo
+  // (.worktrees/ and .claude/worktrees/). They are checkouts of other
   // branches, so their tests belong to those branches, not to this run.
-  test: { exclude: ["node_modules/**", "dist/**", ".worktrees/**"] }
+  test: { exclude: ["node_modules/**", "dist/**", ".worktrees/**", ".claude/worktrees/**"] }
 }));
