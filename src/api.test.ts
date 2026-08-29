@@ -311,3 +311,43 @@ describe("Context breakdown (issue #245)", () => {
     expect(breakdown.digest.length).toBeGreaterThan(0);
   });
 });
+
+describe("browser-mode live agent-event fan-out", () => {
+  it("delivers mock turn events to onAgentEvent subscribers until unsubscribed", async () => {
+    const seen: string[] = [];
+    const off = await bridgeApi.onAgentEvent(event => seen.push(event.kind));
+
+    const created = await bridgeApi.createChat("claude", "sonnet", "fan-out probe");
+    const chat = [...created.sessions].reverse().find(item => item.title === "fan-out probe")!;
+    await bridgeApi.startChat(chat.id);
+    const outcome = await bridgeApi.submitInput(chat.id, "does the stream reach me?");
+
+    // The aside's whole render path hangs without these: the optimistic
+    // pending row reconciles against the live user turn, and the reply is
+    // only ever a live frame for a non-selected session.
+    expect(outcome.disposition).toBe("startedNewTurn");
+    expect(seen).toContain("session.started");
+    expect(seen).toContain("message.completed");
+    const before = seen.length;
+
+    off();
+    await bridgeApi.submitInput(chat.id, "and after unsubscribe?");
+    expect(seen.length).toBe(before);
+  });
+
+  it("hands each subscriber its own clone, sequence already assigned", async () => {
+    const received: import("./types").AgentEvent[] = [];
+    const off = await bridgeApi.onAgentEvent(event => received.push(event));
+    const created = await bridgeApi.createChat("claude", "sonnet", "clone probe");
+    const chat = [...created.sessions].reverse().find(item => item.title === "clone probe")!;
+    await bridgeApi.startChat(chat.id);
+    off();
+
+    const event = received.find(item => item.sessionId === chat.id)!;
+    expect(event.sequence).toBeGreaterThan(0);
+    // Mutating the delivered copy must not corrupt the stored mock row.
+    event.kind = "tampered";
+    const state = await bridgeApi.state();
+    expect(state.agentEvents.some(item => item.kind === "tampered")).toBe(false);
+  });
+});
