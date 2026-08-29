@@ -153,6 +153,8 @@ typed_methods![
     (GithubPullRequests, GithubPrsParams, GithubPullRequestsResult),
     (GithubPullRequest, GithubPrParams, GithubPullRequestResult),
     (GithubChecks, GithubChecksParams, GithubChecksResult),
+    (GithubMergeConfig, GithubMergeConfigParams, GithubMergeConfigResult),
+    (GithubAct, GithubActParams, GithubActResult),
     // workspaces
     (CreateWorkspace, CreateWorkspaceParams, BridgeState),
     (ConnectWorkspaceFolder, ConnectWorkspaceFolderParams, BridgeState),

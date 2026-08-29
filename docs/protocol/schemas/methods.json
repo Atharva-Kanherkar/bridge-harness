@@ -51,6 +51,20 @@
       "resultSchema": "github-checks-result.json"
     },
     {
+      "command": "github_merge_config",
+      "domain": "github",
+      "method": "github/github_merge_config",
+      "paramsSchema": "github-merge-config-params.json",
+      "resultSchema": "github-merge-config-result.json"
+    },
+    {
+      "command": "github_act",
+      "domain": "github",
+      "method": "github/github_act",
+      "paramsSchema": "github-act-params.json",
+      "resultSchema": "github-act-result.json"
+    },
+    {
       "command": "create_workspace",
       "domain": "workspaces",
       "method": "workspaces/create_workspace",

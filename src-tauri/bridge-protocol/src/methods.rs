@@ -48,6 +48,8 @@ methods![
     (GithubPullRequests, "github", "github_prs"),
     (GithubPullRequest, "github", "github_pr"),
     (GithubChecks, "github", "github_checks"),
+    (GithubMergeConfig, "github", "github_merge_config"),
+    (GithubAct, "github", "github_act"),
     // workspaces
     (CreateWorkspace, "workspaces", "create_workspace"),
     (ConnectWorkspaceFolder, "workspaces", "connect_workspace_folder"),

@@ -131,6 +131,45 @@ pub fn github_checks(core: &Arc<BridgeCore>, workspace_id: &str, number: u64) ->
     Ok(wire::GithubChecksResult { checks })
 }
 
+pub fn github_merge_config(core: &Arc<BridgeCore>, workspace_id: &str) -> Result<wire::GithubMergeConfigResult, BridgeError> {
+    let path = locked_workspace_path(core, workspace_id)?;
+    let config = core.github_surface.merge_config(Path::new(&path)).map_err(github_error)?;
+    github_wire(config)
+}
+
+/// Perform one mutating GitHub action. The approval gate is consulted *before*
+/// the surface is touched: a denied action returns without resolving the
+/// repository or spawning any subprocess. Only an approved action reaches `gh`.
+pub fn github_act(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+    action: wire::GithubAction,
+    confirmed: bool,
+) -> Result<wire::GithubActResult, BridgeError> {
+    let action: crate::github_surface::GithubAction = github_wire(action)?;
+    if !crate::github_policy::authorize(confirmed).is_approved() {
+        return Ok(wire::GithubActResult {
+            executed: false,
+            message: format!("Declined: {}", crate::github_policy::summary(&action)),
+        });
+    }
+    let path = locked_workspace_path(core, workspace_id)?;
+    let workspace = Path::new(&path);
+    let is_rerun = matches!(action, crate::github_surface::GithubAction::Rerun { .. });
+    let outcome = core.github_surface.act(workspace, &action);
+    // A re-run makes the checks queue again; re-list so the slice-3 poller picks
+    // the PR back up and the rollup returns to "running" without a manual nudge.
+    // This also runs after a partial rerun failure: one run may already be
+    // queued even if a later `gh run rerun` is refused.
+    if is_rerun {
+        if let Ok(summaries) = core.github_surface.list_prs(workspace) {
+            core.github_poller.watch(workspace_id, workspace.to_path_buf(), &summaries);
+        }
+    }
+    let message = outcome.map_err(github_error)?;
+    Ok(wire::GithubActResult { executed: true, message })
+}
+
 // --- verified catalog --------------------------------------------------------
 
 /// The Bridge Verified catalog in force, and how it came to be trusted.
@@ -3006,6 +3045,47 @@ pub fn execute_automation_action(
 
 #[cfg(test)]
 mod tests {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct PolicyReplayCase {
+        id: String,
+        action: bridge_protocol::messages::GithubAction,
+        confirmed: bool,
+        expect_executed: bool,
+    }
+
+    /// Replays the recorded approve/deny decision for every action kind through
+    /// the real `github_act` gate. A denied case must return `executed:false`
+    /// *without* consulting the surface — the test core's surface is
+    /// `unavailable_for_tests`, so any subprocess attempt would surface as an
+    /// `Unavailable` error instead of a clean decline. An approved case must be
+    /// let through the gate (it then fails on the missing workspace, proving the
+    /// gate did not itself short-circuit it).
+    #[test]
+    fn github_act_policy_replay_covers_approve_and_deny_per_action_kind() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../testing/fixtures/github-act-policy.json");
+        let cases: Vec<PolicyReplayCase> =
+            serde_json::from_slice(&std::fs::read(fixture).unwrap()).unwrap();
+        assert_eq!(cases.len(), 8, "approve and deny for four action kinds");
+        let scratch = tempfile::tempdir().unwrap();
+        let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
+        for case in cases {
+            let result = super::github_act(&core, "missing-workspace", case.action, case.confirmed);
+            if case.expect_executed {
+                assert!(
+                    result.is_err(),
+                    "{}: an approved action is let through the gate",
+                    case.id
+                );
+            } else {
+                let acted = result.unwrap_or_else(|error| panic!("{}: {error:?}", case.id));
+                assert!(!acted.executed, "{}: a denied action does not execute", case.id);
+                assert!(acted.message.starts_with("Declined:"), "{}: names the decline", case.id);
+            }
+        }
+    }
+
     #[test]
     fn shells_key_by_workspace_and_terminal() {
         let scratch = tempfile::tempdir().unwrap();

@@ -51,6 +51,14 @@ pub fn dispatch(
             let p: wire::GithubChecksParams = decode(method, params)?;
             reply(api::github_checks(core, &p.workspace_id, p.number))
         }
+        MethodName::GithubMergeConfig => {
+            let p: wire::GithubMergeConfigParams = decode(method, params)?;
+            reply(api::github_merge_config(core, &p.workspace_id))
+        }
+        MethodName::GithubAct => {
+            let p: wire::GithubActParams = decode(method, params)?;
+            reply(api::github_act(core, &p.workspace_id, p.action, p.confirmed))
+        }
 
         MethodName::AddProject => {
             let p: wire::AddProjectParams = decode(method, params)?;

@@ -71,6 +71,18 @@ async fn github_checks(workspace_id: String, number: u64, state: State<'_, Arc<B
 }
 
 #[tauri::command]
+async fn github_merge_config(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubMergeConfigResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub merge config", move || api::github_merge_config(&core, &workspace_id)).await
+}
+
+#[tauri::command]
+async fn github_act(workspace_id: String, action: wire::GithubAction, confirmed: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubActResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub action", move || api::github_act(&core, &workspace_id, action, confirmed)).await
+}
+
+#[tauri::command]
 async fn browser_bridge_state(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<browser_bridge::BrowserBridgeSnapshot, BridgeError> {
@@ -1677,6 +1689,8 @@ pub fn run() {
             github_prs,
             github_pr,
             github_checks,
+            github_merge_config,
+            github_act,
             browser_bridge_state,
             install_browser_native_host,
             browser_action,

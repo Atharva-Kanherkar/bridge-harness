@@ -43,6 +43,10 @@
     },
     {
       "delivery": "transient",
+      "notification": "github/checks_changed"
+    },
+    {
+      "delivery": "transient",
       "notification": "stream-lagged"
     }
   ]

@@ -21,6 +21,7 @@ pub const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(15);
 const PR_LIST_FIELDS: &str = "number,title,state,isDraft,author,headRefName,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,url";
 const PR_DETAIL_FIELDS: &str = "number,title,body,state,isDraft,author,headRefName,baseRefName,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,url";
 const PR_CHECK_FIELDS: &str = "name,state,bucket,link,workflow";
+const PR_HEAD_FIELDS: &str = "headRefOid";
 const REVIEW_THREADS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id,isResolved,isOutdated,path,line,originalLine,comments(first:100){nodes{id,databaseId,author{login},body,createdAt,url,replyTo{id}}}}}}}}";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,6 +172,91 @@ pub struct ReviewThread {
     pub line: Option<u64>,
     pub original_line: Option<u64>,
     pub comments: Vec<ReviewComment>,
+}
+
+/// The merge strategies a repository permits, plus the one Bridge preselects.
+///
+/// GitHub's REST API exposes which strategies are *allowed* but not a per-repo
+/// *default* merge method, so [`MergeConfig::default_strategy`] is Bridge's
+/// choice: squash when allowed, else merge, else rebase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeStrategies {
+    pub merge: bool,
+    pub squash: bool,
+    pub rebase: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MergeConfig {
+    pub strategies: MergeStrategies,
+    pub default_strategy: MergeStrategy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MergeStrategy {
+    Merge,
+    Squash,
+    Rebase,
+}
+
+impl MergeStrategy {
+    /// The `gh pr merge` flag that selects this strategy.
+    fn flag(self) -> &'static str {
+        match self {
+            MergeStrategy::Merge => "--merge",
+            MergeStrategy::Squash => "--squash",
+            MergeStrategy::Rebase => "--rebase",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReviewEvent {
+    Approve,
+    RequestChanges,
+    Comment,
+}
+
+/// One mutating GitHub action. The tag mirrors the protocol payload so the api
+/// layer can convert a wire action into this by a JSON round-trip.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum GithubAction {
+    Merge {
+        number: u64,
+        strategy: MergeStrategy,
+    },
+    Review {
+        number: u64,
+        event: ReviewEvent,
+        body: String,
+    },
+    Reply {
+        number: u64,
+        // Keep the wire name camelCase; `rename_all` skips struct-variant fields.
+        #[serde(rename = "commentId")]
+        comment_id: u64,
+        body: String,
+    },
+    Rerun {
+        number: u64,
+    },
+}
+
+impl GithubAction {
+    /// The pull request this action targets.
+    pub fn number(&self) -> u64 {
+        match self {
+            GithubAction::Merge { number, .. }
+            | GithubAction::Review { number, .. }
+            | GithubAction::Reply { number, .. }
+            | GithubAction::Rerun { number } => *number,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -525,6 +611,199 @@ impl GithubSurface {
         Ok(threads)
     }
 
+    /// The merge strategies the repository permits. A separate `gh api` read so
+    /// the merge confirmation can offer only the allowed choices; the reader
+    /// never widens what `gh pr merge` will actually accept.
+    pub fn merge_config(&self, workspace: &Path) -> Result<MergeConfig, GithubSurfaceError> {
+        self.require_binary()?;
+        let repository = self.resolve_repository(workspace)?;
+        let mut args: Vec<String> = vec!["api".into()];
+        if !repository.host.eq_ignore_ascii_case("github.com") {
+            args.push("--hostname".into());
+            args.push(repository.host.clone());
+        }
+        args.push(format!("repos/{}/{}", repository.owner, repository.name));
+        let bytes = self.run_gh(workspace, "repo settings", &args, false)?;
+        let raw: RawRepositorySettings = parse_json("repository settings", &bytes)?;
+        let strategies = MergeStrategies {
+            merge: raw.allow_merge_commit,
+            squash: raw.allow_squash_merge,
+            rebase: raw.allow_rebase_merge,
+        };
+        // GitHub does not report a default merge method; squash is the
+        // community-common default, so prefer it when the repo allows it.
+        let default_strategy = if strategies.squash {
+            MergeStrategy::Squash
+        } else if strategies.merge {
+            MergeStrategy::Merge
+        } else if strategies.rebase {
+            MergeStrategy::Rebase
+        } else {
+            return Err(malformed("repository settings", "no merge strategies are enabled"));
+        };
+        Ok(MergeConfig {
+            strategies,
+            default_strategy,
+        })
+    }
+
+    /// Execute one mutating action through `gh`. Every invocation is an argv
+    /// array; a `gh` refusal (branch protection, required reviews, conflicts)
+    /// propagates verbatim and is never retried.
+    pub fn act(&self, workspace: &Path, action: &GithubAction) -> Result<String, GithubSurfaceError> {
+        self.require_binary()?;
+        let repository = self.resolve_repository(workspace)?;
+        let selector = repository.selector();
+        let result = match action {
+            GithubAction::Merge { number, strategy } => {
+                self.run_gh(
+                    workspace,
+                    "pr merge",
+                    &[
+                        "pr".into(),
+                        "merge".into(),
+                        number.to_string(),
+                        "--repo".into(),
+                        selector.clone(),
+                        strategy.flag().into(),
+                    ],
+                    false,
+                )?;
+                Ok(format!("Merge requested for PR #{number} ({}).", strategy_label(*strategy)))
+            }
+            GithubAction::Review {
+                number,
+                event,
+                body,
+            } => {
+                let mut args = vec![
+                    "pr".into(),
+                    "review".into(),
+                    number.to_string(),
+                    "--repo".into(),
+                    selector.clone(),
+                ];
+                match event {
+                    ReviewEvent::Approve => {
+                        args.push("--approve".into());
+                        if !body.is_empty() {
+                            args.push("--body".into());
+                            args.push(body.clone());
+                        }
+                    }
+                    ReviewEvent::RequestChanges => {
+                        args.push("--request-changes".into());
+                        args.push("--body".into());
+                        args.push(body.clone());
+                    }
+                    ReviewEvent::Comment => {
+                        args.push("--comment".into());
+                        args.push("--body".into());
+                        args.push(body.clone());
+                    }
+                }
+                self.run_gh(workspace, "pr review", &args, false)?;
+                Ok(format!("Submitted {} on PR #{number}.", review_label(*event)))
+            }
+            GithubAction::Reply {
+                number,
+                comment_id,
+                body,
+            } => {
+                let mut args = vec!["api".into()];
+                if !repository.host.eq_ignore_ascii_case("github.com") {
+                    args.push("--hostname".into());
+                    args.push(repository.host.clone());
+                }
+                args.extend([
+                    "--method".into(),
+                    "POST".into(),
+                    format!(
+                        "repos/{}/{}/pulls/{number}/comments/{comment_id}/replies",
+                        repository.owner, repository.name
+                    ),
+                    "-f".into(),
+                    format!("body={body}"),
+                ]);
+                self.run_gh(
+                    workspace,
+                    "review reply",
+                    &args,
+                    false,
+                )?;
+                Ok(format!("Replied on PR #{number}."))
+            }
+            GithubAction::Rerun { number } => self.rerun_failed(workspace, &selector, *number),
+        };
+        if result.is_ok() {
+            self.invalidate_action_resources(&repository, action.number());
+        }
+        result
+    }
+
+    /// Re-run only the failed workflow runs on the pull request's head branch.
+    fn rerun_failed(
+        &self,
+        workspace: &Path,
+        selector: &str,
+        number: u64,
+    ) -> Result<String, GithubSurfaceError> {
+        let head_sha = self.pr_head_sha(workspace, selector, number)?;
+        let bytes = self.run_gh(
+            workspace,
+            "run list",
+            &[
+                "run".into(),
+                "list".into(),
+                "--repo".into(),
+                selector.to_string(),
+                "--commit".into(),
+                head_sha,
+                "--limit".into(),
+                "20".into(),
+                "--json".into(),
+                "databaseId,status,conclusion".into(),
+            ],
+            false,
+        )?;
+        let runs: Vec<RawWorkflowRun> = parse_json("workflow runs", &bytes)?;
+        let failed: Vec<u64> = runs
+            .into_iter()
+            .filter(|run| run.is_failed())
+            .map(|run| run.database_id)
+            .collect();
+        if failed.is_empty() {
+            return Ok("No failed runs to re-run.".into());
+        }
+        for id in &failed {
+            self.run_gh(
+                workspace,
+                "run rerun",
+                &[
+                    "run".into(),
+                    "rerun".into(),
+                    id.to_string(),
+                    "--repo".into(),
+                    selector.to_string(),
+                    "--failed".into(),
+                ],
+                false,
+            )?;
+            // A later rerun may still fail, but this one has already queued
+            // work. Drop every stale PR view before returning that refusal.
+            self.invalidate_action_resources_for_selector(selector, number);
+        }
+        // The re-run makes the checks queue again; drop the stale cached rollup
+        // so the very next read (and the poller re-arm in the api layer) sees
+        // the runs return to "running".
+        self.invalidate_checks(workspace, number);
+        let count = failed.len();
+        Ok(format!(
+            "Re-running {count} failed {} on PR #{number}.",
+            if count == 1 { "run" } else { "runs" }
+        ))
+    }
+
     fn run_gh(
         &self,
         workspace: &Path,
@@ -569,6 +848,58 @@ impl GithubSurface {
                     resource,
                 },
             );
+    }
+
+    /// A completed write changes every cached view of its pull request. Clear
+    /// them together so the UI's immediate refresh and a re-run's poller
+    /// re-arm observe GitHub instead of a pre-write 15-second cache entry.
+    fn invalidate_action_resources(&self, repository: &GithubRepository, number: u64) {
+        self.invalidate_action_resources_for_selector(&repository.selector(), number);
+    }
+
+    fn invalidate_action_resources_for_selector(&self, selector: &str, number: u64) {
+        let mut cache = self
+            .cache
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        for resource in [
+            Resource::PullRequests,
+            Resource::PullRequest(number),
+            Resource::Checks(number),
+            Resource::ReviewThreads(number),
+        ] {
+            cache.remove(&CacheKey {
+                repository: selector.into(),
+                resource,
+            });
+        }
+    }
+
+    fn pr_head_sha(
+        &self,
+        workspace: &Path,
+        selector: &str,
+        number: u64,
+    ) -> Result<String, GithubSurfaceError> {
+        let bytes = self.run_gh(
+            workspace,
+            "pr head SHA",
+            &[
+                "pr".into(),
+                "view".into(),
+                number.to_string(),
+                "--repo".into(),
+                selector.into(),
+                "--json".into(),
+                PR_HEAD_FIELDS.into(),
+            ],
+            false,
+        )?;
+        let head: RawPullRequestHead = parse_json("pull-request head", &bytes)?;
+        if head.head_ref_oid.is_empty() {
+            return Err(malformed("pull-request head", "headRefOid was empty"));
+        }
+        Ok(head.head_ref_oid)
     }
 
     #[cfg(test)]
@@ -626,6 +957,12 @@ struct RawPullRequestDetail {
     merge_state_status: String,
     status_check_rollup: Vec<RawCheckRollup>,
     url: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawPullRequestHead {
+    head_ref_oid: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -697,6 +1034,38 @@ struct RawReviewComment {
 #[derive(Debug, Deserialize)]
 struct RawReviewReply {
     id: String,
+}
+
+// GitHub's REST API returns snake_case, unlike the `gh --json` reads elsewhere
+// in this module, so these field names map directly with no rename.
+#[derive(Debug, Default, Deserialize)]
+struct RawRepositorySettings {
+    #[serde(default)]
+    allow_merge_commit: bool,
+    #[serde(default)]
+    allow_squash_merge: bool,
+    #[serde(default)]
+    allow_rebase_merge: bool,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawWorkflowRun {
+    database_id: u64,
+    #[serde(default)]
+    conclusion: Option<String>,
+}
+
+impl RawWorkflowRun {
+    /// A completed run counts as "failed" for re-run purposes when GitHub gave
+    /// it a non-success terminal conclusion. Runs still in flight (empty
+    /// conclusion) are left alone — there is nothing to re-run yet.
+    fn is_failed(&self) -> bool {
+        matches!(
+            self.conclusion.as_deref(),
+            Some("failure" | "timed_out" | "startup_failure")
+        )
+    }
 }
 
 impl TryFrom<RawPullRequestSummary> for PullRequestSummary {
@@ -805,6 +1174,24 @@ fn malformed(resource: &'static str, detail: impl Into<String>) -> GithubSurface
     GithubSurfaceError::MalformedResponse {
         resource,
         detail: detail.into(),
+    }
+}
+
+/// The lowercase word for a merge strategy, used in confirmation statements.
+pub fn strategy_label(strategy: MergeStrategy) -> &'static str {
+    match strategy {
+        MergeStrategy::Merge => "merge",
+        MergeStrategy::Squash => "squash",
+        MergeStrategy::Rebase => "rebase",
+    }
+}
+
+/// The human phrase for a review event, used in confirmation statements.
+pub fn review_label(event: ReviewEvent) -> &'static str {
+    match event {
+        ReviewEvent::Approve => "approval",
+        ReviewEvent::RequestChanges => "requested changes",
+        ReviewEvent::Comment => "a review comment",
     }
 }
 
@@ -1125,7 +1512,7 @@ mod tests {
             .canonicalize()
             .unwrap();
         let script = format!(
-            "#!/bin/sh\nroot=$(dirname \"$0\")\nprintf '%s\\n' \"$*\" >> \"$root/invocations.log\"\nif [ \"$1 $2\" = \"auth status\" ]; then exit {auth_exit}; fi\nif [ \"$1 $2 $3\" = \"repo set-default --view\" ]; then\n  if [ -n \"{default}\" ]; then printf '%s\\n' '{default}'; exit 0; fi\n  exit 1\nfi\nif [ \"$1 $2\" = \"pr list\" ]; then\n  fixture=prs.json\n  if [ -f \"$root/pr-list-fixture\" ]; then fixture=$(cat \"$root/pr-list-fixture\"); fi\n  cat '{fixtures}/'$fixture\n  exit 0\nfi\nif [ \"$1 $2\" = \"pr view\" ]; then cat '{fixtures}/pr-detail.json'; exit 0; fi\nif [ \"$1 $2\" = \"pr checks\" ]; then\n  if [ -f \"$root/pr-checks-empty\" ]; then echo \"no checks reported on the 'fixture' branch\" >&2; exit 1; fi\n  cat '{fixtures}/checks.json'\n  exit 1\nfi\nif [ \"$1 $2\" = \"api graphql\" ]; then cat '{fixtures}/review-threads.json'; exit 0; fi\nexit 2\n",
+            "#!/bin/sh\nroot=$(dirname \"$0\")\nprintf '%s\\n' \"$*\" >> \"$root/invocations.log\"\nif [ \"$1 $2\" = \"auth status\" ]; then exit {auth_exit}; fi\nif [ \"$1 $2 $3\" = \"repo set-default --view\" ]; then\n  if [ -n \"{default}\" ]; then printf '%s\\n' '{default}'; exit 0; fi\n  exit 1\nfi\nif [ \"$1 $2\" = \"pr list\" ]; then\n  fixture=prs.json\n  if [ -f \"$root/pr-list-fixture\" ]; then fixture=$(cat \"$root/pr-list-fixture\"); fi\n  cat '{fixtures}/'$fixture\n  exit 0\nfi\nif [ \"$1 $2\" = \"pr view\" ]; then cat '{fixtures}/pr-detail.json'; exit 0; fi\nif [ \"$1 $2\" = \"pr checks\" ]; then\n  if [ -f \"$root/pr-checks-empty\" ]; then echo \"no checks reported on the 'fixture' branch\" >&2; exit 1; fi\n  cat '{fixtures}/checks.json'\n  exit 1\nfi\nif [ \"$1 $2\" = \"api graphql\" ]; then cat '{fixtures}/review-threads.json'; exit 0; fi\nif [ \"$1 $2\" = \"pr merge\" ]; then\n  if [ -f \"$root/pr-merge-blocked\" ]; then echo 'GraphQL: Branch protections: at least 1 approving review is required (mergePullRequest)' >&2; exit 1; fi\n  exit 0\nfi\nif [ \"$1 $2\" = \"pr review\" ]; then exit 0; fi\nif [ \"$1 $2\" = \"run list\" ]; then\n  fixture=runs.json\n  if [ -f \"$root/run-list-clean\" ]; then fixture=runs-clean.json; fi\n  cat '{fixtures}/'$fixture\n  exit 0\nfi\nif [ \"$1 $2\" = \"run rerun\" ]; then exit 0; fi\nif [ \"$1\" = \"api\" ] && [ \"$2\" = \"--method\" ]; then exit 0; fi\nif [ \"$1\" = \"api\" ]; then case \"$2\" in repos/*) cat '{fixtures}/repos-settings.json'; exit 0;; esac; fi\nexit 2\n",
             fixtures = fixtures.display()
         );
         fs::write(&binary, script).unwrap();
@@ -1523,5 +1910,292 @@ mod tests {
         let log = fs::read_to_string(fake.path().join("invocations.log")).unwrap();
         assert!(log.contains(&format!("--json {PR_LIST_FIELDS}")));
         assert!(log.contains(&format!("--json {PR_DETAIL_FIELDS}")));
+    }
+
+    fn invocations(fake: &TempDir) -> String {
+        fs::read_to_string(fake.path().join("invocations.log")).unwrap_or_default()
+    }
+
+    #[test]
+    fn merge_config_reports_allowed_strategies_and_default() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        let config = surface.merge_config(repository.path()).unwrap();
+        assert_eq!(
+            config.strategies,
+            MergeStrategies {
+                merge: true,
+                squash: true,
+                rebase: false,
+            }
+        );
+        // Squash is allowed, so it is the preselected default.
+        assert_eq!(config.default_strategy, MergeStrategy::Squash);
+        assert!(invocations(&fake).contains("api repos/fixture/project"));
+    }
+
+    #[test]
+    fn merge_config_refuses_a_repository_without_any_merge_strategy() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        fs::write(
+            fake.path().join("gh"),
+            "#!/bin/sh\nif [ \"$1 $2\" = \"auth status\" ]; then exit 0; fi\nprintf '%s\\n' '{\"allow_merge_commit\":false,\"allow_squash_merge\":false,\"allow_rebase_merge\":false}'\n",
+        )
+        .unwrap();
+        let surface = GithubSurface::discover_on_path(fake.path());
+        assert!(matches!(
+            surface.merge_config(repository.path()),
+            Err(GithubSurfaceError::MalformedResponse { resource: "repository settings", .. })
+        ));
+    }
+
+    #[test]
+    fn merge_sends_the_selected_strategy_flag() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        for strategy in [MergeStrategy::Merge, MergeStrategy::Squash, MergeStrategy::Rebase] {
+            let message = surface
+                .act(
+                    repository.path(),
+                    &GithubAction::Merge { number: 103, strategy },
+                )
+                .unwrap();
+            assert!(message.contains("Merge requested for PR #103"));
+        }
+        let log = invocations(&fake);
+        assert!(log.contains("pr merge 103 --repo fixture/project --merge"));
+        assert!(log.contains("pr merge 103 --repo fixture/project --squash"));
+        assert!(log.contains("pr merge 103 --repo fixture/project --rebase"));
+    }
+
+    #[test]
+    fn merge_propagates_a_branch_protection_refusal_verbatim() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        // Steer the shim to refuse the merge the way branch protection would.
+        fs::write(fake.path().join("pr-merge-blocked"), "").unwrap();
+        let surface = GithubSurface::discover_on_path(fake.path());
+        let error = surface
+            .act(
+                repository.path(),
+                &GithubAction::Merge {
+                    number: 103,
+                    strategy: MergeStrategy::Squash,
+                },
+            )
+            .unwrap_err();
+        match error {
+            GithubSurfaceError::CommandFailed { operation, stderr } => {
+                assert_eq!(operation, "pr merge");
+                assert_eq!(
+                    stderr,
+                    "GraphQL: Branch protections: at least 1 approving review is required (mergePullRequest)"
+                );
+            }
+            other => panic!("expected a verbatim command failure, got {other:?}"),
+        }
+        // The refusal is never retried: exactly one merge attempt was spawned.
+        assert_eq!(invocation_count(&fake, "pr merge"), 1);
+    }
+
+    #[test]
+    fn review_builds_the_correct_event_argv() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        // Approve with no body omits --body entirely.
+        surface
+            .act(
+                repository.path(),
+                &GithubAction::Review {
+                    number: 103,
+                    event: ReviewEvent::Approve,
+                    body: String::new(),
+                },
+            )
+            .unwrap();
+        surface
+            .act(
+                repository.path(),
+                &GithubAction::Review {
+                    number: 103,
+                    event: ReviewEvent::RequestChanges,
+                    body: "please fix".into(),
+                },
+            )
+            .unwrap();
+        surface
+            .act(
+                repository.path(),
+                &GithubAction::Review {
+                    number: 103,
+                    event: ReviewEvent::Comment,
+                    body: "a note".into(),
+                },
+            )
+            .unwrap();
+        let log = invocations(&fake);
+        assert!(log.contains("pr review 103 --repo fixture/project --approve\n"));
+        assert!(!log.contains("--approve --body"));
+        assert!(log.contains("pr review 103 --repo fixture/project --request-changes --body please fix"));
+        assert!(log.contains("pr review 103 --repo fixture/project --comment --body a note"));
+    }
+
+    #[test]
+    fn reply_posts_to_the_review_comment_replies_endpoint() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        surface
+            .act(
+                repository.path(),
+                &GithubAction::Reply {
+                    number: 103,
+                    comment_id: 55,
+                    body: "thanks".into(),
+                },
+            )
+            .unwrap();
+        let log = invocations(&fake);
+        assert!(log.contains(
+            "api --method POST repos/fixture/project/pulls/103/comments/55/replies -f body=thanks"
+        ));
+    }
+
+    #[test]
+    fn reply_uses_workspace_hostname_for_github_enterprise() {
+        let repository = repository();
+        git(
+            repository.path(),
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://github.example.test/fixture/project.git",
+            ],
+        );
+        let fake = fake_gh(true, None);
+        fs::write(
+            fake.path().join("gh"),
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$(dirname \"$0\")/invocations.log\"\nexit 0\n",
+        )
+        .unwrap();
+        let surface = GithubSurface::discover_on_path(fake.path());
+        surface
+            .act(
+                repository.path(),
+                &GithubAction::Reply {
+                    number: 103,
+                    comment_id: 55,
+                    body: "thanks".into(),
+                },
+            )
+            .unwrap();
+        assert!(invocations(&fake).contains(
+            "api --hostname github.example.test --method POST repos/fixture/project/pulls/103/comments/55/replies -f body=thanks"
+        ));
+    }
+
+    #[test]
+    fn completed_action_invalidates_all_cached_pull_request_resources() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        surface.list_prs(repository.path()).unwrap();
+        surface.pr_detail(repository.path(), 103).unwrap();
+        surface.pr_checks(repository.path(), 103).unwrap();
+        surface.pr_review_threads(repository.path(), 103).unwrap();
+
+        surface
+            .act(
+                repository.path(),
+                &GithubAction::Review {
+                    number: 103,
+                    event: ReviewEvent::Approve,
+                    body: String::new(),
+                },
+            )
+            .unwrap();
+
+        surface.list_prs(repository.path()).unwrap();
+        surface.pr_detail(repository.path(), 103).unwrap();
+        surface.pr_checks(repository.path(), 103).unwrap();
+        surface.pr_review_threads(repository.path(), 103).unwrap();
+        assert_eq!(invocation_count(&fake, "pr list"), 2);
+        assert_eq!(invocation_count(&fake, "pr view"), 2);
+        assert_eq!(invocation_count(&fake, "pr checks"), 2);
+        assert_eq!(invocation_count(&fake, "api graphql"), 2);
+    }
+
+    #[test]
+    fn rerun_acts_only_on_failed_runs() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        let message = surface
+            .act(repository.path(), &GithubAction::Rerun { number: 103 })
+            .unwrap();
+        assert!(message.contains("Re-running 1 failed run"));
+        let log = invocations(&fake);
+        // Only the failed run (42) is re-run — the passing (43) and in-progress
+        // (44) runs are left alone.
+        assert!(log.contains("run rerun 42 --repo fixture/project --failed"));
+        assert!(!log.contains("run rerun 43"));
+        assert!(!log.contains("run rerun 44"));
+        assert_eq!(invocation_count(&fake, "run rerun"), 1);
+        assert!(log.contains("pr view 103 --repo fixture/project --json headRefOid"));
+        assert!(log.contains("run list --repo fixture/project --commit current-head-sha"));
+    }
+
+    #[test]
+    fn partial_rerun_failure_still_invalidates_cached_pull_request_resources() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let fixtures = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../testing/fixtures/github")
+            .canonicalize()
+            .unwrap();
+        fs::write(
+            fake.path().join("gh"),
+            format!(
+                "#!/bin/sh\nroot=$(dirname \"$0\")\nprintf '%s\\n' \"$*\" >> \"$root/invocations.log\"\nif [ \"$1 $2\" = \"auth status\" ]; then exit 0; fi\nif [ \"$1 $2\" = \"pr list\" ]; then cat '{fixtures}/prs.json'; exit 0; fi\nif [ \"$1 $2\" = \"pr view\" ]; then cat '{fixtures}/pr-detail.json'; exit 0; fi\nif [ \"$1 $2\" = \"pr checks\" ]; then cat '{fixtures}/checks.json'; exit 1; fi\nif [ \"$1 $2\" = \"api graphql\" ]; then cat '{fixtures}/review-threads.json'; exit 0; fi\nif [ \"$1 $2\" = \"run list\" ]; then printf '%s\\n' '[{{\"databaseId\":42,\"conclusion\":\"failure\"}},{{\"databaseId\":43,\"conclusion\":\"failure\"}}]'; exit 0; fi\nif [ \"$1 $2\" = \"run rerun\" ] && [ \"$3\" = \"43\" ]; then echo 'second rerun refused' >&2; exit 1; fi\nexit 0\n",
+                fixtures = fixtures.display()
+            ),
+        )
+        .unwrap();
+        let surface = GithubSurface::discover_on_path(fake.path());
+        surface.list_prs(repository.path()).unwrap();
+        surface.pr_detail(repository.path(), 103).unwrap();
+        surface.pr_checks(repository.path(), 103).unwrap();
+        surface.pr_review_threads(repository.path(), 103).unwrap();
+
+        assert!(surface
+            .act(repository.path(), &GithubAction::Rerun { number: 103 })
+            .is_err());
+
+        surface.list_prs(repository.path()).unwrap();
+        surface.pr_detail(repository.path(), 103).unwrap();
+        surface.pr_checks(repository.path(), 103).unwrap();
+        surface.pr_review_threads(repository.path(), 103).unwrap();
+        assert_eq!(invocation_count(&fake, "pr list"), 2);
+        assert_eq!(invocation_count(&fake, "pr view"), 3);
+        assert_eq!(invocation_count(&fake, "pr checks"), 2);
+        assert_eq!(invocation_count(&fake, "api graphql"), 2);
+    }
+
+    #[test]
+    fn rerun_with_no_failed_runs_spawns_no_rerun() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        fs::write(fake.path().join("run-list-clean"), "").unwrap();
+        let surface = GithubSurface::discover_on_path(fake.path());
+        let message = surface
+            .act(repository.path(), &GithubAction::Rerun { number: 103 })
+            .unwrap();
+        assert_eq!(message, "No failed runs to re-run.");
+        assert_eq!(invocation_count(&fake, "run rerun"), 0);
     }
 }

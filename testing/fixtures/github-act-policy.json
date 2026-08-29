@@ -1,0 +1,10 @@
+[
+  { "id": "merge-approved", "action": { "kind": "merge", "number": 328, "strategy": "squash" }, "confirmed": true, "expectExecuted": true },
+  { "id": "merge-denied", "action": { "kind": "merge", "number": 328, "strategy": "squash" }, "confirmed": false, "expectExecuted": false },
+  { "id": "review-approved", "action": { "kind": "review", "number": 341, "event": "approve", "body": "" }, "confirmed": true, "expectExecuted": true },
+  { "id": "review-denied", "action": { "kind": "review", "number": 341, "event": "requestChanges", "body": "please fix" }, "confirmed": false, "expectExecuted": false },
+  { "id": "reply-approved", "action": { "kind": "reply", "number": 341, "commentId": 55, "body": "thanks" }, "confirmed": true, "expectExecuted": true },
+  { "id": "reply-denied", "action": { "kind": "reply", "number": 341, "commentId": 55, "body": "thanks" }, "confirmed": false, "expectExecuted": false },
+  { "id": "rerun-approved", "action": { "kind": "rerun", "number": 104 }, "confirmed": true, "expectExecuted": true },
+  { "id": "rerun-denied", "action": { "kind": "rerun", "number": 104 }, "confirmed": false, "expectExecuted": false }
+]

@@ -35,6 +35,7 @@ pub mod frame_queue;
 pub mod git;
 pub mod github_surface;
 pub mod github_poll;
+pub mod github_policy;
 pub mod handoff;
 pub mod health;
 pub mod learning_job;
