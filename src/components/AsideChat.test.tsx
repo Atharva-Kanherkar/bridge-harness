@@ -127,6 +127,20 @@ describe("AsideChat", () => {
     expect(onClose).toHaveBeenCalledTimes(2);
   });
 
+  it("lets Escape dismiss an open model picker without tearing down the aside", async () => {
+    const onClose = vi.fn();
+    await mount({ working: false, onClose });
+    const pill = dialog().querySelector<HTMLButtonElement>('[aria-label="Aside model: Claude Sonnet"]')!;
+    await act(async () => { pill.click(); });
+    expect(dialog().querySelector(".u-glass-popover")).toBeTruthy();
+    await act(async () => { pill.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(dialog().querySelector(".u-glass-popover")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    // The next Escape, with no picker in the way, closes the panel as before.
+    await act(async () => { pill.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it("promotes through its header button", async () => {
     const onPromote = vi.fn();
     await mount({ onPromote });
