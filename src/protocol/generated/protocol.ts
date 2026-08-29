@@ -300,6 +300,7 @@ export type BridgeNotification =
   | "terminal-exited"
   | "account-usage"
   | "session-startup"
+  | "github/checks_changed"
   | "stream-lagged";
 
 export const BRIDGE_NOTIFICATIONS = [
@@ -313,6 +314,7 @@ export const BRIDGE_NOTIFICATIONS = [
   { notification: "terminal-exited", delivery: "transient" },
   { notification: "account-usage", delivery: "transient" },
   { notification: "session-startup", delivery: "transient" },
+  { notification: "github/checks_changed", delivery: "transient" },
   { notification: "stream-lagged", delivery: "transient" },
 ] as const;
 

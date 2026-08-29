@@ -58,6 +58,7 @@ const unit = (result: Promise<null>): Promise<void> => result.then(() => undefin
 const now = new Date().toISOString();
 const stateListeners = new Set<() => void>();
 const memoryListeners = new Set<(payload: MemoryChangedPayload) => void>();
+type GithubChecksChangedPayload = { workspaceId: string; number: number };
 // Browser-mode stand-in for the daemon's global `agent-event` fan-out. Every
 // surface that renders live turns (the aside panel above all — its optimistic
 // pending rows reconcile only against this stream) subscribes here outside
@@ -1500,6 +1501,10 @@ export const bridgeApi = {
    *  never shows that phase, so browser/mock mode has nothing to replay. */
   onSessionStartup: async (handler: (payload: SessionStartupPayload) => void): Promise<UnlistenFn> => {
     if (isTauri()) return subscribe<SessionStartupPayload>("session-startup", handler);
+    return () => undefined;
+  },
+  onGithubChecksChanged: async (handler: (payload: GithubChecksChangedPayload) => void): Promise<UnlistenFn> => {
+    if (isTauri()) return subscribe<GithubChecksChangedPayload>("github/checks_changed", handler);
     return () => undefined;
   },
 };

@@ -37,6 +37,25 @@ export function GitHubPanel({ workspaceId }: { workspaceId?: string }) {
     setSelected({ result, checks });
   };
 
+  useEffect(() => {
+    if (!workspaceId) return;
+    let active = true;
+    // The unsubscribe must be kept for cleanup, not only for the
+    // already-cancelled race: this effect re-runs on every `selected` change,
+    // and a listener that is never removed piles up a duplicate refetch per
+    // selection — each with a stale `selected` closure.
+    let off: (() => void) | undefined;
+    void bridgeApi.onGithubChecksChanged(({ workspaceId: changedWorkspace, number }) => {
+      if (!active || changedWorkspace !== workspaceId) return;
+      void bridgeApi.githubPullRequests(workspaceId).then(value => { if (active) setPullRequests(value); });
+      if (selected?.result.pullRequest.summary.number === number) void open(number);
+    }).then(unlisten => {
+      if (!active) { unlisten(); return; }
+      off = unlisten;
+    });
+    return () => { active = false; off?.(); };
+  }, [workspaceId, selected]);
+
   if (!workspaceId) return null;
   if (error) return <p className="mx-2 mb-2 text-xs text-muted-foreground">GitHub is unavailable.</p>;
   if (!status) return <p className="mx-2 mb-2 flex items-center gap-1 text-xs text-muted-foreground"><LoaderCircle className="animate-spin" size={12} /> Checking GitHub…</p>;
