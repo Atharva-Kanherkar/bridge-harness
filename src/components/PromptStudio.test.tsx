@@ -352,6 +352,76 @@ describe("PromptStudio", () => {
     await unmount();
   });
 
+  it("every_target_gets_a_rail_row", async () => {
+    // Locks the exact set the rail renders. TARGET_GROUPS partitions TARGETS
+    // by three id-shape filters (orchestrator / worker:* / direct_session);
+    // a future target id that matches none of them would silently vanish
+    // from the rail with no type error. This pins the count so that regresses
+    // loudly instead of quietly.
+    const { container, unmount } = await mount(<PromptStudio />);
+    await flush();
+    const labels = [...container.querySelectorAll<HTMLButtonElement>('nav[aria-label="Prompt targets"] button:not([role="option"])')]
+      .map(node => node.textContent);
+    expect(labels).toEqual(["Orchestrator", "Research", "Implementation", "Verification", "Planning", "Documentation", "Direct session"]);
+    await unmount();
+  });
+
+  it("override_dot_appears_on_a_non_active_target_after_a_save", async () => {
+    const { container, unmount } = await mount(<PromptStudio />);
+    await flush();
+    await flush();
+
+    const researchWrapper = () => navButton(container, "Research").parentElement!;
+    expect(researchWrapper().textContent).not.toContain("Has overrides");
+
+    await act(async () => { navButton(container, "Research").click(); await flush(); });
+    await typeInto(editorTextarea(container), "Custom research contract.");
+    await act(async () => { buttonWithText(container, "Save worker_contract")!.click(); await flush(); });
+
+    await act(async () => { navButton(container, "Orchestrator").click(); await flush(); });
+    expect(researchWrapper().textContent).toContain("Has overrides");
+    await unmount();
+  });
+
+  it("mount_time_stack_load_does_not_clobber_a_save_that_lands_first", async () => {
+    // The mount effect fetches every target's stack once (for the rail's
+    // override dots) via Promise.all(TARGETS.map(...)) — 7 calls, fired
+    // synchronously in TARGETS order before anything else awaits. Every call
+    // after that is the per-target effect / a mutation handler. Holding the
+    // first 7 calls back and releasing them only after a save has landed
+    // reproduces the exact race: a stale snapshot resolving after a fresh
+    // save must not overwrite it.
+    const TARGETS_COUNT = 7;
+    const original = bridgeApi.promptStack.bind(bridgeApi);
+    let callIndex = 0;
+    const releaseMountBatch: (() => void)[] = [];
+    vi.spyOn(bridgeApi, "promptStack").mockImplementation((target, depth) => {
+      callIndex += 1;
+      const real = original(target, depth);
+      if (callIndex <= TARGETS_COUNT) {
+        return new Promise(resolve => { releaseMountBatch.push(() => { void real.then(resolve); }); });
+      }
+      return real;
+    });
+
+    const { container, unmount } = await mount(<PromptStudio />);
+    await flush();
+    await flush();
+
+    await typeInto(editorTextarea(container), "Saved before the mount batch resolves.");
+    await act(async () => { buttonWithText(container, "Save bridge_role")!.click(); await flush(); });
+    expect(optionText(container, "bridge_role")).toContain("Modified");
+
+    await act(async () => {
+      releaseMountBatch.forEach(release => release());
+      await flush();
+      await flush();
+    });
+
+    expect(optionText(container, "bridge_role")).toContain("Modified");
+    await unmount();
+  });
+
   it("revision_history_lists_operations_and_restore_works", async () => {
     const { container, unmount } = await mount(<PromptStudio />);
     await flush();

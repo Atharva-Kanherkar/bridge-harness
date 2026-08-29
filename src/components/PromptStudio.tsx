@@ -94,14 +94,17 @@ export function PromptStudio() {
   const stack = stacks[target];
 
   // One load of every stack at mount so each target row can carry an honest
-  // "has overrides" dot; every mutation below already keeps stacks fresh.
+  // "has overrides" dot. This only fills gaps: any target already populated
+  // by the per-target effect or a mutation handler by the time this resolves
+  // keeps its (fresher) entry, so a save/reset/restore/import that lands
+  // before this promise settles can never be clobbered by a stale snapshot.
   useEffect(() => {
     let active = true;
     void Promise.all(TARGETS.map(item => bridgeApi.promptStack(item.id))).then(all => {
       if (!active) return;
       setStacks(current => {
         const next = { ...current };
-        TARGETS.forEach((item, index) => { next[item.id] = all[index]; });
+        TARGETS.forEach((item, index) => { next[item.id] = current[item.id] ?? all[index]; });
         return next;
       });
     }).catch(() => undefined);
@@ -289,8 +292,15 @@ const handleImportFile = (files: FileList | null) => {
             {group.targets.map(item => {
               const itemStack = stacks[item.id];
               const hasOverrides = itemStack?.sections.some(sectionItem => sectionItem.state.state !== "default") ?? false;
-              return <div key={item.id} className="flex items-center gap-1.5">
-                {hasOverrides && <span aria-hidden className="ml-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-warning/80" />}
+              return <div
+                key={item.id}
+                title={hasOverrides ? `${item.label} has overrides` : undefined}
+                className="flex items-center gap-1.5"
+              >
+                <span aria-hidden className="ml-1.5 w-1.5 shrink-0">
+                  {hasOverrides && <span className="block h-1.5 w-1.5 rounded-full bg-warning/80" />}
+                </span>
+                {hasOverrides && <span className="sr-only">Has overrides</span>}
                 <button
                   type="button"
                   aria-current={target === item.id}
@@ -429,53 +439,57 @@ const handleImportFile = (files: FileList | null) => {
                 disabled={busy}
                 aria-label={`Restore ${section.id} to revision ${revision.id} (${revision.operation})`}
                 onClick={() => void handleRestore(section.id, revision.id)}
-                className="mt-0.5 rounded-md text-[10.5px] text-info opacity-0 transition-opacity hover:underline focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-40"
+                className="mt-0.5 rounded-md text-[10.5px] text-info opacity-0 pointer-events-none transition-opacity hover:underline focus-visible:opacity-100 focus-visible:pointer-events-auto group-hover:opacity-100 group-hover:pointer-events-auto group-hover:disabled:opacity-40 focus-visible:disabled:opacity-40"
               >Restore</button>
             </li>)}
           </ol>
         </section>}
-
-        <aside aria-label="Compiled prompt preview and overrides" className="mt-7 shrink-0">
-          <details open className="u-surface rounded-xl">
-            <summary className="cursor-pointer select-none px-4 py-2.5 text-[10.5px] font-semibold uppercase tracking-[0.09em] text-muted-foreground/80 marker:content-[''] [&::-webkit-details-marker]:hidden">Compiled preview</summary>
-            <div className="border-t border-border/60 px-4 py-3">
-              {previewError && <p role="alert" className="mb-2 text-[11px] text-destructive">{previewError}</p>}
-              {!preview ? <p className="text-[11px] text-muted-foreground">Loading preview…</p> : <div className="space-y-3">
-                <div>
-                  <h4 className="text-[10.5px] font-semibold uppercase tracking-wide text-foreground">Exact Bridge bytes</h4>
-                  <dl className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 font-mono text-[10px] text-muted-foreground">
-                    <dt>Hash</dt><dd className="truncate">{preview.prefixHash}</dd>
-                    <dt>ID</dt><dd className="truncate">{preview.prefixId}</dd>
-                    <dt>Bytes (exact)</dt><dd>{preview.prefixBytes}</dd>
-                    <dt>Tokens (est.)</dt><dd>{preview.prefixTokenEstimate}</dd>
-                  </dl>
-                  <p className="mt-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">Stable prefix — exact bytes</p>
-                  <pre className="mt-0.5 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-foreground/[0.03] p-2 font-mono text-[10px]">{preview.stablePrefix}</pre>
-                  <p className="mt-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">Variable suffix — exact bytes</p>
-                  <pre className="mt-0.5 max-h-24 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-foreground/[0.03] p-2 font-mono text-[10px]">{preview.variableSuffix}</pre>
-                </div>
-
-                {prefixChanged && <p role="status" className="rounded-lg border border-warning/40 bg-warning/10 p-2 text-[10.5px] leading-relaxed text-warning">
-                  Bridge prefix changed — the next turn is likely a cache miss on the Bridge prefix. Provider-side cache effects are estimated, not measured.
-                </p>}
-
-                <div>
-                  <h4 className="text-[10.5px] font-semibold uppercase tracking-wide text-foreground">Provider layers (not exact)</h4>
-                  <ul className="mt-1 space-y-1">
-                    {preview.providerLayers.map(layer => <li key={`${layer.layer}:${layer.adapter}`} className="rounded-lg border border-border/60 p-1.5 text-[10.5px]">
-                      <div className="flex items-center justify-between gap-2">
-                        <span className="font-mono">{layer.adapter}</span>
-                        <span className="rounded-full bg-foreground/[0.08] px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-muted-foreground">{layer.source}</span>
-                      </div>
-                      {layer.detail && <p className="mt-0.5 text-muted-foreground">{layer.detail}</p>}
-                    </li>)}
-                  </ul>
-                </div>
-              </div>}
-            </div>
-          </details>
-        </aside>
       </>}
+
+      {/* Rendered regardless of isEmptyTarget/loading state — a direct
+         session has no sections to edit, but its provider-layer breakdown
+         is still the most relevant fact on the page, and it was never
+         gated on section selection before this redesign. */}
+      <aside aria-label="Compiled prompt preview and overrides" className="mt-7 shrink-0">
+        <details open className="u-surface rounded-xl">
+          <summary className="cursor-pointer select-none px-4 py-2.5 text-[10.5px] font-semibold uppercase tracking-[0.09em] text-muted-foreground/80 marker:content-[''] [&::-webkit-details-marker]:hidden">Compiled preview</summary>
+          <div className="border-t border-border/60 px-4 py-3">
+            {previewError && <p role="alert" className="mb-2 text-[11px] text-destructive">{previewError}</p>}
+            {!preview ? <p className="text-[11px] text-muted-foreground">Loading preview…</p> : <div className="space-y-3">
+              <div>
+                <h4 className="text-[10.5px] font-semibold uppercase tracking-wide text-foreground">Exact Bridge bytes</h4>
+                <dl className="mt-1 grid grid-cols-2 gap-x-3 gap-y-0.5 font-mono text-[10px] text-muted-foreground">
+                  <dt>Hash</dt><dd className="truncate">{preview.prefixHash}</dd>
+                  <dt>ID</dt><dd className="truncate">{preview.prefixId}</dd>
+                  <dt>Bytes (exact)</dt><dd>{preview.prefixBytes}</dd>
+                  <dt>Tokens (est.)</dt><dd>{preview.prefixTokenEstimate}</dd>
+                </dl>
+                <p className="mt-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">Stable prefix — exact bytes</p>
+                <pre className="mt-0.5 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-foreground/[0.03] p-2 font-mono text-[10px]">{preview.stablePrefix}</pre>
+                <p className="mt-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground/70">Variable suffix — exact bytes</p>
+                <pre className="mt-0.5 max-h-24 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border bg-foreground/[0.03] p-2 font-mono text-[10px]">{preview.variableSuffix}</pre>
+              </div>
+
+              {prefixChanged && <p role="status" className="rounded-lg border border-warning/40 bg-warning/10 p-2 text-[10.5px] leading-relaxed text-warning">
+                Bridge prefix changed — the next turn is likely a cache miss on the Bridge prefix. Provider-side cache effects are estimated, not measured.
+              </p>}
+
+              <div>
+                <h4 className="text-[10.5px] font-semibold uppercase tracking-wide text-foreground">Provider layers (not exact)</h4>
+                <ul className="mt-1 space-y-1">
+                  {preview.providerLayers.map(layer => <li key={`${layer.layer}:${layer.adapter}`} className="rounded-lg border border-border/60 p-1.5 text-[10.5px]">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-mono">{layer.adapter}</span>
+                      <span className="rounded-full bg-foreground/[0.08] px-1.5 py-0.5 text-[9px] uppercase tracking-wide text-muted-foreground">{layer.source}</span>
+                    </div>
+                    {layer.detail && <p className="mt-0.5 text-muted-foreground">{layer.detail}</p>}
+                  </li>)}
+                </ul>
+              </div>
+            </div>}
+          </div>
+        </details>
+      </aside>
     </div>
     <p aria-live="polite" className="sr-only">{announcement}</p>
   </div>;

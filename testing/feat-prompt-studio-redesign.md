@@ -15,7 +15,10 @@ behavior of the 4-interface contract carries over unchanged.**
 
 - Target/section navigation via `bridgeApi.promptStack(target)`; section rows
   show id, live token estimate, modified/deleted badges, unsaved-draft dot.
-- `direct_session` empty state copy ("nothing here for Bridge to override").
+- `direct_session` empty state copy ("nothing here for Bridge to override"),
+  with the compiled preview receipt still rendered beneath it — the receipt
+  is not gated on there being an editable section, since a direct session's
+  provider-layer breakdown is real information even with no Bridge overrides.
 - CodeEditor reuse with `docKey`/revision-count reseed semantics; drafts
   survive navigation; save via button or Mod-s; reset per section and per
   target (with confirmation); revision history with restore.
