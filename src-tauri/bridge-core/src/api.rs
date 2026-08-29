@@ -122,13 +122,31 @@ pub fn github_pr(core: &Arc<BridgeCore>, workspace_id: &str, number: u64) -> Res
     let workspace = Path::new(&path);
     let pull_request = github_wire(core.github_surface.pr_detail(workspace, number).map_err(github_error)?)?;
     let review_threads = github_wire(core.github_surface.pr_review_threads(workspace, number).map_err(github_error)?)?;
-    Ok(wire::GithubPullRequestResult { pull_request, review_threads })
+    let files = github_wire(core.github_surface.pr_files(workspace, number).map_err(github_error)?)?;
+    Ok(wire::GithubPullRequestResult { pull_request, review_threads, files })
 }
 
 pub fn github_checks(core: &Arc<BridgeCore>, workspace_id: &str, number: u64) -> Result<wire::GithubChecksResult, BridgeError> {
     let path = locked_workspace_path(core, workspace_id)?;
     let checks = github_wire(core.github_surface.pr_checks(Path::new(&path), number).map_err(github_error)?)?;
     Ok(wire::GithubChecksResult { checks })
+}
+
+pub fn github_issues(core: &Arc<BridgeCore>, workspace_id: &str) -> Result<wire::GithubIssuesResult, BridgeError> {
+    let path = locked_workspace_path(core, workspace_id)?;
+    let issues = github_wire(core.github_surface.list_issues(Path::new(&path)).map_err(github_error)?)?;
+    Ok(wire::GithubIssuesResult { issues })
+}
+
+pub fn github_issue(core: &Arc<BridgeCore>, workspace_id: &str, number: u64) -> Result<wire::GithubIssueResult, BridgeError> {
+    let path = locked_workspace_path(core, workspace_id)?;
+    let issue = github_wire(core.github_surface.issue_detail(Path::new(&path), number).map_err(github_error)?)?;
+    Ok(wire::GithubIssueResult { issue })
+}
+
+pub fn github_repository(core: &Arc<BridgeCore>, workspace_id: &str) -> Result<wire::GithubRepositoryResult, BridgeError> {
+    let path = locked_workspace_path(core, workspace_id)?;
+    github_wire(core.github_surface.repository_overview(Path::new(&path)).map_err(github_error)?)
 }
 
 pub fn github_merge_config(core: &Arc<BridgeCore>, workspace_id: &str) -> Result<wire::GithubMergeConfigResult, BridgeError> {
@@ -3112,7 +3130,7 @@ mod tests {
             .join("../../testing/fixtures/github-act-policy.json");
         let cases: Vec<PolicyReplayCase> =
             serde_json::from_slice(&std::fs::read(fixture).unwrap()).unwrap();
-        assert_eq!(cases.len(), 8, "approve and deny for four action kinds");
+        assert_eq!(cases.len(), 12, "approve and deny for PR and issue action kinds");
         let scratch = tempfile::tempdir().unwrap();
         let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
         for case in cases {

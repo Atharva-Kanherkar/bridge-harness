@@ -1,0 +1,17 @@
+[
+  [
+    {
+      "filename": "src/githubSurface.ts",
+      "status": "modified",
+      "additions": 12,
+      "deletions": 4,
+      "patch": "@@ -1,2 +1,3 @@\n-old line\n+new line\n context"
+    },
+    {
+      "filename": "assets/github.png",
+      "status": "added",
+      "additions": 0,
+      "deletions": 0
+    }
+  ]
+]

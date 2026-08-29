@@ -14,7 +14,7 @@
 //! proceed — and conflating them is exactly the hierarchy-mixing bug the
 //! architecture warns against.
 
-use crate::github_surface::{review_label, strategy_label, GithubAction};
+use crate::github_surface::{review_label, strategy_label, GithubAction, LabelOperation, LabelTarget};
 
 /// The outcome of the approval gate for a single action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +56,12 @@ pub fn summary(action: &GithubAction) -> String {
         }
         GithubAction::Reply { .. } => format!("reply to a review comment on PR #{number}"),
         GithubAction::Rerun { .. } => format!("re-run failed checks on PR #{number}"),
+        GithubAction::Label { target, label, operation, .. } => format!(
+            "{} label {label:?} {} {} #{number}",
+            match operation { LabelOperation::Add => "add", LabelOperation::Remove => "remove" },
+            match operation { LabelOperation::Add => "to", LabelOperation::Remove => "from" },
+            match target { LabelTarget::PullRequest => "PR", LabelTarget::Issue => "issue" },
+        ),
     }
 }
 
@@ -108,5 +114,13 @@ mod tests {
 
         let rerun = GithubAction::Rerun { number: 104 };
         assert_eq!(describe(&rerun, "owner/repo"), "re-run failed checks on PR #104 on owner/repo");
+
+        let label = GithubAction::Label {
+            target: LabelTarget::Issue,
+            number: 9,
+            label: "bug".into(),
+            operation: LabelOperation::Add,
+        };
+        assert_eq!(describe(&label, "owner/repo"), "add label \"bug\" to issue #9 on owner/repo");
     }
 }

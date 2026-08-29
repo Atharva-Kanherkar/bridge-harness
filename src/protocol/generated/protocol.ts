@@ -14,6 +14,9 @@ export type BridgeMethod =
   | "github/github_prs"
   | "github/github_pr"
   | "github/github_checks"
+  | "github/github_issues"
+  | "github/github_issue"
+  | "github/github_repository"
   | "github/github_merge_config"
   | "github/github_act"
   | "github/github_checkout"
@@ -158,6 +161,9 @@ export const BRIDGE_METHODS = [
   { method: "github/github_prs", domain: "github", command: "github_prs" },
   { method: "github/github_pr", domain: "github", command: "github_pr" },
   { method: "github/github_checks", domain: "github", command: "github_checks" },
+  { method: "github/github_issues", domain: "github", command: "github_issues" },
+  { method: "github/github_issue", domain: "github", command: "github_issue" },
+  { method: "github/github_repository", domain: "github", command: "github_repository" },
   { method: "github/github_merge_config", domain: "github", command: "github_merge_config" },
   { method: "github/github_act", domain: "github", command: "github_act" },
   { method: "github/github_checkout", domain: "github", command: "github_checkout" },
@@ -362,6 +368,9 @@ export interface BridgeMethodParams {
   "github/github_prs": GithubPrsParams;
   "github/github_pr": GithubPrParams;
   "github/github_checks": GithubChecksParams;
+  "github/github_issues": GithubIssuesParams;
+  "github/github_issue": GithubIssueParams;
+  "github/github_repository": GithubRepositoryParams;
   "github/github_merge_config": GithubMergeConfigParams;
   "github/github_act": GithubActParams;
   "github/github_checkout": GithubCheckoutParams;
@@ -508,6 +517,9 @@ export interface BridgeMethodResults {
   "github/github_prs": GithubPullRequestsResult;
   "github/github_pr": GithubPullRequestResult;
   "github/github_checks": GithubChecksResult;
+  "github/github_issues": GithubIssuesResult;
+  "github/github_issue": GithubIssueResult;
+  "github/github_repository": GithubRepositoryResult;
   "github/github_merge_config": GithubMergeConfigResult;
   "github/github_act": GithubActResult;
   "github/github_checkout": GithubCheckoutResult;
@@ -825,7 +837,7 @@ export type EvalKind = "deterministic" | "scrutiny" | "user_testing";
 
 export type ExternalLearningTriggerKind = "codex" | "claude" | "open_code";
 
-export type GithubAction = { kind: "merge"; number: number; strategy: MergeStrategy } | { body: string; event: ReviewEvent; kind: "review"; number: number } | { body: string; commentId: number; kind: "reply"; number: number } | { kind: "rerun"; number: number };
+export type GithubAction = { kind: "merge"; number: number; strategy: MergeStrategy } | { body: string; event: ReviewEvent; kind: "review"; number: number } | { body: string; commentId: number; kind: "reply"; number: number } | { kind: "rerun"; number: number } | { kind: "label"; label: string; number: number; operation: LabelOperation; target: LabelTarget };
 
 export interface GithubActor {
   login: string;
@@ -836,6 +848,20 @@ export type GithubAvailability = { status: "available" } | { status: "notInstall
 export type GithubCheckConclusion = "success" | "failure" | "cancelled" | "skipped" | "neutral" | "timedOut" | "actionRequired" | "startupFailure" | "stale";
 
 export type GithubCheckStatus = "queued" | "inProgress" | "completed";
+
+export interface GithubComment {
+  author?: GithubActor | null;
+  body: string;
+  createdAt: string;
+  id: string;
+  url: string;
+}
+
+export interface GithubLabel {
+  color: string;
+  description: string;
+  name: string;
+}
 
 export interface GithubRepository {
   host: string;
@@ -865,11 +891,34 @@ export interface HealthWarning {
 
 export type InputDisposition = "startedNewTurn" | "steeredActiveTurn" | "queuedForPhaseBoundary";
 
+export interface IssueDetail {
+  body: string;
+  comments: GithubComment[];
+  summary: IssueSummary;
+}
+
+export type IssueState = "open" | "closed";
+
+export interface IssueSummary {
+  author?: GithubActor | null;
+  createdAt: string;
+  labels: GithubLabel[];
+  number: number;
+  state: IssueState;
+  title: string;
+  updatedAt: string;
+  url: string;
+}
+
 export type JsSafeI64 = number;
 
 export type JsSafeU64 = number;
 
 export type JsonRpcVersion = "2.0";
+
+export type LabelOperation = "add" | "remove";
+
+export type LabelTarget = "pullRequest" | "issue";
 
 export interface LearningSchedule {
   cadenceMinutes: number;
@@ -1078,9 +1127,23 @@ export interface PullRequestCheck {
 }
 
 export interface PullRequestDetail {
+  additions: number;
   baseBranch: string;
   body: string;
+  changedFiles: number;
+  comments: GithubComment[];
+  deletions: number;
+  labels: GithubLabel[];
   summary: PullRequestSummary;
+}
+
+export interface PullRequestFile {
+  additions: number;
+  deletions: number;
+  patch?: string | null;
+  path: string;
+  previousPath?: string | null;
+  status: string;
 }
 
 export type PullRequestState = "open" | "closed" | "merged";
@@ -1666,6 +1729,7 @@ export interface GithubPrParams {
 }
 
 export interface GithubPullRequestResult {
+  files: PullRequestFile[];
   pullRequest: PullRequestDetail;
   reviewThreads: ReviewThread[];
 }
@@ -1677,6 +1741,39 @@ export interface GithubChecksParams {
 
 export interface GithubChecksResult {
   checks: PullRequestCheck[];
+}
+
+export interface GithubIssuesParams {
+  workspaceId: string;
+}
+
+export interface GithubIssuesResult {
+  issues: IssueSummary[];
+}
+
+export interface GithubIssueParams {
+  number: number;
+  workspaceId: string;
+}
+
+export interface GithubIssueResult {
+  issue: IssueDetail;
+}
+
+export interface GithubRepositoryParams {
+  workspaceId: string;
+}
+
+export interface GithubRepositoryResult {
+  defaultBranch: string;
+  description: string;
+  labels: GithubLabel[];
+  nameWithOwner: string;
+  openIssues: number;
+  openPullRequests: number;
+  primaryLanguage?: string | null;
+  url: string;
+  visibility: string;
 }
 
 export interface GithubMergeConfigParams {

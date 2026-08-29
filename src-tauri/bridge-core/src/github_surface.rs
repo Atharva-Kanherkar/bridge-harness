@@ -19,9 +19,12 @@ pub const AUTH_REMEDIATION: &str = "gh auth login";
 pub const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(15);
 
 const PR_LIST_FIELDS: &str = "number,title,state,isDraft,author,headRefName,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,url";
-const PR_DETAIL_FIELDS: &str = "number,title,body,state,isDraft,author,headRefName,baseRefName,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,url";
+const PR_DETAIL_FIELDS: &str = "number,title,body,state,isDraft,author,headRefName,baseRefName,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,url,comments,labels,additions,deletions,changedFiles";
 const PR_CHECK_FIELDS: &str = "name,state,bucket,link,workflow";
 const PR_HEAD_FIELDS: &str = "headRefOid";
+const ISSUE_LIST_FIELDS: &str = "number,title,state,author,labels,createdAt,updatedAt,url";
+const ISSUE_DETAIL_FIELDS: &str = "number,title,body,state,author,labels,comments,createdAt,updatedAt,url";
+const REPOSITORY_FIELDS: &str = "nameWithOwner,description,visibility,defaultBranchRef,primaryLanguage,url,issues,pullRequests";
 const REVIEW_THREADS_QUERY: &str = "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){pullRequest(number:$number){reviewThreads(first:100){nodes{id,isResolved,isOutdated,path,line,originalLine,comments(first:100){nodes{id,databaseId,author{login},body,createdAt,url,replyTo{id}}}}}}}}";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -104,6 +107,24 @@ pub struct GithubActor {
     pub login: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubLabel {
+    pub name: String,
+    pub color: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubComment {
+    pub id: String,
+    pub author: Option<GithubActor>,
+    pub body: String,
+    pub created_at: String,
+    pub url: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CheckRollup {
@@ -138,6 +159,64 @@ pub struct PullRequestDetail {
     pub summary: PullRequestSummary,
     pub body: String,
     pub base_branch: String,
+    pub comments: Vec<GithubComment>,
+    pub labels: Vec<GithubLabel>,
+    pub additions: u64,
+    pub deletions: u64,
+    pub changed_files: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestFile {
+    pub path: String,
+    pub previous_path: Option<String>,
+    pub status: String,
+    pub additions: u64,
+    pub deletions: u64,
+    pub patch: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IssueState {
+    Open,
+    Closed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueSummary {
+    pub number: u64,
+    pub title: String,
+    pub state: IssueState,
+    pub author: Option<GithubActor>,
+    pub labels: Vec<GithubLabel>,
+    pub created_at: String,
+    pub updated_at: String,
+    pub url: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IssueDetail {
+    pub summary: IssueSummary,
+    pub body: String,
+    pub comments: Vec<GithubComment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepositoryOverview {
+    pub name_with_owner: String,
+    pub description: String,
+    pub visibility: String,
+    pub default_branch: String,
+    pub primary_language: Option<String>,
+    pub url: String,
+    pub open_issues: u64,
+    pub open_pull_requests: u64,
+    pub labels: Vec<GithubLabel>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -221,6 +300,20 @@ pub enum ReviewEvent {
     Comment,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LabelTarget {
+    PullRequest,
+    Issue,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum LabelOperation {
+    Add,
+    Remove,
+}
+
 /// One mutating GitHub action. The tag mirrors the protocol payload so the api
 /// layer can convert a wire action into this by a JSON round-trip.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -245,6 +338,12 @@ pub enum GithubAction {
     Rerun {
         number: u64,
     },
+    Label {
+        target: LabelTarget,
+        number: u64,
+        label: String,
+        operation: LabelOperation,
+    },
 }
 
 impl GithubAction {
@@ -254,7 +353,8 @@ impl GithubAction {
             GithubAction::Merge { number, .. }
             | GithubAction::Review { number, .. }
             | GithubAction::Reply { number, .. }
-            | GithubAction::Rerun { number } => *number,
+            | GithubAction::Rerun { number }
+            | GithubAction::Label { number, .. } => *number,
         }
     }
 }
@@ -263,8 +363,12 @@ impl GithubAction {
 enum Resource {
     PullRequests,
     PullRequest(u64),
+    PullRequestFiles(u64),
     Checks(u64),
     ReviewThreads(u64),
+    Issues,
+    Issue(u64),
+    RepositoryOverview,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -277,8 +381,12 @@ struct CacheKey {
 enum CachedResource {
     PullRequests(Vec<PullRequestSummary>),
     PullRequest(PullRequestDetail),
+    PullRequestFiles(Vec<PullRequestFile>),
     Checks(Vec<PullRequestCheck>),
     ReviewThreads(Vec<ReviewThread>),
+    Issues(Vec<IssueSummary>),
+    Issue(IssueDetail),
+    RepositoryOverview(RepositoryOverview),
 }
 
 #[derive(Debug, Clone)]
@@ -503,6 +611,162 @@ impl GithubSurface {
         )?)?;
         self.store(key, CachedResource::PullRequest(pull_request.clone()));
         Ok(pull_request)
+    }
+
+    pub fn pr_files(
+        &self,
+        workspace: &Path,
+        number: u64,
+    ) -> Result<Vec<PullRequestFile>, GithubSurfaceError> {
+        self.require_binary()?;
+        let repository = self.resolve_repository(workspace)?;
+        let key = CacheKey {
+            repository: repository.selector(),
+            resource: Resource::PullRequestFiles(number),
+        };
+        if let Some(CachedResource::PullRequestFiles(files)) = self.cached(&key) {
+            return Ok(files);
+        }
+        let mut args = vec!["api".into()];
+        if !repository.host.eq_ignore_ascii_case("github.com") {
+            args.push("--hostname".into());
+            args.push(repository.host.clone());
+        }
+        args.extend([
+            "--paginate".into(),
+            "--slurp".into(),
+            format!(
+                "repos/{}/{}/pulls/{number}/files?per_page=100",
+                repository.owner, repository.name
+            ),
+        ]);
+        let bytes = self.run_gh(workspace, "pull-request files", &args, false)?;
+        let pages: Vec<Vec<RawPullRequestFile>> = parse_json("pull-request files", &bytes)?;
+        let files = pages
+            .into_iter()
+            .flatten()
+            .map(PullRequestFile::from)
+            .collect::<Vec<_>>();
+        self.store(key, CachedResource::PullRequestFiles(files.clone()));
+        Ok(files)
+    }
+
+    pub fn list_issues(&self, workspace: &Path) -> Result<Vec<IssueSummary>, GithubSurfaceError> {
+        self.require_binary()?;
+        let repository = self.resolve_repository(workspace)?;
+        let key = CacheKey {
+            repository: repository.selector(),
+            resource: Resource::Issues,
+        };
+        if let Some(CachedResource::Issues(issues)) = self.cached(&key) {
+            return Ok(issues);
+        }
+        let bytes = self.run_gh(
+            workspace,
+            "issue list",
+            &[
+                "issue".into(),
+                "list".into(),
+                "--repo".into(),
+                repository.selector(),
+                "--state".into(),
+                "open".into(),
+                "--limit".into(),
+                "100".into(),
+                "--json".into(),
+                ISSUE_LIST_FIELDS.into(),
+            ],
+            false,
+        )?;
+        let issues = parse_json::<Vec<RawIssueSummary>>("issue list", &bytes)?
+            .into_iter()
+            .map(IssueSummary::try_from)
+            .collect::<Result<Vec<_>, _>>()?;
+        self.store(key, CachedResource::Issues(issues.clone()));
+        Ok(issues)
+    }
+
+    pub fn issue_detail(
+        &self,
+        workspace: &Path,
+        number: u64,
+    ) -> Result<IssueDetail, GithubSurfaceError> {
+        self.require_binary()?;
+        let repository = self.resolve_repository(workspace)?;
+        let key = CacheKey {
+            repository: repository.selector(),
+            resource: Resource::Issue(number),
+        };
+        if let Some(CachedResource::Issue(issue)) = self.cached(&key) {
+            return Ok(issue);
+        }
+        let bytes = self.run_gh(
+            workspace,
+            "issue view",
+            &[
+                "issue".into(),
+                "view".into(),
+                number.to_string(),
+                "--repo".into(),
+                repository.selector(),
+                "--json".into(),
+                ISSUE_DETAIL_FIELDS.into(),
+            ],
+            false,
+        )?;
+        let issue = IssueDetail::try_from(parse_json::<RawIssueDetail>("issue detail", &bytes)?)?;
+        self.store(key, CachedResource::Issue(issue.clone()));
+        Ok(issue)
+    }
+
+    pub fn repository_overview(
+        &self,
+        workspace: &Path,
+    ) -> Result<RepositoryOverview, GithubSurfaceError> {
+        self.require_binary()?;
+        let repository = self.resolve_repository(workspace)?;
+        let key = CacheKey {
+            repository: repository.selector(),
+            resource: Resource::RepositoryOverview,
+        };
+        if let Some(CachedResource::RepositoryOverview(overview)) = self.cached(&key) {
+            return Ok(overview);
+        }
+        let bytes = self.run_gh(
+            workspace,
+            "repository overview",
+            &[
+                "repo".into(),
+                "view".into(),
+                repository.selector(),
+                "--json".into(),
+                REPOSITORY_FIELDS.into(),
+            ],
+            false,
+        )?;
+        let raw: RawRepositoryOverview = parse_json("repository overview", &bytes)?;
+        let labels_bytes = self.run_gh(
+            workspace,
+            "label list",
+            &[
+                "label".into(),
+                "list".into(),
+                "--repo".into(),
+                repository.selector(),
+                "--limit".into(),
+                "100".into(),
+                "--json".into(),
+                "name,color,description".into(),
+            ],
+            false,
+        )?;
+        let labels = parse_json::<Vec<RawLabel>>("label list", &labels_bytes)?
+            .into_iter()
+            .map(GithubLabel::from)
+            .collect();
+        let overview = RepositoryOverview::from_raw(raw, labels);
+        self.store(key, CachedResource::RepositoryOverview(overview.clone()));
+        Ok(overview)
     }
 
     pub fn pr_checks(
@@ -734,6 +998,46 @@ impl GithubSurface {
                 Ok(format!("Replied on PR #{number}."))
             }
             GithubAction::Rerun { number } => self.rerun_failed(workspace, &selector, *number),
+            GithubAction::Label {
+                target,
+                number,
+                label,
+                operation,
+            } => {
+                let noun = match target {
+                    LabelTarget::PullRequest => "pr",
+                    LabelTarget::Issue => "issue",
+                };
+                let flag = match operation {
+                    LabelOperation::Add => "--add-label",
+                    LabelOperation::Remove => "--remove-label",
+                };
+                self.run_gh(
+                    workspace,
+                    "edit labels",
+                    &[
+                        noun.into(),
+                        "edit".into(),
+                        number.to_string(),
+                        "--repo".into(),
+                        selector.clone(),
+                        flag.into(),
+                        label.clone(),
+                    ],
+                    false,
+                )?;
+                Ok(format!(
+                    "{} label {label:?} {} #{number}.",
+                    match operation {
+                        LabelOperation::Add => "Added",
+                        LabelOperation::Remove => "Removed",
+                    },
+                    match operation {
+                        LabelOperation::Add => "to",
+                        LabelOperation::Remove => "from",
+                    }
+                ))
+            }
         };
         if result.is_ok() {
             self.invalidate_action_resources(&repository, action.number());
@@ -865,8 +1169,12 @@ impl GithubSurface {
         for resource in [
             Resource::PullRequests,
             Resource::PullRequest(number),
+            Resource::PullRequestFiles(number),
             Resource::Checks(number),
             Resource::ReviewThreads(number),
+            Resource::Issues,
+            Resource::Issue(number),
+            Resource::RepositoryOverview,
         ] {
             cache.remove(&CacheKey {
                 repository: selector.into(),
@@ -917,6 +1225,25 @@ struct RawActor {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct RawLabel {
+    name: String,
+    color: String,
+    #[serde(default)]
+    description: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawComment {
+    id: String,
+    author: Option<RawActor>,
+    body: String,
+    created_at: String,
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct RawCheckRollup {
     #[serde(rename = "__typename")]
     _type_name: Option<String>,
@@ -957,6 +1284,80 @@ struct RawPullRequestDetail {
     merge_state_status: String,
     status_check_rollup: Vec<RawCheckRollup>,
     url: String,
+    #[serde(default)]
+    comments: Vec<RawComment>,
+    #[serde(default)]
+    labels: Vec<RawLabel>,
+    additions: u64,
+    deletions: u64,
+    changed_files: u64,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawPullRequestFile {
+    filename: String,
+    previous_filename: Option<String>,
+    status: String,
+    additions: u64,
+    deletions: u64,
+    patch: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawIssueSummary {
+    number: u64,
+    title: String,
+    state: String,
+    author: Option<RawActor>,
+    #[serde(default)]
+    labels: Vec<RawLabel>,
+    created_at: String,
+    updated_at: String,
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawIssueDetail {
+    number: u64,
+    title: String,
+    body: String,
+    state: String,
+    author: Option<RawActor>,
+    #[serde(default)]
+    labels: Vec<RawLabel>,
+    #[serde(default)]
+    comments: Vec<RawComment>,
+    created_at: String,
+    updated_at: String,
+    url: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawNamedRef {
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawCountConnection {
+    total_count: u64,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawRepositoryOverview {
+    name_with_owner: String,
+    #[serde(default)]
+    description: String,
+    visibility: String,
+    default_branch_ref: RawNamedRef,
+    primary_language: Option<RawNamedRef>,
+    url: String,
+    issues: RawCountConnection,
+    pull_requests: RawCountConnection,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1112,7 +1513,107 @@ impl TryFrom<RawPullRequestDetail> for PullRequestDetail {
             },
             body: raw.body,
             base_branch: raw.base_ref_name,
+            comments: raw.comments.into_iter().map(GithubComment::from).collect(),
+            labels: raw.labels.into_iter().map(GithubLabel::from).collect(),
+            additions: raw.additions,
+            deletions: raw.deletions,
+            changed_files: raw.changed_files,
         })
+    }
+}
+
+impl From<RawActor> for GithubActor {
+    fn from(raw: RawActor) -> Self {
+        Self { login: raw.login }
+    }
+}
+
+impl From<RawLabel> for GithubLabel {
+    fn from(raw: RawLabel) -> Self {
+        Self {
+            name: raw.name,
+            color: raw.color,
+            description: raw.description,
+        }
+    }
+}
+
+impl From<RawComment> for GithubComment {
+    fn from(raw: RawComment) -> Self {
+        Self {
+            id: raw.id,
+            author: raw.author.map(GithubActor::from),
+            body: raw.body,
+            created_at: raw.created_at,
+            url: raw.url,
+        }
+    }
+}
+
+impl From<RawPullRequestFile> for PullRequestFile {
+    fn from(raw: RawPullRequestFile) -> Self {
+        Self {
+            path: raw.filename,
+            previous_path: raw.previous_filename,
+            status: raw.status,
+            additions: raw.additions,
+            deletions: raw.deletions,
+            patch: raw.patch,
+        }
+    }
+}
+
+impl TryFrom<RawIssueSummary> for IssueSummary {
+    type Error = GithubSurfaceError;
+
+    fn try_from(raw: RawIssueSummary) -> Result<Self, Self::Error> {
+        Ok(Self {
+            number: raw.number,
+            title: raw.title,
+            state: parse_issue_state(&raw.state)?,
+            author: raw.author.map(GithubActor::from),
+            labels: raw.labels.into_iter().map(GithubLabel::from).collect(),
+            created_at: raw.created_at,
+            updated_at: raw.updated_at,
+            url: raw.url,
+        })
+    }
+}
+
+impl TryFrom<RawIssueDetail> for IssueDetail {
+    type Error = GithubSurfaceError;
+
+    fn try_from(raw: RawIssueDetail) -> Result<Self, Self::Error> {
+        Ok(Self {
+            summary: IssueSummary {
+                number: raw.number,
+                title: raw.title,
+                state: parse_issue_state(&raw.state)?,
+                author: raw.author.map(GithubActor::from),
+                labels: raw.labels.into_iter().map(GithubLabel::from).collect(),
+                created_at: raw.created_at,
+                updated_at: raw.updated_at,
+                url: raw.url,
+            },
+            body: raw.body,
+            comments: raw.comments.into_iter().map(GithubComment::from).collect(),
+        })
+    }
+}
+
+impl RepositoryOverview {
+    fn from_raw(raw: RawRepositoryOverview, labels: Vec<GithubLabel>) -> Self {
+        Self {
+            name_with_owner: raw.name_with_owner,
+            description: raw.description,
+            visibility: raw.visibility,
+            default_branch: raw.default_branch_ref.name,
+            primary_language: raw.primary_language.map(|language| language.name),
+            url: raw.url,
+            open_issues: raw.issues.total_count,
+            open_pull_requests: raw.pull_requests.total_count,
+            labels,
+        }
     }
 }
 
@@ -1204,6 +1705,14 @@ fn parse_pull_request_state(value: &str) -> Result<PullRequestState, GithubSurfa
             "pull request",
             format!("unknown state {other:?}"),
         )),
+    }
+}
+
+fn parse_issue_state(value: &str) -> Result<IssueState, GithubSurfaceError> {
+    match value {
+        "OPEN" => Ok(IssueState::Open),
+        "CLOSED" => Ok(IssueState::Closed),
+        other => Err(malformed("issue", format!("unknown state {other:?}"))),
     }
 }
 
@@ -1521,7 +2030,31 @@ mod tests {
             .canonicalize()
             .unwrap();
         let script = format!(
-            "#!/bin/sh\nroot=$(dirname \"$0\")\nprintf '%s\\n' \"$*\" >> \"$root/invocations.log\"\nif [ \"$1 $2\" = \"auth status\" ]; then exit {auth_exit}; fi\nif [ \"$1 $2 $3\" = \"repo set-default --view\" ]; then\n  if [ -n \"{default}\" ]; then printf '%s\\n' '{default}'; exit 0; fi\n  exit 1\nfi\nif [ \"$1 $2\" = \"pr list\" ]; then\n  fixture=prs.json\n  if [ -f \"$root/pr-list-fixture\" ]; then fixture=$(cat \"$root/pr-list-fixture\"); fi\n  cat '{fixtures}/'$fixture\n  exit 0\nfi\nif [ \"$1 $2\" = \"pr view\" ]; then cat '{fixtures}/pr-detail.json'; exit 0; fi\nif [ \"$1 $2\" = \"pr checks\" ]; then\n  if [ -f \"$root/pr-checks-empty\" ]; then echo \"no checks reported on the 'fixture' branch\" >&2; exit 1; fi\n  cat '{fixtures}/checks.json'\n  exit 1\nfi\nif [ \"$1 $2\" = \"api graphql\" ]; then cat '{fixtures}/review-threads.json'; exit 0; fi\nif [ \"$1 $2\" = \"pr merge\" ]; then\n  if [ -f \"$root/pr-merge-blocked\" ]; then echo 'GraphQL: Branch protections: at least 1 approving review is required (mergePullRequest)' >&2; exit 1; fi\n  exit 0\nfi\nif [ \"$1 $2\" = \"pr review\" ]; then exit 0; fi\nif [ \"$1 $2\" = \"run list\" ]; then\n  fixture=runs.json\n  if [ -f \"$root/run-list-clean\" ]; then fixture=runs-clean.json; fi\n  cat '{fixtures}/'$fixture\n  exit 0\nfi\nif [ \"$1 $2\" = \"run rerun\" ]; then exit 0; fi\nif [ \"$1\" = \"api\" ] && [ \"$2\" = \"--method\" ]; then exit 0; fi\nif [ \"$1\" = \"api\" ]; then case \"$2\" in repos/*) cat '{fixtures}/repos-settings.json'; exit 0;; esac; fi\nexit 2\n",
+            concat!(
+                "#!/bin/sh\n",
+                "root=$(dirname \"$0\")\n",
+                "printf '%s\\n' \"$*\" >> \"$root/invocations.log\"\n",
+                "if [ \"$1 $2\" = \"auth status\" ]; then exit {auth_exit}; fi\n",
+                "if [ \"$1 $2 $3\" = \"repo set-default --view\" ]; then if [ -n \"{default}\" ]; then printf '%s\\n' '{default}'; exit 0; fi; exit 1; fi\n",
+                "if [ \"$1 $2\" = \"pr list\" ]; then fixture=prs.json; if [ -f \"$root/pr-list-fixture\" ]; then fixture=$(cat \"$root/pr-list-fixture\"); fi; cat '{fixtures}/'$fixture; exit 0; fi\n",
+                "if [ \"$1 $2\" = \"pr view\" ]; then cat '{fixtures}/pr-detail.json'; exit 0; fi\n",
+                "if [ \"$1 $2\" = \"issue list\" ]; then cat '{fixtures}/issues.json'; exit 0; fi\n",
+                "if [ \"$1 $2\" = \"issue view\" ]; then cat '{fixtures}/issue-detail.json'; exit 0; fi\n",
+                "if [ \"$1 $2\" = \"repo view\" ]; then cat '{fixtures}/repository.json'; exit 0; fi\n",
+                "if [ \"$1 $2\" = \"label list\" ]; then cat '{fixtures}/labels.json'; exit 0; fi\n",
+                "if [ \"$1 $2\" = \"pr checks\" ]; then if [ -f \"$root/pr-checks-empty\" ]; then echo \"no checks reported on the 'fixture' branch\" >&2; exit 1; fi; cat '{fixtures}/checks.json'; exit 1; fi\n",
+                "if [ \"$1 $2\" = \"api graphql\" ]; then cat '{fixtures}/review-threads.json'; exit 0; fi\n",
+                "if [ \"$1 $2\" = \"pr merge\" ]; then if [ -f \"$root/pr-merge-blocked\" ]; then echo 'GraphQL: Branch protections: at least 1 approving review is required (mergePullRequest)' >&2; exit 1; fi; exit 0; fi\n",
+                "if [ \"$1 $2\" = \"pr review\" ] || [ \"$1 $2\" = \"pr edit\" ] || [ \"$1 $2\" = \"issue edit\" ]; then exit 0; fi\n",
+                "if [ \"$1 $2\" = \"run list\" ]; then fixture=runs.json; if [ -f \"$root/run-list-clean\" ]; then fixture=runs-clean.json; fi; cat '{fixtures}/'$fixture; exit 0; fi\n",
+                "if [ \"$1 $2\" = \"run rerun\" ]; then exit 0; fi\n",
+                "if [ \"$1\" = \"api\" ] && [ \"$2\" = \"--method\" ]; then exit 0; fi\n",
+                "if [ \"$1\" = \"api\" ]; then case \"$4\" in repos/*/pulls/*/files*) cat '{fixtures}/pr-files.json'; exit 0;; esac; fi\n",
+                "if [ \"$1\" = \"api\" ]; then case \"$2\" in repos/*) cat '{fixtures}/repos-settings.json'; exit 0;; esac; fi\n",
+                "exit 2\n"
+            ),
+            auth_exit = auth_exit,
+            default = default,
             fixtures = fixtures.display()
         );
         fs::write(&binary, script).unwrap();
@@ -1797,6 +2330,81 @@ mod tests {
         );
         assert_eq!(detail.summary.mergeability, Mergeability::Conflicting);
         assert!(detail.body.contains("typed GitHub surface"));
+        assert_eq!(detail.comments[0].author.as_ref().unwrap().login, "maintainer");
+        assert_eq!(detail.labels[0].name, "bug");
+        assert_eq!((detail.additions, detail.deletions, detail.changed_files), (18, 4, 2));
+    }
+
+    #[test]
+    fn pr_files_parse_text_and_binary_changes() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        let files = surface.pr_files(repository.path(), 103).unwrap();
+        assert_eq!(files.len(), 2);
+        assert_eq!(files[0].path, "src/githubSurface.ts");
+        assert!(files[0].patch.as_deref().unwrap().contains("+new line"));
+        assert_eq!(files[1].path, "assets/github.png");
+        assert_eq!(files[1].patch, None, "binary files have no textual patch");
+        assert!(invocations(&fake).contains(
+            "api --paginate --slurp repos/fixture/project/pulls/103/files?per_page=100"
+        ));
+    }
+
+    #[test]
+    fn issues_and_repository_overview_are_typed() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+
+        let issues = surface.list_issues(repository.path()).unwrap();
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].state, IssueState::Open);
+        assert_eq!(issues[0].labels[0].name, "enhancement");
+
+        let detail = surface.issue_detail(repository.path(), 17).unwrap();
+        assert!(detail.body.contains("<script>"));
+        assert_eq!(detail.comments[0].body, "Issue comment");
+
+        let overview = surface.repository_overview(repository.path()).unwrap();
+        assert_eq!(overview.name_with_owner, "fixture/project");
+        assert_eq!(overview.default_branch, "main");
+        assert_eq!(overview.primary_language.as_deref(), Some("TypeScript"));
+        assert_eq!((overview.open_issues, overview.open_pull_requests), (3, 2));
+        assert_eq!(overview.labels.len(), 2);
+    }
+
+    #[test]
+    fn label_actions_use_exact_argv_and_invalidate_reads() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        surface.list_issues(repository.path()).unwrap();
+        surface.issue_detail(repository.path(), 17).unwrap();
+
+        surface.act(repository.path(), &GithubAction::Label {
+            target: LabelTarget::Issue,
+            number: 17,
+            label: "bug".into(),
+            operation: LabelOperation::Add,
+        }).unwrap();
+        surface.list_issues(repository.path()).unwrap();
+        surface.issue_detail(repository.path(), 17).unwrap();
+        assert!(invocations(&fake).contains(
+            "issue edit 17 --repo fixture/project --add-label bug"
+        ));
+        assert_eq!(invocation_count(&fake, "issue list"), 2);
+        assert_eq!(invocation_count(&fake, "issue view"), 2);
+
+        surface.act(repository.path(), &GithubAction::Label {
+            target: LabelTarget::PullRequest,
+            number: 103,
+            label: "bug".into(),
+            operation: LabelOperation::Remove,
+        }).unwrap();
+        assert!(invocations(&fake).contains(
+            "pr edit 103 --repo fixture/project --remove-label bug"
+        ));
     }
 
     #[test]

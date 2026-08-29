@@ -1,0 +1,10 @@
+{
+  "nameWithOwner": "fixture/project",
+  "description": "A native GitHub workspace fixture.",
+  "visibility": "PRIVATE",
+  "defaultBranchRef": { "name": "main" },
+  "primaryLanguage": { "name": "TypeScript" },
+  "url": "https://github.com/fixture/project",
+  "issues": { "totalCount": 3 },
+  "pullRequests": { "totalCount": 2 }
+}

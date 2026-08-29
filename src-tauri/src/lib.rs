@@ -71,6 +71,24 @@ async fn github_checks(workspace_id: String, number: u64, state: State<'_, Arc<B
 }
 
 #[tauri::command]
+async fn github_issues(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubIssuesResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub issue list", move || api::github_issues(&core, &workspace_id)).await
+}
+
+#[tauri::command]
+async fn github_issue(workspace_id: String, number: u64, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubIssueResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub issue", move || api::github_issue(&core, &workspace_id, number)).await
+}
+
+#[tauri::command]
+async fn github_repository(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubRepositoryResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub repository", move || api::github_repository(&core, &workspace_id)).await
+}
+
+#[tauri::command]
 async fn github_merge_config(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubMergeConfigResult, BridgeError> {
     let core = state.inner().clone();
     blocking("GitHub merge config", move || api::github_merge_config(&core, &workspace_id)).await
@@ -1695,6 +1713,9 @@ pub fn run() {
             github_prs,
             github_pr,
             github_checks,
+            github_issues,
+            github_issue,
+            github_repository,
             github_merge_config,
             github_act,
             github_checkout,

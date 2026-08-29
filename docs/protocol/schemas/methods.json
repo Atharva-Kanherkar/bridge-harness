@@ -51,6 +51,27 @@
       "resultSchema": "github-checks-result.json"
     },
     {
+      "command": "github_issues",
+      "domain": "github",
+      "method": "github/github_issues",
+      "paramsSchema": "github-issues-params.json",
+      "resultSchema": "github-issues-result.json"
+    },
+    {
+      "command": "github_issue",
+      "domain": "github",
+      "method": "github/github_issue",
+      "paramsSchema": "github-issue-params.json",
+      "resultSchema": "github-issue-result.json"
+    },
+    {
+      "command": "github_repository",
+      "domain": "github",
+      "method": "github/github_repository",
+      "paramsSchema": "github-repository-params.json",
+      "resultSchema": "github-repository-result.json"
+    },
+    {
       "command": "github_merge_config",
       "domain": "github",
       "method": "github/github_merge_config",

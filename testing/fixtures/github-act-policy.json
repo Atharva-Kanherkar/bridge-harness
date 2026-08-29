@@ -6,5 +6,9 @@
   { "id": "reply-approved", "action": { "kind": "reply", "number": 341, "commentId": 55, "body": "thanks" }, "confirmed": true, "expectExecuted": true },
   { "id": "reply-denied", "action": { "kind": "reply", "number": 341, "commentId": 55, "body": "thanks" }, "confirmed": false, "expectExecuted": false },
   { "id": "rerun-approved", "action": { "kind": "rerun", "number": 104 }, "confirmed": true, "expectExecuted": true },
-  { "id": "rerun-denied", "action": { "kind": "rerun", "number": 104 }, "confirmed": false, "expectExecuted": false }
+  { "id": "rerun-denied", "action": { "kind": "rerun", "number": 104 }, "confirmed": false, "expectExecuted": false },
+  { "id": "pr-label-approved", "action": { "kind": "label", "target": "pullRequest", "number": 104, "label": "bug", "operation": "add" }, "confirmed": true, "expectExecuted": true },
+  { "id": "pr-label-denied", "action": { "kind": "label", "target": "pullRequest", "number": 104, "label": "bug", "operation": "remove" }, "confirmed": false, "expectExecuted": false },
+  { "id": "issue-label-approved", "action": { "kind": "label", "target": "issue", "number": 17, "label": "enhancement", "operation": "add" }, "confirmed": true, "expectExecuted": true },
+  { "id": "issue-label-denied", "action": { "kind": "label", "target": "issue", "number": 17, "label": "enhancement", "operation": "remove" }, "confirmed": false, "expectExecuted": false }
 ]
