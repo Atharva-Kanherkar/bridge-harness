@@ -9,11 +9,20 @@ pub const UNFOCUSED_CADENCE: Duration = Duration::from_secs(120);
 #[derive(Default)]
 pub struct GithubPoller {
     watched: Mutex<HashMap<(String, u64), WatchedPullRequest>>,
+    /// The last terminal check set announced per PR. The list refetch that
+    /// follows every checks-changed event re-`watch()`es from a rollup that can
+    /// still read "in progress" after the checks completed; without this
+    /// baseline that stale re-add would re-observe the same completion and
+    /// announce it twice. Keyed forever (bounded by PRs seen): a PR only
+    /// re-announces when a *different* terminal check set shows up — a new run.
+    announced: Mutex<HashMap<(String, u64), Vec<PullRequestCheck>>>,
 }
 
 #[derive(Clone)]
 struct WatchedPullRequest {
     path: PathBuf,
+    head_branch: String,
+    title: String,
     checks: Option<Vec<PullRequestCheck>>,
 }
 
@@ -36,7 +45,15 @@ impl GithubPoller {
         for pull_request in pull_requests {
             if pull_request.checks.queued > 0 || pull_request.checks.in_progress > 0 {
                 let checks = previous.remove(&pull_request.number).flatten();
-                watched.insert((workspace_id.into(), pull_request.number), WatchedPullRequest { path: path.clone(), checks });
+                watched.insert(
+                    (workspace_id.into(), pull_request.number),
+                    WatchedPullRequest {
+                        path: path.clone(),
+                        head_branch: pull_request.head_branch.clone(),
+                        title: pull_request.title.clone(),
+                        checks,
+                    },
+                );
             }
         }
     }
@@ -52,16 +69,71 @@ impl GithubPoller {
             // (e.g. the workspace's PR list was refetched); nothing to update.
             let Some(entry) = watched_map.get_mut(&(workspace_id.clone(), number)) else { continue };
             let changed = rollup_changed(entry.checks.as_deref(), &checks, complete);
-            entry.checks = Some(checks);
+            let terminal = complete.then(|| (entry.head_branch.clone(), entry.title.clone()));
+            entry.checks = Some(checks.clone());
             if complete {
                 watched_map.remove(&(workspace_id.clone(), number));
             }
             drop(watched_map);
             if changed {
-                core.events.publish(CoreEvent::GithubChecksChanged { workspace_id, number });
+                core.events.publish(CoreEvent::GithubChecksChanged {
+                    workspace_id: workspace_id.clone(),
+                    number,
+                });
+            }
+            if let Some((head_branch, title)) = terminal {
+                self.announce_terminal(core, workspace_id, number, head_branch, title, checks);
             }
         }
     }
+
+    /// Publish `GithubCiFinished` for a terminal check set, at most once per
+    /// set. See `announced` for why the re-check is needed at all.
+    fn announce_terminal(
+        &self,
+        core: &BridgeCore,
+        workspace_id: String,
+        number: u64,
+        head_branch: String,
+        title: String,
+        checks: Vec<PullRequestCheck>,
+    ) {
+        let key = (workspace_id.clone(), number);
+        let mut announced = self.announced.lock().unwrap();
+        if announced.get(&key) == Some(&checks) {
+            return;
+        }
+        let (failed, total) = summarize(&checks);
+        announced.insert(key, checks);
+        drop(announced);
+        core.events.publish(CoreEvent::GithubCiFinished {
+            workspace_id,
+            number,
+            head_branch,
+            title,
+            failed,
+            total,
+        });
+    }
+}
+
+/// The notification's headline numbers: how many checks ended badly, out of
+/// how many. "Badly" mirrors the rerun affordance — failure, timeout, or a
+/// startup failure; cancelled and skipped runs are not news.
+fn summarize(checks: &[PullRequestCheck]) -> (u32, u32) {
+    use crate::github_surface::CheckConclusion;
+    let failed = checks
+        .iter()
+        .filter(|check| {
+            matches!(
+                check.conclusion,
+                Some(CheckConclusion::Failure)
+                    | Some(CheckConclusion::TimedOut)
+                    | Some(CheckConclusion::StartupFailure)
+            )
+        })
+        .count() as u32;
+    (failed, checks.len() as u32)
 }
 
 /// An empty result can mean the checks API has not yet caught up with the
@@ -91,6 +163,7 @@ pub fn start_github_poll_maintenance(core: Arc<BridgeCore>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::github_surface::CheckConclusion;
 
     fn check(status: CheckStatus) -> PullRequestCheck {
         PullRequestCheck {
@@ -100,6 +173,78 @@ mod tests {
             log_url: String::new(),
             workflow: "ci".into(),
         }
+    }
+
+    fn finished(name: &str, conclusion: CheckConclusion) -> PullRequestCheck {
+        PullRequestCheck {
+            name: name.into(),
+            status: CheckStatus::Completed,
+            conclusion: Some(conclusion),
+            log_url: String::new(),
+            workflow: "ci".into(),
+        }
+    }
+
+    #[test]
+    fn a_terminal_check_set_announces_exactly_once_across_reobservation() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = crate::runtime::BridgeCore::for_tests(scratch.path());
+        let mut events = core.events.subscribe();
+        let poller = GithubPoller::default();
+        let done = vec![
+            finished("build", CheckConclusion::Failure),
+            finished("test", CheckConclusion::Success),
+        ];
+        poller.announce_terminal(&core, "ws".into(), 7, "feat/x".into(), "Title".into(), done.clone());
+        // A reconnect refetches the PR list from a rollup that can still read
+        // "in progress"; the stale re-watch then re-observes the same terminal
+        // set. That path must be silent.
+        poller.announce_terminal(&core, "ws".into(), 7, "feat/x".into(), "Title".into(), done);
+        match events.try_recv().expect("first terminal set announces") {
+            CoreEvent::GithubCiFinished { workspace_id, number, head_branch, failed, total, .. } => {
+                assert_eq!(workspace_id, "ws");
+                assert_eq!(number, 7);
+                assert_eq!(head_branch, "feat/x");
+                assert_eq!(failed, 1);
+                assert_eq!(total, 2);
+            }
+            other => panic!("expected GithubCiFinished, got {other:?}"),
+        }
+        assert!(events.try_recv().is_err(), "the re-observation is deduplicated");
+    }
+
+    #[test]
+    fn a_different_terminal_set_is_a_new_run_and_announces_again() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = crate::runtime::BridgeCore::for_tests(scratch.path());
+        let mut events = core.events.subscribe();
+        let poller = GithubPoller::default();
+        poller.announce_terminal(
+            &core, "ws".into(), 7, "feat/x".into(), "Title".into(),
+            vec![finished("build", CheckConclusion::Failure)],
+        );
+        poller.announce_terminal(
+            &core, "ws".into(), 7, "feat/x".into(), "Title".into(),
+            vec![finished("build", CheckConclusion::Success)],
+        );
+        assert!(matches!(events.try_recv(), Ok(CoreEvent::GithubCiFinished { failed: 1, .. })));
+        assert!(
+            matches!(events.try_recv(), Ok(CoreEvent::GithubCiFinished { failed: 0, .. })),
+            "a rerun that flips the outcome is news again",
+        );
+    }
+
+    #[test]
+    fn summarize_counts_rerunnable_conclusions_only() {
+        let checks = [
+            finished("a", CheckConclusion::Failure),
+            finished("b", CheckConclusion::TimedOut),
+            finished("c", CheckConclusion::StartupFailure),
+            finished("d", CheckConclusion::Cancelled),
+            finished("e", CheckConclusion::Skipped),
+            finished("f", CheckConclusion::Success),
+        ];
+        assert_eq!(summarize(&checks), (3, 6));
     }
 
     #[test]
