@@ -47,9 +47,9 @@ async fn health(state: State<'_, Arc<BridgeCore>>) -> Result<api::Health, Bridge
 }
 
 #[tauri::command]
-async fn github_status(workspace_id: String, refresh: Option<bool>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubStatusResult, BridgeError> {
+async fn github_status(workspace_id: String, refresh: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubStatusResult, BridgeError> {
     let core = state.inner().clone();
-    blocking("GitHub status", move || api::github_status(&core, &workspace_id, refresh.unwrap_or(false))).await
+    blocking("GitHub status", move || api::github_status(&core, &workspace_id, refresh)).await
 }
 
 #[tauri::command]
