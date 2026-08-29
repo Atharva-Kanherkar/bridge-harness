@@ -123,16 +123,18 @@ describe("adaptive setup surfaces", () => {
 
   it("labels each evaluator execution state truthfully", () => {
     expect(evaluatorExecutionLabel("not_run")).toBe("not run");
+    expect(evaluatorExecutionLabel("deferred")).toBe("not run");
     expect(evaluatorExecutionLabel("queued")).toBe("queued — bounded model evaluation has not run yet");
     expect(evaluatorExecutionLabel("executed")).toBe("bounded model evaluation executed");
+    expect(evaluatorExecutionLabel("evaluation_failed")).toBe("bounded model evaluation reached no verdict");
     expect(evaluatorExecutionLabel("deterministic_only")).toBe("deterministic only — no model evaluation requested");
     expect(evaluatorExecutionLabel("reused_existing_evidence")).toBe("reused existing evidence");
   });
 
-  it("treats schedule nextRunAt and evaluator ceilings as not user-editable", () => {
+  it("treats schedule nextRunAt as runner-owned and the evaluator ceilings as user-editable", () => {
     const schedule: LearningSchedule = { jobId: "default", enabled: false, cadenceMinutes: 1440, nextRunAt: null, runBudgetMicrousd: 100_000, runBudgetTokens: 50_000, mode: "ask" };
     expect(scheduleUserFieldsChanged(schedule, { ...schedule, nextRunAt: "stale" })).toBe(false);
-    expect(scheduleUserFieldsChanged(schedule, { ...schedule, runBudgetMicrousd: 0, runBudgetTokens: 0 })).toBe(false);
+    expect(scheduleUserFieldsChanged(schedule, { ...schedule, runBudgetMicrousd: 0, runBudgetTokens: 0 })).toBe(true);
     expect(scheduleUserFieldsChanged(schedule, { ...schedule, mode: "automatic" })).toBe(true);
     expect(scheduleUserFieldsChanged(schedule, { ...schedule, enabled: true })).toBe(true);
     expect(scheduleUserFieldsChanged(schedule, { ...schedule, cadenceMinutes: 60 })).toBe(true);

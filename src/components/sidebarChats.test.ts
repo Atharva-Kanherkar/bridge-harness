@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import type { Session, SessionStatus, Workspace } from "../types";
-import { BRIEFING_SESSION_KIND, EXTRACTION_SESSION_KIND, CHAT_VIEW_KEY, DEFAULT_CHAT_VIEW, agentOptions, chatListTime, chatTimestamp, dayLabel, filterChats, groupChats, isHiddenSession, readChatView, statusBucket, visibleChats, writeChatView, SUGGESTION_SESSION_KIND } from "./sidebarChats";
+import { BRIEFING_SESSION_KIND, EXTRACTION_SESSION_KIND, EVALUATION_SESSION_KIND, CHAT_VIEW_KEY, DEFAULT_CHAT_VIEW, agentOptions, chatListTime, chatTimestamp, dayLabel, filterChats, groupChats, isHiddenSession, readChatView, statusBucket, visibleChats, writeChatView, SUGGESTION_SESSION_KIND } from "./sidebarChats";
 
 const chat = (id: string, overrides: Partial<Session> = {}): Session => ({
   id,
@@ -266,6 +266,7 @@ describe("hidden sessions", () => {
     expect(isHiddenSession(chat("a", BRIEFING_SESSION_KIND))).toBe(true);
     expect(isHiddenSession(chat("s", SUGGESTION_SESSION_KIND))).toBe(true);
     expect(isHiddenSession(chat("x", EXTRACTION_SESSION_KIND))).toBe(true);
+    expect(isHiddenSession(chat("e", EVALUATION_SESSION_KIND))).toBe(true);
     for (const kind of [null, "orchestrator", "chat", "worker", "direct"]) {
       expect(isHiddenSession(chat("b", kind))).toBe(false);
     }
@@ -299,5 +300,6 @@ describe("hidden sessions", () => {
     // becomes visible in the rail, which is the one place it must never appear.
     expect(BRIEFING_SESSION_KIND).toBe("briefing");
     expect(SUGGESTION_SESSION_KIND).toBe("suggestion");
+    expect(EVALUATION_SESSION_KIND).toBe("outcome_evaluation");
   });
 });

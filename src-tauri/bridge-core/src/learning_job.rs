@@ -381,6 +381,19 @@ fn record_model_evaluations(
         let evaluator =
             routing_evaluation::cross_family(&evaluator_profiles, actual_provider.as_deref());
         let evaluation_id = format!("model:{learning_run_id}:{decision_id}");
+        // An earlier learning run's evaluation may still be open for this
+        // decision — a failed run does not consume evidence, so a retry
+        // re-reads the window. That queued run is still the decision's
+        // answer-in-progress: minting a second `model_based` row here would
+        // leave one stranded at 'queued' forever, because settlement mirrors
+        // only the run's own evaluation id.
+        if completed_eval.is_none()
+            && evaluator.is_some()
+            && routing_evaluation::has_open_run(db, &decision_id)?
+        {
+            summary.queued += 1;
+            continue;
+        }
         let (evaluator_version, status, score_bps, confidence_bps, evidence_ids, source, enqueue) =
             if let Some((check_status, verifier_family, output_digest, artifact_refs)) =
                 completed_eval
@@ -453,7 +466,7 @@ fn record_model_evaluations(
         )?;
         match (status, enqueue) {
             (routing_evaluation::STATUS_QUEUED, Some(profile)) => {
-                routing_evaluation::enqueue(
+                if routing_evaluation::enqueue(
                     db,
                     learning_run_id,
                     &decision_id,
@@ -461,10 +474,19 @@ fn record_model_evaluations(
                     &evaluation_id,
                     profile,
                     Utc::now(),
-                )?;
-                summary.queued += 1;
+                )? {
+                    summary.queued += 1;
+                }
             }
-            (routing_evaluation::STATUS_COMPLETED, _) => summary.reused_existing += 1,
+            (routing_evaluation::STATUS_COMPLETED, _) => {
+                // The reused verifier row is completed evidence right now, so
+                // the outcome's confidence must follow it the same way a fresh
+                // verdict's would — the replay and the online histories read
+                // the same number or the replay promotes on evidence the
+                // online path rejects.
+                learning_router::refresh_outcome_confidence(db, &decision_id)?;
+                summary.reused_existing += 1;
+            }
             _ => {}
         }
     }
@@ -499,8 +521,16 @@ pub fn refresh_evaluated_usage(
         .map(|mut report| {
             report.evaluated_spend_microusd = usage.spend_microusd;
             report.evaluated_tokens = usage.tokens;
-            if report.evaluation_execution == "queued" && usage.open == 0 && usage.settled > 0 {
-                report.evaluation_execution = "executed".into();
+            // "executed" is a claim that a judgement was reached. A run whose
+            // evaluations all failed or were skipped settled without one, and
+            // saying it executed is the exact untruth this module exists to
+            // retire.
+            if report.evaluation_execution == "queued" && usage.open == 0 {
+                if usage.completed > 0 {
+                    report.evaluation_execution = "executed".into();
+                } else if usage.settled > 0 {
+                    report.evaluation_execution = "evaluation_failed".into();
+                }
             }
             serde_json::to_string(&report)
         })

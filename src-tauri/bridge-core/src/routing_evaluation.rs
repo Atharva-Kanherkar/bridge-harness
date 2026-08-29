@@ -275,6 +275,21 @@ pub fn cross_family<'a>(
     })
 }
 
+/// Whether a decision already has a queued or running evaluation. An earlier
+/// learning run's open run keeps answering for the decision, so a later run
+/// must not mint a second row behind it.
+pub(crate) fn has_open_run(db: &Connection, decision_id: &str) -> Result<bool, BridgeError> {
+    let open: Option<i64> = db
+        .query_row(
+            "SELECT 1 FROM routing_evaluation_runs
+             WHERE decision_id=?1 AND status IN ('queued','running') LIMIT 1",
+            params![decision_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(open.is_some())
+}
+
 /// One queued run per decision, claimed later by whichever host owns the data
 /// directory. Returns false when the decision already has an open run.
 pub fn enqueue(
@@ -286,15 +301,7 @@ pub fn enqueue(
     profile: &EvaluatorProfile,
     now: DateTime<Utc>,
 ) -> Result<bool, BridgeError> {
-    let open: Option<i64> = db
-        .query_row(
-            "SELECT 1 FROM routing_evaluation_runs
-             WHERE decision_id=?1 AND status IN ('queued','running') LIMIT 1",
-            params![decision_id],
-            |row| row.get(0),
-        )
-        .optional()?;
-    if open.is_some() {
+    if has_open_run(db, decision_id)? {
         return Ok(false);
     }
     let now = now.to_rfc3339();
@@ -364,6 +371,22 @@ pub fn claim_due(
             mirror_row_status(db, &run_id, STATUS_SKIPPED)?;
             continue;
         }
+        // The schedule's ceilings are the user's spend contract, and the
+        // evaluator is the only part of a learning run that spends. A run whose
+        // learning run has already observed at least the ceiling settles
+        // `skipped` rather than executing: a skipped run is not a verdict, and
+        // a ceiling that only ever gated a zero was not a ceiling.
+        if evaluation_budget_exhausted(db, &run_id)? {
+            db.execute(
+                "UPDATE routing_evaluation_runs
+                 SET status='skipped', detail='evaluation_budget_exhausted', lease_owner=NULL,
+                     lease_expires_at=NULL, updated_at=?2
+                 WHERE id=?1 AND status IN ('queued','running')",
+                params![run_id, now.to_rfc3339()],
+            )?;
+            mirror_row_status(db, &run_id, STATUS_SKIPPED)?;
+            continue;
+        }
         let lease_owner = Uuid::new_v4().to_string();
         let expires = (now + Duration::minutes(LEASE_MINUTES)).to_rfc3339();
         let claimed = db.execute(
@@ -399,6 +422,37 @@ pub fn claim_due(
         )?;
         return Ok(Some(claimed));
     }
+}
+
+/// Whether the learning run behind a queued evaluation has already observed
+/// its schedule's spend or token ceiling. A run queued outside any learning
+/// run has no ceiling to exhaust.
+fn evaluation_budget_exhausted(db: &Connection, run_id: &str) -> Result<bool, BridgeError> {
+    let learning_run_id: Option<Option<String>> = db
+        .query_row(
+            "SELECT learning_run_id FROM routing_evaluation_runs WHERE id=?1",
+            params![run_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(Some(learning_run_id)) = learning_run_id else {
+        return Ok(false);
+    };
+    let budgets: Option<(i64, i64)> = db
+        .query_row(
+            "SELECT j.run_budget_microusd, j.run_budget_tokens
+             FROM learning_jobs j JOIN learning_job_runs r ON r.job_id=j.id
+             WHERE r.id=?1",
+            params![learning_run_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let Some((budget_microusd, budget_tokens)) = budgets else {
+        return Ok(false);
+    };
+    let usage = observed_usage(db, &learning_run_id)?;
+    Ok((budget_microusd > 0 && usage.spend_microusd >= budget_microusd)
+        || (budget_tokens > 0 && usage.tokens >= budget_tokens))
 }
 
 pub fn heartbeat(
@@ -549,6 +603,10 @@ pub struct ObservedUsage {
     pub spend_microusd: i64,
     pub tokens: i64,
     pub settled: i64,
+    /// Settled runs that actually reached a verdict. `settled` also counts
+    /// failed and skipped runs, and "every judge failed" must never read as
+    /// "a judgement was reached".
+    pub completed: i64,
     pub open: i64,
 }
 
@@ -558,6 +616,7 @@ pub fn observed_usage(db: &Connection, learning_run_id: &str) -> Result<Observed
     db.query_row(
         "SELECT COALESCE(SUM(spend_microusd),0), COALESCE(SUM(observed_tokens),0),
                 COALESCE(SUM(status IN ('completed','failed','skipped')),0),
+                COALESCE(SUM(status='completed'),0),
                 COALESCE(SUM(status IN ('queued','running')),0)
          FROM routing_evaluation_runs WHERE learning_run_id=?1",
         params![learning_run_id],
@@ -566,7 +625,8 @@ pub fn observed_usage(db: &Connection, learning_run_id: &str) -> Result<Observed
                 spend_microusd: row.get(0)?,
                 tokens: row.get(1)?,
                 settled: row.get(2)?,
-                open: row.get(3)?,
+                completed: row.get(3)?,
+                open: row.get(4)?,
             })
         },
     )
@@ -883,9 +943,14 @@ fn fenced_payload(text: &str) -> Option<&str> {
     while let Some(start) = search.rfind(FENCE_TAG) {
         let after = &search[start + FENCE_TAG.len()..];
         if after.starts_with(['\n', '\r']) {
-            let end = after.find("```")?;
-            found = Some(after[..end].trim());
-            break;
+            // The closing fence must open a line: a ``` inside a quoted span
+            // does not end the block, and a tag with no closing fence at all
+            // is not a block — the scan keeps walking back to an earlier
+            // complete one instead of giving up on the whole answer.
+            if let Some(end) = after.find("\n```") {
+                found = Some(after[..end].trim());
+                break;
+            }
         }
         search = &search[..start];
     }
@@ -997,9 +1062,32 @@ pub fn gate_and_record(
     model_text: &str,
     now: DateTime<Utc>,
 ) -> Result<EvaluationVerdict, BridgeError> {
-    let verdict = parse_verdict(model_text)?;
+    let verdict = gate(model_text)?;
+    record_verdict(db, claimed, evidence, &verdict, now)?;
+    Ok(verdict)
+}
+
+/// The parse half of the gate, split out so an executor can settle its run —
+/// the lease check — before any evidence is written. A verdict is not evidence
+/// until the run that produced it has settled: recording first is how a
+/// crashed or lease-expired worker writes a verdict for a run that is later
+/// re-executed and paid for twice.
+pub fn gate(model_text: &str) -> Result<EvaluationVerdict, BridgeError> {
+    parse_verdict(model_text)
+}
+
+/// The record half: write a decided verdict onto the decision's `model_based`
+/// row and refresh the outcome's confidence. An undecidable verdict writes
+/// nothing.
+pub fn record_verdict(
+    db: &Connection,
+    claimed: &ClaimedEvaluation,
+    evidence: &EvaluationEvidence,
+    verdict: &EvaluationVerdict,
+    now: DateTime<Utc>,
+) -> Result<(), BridgeError> {
     let Some(score_bps) = verdict.score_bps else {
-        return Ok(verdict);
+        return Ok(());
     };
     db.execute(
         "INSERT INTO routing_evaluations(id,learning_run_id,decision_id,evaluator_kind,evaluator_version,
@@ -1043,7 +1131,7 @@ pub fn gate_and_record(
         ],
     )?;
     learning_router::refresh_outcome_confidence(db, &claimed.decision_id)?;
-    Ok(verdict)
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1505,6 +1593,48 @@ mod tests {
         assert!(row.3.contains("\"scoreSource\":\"derived_from_criteria\""));
         assert!(row.3.contains("\"reproducible\":false"), "sampling is recorded, not claimed stable");
         assert!(row.3.contains(&digest));
+    }
+
+    #[test]
+    fn an_exhausted_schedule_budget_skips_the_remaining_evaluations() {
+        let (_dir, db) = evaluation_db();
+        evaluator_profile(&db, "claude");
+        insert_decision(&db, "d1", "codex");
+        insert_outcome(&db, "d1");
+        insert_decision(&db, "d2", "codex");
+        insert_outcome(&db, "d2");
+        db.execute(
+            "UPDATE learning_jobs SET run_budget_microusd=5000 WHERE id='default'",
+            [],
+        )
+        .unwrap();
+        let first = queued_run(&db, "d1");
+        assert!(settle(
+            &db,
+            &first.run_id,
+            &first.lease_owner,
+            STATUS_COMPLETED,
+            Some("judged"),
+            Some("digest"),
+            Some(9_000),
+            Some(9_000),
+            100,
+            5_000,
+            Utc::now(),
+        )
+        .unwrap());
+        let profiles = eligible_evaluators(&db, "w").unwrap();
+        let profile = cross_family(&profiles, Some("codex")).unwrap().clone();
+        assert!(enqueue(&db, "learn-1", "d2", "w", "model:learn-1:d2", &profile, Utc::now())
+            .unwrap());
+        assert!(
+            claim_due(&db, Utc::now()).unwrap().is_none(),
+            "a run over its schedule's ceiling claims nothing"
+        );
+        let runs = list_runs(&db, "w", 10).unwrap();
+        let skipped = runs.iter().find(|run| run.decision_id == "d2").unwrap();
+        assert_eq!(skipped.status, STATUS_SKIPPED);
+        assert_eq!(skipped.detail.as_deref(), Some("evaluation_budget_exhausted"));
     }
 
     #[test]

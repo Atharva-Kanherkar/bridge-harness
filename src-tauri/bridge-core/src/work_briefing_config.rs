@@ -177,6 +177,7 @@ pub fn is_hidden_session_kind(kind: Option<&str>) -> bool {
         kind,
         Some(BRIEFING_SESSION_KIND) | Some(SUGGESTION_SESSION_KIND)
     ) || kind == Some(crate::memory_extraction::EXTRACTION_SESSION_KIND)
+        || kind == Some(crate::routing_evaluation::EVALUATION_SESSION_KIND)
 }
 
 #[cfg(test)]
@@ -336,7 +337,10 @@ mod tests {
     fn hidden_session_kinds_cover_briefing_and_suggestion_and_nothing_else() {
         assert!(is_hidden_session_kind(Some(BRIEFING_SESSION_KIND)));
         assert!(is_hidden_session_kind(Some(SUGGESTION_SESSION_KIND)));
-        for visible in [None, Some("orchestrator"), Some("chat"), Some("worker"), Some("")] {
+        assert!(is_hidden_session_kind(Some(
+            crate::routing_evaluation::EVALUATION_SESSION_KIND
+        )));
+        for visible in [None, Some("orchestrator"), Some("direct"), Some("worker"), Some("")] {
             assert!(!is_hidden_session_kind(visible), "{visible:?} is a session a human may see");
         }
     }

@@ -43,12 +43,18 @@ const POLL_SECONDS: u64 = 60;
 pub fn start_evaluation_maintenance(core: Arc<BridgeCore>) {
     std::thread::spawn(move || loop {
         std::thread::sleep(StdDuration::from_secs(POLL_SECONDS));
-        let claimed = {
-            let db = core.db.lock().unwrap();
-            routing_evaluation::claim_due(&db, Utc::now())
-        };
-        if let Ok(Some(run)) = claimed {
-            execute(&core, run);
+        // Drain everything due before sleeping again: a learning run queues one
+        // evaluation per unknown outcome, and a backlog that drips out at one
+        // run per tick leaves reports reading "queued" for hours.
+        loop {
+            let claimed = {
+                let db = core.db.lock().unwrap();
+                routing_evaluation::claim_due(&db, Utc::now())
+            };
+            match claimed {
+                Ok(Some(run)) => execute(&core, run),
+                _ => break,
+            }
         }
     });
 }
@@ -86,15 +92,16 @@ pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedEvaluation) {
     };
     let usage = (output.observed_tokens, output.spend_microusd);
 
-    let verdict = {
-        let db = core.db.lock().unwrap();
-        routing_evaluation::gate_and_record(&db, &claimed, &evidence, &output.text, Utc::now())
-    };
-    match verdict {
+    // Settle before recording. The settle is the lease check: a worker whose
+    // lease was reclaimed, or a run a crash left behind, must not write a
+    // verdict into the evidence a second executor already answered — and a
+    // verdict recorded before its run settles is one a crash turns into a
+    // duplicate paid evaluation.
+    match routing_evaluation::gate(&output.text) {
         Ok(verdict) => {
             let status = verdict.settled_status();
             let scored = status == STATUS_COMPLETED;
-            settle(
+            let settled = settle(
                 core,
                 &claimed,
                 status,
@@ -104,17 +111,29 @@ pub fn execute(core: &Arc<BridgeCore>, claimed: ClaimedEvaluation) {
                 scored.then_some(verdict.confidence_bps),
                 usage,
             );
+            if settled && scored {
+                let db = core.db.lock().unwrap();
+                let _ = routing_evaluation::record_verdict(
+                    &db,
+                    &claimed,
+                    &evidence,
+                    &verdict,
+                    Utc::now(),
+                );
+            }
         }
-        Err(error) => settle(
-            core,
-            &claimed,
-            STATUS_FAILED,
-            &error.to_string(),
-            Some(&evidence.sha256),
-            None,
-            None,
-            usage,
-        ),
+        Err(error) => {
+            settle(
+                core,
+                &claimed,
+                STATUS_FAILED,
+                &error.to_string(),
+                Some(&evidence.sha256),
+                None,
+                None,
+                usage,
+            );
+        }
     }
 }
 
@@ -128,7 +147,7 @@ fn settle(
     score_bps: Option<i64>,
     confidence_bps: Option<i64>,
     usage: (i64, i64),
-) {
+) -> bool {
     let settled = {
         let db = core.db.lock().unwrap();
         routing_evaluation::settle(
@@ -146,10 +165,10 @@ fn settle(
         )
     };
     if !matches!(settled, Ok(true)) {
-        return;
+        return false;
     }
     let Some(learning_run_id) = claimed.learning_run_id.as_deref() else {
-        return;
+        return true;
     };
     let run = {
         let db = core.db.lock().unwrap();
@@ -161,6 +180,7 @@ fn settle(
             serde_json::to_value(&run).unwrap_or_default(),
         ));
     }
+    true
 }
 
 /// Spawn the hidden session, send the prompt as its one turn, and read the
