@@ -65,6 +65,9 @@ export type BridgeMethod =
   | "memory/get_memory_injection"
   | "memory/set_memory_injection"
   | "memory/get_packet_audit"
+  | "memory/list_memory_records_as_of"
+  | "memory/get_consolidation_settings"
+  | "memory/update_consolidation_settings"
   | "approvals/resolve_approval"
   | "auth/start_provider_login"
   | "terminal/open_terminal"
@@ -216,6 +219,9 @@ export const BRIDGE_METHODS = [
   { method: "memory/get_memory_injection", domain: "memory", command: "get_memory_injection" },
   { method: "memory/set_memory_injection", domain: "memory", command: "set_memory_injection" },
   { method: "memory/get_packet_audit", domain: "memory", command: "get_packet_audit" },
+  { method: "memory/list_memory_records_as_of", domain: "memory", command: "list_memory_records_as_of" },
+  { method: "memory/get_consolidation_settings", domain: "memory", command: "get_consolidation_settings" },
+  { method: "memory/update_consolidation_settings", domain: "memory", command: "update_consolidation_settings" },
   { method: "approvals/resolve_approval", domain: "approvals", command: "resolve_approval" },
   { method: "auth/start_provider_login", domain: "auth", command: "start_provider_login" },
   { method: "terminal/open_terminal", domain: "terminal", command: "open_terminal" },
@@ -427,6 +433,9 @@ export interface BridgeMethodParams {
   "memory/get_memory_injection": undefined;
   "memory/set_memory_injection": SetMemoryInjectionParams;
   "memory/get_packet_audit": GetPacketAuditParams;
+  "memory/list_memory_records_as_of": ListMemoryRecordsAsOfParams;
+  "memory/get_consolidation_settings": undefined;
+  "memory/update_consolidation_settings": UpdateConsolidationSettingsParams;
   "approvals/resolve_approval": ResolveApprovalParams;
   "auth/start_provider_login": StartProviderLoginParams;
   "terminal/open_terminal": OpenTerminalParams;
@@ -580,6 +589,9 @@ export interface BridgeMethodResults {
   "memory/get_memory_injection": MemoryInjectionSettings;
   "memory/set_memory_injection": MemoryInjectionSettings;
   "memory/get_packet_audit": MemoryPacketAudit;
+  "memory/list_memory_records_as_of": ListMemoryRecordsResult;
+  "memory/get_consolidation_settings": MemoryConsolidationSettings;
+  "memory/update_consolidation_settings": MemoryConsolidationSettings;
   "approvals/resolve_approval": UnitResult;
   "auth/start_provider_login": StartProviderLoginResult;
   "terminal/open_terminal": UnitResult;
@@ -988,6 +1000,16 @@ export type MarketplaceAction = "install" | "enable" | "disable" | "update" | "u
 
 export type MarketplaceProvider = "codex" | "claude";
 
+export interface MemoryConsolidationRun {
+  appliedCount: number;
+  detail?: string | null;
+  observedTokens: number;
+  refusedCount: number;
+  spendMicrousd: number;
+  status: string;
+  updatedAt: string;
+}
+
 export interface MemoryExtractionRun {
   detail?: string | null;
   observedTokens: number;
@@ -1014,7 +1036,9 @@ export interface MemoryPacketItem {
 export interface MemoryRecord {
   body: string;
   confidenceBps?: number | null;
+  conflictGroup?: string | null;
   createdAt: string;
+  expiresAt?: string | null;
   id: string;
   kind: string;
   provenance: string;
@@ -1024,6 +1048,8 @@ export interface MemoryRecord {
   status: string;
   supersedes?: string | null;
   updatedAt: string;
+  validFrom: string;
+  validTo?: string | null;
 }
 
 export interface MergeStrategies {
@@ -2165,6 +2191,32 @@ export interface MemoryPacketAudit {
   selected: MemoryPacketItem[];
   sessionId: string;
   tokenEstimate: number;
+}
+
+export interface ListMemoryRecordsAsOfParams {
+  at: string;
+  scopeKey: string;
+}
+
+export interface MemoryConsolidationSettings {
+  allowRemoval: boolean;
+  debounceSeconds: number;
+  harness?: string | null;
+  heldRecords: number;
+  lastRun?: MemoryConsolidationRun | null;
+  maxRecords: number;
+  mode: string;
+  model?: string | null;
+  scopeKey: string;
+}
+
+export interface UpdateConsolidationSettingsParams {
+  allowRemoval?: boolean | null;
+  debounceSeconds?: number | null;
+  harness?: string | null;
+  maxRecords?: number | null;
+  mode: string;
+  model?: string | null;
 }
 
 export interface ResolveApprovalParams {

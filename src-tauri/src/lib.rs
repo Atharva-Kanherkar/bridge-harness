@@ -1403,6 +1403,55 @@ async fn update_extraction_settings(
     .await
 }
 
+#[tauri::command]
+async fn get_consolidation_settings(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryConsolidationSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get consolidation settings", move || {
+        api::get_consolidation_settings(&core)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn update_consolidation_settings(
+    mode: String,
+    harness: Option<String>,
+    model: Option<String>,
+    max_records: Option<i64>,
+    allow_removal: Option<bool>,
+    debounce_seconds: Option<i64>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryConsolidationSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Update consolidation settings", move || {
+        api::update_consolidation_settings(
+            &core,
+            &mode,
+            harness.as_deref(),
+            model.as_deref(),
+            max_records,
+            allow_removal,
+            debounce_seconds,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn list_memory_records_as_of(
+    scope_key: String,
+    at: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ListMemoryRecordsResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("List memory records as of", move || {
+        api::list_memory_records_as_of(&core, &scope_key, &at)
+    })
+    .await
+}
+
 /// Replay durable session events after a cursor — the recovery half of the
 /// notify-then-replay event contract.
 #[tauri::command]
@@ -1737,6 +1786,7 @@ fn setup_embedded(
     bridge_core::github_poll::start_github_poll_maintenance(core.clone());
     bridge_core::memory_extraction_live::start_extraction_maintenance(core.clone());
     bridge_core::routing_evaluation_live::start_evaluation_maintenance(core.clone());
+    bridge_core::memory_consolidation_live::start_consolidation_maintenance(core.clone());
     live_turn::start_queued_input_maintenance(core.clone());
     live_turn::start_history_snapshot_maintenance(core);
     Ok(())
@@ -1886,6 +1936,9 @@ pub fn run() {
             get_memory_injection,
             set_memory_injection,
             get_packet_audit,
+            list_memory_records_as_of,
+            get_consolidation_settings,
+            update_consolidation_settings,
             interrupt_turn,
             retry_worker_task,
             refresh_account_usage,

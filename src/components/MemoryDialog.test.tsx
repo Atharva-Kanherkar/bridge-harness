@@ -17,6 +17,7 @@ const record = (id: string, body: string, kind = "preference"): MemoryRecord => 
   body,
   provenance: "user_explicit",
   status: "active",
+  validFrom: "2026-08-20T00:00:00Z",
   createdAt: "2026-08-20T00:00:00Z",
   updatedAt: "2026-08-20T00:00:00Z",
 });

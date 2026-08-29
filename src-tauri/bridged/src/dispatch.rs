@@ -268,6 +268,23 @@ pub fn dispatch(
             let p: wire::GetPacketAuditParams = decode(method, params)?;
             reply(api::get_packet_audit(core, &p.session_id))
         }
+        MethodName::ListMemoryRecordsAsOf => {
+            let p: wire::ListMemoryRecordsAsOfParams = decode(method, params)?;
+            reply(api::list_memory_records_as_of(core, &p.scope_key, &p.at))
+        }
+        MethodName::GetConsolidationSettings => reply(api::get_consolidation_settings(core)),
+        MethodName::UpdateConsolidationSettings => {
+            let p: wire::UpdateConsolidationSettingsParams = decode(method, params)?;
+            reply(api::update_consolidation_settings(
+                core,
+                &p.mode,
+                p.harness.as_deref(),
+                p.model.as_deref(),
+                p.max_records,
+                p.allow_removal,
+                p.debounce_seconds,
+            ))
+        }
         MethodName::UpdateExtractionSettings => {
             let p: wire::UpdateExtractionSettingsParams = decode(method, params)?;
             reply(api::update_extraction_settings(

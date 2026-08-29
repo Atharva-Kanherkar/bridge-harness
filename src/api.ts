@@ -1211,6 +1211,7 @@ export const bridgeApi = {
       provenance: "user_explicit",
       status: "active",
       sourceSessionId: sessionId?.trim() || undefined,
+      validFrom: now,
       createdAt: now,
       updatedAt: now,
     };
@@ -1240,6 +1241,7 @@ export const bridgeApi = {
     if (!trimmed) throw new Error("A memory pin needs some text. Empty bodies are not stored.");
     const now = new Date().toISOString();
     old.status = "superseded";
+    old.validTo = now;
     old.updatedAt = now;
     const record: MemoryRecord = {
       id: crypto.randomUUID(),
@@ -1250,6 +1252,7 @@ export const bridgeApi = {
       status: "active",
       sourceSessionId: old.sourceSessionId,
       supersedes: old.id,
+      validFrom: now,
       createdAt: now,
       updatedAt: now,
     };
@@ -1320,8 +1323,10 @@ export const bridgeApi = {
     if (isTauri()) return call("memory/delete_memory_record", { recordId });
     const record = mockMemoryRecords.find(item => item.id === recordId && item.status === "active");
     if (!record) throw new Error("That memory pin is not active (unknown id or already forgotten).");
+    const closedAt = new Date().toISOString();
     record.status = "deleted";
-    record.updatedAt = new Date().toISOString();
+    record.validTo = closedAt;
+    record.updatedAt = closedAt;
     emitMemoryChanged(record.scopeKey);
     return structuredClone(record);
   },

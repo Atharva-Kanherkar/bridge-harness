@@ -9,7 +9,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 41;
+const LATEST_SCHEMA_VERSION: i64 = 42;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -445,6 +445,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             39 => migration_39_learning_tunables(&transaction)?,
             40 => migration_40_prompt_compilation_accounting(&transaction)?,
             41 => migration_41_routing_evaluation_runs(&transaction)?,
+            42 => migration_42_memory_consolidation(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -1174,6 +1175,11 @@ fn migration_41_routing_evaluation_runs(
     transaction: &Transaction<'_>,
 ) -> Result<(), BridgeError> {
     crate::routing_evaluation::install(transaction)
+}
+
+fn migration_42_memory_consolidation(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    crate::memory_ledger::install_validity_intervals(transaction)?;
+    crate::memory_consolidation::install(transaction)
 }
 
 fn migration_39_learning_tunables(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
@@ -3639,6 +3645,8 @@ mod tests {
             "prompt_section_revisions",
             "routing_evaluation_runs",
             "routing_evaluation_settings",
+            "memory_consolidation_runs",
+            "memory_consolidation_settings",
         ] {
             assert!(
                 db.query_row(
@@ -3665,6 +3673,10 @@ mod tests {
             ("learning_jobs", "run_budget_tokens"),
             ("routing_policies", "learning_scope"),
             ("learning_job_runs", "learning_scope"),
+            ("memory_records", "valid_from"),
+            ("memory_records", "valid_to"),
+            ("memory_records", "expires_at"),
+            ("memory_records", "conflict_group"),
         ] {
             let exists = db
                 .prepare(&format!("PRAGMA table_info({table})"))

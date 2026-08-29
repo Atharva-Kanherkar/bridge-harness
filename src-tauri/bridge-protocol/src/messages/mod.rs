@@ -215,6 +215,9 @@ typed_methods![
     (GetMemoryInjection, _, MemoryInjectionSettings),
     (SetMemoryInjection, SetMemoryInjectionParams, MemoryInjectionSettings),
     (GetPacketAudit, GetPacketAuditParams, MemoryPacketAudit),
+    (ListMemoryRecordsAsOf, ListMemoryRecordsAsOfParams, ListMemoryRecordsResult),
+    (GetConsolidationSettings, _, MemoryConsolidationSettings),
+    (UpdateConsolidationSettings, UpdateConsolidationSettingsParams, MemoryConsolidationSettings),
     // approvals
     (ResolveApproval, ResolveApprovalParams, UnitResult),
     // auth — provider sign-in
@@ -488,6 +491,7 @@ mod tests {
             MethodName::ListSlashCommands,
             MethodName::GetMemoryCapabilities,
             MethodName::GetExtractionSettings,
+            MethodName::GetConsolidationSettings,
             MethodName::GetMemoryInjection,
             MethodName::GetConfigState,
             MethodName::MarketplaceCatalog,
