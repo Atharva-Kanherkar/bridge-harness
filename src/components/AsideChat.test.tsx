@@ -80,6 +80,34 @@ describe("AsideChat", () => {
     expect(onChangeModel).toHaveBeenCalledWith("claude", "opus");
   });
 
+  it("wears a failed model switch inside the panel, not the banner behind it", async () => {
+    const onChangeModel = vi.fn(async () => { throw new Error("Wait for the current response before switching models"); });
+    await mount({ working: false, onChangeModel });
+    const pill = dialog().querySelector<HTMLButtonElement>('[aria-label="Aside model: Claude Sonnet"]')!;
+    await act(async () => { pill.click(); });
+    const opus = [...dialog().querySelectorAll("button")].find(button => button.textContent?.includes("Opus"))!;
+    await act(async () => { opus.click(); });
+    expect(dialog().textContent).toContain("Wait for the current response before switching models");
+  });
+
+  it("narrates a model switch in flight and locks the picker for its duration", async () => {
+    await mount({ working: false, modelSwitch: { harness: "claude", label: "Opus" } });
+    expect(dialog().textContent).toContain("Switching to Opus…");
+    const pill = dialog().querySelector<HTMLButtonElement>('[aria-label="Aside model: Claude Sonnet"]')!;
+    expect(pill.disabled).toBe(true);
+  });
+
+  it("offers Steer mid-turn when the aside's harness advertises steering", async () => {
+    const steering = [{ ...adapters[0], capabilities: ["steering"] }];
+    await mount({ adapters: steering, working: true });
+    expect([...container.querySelectorAll("button")].some(button => button.textContent?.trim() === "Steer")).toBe(true);
+  });
+
+  it("keeps Queue mid-turn when the harness cannot steer", async () => {
+    await mount({ working: true });
+    expect([...container.querySelectorAll("button")].some(button => button.textContent?.trim() === "Queue")).toBe(true);
+  });
+
   it("disables the model control while the aside is working", async () => {
     await mount({ working: true });
     const pill = dialog().querySelector<HTMLButtonElement>('[aria-label="Aside model: Claude Sonnet"]')!;
@@ -97,6 +125,20 @@ describe("AsideChat", () => {
     // A click that starts inside the panel must not close it.
     await act(async () => { dialog().dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
     expect(onClose).toHaveBeenCalledTimes(2);
+  });
+
+  it("lets Escape dismiss an open model picker without tearing down the aside", async () => {
+    const onClose = vi.fn();
+    await mount({ working: false, onClose });
+    const pill = dialog().querySelector<HTMLButtonElement>('[aria-label="Aside model: Claude Sonnet"]')!;
+    await act(async () => { pill.click(); });
+    expect(dialog().querySelector(".u-glass-popover")).toBeTruthy();
+    await act(async () => { pill.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(dialog().querySelector(".u-glass-popover")).toBeNull();
+    expect(onClose).not.toHaveBeenCalled();
+    // The next Escape, with no picker in the way, closes the panel as before.
+    await act(async () => { pill.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("promotes through its header button", async () => {

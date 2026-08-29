@@ -58,6 +58,11 @@ const unit = (result: Promise<null>): Promise<void> => result.then(() => undefin
 const now = new Date().toISOString();
 const stateListeners = new Set<() => void>();
 const memoryListeners = new Set<(payload: MemoryChangedPayload) => void>();
+// Browser-mode stand-in for the daemon's global `agent-event` fan-out. Every
+// surface that renders live turns (the aside panel above all — its optimistic
+// pending rows reconcile only against this stream) subscribes here outside
+// Tauri, so mock turns must be delivered, not just persisted to mock state.
+const agentListeners = new Set<(event: AgentEvent) => void>();
 const mockRouterPreferences = new Map<string, RouterPreferences>();
 const mockVerifierManifests = new Map<string, VerifierManifest>();
 let mockModelSetup: ModelSetupState = { complete: false, activeVersion: null, profiles: [] };
@@ -419,6 +424,9 @@ function appendAgent(sessionId: string, kind: string, fields: Partial<AgentEvent
   const event = agentEvent(nextEventId++, sessionId, kind, fields);
   event.sequence = Math.max(0, ...mockState.agentEvents.filter(item => item.sessionId === sessionId).map(item => item.sequence)) + 1;
   mockState.agentEvents.push(event);
+  // Cloned per listener so no subscriber can mutate the stored row or another
+  // subscriber's copy — the same isolation a wire round-trip gives.
+  agentListeners.forEach(listener => listener(structuredClone(event)));
 }
 
 const mockHealth: Health = {
@@ -1465,7 +1473,8 @@ export const bridgeApi = {
   onTerminalExited: async (handler: (exit: TerminalExit) => void): Promise<UnlistenFn> => isTauri() ? subscribe<TerminalExit>("terminal-exited", handler) : () => undefined,
   onAgentEvent: async (handler: (event: AgentEvent) => void): Promise<UnlistenFn> => {
     if (isTauri()) return subscribe<AgentEvent>("agent-event", handler);
-    return () => undefined;
+    agentListeners.add(handler);
+    return () => agentListeners.delete(handler);
   },
   onAccountUsage: async (handler: (payload: AccountUsagePayload) => void): Promise<UnlistenFn> => {
     if (isTauri()) return subscribe<AccountUsagePayload>("account-usage", handler);
