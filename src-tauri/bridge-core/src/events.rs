@@ -352,6 +352,10 @@ mod tests {
                 session_id: "s".into(),
                 phase: crate::adapters::StartupPhase::Spawning,
             },
+            CoreEvent::GithubChecksChanged {
+                workspace_id: "w".into(),
+                number: 1,
+            },
         ];
         for event in &events {
             assert_eq!(
