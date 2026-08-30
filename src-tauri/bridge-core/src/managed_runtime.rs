@@ -73,6 +73,12 @@ pub enum RuntimeSource {
         url: String,
         sha256: String,
         kind: ArtifactKind,
+        /// The vendor's own version string for this release.
+        ///
+        /// Carried rather than derived from the digest: the receipt's version is
+        /// what a client displays, and a hash prefix in that field reads as a
+        /// broken install next to every other agent's real version.
+        version: String,
         /// Path of the executable inside the extracted archive, or the file name
         /// to give a raw binary.
         entrypoint: PathBuf,
@@ -124,7 +130,11 @@ impl RuntimeSource {
         validate_relative_entrypoint(self.entrypoint())?;
         match self {
             Self::ReleaseArtifact {
-                url, sha256, kind, ..
+                url,
+                sha256,
+                kind,
+                version,
+                ..
             } => {
                 if !url.starts_with("https://") {
                     return Err(BridgeError::Invalid(format!(
@@ -143,6 +153,12 @@ impl RuntimeSource {
                 {
                     return Err(BridgeError::Invalid(format!(
                         "managed runtime archive must be a .tar.gz or .tgz: {url}"
+                    )));
+                }
+                if !version_is_path_safe(version) {
+                    return Err(BridgeError::Invalid(format!(
+                        "managed runtime release version must be a safe path component: \
+                         {version:?}"
                     )));
                 }
                 Ok(())
@@ -206,6 +222,23 @@ fn version_is_exact(version: &str) -> bool {
             .split('.')
             .take(3)
             .all(|part| !part.is_empty() && part.bytes().next().is_some_and(|b| b.is_ascii_digit()))
+}
+
+/// A version safe to spell as a directory name and to carry in a receipt.
+///
+/// The payload engine checks the receipt's version, but a staging directory is
+/// built from the same string well before any of that runs — so an empty or
+/// traversing version would shape a directory and pull a whole artifact into it
+/// before the only check fired. The rule is the engine's own, restated at the
+/// earlier of the two gates rather than as a second opinion.
+fn version_is_path_safe(version: &str) -> bool {
+    !version.is_empty()
+        && version.len() <= 128
+        && version != "."
+        && version != ".."
+        && version
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 fn validate_relative_entrypoint(entrypoint: &Path) -> Result<(), BridgeError> {
@@ -345,6 +378,7 @@ fn prepare_into(
             sha256,
             kind,
             entrypoint,
+            ..
         } => {
             let download = staging.join("download.part");
             fetcher
@@ -831,6 +865,8 @@ pub const CLAUDE_SDK_VERSION: &str = "0.3.209";
 pub const CODEX_VERSION: &str = "0.147.0";
 /// Pinned version of the OpenCode runtime closure.
 pub const OPENCODE_VERSION: &str = "1.18.16";
+/// Pinned version of the Cursor agent CLI release.
+pub const CURSOR_VERSION: &str = "2026.08.25-3e8eec8";
 
 const CLAUDE_MANIFEST: &str = include_str!("../../../runtimes/claude/package.json");
 const CLAUDE_LOCKFILE: &str = include_str!("../../../runtimes/claude/package-lock.json");
@@ -899,11 +935,55 @@ pub fn opencode_recipe() -> Option<RuntimeSource> {
     })
 }
 
+/// The Cursor agent CLI release artifact.
+///
+/// Cursor publishes no npm package: the CLI ships as a per-platform tarball from
+/// the vendor's own download host, so this is a release artifact pinned by
+/// digest per platform rather than a lockfile-pinned closure. The digests were
+/// computed from the published tarballs at pin time; a republish under the same
+/// version fails integrity on a first install, and on a reinstall is treated as
+/// a superseded pin because the digest is part of what the receipt records.
+///
+/// `None` on Windows: the vendor publishes darwin and linux builds only, so
+/// there is nothing to pin there and installing reports the platform as
+/// unsupported instead of fetching a url that does not exist.
+pub fn cursor_recipe() -> Option<RuntimeSource> {
+    let (platform, sha256) = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => (
+            "darwin/arm64",
+            "81d4de7349e208d4ce441ca9c2d4e7d019ec2fbeb1137a79099fd8c4b8662f5f",
+        ),
+        ("macos", "x86_64") => (
+            "darwin/x64",
+            "851f5412f603cff4cb37d4d87d5a940c5e642077c0459238398c866a69d3f495",
+        ),
+        ("linux", "aarch64") => (
+            "linux/arm64",
+            "f1c1c2330d89fa4ef5b6cc04fcffba15012ff50eacd07e0f3baec0716f25ac5d",
+        ),
+        ("linux", "x86_64") => (
+            "linux/x64",
+            "7a212e5a17ff9316f5acc78808e33c536940d5455645022e6388d99ba48c8425",
+        ),
+        _ => return None,
+    };
+    Some(RuntimeSource::ReleaseArtifact {
+        url: format!(
+            "https://downloads.cursor.com/lab/{CURSOR_VERSION}/{platform}/agent-cli-package.tar.gz"
+        ),
+        sha256: sha256.into(),
+        kind: ArtifactKind::TarGz,
+        version: CURSOR_VERSION.to_owned(),
+        entrypoint: PathBuf::from("dist-package").join("cursor-agent"),
+    })
+}
+
 /// Every built-in managed runtime, by agent id.
 pub fn builtin_recipes() -> Vec<(&'static str, RuntimeSource)> {
     [
         ("claude", claude_recipe()),
         ("codex", codex_recipe()),
+        ("cursor", cursor_recipe()),
         ("opencode", opencode_recipe()),
     ]
     .into_iter()
@@ -999,6 +1079,7 @@ mod tests {
             url: url.into(),
             sha256: sha256.into(),
             kind,
+            version: "1.0.0".into(),
             entrypoint: PathBuf::from("bin/agent"),
         }
     }
@@ -1171,6 +1252,7 @@ mod tests {
                 url: "https://example.com/agent".into(),
                 sha256: digest_of(&bytes),
                 kind: ArtifactKind::RawBinary,
+                version: "1.0.0".into(),
                 entrypoint: PathBuf::from("bin/agent"),
             },
             &fixture.path().join("ok"),
@@ -1204,6 +1286,7 @@ mod tests {
                 url: "https://example.com/agent".into(),
                 sha256: "b".repeat(64),
                 kind: ArtifactKind::RawBinary,
+                version: "1.0.0".into(),
                 entrypoint: PathBuf::from("bin/agent"),
             },
             &staging,
@@ -1372,6 +1455,7 @@ mod tests {
                 url: "https://example.com/agent-1.0.0.tar.gz".into(),
                 sha256: digest_of(&bytes),
                 kind: ArtifactKind::TarGz,
+                version: "1.0.0".into(),
                 entrypoint: PathBuf::from("bin/agent"),
             },
             &fixture.path().join("staging"),
@@ -1751,6 +1835,7 @@ mod tests {
                 url: "https://example.com/agent".into(),
                 sha256: digest_of(&bytes),
                 kind: ArtifactKind::RawBinary,
+                version: "1.0.0".into(),
                 entrypoint: PathBuf::from("bin/agent"),
             },
             &fixture.path().join("staging"),
@@ -1809,6 +1894,7 @@ mod tests {
                 url: "https://example.com/agent".into(),
                 sha256: "c".repeat(64),
                 kind: ArtifactKind::RawBinary,
+                version: "1.0.0".into(),
                 entrypoint: PathBuf::from("bin/agent"),
             },
             &staging,
@@ -1961,7 +2047,8 @@ mod tests {
                 manifest, lockfile, ..
             } = &source
             else {
-                panic!("{agent_id} must install from npm");
+                // A release artifact carries no closure to borrow.
+                continue;
             };
             assert!(
                 matches!(manifest, Cow::Borrowed(_)),
@@ -2008,10 +2095,14 @@ mod tests {
     #[test]
     fn each_agent_recipe_pins_an_exact_version_and_entrypoint() {
         let recipes = builtin_recipes();
+        // Three npm closures wherever a vendor publishes at all, plus Cursor
+        // wherever its vendor ships a tarball. Counted rather than hardcoded:
+        // Cursor has no Windows build, and a fixed number here would fail on a
+        // platform whose recipe set is correct.
         assert_eq!(
             recipes.len(),
-            3,
-            "all three agents must have a recipe on a supported platform"
+            3 + usize::from(cursor_recipe().is_some()),
+            "every agent with a published build must have a recipe on a supported platform"
         );
         for (agent_id, source) in recipes {
             source
@@ -2027,7 +2118,21 @@ mod tests {
                 ..
             } = &source
             else {
-                panic!("{agent_id} must install from npm");
+                // Cursor is the one vendor with no npm distribution: its recipe
+                // is a release artifact whose pinning is the url's version
+                // component plus the digest validate() already checked.
+                let RuntimeSource::ReleaseArtifact { url, version, .. } = &source else {
+                    unreachable!("{agent_id} has an unknown source kind");
+                };
+                assert_eq!(agent_id, "cursor", "only cursor may skip npm: {url}");
+                assert!(
+                    url.contains(CURSOR_VERSION),
+                    "cursor url does not pin {CURSOR_VERSION}: {url}"
+                );
+                // The receipt's version is what the runtimes card displays, so it
+                // must be the vendor's string rather than a digest prefix.
+                assert_eq!(version, CURSOR_VERSION);
+                continue;
             };
             assert!(
                 version_is_exact(version),
@@ -2088,6 +2193,7 @@ mod tests {
                 url: "https://example.com/codex.tar.gz".into(),
                 sha256: digest_of(&bytes),
                 kind: ArtifactKind::TarGz,
+                version: "1.0.0".into(),
                 entrypoint: PathBuf::from("bin/codex"),
             },
             &fixture.path().join("staging"),
@@ -2143,6 +2249,7 @@ mod tests {
                 url: "https://example.com/a.tar.gz".into(),
                 sha256: digest_of(&bytes),
                 kind: ArtifactKind::TarGz,
+                version: "1.0.0".into(),
                 entrypoint: PathBuf::from("bin/agent"),
             },
             &fixture.path().join("staging"),

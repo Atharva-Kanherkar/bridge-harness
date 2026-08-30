@@ -202,17 +202,18 @@ impl CursorUnavailable {
                      the agent protocol, so this build cannot be driven{detail}"
                 )
             }
-            Self::Unidentified { version, reported } => {
-                let named = reported
-                    .as_deref()
-                    .map(|name| format!("{name:?}"))
-                    .unwrap_or_else(|| "nothing".into());
-                format!(
+            Self::Unidentified { version, reported } => match reported {
+                Some(name) => format!(
                     "The executable found as {AMBIGUOUS_EXECUTABLE} ({version}) identified \
-                     itself as {named}, not as Cursor; install {PUBLISHED_EXECUTABLE} so Bridge \
-                     can tell the two apart"
-                )
-            }
+                     itself as {name:?}, not as Cursor; install {PUBLISHED_EXECUTABLE} so \
+                     Bridge can tell the two apart"
+                ),
+                None => format!(
+                    "The executable found as {AMBIGUOUS_EXECUTABLE} ({version}) has not \
+                     identified itself as Cursor; install {PUBLISHED_EXECUTABLE} so Bridge can \
+                     tell the two apart"
+                ),
+            },
             Self::NeedsSignIn { version } => {
                 format!("Cursor {version} is installed but not signed in; run {SIGN_IN_COMMAND}")
             }
@@ -276,18 +277,26 @@ impl CachedProbe {
     }
 }
 
-/// Find the vendor's CLI, preferring the name that identifies it.
+/// Find the vendor's CLI, preferring a Bridge-managed payload and then the name
+/// that identifies it.
 ///
-/// `resolve` is the lookup rather than a hardcoded call so the preference
-/// between the two names can be exercised against a controlled search path;
+/// A managed payload outranks PATH for the reason it does in every other
+/// adapter: it is the copy the user asked Bridge to install, and searching PATH
+/// first would leave an installed payload unusable. It is never the ambiguous
+/// name — Bridge extracted it from its own digest-pinned recipe.
+///
+/// `managed` and `resolve` are lookups rather than hardcoded calls so the
+/// preference order can be exercised against a controlled search path;
 /// production passes [`crate::binary::resolve`], which is also what finds a CLI
 /// when Bridge is launched as a macOS bundle without a login shell's PATH.
 fn locate_with(
+    managed: &dyn Fn() -> Option<PathBuf>,
     resolve: &dyn Fn(&str) -> Option<PathBuf>,
     version_at: &dyn Fn(&Path) -> Option<String>,
 ) -> Result<CursorExecutable, CursorUnavailable> {
-    let (path, ambiguous_name) = resolve(PUBLISHED_EXECUTABLE)
+    let (path, ambiguous_name) = managed()
         .map(|path| (path, false))
+        .or_else(|| resolve(PUBLISHED_EXECUTABLE).map(|path| (path, false)))
         .or_else(|| resolve(AMBIGUOUS_EXECUTABLE).map(|path| (path, true)))
         .ok_or(CursorUnavailable::NotInstalled)?;
     // A version Bridge cannot read is reported as such rather than treated as
@@ -305,7 +314,43 @@ fn locate_with(
 }
 
 pub fn locate() -> Result<CursorExecutable, CursorUnavailable> {
-    locate_with(&binary::resolve, &binary::version_at)
+    locate_with(
+        &|| crate::managed_runtime::managed_entrypoint(HARNESS_ID),
+        &binary::resolve,
+        &binary::version_at,
+    )
+}
+
+/// The copy of the vendor's CLI on PATH, under either of the names [`locate`]
+/// accepts.
+///
+/// Exported so surfaces that describe a user's own install — the managed
+/// runtimes card, and the uninstall guard behind it — resolve the same file this
+/// adapter would launch. Looking only for the published name there reported a
+/// working install as absent and offered to download a second copy of it.
+pub fn system_executable() -> Option<PathBuf> {
+    binary::resolve(PUBLISHED_EXECUTABLE).or_else(|| binary::resolve(AMBIGUOUS_EXECUTABLE))
+}
+
+/// The executable a sign-in may be spawned against.
+///
+/// Narrower than [`locate`] on purpose. A login is an interactive vendor process
+/// in a Bridge-owned PTY labelled Cursor, and nothing has asked the ambiguous
+/// name who it is at that point — the identity check lives in [`probe`], which a
+/// login never reaches. So a managed payload or the vendor's own published name,
+/// and otherwise the same remedy an unidentified build already names.
+pub fn login_executable() -> Result<PathBuf, CursorUnavailable> {
+    login_executable_of(locate()?)
+}
+
+fn login_executable_of(executable: CursorExecutable) -> Result<PathBuf, CursorUnavailable> {
+    if executable.ambiguous_name {
+        return Err(CursorUnavailable::Unidentified {
+            version: executable.version,
+            reported: None,
+        });
+    }
+    Ok(executable.path)
 }
 
 /// A configured key, read from Bridge's own environment.
@@ -1493,7 +1538,18 @@ mod tests {
     }
 
     fn locate_in(directory: &Path) -> Result<CursorExecutable, CursorUnavailable> {
-        locate_with(&search_path(directory), &binary::version_at)
+        locate_with(&|| None, &search_path(directory), &binary::version_at)
+    }
+
+    fn locate_managed(
+        managed: &Path,
+        directory: &Path,
+    ) -> Result<CursorExecutable, CursorUnavailable> {
+        locate_with(
+            &|| Some(managed.to_path_buf()),
+            &search_path(directory),
+            &binary::version_at,
+        )
     }
 
     fn temp_directory() -> tempfile::TempDir {
@@ -1549,6 +1605,44 @@ mod tests {
         assert!(
             found.ambiguous_name,
             "finding the shared name is not on its own evidence of the vendor"
+        );
+    }
+
+    #[test]
+    fn a_managed_payload_outranks_both_names_on_path() {
+        let directory = temp_directory();
+        FakeCli::speaking_protocol().install(directory.path(), PUBLISHED_EXECUTABLE);
+        let managed_directory = temp_directory();
+        let managed =
+            FakeCli::speaking_protocol().install(managed_directory.path(), PUBLISHED_EXECUTABLE);
+
+        let found = locate_managed(&managed, directory.path()).expect("the payload resolves");
+        assert_eq!(
+            found.path, managed,
+            "an installed payload is the copy Bridge was asked to run"
+        );
+        assert!(
+            !found.ambiguous_name,
+            "Bridge extracted the payload from its own pinned recipe"
+        );
+    }
+
+    #[test]
+    fn a_sign_in_is_never_spawned_against_the_shared_name() {
+        let directory = temp_directory();
+        FakeCli::speaking_protocol().install(directory.path(), AMBIGUOUS_EXECUTABLE);
+        let ambiguous = locate_in(directory.path()).expect("the bare name resolves");
+
+        let refused = login_executable_of(ambiguous).unwrap_err();
+        assert!(matches!(refused, CursorUnavailable::Unidentified { .. }));
+        assert!(refused.reason().contains(PUBLISHED_EXECUTABLE));
+
+        let published = temp_directory();
+        FakeCli::speaking_protocol().install(published.path(), PUBLISHED_EXECUTABLE);
+        let unambiguous = locate_in(published.path()).expect("the published name resolves");
+        assert_eq!(
+            login_executable_of(unambiguous).unwrap(),
+            published.path().join(PUBLISHED_EXECUTABLE)
         );
     }
 

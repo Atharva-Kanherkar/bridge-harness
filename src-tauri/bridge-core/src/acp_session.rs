@@ -87,6 +87,7 @@ use std::{
     thread,
     time::Duration,
 };
+use uuid::Uuid;
 
 /// Zed measured roughly half a mebibyte of stack per inbound message in an
 /// unoptimized build, which overflows the fixed stacks the platform gives its
@@ -126,6 +127,17 @@ const EVENT_QUEUE_CAPACITY: usize = 4_096;
 
 /// The event kinds that may be evicted under pressure.
 const TRANSIENT_EVENT_KINDS: [&str; 3] = ["message.delta", "reasoning.delta", "tool.progress"];
+
+/// The most assistant text one assembled message may carry. Bounded like every
+/// other sink here, and for a sharper reason: the assembled event is not
+/// evictable, is written whole into a forest payload, and is fanned out to every
+/// subscriber, so an agent that dumps a large file as message chunks would
+/// otherwise hold all of it in the accumulator while the queue evicts the very
+/// deltas it was built from.
+const TURN_MESSAGE_BYTES: usize = 1024 * 1024;
+
+/// What an assembled message ends with when the agent said more than the cap.
+const TURN_MESSAGE_TRUNCATED: &str = "\n[truncated]";
 
 /// How long a caller waits for the connection thread to finish its own teardown
 /// before reaping the process group out from under it. Bounded rather than an
@@ -547,7 +559,82 @@ struct Shared {
     /// Set the moment a caller asks for shutdown, so the connection ending is
     /// reported as a stop rather than as the agent falling over.
     stopping: Mutex<Option<ShutdownReason>>,
+    /// Assistant text accumulated from the live deltas of the turn in flight.
+    ///
+    /// ACP streams a reply only as `agent_message_chunk` updates and then ends
+    /// the prompt request; there is no terminal message on the wire. The forest
+    /// stores deltas as transient, so without an assembled `message.completed`
+    /// at turn end the reply would stream once and never persist.
+    turn_message: Mutex<TurnMessage>,
     closed: AtomicBool,
+}
+
+#[derive(Default)]
+struct TurnMessage {
+    text: String,
+    item_id: Option<String>,
+    truncated: bool,
+}
+
+impl TurnMessage {
+    /// Append one delta, stopping at the cap rather than growing past it. The
+    /// cut lands on a character boundary, because the text is persisted and
+    /// replayed to a model rather than only shown.
+    fn push(&mut self, text: &str) {
+        let room = TURN_MESSAGE_BYTES.saturating_sub(self.text.len());
+        if text.len() <= room {
+            self.text.push_str(text);
+            return;
+        }
+        let mut cut = room;
+        while cut > 0 && !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        self.text.push_str(&text[..cut]);
+        self.truncated = true;
+    }
+
+    /// Whether a delta belongs to the message being assembled. ACP states that a
+    /// change of `messageId` starts a new message, so a chunk carrying a
+    /// different one ends this one instead of being concatenated onto it.
+    fn continues(&self, item_id: Option<&str>) -> bool {
+        self.text.is_empty() || self.item_id.as_deref() == item_id
+    }
+
+    /// The assembled event, or `None` when nothing streamed. Taking it resets
+    /// the accumulator for whatever comes next.
+    fn take(&mut self, status: &str) -> Option<NormalizedEvent> {
+        let taken = std::mem::take(self);
+        if taken.text.is_empty() {
+            return None;
+        }
+        let mut event = NormalizedEvent::new("message.completed");
+        event.item_id = taken.item_id;
+        event.role = Some("assistant".into());
+        event.status = Some(status.to_owned());
+        event.text = Some(if taken.truncated {
+            format!("{}{TURN_MESSAGE_TRUNCATED}", taken.text)
+        } else {
+            taken.text
+        });
+        event.data = serde_json::json!({"assembledFrom": "message.delta"});
+        Some(event)
+    }
+}
+
+/// Give an assembled live message an identity when the agent gave it none.
+///
+/// `messageId` is optional in ACP, and the delegation ledger keys its dedupe
+/// receipt on this id: without one, every message in a session shares a key and
+/// every directive after the first is silently discarded as already claimed.
+/// Only the live path does this — a replayed message keeps whatever identity it
+/// arrived with, because the replay ledger fingerprints that id and a fresh one
+/// per reload would re-append the whole conversation.
+fn identified(mut event: NormalizedEvent) -> NormalizedEvent {
+    if event.item_id.is_none() {
+        event.item_id = Some(format!("acp-message-{}", Uuid::new_v4()));
+    }
+    event
 }
 
 impl Shared {
@@ -561,10 +648,70 @@ impl Shared {
             return;
         }
         drop(replay);
-        self.events
+        let ended = self.accumulate(&event);
+        let mut events = self.events.lock().expect("acp event queue poisoned");
+        if let Some(ended) = ended {
+            events.push(ended);
+        }
+        events.push(event);
+    }
+
+    /// Fold an assistant delta into the message being assembled, returning the
+    /// message this event ended, if any.
+    ///
+    /// Two things end a message. A chunk carrying a different `messageId` is a
+    /// new message by ACP's own rule, so the previous one is emitted rather than
+    /// concatenated onto — otherwise two replies persist as one, running
+    /// together at the seam with the second id lost. And a tool call is the
+    /// agent breaking off to act, so the prose before it is emitted before the
+    /// call rather than after the whole turn, which is the order every surface
+    /// renders.
+    fn accumulate(&self, event: &NormalizedEvent) -> Option<NormalizedEvent> {
+        let delta = event.kind == "message.delta" && event.role.as_deref() == Some("assistant");
+        if !delta && event.kind != "tool.started" {
+            return None;
+        }
+        let mut message = self.turn_message.lock().expect("acp turn message poisoned");
+        if !delta {
+            return message.take("completed").map(identified);
+        }
+        let ended = (!message.continues(event.item_id.as_deref()))
+            .then(|| message.take("completed").map(identified))
+            .flatten();
+        if message.text.is_empty() {
+            message.item_id.clone_from(&event.item_id);
+        }
+        if let Some(text) = event.text.as_deref() {
+            message.push(text);
+        }
+        ended
+    }
+
+    /// Arm the accumulator for a turn about to start.
+    ///
+    /// Deltas can arrive with no prompt outstanding — this module accepts the
+    /// updates an agent flushes after a cancel — so the accumulator is cleared
+    /// at the start of a turn rather than only drained at the end of one.
+    /// Without the barrier the tail of a cancelled turn opens the next turn's
+    /// persisted message and latches its id.
+    fn begin_turn(&self) {
+        *self.turn_message.lock().expect("acp turn message poisoned") = TurnMessage::default();
+    }
+
+    /// The assembled assistant message of the turn that just ended, if any text
+    /// streamed. Taking it resets the accumulator.
+    ///
+    /// The status is the turn's own ending rather than a fixed "completed": a
+    /// reply the user interrupted, one the agent refused, and one that ran out
+    /// of tokens are each persisted for what they are, because context
+    /// projection replays this text to the model as history and delegation
+    /// parsing runs over it.
+    fn take_turn_message(&self, status: &str) -> Option<NormalizedEvent> {
+        self.turn_message
             .lock()
-            .expect("acp event queue poisoned")
-            .push(event);
+            .expect("acp turn message poisoned")
+            .take(status)
+            .map(identified)
     }
 
     fn failure_context(&self) -> Option<String> {
@@ -1346,6 +1493,7 @@ async fn run_turn(
     session_id: &SessionId,
     text: &str,
 ) -> Result<AcpTurnOutcome, AcpError> {
+    shared.begin_turn();
     let response = cx
         .send_request(PromptRequest::new(
             session_id.clone(),
@@ -1356,22 +1504,56 @@ async fn run_turn(
     match response {
         Ok(response) => {
             let outcome = AcpTurnOutcome::from_stop_reason(response.stop_reason);
-            shared
-                .events
-                .lock()
-                .expect("acp event queue poisoned")
-                .push(turn_completed_event(outcome));
+            let completed = shared.take_turn_message(turn_message_status(outcome));
+            let mut events = shared.events.lock().expect("acp event queue poisoned");
+            if let Some(completed) = completed {
+                events.push(completed);
+            }
+            events.push(turn_completed_event(outcome));
             Ok(outcome)
         }
-        Err(error) if is_incoming_transport_closed(&error) => Err(AcpError::Closed {
-            reason: shared
-                .failure_context()
-                .unwrap_or_else(|| error.message.clone()),
-        }),
-        Err(error) => Err(AcpError::Agent {
-            code: error.code.into(),
-            message: error.message,
-        }),
+        Err(error) if is_incoming_transport_closed(&error) => {
+            publish_turn_message(shared, INTERRUPTED_STATUS);
+            Err(AcpError::Closed {
+                reason: shared
+                    .failure_context()
+                    .unwrap_or_else(|| error.message.clone()),
+            })
+        }
+        Err(error) => {
+            publish_turn_message(shared, INTERRUPTED_STATUS);
+            Err(AcpError::Agent {
+                code: error.code.into(),
+                message: error.message,
+            })
+        }
+    }
+}
+
+/// The status an assembled reply carries for a turn that ended this way.
+const fn turn_message_status(outcome: AcpTurnOutcome) -> &'static str {
+    match outcome {
+        AcpTurnOutcome::EndTurn => "completed",
+        other => other.as_str(),
+    }
+}
+
+/// What a reply is when the turn under it failed rather than ended.
+const INTERRUPTED_STATUS: &str = "interrupted";
+
+/// Publish whatever the agent streamed before the turn failed.
+///
+/// The deltas already reached the caller and the store keeps none of them, so
+/// dropping the assembly on this path is the difference between a reply the user
+/// watched arrive and a reload that shows nothing — the same gap the assembly
+/// exists to close, on the side that is easier to forget.
+fn publish_turn_message(shared: &Arc<Shared>, status: &str) {
+    if let Some(message) = shared.take_turn_message(status) {
+        shared
+            .events
+            .lock()
+            .expect("acp event queue poisoned")
+            .push(message);
     }
 }
 
@@ -1406,7 +1588,7 @@ async fn run_reload(
         .take()
         .unwrap_or_default();
     match outcome {
-        Ok(()) => Ok(replayed),
+        Ok(()) => Ok(assemble_replay(replayed)),
         Err(error) if is_incoming_transport_closed(&error) => Err(AcpError::Closed {
             reason: shared
                 .failure_context()
@@ -1417,6 +1599,39 @@ async fn run_reload(
             reason: error.message,
         }),
     }
+}
+
+/// Fold replayed assistant deltas into the assembled messages a caller can
+/// persist.
+///
+/// A live turn assembles as it publishes, but a replay lands in a buffer and
+/// never passes through that path, so the same fold runs over it here. Without
+/// it a reload yields deltas alone — which the forest drops as transient while
+/// the replay ledger records their fingerprints as held, so the history is lost
+/// on the first read and suppressed on every one after it. The deltas
+/// themselves are not carried through: there is no stream left to render, and
+/// the assembled message is what a live turn would have stored.
+fn assemble_replay(replayed: Vec<NormalizedEvent>) -> Vec<NormalizedEvent> {
+    let mut assembled = Vec::with_capacity(replayed.len());
+    let mut message = TurnMessage::default();
+    for event in replayed {
+        if event.kind != "message.delta" || event.role.as_deref() != Some("assistant") {
+            assembled.extend(message.take("completed"));
+            assembled.push(event);
+            continue;
+        }
+        if !message.continues(event.item_id.as_deref()) {
+            assembled.extend(message.take("completed"));
+        }
+        if message.text.is_empty() {
+            message.item_id.clone_from(&event.item_id);
+        }
+        if let Some(text) = event.text.as_deref() {
+            message.push(text);
+        }
+    }
+    assembled.extend(message.take("completed"));
+    assembled
 }
 
 /// Give a child that failed the handshake a moment to exit on its own.
@@ -2088,6 +2303,9 @@ mod tests {
             [
                 "reasoning.delta",
                 "message.delta",
+                // The prose lands before the call it broke off for, not after
+                // the whole turn.
+                "message.completed",
                 "tool.started",
                 "tool.completed",
                 "plan.updated",
@@ -2099,11 +2317,19 @@ mod tests {
         );
         assert_eq!(events[1].text.as_deref(), Some("hello"));
         assert_eq!(events[1].role.as_deref(), Some("assistant"));
-        assert_eq!(events[2].item_id.as_deref(), Some("t1"));
-        assert_eq!(events[2].status.as_deref(), Some("inProgress"));
-        assert_eq!(events[3].status.as_deref(), Some("completed"));
+        let completed = &events[2];
+        assert_eq!(completed.text.as_deref(), Some("hello"));
+        assert_eq!(completed.role.as_deref(), Some("assistant"));
+        assert_eq!(completed.status.as_deref(), Some("completed"));
+        assert!(
+            completed.item_id.is_some(),
+            "an assembled message the agent left unnamed still needs an identity"
+        );
+        assert_eq!(events[3].item_id.as_deref(), Some("t1"));
+        assert_eq!(events[3].status.as_deref(), Some("inProgress"));
+        assert_eq!(events[4].status.as_deref(), Some("completed"));
         assert_eq!(
-            events[7]
+            events[8]
                 .data
                 .pointer("/usage/used_tokens")
                 .and_then(Value::as_u64),
@@ -2119,6 +2345,203 @@ mod tests {
         assert_eq!(
             prompt.pointer("/sessionId").and_then(Value::as_str),
             Some(SESSION)
+        );
+    }
+
+    #[test]
+    fn two_messages_in_one_turn_are_persisted_as_two() {
+        let (session, _agent) = connect_scripted(|message, wire| {
+            if answer_handshake(message, wire, &json!({})) {
+                return;
+            }
+            if message.get("method").and_then(Value::as_str) == Some("session/prompt") {
+                for (id, text) in [
+                    ("m1", "Let me check "),
+                    ("m1", "the file."),
+                    ("m2", "The bug is on line 42."),
+                ] {
+                    wire.update(json!({
+                        "sessionUpdate": "agent_message_chunk",
+                        "messageId": id,
+                        "content": {"type": "text", "text": text},
+                    }));
+                }
+                wire.result(message, json!({"stopReason": "end_turn"}));
+            }
+        });
+
+        assert_eq!(
+            session.prompt("go").expect("the turn completes"),
+            AcpTurnOutcome::EndTurn
+        );
+        let assembled: Vec<NormalizedEvent> = session
+            .drain()
+            .into_iter()
+            .filter(|event| event.kind == "message.completed")
+            .collect();
+        assert_eq!(assembled.len(), 2, "a changed messageId starts a new message");
+        assert_eq!(assembled[0].text.as_deref(), Some("Let me check the file."));
+        assert_eq!(assembled[0].item_id.as_deref(), Some("m1"));
+        assert_eq!(assembled[1].text.as_deref(), Some("The bug is on line 42."));
+        assert_eq!(assembled[1].item_id.as_deref(), Some("m2"));
+    }
+
+    #[test]
+    fn an_unnamed_message_gets_an_identity_of_its_own_every_turn() {
+        let (session, _agent) = connect_scripted(|message, wire| {
+            if answer_handshake(message, wire, &json!({})) {
+                return;
+            }
+            if message.get("method").and_then(Value::as_str) == Some("session/prompt") {
+                wire.update(json!({
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "same words"},
+                }));
+                wire.result(message, json!({"stopReason": "end_turn"}));
+            }
+        });
+
+        let mut identities = Vec::new();
+        for _ in 0..2 {
+            session.prompt("go").expect("the turn completes");
+            identities.extend(
+                session
+                    .drain()
+                    .into_iter()
+                    .filter(|event| event.kind == "message.completed")
+                    .map(|event| event.item_id.expect("an assembled message is identified")),
+            );
+        }
+        assert_eq!(identities.len(), 2);
+        assert_ne!(
+            identities[0], identities[1],
+            "a shared identity collapses the delegation dedupe key for every later turn"
+        );
+    }
+
+    #[test]
+    fn a_reply_the_turn_never_finished_is_still_persisted_and_says_so() {
+        let (session, _agent) = connect_scripted(|message, wire| {
+            if answer_handshake(message, wire, &json!({})) {
+                return;
+            }
+            if message.get("method").and_then(Value::as_str) == Some("session/prompt") {
+                wire.update(json!({
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "half an answ"},
+                }));
+                wire.error(message, -32603, "the agent fell over");
+            }
+        });
+
+        assert!(matches!(
+            session.prompt("go").expect_err("the turn fails"),
+            AcpError::Agent { .. }
+        ));
+        let assembled: Vec<NormalizedEvent> = session
+            .drain()
+            .into_iter()
+            .filter(|event| event.kind == "message.completed")
+            .collect();
+        assert_eq!(
+            assembled.len(),
+            1,
+            "text the user watched stream must not depend on which side ended the turn"
+        );
+        assert_eq!(assembled[0].text.as_deref(), Some("half an answ"));
+        assert_eq!(assembled[0].status.as_deref(), Some("interrupted"));
+    }
+
+    #[test]
+    fn a_stop_reason_that_is_not_an_ending_is_not_persisted_as_one() {
+        let (session, _agent) = connect_scripted(|message, wire| {
+            if answer_handshake(message, wire, &json!({})) {
+                return;
+            }
+            if message.get("method").and_then(Value::as_str) == Some("session/prompt") {
+                wire.update(json!({
+                    "sessionUpdate": "agent_message_chunk",
+                    "content": {"type": "text", "text": "mid-sen"},
+                }));
+                let reason = message
+                    .pointer("/params/prompt/0/text")
+                    .and_then(Value::as_str)
+                    .unwrap_or("end_turn");
+                wire.result(message, json!({"stopReason": reason}));
+            }
+        });
+
+        for (reason, expected) in [
+            ("end_turn", "completed"),
+            ("cancelled", "cancelled"),
+            ("refusal", "refusal"),
+            ("max_tokens", "max_tokens"),
+        ] {
+            session.prompt(reason).expect("the turn completes");
+            let assembled: Vec<NormalizedEvent> = session
+                .drain()
+                .into_iter()
+                .filter(|event| event.kind == "message.completed")
+                .collect();
+            assert_eq!(assembled.len(), 1, "{reason}");
+            assert_eq!(
+                assembled[0].status.as_deref(),
+                Some(expected),
+                "{reason} must not be persisted as a finished reply"
+            );
+        }
+    }
+
+    #[test]
+    fn a_delta_arriving_between_turns_does_not_open_the_next_one() {
+        let shared = Arc::new(Shared::default());
+        let mut trailing = NormalizedEvent::new("message.delta");
+        trailing.role = Some("assistant".into());
+        trailing.item_id = Some("stale".into());
+        trailing.text = Some("tail of a cancelled turn".into());
+        shared.publish_event(trailing);
+
+        shared.begin_turn();
+        let mut fresh = NormalizedEvent::new("message.delta");
+        fresh.role = Some("assistant".into());
+        fresh.text = Some("the new answer".into());
+        shared.publish_event(fresh);
+
+        let assembled = shared
+            .take_turn_message("completed")
+            .expect("the new turn assembled");
+        assert_eq!(assembled.text.as_deref(), Some("the new answer"));
+        assert_ne!(
+            assembled.item_id.as_deref(),
+            Some("stale"),
+            "a stale id would key the next turn's delegation receipt"
+        );
+    }
+
+    #[test]
+    fn an_assembled_message_is_bounded_like_every_other_sink_here() {
+        let mut message = TurnMessage::default();
+        for _ in 0..8 {
+            message.push(&"n".repeat(TURN_MESSAGE_BYTES / 2));
+        }
+        let assembled = message.take("completed").expect("text streamed");
+        let text = assembled.text.expect("an assembled message carries text");
+        assert!(
+            text.len() <= TURN_MESSAGE_BYTES + TURN_MESSAGE_TRUNCATED.len(),
+            "{} bytes accumulated past the cap",
+            text.len()
+        );
+        assert!(text.ends_with(TURN_MESSAGE_TRUNCATED));
+
+        // A cut never lands inside a character, because this text is persisted
+        // and replayed to a model rather than only shown.
+        let mut multibyte = TurnMessage::default();
+        multibyte.push(&"e".repeat(TURN_MESSAGE_BYTES - 1));
+        multibyte.push("\u{00e9}tape");
+        let cut = multibyte.take("completed").expect("text streamed");
+        assert_eq!(
+            cut.text.as_deref().map(str::len),
+            Some(TURN_MESSAGE_BYTES - 1 + TURN_MESSAGE_TRUNCATED.len())
         );
     }
 
@@ -2457,9 +2880,15 @@ mod tests {
                 return;
             }
             if message.get("method").and_then(Value::as_str) == Some("session/load") {
-                for text in ["do the thing", "working", "done"] {
+                for (id, text) in [
+                    ("m1", "do the "),
+                    ("m1", "thing"),
+                    ("m2", "working"),
+                    ("m3", "done"),
+                ] {
                     wire.update(json!({
                         "sessionUpdate": "agent_message_chunk",
+                        "messageId": id,
                         "content": {"type": "text", "text": text},
                     }));
                 }
@@ -2471,16 +2900,33 @@ mod tests {
         let replay = session
             .load("older-session", &mut ledger)
             .expect("the reload succeeds");
+        // Replayed deltas are assembled the way a live turn assembles them, or
+        // the forest would drop every one of them as transient while the ledger
+        // recorded them as held.
         assert_eq!(
             replay.events.len(),
             3,
             "no replayed update may be lost to a late subscription"
         );
+        assert!(replay
+            .events
+            .iter()
+            .all(|event| event.kind == "message.completed"));
         assert_eq!(replay.suppressed, 0);
+        assert_eq!(
+            replay.events[0].text.as_deref(),
+            Some("do the thing"),
+            "chunks of one message assemble rather than persisting separately"
+        );
         assert_eq!(
             replay.events[2].text.as_deref(),
             Some("done"),
             "replay keeps its order"
+        );
+        assert_eq!(
+            replay.events[2].item_id.as_deref(),
+            Some("m3"),
+            "a replayed identity is kept, so a second reload fingerprints the same"
         );
         assert!(
             session
