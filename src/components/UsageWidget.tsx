@@ -43,14 +43,18 @@ function highestUse(snapshot?: UsageSnapshot): number | undefined {
   return clampPercent(Math.max(...snapshot.windows.map(window => window.usedPercent)));
 }
 
-/** CLI install status wins over auth status; a signed-in adapter with no
+/** A named auth state wins over install status, because an adapter can only
+ *  report signed_out about a CLI it found: Cursor probes by opening a session,
+ *  so a signed-out Cursor is unavailable and signed_out at once, and reading
+ *  availability first would send the user to Settings instead of to Sign in.
+ *  Everything else falls back to install status; a signed-in adapter with no
  *  snapshot yet stays "normal" so it keeps the existing unknown-quota look. */
 type ProviderStatus = "not_installed" | "signed_out" | "normal";
 
 function providerStatus(adapter?: AdapterDescriptor): ProviderStatus {
   if (!adapter) return "normal";
-  if (!adapter.available) return "not_installed";
   if (adapter.authState === "signed_out") return "signed_out";
+  if (!adapter.available) return "not_installed";
   return "normal";
 }
 

@@ -132,18 +132,22 @@ describe("UsageWidget", () => {
     expect(html).toContain("Not signed in");
   });
 
-  it("offers sign-in for a signed-out cursor provider instead of a limit guess", () => {
+  it("offers sign-in for a signed-out cursor provider instead of calling it absent", () => {
+    // Cursor probes by opening a session, so a signed-out install reports
+    // available:false and signed_out together — the only shape the real
+    // descriptor produces, and the one that used to render as not installed.
     const adapters: AdapterDescriptor[] = [
       adapterFixture("codex"),
       adapterFixture("claude"),
-      adapterFixture("cursor", { authState: "signed_out" }),
+      adapterFixture("cursor", { available: false, authState: "signed_out", unavailableReason: "Cursor 2026.08.25 is installed but not signed in; run cursor-agent login" }),
       adapterFixture("opencode"),
     ];
     const snapshot: UsageSnapshot = { windows: [{ id: "weekly", label: "Weekly", usedPercent: 40, source: "reported" }], source: "reported", capturedAt: "2026-07-16T10:00:00Z" };
     const html = renderToStaticMarkup(<UsageWidget usage={{ codex: snapshot, claude: snapshot, opencode: snapshot }} adapters={adapters} />);
-    expect(html).toContain("Cursor");
+    expect(html).toContain(">Sign in</button>");
     expect(html).toContain("Not signed in");
-    expect(html).toContain("Sign in");
+    expect(html).not.toContain("not installed");
+    expect(html).not.toContain("Add it in Settings");
     expect(html).not.toContain("Limit unknown");
   });
 
