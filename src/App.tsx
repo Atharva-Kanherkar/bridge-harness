@@ -2325,7 +2325,8 @@ function AppContent() {
           // held on the draft (#350), created on submit — not started immediately.
           : { ...resolveDraftHarnessModel(), workspaceId: resolvedWelcomeWorkspaceId, createWorktree: true })}
         onStartChat={(text, initialAttachments) => void startChatOrShortcut(text, initialAttachments)}
-        onNewWorkspace={() => setProjectOnboardingOpen(true)}
+        onNewWorkspace={() => void createWorkspaceFromFolder()}
+        onAddProject={() => setProjectOnboardingOpen(true)}
       />}
     </main>
     </div>
@@ -2399,7 +2400,7 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
   </aside>;
 }
 
-function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, onStartChat, onNewWorkspace, workspaces, workspace, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree }: {
+function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, onStartChat, onNewWorkspace, onAddProject, workspaces, workspace, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree }: {
   adapters: import("./types").AdapterDescriptor[];
   harness: Harness;
   model: string | null;
@@ -2408,6 +2409,7 @@ function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, 
   canStartChat: boolean;
   onStartChat: (text?: string, attachments?: ComposerAttachment[]) => void;
   onNewWorkspace: () => void;
+  onAddProject: () => void;
   workspaces: Workspace[];
   workspace: Workspace | null;
   worktree: boolean;
@@ -2484,6 +2486,7 @@ function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, 
       // before the first message, the same picker the session composer uses.
       trailing={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} compact roleLabel="Chat" />}
     />
+    <Button type="button" variant="link" size="sm" disabled={busy} className="mt-3 text-xs text-muted-foreground" onClick={onAddProject}>Add a project another way</Button>
     {composerError && <p className="mt-2 max-w-2xl text-left text-[11px] text-destructive">{composerError}</p>}
     <p className="mt-6 max-w-md text-[13px] leading-relaxed text-muted-foreground">{greeting.hint}</p>
   </div>;
