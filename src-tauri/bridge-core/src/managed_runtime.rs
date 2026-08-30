@@ -73,6 +73,12 @@ pub enum RuntimeSource {
         url: String,
         sha256: String,
         kind: ArtifactKind,
+        /// The vendor's own version string for this release.
+        ///
+        /// Carried rather than derived from the digest: the receipt's version is
+        /// what a client displays, and a hash prefix in that field reads as a
+        /// broken install next to every other agent's real version.
+        version: String,
         /// Path of the executable inside the extracted archive, or the file name
         /// to give a raw binary.
         entrypoint: PathBuf,
@@ -345,6 +351,7 @@ fn prepare_into(
             sha256,
             kind,
             entrypoint,
+            ..
         } => {
             let download = staging.join("download.part");
             fetcher
@@ -934,6 +941,7 @@ pub fn cursor_recipe() -> Option<RuntimeSource> {
         ),
         sha256: sha256.into(),
         kind: ArtifactKind::TarGz,
+        version: CURSOR_VERSION.to_owned(),
         entrypoint: PathBuf::from("dist-package").join("cursor-agent"),
     })
 }
@@ -1039,6 +1047,7 @@ mod tests {
             url: url.into(),
             sha256: sha256.into(),
             kind,
+            version: "1.0.0".into(),
             entrypoint: PathBuf::from("bin/agent"),
         }
     }
@@ -1211,6 +1220,7 @@ mod tests {
                 url: "https://example.com/agent".into(),
                 sha256: digest_of(&bytes),
                 kind: ArtifactKind::RawBinary,
+                version: "1.0.0".into(),
                 entrypoint: PathBuf::from("bin/agent"),
             },
             &fixture.path().join("ok"),
@@ -1244,6 +1254,7 @@ mod tests {
                 url: "https://example.com/agent".into(),
                 sha256: "b".repeat(64),
                 kind: ArtifactKind::RawBinary,
+                version: "1.0.0".into(),
                 entrypoint: PathBuf::from("bin/agent"),
             },
             &staging,
@@ -1412,6 +1423,7 @@ mod tests {
                 url: "https://example.com/agent-1.0.0.tar.gz".into(),
                 sha256: digest_of(&bytes),
                 kind: ArtifactKind::TarGz,
+                version: "1.0.0".into(),
                 entrypoint: PathBuf::from("bin/agent"),
             },
             &fixture.path().join("staging"),
@@ -1791,6 +1803,7 @@ mod tests {
                 url: "https://example.com/agent".into(),
                 sha256: digest_of(&bytes),
                 kind: ArtifactKind::RawBinary,
+                version: "1.0.0".into(),
                 entrypoint: PathBuf::from("bin/agent"),
             },
             &fixture.path().join("staging"),
@@ -1849,6 +1862,7 @@ mod tests {
                 url: "https://example.com/agent".into(),
                 sha256: "c".repeat(64),
                 kind: ArtifactKind::RawBinary,
+                version: "1.0.0".into(),
                 entrypoint: PathBuf::from("bin/agent"),
             },
             &staging,
@@ -2071,7 +2085,7 @@ mod tests {
                 // Cursor is the one vendor with no npm distribution: its recipe
                 // is a release artifact whose pinning is the url's version
                 // component plus the digest validate() already checked.
-                let RuntimeSource::ReleaseArtifact { url, .. } = &source else {
+                let RuntimeSource::ReleaseArtifact { url, version, .. } = &source else {
                     unreachable!("{agent_id} has an unknown source kind");
                 };
                 assert_eq!(agent_id, "cursor", "only cursor may skip npm: {url}");
@@ -2079,6 +2093,9 @@ mod tests {
                     url.contains(CURSOR_VERSION),
                     "cursor url does not pin {CURSOR_VERSION}: {url}"
                 );
+                // The receipt's version is what the runtimes card displays, so it
+                // must be the vendor's string rather than a digest prefix.
+                assert_eq!(version, CURSOR_VERSION);
                 continue;
             };
             assert!(
@@ -2140,6 +2157,7 @@ mod tests {
                 url: "https://example.com/codex.tar.gz".into(),
                 sha256: digest_of(&bytes),
                 kind: ArtifactKind::TarGz,
+                version: "1.0.0".into(),
                 entrypoint: PathBuf::from("bin/codex"),
             },
             &fixture.path().join("staging"),
@@ -2195,6 +2213,7 @@ mod tests {
                 url: "https://example.com/a.tar.gz".into(),
                 sha256: digest_of(&bytes),
                 kind: ArtifactKind::TarGz,
+                version: "1.0.0".into(),
                 entrypoint: PathBuf::from("bin/agent"),
             },
             &fixture.path().join("staging"),

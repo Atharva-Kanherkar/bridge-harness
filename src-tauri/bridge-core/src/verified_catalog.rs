@@ -371,6 +371,11 @@ impl CatalogRecipe {
                     ArchiveKind::RawBinary => ArtifactKind::RawBinary,
                     ArchiveKind::TarGz => ArtifactKind::TarGz,
                 },
+                // A catalog entry carries no version of its own, so the digest
+                // prefix stays its identifier — the same string this produced
+                // before release artifacts became versioned. Sliced defensively:
+                // this conversion runs before the engine validates the digest.
+                version: sha256.get(..12).unwrap_or(sha256).to_owned(),
                 entrypoint: PathBuf::from(entrypoint),
             },
         }

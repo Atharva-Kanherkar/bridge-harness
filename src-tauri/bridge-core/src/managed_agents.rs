@@ -496,7 +496,7 @@ fn perform_install(agent_id: &str, repair: bool) -> Result<ManagedAgentOperation
 fn pinned_version(source: &managed_runtime::RuntimeSource) -> String {
     match source {
         managed_runtime::RuntimeSource::NpmClosure { version, .. } => version.clone(),
-        managed_runtime::RuntimeSource::ReleaseArtifact { sha256, .. } => sha256[..12].to_owned(),
+        managed_runtime::RuntimeSource::ReleaseArtifact { version, .. } => version.clone(),
     }
 }
 
