@@ -83,6 +83,7 @@ export type {
   RouterMode,
   RouterPreferences,
   SanitizedTurn,
+  DispatchAgentShortcutResult,
   SecretInterception,
   Session,
   SessionHead,

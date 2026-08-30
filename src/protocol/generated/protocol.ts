@@ -47,6 +47,7 @@ export type BridgeMethod =
   | "sessions/prepare_turn"
   | "sessions/send_turn"
   | "sessions/submit_input"
+  | "sessions/dispatch_agent_shortcut"
   | "sessions/compact_session"
   | "sessions/search_session_entries"
   | "sessions/interrupt_turn"
@@ -201,6 +202,7 @@ export const BRIDGE_METHODS = [
   { method: "sessions/prepare_turn", domain: "sessions", command: "prepare_turn" },
   { method: "sessions/send_turn", domain: "sessions", command: "send_turn" },
   { method: "sessions/submit_input", domain: "sessions", command: "submit_input" },
+  { method: "sessions/dispatch_agent_shortcut", domain: "sessions", command: "dispatch_agent_shortcut" },
   { method: "sessions/compact_session", domain: "sessions", command: "compact_session" },
   { method: "sessions/search_session_entries", domain: "sessions", command: "search_session_entries" },
   { method: "sessions/interrupt_turn", domain: "sessions", command: "interrupt_turn" },
@@ -415,6 +417,7 @@ export interface BridgeMethodParams {
   "sessions/prepare_turn": PrepareTurnParams;
   "sessions/send_turn": SendTurnParams;
   "sessions/submit_input": SubmitInputParams;
+  "sessions/dispatch_agent_shortcut": DispatchAgentShortcutParams;
   "sessions/compact_session": CompactSessionParams;
   "sessions/search_session_entries": SearchSessionEntriesParams;
   "sessions/interrupt_turn": InterruptTurnParams;
@@ -571,6 +574,7 @@ export interface BridgeMethodResults {
   "sessions/prepare_turn": SanitizedTurn;
   "sessions/send_turn": UnitResult;
   "sessions/submit_input": SubmitInputResult;
+  "sessions/dispatch_agent_shortcut": DispatchAgentShortcutResult;
   "sessions/compact_session": UnitResult;
   "sessions/search_session_entries": SearchSessionEntriesResult;
   "sessions/interrupt_turn": UnitResult;
@@ -713,6 +717,8 @@ export interface AgentDefinition {
   systemPrompt?: string;
   updatedAt?: string;
 }
+
+export type AgentShortcutDisposition = "launched" | "queued" | "awaitingApproval";
 
 export type ApprovalDecision = "accept" | "acceptForSession" | "decline" | "cancel";
 
@@ -2090,6 +2096,21 @@ export interface SubmitInputResult {
   disposition: InputDisposition;
   interceptions: SecretInterception[];
   queuedInputId?: string | null;
+}
+
+export interface DispatchAgentShortcutParams {
+  objective: string;
+  sessionId: string;
+  token: string;
+}
+
+export interface DispatchAgentShortcutResult {
+  agentId: string;
+  agentName: string;
+  childSessionId?: string | null;
+  disposition: AgentShortcutDisposition;
+  interceptions: SecretInterception[];
+  role: string;
 }
 
 export interface CompactSessionParams {

@@ -948,6 +948,17 @@ pub fn submit_input_with_attachments(
     live_turn::submit_input_with_attachments(core, session_id, text, attachments)
 }
 
+/// Resolve and dispatch a leading `#agent` directive without starting or
+/// steering the parent provider. The live-turn layer owns the lifecycle path.
+pub fn dispatch_agent_shortcut(
+    core: &Arc<BridgeCore>,
+    session_id: String,
+    token: String,
+    objective: String,
+) -> Result<wire::DispatchAgentShortcutResult, BridgeError> {
+    live_turn::dispatch_agent_shortcut(core, session_id, token, objective)
+}
+
 pub fn compact_session(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
     let prompt = core.begin_manual_compaction(session_id)?;
     live_turn::send_internal_checkpoint_turn(core, session_id, &prompt)

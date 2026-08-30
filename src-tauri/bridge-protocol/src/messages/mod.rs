@@ -196,6 +196,11 @@ typed_methods![
     (PrepareTurn, PrepareTurnParams, SanitizedTurn),
     (SendTurn, SendTurnParams, UnitResult),
     (SubmitInput, SubmitInputParams, SubmitInputResult),
+    (
+        DispatchAgentShortcut,
+        DispatchAgentShortcutParams,
+        DispatchAgentShortcutResult
+    ),
     (CompactSession, CompactSessionParams, UnitResult),
     (SearchSessionEntries, SearchSessionEntriesParams, SearchSessionEntriesResult),
     (InterruptTurn, InterruptTurnParams, UnitResult),

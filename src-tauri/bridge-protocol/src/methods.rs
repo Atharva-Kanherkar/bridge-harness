@@ -83,6 +83,7 @@ methods![
     (PrepareTurn, "sessions", "prepare_turn"),
     (SendTurn, "sessions", "send_turn"),
     (SubmitInput, "sessions", "submit_input"),
+    (DispatchAgentShortcut, "sessions", "dispatch_agent_shortcut"),
     (CompactSession, "sessions", "compact_session"),
     (SearchSessionEntries, "sessions", "search_session_entries"),
     (InterruptTurn, "sessions", "interrupt_turn"),

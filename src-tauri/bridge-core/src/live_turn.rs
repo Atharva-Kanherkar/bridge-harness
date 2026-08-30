@@ -1735,7 +1735,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
         let core = core.clone();
         let session_id = session_id.clone();
         thread::spawn(move || {
-            warn_on_stale_base(&core, &session_id, "workspace_open", true);
+            warn_on_stale_base(&core, &session_id, "workspace_open", true, true);
         });
     }
     core.events.publish(CoreEvent::StateChanged);
@@ -3216,6 +3216,12 @@ pub enum WorkerLaunchOutcome {
     Failed,
 }
 
+const DIRECT_AGENT_TURN_PREFIX: &str = "direct-agent-";
+
+fn is_direct_agent_turn(turn_id: &str) -> bool {
+    turn_id.starts_with(DIRECT_AGENT_TURN_PREFIX)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WorkerActivation {
     Fresh,
@@ -3562,7 +3568,13 @@ pub fn launch_worker_outcome(
                 &error.to_string(),
             );
             drop(db);
-            report_worker_launch_failure(core, parent_session_id, "routing", &error.to_string());
+            report_worker_launch_failure(
+                core,
+                parent_session_id,
+                "routing",
+                &error.to_string(),
+                !is_direct_agent_turn(turn_id),
+            );
             return WorkerLaunchOutcome::Failed;
         }
     };
@@ -3584,6 +3596,7 @@ pub fn launch_worker_outcome(
             parent_session_id,
             "capability",
             &format!("{harness} is disabled in Settings"),
+            !is_direct_agent_turn(turn_id),
         );
         return WorkerLaunchOutcome::Failed;
     }
@@ -3613,6 +3626,7 @@ pub fn launch_worker_outcome(
                 parent_session_id,
                 "model_resolution",
                 &error.to_string(),
+                !is_direct_agent_turn(turn_id),
             );
             return WorkerLaunchOutcome::Failed;
         }
@@ -3621,7 +3635,13 @@ pub fn launch_worker_outcome(
     // stale code. No fetch here: a delegation must not wait on the network, and
     // the last fetched ref is enough to detect months of drift.
     if directive.write_mode != delegation::WriteMode::ReadOnly {
-        warn_on_stale_base(core, parent_session_id, "before_write_delegation", false);
+        warn_on_stale_base(
+            core,
+            parent_session_id,
+            "before_write_delegation",
+            false,
+            !is_direct_agent_turn(turn_id),
+        );
     }
     if directive.role == delegation::WorkerRole::Verification {
         // Bind the verifier to an implementation revision *before* reserving it
@@ -3673,6 +3693,7 @@ pub fn launch_worker_outcome(
                     parent_session_id,
                     "verification_target",
                     &reason,
+                    !is_direct_agent_turn(turn_id),
                 );
                 return WorkerLaunchOutcome::Failed;
             }
@@ -3682,6 +3703,7 @@ pub fn launch_worker_outcome(
                     parent_session_id,
                     "verification_target",
                     &format!("Could not record or bind the implementation revision: {error}"),
+                    !is_direct_agent_turn(turn_id),
                 );
                 return WorkerLaunchOutcome::Failed;
             }
@@ -3749,6 +3771,7 @@ pub fn launch_worker_outcome(
                     reason.as_str(),
                     reason.remediation()
                 ),
+                !is_direct_agent_turn(turn_id),
             );
             return WorkerLaunchOutcome::Failed;
         }
@@ -3763,7 +3786,13 @@ pub fn launch_worker_outcome(
                 &error.to_string(),
             );
             drop(db);
-            report_worker_launch_failure(core, parent_session_id, "policy", &error.to_string());
+            report_worker_launch_failure(
+                core,
+                parent_session_id,
+                "policy",
+                &error.to_string(),
+                !is_direct_agent_turn(turn_id),
+            );
             return WorkerLaunchOutcome::Failed;
         }
     };
@@ -3954,6 +3983,7 @@ pub fn launch_worker_outcome(
                     parent_session_id,
                     "worktree",
                     &format!("Could not prepare or queue isolated worker worktree: {error}"),
+                    !is_direct_agent_turn(turn_id),
                 );
                 return WorkerLaunchOutcome::Failed;
             }
@@ -4856,6 +4886,7 @@ pub fn warn_on_stale_base(
     session_id: &str,
     phase: &str,
     allow_fetch: bool,
+    notify_provider: bool,
 ) -> Option<git::BaseBranchDivergence> {
     let state = core.clone();
     // The workspace root, not the session cwd: this warning and the Work
@@ -4918,12 +4949,13 @@ pub fn warn_on_stale_base(
         "instruction": "This workspace is far behind its base branch, so any change you make is against stale code and completion evidence will be stamped against it. Tell the user the counts and let them choose to refresh the workspace or continue on the current revision. Do not rebase or reset anything yourself."
     })
     .to_string();
-    let delivered = state
-        .adapters
-        .lock()
-        .unwrap()
-        .get(session_id)
-        .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+    let delivered = notify_provider
+        && state
+            .adapters
+            .lock()
+            .unwrap()
+            .get(session_id)
+            .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
     let event = agent::NormalizedEvent {
         kind: "workspace.stale_base".into(),
         item_id: Some(format!("stale-base-{fingerprint}")),
@@ -5046,12 +5078,19 @@ fn surface_child_approval_on_parent(
         "instruction": "This worker is blocked on a human approval and is producing no output. Do not treat it as failed and do not re-delegate its objective. Stop this turn; Bridge notifies you when the approval is resolved or the approval deadline expires."
     })
     .to_string();
-    let delivered = state
-        .adapters
-        .lock()
-        .unwrap()
-        .get(&context.parent_session_id)
-        .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+    let direct_dispatch = spawned_turn_id(
+        &state.db.lock().unwrap(),
+        &context.parent_session_id,
+        child_session_id,
+    )
+    .is_some_and(|turn_id| is_direct_agent_turn(&turn_id));
+    let delivered = !direct_dispatch
+        && state
+            .adapters
+            .lock()
+            .unwrap()
+            .get(&context.parent_session_id)
+            .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
     let event = agent::NormalizedEvent {
         kind: "delegation.blocked".into(),
         item_id: Some(format!("child-approval-{child_session_id}")),
@@ -5103,12 +5142,19 @@ pub fn notify_parent_child_left_waiting(
         "instruction": "The worker's approval was resolved and it is running again. Keep waiting for its typed result."
     })
     .to_string();
-    let delivered = state
-        .adapters
-        .lock()
-        .unwrap()
-        .get(&context.parent_session_id)
-        .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+    let direct_dispatch = spawned_turn_id(
+        &state.db.lock().unwrap(),
+        &context.parent_session_id,
+        child_session_id,
+    )
+    .is_some_and(|turn_id| is_direct_agent_turn(&turn_id));
+    let delivered = !direct_dispatch
+        && state
+            .adapters
+            .lock()
+            .unwrap()
+            .get(&context.parent_session_id)
+            .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
     let event = agent::NormalizedEvent {
         kind: "delegation.blocked".into(),
         item_id: Some(format!("child-approval-{child_session_id}")),
@@ -5517,12 +5563,13 @@ fn report_worker_launch_awaiting_approval(
         "instruction": "A user approval card is pending for this delegation. The worker has NOT failed and may still start. Do not re-delegate this objective and do not emit new work for it. Stop this turn and wait; Bridge resumes you with the child session id once the user decides."
     })
     .to_string();
-    let delivered = state
-        .adapters
-        .lock()
-        .unwrap()
-        .get(parent_session_id)
-        .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+    let delivered = !is_direct_agent_turn(turn_id)
+        && state
+            .adapters
+            .lock()
+            .unwrap()
+            .get(parent_session_id)
+            .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
     let db = state.db.lock().unwrap();
     let _ = store::event(
         &db,
@@ -5563,12 +5610,13 @@ pub fn report_delegation_approval_declined(
         "instruction": "The user declined this write scope. No worker started and none will. Do not retry the same scope. Either narrow the paths, delegate read-only, or tell the user what you need."
     })
     .to_string();
-    let delivered = state
-        .adapters
-        .lock()
-        .unwrap()
-        .get(parent_session_id)
-        .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+    let delivered = !is_direct_agent_turn(turn_id)
+        && state
+            .adapters
+            .lock()
+            .unwrap()
+            .get(parent_session_id)
+            .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
     let db = state.db.lock().unwrap();
     let _ = session_forest::SessionForest::new(&db).append(
         parent_session_id,
@@ -5623,12 +5671,13 @@ pub fn report_approved_launch_adopted(
         }
     })
     .to_string();
-    let delivered = state
-        .adapters
-        .lock()
-        .unwrap()
-        .get(parent_session_id)
-        .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+    let delivered = !is_direct_agent_turn(turn_id)
+        && state
+            .adapters
+            .lock()
+            .unwrap()
+            .get(parent_session_id)
+            .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
     let db = state.db.lock().unwrap();
     let _ = store::event(
         &db,
@@ -5652,6 +5701,7 @@ fn report_worker_launch_failure(
     parent_session_id: &str,
     phase: &str,
     reason: &str,
+    notify_provider: bool,
 ) {
     let state = core.clone();
     let fleet = fleet_digest(&state.db.lock().unwrap(), parent_session_id);
@@ -5663,12 +5713,13 @@ fn report_worker_launch_failure(
         "instruction": "No worker started. Do not wait for a result. Tell the user what failed, then retry only if a different route can address the failure."
     })
     .to_string();
-    let delivered = state
-        .adapters
-        .lock()
-        .unwrap()
-        .get(parent_session_id)
-        .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+    let delivered = notify_provider
+        && state
+            .adapters
+            .lock()
+            .unwrap()
+            .get(parent_session_id)
+            .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
     let event = agent::NormalizedEvent {
         kind: "delegation.rejected".into(),
         item_id: Some(format!("launch-failed-{}", Uuid::new_v4())),
@@ -5693,6 +5744,28 @@ fn report_worker_launch_failure(
         core.events.publish(CoreEvent::Agent(stored));
     }
     core.events.publish(CoreEvent::StateChanged);
+}
+
+fn report_worker_launch_failure_for_child(
+    core: &Arc<BridgeCore>,
+    parent_session_id: &str,
+    child_session_id: &str,
+    phase: &str,
+    reason: &str,
+) {
+    let notify_provider = spawned_turn_id(
+        &core.db.lock().unwrap(),
+        parent_session_id,
+        child_session_id,
+    )
+    .is_none_or(|turn_id| !is_direct_agent_turn(&turn_id));
+    report_worker_launch_failure(
+        core,
+        parent_session_id,
+        phase,
+        reason,
+        notify_provider,
+    );
 }
 
 pub fn record_actual_execution_best_effort(
@@ -5765,7 +5838,13 @@ fn fail_reserved_worker(core: &Arc<BridgeCore>, session_id: &str, label: &str, r
             )
             .ok();
         if let Some(parent_session_id) = parent_session_id {
-            report_worker_launch_failure(core, &parent_session_id, "settlement", reason);
+            report_worker_launch_failure_for_child(
+                core,
+                &parent_session_id,
+                session_id,
+                "settlement",
+                reason,
+            );
         }
         return;
     }
@@ -5796,7 +5875,13 @@ fn fail_reserved_worker(core: &Arc<BridgeCore>, session_id: &str, label: &str, r
                 )
                 .ok();
             if let Some(parent_session_id) = parent_session_id {
-                report_worker_launch_failure(core, &parent_session_id, "settlement", reason);
+                report_worker_launch_failure_for_child(
+                    core,
+                    &parent_session_id,
+                    session_id,
+                    "settlement",
+                    reason,
+                );
             }
         }
     }
@@ -5831,7 +5916,13 @@ fn abort_unbindable_verifier(
         // reason for the parent to sit in `waiting`.
         let _ = completion::reconcile_parent_readiness(&db, parent_session_id);
     }
-    report_worker_launch_failure(core, parent_session_id, phase, reason);
+    report_worker_launch_failure_for_child(
+        core,
+        parent_session_id,
+        &reservation.session_id,
+        phase,
+        reason,
+    );
 }
 
 fn delete_reserved_worker(db: &Connection, session_id: &str) -> Result<(), BridgeError> {
@@ -7097,6 +7188,12 @@ fn report_to_parent(
     let Some(report) = report else {
         return;
     };
+    let direct_dispatch = spawned_turn_id(
+        &state.db.lock().unwrap(),
+        &report.parent_session_id,
+        child_session_id,
+    )
+    .is_some_and(|turn_id| is_direct_agent_turn(&turn_id));
     let core = core.clone();
     let child_session_id = child_session_id.to_owned();
     let result = result.clone();
@@ -7193,15 +7290,16 @@ fn report_to_parent(
         }
     })
     .to_string();
-        let delivered = match state
-            .adapters
-            .lock()
-            .unwrap()
-            .get(&report.parent_session_id)
-        {
-            Some(runtime) => runtime.send_turn(&routing_notice).is_ok(),
-            None => false,
-        };
+        let delivered = !direct_dispatch
+            && match state
+                .adapters
+                .lock()
+                .unwrap()
+                .get(&report.parent_session_id)
+            {
+                Some(runtime) => runtime.send_turn(&routing_notice).is_ok(),
+                None => false,
+            };
         {
             let db = state.db.lock().unwrap();
             let result_event = agent::NormalizedEvent {
@@ -8120,6 +8218,188 @@ pub fn submit_input_with_attachments(
     attachments: Vec<wire::TurnImage>,
 ) -> Result<wire::SubmitInputResult, BridgeError> {
     submit_input_internal(core, session_id, text, false, attachments)
+}
+
+fn configured_worker_request(
+    agent: &agent_config::AgentDefinition,
+    objective: String,
+) -> Result<delegation::DelegationRequest, BridgeError> {
+    let role = match agent.role.as_str() {
+        "research" => delegation::WorkerRole::Research,
+        "implementation" => delegation::WorkerRole::Implementation,
+        "verification" => delegation::WorkerRole::Verification,
+        "planning" => delegation::WorkerRole::Planning,
+        "documentation" => delegation::WorkerRole::Documentation,
+        _ => {
+            return Err(BridgeError::Invalid(format!(
+                "Agent {} has unsupported worker role {}",
+                agent.name, agent.role
+            )))
+        }
+    };
+    let automatic_harness = agent.harness == "bridge";
+    let request = delegation::DelegationRequest {
+        schema_version: delegation::SCHEMA_VERSION,
+        role,
+        objective,
+        acceptance_criteria: vec![
+            "Complete the requested objective and report concrete evidence in the typed worker result"
+                .into(),
+        ],
+        known_facts: vec![format!(
+            "The user directly selected configured agent {} ({})",
+            agent.name, agent.id
+        )],
+        decisions: Vec::new(),
+        evidence_ids: Vec::new(),
+        relevant_files: Vec::new(),
+        owned_paths: if role == delegation::WorkerRole::Implementation {
+            vec!["**".into()]
+        } else {
+            Vec::new()
+        },
+        write_mode: role.default_write_mode(),
+        capability_tier: delegation::CapabilityTier::Standard,
+        effort: agent.effort,
+        network_access: false,
+        writable_output_paths: Vec::new(),
+        verification: vec!["Return commands run and their outcomes in the typed result".into()],
+        output_contract: role.output_contract(),
+        harness: (!automatic_harness).then(|| agent.harness.clone()),
+        model: (!automatic_harness).then(|| agent.model.clone()).flatten(),
+    };
+    request.validate().map_err(BridgeError::Invalid)?;
+    Ok(request)
+}
+
+fn prepare_direct_agent_objective(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    objective: &str,
+) -> (String, String, Vec<secret_interception::SecretInterception>) {
+    let intercepted = secret_interception::intercept(objective);
+    core.credential_broker.register(session_id, intercepted.captured);
+    let sanitized = intercepted.sanitized;
+    let workspace_root = core.session_workspace_root(session_id);
+    let file_context = workspace_files::mention_context(workspace_root.as_deref(), &sanitized.text);
+    let worker_text = workspace_files::append_to_user_text(&sanitized.text, file_context.as_deref());
+    (sanitized.text, worker_text, sanitized.interceptions)
+}
+
+fn persist_direct_agent_request(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    adapter_id: &str,
+    turn_id: &str,
+    token: &str,
+    agent: &agent_config::AgentDefinition,
+    objective: &str,
+) -> Result<(), BridgeError> {
+    let event = agent::NormalizedEvent {
+        kind: "message.completed".into(),
+        item_id: Some(format!("user-{}", Uuid::new_v4())),
+        role: Some("user".into()),
+        status: Some("completed".into()),
+        title: None,
+        text: Some(objective.into()),
+        data: serde_json::json!({
+            "delivery": "directAgent",
+            "directDispatch": true,
+            "turnId": turn_id,
+            "agentToken": token,
+            "agentId": agent.id,
+            "agentName": agent.name,
+            "agentRole": agent.role,
+        }),
+    };
+    let stored = store::session_event(
+        &core.db.lock().unwrap(),
+        session_id,
+        &event,
+        &serde_json::json!({"adapter": adapter_id, "directDispatch": true}),
+    )?;
+    core.events.publish(CoreEvent::Agent(stored));
+    Ok(())
+}
+
+/// Resolve an enabled specialist from persisted configuration and enter the
+/// ordinary reservation/lifecycle path without sending anything to the parent
+/// adapter. A direct objective never starts, steers, or queues an orchestrator.
+pub fn dispatch_agent_shortcut(
+    core: &Arc<BridgeCore>,
+    session_id: String,
+    token: String,
+    objective: String,
+) -> Result<wire::DispatchAgentShortcutResult, BridgeError> {
+    if objective.trim().is_empty() {
+        return Err(BridgeError::Invalid(
+            "Agent shortcut objective cannot be empty; add what the specialist should do".into(),
+        ));
+    }
+    let (adapter_id, workspace_id, depth): (String, Option<String>, i64) = core.db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT harness,workspace_id,COALESCE(depth,0) FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .map_err(|_| BridgeError::Invalid("Chat session does not exist".into()))?;
+    if depth != 0 || store::worker_runtime(&core.db.lock().unwrap(), &session_id)?.is_some() {
+        return Err(BridgeError::Invalid(
+            "Workers cannot directly dispatch nested agents; use the top-level workspace composer".into(),
+        ));
+    }
+    if workspace_id.is_none() {
+        return Err(BridgeError::Invalid(
+            "Agent shortcuts need a connected workspace so Bridge can enforce worker isolation and path scope".into(),
+        ));
+    }
+    let configured_agent = agent_config::resolve_worker_agent(&core.db.lock().unwrap(), &token)?;
+    let normalized_token = agent_config::normalize_agent_token(&token);
+    let (display_objective, worker_objective, interceptions) =
+        prepare_direct_agent_objective(core, &session_id, objective.trim());
+    let request = configured_worker_request(&configured_agent, worker_objective)?;
+    let turn_id = format!("{DIRECT_AGENT_TURN_PREFIX}{}", Uuid::new_v4());
+    persist_direct_agent_request(
+        core,
+        &session_id,
+        &adapter_id,
+        &turn_id,
+        &normalized_token,
+        &configured_agent,
+        &display_objective,
+    )?;
+    let (disposition, child_session_id) = match launch_worker_outcome(
+        core,
+        &session_id,
+        &turn_id,
+        &request,
+        true,
+    ) {
+        WorkerLaunchOutcome::Launched(child_session_id) => {
+            (wire::AgentShortcutDisposition::Launched, Some(child_session_id))
+        }
+        WorkerLaunchOutcome::Queued => (wire::AgentShortcutDisposition::Queued, None),
+        WorkerLaunchOutcome::AwaitingApproval => {
+            (wire::AgentShortcutDisposition::AwaitingApproval, None)
+        }
+        WorkerLaunchOutcome::Failed => {
+            return Err(BridgeError::Invalid(format!(
+                "{} could not be dispatched; the conversation contains the host-side reason",
+                configured_agent.name
+            )))
+        }
+    };
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(wire::DispatchAgentShortcutResult {
+        disposition,
+        child_session_id,
+        agent_id: configured_agent.id,
+        agent_name: configured_agent.name,
+        role: configured_agent.role,
+        interceptions: mirror_interceptions(&interceptions),
+    })
 }
 
 /// Relaunch a session's adapter so a user-initiated send can be delivered,
@@ -12787,5 +13067,168 @@ mod verification_binding_tests {
             1,
             "and it was told why in words"
         );
+    }
+}
+
+#[cfg(test)]
+mod direct_agent_shortcut_tests {
+    use super::*;
+
+    type Fixture = (
+        tempfile::TempDir,
+        Arc<BridgeCore>,
+        super::submit_input_tests::FakeHandles,
+        std::sync::MutexGuard<'static, ()>,
+    );
+
+    fn core_with_workspace() -> Fixture {
+        let managed_root = managed_root_guard();
+        let fixture = tempfile::tempdir().unwrap();
+        let core = Arc::new(
+            BridgeCore::boot(crate::BootConfig {
+                data_dir: fixture.path().join("data"),
+                browser_extension_path: fixture.path().join("no-extension"),
+                events: None,
+            })
+            .unwrap(),
+        );
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')",
+                params![fixture.path().to_string_lossy()],
+            )
+            .unwrap();
+            db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Pune','Task','bridge/task',?1,'ready','now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth,kind) VALUES('parent','w','codex','Parent','ready','reported',0,'orchestrator')", []).unwrap();
+            db.execute("INSERT INTO session_heads(session_id,restoration_mode,updated_at) VALUES('parent','fresh','now')", []).unwrap();
+        }
+        let (runtime, handles) = super::submit_input_tests::FakeRuntime::new(false);
+        core.adapters.lock().unwrap().insert("parent".into(), runtime);
+        (fixture, core, handles, managed_root)
+    }
+
+    #[test]
+    fn configured_agents_are_the_only_source_of_worker_authority() {
+        let (_fixture, core, _handles, _managed_root) = core_with_workspace();
+        let config = agent_config::state(&core.db.lock().unwrap()).unwrap();
+        let implementation = config
+            .agents
+            .iter()
+            .find(|agent| agent.role == "implementation")
+            .unwrap();
+        let implementation_request =
+            configured_worker_request(implementation, "change it".into()).unwrap();
+        assert_eq!(implementation_request.role, delegation::WorkerRole::Implementation);
+        assert_eq!(implementation_request.write_mode, delegation::WriteMode::Isolated);
+        assert_eq!(implementation_request.owned_paths, vec!["**"]);
+        assert_eq!(implementation_request.effort, implementation.effort);
+        assert_eq!(implementation_request.harness, None);
+        assert_eq!(implementation_request.model, None);
+
+        let verification = config
+            .agents
+            .iter()
+            .find(|agent| agent.role == "verification")
+            .unwrap();
+        let verification_request =
+            configured_worker_request(verification, "verify it".into()).unwrap();
+        assert_eq!(verification_request.role, delegation::WorkerRole::Verification);
+        assert_eq!(verification_request.write_mode, delegation::WriteMode::ReadOnly);
+        assert!(verification_request.owned_paths.is_empty());
+        assert_eq!(verification_request.output_contract, delegation::OutputContract::VerificationResult);
+    }
+
+    #[test]
+    fn rejected_shortcuts_do_not_touch_the_parent_provider_or_lifecycle() {
+        let (_fixture, core, handles, _managed_root) = core_with_workspace();
+        for (token, objective, message) in [
+            ("verifier", "", "objective cannot be empty"),
+            ("missing", "do work", "Unknown agent shortcut"),
+            ("orchestrator", "do work", "cannot be a direct worker"),
+        ] {
+            let error = dispatch_agent_shortcut(
+                &core,
+                "parent".into(),
+                token.into(),
+                objective.into(),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains(message), "{error}");
+        }
+        assert!(handles.sent.lock().unwrap().is_empty());
+        let db = core.db.lock().unwrap();
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM session_entries WHERE session_id='parent' AND kind='user.message'", [], |row| row.get::<_, i64>(0)).unwrap(),
+            0,
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM worker_runtime", [], |row| row.get::<_, i64>(0)).unwrap(),
+            0,
+        );
+    }
+
+    #[test]
+    fn implementation_shortcuts_enter_the_existing_scope_approval_path_silently() {
+        let (_fixture, core, handles, _managed_root) = core_with_workspace();
+        let implementation = agent_config::resolve_worker_agent(
+            &core.db.lock().unwrap(),
+            "implementer",
+        )
+        .unwrap();
+        let request = configured_worker_request(&implementation, "change it".into()).unwrap();
+        let outcome = reserve_worker_launch_outcome(
+            &core.db.lock().unwrap(),
+            "parent",
+            "direct-agent-test",
+            &request,
+            "test-model",
+            true,
+            None,
+        )
+        .unwrap();
+        let pending = match outcome {
+            WorkerReservationOutcome::AwaitingApproval(pending) => pending,
+            _ => panic!("an unprovenanced whole-workspace write must await approval"),
+        };
+        report_worker_launch_awaiting_approval(
+            &core,
+            "parent",
+            "direct-agent-test",
+            &request,
+            &pending,
+        );
+        assert!(
+            handles.sent.lock().unwrap().is_empty(),
+            "direct reservation notices must never start an orchestrator provider turn"
+        );
+    }
+
+    #[test]
+    fn direct_launch_failures_are_persisted_without_notifying_the_parent_provider() {
+        let (_fixture, core, handles, _managed_root) = core_with_workspace();
+        let error = dispatch_agent_shortcut(
+            &core,
+            "parent".into(),
+            "verifier".into(),
+            "verify the current workspace".into(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("could not be dispatched"), "{error}");
+        assert!(
+            handles.sent.lock().unwrap().is_empty(),
+            "a failed direct reservation must not turn into an orchestrator provider turn"
+        );
+        let notified = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT json_extract(payload,'$.data.orchestratorNotified') FROM session_entries WHERE session_id='parent' AND kind='delegation.rejected' ORDER BY sequence DESC LIMIT 1",
+                [],
+                |row| row.get::<_, bool>(0),
+            )
+            .unwrap();
+        assert!(!notified);
     }
 }

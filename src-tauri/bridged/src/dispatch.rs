@@ -210,6 +210,15 @@ pub fn dispatch(
             let p: wire::SubmitInputParams = decode(method, params)?;
             reply(api::submit_input_with_attachments(core, p.session_id, p.text, p.attachments.unwrap_or_default()))
         }
+        MethodName::DispatchAgentShortcut => {
+            let p: wire::DispatchAgentShortcutParams = decode(method, params)?;
+            reply(api::dispatch_agent_shortcut(
+                core,
+                p.session_id,
+                p.token,
+                p.objective,
+            ))
+        }
         MethodName::CompactSession => {
             let p: wire::CompactSessionParams = decode(method, params)?;
             reply(api::compact_session(core, &p.session_id))

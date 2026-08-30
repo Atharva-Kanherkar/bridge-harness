@@ -1179,6 +1179,22 @@ async fn submit_input(
     .await
 }
 
+/// Directly reserve a configured specialist worker. The browser supplies only
+/// the token and objective; every execution characteristic is host-resolved.
+#[tauri::command]
+async fn dispatch_agent_shortcut(
+    session_id: String,
+    token: String,
+    objective: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::DispatchAgentShortcutResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Agent shortcut dispatch", move || {
+        api::dispatch_agent_shortcut(&core, session_id, token, objective)
+    })
+    .await
+}
+
 /// List the current chat's workspace files for the composer's `@file`
 /// autocomplete. Returns an empty list for chats with no connected folder.
 #[tauri::command]
@@ -1918,6 +1934,7 @@ pub fn run() {
             prepare_turn,
             send_turn,
             submit_input,
+            dispatch_agent_shortcut,
             list_workspace_files,
             list_workspace_tree,
             read_workspace_file,
