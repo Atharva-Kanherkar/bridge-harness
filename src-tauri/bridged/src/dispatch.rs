@@ -734,6 +734,17 @@ pub fn dispatch(
         }
 
         MethodName::AutomationCatalog => reply(api::automation_catalog(core)),
+        MethodName::SaveAutomation => {
+            let p: wire::SaveAutomationParams = decode(method, params)?;
+            reply(api::save_automation(
+                core,
+                into_core(method, &p.provider)?,
+                p.id.as_deref(),
+                &p.prompt,
+                &p.schedule_expression,
+                p.recurring,
+            ))
+        }
         MethodName::ExecuteAutomationAction => {
             let p: wire::ExecuteAutomationActionParams = decode(method, params)?;
             reply(api::execute_automation_action(

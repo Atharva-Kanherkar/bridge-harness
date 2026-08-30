@@ -13,17 +13,31 @@ use serde::{Deserialize, Serialize};
 pub enum AutomationProvider {
     Claude,
     Codex,
-    OpenCode,
+    Cursor,
+}
+
+/// Native operations exposed by a provider's own automation surface. Clients
+/// must use these capabilities instead of assuming providers have parity.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum AutomationCapability {
+    Create,
+    Edit,
+    RunNow,
+    Pause,
+    Resume,
+    Delete,
 }
 
 /// What to do to an automation. Mirrors
 /// `bridge_core::automations::AutomationAction`. Pause/resume are only
 /// honored where the native format has a paused state (Codex).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "camelCase")]
 pub enum AutomationAction {
     Pause,
     Resume,
+    RunNow,
     Delete,
 }
 
@@ -34,6 +48,19 @@ pub struct ExecuteAutomationActionParams {
     /// The automation's id in its native store.
     pub id: String,
     pub action: AutomationAction,
+}
+
+/// Create a provider-native automation when `id` is absent, or edit the
+/// identified native automation when it is present. Capability checks remain
+/// authoritative in bridge-core.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SaveAutomationParams {
+    pub provider: AutomationProvider,
+    pub id: Option<String>,
+    pub prompt: String,
+    pub schedule_expression: String,
+    pub recurring: bool,
 }
 
 #[cfg(test)]
@@ -66,5 +93,42 @@ mod tests {
         }))
         .unwrap_err();
         assert!(error.to_string().contains("extra"), "{error}");
+    }
+
+    #[test]
+    fn save_automation_params_round_trip() {
+        let params = SaveAutomationParams {
+            provider: AutomationProvider::Claude,
+            id: Some("task-1".into()),
+            prompt: "Summarize CI failures".into(),
+            schedule_expression: "7 9 * * 1-5".into(),
+            recurring: true,
+        };
+        assert_eq!(
+            serde_json::to_value(&params).unwrap(),
+            json!({
+                "provider": "claude",
+                "id": "task-1",
+                "prompt": "Summarize CI failures",
+                "scheduleExpression": "7 9 * * 1-5",
+                "recurring": true
+            })
+        );
+        assert_eq!(round_trip(&params), params);
+    }
+
+    #[test]
+    fn capabilities_and_run_now_have_stable_wire_names() {
+        assert_eq!(
+            serde_json::to_value([
+                AutomationCapability::Create,
+                AutomationCapability::Edit,
+                AutomationCapability::RunNow,
+            ])
+            .unwrap(),
+            json!(["create", "edit", "runNow"])
+        );
+        assert_eq!(serde_json::to_value(AutomationAction::RunNow).unwrap(), json!("runNow"));
+        assert_eq!(serde_json::to_value(AutomationProvider::Cursor).unwrap(), json!("cursor"));
     }
 }

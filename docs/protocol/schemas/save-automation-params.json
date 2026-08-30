@@ -3,16 +3,6 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "additionalProperties": false,
   "definitions": {
-    "AutomationAction": {
-      "description": "What to do to an automation. Mirrors `bridge_core::automations::AutomationAction`. Pause/resume are only honored where the native format has a paused state (Codex).",
-      "enum": [
-        "pause",
-        "resume",
-        "runNow",
-        "delete"
-      ],
-      "type": "string"
-    },
     "AutomationProvider": {
       "description": "Whose native automation store an entry lives in. Mirrors `bridge_core::automations::AutomationProvider`.",
       "enum": [
@@ -23,23 +13,33 @@
       "type": "string"
     }
   },
+  "description": "Create a provider-native automation when `id` is absent, or edit the identified native automation when it is present. Capability checks remain authoritative in bridge-core.",
   "properties": {
-    "action": {
-      "$ref": "#/definitions/AutomationAction"
-    },
     "id": {
-      "description": "The automation's id in its native store.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "prompt": {
       "type": "string"
     },
     "provider": {
       "$ref": "#/definitions/AutomationProvider"
+    },
+    "recurring": {
+      "type": "boolean"
+    },
+    "scheduleExpression": {
+      "type": "string"
     }
   },
   "required": [
-    "action",
-    "id",
-    "provider"
+    "prompt",
+    "provider",
+    "recurring",
+    "scheduleExpression"
   ],
-  "title": "ExecuteAutomationActionParams",
+  "title": "SaveAutomationParams",
   "type": "object"
 }
