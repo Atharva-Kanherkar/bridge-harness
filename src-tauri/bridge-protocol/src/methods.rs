@@ -231,6 +231,7 @@ methods![
     (ExecuteSkillChange, "skills", "execute_skill_change"),
     // automations — each harness's native scheduled jobs, one catalog
     (AutomationCatalog, "automations", "automation_catalog"),
+    (SaveAutomation, "automations", "save_automation"),
     (ExecuteAutomationAction, "automations", "execute_automation_action"),
 ];
 

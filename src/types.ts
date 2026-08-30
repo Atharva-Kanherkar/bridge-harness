@@ -29,6 +29,7 @@ import type {
   SkillProvider,
   AutomationAction,
   AutomationProvider,
+  SaveAutomationParams,
 } from "./protocol/generated/protocol";
 
 // ---------------------------------------------------------------------------
@@ -42,6 +43,7 @@ export type {
   AuthState,
   AutomationAction,
   AutomationProvider,
+  SaveAutomationParams,
   BaseBranchDivergence,
   BridgeEvent,
   BridgeState,
@@ -261,6 +263,7 @@ export interface SkillActionResult {
 }
 
 export interface AutomationSchedule { kind: "cron" | "rrule" | string; expression: string; human: string }
+export type AutomationCapability = "create" | "edit" | "runNow" | "pause" | "resume" | "delete";
 export interface AutomationRun {
   id: string; automationId: string; status: string; title: string | null; summary: string | null; createdAt: number | null;
 }
@@ -268,14 +271,17 @@ export interface UnifiedAutomation {
   id: string; provider: AutomationProvider; name: string; prompt: string; schedule: AutomationSchedule;
   status: "active" | "paused" | "unknown"; recurring: boolean;
   createdAt: number | null; nextRunAt: number | null; lastRunAt: number | null;
-  cwds: string[]; model: string | null; effort: string | null; canPause: boolean; runs: AutomationRun[];
+  cwds: string[]; model: string | null; effort: string | null; runs: AutomationRun[];
 }
 export interface AutomationProviderState {
-  provider: AutomationProvider; available: boolean; detail: string; count: number;
+  provider: AutomationProvider; available: boolean; detail: string; count: number; capabilities: AutomationCapability[];
 }
 export interface AutomationCatalog { automations: UnifiedAutomation[]; providers: AutomationProviderState[] }
 export interface AutomationActionResult {
   provider: AutomationProvider; id: string; action: AutomationAction; success: boolean; message: string;
+}
+export interface AutomationSaveResult {
+  provider: AutomationProvider; id: string; created: boolean; message: string;
 }
 
 export interface BrowserTab {

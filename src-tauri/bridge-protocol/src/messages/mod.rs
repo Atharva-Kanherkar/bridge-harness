@@ -333,6 +333,7 @@ typed_methods![
     (ExecuteSkillChange, ExecuteSkillChangeParams, _),
     // automations
     (AutomationCatalog, _, _),
+    (SaveAutomation, SaveAutomationParams, _),
     (ExecuteAutomationAction, ExecuteAutomationActionParams, _),
 ];
 
@@ -364,6 +365,7 @@ pub const DEFERRED_RESULTS: &[(MethodName, &str)] = &[
     (MethodName::PreviewSkillChange, "bridge_core::skill_marketplace::SkillPreview"),
     (MethodName::ExecuteSkillChange, "Vec<bridge_core::skill_marketplace::SkillActionResult>"),
     (MethodName::AutomationCatalog, "bridge_core::automations::AutomationCatalog"),
+    (MethodName::SaveAutomation, "bridge_core::automations::AutomationSaveResult"),
     (MethodName::ExecuteAutomationAction, "bridge_core::automations::AutomationActionResult"),
 ];
 

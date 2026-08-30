@@ -3,6 +3,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { normalizeAgentToken } from "./agentMention";
 import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
+import type { AutomationSaveResult, SaveAutomationParams } from "./types";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult } from "./protocol/generated/protocol";
 import type { TurnImage } from "./protocol/generated/protocol";
 import type { ComposerAttachment } from "./pasteAttachments";
@@ -477,19 +478,20 @@ const mockAutomations: AutomationCatalog = {
     {
       id: "task-1", provider: "claude", name: "Summarize overnight CI failures", prompt: "Summarize overnight CI failures and file issues for new ones.",
       schedule: { kind: "cron", expression: "7 9 * * 1-5", human: "Weekdays at 09:07" }, status: "active", recurring: true,
-      createdAt: Date.now() - 86_400_000, nextRunAt: null, lastRunAt: Date.now() - 3_600_000, cwds: [], model: null, effort: null, canPause: false, runs: [],
+      createdAt: Date.now() - 86_400_000, nextRunAt: null, lastRunAt: Date.now() - 3_600_000, cwds: [], model: null, effort: null, runs: [],
     },
     {
       id: "auto-1", provider: "codex", name: "Nightly dependency audit", prompt: "Audit dependencies for CVEs and report anything actionable.",
       schedule: { kind: "rrule", expression: "FREQ=DAILY;BYHOUR=3;BYMINUTE=15", human: "Daily at 03:15" }, status: "paused", recurring: true,
-      createdAt: Date.now() - 172_800_000, nextRunAt: Date.now() + 43_200_000, lastRunAt: null, cwds: ["/Users/you/project"], model: "gpt-5.3-codex", effort: "high", canPause: true,
+      createdAt: Date.now() - 172_800_000, nextRunAt: Date.now() + 43_200_000, lastRunAt: null, cwds: ["/Users/you/project"], model: "gpt-5.3-codex", effort: "high",
       runs: [{ id: "thread-1", automationId: "auto-1", status: "COMPLETED", title: "Deps clean", summary: "No CVEs found", createdAt: Date.now() - 90_000_000 }],
     },
   ],
   providers: [
-    { provider: "claude", available: true, detail: "~/.claude/scheduled_tasks.json", count: 1 },
-    { provider: "codex", available: true, detail: "~/.codex/sqlite/codex.db", count: 1 },
-    { provider: "opencode", available: false, detail: "OpenCode has no automations feature", count: 0 },
+    { provider: "claude", available: true, detail: "~/.claude/scheduled_tasks.json", count: 1, capabilities: ["create", "edit", "delete"] },
+    { provider: "codex", available: true, detail: "~/.codex/sqlite/codex.db", count: 1, capabilities: ["pause", "resume", "delete"] },
+    { provider: "cursor", available: false, detail: "Cursor has no native automations feature", count: 0, capabilities: [] },
+    { provider: "opencode", available: false, detail: "OpenCode has no native automations feature", count: 0, capabilities: [] },
   ],
 };
 
@@ -780,8 +782,29 @@ export const bridgeApi = {
     return consent.targets.map(provider => ({ provider, action: consent.action, success: true, message: `${consent.action} completed`, error: null }));
   },
   automationCatalog: (): Promise<AutomationCatalog> => isTauri() ? call("automations/automation_catalog") as Promise<AutomationCatalog> : Promise.resolve(structuredClone(mockAutomations)),
+  saveAutomation: async (draft: SaveAutomationParams): Promise<AutomationSaveResult> => {
+    if (isTauri()) return call("automations/save_automation", draft) as Promise<AutomationSaveResult>;
+    if (draft.provider !== "claude") throw new Error(`${draft.provider} does not expose native automation saving`);
+    const existing = draft.id ? mockAutomations.automations.find(item => item.provider === draft.provider && item.id === draft.id) : undefined;
+    if (draft.id && !existing) throw new Error(`No Claude Code scheduled task with id ${draft.id}`);
+    const id = existing?.id ?? crypto.randomUUID();
+    if (existing) {
+      existing.name = draft.prompt.split(/[.;:\n]/)[0].trim(); existing.prompt = draft.prompt;
+      existing.schedule = { kind: "cron", expression: draft.scheduleExpression, human: draft.scheduleExpression };
+      existing.recurring = draft.recurring;
+    } else {
+      mockAutomations.automations.unshift({
+        id, provider: "claude", name: draft.prompt.split(/[.;:\n]/)[0].trim(), prompt: draft.prompt,
+        schedule: { kind: "cron", expression: draft.scheduleExpression, human: draft.scheduleExpression }, status: "active", recurring: draft.recurring,
+        createdAt: Date.now(), nextRunAt: null, lastRunAt: null, cwds: [], model: null, effort: null, runs: [],
+      });
+    }
+    return { provider: "claude", id, created: !existing, message: existing ? "Updated in Claude Code's schedule file" : "Created in Claude Code's schedule file" };
+  },
   executeAutomationAction: async (provider: AutomationProvider, id: string, action: AutomationAction): Promise<AutomationActionResult> => {
     if (isTauri()) return call("automations/execute_automation_action", { provider, id, action }) as Promise<AutomationActionResult>;
+    const state = mockAutomations.providers.find(item => item.provider === provider);
+    if (!state?.capabilities.includes(action)) throw new Error(`${provider} does not expose native automation ${action} support`);
     const automation = mockAutomations.automations.find(item => item.provider === provider && item.id === id);
     if (!automation) throw new Error(`No ${provider} automation with id ${id}`);
     if (action === "delete") mockAutomations.automations = mockAutomations.automations.filter(item => item !== automation);

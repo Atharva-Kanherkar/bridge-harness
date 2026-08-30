@@ -3994,6 +3994,19 @@ pub fn automation_catalog(
     Ok(automations::catalog(&user_home()))
 }
 
+pub fn save_automation(
+    core: &Arc<BridgeCore>,
+    provider: automations::AutomationProvider,
+    automation_id: Option<&str>,
+    prompt: &str,
+    schedule_expression: &str,
+    recurring: bool,
+) -> Result<automations::AutomationSaveResult, BridgeError> {
+    let result = automations::save(&user_home(), provider, automation_id, prompt, schedule_expression, recurring)?;
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(result)
+}
+
 pub fn execute_automation_action(
     core: &Arc<BridgeCore>,
     provider: automations::AutomationProvider,

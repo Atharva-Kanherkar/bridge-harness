@@ -181,18 +181,31 @@ describe("AgentMarketplace", () => {
 });
 
 describe("MarketplaceScreen", () => {
-  it("offers Agents alongside Plugins and Skills, and opens on Agents", async () => {
+  it("keeps the catalog intact beside a distinct Automations section", async () => {
     vi.spyOn(bridgeApi, "listManagedAgents").mockResolvedValue({
       agents: [agent()],
     } as Awaited<ReturnType<typeof bridgeApi.listManagedAgents>>);
     vi.spyOn(bridgeApi, "marketplaceCatalog").mockResolvedValue(
       { providers: [], services: [] } as unknown as Awaited<ReturnType<typeof bridgeApi.marketplaceCatalog>>,
     );
+    vi.spyOn(bridgeApi, "automationCatalog").mockResolvedValue({
+      automations: [],
+      providers: [
+        { provider: "claude", available: true, detail: "No scheduled tasks yet", count: 0, capabilities: ["create", "edit", "delete"] },
+        { provider: "codex", available: false, detail: "No automations database yet", count: 0, capabilities: ["pause", "resume", "delete"] },
+        { provider: "cursor", available: false, detail: "Cursor has no native automations feature", count: 0, capabilities: [] },
+      ],
+    });
 
     const view = await render(<MarketplaceScreen/>);
-    const tabs = [...view.host.querySelectorAll(".u-segmented-item")].map(item => item.textContent?.trim());
-    expect(tabs).toEqual(["agents", "plugins", "skills", "automations"]);
-    expect(view.host.querySelector('[data-active="true"]')?.textContent?.trim()).toBe("agents");
+    const marketplaceTabs = [...view.host.querySelectorAll('nav[aria-label="Marketplace sections"] button')].map(item => item.textContent?.trim());
+    const catalogTabs = [...view.host.querySelectorAll('nav[aria-label="Catalog sections"] button')].map(item => item.textContent?.trim());
+    expect(marketplaceTabs).toEqual(["catalog", "automations"]);
+    expect(catalogTabs).toEqual(["agents", "plugins", "skills"]);
+    expect(view.host.querySelector('nav[aria-label="Catalog sections"] [data-active="true"]')?.textContent?.trim()).toBe("agents");
+    await view.click(view.button("automations"));
+    expect(view.text()).toContain("No native automations yet");
+    expect(view.host.querySelector('nav[aria-label="Catalog sections"]')).toBeNull();
     await view.unmount();
   });
 });

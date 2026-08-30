@@ -1080,6 +1080,13 @@
       "resultDeferred": "bridge_core::automations::AutomationCatalog"
     },
     {
+      "command": "save_automation",
+      "domain": "automations",
+      "method": "automations/save_automation",
+      "paramsSchema": "save-automation-params.json",
+      "resultDeferred": "bridge_core::automations::AutomationSaveResult"
+    },
+    {
       "command": "execute_automation_action",
       "domain": "automations",
       "method": "automations/execute_automation_action",

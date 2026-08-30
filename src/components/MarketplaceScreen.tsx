@@ -295,25 +295,21 @@ function PluginMarketplace() {
   </div>;
 }
 
-const RESOURCES = ["agents", "plugins", "skills", "automations"] as const;
-type Resource = (typeof RESOURCES)[number];
+const CATALOG_RESOURCES = ["agents", "plugins", "skills"] as const;
+type CatalogResource = (typeof CATALOG_RESOURCES)[number];
+type MarketplaceSection = "catalog" | "automations";
 
 export function MarketplaceScreen() {
-  // Agents first, and the default: a runtime is the thing a plugin or a skill
-  // runs *inside*. Landing on Plugins asks the user to furnish a room before
-  // they have one.
-  const [resource, setResource] = useState<Resource>("agents");
+  const [section, setSection] = useState<MarketplaceSection>("catalog");
+  // Agents remain the catalog default: plugins and skills run inside them.
+  const [resource, setResource] = useState<CatalogResource>("agents");
   return <div className="flex h-full min-h-0 flex-col">
     <nav className="flex h-14 shrink-0 items-center justify-center border-b border-border px-3" aria-label="Marketplace sections" data-tauri-drag-region="deep">
       <div className="u-segmented">
-        {RESOURCES.map(value => <button key={value} type="button" data-active={resource === value} onClick={() => setResource(value)} className="u-segmented-item capitalize">{value}</button>)}
+        {(["catalog", "automations"] as MarketplaceSection[]).map(value => <button key={value} type="button" data-active={section === value} onClick={() => setSection(value)} className="u-segmented-item capitalize">{value}</button>)}
       </div>
     </nav>
-    <div className="min-h-0 flex-1">
-      {resource === "agents" && <AgentMarketplace/>}
-      {resource === "plugins" && <PluginMarketplace/>}
-      {resource === "skills" && <SkillMarketplace/>}
-      {resource === "automations" && <AutomationsPanel/>}
-    </div>
+    {section === "catalog" && <nav className="flex h-11 shrink-0 items-center justify-center border-b border-border px-3" aria-label="Catalog sections"><div className="u-segmented">{CATALOG_RESOURCES.map(value => <button key={value} type="button" data-active={resource === value} onClick={() => setResource(value)} className="u-segmented-item capitalize">{value}</button>)}</div></nav>}
+    <div className="min-h-0 flex-1">{section === "automations" ? <AutomationsPanel/> : <>{resource === "agents" && <AgentMarketplace/>}{resource === "plugins" && <PluginMarketplace/>}{resource === "skills" && <SkillMarketplace/>}</>}</div>
   </div>;
 }

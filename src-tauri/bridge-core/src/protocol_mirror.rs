@@ -171,7 +171,19 @@ fn mirror_automation_provider(
     match provider {
         automations::AutomationProvider::Claude => wire::AutomationProvider::Claude,
         automations::AutomationProvider::Codex => wire::AutomationProvider::Codex,
+        automations::AutomationProvider::Cursor => wire::AutomationProvider::Cursor,
         automations::AutomationProvider::OpenCode => wire::AutomationProvider::OpenCode,
+    }
+}
+
+fn mirror_automation_capability(capability: automations::AutomationCapability) -> wire::AutomationCapability {
+    match capability {
+        automations::AutomationCapability::Create => wire::AutomationCapability::Create,
+        automations::AutomationCapability::Edit => wire::AutomationCapability::Edit,
+        automations::AutomationCapability::RunNow => wire::AutomationCapability::RunNow,
+        automations::AutomationCapability::Pause => wire::AutomationCapability::Pause,
+        automations::AutomationCapability::Resume => wire::AutomationCapability::Resume,
+        automations::AutomationCapability::Delete => wire::AutomationCapability::Delete,
     }
 }
 
@@ -179,6 +191,7 @@ fn mirror_automation_action(action: automations::AutomationAction) -> wire::Auto
     match action {
         automations::AutomationAction::Pause => wire::AutomationAction::Pause,
         automations::AutomationAction::Resume => wire::AutomationAction::Resume,
+        automations::AutomationAction::RunNow => wire::AutomationAction::RunNow,
         automations::AutomationAction::Delete => wire::AutomationAction::Delete,
     }
 }
@@ -492,6 +505,7 @@ fn marketplace_and_skill_enums_share_their_wire_values() {
     for provider in [
         automations::AutomationProvider::Claude,
         automations::AutomationProvider::Codex,
+        automations::AutomationProvider::Cursor,
         automations::AutomationProvider::OpenCode,
     ] {
         assert_same_wire_value(&provider, &mirror_automation_provider(provider));
@@ -499,9 +513,20 @@ fn marketplace_and_skill_enums_share_their_wire_values() {
     for action in [
         automations::AutomationAction::Pause,
         automations::AutomationAction::Resume,
+        automations::AutomationAction::RunNow,
         automations::AutomationAction::Delete,
     ] {
         assert_same_wire_value(&action, &mirror_automation_action(action));
+    }
+    for capability in [
+        automations::AutomationCapability::Create,
+        automations::AutomationCapability::Edit,
+        automations::AutomationCapability::RunNow,
+        automations::AutomationCapability::Pause,
+        automations::AutomationCapability::Resume,
+        automations::AutomationCapability::Delete,
+    ] {
+        assert_same_wire_value(&capability, &mirror_automation_capability(capability));
     }
 }
 

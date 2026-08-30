@@ -161,6 +161,7 @@ export type BridgeMethod =
   | "skills/preview_skill_change"
   | "skills/execute_skill_change"
   | "automations/automation_catalog"
+  | "automations/save_automation"
   | "automations/execute_automation_action";
 
 export const BRIDGE_METHODS = [
@@ -318,6 +319,7 @@ export const BRIDGE_METHODS = [
   { method: "skills/preview_skill_change", domain: "skills", command: "preview_skill_change" },
   { method: "skills/execute_skill_change", domain: "skills", command: "execute_skill_change" },
   { method: "automations/automation_catalog", domain: "automations", command: "automation_catalog" },
+  { method: "automations/save_automation", domain: "automations", command: "save_automation" },
   { method: "automations/execute_automation_action", domain: "automations", command: "execute_automation_action" },
 ] as const;
 
@@ -535,6 +537,7 @@ export interface BridgeMethodParams {
   "skills/preview_skill_change": PreviewSkillChangeParams;
   "skills/execute_skill_change": ExecuteSkillChangeParams;
   "automations/automation_catalog": undefined;
+  "automations/save_automation": SaveAutomationParams;
   "automations/execute_automation_action": ExecuteAutomationActionParams;
 }
 
@@ -694,6 +697,7 @@ export interface BridgeMethodResults {
   "skills/preview_skill_change": unknown;
   "skills/execute_skill_change": unknown;
   "automations/automation_catalog": unknown;
+  "automations/save_automation": unknown;
   "automations/execute_automation_action": unknown;
 }
 
@@ -732,9 +736,9 @@ export type ApprovalDecision = "accept" | "acceptForSession" | "decline" | "canc
 
 export type AuthState = "signed_in" | "signed_out" | "unknown";
 
-export type AutomationAction = "pause" | "resume" | "delete";
+export type AutomationAction = "pause" | "resume" | "runNow" | "delete";
 
-export type AutomationProvider = "claude" | "codex" | "opencode";
+export type AutomationProvider = "claude" | "codex" | "cursor" | "opencode";
 
 export interface BridgeEvent {
   body: string;
@@ -2759,6 +2763,14 @@ export interface PreviewSkillChangeParams {
 
 export interface ExecuteSkillChangeParams {
   confirmationId: string;
+}
+
+export interface SaveAutomationParams {
+  id?: string | null;
+  prompt: string;
+  provider: AutomationProvider;
+  recurring: boolean;
+  scheduleExpression: string;
 }
 
 export interface ExecuteAutomationActionParams {

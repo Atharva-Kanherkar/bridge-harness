@@ -39,13 +39,13 @@ const props = (overrides: Partial<BridgeSidebarProps> = {}): BridgeSidebarProps 
   workspaces: [workspace],
   activeSessionId: undefined,
   projectsActive: false,
-  automationsActive: false,
+  marketplaceActive: false,
   missionControlActive: false,
   settingsActive: false,
   accountName: "cestercian",
   onOpenNewChat: noop,
   onOpenProjects: noop,
-  onOpenAutomations: noop,
+  onOpenMarketplace: noop,
   onOpenMissionControl: noop,
   onOpenWorkBoard: noop,
   onOpenMemory: noop,
@@ -158,18 +158,18 @@ describe("BridgeSidebar account actions", () => {
 describe("BridgeSidebar action rows", () => {
   it("fires the matching handler from each action row", () => {
     const onOpenNewChat = vi.fn();
-    const onOpenAutomations = vi.fn();
+    const onOpenMarketplace = vi.fn();
     const onOpenMissionControl = vi.fn();
     const onOpenWorkBoard = vi.fn();
     const onOpenSettings = vi.fn();
-    mount({ onOpenNewChat, onOpenAutomations, onOpenMissionControl, onOpenWorkBoard, onOpenSettings });
+    mount({ onOpenNewChat, onOpenMarketplace, onOpenMissionControl, onOpenWorkBoard, onOpenSettings });
     click(container.querySelector('button[aria-label="New Chat"]')!);
-    click(container.querySelector('button[aria-label="Automations"]')!);
+    click(container.querySelector('button[aria-label="Marketplace"]')!);
     click(container.querySelector('button[aria-label="Mission Control"]')!);
     click(container.querySelector('button[aria-label="Work board"]')!);
     click(container.querySelector('button[aria-label="Open settings for cestercian"]')!);
     expect(onOpenNewChat).toHaveBeenCalledOnce();
-    expect(onOpenAutomations).toHaveBeenCalledOnce();
+    expect(onOpenMarketplace).toHaveBeenCalledOnce();
     expect(onOpenMissionControl).toHaveBeenCalledOnce();
     expect(onOpenWorkBoard).toHaveBeenCalledOnce();
     expect(onOpenSettings).toHaveBeenCalledOnce();

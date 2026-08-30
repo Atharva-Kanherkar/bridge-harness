@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { placesEqual, recordPlace, type AppPlace } from "./navigationHistory";
+import { placesEqual, recordPlace, type AppPlace, type AppView } from "./navigationHistory";
 
 const workspace = (sessionId: string | null = null, paradigm: AppPlace["paradigm"] = "single"): AppPlace => ({ view: "workspace", sessionId, paradigm });
 
@@ -36,10 +36,14 @@ describe("placesEqual", () => {
     expect(placesEqual(workspace("a"), { view: "work", sessionId: "a", paradigm: "single" })).toBe(false);
   });
 
-  it("treats automations as a distinct view from marketplace", () => {
-    expect(placesEqual(
-      { view: "automations", sessionId: null, paradigm: "single" },
-      { view: "marketplace", sessionId: null, paradigm: "single" },
-    )).toBe(false);
+  it("keeps Marketplace as the single catalog and automations destination", () => {
+    // Catalog and Automations are sections of one screen, so history holds one
+    // entry for both. Re-adding an "automations" view breaks this exhaustive
+    // record at compile time, which is the point of writing it out.
+    const views: Record<AppView, true> = { workspace: true, work: true, projects: true, marketplace: true, settings: true };
+    expect(Object.keys(views).sort()).toEqual(["marketplace", "projects", "settings", "work", "workspace"]);
+
+    const marketplace: AppPlace = { view: "marketplace", sessionId: null, paradigm: "single" };
+    expect(recordPlace([marketplace], 0, marketplace)).toEqual({ stack: [marketplace], index: 0 });
   });
 });

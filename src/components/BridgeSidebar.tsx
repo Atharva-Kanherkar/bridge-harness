@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Bot, ChevronRight, ClipboardList, Folder, FolderGit2, FolderPlus, GitBranch, Home, LayoutGrid, Pin, Search, Settings2, SquarePen, type LucideIcon } from "lucide-react";
+import { ChevronRight, ClipboardList, Folder, FolderGit2, FolderPlus, GitBranch, Home, LayoutGrid, Pin, Search, Settings2, SquarePen, Store, type LucideIcon } from "lucide-react";
 import { WindowNavButtons, WindowPanelButton } from "./WindowNavButtons";
 import type { Session, SessionStatus, Workspace } from "../types";
 import { chordLabel, type CommandId } from "../keymap";
@@ -241,7 +241,7 @@ export type BridgeSidebarProps = {
   workspaces: Workspace[];
   activeSessionId?: string;
   projectsActive: boolean;
-  automationsActive: boolean;
+  marketplaceActive: boolean;
   missionControlActive: boolean;
   workActive?: boolean;
   settingsActive: boolean;
@@ -252,7 +252,7 @@ export type BridgeSidebarProps = {
   onCloseMobile?: () => void;
   onOpenNewChat: () => void;
   onOpenProjects: () => void;
-  onOpenAutomations: () => void;
+  onOpenMarketplace: () => void;
   onOpenMissionControl: () => void;
   onOpenWorkBoard: () => void;
   /** Account memory. Not workspace-gated: a plain chat reaches it identically. */
@@ -275,7 +275,7 @@ export function BridgeSidebar({
   workspaces,
   activeSessionId,
   projectsActive,
-  automationsActive,
+  marketplaceActive,
   missionControlActive,
   workActive = false,
   settingsActive,
@@ -285,7 +285,7 @@ export function BridgeSidebar({
   onCloseMobile,
   onOpenNewChat,
   onOpenProjects,
-  onOpenAutomations,
+  onOpenMarketplace,
   onOpenMissionControl,
   onOpenWorkBoard,
   onOpenMemory,
@@ -503,7 +503,7 @@ export function BridgeSidebar({
         <div className={cn("mb-2 shrink-0", collapsed && "flex flex-col items-center")}>
           <ActionRow icon={SquarePen} label="New Chat" chord="new-chat" collapsed={collapsed} disabled={newChatBusy} onClick={onOpenNewChat} />
           <ActionRow icon={Search} label="Search" collapsed={collapsed} onClick={toggleSearch} />
-          <ActionRow icon={Bot} label="Automations" collapsed={collapsed} onClick={onOpenAutomations} active={automationsActive} />
+          <ActionRow icon={Store} label="Marketplace" collapsed={collapsed} onClick={onOpenMarketplace} active={marketplaceActive} />
           <ActionRow icon={LayoutGrid} label="Mission Control" collapsed={collapsed} onClick={onOpenMissionControl} active={missionControlActive} />
           <ActionRow icon={FolderGit2} label="Projects" chord="open-projects" collapsed={collapsed} onClick={onOpenProjects} active={projectsActive} />
           <ActionRow icon={Pin} label="Memory" collapsed={collapsed} onClick={onOpenMemory} />

@@ -37,13 +37,13 @@ const props = (overrides: Partial<BridgeSidebarProps> = {}): BridgeSidebarProps 
   workspaces: [workspace],
   activeSessionId: undefined,
   projectsActive: false,
-  automationsActive: false,
+  marketplaceActive: false,
   missionControlActive: false,
   settingsActive: false,
   accountName: "cestercian",
   onOpenNewChat: noop,
   onOpenProjects: noop,
-  onOpenAutomations: noop,
+  onOpenMarketplace: noop,
   onOpenMissionControl: noop,
   onOpenWorkBoard: noop,
   onOpenMemory: noop,
@@ -305,7 +305,7 @@ describe("BridgeSidebar without the projects tree", () => {
     const html = render();
     expect(html).toContain("Projects");
     expect(html).toContain("Memory");
-    expect(html).not.toContain("Marketplace");
+    expect(html).toContain("Marketplace");
     expect(html).toContain("cestercian");
     expect(html).toContain('aria-label="Open settings for cestercian"');
     expect(html).not.toContain("Yashaswi");
@@ -346,10 +346,10 @@ describe("BridgeSidebar action rows", () => {
   it("offers Mission Control followed by Projects and Memory near the top", () => {
     const html = render();
     expect(html).toContain("New Chat");
-    expect(html).toContain("Automations");
+    expect(html).toContain("Marketplace");
     expect(html).toContain("Mission Control");
-    expect(html.indexOf("New Chat")).toBeLessThan(html.indexOf("Automations"));
-    expect(html.indexOf("Automations")).toBeLessThan(html.indexOf("Mission Control"));
+    expect(html.indexOf("New Chat")).toBeLessThan(html.indexOf("Marketplace"));
+    expect(html.indexOf("Marketplace")).toBeLessThan(html.indexOf("Mission Control"));
     expect(html.indexOf("Mission Control")).toBeLessThan(html.indexOf("Projects"));
     expect(html.indexOf("Projects")).toBeLessThan(html.indexOf("Memory"));
     expect(html.indexOf("Memory")).toBeLessThan(html.indexOf("Work board"));
@@ -364,22 +364,22 @@ describe("BridgeSidebar action rows", () => {
   it("keeps those rows reachable as icon-only controls when collapsed", () => {
     localStorage.setItem("bridge.sidebar.collapsed", "1");
     const html = render();
-    for (const label of ["New Chat", "Search", "Automations", "Mission Control", "Projects", "Memory", "Work board"]) {
+    for (const label of ["New Chat", "Search", "Marketplace", "Mission Control", "Projects", "Memory", "Work board"]) {
       expect(html).toContain(`aria-label="${label}"`);
     }
     expect(html).not.toContain(">New Chat<");
   });
 
-  it("marks Automations, Mission Control, Work board, and account settings current", () => {
-    const automations = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Automations"')) ?? "";
+  it("marks Marketplace, Mission Control, Work board, and account settings current", () => {
+    const marketplace = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Marketplace"')) ?? "";
     const missionControl = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Mission Control"')) ?? "";
     const work = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Work board"')) ?? "";
     const account = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Open settings for cestercian"')) ?? "";
-    expect(automations(render({ automationsActive: true }))).toContain('aria-current="page"');
+    expect(marketplace(render({ marketplaceActive: true }))).toContain('aria-current="page"');
     expect(missionControl(render({ missionControlActive: true }))).toContain('aria-current="page"');
     expect(work(render({ workActive: true }))).toContain('aria-current="page"');
     expect(account(render({ settingsActive: true }))).toContain('aria-current="page"');
-    expect(automations(render())).not.toContain("aria-current");
+    expect(marketplace(render())).not.toContain("aria-current");
   });
 });
 

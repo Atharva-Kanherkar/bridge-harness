@@ -353,6 +353,22 @@ async fn automation_catalog(
 }
 
 #[tauri::command]
+async fn save_automation(
+    provider: automations::AutomationProvider,
+    id: Option<String>,
+    prompt: String,
+    schedule_expression: String,
+    recurring: bool,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<automations::AutomationSaveResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Automation update", move || {
+        api::save_automation(&core, provider, id.as_deref(), &prompt, &schedule_expression, recurring)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn execute_automation_action(
     provider: automations::AutomationProvider,
     id: String,
@@ -1902,6 +1918,7 @@ pub fn run() {
             preview_skill_change,
             execute_skill_change,
             automation_catalog,
+            save_automation,
             execute_automation_action,
             get_state,
             get_session_forest,
