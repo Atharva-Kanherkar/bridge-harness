@@ -477,6 +477,15 @@ pub trait HarnessAdapter: Send + Sync + Any {
     /// when the session's runtime is gone; adapters without per-session state
     /// ignore it.
     fn forget_session(&self, _provider_session_id: &str) {}
+    /// Look again at whatever decides this harness's availability.
+    ///
+    /// A default no-op, because most adapters read availability fresh on every
+    /// descriptor and have nothing recorded to go stale. An adapter that proves
+    /// availability with a handshake and records the answer overrides this to
+    /// take the probe again — off-thread, announcing through the discovery
+    /// notify when it lands — because the recorded answer can be changed by
+    /// things Bridge does not observe, a sign-in above all.
+    fn refresh_availability(&self) {}
 }
 
 pub struct AdapterRegistry {
@@ -585,10 +594,11 @@ impl AdapterRegistry {
         // Cursor discovers itself the same way, and for a stronger reason: its
         // protocol support cannot be read off the filesystem and has to be
         // proved with a handshake, which is not something application setup can
-        // wait on.
-        registry.register(Box::new(cursor_adapter::CursorAdapter::new(notify(
-            &on_discovered,
-        ))))?;
+        // wait on. It keeps the shared notify rather than a one-shot: its probe
+        // is retaken after a sign-in, and each retake announces itself too.
+        registry.register(Box::new(cursor_adapter::CursorAdapter::new(
+            on_discovered,
+        )))?;
         Ok(registry)
     }
 
@@ -605,6 +615,16 @@ impl AdapterRegistry {
         }
         self.adapters.insert(descriptor.id, adapter);
         Ok(())
+    }
+
+    /// Ask one adapter to re-establish its availability.
+    ///
+    /// A no-op for an unknown id: the caller names whichever provider just
+    /// finished a sign-in, and not every provider has a structured adapter.
+    pub fn refresh_availability(&self, id: &str) {
+        if let Some(adapter) = self.adapters.get(id) {
+            adapter.refresh_availability();
+        }
     }
 
     pub fn descriptors(&self) -> Vec<AdapterDescriptor> {
@@ -1165,6 +1185,59 @@ mod tests {
             vec![]
         }
     }
+    #[test]
+    fn refresh_reaches_the_named_adapter_and_ignores_everything_else() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        static REFRESHED: AtomicUsize = AtomicUsize::new(0);
+        struct Refreshing;
+        impl HarnessAdapter for Refreshing {
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+            fn descriptor(&self) -> AdapterDescriptor {
+                AdapterDescriptor {
+                    sandbox_modes: crate::model::SandboxMode::ALL.to_vec(),
+                    id: "refreshing".into(),
+                    label: "Refreshing".into(),
+                    available: true,
+                    auth_state: crate::model::AuthState::Unknown,
+                    version: Some("1".into()),
+                    capabilities: vec!["messages".into()],
+                    unavailable_reason: None,
+                    models: vec![],
+                    default_model: None,
+                }
+            }
+            fn start(&self, _request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+                Err(BridgeError::Invalid("not launched in registry test".into()))
+            }
+            fn resume(&self, _request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+                Err(BridgeError::Invalid("not resumed in registry test".into()))
+            }
+            fn supports_native_resume(&self) -> bool {
+                false
+            }
+            fn normalize(&self, _value: &Value) -> Vec<agent::NormalizedEvent> {
+                vec![]
+            }
+            fn refresh_availability(&self) {
+                REFRESHED.fetch_add(1, Ordering::SeqCst);
+            }
+        }
+        let mut registry = AdapterRegistry {
+            adapters: HashMap::new(),
+        };
+        registry.register(Box::new(Refreshing)).unwrap();
+        registry.register(Box::new(Fake)).unwrap();
+        registry.refresh_availability("refreshing");
+        assert_eq!(REFRESHED.load(Ordering::SeqCst), 1);
+        // The default is a no-op and an unknown id has nothing to do — both
+        // must be safe to call with whatever provider a login pane just ran.
+        registry.refresh_availability("fake");
+        registry.refresh_availability("no-such-provider");
+        assert_eq!(REFRESHED.load(Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn rejects_duplicate_ids() {
         let mut registry = AdapterRegistry {

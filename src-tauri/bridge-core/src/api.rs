@@ -2432,6 +2432,14 @@ pub fn start_provider_login(
                 None => {}
             }
         }
+        // The sign-in that just ended may have changed what a probe would
+        // answer, and an adapter that records its probe would otherwise keep
+        // serving the pre-login one until restart. Unconditional — a cancelled
+        // login re-probes to the same answer — and non-blocking: the fresh
+        // result arrives as its own adapters-changed hint when it lands.
+        core_reader
+            .adapter_registry
+            .refresh_availability(&terminal_reader);
         core_reader.events.publish(CoreEvent::TerminalExited {
             session_id: workspace_reader,
             terminal_id: terminal_reader,

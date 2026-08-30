@@ -1228,21 +1228,27 @@ pub struct CursorAdapter {
     /// handshake, and the background pass and a caller that arrived before it
     /// landed both reach for one — without this they race and spawn two.
     probing: Arc<Mutex<()>>,
+    /// Fired after any off-thread probe lands — the startup pass and every
+    /// refresh — so the host can tell the frontend to re-read availability.
+    /// Kept rather than consumed: a probe is not a once-per-process event.
+    notify: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl CursorAdapter {
-    pub fn new(on_discovered: Option<Box<dyn FnOnce() + Send>>) -> Self {
+    pub fn new(on_discovered: Option<Arc<dyn Fn() + Send + Sync>>) -> Self {
         let adapter = Self {
             probe: Arc::new(RwLock::new(None)),
             probing: Arc::new(Mutex::new(())),
+            notify: on_discovered,
         };
         let probe = adapter.probe.clone();
         let probing = adapter.probing.clone();
+        let notify = adapter.notify.clone();
         let _ = thread::Builder::new()
             .name("cursor-discover".into())
             .spawn(move || {
                 drop(store_probe(&probe, &probing));
-                if let Some(notify) = on_discovered {
+                if let Some(notify) = notify {
                     notify();
                 }
             });
@@ -1291,6 +1297,7 @@ impl CursorAdapter {
                 outcome,
             }))),
             probing: Arc::new(Mutex::new(())),
+            notify: None,
         }
     }
 }
@@ -1315,6 +1322,29 @@ fn store_probe(
             }
         }
     }
+    probe_and_record(cache, located)
+}
+
+/// Probe again even though the build looks unchanged.
+///
+/// [`store_probe`]'s shortcut answers from the cache whenever the recorded
+/// probe describes the executable in front of it — which is exactly wrong after
+/// a sign-in, because logging in changes what a probe answers without changing
+/// the binary's path or version. This is the same probe with the shortcut left
+/// out; the recorded answer stays on the shelf until the fresh one replaces it,
+/// so nothing ever reads an emptied cache mid-refresh.
+fn refresh_probe(
+    cache: &Arc<RwLock<Option<CachedProbe>>>,
+    gate: &Arc<Mutex<()>>,
+) -> Result<CursorProfile, CursorUnavailable> {
+    let _in_flight = gate.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    probe_and_record(cache, locate())
+}
+
+fn probe_and_record(
+    cache: &Arc<RwLock<Option<CachedProbe>>>,
+    located: Result<CursorExecutable, CursorUnavailable>,
+) -> Result<CursorProfile, CursorUnavailable> {
     let (executable, version, outcome) = match located {
         Ok(executable) => {
             let outcome = probe(&executable, PROBE_TIMEOUT);
@@ -1333,6 +1363,27 @@ fn store_probe(
 impl crate::adapters::HarnessAdapter for CursorAdapter {
     fn as_any(&self) -> &dyn std::any::Any {
         self
+    }
+
+    /// Take the probe again, off-thread, and say so when it lands.
+    ///
+    /// The recorded probe is keyed on the binary's path and version, and a
+    /// sign-in changes neither — so without this, a user who signs in through
+    /// Bridge's own pane keeps reading "not signed in" until the process
+    /// restarts. The caller returns immediately; the fresh answer arrives
+    /// through the same notify the startup discovery uses.
+    fn refresh_availability(&self) {
+        let probe = self.probe.clone();
+        let probing = self.probing.clone();
+        let notify = self.notify.clone();
+        let _ = thread::Builder::new()
+            .name("cursor-refresh".into())
+            .spawn(move || {
+                drop(refresh_probe(&probe, &probing));
+                if let Some(notify) = notify {
+                    notify();
+                }
+            });
     }
 
     fn descriptor(&self) -> AdapterDescriptor {
@@ -1644,6 +1695,41 @@ mod tests {
             login_executable_of(unambiguous).unwrap(),
             published.path().join(PUBLISHED_EXECUTABLE)
         );
+    }
+
+    #[test]
+    fn a_refresh_takes_a_new_probe_even_when_the_build_is_unchanged() {
+        let directory = temp_directory();
+        FakeCli::speaking_protocol().install(directory.path(), PUBLISHED_EXECUTABLE);
+        let executable = locate_in(directory.path()).expect("the fake resolves");
+        // Signing in changes neither the path nor the version, so the recorded
+        // probe still describes this exact build — which is the shortcut
+        // store_probe takes, and the reason a refresh must not.
+        let stale = CachedProbe {
+            executable: executable.path.clone(),
+            version: executable.version.clone(),
+            outcome: Err(CursorUnavailable::NeedsSignIn {
+                version: executable.version.clone(),
+            }),
+        };
+        assert!(
+            stale.describes(&executable),
+            "the stale record is exactly what the shortcut would serve"
+        );
+        let cache = Arc::new(RwLock::new(Some(stale)));
+        let refreshed = probe_and_record(&cache, Ok(executable));
+        assert!(
+            refreshed.is_ok(),
+            "a fresh handshake replaces the recorded sign-out: {refreshed:?}"
+        );
+        let recorded = cache
+            .read()
+            .unwrap()
+            .as_ref()
+            .expect("the cache is never emptied mid-refresh")
+            .outcome
+            .clone();
+        assert!(recorded.is_ok(), "the replacement is what later reads serve");
     }
 
     #[test]
