@@ -45,7 +45,6 @@ import { ComposerPill } from "./components/ComposerPill";
 import { activeTurnAction, queuedFollowUps } from "./sessionInput";
 import { BrowserSurface } from "./components/BrowserSurface";
 import { PatchView } from "./components/DiffView";
-import { WorkspaceCreateDialog } from "./components/WorkspaceCreateDialog";
 import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
 import { MemoryDialog, rememberAction } from "./components/MemoryDialog";
@@ -61,6 +60,7 @@ import { pickGreeting } from "./greetings";
 import { useThemePreference } from "./theme";
 import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
 import { readLastWorkspaceId, resolveNewChatWorkspaceId, writeLastWorkspaceId } from "./lastWorkspace";
+import { selectedFolder, workspaceForFolder, workspaceTitleFromFolder } from "./workspaceFolder";
 import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setLayoutFullscreenDocument } from "./windowChrome";
 import { isTypingTarget, matchShortcut, MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
@@ -186,7 +186,6 @@ function AppContent() {
   const [memoryDisclosureOpen, setMemoryDisclosureOpen] = useState(false);
   const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string>();
   const worktreeBySessionRef = useRef(new Map<string, boolean>());
-  const [title, setTitle] = useState("");
   const [composer, setComposer] = useState("");
   const [slashCommands, setSlashCommands] = useState<import("./types").SlashCommand[]>([]);
   const [slashIndex, setSlashIndex] = useState(0);
@@ -1373,12 +1372,34 @@ function AppContent() {
     catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); setModelSwitch(null); }
   }
-  async function submitNewWorkspace() {
-    const name = title.trim(); if (!name) return;
+  async function createWorkspaceFromFolder() {
     setBusy(true); setError(undefined);
     try {
-      const next = await bridgeApi.createWorkspace(name);
-      setState(next); closeModal(); setTitle("");
+      const value = selectedFolder(("__TAURI_INTERNALS__" in window)
+        ? await open({ directory: true, multiple: false, title: "Choose a project folder" })
+        : "/Users/you/Developer/project");
+      if (!value) return;
+
+      const existing = workspaceForFolder(state.workspaces, value);
+      if (existing) {
+        writeLastWorkspaceId(existing.id);
+        setWelcomeWorkspaceId(existing.id);
+        setSelectedSessionId(undefined);
+        setView("workspace");
+        setParadigm("single");
+        return;
+      }
+
+      const createdState = await bridgeApi.createWorkspace(workspaceTitleFromFolder(value));
+      const created = createdState.workspaces.find(item => !state.workspaces.some(workspace => workspace.id === item.id));
+      if (!created) throw new Error("Bridge could not create the selected project.");
+      const next = await bridgeApi.connectWorkspaceFolder(created.id, value);
+      setState(next);
+      writeLastWorkspaceId(created.id);
+      setWelcomeWorkspaceId(created.id);
+      setSelectedSessionId(undefined);
+      setView("workspace");
+      setParadigm("single");
     } catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); }
   }
@@ -1718,8 +1739,7 @@ function AppContent() {
         void startChatInCurrentRepo();
         return;
       case "new-project":
-        setTitle("");
-        openModal("workspace");
+        void createWorkspaceFromFolder();
         return;
       case "interrupt-turn":
         // Reachable mid-sentence, so it has to be inert when nothing is running.
@@ -1910,7 +1930,7 @@ function AppContent() {
         activeSessionId={session?.id}
         busy={busy}
         onOpenSession={openSession}
-        onNewWorkspace={() => { setTitle(""); openModal("workspace"); }}
+        onNewWorkspace={() => void createWorkspaceFromFolder()}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
       /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
@@ -2296,7 +2316,7 @@ function AppContent() {
           // held on the draft (#350), created on submit — not started immediately.
           : { ...resolveDraftHarnessModel(), workspaceId: resolvedWelcomeWorkspaceId, createWorktree: true })}
         onStartChat={(text, initialAttachments) => void startChatOrShortcut(text, initialAttachments)}
-        onNewWorkspace={() => { setTitle(""); openModal("workspace"); }}
+        onNewWorkspace={() => void createWorkspaceFromFolder()}
       />}
     </main>
     </div>
@@ -2324,14 +2344,6 @@ function AppContent() {
       onDismissHint={() => setGithubJumpHint(undefined)}
     />
 
-    <WorkspaceCreateDialog
-      open={modal === "workspace"}
-      title={title}
-      busy={busy}
-      onTitleChange={setTitle}
-      onClose={closeModal}
-      onSubmit={() => void submitNewWorkspace()}
-    />
     <OrchestratorCreateDialog
       open={modal === "orchestrator"}
       workspaceTitle={state.workspaces.find(item => item.id === pendingWorkspaceId)?.title ?? "workspace"}
