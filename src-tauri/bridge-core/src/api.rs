@@ -2326,6 +2326,16 @@ fn provider_login_command(provider: &str) -> Result<CommandBuilder, BridgeError>
             command.args(["login"]);
             Ok(command)
         }
+        // locate() rather than a bare binary::resolve: the ambiguous `agent`
+        // name only counts as Cursor after the identity check, so a login
+        // cannot be launched against an executable that merely shares the name.
+        "cursor" => {
+            let executable = crate::cursor_adapter::locate()
+                .map_err(|unavailable| BridgeError::Invalid(unavailable.reason()))?;
+            let mut command = CommandBuilder::new(executable.path);
+            command.args(["login"]);
+            Ok(command)
+        }
         "opencode" => {
             let binary = binary::resolve("opencode")
                 .ok_or_else(|| BridgeError::Invalid("OpenCode binary is not installed".into()))?;

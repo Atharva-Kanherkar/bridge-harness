@@ -13,6 +13,8 @@ describe("UsageWidget", () => {
     const html = renderToStaticMarkup(<UsageWidget usage={{}} />);
     expect(html).toContain("Codex");
     expect(html).toContain("Claude");
+    expect(html).toContain("Cursor");
+    expect(html).toContain("OpenCode");
     expect(html).toContain("Limit unknown");
     expect(html).not.toContain("0% used");
     expect(html).toContain("pointer-events-none");
@@ -98,10 +100,11 @@ describe("UsageWidget", () => {
     const adapters: AdapterDescriptor[] = [
       adapterFixture("codex", { authState: "signed_out" }),
       adapterFixture("claude"),
+      adapterFixture("cursor"),
       adapterFixture("opencode"),
     ];
     const snapshot: UsageSnapshot = { windows: [{ id: "weekly", label: "Weekly", usedPercent: 40, source: "reported" }], source: "reported", capturedAt: "2026-07-16T10:00:00Z" };
-    const html = renderToStaticMarkup(<UsageWidget usage={{ claude: snapshot, opencode: snapshot }} adapters={adapters} />);
+    const html = renderToStaticMarkup(<UsageWidget usage={{ claude: snapshot, cursor: snapshot, opencode: snapshot }} adapters={adapters} />);
     expect(html).toContain("Not signed in");
     expect(html).not.toContain("Limit unknown");
   });
@@ -127,6 +130,21 @@ describe("UsageWidget", () => {
     expect(html).toContain("not installed");
     expect(html).toContain("codex CLI not found on PATH");
     expect(html).toContain("Not signed in");
+  });
+
+  it("offers sign-in for a signed-out cursor provider instead of a limit guess", () => {
+    const adapters: AdapterDescriptor[] = [
+      adapterFixture("codex"),
+      adapterFixture("claude"),
+      adapterFixture("cursor", { authState: "signed_out" }),
+      adapterFixture("opencode"),
+    ];
+    const snapshot: UsageSnapshot = { windows: [{ id: "weekly", label: "Weekly", usedPercent: 40, source: "reported" }], source: "reported", capturedAt: "2026-07-16T10:00:00Z" };
+    const html = renderToStaticMarkup(<UsageWidget usage={{ codex: snapshot, claude: snapshot, opencode: snapshot }} adapters={adapters} />);
+    expect(html).toContain("Cursor");
+    expect(html).toContain("Not signed in");
+    expect(html).toContain("Sign in");
+    expect(html).not.toContain("Limit unknown");
   });
 
   it("renders no progress arc for not-installed or signed-out providers", () => {

@@ -9,6 +9,7 @@ import { UsageWidget } from "./UsageWidget";
 const adapters: AdapterDescriptor[] = [
   { id: "codex", label: "Codex", available: true, authState: "signed_out", version: "mock", capabilities: [], unavailableReason: null, models: [] },
   { id: "claude", label: "Claude", available: true, authState: "signed_in", version: "mock", capabilities: [], unavailableReason: null, models: [] },
+  { id: "cursor", label: "Cursor", available: true, authState: "signed_in", version: "mock", capabilities: [], unavailableReason: null, models: [] },
   { id: "opencode", label: "OpenCode", available: true, authState: "signed_in", version: "mock", capabilities: [], unavailableReason: null, models: [] },
 ];
 

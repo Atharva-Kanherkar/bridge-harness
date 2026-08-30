@@ -14,6 +14,7 @@ const PANEL_NESTED = "rounded-[calc(var(--radius-2xl)-0.625rem)]";
 const PROVIDERS: Array<{ id: UsageProvider; label: string }> = [
   { id: "codex", label: "Codex" },
   { id: "claude", label: "Claude" },
+  { id: "cursor", label: "Cursor" },
   { id: "opencode", label: "OpenCode" },
 ];
 

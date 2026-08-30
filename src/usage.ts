@@ -29,7 +29,7 @@ export interface UsageSnapshot {
   capturedAt: string;
 }
 
-export type UsageProvider = "claude" | "codex" | "opencode";
+export type UsageProvider = "claude" | "codex" | "cursor" | "opencode";
 
 export interface AccountUsagePayload {
   provider: UsageProvider;
