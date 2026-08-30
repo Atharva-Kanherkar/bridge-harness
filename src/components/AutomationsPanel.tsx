@@ -21,7 +21,7 @@ function relativeTime(epochMs: number | null, now: number): string | null {
 
 type DraftState = SaveAutomationParams & { mode: "create" | "edit" };
 
-export function AutomationsPanel({ initialCatalog, onBrowseCatalog }: { initialCatalog?: AutomationCatalog; onBrowseCatalog?: () => void } = {}) {
+export function AutomationsPanel({ initialCatalog }: { initialCatalog?: AutomationCatalog } = {}) {
   const [catalog, setCatalog] = useState<AutomationCatalog | undefined>(initialCatalog);
   const [provider, setProvider] = useState<AutomationProvider | "all">("all");
   const [status, setStatus] = useState<UnifiedAutomation["status"] | "all">("all");
@@ -100,7 +100,7 @@ export function AutomationsPanel({ initialCatalog, onBrowseCatalog }: { initialC
     <main className="mx-auto w-full max-w-5xl px-3 pb-16 pt-8 sm:px-6 sm:pt-12">
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div className="min-w-0"><h1 className="font-display text-[26px] font-semibold tracking-[-0.025em] text-foreground sm:text-[32px]">Automations</h1><p className="mt-1.5 text-[13.5px] leading-relaxed text-muted-foreground">Manage schedules in each harness's own native store. Bridge never schedules or runs them.</p></div>
-        <div className="flex items-center gap-2">{onBrowseCatalog && <Button size="xs" variant="ghost" onClick={onBrowseCatalog}>Browse catalog</Button>}{canCreateClaude && <Button size="xs" disabled={busy} onClick={openCreate}><Plus size={11}/>New Claude automation</Button>}<Button size="xs" variant="secondary" disabled={busy} onClick={() => void refresh()}><RefreshCw size={11}/>Refresh</Button></div>
+        <div className="flex items-center gap-2">{canCreateClaude && <Button size="xs" disabled={busy} onClick={openCreate}><Plus size={11}/>New Claude automation</Button>}<Button size="xs" variant="secondary" disabled={busy} onClick={() => void refresh()}><RefreshCw size={11}/>Refresh</Button></div>
       </div>
 
       <div className="mt-5 grid gap-2 sm:grid-cols-3" aria-label="Automation provider capabilities">

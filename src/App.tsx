@@ -79,7 +79,6 @@ import { createBridgeQueryClient } from "./queryClient";
 import { useUiStore } from "./uiStore";
 import { useBridgeServerState } from "./serverState";
 
-const AutomationsPanel = lazy(() => import("./components/AutomationsPanel").then(module => ({ default: module.AutomationsPanel })));
 const MarketplaceScreen = lazy(() => import("./components/MarketplaceScreen").then(module => ({ default: module.MarketplaceScreen })));
 const SettingsScreen = lazy(() => import("./components/SettingsScreen").then(module => ({ default: module.SettingsScreen })));
 const WorkView = lazy(() => import("./components/WorkView").then(module => ({ default: module.WorkView })));
@@ -1834,7 +1833,7 @@ function AppContent() {
   const startupError = error ?? (healthError ? errorMessage(healthError) : modelSetupError ? errorMessage(modelSetupError) : undefined);
   if (!health || !modelSetup) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{startupError ? <><X size={14} className="text-destructive" aria-hidden="true" />{startupError}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
   if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard adapters={health.adapters} onComplete={acceptModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
-  const chromeTitle = view === "work" ? "Work" : view === "projects" ? "Projects" : view === "marketplace" ? "Marketplace" : view === "automations" ? "Automations" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge";
+  const chromeTitle = view === "work" ? "Work" : view === "projects" ? "Projects" : view === "marketplace" ? "Marketplace" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -1850,7 +1849,7 @@ function AppContent() {
       workspaces={state.workspaces}
       activeSessionId={session?.id}
       projectsActive={view === "projects"}
-      automationsActive={view === "automations"}
+      marketplaceActive={view === "marketplace"}
       missionControlActive={view === "workspace" && paradigm === "grid"}
       workActive={view === "work"}
       settingsActive={view === "settings"}
@@ -1858,7 +1857,7 @@ function AppContent() {
       newChatBusy={busy}
       onOpenNewChat={() => void startChatInCurrentRepo()}
       onOpenProjects={() => setView("projects")}
-      onOpenAutomations={() => setView("automations")}
+      onOpenMarketplace={() => setView("marketplace")}
       onOpenMissionControl={() => { setView("workspace"); setParadigm("grid"); }}
       onOpenWorkBoard={openWorkBoard}
       onOpenMemory={() => openModal("memory")}
@@ -1914,7 +1913,7 @@ function AppContent() {
         onNewWorkspace={() => { setTitle(""); openModal("workspace"); }}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
-      /> : view === "automations" ? <Suspense fallback={<PanelLoading label="Opening automations…"/>}><AutomationsPanel onBrowseCatalog={() => setView("marketplace")} /></Suspense> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
+      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
         sessions={visibleSessions}
         runtimes={forest?.workerRuntimes ?? []}
         reasons={forest?.reasons ?? []}

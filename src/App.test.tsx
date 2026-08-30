@@ -67,6 +67,9 @@ describe("shell flags", () => {
     expect(source).not.toContain("RightRailPreview");
     expect(source).not.toContain("NewChatDialog");
     expect(source).toContain("BridgeSidebar");
+    expect(source).toContain('onOpenMarketplace={() => setView("marketplace")}');
+    expect(source).not.toContain('setView("automations")');
+    expect(source).not.toContain('view === "automations"');
     expect(source).toContain("chromeFullscreen");
     expect(source).toContain("data-flush-window");
     expect(source).toContain("setLayoutFullscreenDocument");

@@ -36,10 +36,8 @@ describe("placesEqual", () => {
     expect(placesEqual(workspace("a"), { view: "work", sessionId: "a", paradigm: "single" })).toBe(false);
   });
 
-  it("treats automations as a distinct view from marketplace", () => {
-    expect(placesEqual(
-      { view: "automations", sessionId: null, paradigm: "single" },
-      { view: "marketplace", sessionId: null, paradigm: "single" },
-    )).toBe(false);
+  it("keeps Marketplace as the single catalog and automations destination", () => {
+    const marketplace: AppPlace = { view: "marketplace", sessionId: null, paradigm: "single" };
+    expect(recordPlace([marketplace], 0, marketplace)).toEqual({ stack: [marketplace], index: 0 });
   });
 });
