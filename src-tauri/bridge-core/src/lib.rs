@@ -14,6 +14,7 @@ pub mod agent;
 pub mod agent_config;
 pub mod agent_integration;
 pub mod agent_lifecycle;
+pub mod analytics;
 pub mod api;
 pub mod automations;
 pub mod backend_binding;
