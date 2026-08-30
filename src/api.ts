@@ -1446,6 +1446,17 @@ export const bridgeApi = {
     const workspace = mockState.workspaces.find(item => item.id === workspaceId); if (workspace) { workspace.path = path; workspace.branch = "main"; }
     emitState(); return snapshot();
   },
+  cloneWorkspaceRepo: async (url: string, destination?: string): Promise<BridgeState> => {
+    if (isTauri()) return call("workspaces/clone_workspace_repo", { url, destination: destination || null });
+    const title = url.trim().replace(/\/$/, "").split(/[/:]/).pop()?.replace(/\.git$/, "") || "project";
+    const id = crypto.randomUUID(); mockState.workspaces.push({ id, title, status: "idle", path: destination || `/tmp/bridge/projects/${title}`, projectId: id, city: "Kyoto", branch: "main", dirtyFiles: 0, additions: 0, deletions: 0, createdAt: new Date().toISOString() }); emitState(); return snapshot();
+  },
+  searchGithubRepos: (query: string) => isTauri()
+    ? call("workspaces/search_github_repos", { query }).then(result => result.repositories)
+    : Promise.resolve([{ nameWithOwner: `bridge/${query}`, url: `https://github.com/bridge/${query}`, sshUrl: `git@github.com:bridge/${query}.git`, isPrivate: false, pushedAt: null }]),
+  locateWorkspaceFolders: (query: string, searchRoots: string[]) => isTauri()
+    ? call("workspaces/locate_workspace_folders", { query, searchRoots }).then(result => result.candidates)
+    : Promise.resolve([`/Users/you/Developer/${query}`]),
   startChat: async (sessionId: string): Promise<BridgeState> => {
     if (isTauri()) return call("sessions/start_chat", { sessionId });
     const session = mockState.sessions.find(item => item.id === sessionId);

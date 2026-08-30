@@ -63,6 +63,7 @@ pub mod ownership;
 pub mod policy;
 pub mod policy_coordinator;
 pub mod policy_replay;
+pub mod project_onboarding;
 pub mod process_ledger;
 pub mod prompt_authority;
 pub mod prompt_compiler;

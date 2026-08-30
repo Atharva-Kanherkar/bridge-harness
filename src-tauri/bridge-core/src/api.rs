@@ -466,6 +466,18 @@ pub fn connect_workspace_folder(
     core.connect_workspace_folder(workspace_id, path)
 }
 
+pub fn clone_workspace_repo(core: &Arc<BridgeCore>, url: &str, destination: Option<&str>) -> Result<BridgeState, BridgeError> {
+    core.clone_workspace_repo(url, destination)
+}
+
+pub fn search_github_repos(query: &str) -> Result<bridge_protocol::messages::SearchGithubReposResult, BridgeError> {
+    Ok(bridge_protocol::messages::SearchGithubReposResult { repositories: crate::project_onboarding::search_github_repos(query)? })
+}
+
+pub fn locate_workspace_folders(query: &str, search_roots: &[String]) -> Result<bridge_protocol::messages::LocateWorkspaceFoldersResult, BridgeError> {
+    Ok(bridge_protocol::messages::LocateWorkspaceFoldersResult { candidates: crate::project_onboarding::locate_folders(query, search_roots)? })
+}
+
 /// List the current chat's workspace files for the composer's `@file`
 /// autocomplete. Returns an empty list for chats with no connected folder.
 pub fn list_workspace_files(
