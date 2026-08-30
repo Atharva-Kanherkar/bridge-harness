@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
+import { bridgeApi } from "./api";
 
 // The composer's `+` control, exercised through the real App against the api
 // layer's mock backend. The unit tests in ComposerPill.test.tsx cover what the
@@ -49,8 +50,8 @@ afterEach(() => {
   container?.remove();
 });
 
-// By placeholder, not by position: the workspace dialog brings its own fields,
-// and "the first textarea on the page" stops meaning the composer once it opens.
+// By placeholder, not by position: the welcome surface and a connected project
+// both render a composer.
 const composerField = () => [...container.querySelectorAll<HTMLTextAreaElement>("textarea")]
   .find(field => field.placeholder.startsWith("Ask Bridge"));
 
@@ -66,22 +67,25 @@ async function type(field: HTMLTextAreaElement, text: string) {
 }
 
 describe("the composer's + control inside the app", () => {
-  it("opens the workspace dialog from the welcome surface and leaves the draft alone", async () => {
+  it("opens the folder-first project flow from the welcome surface and leaves the draft alone", async () => {
     const composer = composerField();
     expect(composer, "the app mounted with a composer").not.toBeNull();
 
     await type(composer!, "keep this draft");
     expect(composerField()!.value).toBe("keep this draft");
 
-    // The welcome surface has no conversation and no folder, so there is nothing
-    // to attach to; here the control keeps the structural action its label names.
+    const create = vi.spyOn(bridgeApi, "createWorkspace");
+    const connect = vi.spyOn(bridgeApi, "connectWorkspaceFolder");
+    // The welcome surface has no conversation and no folder, so the control
+    // creates a connected project rather than treating itself as an attachment.
     const plus = container.querySelector<HTMLButtonElement>('button[aria-label="New workspace"]');
     expect(plus, "the + control is present").not.toBeNull();
     await act(async () => plus!.click());
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
 
-    // The dialog its label promises, and the words the user was holding.
-    expect(container.textContent).toMatch(/workspace/i);
+    expect(create).toHaveBeenCalledWith("project");
+    expect(connect).toHaveBeenCalledOnce();
+    expect(container.textContent).not.toContain("Workspace name");
     expect(composerField()!.value).toBe("keep this draft");
   });
 });
