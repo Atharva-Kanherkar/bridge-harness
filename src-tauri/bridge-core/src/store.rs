@@ -9,7 +9,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 43;
+const LATEST_SCHEMA_VERSION: i64 = 44;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -447,6 +447,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             41 => migration_41_routing_evaluation_runs(&transaction)?,
             42 => migration_42_memory_consolidation(&transaction)?,
             43 => migration_43_interaction_resolutions(&transaction)?,
+            44 => migration_44_agent_usage_analytics(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -459,6 +460,104 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
         )?;
         transaction.commit()?;
     }
+    Ok(())
+}
+
+fn migration_44_agent_usage_analytics(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    // This index intentionally has no foreign keys to workspaces or the
+    // Bridge-owned usage ledger. It represents source-owned, device-wide facts
+    // and must survive workspace deletion or source-file disappearance.
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS agent_usage_sources (
+            id TEXT PRIMARY KEY,
+            agent TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            location_fingerprint TEXT NOT NULL UNIQUE,
+            detected_version TEXT,
+            format_version TEXT,
+            scan_cursor TEXT,
+            coverage_start_at TEXT,
+            coverage_end_at TEXT,
+            coverage_state TEXT NOT NULL CHECK (coverage_state IN ('complete','partial','stale','unsupported','unreadable','empty')),
+            coverage_reason TEXT,
+            records_imported INTEGER NOT NULL DEFAULT 0 CHECK (records_imported >= 0),
+            records_skipped INTEGER NOT NULL DEFAULT 0 CHECK (records_skipped >= 0),
+            last_successful_scan_at TEXT,
+            last_error TEXT,
+            importer_version TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_usage_sources_coverage ON agent_usage_sources(coverage_state,updated_at DESC);
+
+        CREATE TABLE IF NOT EXISTS agent_usage_sessions (
+            id TEXT PRIMARY KEY,
+            source_id TEXT NOT NULL REFERENCES agent_usage_sources(id),
+            native_session_id TEXT NOT NULL,
+            parent_native_session_id TEXT,
+            agent TEXT NOT NULL,
+            provider TEXT NOT NULL,
+            model TEXT,
+            project_label TEXT,
+            project_path_fingerprint TEXT,
+            session_type TEXT,
+            started_at TEXT,
+            ended_at TEXT,
+            outcome TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            UNIQUE(source_id,native_session_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_usage_sessions_source_time ON agent_usage_sessions(source_id,started_at DESC);
+
+        CREATE TABLE IF NOT EXISTS agent_usage_observations (
+            id TEXT PRIMARY KEY,
+            source_id TEXT NOT NULL REFERENCES agent_usage_sources(id),
+            session_id TEXT REFERENCES agent_usage_sessions(id),
+            native_record_id TEXT NOT NULL,
+            occurred_at TEXT NOT NULL,
+            model TEXT,
+            input_semantics TEXT NOT NULL,
+            output_semantics TEXT NOT NULL,
+            total_input_tokens INTEGER CHECK (total_input_tokens IS NULL OR total_input_tokens >= 0),
+            uncached_input_tokens INTEGER CHECK (uncached_input_tokens IS NULL OR uncached_input_tokens >= 0),
+            cache_read_tokens INTEGER CHECK (cache_read_tokens IS NULL OR cache_read_tokens >= 0),
+            cache_write_tokens INTEGER CHECK (cache_write_tokens IS NULL OR cache_write_tokens >= 0),
+            output_tokens INTEGER CHECK (output_tokens IS NULL OR output_tokens >= 0),
+            reasoning_tokens INTEGER CHECK (reasoning_tokens IS NULL OR reasoning_tokens >= 0),
+            tool_use_tokens INTEGER CHECK (tool_use_tokens IS NULL OR tool_use_tokens >= 0),
+            provider_reported_total_tokens INTEGER CHECK (provider_reported_total_tokens IS NULL OR provider_reported_total_tokens >= 0),
+            exact_total_formula TEXT NOT NULL,
+            reported_cost_microusd INTEGER CHECK (reported_cost_microusd IS NULL OR reported_cost_microusd >= 0),
+            calculated_cost_microusd INTEGER CHECK (calculated_cost_microusd IS NULL OR calculated_cost_microusd >= 0),
+            cost_source TEXT,
+            pricing_source TEXT,
+            pricing_version TEXT,
+            pricing_effective_at TEXT,
+            pricing_model_id TEXT,
+            pricing_rates_json TEXT,
+            numeric_usage_json TEXT NOT NULL DEFAULT '{}',
+            source_file_fingerprint TEXT,
+            importer_version TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(source_id,native_record_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_usage_observations_time ON agent_usage_observations(occurred_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_agent_usage_observations_source_session ON agent_usage_observations(source_id,session_id,occurred_at DESC);
+
+        CREATE TABLE IF NOT EXISTS agent_usage_attributions (
+            id TEXT PRIMARY KEY,
+            source_id TEXT NOT NULL REFERENCES agent_usage_sources(id),
+            session_id TEXT REFERENCES agent_usage_sessions(id),
+            observation_id TEXT REFERENCES agent_usage_observations(id),
+            attribution_kind TEXT NOT NULL CHECK (attribution_kind IN ('skill','slash_command','tool','mcp_server','agent_role')),
+            attribution_value TEXT NOT NULL,
+            attribution_source TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            UNIQUE(source_id,session_id,observation_id,attribution_kind,attribution_value,attribution_source)
+        );
+        CREATE INDEX IF NOT EXISTS idx_agent_usage_attributions_lookup ON agent_usage_attributions(attribution_kind,attribution_value);",
+    )?;
     Ok(())
 }
 
@@ -4823,5 +4922,108 @@ mod tests {
         assert!(!has_versions);
         drop(raw);
         reader.execute_batch("ROLLBACK").unwrap();
+    }
+
+    // Issue #400 foundation: a whole-Mac analytics index that is structurally
+    // separate from the workspace-scoped usage ledger. These tests lock the
+    // schema and its independence before any importer exists to fill it.
+    #[test]
+    fn opening_a_database_creates_the_analytics_schema_with_dedupe_indexes() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+
+        let version: i64 = db
+            .query_row("SELECT MAX(version) FROM schema_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, LATEST_SCHEMA_VERSION);
+
+        for table in [
+            "agent_usage_sources",
+            "agent_usage_sessions",
+            "agent_usage_observations",
+            "agent_usage_attributions",
+        ] {
+            let exists: bool = db
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    params![table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists, "{table} is missing after migration");
+        }
+
+        // Dedupe constraints: the same native record cannot be indexed twice,
+        // and a source location is admitted once under one fingerprint.
+        db.execute_batch(
+            "INSERT INTO agent_usage_sources(id,agent,provider,location_fingerprint,coverage_state,importer_version,created_at,updated_at)
+                 VALUES('s1','codex','openai','sha256:loc','empty','test','now','now');
+             INSERT INTO agent_usage_observations(id,source_id,native_record_id,occurred_at,input_semantics,output_semantics,exact_total_formula,importer_version,created_at)
+                 VALUES('o1','s1','rec-1','t','inclusive','delta','provider_reported','test','now');",
+        )
+        .unwrap();
+        let duplicate_record = db.execute(
+            "INSERT INTO agent_usage_observations(id,source_id,native_record_id,occurred_at,input_semantics,output_semantics,exact_total_formula,importer_version,created_at)
+                 VALUES('o2','s1','rec-1','t','inclusive','delta','provider_reported','test','now');",
+            [],
+        );
+        assert!(
+            duplicate_record.is_err(),
+            "a duplicate (source_id, native_record_id) was accepted"
+        );
+        let duplicate_location = db.execute(
+            "INSERT INTO agent_usage_sources(id,agent,provider,location_fingerprint,coverage_state,importer_version,created_at,updated_at)
+                 VALUES('s2','claude','anthropic','sha256:loc','empty','test','now','now');",
+            [],
+        );
+        assert!(
+            duplicate_location.is_err(),
+            "a duplicate location fingerprint was accepted"
+        );
+    }
+
+    #[test]
+    fn workspace_deletion_leaves_whole_mac_analytics_indexed() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        db.execute_batch(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/demo','now');
+             INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at)
+                 VALUES('w','p','Kyoto','Task','bridge/task',NULL,'idle','now');
+             INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source)
+                 VALUES('ws-session','w','codex','Codex','idle','reported');
+             INSERT INTO usage_ledger(session_id,workspace_id,source,created_at)
+                 VALUES('ws-session','w','test','now');
+             INSERT INTO agent_usage_sources(id,agent,provider,location_fingerprint,coverage_state,importer_version,created_at,updated_at)
+                 VALUES('src','codex','openai','sha256:loc','complete','test','now','now');
+             INSERT INTO agent_usage_observations(id,source_id,native_record_id,occurred_at,input_semantics,output_semantics,exact_total_formula,importer_version,created_at)
+                 VALUES('obs','src','rec-1','t','inclusive','delta','provider_reported','test','now');",
+        )
+        .unwrap();
+
+        // The same cleanup a workspace deletion performs on the legacy ledger:
+        // usage rows and their sessions are workspace-owned and go with it.
+        let tx = db.unchecked_transaction().unwrap();
+        tx.execute("DELETE FROM usage_ledger WHERE workspace_id='w'", [])
+            .unwrap();
+        tx.execute("DELETE FROM sessions WHERE workspace_id='w'", [])
+            .unwrap();
+        tx.execute("DELETE FROM workspaces WHERE id='w'", []).unwrap();
+        tx.commit().unwrap();
+
+        let ledger_rows: i64 = db
+            .query_row("SELECT COUNT(*) FROM usage_ledger", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(ledger_rows, 0, "legacy ledger rows follow their workspace");
+
+        let analytics_rows: i64 = db
+            .query_row("SELECT COUNT(*) FROM agent_usage_observations", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            analytics_rows, 1,
+            "device-wide analytics never belong to a workspace and must survive deletion"
+        );
     }
 }
