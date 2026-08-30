@@ -15,6 +15,7 @@ import { activeTurnAction } from "../sessionInput";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "../pasteAttachments";
 import { cn } from "@/lib/utils";
 import type { AdapterDescriptor, AgentEvent, ApprovalDecision, Harness, Session, SessionForestSnapshot } from "../types";
+import type { InteractionResolutionResult, QuestionAction } from "../protocol/generated/protocol";
 
 // An aside: a standalone chat the user delegated to another agent from inside
 // a conversation, shown as a panel floating over that conversation instead of
@@ -24,7 +25,7 @@ import type { AdapterDescriptor, AgentEvent, ApprovalDecision, Harness, Session,
 // real chat in the sidebar after the panel closes. The panel is the delegation
 // surface, not the session's home; reopening later is ordinary navigation.
 
-export function AsideChat({ session, adapters, events, pendingMessages, working, modelSwitch = null, onSend, onChangeModel, onResolve, onPromote, onClose }: {
+export function AsideChat({ session, adapters, events, pendingMessages, working, modelSwitch = null, lifecycle, initialDraft, onSend, onChangeModel, onResolve, onAnswerQuestion = async () => undefined, onPromote, onClose }: {
   session: Session;
   /** The chat adapters, for the header model picker. */
   adapters: AdapterDescriptor[];
@@ -35,12 +36,16 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   /** This aside's model switch in flight, for the same "Switching to …"
    *  narration the main conversation shows. */
   modelSwitch?: { harness: string; label: string } | null;
+  lifecycle?: { phase: string; handoffStatus?: string; fidelity?: string; error?: string };
+  /** A first delivery that failed is handed back to this panel for retry. */
+  initialDraft?: string;
   onSend: (text: string, attachments?: ComposerAttachment[]) => Promise<void>;
   /** Pick which model the side chat runs on; applies on the next message.
    *  May reject — the panel wears the failure itself, because the main error
    *  banner sits behind the scrim where nobody is looking. */
   onChangeModel: (harness: Harness, model: string | null) => void | Promise<void>;
-  onResolve: (eventId: number, decision: ApprovalDecision) => void;
+  onResolve: (eventId: number, decision: ApprovalDecision, optionId?: string) => Promise<InteractionResolutionResult | void> | void;
+  onAnswerQuestion?: (eventId: number, action: QuestionAction, answers: Record<string, string[]>) => Promise<InteractionResolutionResult | void> | void;
   /** Make the aside the active session and close the panel. */
   onPromote: () => void;
   onClose: () => void;
@@ -49,9 +54,14 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   const [forest, setForest] = useState<SessionForestSnapshot>();
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [composerError, setComposerError] = useState<string>();
+  const [sending, setSending] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const forestKeyRef = useRef("");
   const ownEvents = events.filter(event => event.sessionId === session.id);
+
+  useEffect(() => {
+    if (initialDraft) setDraft(current => current || initialDraft);
+  }, [initialDraft]);
 
   // The durable side of the transcript: without it the handoff brief the aside
   // was created around is invisible, because the brief is a forest entry and
@@ -94,12 +104,24 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   }, [onClose]);
 
   async function send() {
+    if (sending) return;
     const text = draft.trim();
     const sentAttachments = attachments;
     if (!text && sentAttachments.length === 0) return;
+    setSending(true);
+    setComposerError(undefined);
     setDraft("");
     setAttachments([]);
-    await onSend(text, sentAttachments);
+    try {
+      await onSend(text, sentAttachments);
+    } catch (error) {
+      setDraft(text);
+      setAttachments(sentAttachments);
+      setComposerError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSending(false);
+      inputRef.current?.focus();
+    }
   }
 
   // Mirrors the main composer's `handleComposerPaste`: clipboard images become
@@ -215,10 +237,18 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
             pendingMessages={pendingMessages}
             modelSwitch={modelSwitch}
             onResolve={onResolve}
+            onAnswerQuestion={onAnswerQuestion}
           />
         </div>
 
         <footer className="shrink-0 border-t border-border p-3">
+          {lifecycle?.handoffStatus && <p className="mb-2 px-1 text-[11px] text-muted-foreground">
+            {lifecycle.handoffStatus === "carried" ? "Context carried" : "No prior context available"}
+            {lifecycle.fidelity === "projected_at_boundary" ? " · projected at the handoff boundary" : ""}
+          </p>}
+          {lifecycle?.phase === "switching" && <p className="mb-2 px-1 text-[11px] text-muted-foreground">Preparing a handoff and switching models. This can take up to 30 seconds…</p>}
+          {sending && <p className="mb-2 px-1 text-[11px] text-muted-foreground">Sending…</p>}
+          {lifecycle?.error && !composerError && <p className="mb-2 px-1 text-[11px] text-destructive">{lifecycle.error} You can retry below.</p>}
           {composerError && <p className="mb-2 px-1 text-[11px] text-destructive">{composerError}</p>}
           <ComposerPill
             layout="dock"
@@ -230,6 +260,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
             attachments={attachments}
             onRemoveAttachment={id => setAttachments(current => current.filter(attachment => attachment.id !== id))}
             placeholder={`Ask ${harnessLabel(session.harness)}…`}
+            disabled={sending}
             working={working}
             activeAction={activeTurnAction(adapters.find(adapter => adapter.id === session.harness)?.capabilities)}
             onPlusClick={() => void attachFile()}

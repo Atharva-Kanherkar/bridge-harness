@@ -9,7 +9,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 42;
+const LATEST_SCHEMA_VERSION: i64 = 43;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -446,6 +446,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             40 => migration_40_prompt_compilation_accounting(&transaction)?,
             41 => migration_41_routing_evaluation_runs(&transaction)?,
             42 => migration_42_memory_consolidation(&transaction)?,
+            43 => migration_43_interaction_resolutions(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -1180,6 +1181,34 @@ fn migration_41_routing_evaluation_runs(
 fn migration_42_memory_consolidation(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     crate::memory_ledger::install_validity_intervals(transaction)?;
     crate::memory_consolidation::install(transaction)
+}
+
+/// Single-owner durable claims for provider permissions and questions.
+///
+/// The primary key is the immutable request entry. A claim commits before any
+/// provider response, so another window/process/retry observes ownership and
+/// cannot send a second answer. `status='settling'` deliberately survives a
+/// crash: an uncertain external side effect is never retried automatically.
+fn migration_43_interaction_resolutions(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS interaction_resolutions (
+            session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+            request_sequence INTEGER NOT NULL,
+            interaction_kind TEXT NOT NULL,
+            status TEXT NOT NULL,
+            decision TEXT NOT NULL,
+            option_id TEXT,
+            resolved_by TEXT NOT NULL,
+            reason TEXT,
+            result_event_sequence INTEGER,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL,
+            PRIMARY KEY(session_id, request_sequence)
+        );
+        CREATE INDEX IF NOT EXISTS interaction_resolutions_status
+            ON interaction_resolutions(status, updated_at);",
+    )?;
+    Ok(())
 }
 
 fn migration_39_learning_tunables(transaction: &Transaction<'_>) -> Result<(), BridgeError> {

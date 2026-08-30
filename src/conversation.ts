@@ -1,6 +1,6 @@
 import type { AgentEvent, SessionEntry } from "./types";
 
-export type ConversationItemType = "message" | "reasoning" | "activity" | "plan" | "approval" | "error" | "diff" | "artifact" | "delegation" | "checkpoint" | "compaction" | "branch-summary" | "raw";
+export type ConversationItemType = "message" | "reasoning" | "activity" | "plan" | "approval" | "permission" | "question" | "error" | "diff" | "artifact" | "delegation" | "checkpoint" | "compaction" | "branch-summary" | "raw";
 export interface ConversationItem {
   key: string; type: ConversationItemType; eventId: number; role?: string; status?: string;
   title?: string; text: string; data: Record<string, unknown>; sequence: number; entryId?: string;
@@ -42,6 +42,7 @@ const LIFECYCLE_KINDS = new Set([
 export function projectSessionConversation(entries: SessionEntry[], activeLeafId: string | null): ConversationItem[] {
   const items: ConversationItem[] = [];
   const approvalsBySequence = new Map<number, ConversationItem>();
+  const interactionsBySequence = new Map<string, ConversationItem>();
   const lifecycleByItemId = new Map<string, ConversationItem>();
   for (const entry of selectActiveBranch(entries, activeLeafId)) {
     if (entry.semanticSchemaVersion < 1 || entry.semanticSchemaVersion > 2) {
@@ -66,6 +67,17 @@ export function projectSessionConversation(entries: SessionEntry[], activeLeafId
         continue;
       }
     }
+    const interactionKind = interactionType(entry.kind);
+    if (interactionKind && !entry.kind.endsWith(".requested")) {
+      const nested = objectValue(entry.payload.data);
+      const requestEventId = Number(entry.payload.requestEventId ?? nested.requestEventId);
+      const request = interactionsBySequence.get(`${interactionKind}:${requestEventId}`);
+      if (request) {
+        request.status = stringValue(entry.payload.status) ?? stringValue(nested.status) ?? stringValue(nested.decision) ?? "resolved";
+        request.data = { ...request.data, ...nested, resolution: entry.payload };
+        continue;
+      }
+    }
     const item = projectSessionEntry(entry);
     // Tool calls are stored as separate started/completed entries — fold them
     // into a single row so a stale "inProgress" ghost never lingers.
@@ -84,6 +96,9 @@ export function projectSessionConversation(entries: SessionEntry[], activeLeafId
     }
     items.push(item);
     if (entry.kind === "approval.requested") approvalsBySequence.set(entry.sequence, item);
+    if (interactionKind && entry.kind.endsWith(".requested")) {
+      interactionsBySequence.set(`${interactionKind}:${entry.sequence}`, item);
+    }
   }
   return items;
 }
@@ -137,7 +152,7 @@ function projectSessionEntry(entry: SessionEntry): ConversationItem {
         // has always typed it that way; the durable projection called it plain
         // activity, so a patch replayed from history lost the one label that
         // says "render me as a diff" and came back as a generic tool row.
-        type: entry.kind === "approval.requested" || entry.kind === "approval.resolved" ? "approval" : entry.kind === "artifact.created" ? "artifact" : entry.kind.startsWith("delegation.") || entry.kind === "worker.result" ? "delegation" : entry.kind.startsWith("file_change.") || entry.kind.startsWith("diff.") ? "diff" : "activity",
+        type: interactionType(entry.kind) ?? (entry.kind === "approval.requested" || entry.kind === "approval.resolved" ? "approval" : entry.kind === "artifact.created" ? "artifact" : entry.kind.startsWith("delegation.") || entry.kind === "worker.result" ? "delegation" : entry.kind.startsWith("file_change.") || entry.kind.startsWith("diff.") ? "diff" : "activity"),
         role: stringValue(payload.role),
         title: stringValue(payload.title) ?? humanizeKind(entry.kind),
         text: stringValue(payload.text) ?? stringValue(payload.summary) ?? stringValue(payload.reason) ?? "",
@@ -167,6 +182,12 @@ function stringValue(value: unknown): string | undefined {
 
 function objectValue(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function interactionType(kind: string): "permission" | "question" | undefined {
+  if (kind.startsWith("permission.")) return "permission";
+  if (kind.startsWith("question.")) return "question";
+  return undefined;
 }
 
 function humanizeKind(kind: string): string {
@@ -237,6 +258,29 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
     }
     if (event.kind === "approval.resolved") {
       const requestId = Number(event.data.requestEventId); const approval = items.get(`approval:${requestId}`); if (approval) approval.status = String(event.data.decision ?? event.status ?? "resolved"); continue;
+    }
+    const interactionKind = interactionType(event.kind);
+    if (interactionKind && event.kind.endsWith(".requested")) {
+      items.set(`${interactionKind}:${event.id}`, {
+        key: `${interactionKind}:${event.id}`,
+        type: interactionKind,
+        eventId: event.id,
+        status: event.status ?? "pending",
+        title: event.title ?? (interactionKind === "permission" ? "Permission required" : "Question"),
+        text: event.text ?? "",
+        data: event.data,
+        sequence: event.sequence,
+      });
+      continue;
+    }
+    if (interactionKind) {
+      const requestId = Number(event.data.requestEventId);
+      const interaction = items.get(`${interactionKind}:${requestId}`);
+      if (interaction) {
+        interaction.status = event.status ?? String(event.data.decision ?? "resolved");
+        interaction.data = { ...interaction.data, ...event.data, resolution: event };
+      }
+      continue;
     }
     const type: ConversationItemType = event.kind.startsWith("message.") ? "message" : event.kind.startsWith("reasoning.") ? "reasoning" : event.kind.startsWith("diff.") || event.kind.startsWith("file_change.") ? "diff" : event.kind.startsWith("artifact.") ? "artifact" : event.kind === "error" ? "error" : "activity";
     if (type === "reasoning" && !(event.text || stringList(event.data.summary))) continue;

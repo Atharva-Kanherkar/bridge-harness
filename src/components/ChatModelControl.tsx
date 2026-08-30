@@ -52,7 +52,10 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [open]);
-  const chatAdapters = adapters.filter(adapter => ["codex", "claude", "opencode"].includes(adapter.id));
+  // The backend descriptor is the authority. A provider is a chat runtime when
+  // it advertises messages or a model catalog; adding a new adapter must not
+  // require another frontend provider-name allowlist.
+  const chatAdapters = adapters.filter(adapter => adapter.capabilities.includes("messages") || adapter.models.length > 0);
   const current = chatAdapters.find(adapter => adapter.id === harness);
   const currentModel = current?.models.find(option => option.id === model) ?? current?.models.find(option => option.defaultForTier) ?? current?.models[0];
   const modelLabel = (currentModel?.label ?? model ?? "Default").replace(UNLIMITED_SUFFIX, "");

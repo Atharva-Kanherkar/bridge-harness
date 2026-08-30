@@ -15,7 +15,7 @@ import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
 import { ComposerContextStrip } from "./components/ComposerContextStrip";
 import { ProjectsScreen } from "./components/ProjectsScreen";
-import type { SuggestCompletionResult, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
+import type { QuestionAction, SuggestCompletionResult, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
 import { isHiddenSession } from "./components/sidebarChats";
@@ -125,6 +125,17 @@ type NewChatDraft = {
   carryFromSessionId?: string;
 };
 
+type AsidePhase = "creating" | "handing_off" | "ready" | "switching" | "failed" | "cancelled" | "closed";
+type AsideLifecycle = {
+  sourceSessionId: string;
+  sessionId?: string;
+  phase: AsidePhase;
+  handoffStatus?: string;
+  fidelity?: string;
+  error?: string;
+  recoveryDraft?: string;
+};
+
 export function App() {
   const [queryClient] = useState(createBridgeQueryClient);
   return <QueryClientProvider client={queryClient}><AppContent /></QueryClientProvider>;
@@ -211,8 +222,8 @@ function AppContent() {
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   /** A model switch in flight, so the conversation can narrate it honestly. */
   const [modelSwitch, setModelSwitch] = useState<{ sessionId: string; harness: string; label: string } | null>(null);
-  /** An aside open over the current conversation - see `openHarnessShortcut`. */
-  const [asideChatId, setAsideChatId] = useState<string>();
+  /** Exact source/aside ownership and lifecycle - see `openHarnessShortcut`. */
+  const [asideLifecycle, setAsideLifecycle] = useState<AsideLifecycle>();
   // The composer's inline typeahead. Loaded once and kept fresh by Settings'
   // own save path (`onSuggestionSettingsChange`) — off by default, so no
   // request fires until the user opts in.
@@ -542,13 +553,13 @@ function AppContent() {
     () => state.sessions.find(candidate => candidate.id === expandedWorkerId),
     [expandedWorkerId, state.sessions],
   );
-  const asideSession = useMemo(
-    () => state.sessions.find(candidate => candidate.id === asideChatId),
-    [asideChatId, state.sessions],
-  );
+  const asideSession = useMemo(() => {
+    if (!asideLifecycle || asideLifecycle.sourceSessionId !== session?.id) return undefined;
+    return state.sessions.find(candidate => candidate.id === asideLifecycle.sessionId);
+  }, [asideLifecycle, session?.id, state.sessions]);
   const asidePending = useMemo(
-    () => pending.filter(item => item.sessionId === asideChatId).map(item => item.text),
-    [pending, asideChatId],
+    () => pending.filter(item => item.sessionId === asideLifecycle?.sessionId).map(item => item.text),
+    [pending, asideLifecycle?.sessionId],
   );
   const pendingForSession = useMemo(() => pending.filter(p => p.sessionId === session?.id).map(p => p.text), [pending, session?.id]);
   const pendingForSessionAttachments = useMemo(
@@ -874,6 +885,7 @@ function AppContent() {
     setNewChatDraft(null);
     setSelectedSessionId(id);
     setExpandedWorkerId(undefined);
+    setAsideLifecycle(current => current?.sourceSessionId === id ? current : undefined);
     const opened = state.sessions.find(candidate => candidate.id === id);
     if (opened?.workspaceId) writeLastWorkspaceId(opened.workspaceId);
   }
@@ -1159,19 +1171,45 @@ function AppContent() {
     }
     newChatPendingRef.current = true;
     setError(undefined);
+    setAsideLifecycle({ sourceSessionId: carryFromSessionId, phase: "creating" });
     try {
       const title = text.length > 64 ? `${text.slice(0, 63).trimEnd()}…` : text;
-      const next = await bridgeApi.createChat(adapter.id as Harness, model, title);
-      const created = [...next.sessions].reverse().find(item => !item.parentSessionId && !item.workspaceId);
-      if (!created) { setState(next); return; }
-      // Carry before the first send: the brief must be in the forest before
-      // the cold start compiles its prompt, same as `submitNewChatDraft`.
-      try { await bridgeApi.carrySessionHandoff(created.id, carryFromSessionId); }
-      catch { /* context carry is best-effort; the aside starts regardless */ }
-      setState(next);
-      setAsideChatId(created.id);
-      await deliverPrompt(created, text);
-    } catch (e) { setError(errorMessage(e)); }
+      const result = await bridgeApi.createAsideChat(carryFromSessionId, adapter.id as Harness, model, title);
+      setAsideLifecycle({
+        sourceSessionId: result.sourceSessionId,
+        sessionId: result.sessionId,
+        phase: "handing_off",
+        handoffStatus: result.handoffStatus,
+        fidelity: result.fidelity,
+      });
+      setState(result.state);
+      const created = result.state.sessions.find(item => item.id === result.sessionId);
+      if (!created) throw new Error("Bridge created the aside but did not return its session");
+      setAsideLifecycle({
+        sourceSessionId: result.sourceSessionId,
+        sessionId: result.sessionId,
+        phase: "ready",
+        handoffStatus: result.handoffStatus,
+        fidelity: result.fidelity,
+      });
+      try {
+        await deliverPrompt(created, text);
+      } catch (e) {
+        const message = errorMessage(e);
+        setAsideLifecycle(current => current && {
+          ...current,
+          phase: "failed",
+          error: message,
+          recoveryDraft: text,
+        });
+        throw e;
+      }
+    } catch (e) {
+      const message = errorMessage(e);
+      setError(message);
+      setAsideLifecycle(current => current && { ...current, phase: "failed", error: message });
+      throw e;
+    }
     finally { newChatPendingRef.current = false; }
   }
   // Entry point for the Welcome screen's own composer, which has no session
@@ -1429,7 +1467,15 @@ function AppContent() {
     // opens a chat whose first message is that text. An image has nowhere to
     // go in that handoff, so with attachments in hand the words route into the
     // session like any other message.
-    if (submittedText && sentAttachments.length === 0 && await openHarnessShortcut(submittedText)) { setComposer(""); return; }
+    if (submittedText && sentAttachments.length === 0) {
+      try {
+        if (await openHarnessShortcut(submittedText)) { setComposer(""); return; }
+      } catch {
+        // The aside lifecycle owns the inline recovery state. Keep the source
+        // draft untouched so Enter is also a valid retry path.
+        return;
+      }
+    }
     if (!session) return;
     const agentMention = submittedText ? parseAgentMention(submittedText) : null;
     if (agentMention) {
@@ -1497,10 +1543,15 @@ function AppContent() {
     }
     catch (e) { setComposer(retryText); setAttachments(sentAttachments); setPending(current => current.filter(item => item.key !== key)); setError(errorMessage(e)); }
   }
-  const resolveApproval = useCallback(async (eventId: number, decision: ApprovalDecision) => {
+  const resolveApproval = useCallback(async (eventId: number, decision: ApprovalDecision, optionId?: string) => {
     if (!session?.id) return;
-    try { await bridgeApi.resolveApproval(session.id, eventId, decision); await reload(); }
-    catch (e) { setError(errorMessage(e)); }
+    try { const result = await bridgeApi.resolveApproval(session.id, eventId, decision, optionId); await reload(); return result; }
+    catch (e) { setError(errorMessage(e)); throw e; }
+  }, [reload, session?.id]);
+  const resolveQuestion = useCallback(async (eventId: number, action: QuestionAction, answers: Record<string, string[]>) => {
+    if (!session?.id) return;
+    try { const result = await bridgeApi.resolveQuestion(session.id, eventId, action, answers); await reload(); return result; }
+    catch (e) { setError(errorMessage(e)); throw e; }
   }, [reload, session?.id]);
   // The "Memory used" chip is audit-backed: what this session's prompt actually
   // received, re-read on every memory change.
@@ -1788,7 +1839,7 @@ function AppContent() {
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
   const isSessionChrome = view === "workspace" && paradigm !== "grid" && !!session;
-  const bypassBadge = <BypassBadge bypassing={!!permissionPolicy?.bypassAll} onOpenSettings={() => { setSettingsSection("permissions"); setView("settings"); }} />;
+  const bypassBadge = <BypassBadge bypassing={!!permissionPolicy?.autoApproveProviderPermissions} onOpenSettings={() => { setSettingsSection("permissions"); setView("settings"); }} />;
   const usageWidget = <UsageWidget usage={usageByProvider} adapters={health?.adapters} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} focusedSessionId={session?.id ?? null} onOpenPromptStudio={() => { setSettingsSection("prompts"); setView("settings"); }} />;
   const titleBarActions = <>{bypassBadge}{usageWidget}</>;
   const sidebar = (
@@ -1939,24 +1990,44 @@ function AppContent() {
             pendingMessages={asidePending}
             working={!!asideSession.activeTurnId || asideSession.status === "working"}
             modelSwitch={modelSwitch?.sessionId === asideSession.id ? modelSwitch : null}
+            lifecycle={asideLifecycle}
+            initialDraft={asideLifecycle?.recoveryDraft}
             onSend={async (text, attachments) => {
-              try { await deliverPrompt(asideSession, text, attachments); }
-              catch (e) { setError(errorMessage(e)); }
+              try {
+                await deliverPrompt(asideSession, text, attachments);
+                setAsideLifecycle(current => current && { ...current, phase: "ready", error: undefined, recoveryDraft: undefined });
+              } catch (e) {
+                setError(errorMessage(e));
+                setAsideLifecycle(current => current && { ...current, phase: "failed", error: errorMessage(e) });
+                throw e;
+              }
             }}
             onChangeModel={async (harness, model) => {
               // Same path the main chat's control uses, bound to the aside
               // session so the switch never touches the chat underneath —
               // and narrated the same way, inside the aside's conversation.
               // Rethrows so the panel can wear the failure itself.
+              setAsideLifecycle(current => current && { ...current, phase: "switching", error: undefined });
               setModelSwitch({ sessionId: asideSession.id, harness, label: model ? modelDisplayName(adapters, harness, model) : harnessLabel(harness) });
-              try { setState(await bridgeApi.updateChatModel(asideSession.id, harness, model)); }
+              try {
+                setState(await bridgeApi.updateChatModel(asideSession.id, harness, model));
+                setAsideLifecycle(current => current && { ...current, phase: "ready", error: undefined });
+              } catch (e) {
+                setAsideLifecycle(current => current && { ...current, phase: "failed", error: errorMessage(e) });
+                throw e;
+              }
               finally { setModelSwitch(null); }
             }}
-            onResolve={(eventId, decision) => {
-              void bridgeApi.resolveApproval(asideSession.id, eventId, decision).then(reload).catch(e => setError(errorMessage(e)));
+            onResolve={async (eventId, decision, optionId) => {
+              try { const result = await bridgeApi.resolveApproval(asideSession.id, eventId, decision, optionId); await reload(); return result; }
+              catch (e) { setError(errorMessage(e)); throw e; }
             }}
-            onPromote={() => { setAsideChatId(undefined); openSession(asideSession.id); }}
-            onClose={() => setAsideChatId(undefined)}
+            onAnswerQuestion={async (eventId, action, answers) => {
+              try { const result = await bridgeApi.resolveQuestion(asideSession.id, eventId, action, answers); await reload(); return result; }
+              catch (e) { setError(errorMessage(e)); throw e; }
+            }}
+            onPromote={() => { setAsideLifecycle(undefined); openSession(asideSession.id); }}
+            onClose={() => setAsideLifecycle(undefined)}
           />}
           <div className={cn("flex-1 min-w-0 flex flex-col relative", dockExpandedVisible && "hidden")}>
             <>
@@ -1995,6 +2066,7 @@ function AppContent() {
                    pendingMessages={pendingForSession}
                    pendingAttachments={pendingForSessionAttachments}
                   onResolve={resolveApproval}
+                  onAnswerQuestion={resolveQuestion}
                   workspaceFiles={hasRepo ? workspaceFiles : undefined}
                   onOpenFile={hasRepo && workspace ? openFileInDock : undefined}
                   highlightEntryId={highlightEntryId}

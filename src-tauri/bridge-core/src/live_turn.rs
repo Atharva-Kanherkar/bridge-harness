@@ -2040,7 +2040,12 @@ fn persist_agent_value(
 pub fn agent_event_changes_bridge_state(event: &agent::NormalizedEvent) -> bool {
     matches!(
         event.kind.as_str(),
-        "turn.started" | "turn.completed" | "approval.requested" | "usage.updated"
+        "turn.started"
+            | "turn.completed"
+            | "approval.requested"
+            | "permission.requested"
+            | "question.requested"
+            | "usage.updated"
     ) || (event.kind == "error" && event.status.as_deref() == Some("failed"))
 }
 
@@ -2208,7 +2213,7 @@ fn handle_agent_value(
                         let _ = db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'ready' END WHERE id=?1",params![workspace_id]);
                     }
                 }
-                "approval.requested" => {
+                "permission.requested" | "question.requested" => {
                     // One switch, read where the request lands, so a flip takes
                     // effect on the next approval without restarting anything.
                     //
@@ -2223,39 +2228,26 @@ fn handle_agent_value(
                         .or_else(|| event.data.pointer("/data/approvalType"))
                         .and_then(|value| value.as_str())
                         == Some("delegation_path_scope");
-                    // Not every control request that normalizes to
-                    // `approval.requested` is an approval. Codex folds
-                    // `item/tool/requestUserInput` and
-                    // `mcpServer/elicitation/request` into the same event, and
-                    // those are questions: `respond` answers with
-                    // `{"result":{"decision":…}}`, which is the wrong shape for
-                    // them and wedges the turn. Granting is for requests that
-                    // asked for permission. Claude and OpenCode set no
-                    // `requestMethod` because every request they raise is one.
-                    let is_approval_request = event
-                        .data
-                        .get("requestMethod")
-                        .and_then(|value| value.as_str())
-                        .is_none_or(|method| method.ends_with("requestApproval"));
+                    let is_permission_request = event.kind == "permission.requested";
                     auto_approve_this_event = !is_write_scope
-                        && is_approval_request
+                        && is_permission_request
                         && agent_config::permission_policy(&db)
-                            .map(|policy| policy.bypass_all)
+                            .map(|policy| policy.auto_approve_provider_permissions)
                             .unwrap_or(false);
                     if own_depth > 0 {
                         let _ = session_supervisor::SessionSupervisor::transition(
                             &db,
                             session_id,
                             worker_lifecycle::WorkerLifecycleState::Waiting,
-                            Some("approval_requested"),
+                            Some(if is_permission_request { "permission_requested" } else { "question_requested" }),
                         );
                         // A background worker's approval card renders on the
                         // worker's own conversation, which nobody is looking at.
                         // Stamp the wait so the approval deadline can measure it
                         // and hand the parent enough to surface the block.
                         let _ = db.execute(
-                            "UPDATE worker_runtime SET waiting_since=?2,waiting_reason='approval_requested',updated_at=?2 WHERE session_id=?1",
-                            params![session_id, Utc::now().to_rfc3339()],
+                            "UPDATE worker_runtime SET waiting_since=?2,waiting_reason=?3,updated_at=?2 WHERE session_id=?1",
+                            params![session_id, Utc::now().to_rfc3339(), if is_permission_request { "permission_requested" } else { "question_requested" }],
                         );
                         // The lifecycle still goes Waiting and back, exactly as it
                         // would if a human resolved instantly — `transition`
@@ -2264,6 +2256,7 @@ fn handle_agent_value(
                         // What must not happen is telling the parent a worker is
                         // blocked when policy has already unblocked it.
                         pending_child_approval = (!auto_approve_this_event).then(|| serde_json::json!({
+                            "interactionKind": if is_permission_request { "permission" } else { "question" },
                             "title": event.title,
                             "text": event.text,
                             "command": event.data.get("command").or_else(|| event.data.pointer("/data/command")),
@@ -2316,7 +2309,7 @@ fn handle_agent_value(
                             &request_id.to_string(),
                         ) {
                             let resolved = agent::NormalizedEvent {
-                                kind: "approval.resolved".into(),
+                                kind: "permission.resolved".into(),
                                 item_id: None,
                                 role: None,
                                 status: Some("cancelled".into()),
@@ -2376,7 +2369,7 @@ fn handle_agent_value(
                         ) {
                             let decision = event.status.as_deref().unwrap_or("answered");
                             let resolved = agent::NormalizedEvent {
-                                kind: "approval.resolved".into(),
+                                kind: "question.resolved".into(),
                                 item_id: None,
                                 role: None,
                                 status: Some(decision.to_owned()),
@@ -2455,6 +2448,15 @@ fn handle_agent_value(
             }
         }
         for mut normalized_event in normalized {
+            // Policy-owned permission requests are born settling. Clients may
+            // observe this request before the provider reply returns, but they
+            // must never observe an actionable human race window.
+            if auto_approve_this_event && normalized_event.kind == "permission.requested" {
+                normalized_event.status = Some("settling".into());
+                normalized_event.data["resolvedBy"] = serde_json::json!("policy");
+                normalized_event.data["resolutionReason"] =
+                    serde_json::json!("Auto-approve provider permissions");
+            }
             // An internal checkpoint turn's reply answers Bridge, not the user:
             // the machine block precedent this loop already follows for
             // delegation, peek, and steer applies whole here, because the
@@ -5183,26 +5185,26 @@ pub fn notify_parent_child_left_waiting(
 
 /// Answer an approval the permission policy granted.
 ///
-/// Goes through [`crate::api::resolve_approval`] — the same call a human click
-/// makes — on purpose. A second decision path is where auto-approval would drift
-/// into granting something the human path refuses: the lifecycle transition, the
-/// `approval.resolved` event, the session and workspace status updates, and the
-/// parent's mirrored card all have to happen identically, and the only way to
-/// guarantee that is to not write them twice.
+/// Goes through the same single-owner resolver a human click uses. The resolver
+/// chooses only an advertised allow action and prefers the provider's standing
+/// grant over its one-shot grant.
 ///
 /// The reason ledger names the policy that matched, so an auto-approval is
 /// auditable after the fact rather than merely absent from the UI.
 fn apply_bypass_approval(core: &Arc<BridgeCore>, session_id: &str, event_id: i64) {
-    match crate::api::resolve_approval(core, session_id, event_id, "accept") {
-        Ok(()) => {
+    match crate::api::auto_resolve_provider_permission(core, session_id, event_id) {
+        Ok(result) if matches!(result.disposition, wire::InteractionResolutionDisposition::Resolved) => {
             {
                 let db = core.db.lock().unwrap();
                 let _ = store::event(
                     &db,
-                    "approval",
+                    "permission",
                     "approval.auto_allowed",
                     session_id,
-                    &format!("bypass_all granted approval {event_id}"),
+                    &format!(
+                        "Auto-approve provider permissions chose {} for permission {event_id}",
+                        result.decision
+                    ),
                 );
             }
             // `resolve_approval` already published, but it published before this
@@ -5210,15 +5212,16 @@ fn apply_bypass_approval(core: &Arc<BridgeCore>, session_id: &str, event_id: i64
             // that comes after the row it is meant to show.
             core.events.publish(CoreEvent::StateChanged);
         }
+        Ok(_) => {}
         Err(error) => {
             // A policy that could not be applied must not look like one that was.
             let db = core.db.lock().unwrap();
             let _ = store::event(
                 &db,
-                "approval",
+                "permission",
                 "approval.auto_allow_failed",
                 session_id,
-                &format!("bypass_all could not answer approval {event_id}: {error}"),
+                &format!("Auto-approve provider permissions could not resolve permission {event_id}: {error}"),
             );
         }
     }
@@ -8412,7 +8415,7 @@ fn resume_for_send(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), Bridg
     })
 }
 
-/// The most recent `approval.requested` entry of `request_method` still
+/// The most recent `question.requested` entry of `request_method` still
 /// unresolved for `session_id`, as `(sequence, stored payload)` — or `None`
 /// once every request of that kind has a matching `approval.resolved`.
 ///
@@ -8428,11 +8431,11 @@ fn latest_unresolved_approval(
     let (sequence, payload): (i64, String) = db
         .query_row(
             "SELECT e.sequence, e.payload FROM session_entries e
-             WHERE e.session_id=?1 AND e.kind='approval.requested'
+             WHERE e.session_id=?1 AND e.kind='question.requested'
                AND json_extract(e.payload,'$.data.requestMethod')=?2
                AND NOT EXISTS (
                    SELECT 1 FROM session_entries r
-                   WHERE r.session_id=e.session_id AND r.kind='approval.resolved'
+                   WHERE r.session_id=e.session_id AND r.kind='question.resolved'
                      AND COALESCE(json_extract(r.payload,'$.data.requestEventId'),
                                   json_extract(r.payload,'$.requestEventId')) = e.sequence
                )
@@ -8446,7 +8449,7 @@ fn latest_unresolved_approval(
         .map(|data| (sequence, data))
 }
 
-/// The event id of the unresolved `approval.requested` entry of
+/// The event id of the unresolved provider interaction entry of
 /// `request_method` for `session_id` whose adapter `requestId` is exactly
 /// `request_id` — or `None` once it has a matching `approval.resolved`, or if
 /// no such request exists. Used to settle a specific request the *provider*
@@ -8465,12 +8468,12 @@ fn find_unresolved_approval_by_request_id(
         // integer never compares equal to a string in SQLite, so the numeric
         // half would silently match nothing.
         "SELECT e.sequence FROM session_entries e
-         WHERE e.session_id=?1 AND e.kind='approval.requested'
+         WHERE e.session_id=?1 AND e.kind=CASE WHEN ?2='opencode.question' THEN 'question.requested' ELSE 'permission.requested' END
            AND json_extract(e.payload,'$.data.requestMethod')=?2
            AND CAST(json_extract(e.payload,'$.data.requestId') AS TEXT)=?3
            AND NOT EXISTS (
                SELECT 1 FROM session_entries r
-               WHERE r.session_id=e.session_id AND r.kind='approval.resolved'
+               WHERE r.session_id=e.session_id AND r.kind=CASE WHEN ?2='opencode.question' THEN 'question.resolved' ELSE 'permission.resolved' END
                  AND COALESCE(json_extract(r.payload,'$.data.requestEventId'),
                               json_extract(r.payload,'$.requestEventId')) = e.sequence
            )
@@ -8515,7 +8518,7 @@ fn settle_question_resolution(
         |row| row.get(0),
     )?;
     let resolved = agent::NormalizedEvent {
-        kind: "approval.resolved".into(),
+        kind: "question.resolved".into(),
         item_id: None,
         role: None,
         status: Some(decision.to_owned()),
@@ -8565,11 +8568,11 @@ fn settle_question_resolution(
 fn void_orphaned_questions(db: &Connection, session_id: &str, reason: &str) {
     let Ok(mut statement) = db.prepare(
         "SELECT e.sequence FROM session_entries e
-         WHERE e.session_id=?1 AND e.kind='approval.requested'
+         WHERE e.session_id=?1 AND e.kind='question.requested'
            AND json_extract(e.payload,'$.data.requestMethod')=?2
            AND NOT EXISTS (
                SELECT 1 FROM session_entries r
-               WHERE r.session_id=e.session_id AND r.kind='approval.resolved'
+               WHERE r.session_id=e.session_id AND r.kind='question.resolved'
                  AND COALESCE(json_extract(r.payload,'$.data.requestEventId'),
                               json_extract(r.payload,'$.requestEventId')) = e.sequence
            )",
@@ -8588,7 +8591,7 @@ fn void_orphaned_questions(db: &Connection, session_id: &str, reason: &str) {
     drop(statement);
     for event_id in pending {
         let resolved = agent::NormalizedEvent {
-            kind: "approval.resolved".into(),
+            kind: "question.resolved".into(),
             item_id: None,
             role: None,
             status: Some(reason.into()),
@@ -10346,7 +10349,7 @@ mod submit_input_tests {
                 &db,
                 "chat",
                 &agent::NormalizedEvent {
-                    kind: "approval.requested".into(),
+                    kind: "question.requested".into(),
                     item_id: None,
                     role: None,
                     status: Some("pending".into()),
@@ -10748,12 +10751,12 @@ mod submit_input_tests {
         );
     }
 
-    /// Persist an `opencode.question` `approval.requested` for "chat" with
+    /// Persist an `opencode.question` `question.requested` for "chat" with
     /// `questions`, as `agent.rs`'s `question.asked` normalization would have
     /// produced it, and return its event id.
     fn persist_pending_question(core: &Arc<BridgeCore>, questions: serde_json::Value) -> i64 {
         let approval = agent::NormalizedEvent {
-            kind: "approval.requested".into(),
+            kind: "question.requested".into(),
             item_id: Some("call_1".into()),
             role: None,
             status: Some("pending".into()),
@@ -10782,7 +10785,7 @@ mod submit_input_tests {
             .unwrap()
             .query_row(
                 "SELECT json_extract(payload,'$.data.decision') FROM session_entries
-                 WHERE session_id='chat' AND kind='approval.resolved'",
+                 WHERE session_id='chat' AND kind='question.resolved'",
                 [],
                 |row| row.get(0),
             )
@@ -10983,7 +10986,7 @@ mod submit_input_tests {
     /// `provider.unknown`, so a question settled through any channel other
     /// than this exact `answer_pending_question` call — a decline, a
     /// different client on the same OpenCode session — left Bridge's own
-    /// `approval.requested` row open forever even though OpenCode itself
+    /// `question.requested` row open forever even though OpenCode itself
     /// considers the question closed.
     #[test]
     fn a_question_settled_by_the_provider_directly_unblocks_a_waiting_session() {
@@ -11128,7 +11131,7 @@ mod submit_input_tests {
         let handles = attach_handles(&core, false);
 
         let approval = agent::NormalizedEvent {
-            kind: "approval.requested".into(),
+            kind: "question.requested".into(),
             item_id: Some("call_1".into()),
             role: None,
             status: Some("pending".into()),
@@ -11181,7 +11184,7 @@ mod submit_input_tests {
         );
         let resolved: i64 = db
             .query_row(
-                "SELECT COUNT(*) FROM session_entries WHERE session_id='chat' AND kind='approval.resolved'",
+                "SELECT COUNT(*) FROM session_entries WHERE session_id='chat' AND kind='question.resolved'",
                 [],
                 |row| row.get(0),
             )
@@ -12141,6 +12144,25 @@ mod permission_policy_tests {
     use super::submit_input_tests::FakeRuntime;
     use super::*;
 
+    struct BlockingResponseRuntime {
+        gate: Arc<std::sync::Barrier>,
+        responses: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl adapters::AdapterRuntime for BlockingResponseRuntime {
+        fn process_id(&self) -> u32 { 0 }
+        fn provider_session_id(&self) -> &str { "blocking" }
+        fn current_turn(&self) -> Arc<Mutex<Option<String>>> { Arc::new(Mutex::new(None)) }
+        fn send_turn(&self, _: &str) -> Result<(), BridgeError> { Ok(()) }
+        fn interrupt(&self) -> Result<(), BridgeError> { Ok(()) }
+        fn respond(&self, _: serde_json::Value, _: &str) -> Result<(), BridgeError> {
+            self.responses.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.gate.wait();
+            Ok(())
+        }
+        fn stop(&mut self, _: adapters::ShutdownReason) {}
+    }
+
     /// A provider approval as it arrives on the control channel. Codex's shape,
     /// because it is the one with an explicit `requestId` to answer.
     fn approval_frame(request_id: i64) -> serde_json::Value {
@@ -12184,7 +12206,7 @@ mod permission_policy_tests {
                 agent_config::save_permission_policy(
                     &db,
                     agent_config::PermissionPolicy {
-                        bypass_all: true,
+                        auto_approve_provider_permissions: true,
                         updated_at: String::new(),
                     },
                 )
@@ -12266,7 +12288,7 @@ mod permission_policy_tests {
             }).unwrap();
             if bypass {
                 agent_config::save_permission_policy(&db, agent_config::PermissionPolicy {
-                    bypass_all: true, updated_at: String::new(),
+                    auto_approve_provider_permissions: true, updated_at: String::new(),
                 }).unwrap();
             }
         }
@@ -12282,13 +12304,14 @@ mod permission_policy_tests {
 
         let answered = handles.responded.lock().unwrap().clone();
         assert_eq!(answered.len(), 1, "the provider was answered exactly once");
-        assert_eq!(answered[0].1, "accept");
+        assert_eq!(answered[0].1, "acceptForSession");
         assert_eq!(answered[0].0, serde_json::json!(42));
         // Visible, not silent: the conversation shows the resolution and the
         // ledger names the policy that matched.
         let kinds = entry_kinds(&core);
-        assert!(kinds.contains(&"approval.requested".to_owned()));
-        assert!(kinds.contains(&"approval.resolved".to_owned()));
+        assert!(kinds.contains(&"permission.requested".to_owned()));
+        assert!(kinds.contains(&"permission.resolving".to_owned()));
+        assert!(kinds.contains(&"permission.resolved".to_owned()));
         assert_eq!(
             ledger(&core, "approval."),
             vec!["approval.auto_allowed".to_owned()]
@@ -12316,7 +12339,7 @@ mod permission_policy_tests {
             })
             .unwrap();
         assert_eq!(status, "waiting");
-        assert!(!entry_kinds(&core).contains(&"approval.resolved".to_owned()));
+        assert!(!entry_kinds(&core).contains(&"permission.resolved".to_owned()));
     }
 
     /// The gate that must survive bypass. Write scope is authorization, not
@@ -12336,7 +12359,7 @@ mod permission_policy_tests {
             "bypass must not answer a write-scope approval"
         );
         assert!(ledger(&core, "approval.").is_empty());
-        assert!(!entry_kinds(&core).contains(&"approval.resolved".to_owned()));
+        assert!(!entry_kinds(&core).contains(&"permission.resolved".to_owned()));
     }
 
     /// A failure to apply the policy must not read as a grant.
@@ -12354,7 +12377,12 @@ mod permission_policy_tests {
             vec!["approval.auto_allow_failed".to_owned()],
             "an unapplied policy is recorded as unapplied, never as allowed"
         );
-        assert!(!entry_kinds(&core).contains(&"approval.resolved".to_owned()));
+        let failed = core.db.lock().unwrap().query_row(
+            "SELECT COUNT(*) FROM session_entries WHERE session_id='chat' AND kind='permission.resolved' AND json_extract(payload,'$.status')='failed'",
+            [],
+            |row| row.get::<_, i64>(0),
+        ).unwrap();
+        assert_eq!(failed, 1, "delivery failure must be visible inline");
     }
 
     /// Two of the three Codex methods that normalize to `approval.requested` are
@@ -12383,6 +12411,56 @@ mod permission_policy_tests {
         let handles = attach(&core, "chat");
         deliver(&core, &approval_frame(42));
         assert_eq!(handles.responded.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn codex_questions_use_their_provider_specific_result_shapes() {
+        let cases = [
+            (
+                "item/tool/requestUserInput",
+                serde_json::json!({"questions":[{"id":"target","question":"Which target?"}]}),
+                serde_json::json!({"answers":{"target":{"answers":["staging"]}}}),
+            ),
+            (
+                "mcpServer/elicitation/request",
+                serde_json::json!({"message":"Choose target","requestedSchema":{"properties":{"target":{"type":"string"}}}}),
+                serde_json::json!({"action":"accept","content":{"target":"staging"}}),
+            ),
+        ];
+        for (method, params, expected) in cases {
+            let (_fixture, core, _managed_root) = core_with_session(false);
+            let handles = attach(&core, "chat");
+            deliver(
+                &core,
+                &serde_json::json!({"id":42,"method":method,"params":params}),
+            );
+            let event_id: i64 = core
+                .db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT sequence FROM session_entries WHERE session_id='chat' AND kind='question.requested'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            crate::api::resolve_question(
+                &core,
+                "chat",
+                event_id,
+                "answer",
+                std::collections::BTreeMap::from([(
+                    "target".into(),
+                    vec!["staging".into()],
+                )]),
+            )
+            .unwrap();
+            assert_eq!(
+                handles.answered.lock().unwrap().as_slice(),
+                &[(serde_json::json!(42), expected)],
+                "{method} must receive its own wire result shape",
+            );
+        }
     }
 
     /// `session_event` returns sequence 0 for a frame it did not persist, and
@@ -12460,7 +12538,7 @@ mod permission_policy_tests {
             )
             .unwrap();
             let requested = agent::NormalizedEvent {
-                kind: "approval.requested".into(),
+                kind: "permission.requested".into(),
                 item_id: Some("t9".into()),
                 role: None,
                 status: Some("pending".into()),
@@ -12470,6 +12548,7 @@ mod permission_policy_tests {
                 data: serde_json::json!({
                     "requestId": 7,
                     "requestMethod": crate::acp_events::ACP_PERMISSION_REQUEST_METHOD,
+                    "actions": [{"id": "allow-once", "optionId": "allow-once", "decision": "accept", "label": "Allow once"}],
                     "options": [{"id": "allow-once", "name": "Allow once", "kind": "allow_once"}],
                 }),
             };
@@ -12486,7 +12565,7 @@ mod permission_policy_tests {
             .lock()
             .unwrap()
             .query_row(
-                "SELECT sequence FROM session_entries WHERE session_id='chat' AND kind='approval.requested'",
+                "SELECT sequence FROM session_entries WHERE session_id='chat' AND kind='permission.requested'",
                 [],
                 |row| row.get(0),
             )
@@ -12507,7 +12586,7 @@ mod permission_policy_tests {
             .unwrap()
             .query_row(
                 "SELECT COUNT(*) FROM session_entries
-                 WHERE session_id='chat' AND kind='approval.resolved'
+                 WHERE session_id='chat' AND kind='permission.resolved'
                    AND json_extract(payload,'$.data.requestEventId')=?1",
                 params![requested_at],
                 |row| row.get(0),
@@ -12531,7 +12610,7 @@ mod permission_policy_tests {
             .unwrap()
             .query_row(
                 "SELECT COUNT(*) FROM session_entries
-                 WHERE session_id='chat' AND kind='approval.resolved'",
+                 WHERE session_id='chat' AND kind='permission.resolved'",
                 [],
                 |row| row.get(0),
             )
@@ -12553,21 +12632,66 @@ mod permission_policy_tests {
             .lock()
             .unwrap()
             .query_row(
-                "SELECT sequence FROM session_entries WHERE session_id='chat' AND kind='approval.requested'",
+                "SELECT sequence FROM session_entries WHERE session_id='chat' AND kind='permission.requested'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
 
-        crate::api::resolve_approval(&core, "chat", event_id, "accept").unwrap();
-        let second = crate::api::resolve_approval(&core, "chat", event_id, "decline");
+        crate::api::resolve_approval(&core, "chat", event_id, "accept", None).unwrap();
+        let second = crate::api::resolve_approval(&core, "chat", event_id, "decline", None).unwrap();
 
-        assert!(second.is_err(), "the second decider must be refused");
+        assert!(matches!(
+            second.disposition,
+            wire::InteractionResolutionDisposition::AlreadyResolved
+        ));
+        assert_eq!(second.decision, "accept");
         assert_eq!(
             handles.responded.lock().unwrap().len(),
             1,
             "the provider heard exactly one answer, not two contradictory ones"
         );
+    }
+
+    #[test]
+    fn resolution_claim_is_durable_before_the_provider_reply_finishes() {
+        let (_fixture, core, _managed_root) = core_with_session(false);
+        let gate = Arc::new(std::sync::Barrier::new(2));
+        let responses = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        core.adapters.lock().unwrap().insert(
+            "chat".into(),
+            Box::new(BlockingResponseRuntime {
+                gate: gate.clone(),
+                responses: responses.clone(),
+            }),
+        );
+        deliver(&core, &approval_frame(42));
+        let event_id: i64 = core.db.lock().unwrap().query_row(
+            "SELECT sequence FROM session_entries WHERE session_id='chat' AND kind='permission.requested'",
+            [],
+            |row| row.get(0),
+        ).unwrap();
+
+        let first_core = core.clone();
+        let first = std::thread::spawn(move || {
+            crate::api::resolve_approval(&first_core, "chat", event_id, "accept", None)
+        });
+        gate.wait();
+        let second = crate::api::resolve_approval(&core, "chat", event_id, "decline", None).unwrap();
+        let first = first.join().unwrap().unwrap();
+
+        assert!(matches!(first.disposition, wire::InteractionResolutionDisposition::Resolved));
+        assert!(matches!(second.disposition, wire::InteractionResolutionDisposition::AlreadyResolved));
+        assert_eq!(responses.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let (resolving, resolved): (i64, i64) = core.db.lock().unwrap().query_row(
+            "SELECT
+                SUM(kind='permission.resolving'),
+                SUM(kind='permission.resolved')
+             FROM session_entries WHERE session_id='chat'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!((resolving, resolved), (1, 1));
     }
 
     /// A question is answered with text over its own reply channel, never
@@ -12581,7 +12705,7 @@ mod permission_policy_tests {
         let (_fixture, core, _managed_root) = core_with_session(false);
         let handles = attach(&core, "chat");
         let question = agent::NormalizedEvent {
-            kind: "approval.requested".into(),
+            kind: "question.requested".into(),
             item_id: Some("call_1".into()),
             role: None,
             status: Some("pending".into()),
@@ -12605,7 +12729,7 @@ mod permission_policy_tests {
             .sequence
         };
 
-        let accepted = crate::api::resolve_approval(&core, "chat", event_id, "accept");
+        let accepted = crate::api::resolve_approval(&core, "chat", event_id, "accept", None);
         assert!(
             accepted.is_err(),
             "there is no text to answer a question with from a bare accept decision"
@@ -12613,7 +12737,14 @@ mod permission_policy_tests {
         assert!(handles.responded.lock().unwrap().is_empty());
         assert!(handles.rejected.lock().unwrap().is_empty());
 
-        crate::api::resolve_approval(&core, "chat", event_id, "decline").unwrap();
+        crate::api::resolve_question(
+            &core,
+            "chat",
+            event_id,
+            "decline",
+            std::collections::BTreeMap::new(),
+        )
+        .unwrap();
         assert_eq!(
             handles.rejected.lock().unwrap().as_slice(),
             &[serde_json::json!("req_1")],
@@ -12637,7 +12768,7 @@ mod permission_policy_tests {
         let (_fixture, core, _managed_root) = core_with_session(false);
         let handles = attach(&core, "chat");
         let question = agent::NormalizedEvent {
-            kind: "approval.requested".into(),
+            kind: "question.requested".into(),
             item_id: Some("call_1".into()),
             role: None,
             status: Some("pending".into()),
@@ -12661,17 +12792,26 @@ mod permission_policy_tests {
             .sequence
         };
 
-        // Simulates `answer_pending_question` mid-flight on the same session.
-        let _held = core
-            .claim_session_lifecycle("chat", "question resolution")
-            .unwrap();
-        let declined = crate::api::resolve_approval(&core, "chat", event_id, "decline");
+        let first = crate::api::resolve_question(
+            &core,
+            "chat",
+            event_id,
+            "decline",
+            std::collections::BTreeMap::new(),
+        )
+        .unwrap();
+        let second = crate::api::resolve_question(
+            &core,
+            "chat",
+            event_id,
+            "cancel",
+            std::collections::BTreeMap::new(),
+        )
+        .unwrap();
 
-        assert!(
-            declined.is_err(),
-            "a card decision must not race an answer already in flight"
-        );
-        assert!(handles.rejected.lock().unwrap().is_empty());
+        assert!(matches!(first.disposition, wire::InteractionResolutionDisposition::Resolved));
+        assert!(matches!(second.disposition, wire::InteractionResolutionDisposition::AlreadyResolved));
+        assert_eq!(handles.rejected.lock().unwrap().len(), 1);
     }
 
     /// The browser gate is a different channel with a different state machine.
@@ -12685,7 +12825,7 @@ mod permission_policy_tests {
     #[test]
     fn the_permission_policy_is_not_reachable_from_the_browser_gate() {
         let browser = include_str!("browser_bridge.rs");
-        for marker in ["permission_policy", "bypass_all", "PermissionPolicy"] {
+        for marker in ["permission_policy", "auto_approve_provider_permissions", "PermissionPolicy"] {
             assert!(
                 !browser.contains(marker),
                 "the browser outward-effect gate must not consult the permission \

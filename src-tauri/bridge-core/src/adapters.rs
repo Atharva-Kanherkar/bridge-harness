@@ -83,6 +83,16 @@ pub trait AdapterRuntime: Send {
     }
     fn interrupt(&self) -> Result<(), BridgeError>;
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError>;
+    /// Resolve a permission with the exact provider option advertised on the
+    /// request. Providers without option ids use the decision vocabulary.
+    fn respond_with_option(
+        &self,
+        request_id: Value,
+        decision: &str,
+        _option_id: Option<&str>,
+    ) -> Result<(), BridgeError> {
+        self.respond(request_id, decision)
+    }
     /// Answer a pending question this provider raised on its own channel —
     /// distinct from `respond`, which grants or denies a permission decision.
     /// `answers` is provider-shaped (OpenCode expects one array of chosen
@@ -473,6 +483,41 @@ pub struct AdapterRegistry {
     adapters: HashMap<String, Box<dyn HarnessAdapter>>,
 }
 
+/// One compatibility contract for settings, routing, and adapter startup.
+/// Roles map to the authority they require; descriptors state what the runtime
+/// can enforce. Orchestrators additionally require the briefing boundary.
+pub fn descriptor_supports_agent_role(descriptor: &AdapterDescriptor, role: &str) -> bool {
+    match role {
+        "orchestrator" => descriptor.capabilities.iter().any(|value| value == "briefings")
+            && descriptor.supports_sandbox(SandboxMode::WorkspaceWrite),
+        "implementation" => descriptor.supports_sandbox(SandboxMode::WorkspaceWrite),
+        "research" | "verification" | "planning" | "documentation" => {
+            descriptor.supports_sandbox(SandboxMode::ReadOnly)
+        }
+        _ => false,
+    }
+}
+
+fn validate_start_compatibility(descriptor: &AdapterDescriptor, request: &StartRequest<'_>) -> Result<(), BridgeError> {
+    if request.briefing.is_some() && !descriptor.capabilities.iter().any(|value| value == "briefings") {
+        return Err(BridgeError::Invalid(format!("{} cannot run orchestrator briefings", descriptor.label)));
+    }
+    let sandbox = if request.read_only_sandbox.is_some() || matches!(request.write_mode, Some(WriteMode::ReadOnly)) {
+        Some(SandboxMode::ReadOnly)
+    } else {
+        match request.write_mode {
+            Some(WriteMode::Full) => Some(SandboxMode::DangerFullAccess),
+            Some(WriteMode::Shared | WriteMode::Isolated) => Some(SandboxMode::WorkspaceWrite),
+            None => None,
+            Some(WriteMode::ReadOnly) => unreachable!(),
+        }
+    };
+    if sandbox.is_some_and(|mode| !descriptor.supports_sandbox(mode)) {
+        return Err(BridgeError::Invalid(format!("{} cannot enforce the requested worker sandbox", descriptor.label)));
+    }
+    Ok(())
+}
+
 fn model_options(items: &[(&str, &str, CapabilityTier, bool)]) -> Vec<ModelOption> {
     items
         .iter()
@@ -588,6 +633,7 @@ impl AdapterRegistry {
                     .unwrap_or_else(|| format!("{} is unavailable", descriptor.label)),
             ));
         }
+        validate_start_compatibility(&descriptor, &request)?;
         adapter.start(request)
     }
 
@@ -687,11 +733,14 @@ impl AdapterRegistry {
                 BridgeError::Invalid(format!("No structured adapter is registered for {id}"))
             })?
             .descriptor();
+        let unranked = descriptor.models.first().is_some_and(|first| descriptor.models.iter().all(|model| model.tier == first.tier));
         let tier_default = descriptor
             .models
             .iter()
             .find(|model| model.tier == tier && model.default_for_tier)
             .or_else(|| descriptor.models.iter().find(|model| model.tier == tier))
+            .or_else(|| unranked.then(|| descriptor.models.iter().find(|model| model.default_for_tier)).flatten())
+            .or_else(|| unranked.then(|| descriptor.models.first()).flatten())
             .ok_or_else(|| {
                 BridgeError::Invalid(format!(
                     "Adapter {id} does not advertise a {} capability model",
@@ -704,11 +753,9 @@ impl AdapterRegistry {
                 .iter()
                 .find(|model| model.id.eq_ignore_ascii_case(hint.trim()))
         });
-        let selected = hinted
-            .filter(|model| model.tier == tier)
-            .unwrap_or(tier_default);
+        let selected = hinted.filter(|model| unranked || model.tier == tier).unwrap_or(tier_default);
         let warning = model_hint.and_then(|hint| {
-            (hinted.is_none() || hinted.is_some_and(|model| model.tier != tier)).then(|| {
+            (hinted.is_none() || hinted.is_some_and(|model| !unranked && model.tier != tier)).then(|| {
                 format!(
                     "Model hint {hint:?} is unknown or outside tier {}; using {}",
                     tier.as_str(),
@@ -868,6 +915,7 @@ impl HarnessAdapter for OpenCodeAdapter {
                 "usage",
                 "history",
                 "interrupt",
+                "briefings",
             ]
             .into_iter()
             .map(str::to_owned)
@@ -950,6 +998,7 @@ impl HarnessAdapter for CodexAdapter {
                 "usage",
                 "history",
                 "interrupt",
+                "briefings",
             ]
             .into_iter()
             .map(str::to_owned)
@@ -1024,6 +1073,7 @@ impl HarnessAdapter for ClaudeAdapter {
                 "approvals",
                 "usage",
                 "interrupt",
+                "briefings",
                 // The sidecar drives one streaming-input query, so a user
                 // message written mid-turn is consumed by the turn in flight
                 // rather than starting a second one.
@@ -1132,6 +1182,17 @@ mod tests {
         registry.register(Box::new(Fake)).unwrap();
         assert_eq!(registry.descriptors()[0].capabilities, vec!["messages"]);
     }
+    #[test]
+    fn agent_role_compatibility_comes_from_descriptor_authority() {
+        let mut descriptor = Fake.descriptor();
+        descriptor.capabilities = vec!["messages".into()];
+        descriptor.sandbox_modes = vec![SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess];
+        assert!(descriptor_supports_agent_role(&descriptor, "implementation"));
+        assert!(!descriptor_supports_agent_role(&descriptor, "research"));
+        assert!(!descriptor_supports_agent_role(&descriptor, "orchestrator"));
+        descriptor.capabilities.push("briefings".into());
+        assert!(descriptor_supports_agent_role(&descriptor, "orchestrator"));
+    }
 
     /// The descriptor is the router's only source of truth about what a harness
     /// can start. OpenCode's read-only launch guard fails closed, so the
@@ -1154,10 +1215,17 @@ mod tests {
                 descriptor.id
             );
         }
+        let cursor = registry
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.id == "cursor")
+            .expect("cursor adapter is registered");
+        assert!(!cursor.supports_sandbox(SandboxMode::ReadOnly));
+        assert!(cursor.supports_sandbox(SandboxMode::WorkspaceWrite));
         for other in registry
             .descriptors()
             .into_iter()
-            .filter(|descriptor| descriptor.id != "opencode")
+            .filter(|descriptor| !matches!(descriptor.id.as_str(), "opencode" | "cursor"))
         {
             assert!(
                 other.supports_sandbox(SandboxMode::ReadOnly),

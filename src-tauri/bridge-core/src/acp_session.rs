@@ -1274,8 +1274,8 @@ async fn open_session(
         .send_request(InitializeRequest::new(ProtocolVersion::V1))
         .block_task();
     let deadline = async_io::Timer::after(launch.handshake_timeout);
-    let response = match select(std::pin::pin!(initialize), deadline).await {
-        Either::Left((response, _)) => response,
+    let (response, deadline) = match select(std::pin::pin!(initialize), deadline).await {
+        Either::Left((response, deadline)) => (response, deadline),
         Either::Right((_, _)) => {
             observe_exit().await;
             return Err(AcpError::HandshakeTimeout {
@@ -1301,10 +1301,19 @@ async fn open_session(
             offered: capabilities.protocol_version,
         });
     }
-    let opened = cx
+    let open = cx
         .send_request(NewSessionRequest::new(launch.cwd.clone()))
-        .block_task()
-        .await
+        .block_task();
+    let opened = match select(std::pin::pin!(open), deadline).await {
+        Either::Left((opened, _)) => opened,
+        Either::Right((_, _)) => {
+            observe_exit().await;
+            return Err(AcpError::HandshakeTimeout {
+                millis: u64::try_from(launch.handshake_timeout.as_millis()).unwrap_or(u64::MAX),
+                output: shared.failure_context(),
+            });
+        }
+    }
         .map_err(|error| {
             // The protocol reserves one code for "sign in first", and the
             // message beside it is the agent's own prose. Keyed on the code so
@@ -1846,7 +1855,7 @@ mod tests {
     fn approvals(events: &[NormalizedEvent]) -> Vec<&NormalizedEvent> {
         events
             .iter()
-            .filter(|event| event.kind == "approval.requested")
+            .filter(|event| event.kind == "permission.requested")
             .collect()
     }
 
@@ -2008,6 +2017,21 @@ mod tests {
             Err(AcpError::HandshakeTimeout { millis, .. }) => assert_eq!(millis, 250),
             other => panic!("expected a bounded handshake, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn session_new_shares_the_initialize_deadline() {
+        let launch = test_launch().handshake_timeout(Duration::from_millis(250));
+        let (session, agent) = try_connect_scripted(launch, |message, wire| {
+            if message.get("method").and_then(Value::as_str) == Some("initialize") {
+                wire.result(message, json!({"protocolVersion": 1, "agentCapabilities": {}, "authMethods": []}));
+            }
+        });
+        match session {
+            Err(AcpError::HandshakeTimeout { millis, .. }) => assert_eq!(millis, 250),
+            other => panic!("expected session/new to time out, got {other:?}"),
+        }
+        assert!(agent.methods().iter().any(|method| method == "session/new"));
     }
 
     #[test]
@@ -2218,7 +2242,7 @@ mod tests {
 
         thread::scope(|scope| {
             let turn = scope.spawn(|| session.prompt("go"));
-            let events = drain_until(&session, "approval.requested", 1);
+            let events = drain_until(&session, "permission.requested", 1);
             let approval = approvals(&events)[0];
             assert_eq!(approval.item_id.as_deref(), Some("t9"));
             assert_eq!(approval.title.as_deref(), Some("rm -rf build"));
@@ -2250,7 +2274,7 @@ mod tests {
 
         thread::scope(|scope| {
             let turn = scope.spawn(|| session.prompt("go"));
-            let events = drain_until(&session, "approval.requested", 1);
+            let events = drain_until(&session, "permission.requested", 1);
             let request_id = approval_id(approvals(&events)[0]);
 
             assert_eq!(
@@ -2289,7 +2313,7 @@ mod tests {
 
         thread::scope(|scope| {
             let turn = scope.spawn(|| session.prompt("go"));
-            let events = drain_until(&session, "approval.requested", 1);
+            let events = drain_until(&session, "permission.requested", 1);
             let request_id = approval_id(approvals(&events)[0]);
             session
                 .answer_approval(request_id, "allow-once")
@@ -2347,7 +2371,7 @@ mod tests {
 
         thread::scope(|scope| {
             let turn = scope.spawn(|| session.prompt("go"));
-            drain_until(&session, "approval.requested", 2);
+            drain_until(&session, "permission.requested", 2);
             session.cancel().expect("the cancel is delivered");
             let outcome = turn
                 .join()

@@ -6,7 +6,7 @@
     "PermissionPolicy": {
       "description": "How much Bridge asks before an agent acts. Mirrors `bridge_core::agent_config::PermissionPolicy`.\n\n`default` on the container, not just the fields: a policy payload written by an older build must still read once slice 3 adds the graduated modes.",
       "properties": {
-        "bypassAll": {
+        "autoApproveProviderPermissions": {
           "default": false,
           "description": "Auto-accept every provider approval, for every agent. Worker write scope and browser outward effects are unaffected — those are authorization.",
           "type": "boolean"

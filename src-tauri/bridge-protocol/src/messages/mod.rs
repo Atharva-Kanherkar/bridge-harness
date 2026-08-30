@@ -184,6 +184,7 @@ typed_methods![
     (ReplaySessionEvents, ReplaySessionEventsParams, ReplaySessionEventsResult),
     (ActivateSessionEntry, ActivateSessionEntryParams, SessionForestSnapshot),
     (CreateChat, CreateChatParams, BridgeState),
+    (CreateAsideChat, CreateAsideChatParams, CreateAsideChatResult),
     (CreateWorkspaceSession, CreateWorkspaceSessionParams, BridgeState),
     (StartSession, StartSessionParams, BridgeState),
     (StartChat, StartChatParams, BridgeState),
@@ -224,7 +225,8 @@ typed_methods![
     (GetConsolidationSettings, _, MemoryConsolidationSettings),
     (UpdateConsolidationSettings, UpdateConsolidationSettingsParams, MemoryConsolidationSettings),
     // approvals
-    (ResolveApproval, ResolveApprovalParams, UnitResult),
+    (ResolveApproval, ResolveApprovalParams, InteractionResolutionResult),
+    (ResolveQuestion, ResolveQuestionParams, InteractionResolutionResult),
     // auth — provider sign-in
     (StartProviderLogin, StartProviderLoginParams, StartProviderLoginResult),
     // terminal
@@ -552,7 +554,7 @@ mod tests {
         );
         assert_eq!(
             TypedMethod::params_fields(MethodName::ResolveApproval),
-            Some(vec!["decision".to_string(), "eventId".to_string(), "sessionId".to_string()])
+            Some(vec!["decision".to_string(), "eventId".to_string(), "optionId".to_string(), "sessionId".to_string()])
         );
     }
 
@@ -562,7 +564,6 @@ mod tests {
             MethodName::InterruptTurn,
             MethodName::CompactSession,
             MethodName::RefreshAccountUsage,
-            MethodName::ResolveApproval,
             MethodName::OpenTerminal,
             MethodName::SetBrowserPermission,
             MethodName::EnableLearningTrigger,

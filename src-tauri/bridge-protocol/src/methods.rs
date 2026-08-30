@@ -75,6 +75,7 @@ methods![
     (ReplaySessionEvents, "sessions", "replay_session_events"),
     (ActivateSessionEntry, "sessions", "activate_session_entry"),
     (CreateChat, "sessions", "create_chat"),
+    (CreateAsideChat, "sessions", "create_aside_chat"),
     (CreateWorkspaceSession, "sessions", "create_workspace_session"),
     (StartSession, "sessions", "start_session"),
     (StartChat, "sessions", "start_chat"),
@@ -111,6 +112,7 @@ methods![
     (UpdateConsolidationSettings, "memory", "update_consolidation_settings"),
     // approvals
     (ResolveApproval, "approvals", "resolve_approval"),
+    (ResolveQuestion, "approvals", "resolve_question"),
     // auth — provider sign-in
     (StartProviderLogin, "auth", "start_provider_login"),
     // terminal

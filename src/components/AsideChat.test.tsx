@@ -165,6 +165,41 @@ describe("AsideChat", () => {
     expect(box.value).toBe("");
   });
 
+  it("blocks duplicate delivery and restores the full draft when sending fails", async () => {
+    let rejectSend: ((reason: Error) => void) | undefined;
+    const onSend = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectSend = reject; }));
+    await mount({ working: false, onSend });
+    const box = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(box, "keep this retry");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    const file = new File(["fake-image-bytes"], "retry.png", { type: "image/png" });
+    const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, "clipboardData", {
+      value: { items: [{ kind: "file", type: "image/png", getAsFile: () => file }] },
+    });
+    await act(async () => { box.dispatchEvent(pasteEvent); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+
+    await act(async () => {
+      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(dialog().textContent).toContain("Sending…");
+    await act(async () => {
+      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    expect(onSend).toHaveBeenCalledTimes(1);
+
+    await act(async () => { rejectSend?.(new Error("provider refused the send")); });
+    expect(box.value).toBe("keep this retry");
+    expect(container.querySelectorAll("img")).toHaveLength(1);
+    expect(dialog().textContent).toContain("provider refused the send");
+  });
+
   it("routes an approval inside the panel through the aside's resolver", async () => {
     const onResolve = vi.fn();
     await mount({

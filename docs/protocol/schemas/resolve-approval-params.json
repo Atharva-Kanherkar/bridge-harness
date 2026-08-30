@@ -23,6 +23,13 @@
       "format": "int64",
       "type": "integer"
     },
+    "optionId": {
+      "description": "Exact provider option id when the permission protocol advertises one.",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
     "sessionId": {
       "type": "string"
     }

@@ -24,6 +24,13 @@ const efforts: ReasoningEffort[] = ["low", "medium", "high", "xhigh"];
 const field = "h-10 w-full rounded-xl border border-border bg-background/60 px-3 text-sm text-foreground outline-none transition-colors focus:border-foreground/25 disabled:opacity-45";
 const textarea = "min-h-36 w-full resize-y rounded-xl border border-border bg-background/60 px-3 py-2.5 font-mono text-xs leading-relaxed text-foreground outline-none transition-colors focus:border-foreground/25 disabled:opacity-45";
 
+export function adapterSupportsAgentRole(adapter: AdapterDescriptor, role: string): boolean {
+  const supportsSandbox = (mode: "read_only" | "workspace_write") => !adapter.sandboxModes?.length || adapter.sandboxModes.includes(mode);
+  if (role === "orchestrator") return adapter.capabilities.includes("briefings") && supportsSandbox("workspace_write");
+  if (role === "implementation") return supportsSandbox("workspace_write");
+  return supportsSandbox("read_only");
+}
+
 const THEME_OPTIONS: { id: ThemePreference; label: string; hint: string; icon: React.ReactNode }[] = [
   { id: "system", label: "Match macOS", hint: "Follows your system appearance", icon: <Monitor size={15} /> },
   { id: "light", label: "Paper", hint: "Light mode", icon: <Sun size={15} /> },
@@ -77,7 +84,7 @@ export function PermissionsSection({ policy, autoApprovals, busy, onChange }: {
   busy: boolean;
   onChange: (next: PermissionPolicy) => void;
 }) {
-  const on = policy.bypassAll;
+  const on = policy.autoApproveProviderPermissions;
   return <div className="mx-auto max-w-2xl">
     <div className="mb-5">
       <h2 className="font-display text-lg font-semibold">Permissions</h2>
@@ -89,7 +96,7 @@ export function PermissionsSection({ policy, autoApprovals, busy, onChange }: {
       role="switch"
       aria-checked={on}
       disabled={busy}
-      onClick={() => onChange({ ...policy, bypassAll: !on })}
+      onClick={() => onChange({ ...policy, autoApproveProviderPermissions: !on })}
       // The ON state is carried by the border, the icon, and the pill — not by a
       // background swap. Tinting the card put `text-muted-foreground` body copy
       // on a lighter surface and the explanation went unreadable in dark mode,
@@ -103,9 +110,9 @@ export function PermissionsSection({ policy, autoApprovals, busy, onChange }: {
         {on ? <ShieldOff size={16} /> : <Shield size={16} />}
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block text-[13px] font-medium text-foreground">Bypass all approvals</span>
+        <span className="block text-[13px] font-medium text-foreground">Auto-approve provider permissions</span>
         <span className="mt-1 block text-[11.5px] leading-relaxed text-muted-foreground">
-          Every agent — orchestrator, workers, and direct chats — has its approvals accepted automatically. No prompt appears anywhere.
+          Permission requests from Claude, Codex, OpenCode, and Cursor are accepted automatically when the provider offers an allow option. Questions and macOS prompts still wait for you.
         </span>
       </span>
       <span className={cn(
@@ -180,7 +187,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
   /// sent — only because the host confirmed it.
   async function savePolicy(policy: PermissionPolicy) {
     setBusy(true);
-    try { setConfig(await bridgeApi.savePermissionPolicy(policy)); }
+    try { setConfig(await bridgeApi.savePermissionPolicy(policy)); flashSaved(); }
     catch (error) { onError(String(error)); }
     finally { setBusy(false); }
   }
@@ -324,7 +331,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
           </section>
           {agentDraft && <section className="min-w-0 flex-1 rounded-3xl border border-border/80 bg-card/45 p-5">
             <div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="font-display text-lg font-semibold">{agentDraft.id ? agentDraft.name : "Create agent"}</h2><p className="mt-1 text-xs text-muted-foreground">{agentDraft.isBuiltIn ? "Built-in preset · reset restores Bridge defaults" : "Custom preset · safe to delete at any time"}</p></div><label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={agentDraft.enabled} onChange={event => setAgentDraft(value => value && ({ ...value, enabled: event.target.checked }))}/>Enabled</label></div>
-            <div className="grid gap-4 sm:grid-cols-2"><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Name<input className={field} value={agentDraft.name} onChange={event => setAgentDraft(value => value && ({ ...value, name: event.target.value }))}/></label><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Role<select className={field} value={agentDraft.role} onChange={event => setAgentDraft(value => value && ({ ...value, role: event.target.value as AgentRole }))}>{roles.map(role => <option key={role.id} value={role.id}>{role.label}</option>)}</select></label><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Runtime<select className={field} value={agentDraft.harness} onChange={event => setAgentDraft(value => value && ({ ...value, harness: event.target.value as AgentDefinition["harness"], model: null }))}><option value="bridge">Bridge chooses</option><option value="codex">Codex</option><option value="claude">Claude Code</option><option value="cursor">Cursor</option><option value="opencode">OpenCode</option></select></label><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Model<select className={field} value={agentDraft.model ?? ""} disabled={agentDraft.harness === "bridge"} onChange={event => setAgentDraft(value => value && ({ ...value, model: event.target.value || null }))}><option value="">Provider default</option>{modelOptions.filter(option => option.adapter === agentDraft.harness).map(option => <option key={`${option.adapter}:${option.id}`} value={option.id}>{option.label}</option>)}</select></label><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Effort<select className={field} value={agentDraft.effort} onChange={event => setAgentDraft(value => value && ({ ...value, effort: event.target.value as ReasoningEffort }))}>{efforts.map(value => <option key={value} value={value}>{value}</option>)}</select></label><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Description<input className={field} value={agentDraft.description} onChange={event => setAgentDraft(value => value && ({ ...value, description: event.target.value }))}/></label></div>
+            <div className="grid gap-4 sm:grid-cols-2"><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Name<input className={field} value={agentDraft.name} onChange={event => setAgentDraft(value => value && ({ ...value, name: event.target.value }))}/></label><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Role<select className={field} value={agentDraft.role} onChange={event => { const role = event.target.value as AgentRole; setAgentDraft(value => { if (!value) return value; const current = adapters.find(adapter => adapter.id === value.harness); return { ...value, role, harness: value.harness === "bridge" || (current && adapterSupportsAgentRole(current, role)) ? value.harness : "bridge", model: value.harness === "bridge" || (current && adapterSupportsAgentRole(current, role)) ? value.model : null }; }); }}>{roles.map(role => <option key={role.id} value={role.id}>{role.label}</option>)}</select></label><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Runtime<select className={field} value={agentDraft.harness} onChange={event => setAgentDraft(value => value && ({ ...value, harness: event.target.value as AgentDefinition["harness"], model: null }))}><option value="bridge">Bridge chooses</option>{adapters.filter(adapter => adapterSupportsAgentRole(adapter, agentDraft.role)).map(adapter => <option key={adapter.id} value={adapter.id}>{adapter.label}</option>)}</select></label><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Model<select className={field} value={agentDraft.model ?? ""} disabled={agentDraft.harness === "bridge"} onChange={event => setAgentDraft(value => value && ({ ...value, model: event.target.value || null }))}><option value="">Provider default</option>{modelOptions.filter(option => option.adapter === agentDraft.harness).map(option => <option key={`${option.adapter}:${option.id}`} value={option.id}>{option.label}</option>)}</select></label><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Effort<select className={field} value={agentDraft.effort} onChange={event => setAgentDraft(value => value && ({ ...value, effort: event.target.value as ReasoningEffort }))}>{efforts.map(value => <option key={value} value={value}>{value}</option>)}</select></label><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Description<input className={field} value={agentDraft.description} onChange={event => setAgentDraft(value => value && ({ ...value, description: event.target.value }))}/></label></div>
             <label className="mt-4 block space-y-1.5 text-[11px] font-medium text-muted-foreground">System prompt <span className="font-normal text-muted-foreground/60">appended after Bridge safety and routing policy</span><textarea className={textarea} value={agentDraft.systemPrompt} placeholder="Add role-specific behavior…" onChange={event => setAgentDraft(value => value && ({ ...value, systemPrompt: event.target.value }))}/></label>
             <div className="mt-5 flex flex-wrap items-center gap-2"><button type="button" disabled={busy || !agentDraft.name.trim()} onClick={() => void saveAgent()} className="inline-flex h-9 items-center gap-2 rounded-xl bg-foreground px-3.5 text-xs font-medium text-background disabled:opacity-40"><Save size={13}/>{agentDraft.id ? "Save agent" : "Create agent"}</button>{agentDraft.id && agentDraft.role === "orchestrator" && !agentDraft.isDefault && <button type="button" disabled={busy || !agentDraft.enabled} onClick={() => void makeDefault()} className="h-9 rounded-xl border border-border px-3 text-xs text-foreground hover:bg-foreground/[0.05] disabled:opacity-40">Make default orchestrator</button>}{agentDraft.id && <button type="button" disabled={busy} onClick={() => void removeAgent()} className="ml-auto inline-flex h-9 items-center gap-2 rounded-xl px-3 text-xs text-destructive hover:bg-destructive/10"><Trash2 size={13}/>{agentDraft.isBuiltIn ? "Reset agent" : "Delete agent"}</button>}</div>
           </section>}

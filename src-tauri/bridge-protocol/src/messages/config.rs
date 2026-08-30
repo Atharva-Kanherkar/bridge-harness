@@ -130,7 +130,8 @@ pub struct SetDefaultAgentParams {
 pub struct PermissionPolicy {
     /// Auto-accept every provider approval, for every agent. Worker write scope
     /// and browser outward effects are unaffected — those are authorization.
-    pub bypass_all: bool,
+    #[serde(alias = "bypassAll")]
+    pub auto_approve_provider_permissions: bool,
     pub updated_at: String,
 }
 

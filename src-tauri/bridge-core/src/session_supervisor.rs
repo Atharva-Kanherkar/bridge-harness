@@ -11,7 +11,7 @@ use crate::{
     BridgeError,
 };
 use chrono::Utc;
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use std::{collections::HashSet, str::FromStr};
 
 pub struct SessionSupervisor;
@@ -151,6 +151,20 @@ impl SessionSupervisor {
         reason: Option<&str>,
     ) -> Result<SessionEntry, BridgeError> {
         let transaction = db.unchecked_transaction()?;
+        let entry = Self::transition_in_transaction(&transaction, session_id, next, reason)?;
+        transaction.commit()?;
+        Ok(entry)
+    }
+
+    /// Apply a worker transition inside a caller-owned transaction. Interaction
+    /// resolution uses this so the durable answer and the worker leaving its
+    /// waiting state cannot commit separately.
+    pub(crate) fn transition_in_transaction(
+        transaction: &Transaction<'_>,
+        session_id: &str,
+        next: WorkerLifecycleState,
+        reason: Option<&str>,
+    ) -> Result<SessionEntry, BridgeError> {
         let current: String = transaction
             .query_row(
                 "SELECT lifecycle_state FROM worker_runtime WHERE session_id=?1",
@@ -204,7 +218,6 @@ impl SessionSupervisor {
             "INSERT INTO events(source,kind,entity_id,body,created_at) VALUES('supervisor','worker.lifecycle',?1,?2,?3)",
             params![session_id, format!("{} -> {}", current.as_str(), next.as_str()), now],
         )?;
-        transaction.commit()?;
         Ok(entry)
     }
 

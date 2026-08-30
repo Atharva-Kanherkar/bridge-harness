@@ -2,10 +2,10 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
-import { PermissionsSection } from "./SettingsScreen";
-import type { BridgeEvent, PermissionPolicy } from "../types";
+import { adapterSupportsAgentRole, PermissionsSection } from "./SettingsScreen";
+import type { AdapterDescriptor, BridgeEvent, PermissionPolicy } from "../types";
 
-const policy = (bypassAll: boolean): PermissionPolicy => ({ bypassAll, updatedAt: "2026-08-21T10:00:00Z" });
+const policy = (autoApproveProviderPermissions: boolean): PermissionPolicy => ({ autoApproveProviderPermissions, updatedAt: "2026-08-21T10:00:00Z" });
 const ledgerRow = (id: number, body: string): BridgeEvent => ({
   id, source: "approval", kind: "approval.auto_allowed", entityId: "chat", body,
   createdAt: "2026-08-21T10:00:00Z",
@@ -40,6 +40,9 @@ describe("PermissionsSection", () => {
     expect(container.textContent).toContain("Worker write scope");
     expect(container.textContent).toContain("Browser outward effects");
     expect(container.textContent).toContain("These keep asking either way");
+    expect(container.textContent).toContain("Auto-approve provider permissions");
+    expect(container.textContent).toContain("Questions and macOS prompts still wait for you");
+    expect(container.textContent).not.toContain("Bypass all approvals");
     await unmount();
   });
 
@@ -51,7 +54,7 @@ describe("PermissionsSection", () => {
       <PermissionsSection policy={policy(false)} autoApprovals={[]} busy={false} onChange={onChange} />,
     );
     await act(async () => container.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
-    expect(onChange).toHaveBeenCalledWith({ bypassAll: true, updatedAt: "2026-08-21T10:00:00Z" });
+    expect(onChange).toHaveBeenCalledWith({ autoApproveProviderPermissions: true, updatedAt: "2026-08-21T10:00:00Z" });
     // Still off in the DOM: nothing changed until the host says so.
     expect(container.querySelector('[role="switch"]')!.getAttribute("aria-checked")).toBe("false");
     await unmount();
@@ -90,5 +93,22 @@ describe("PermissionsSection", () => {
     await act(async () => toggle.click());
     expect(onChange).not.toHaveBeenCalled();
     await unmount();
+  });
+});
+
+describe("adapterSupportsAgentRole", () => {
+  const cursor: AdapterDescriptor = {
+    id: "cursor", label: "Cursor", available: true, authState: "signed_in", version: "test",
+    capabilities: ["messages"], sandboxModes: ["workspace_write", "danger_full_access"],
+    unavailableReason: null, models: [], defaultModel: null,
+  };
+
+  it("keeps Cursor available for implementation but not roles its adapter rejects", () => {
+    expect(adapterSupportsAgentRole(cursor, "implementation")).toBe(true);
+    expect(adapterSupportsAgentRole(cursor, "research")).toBe(false);
+    expect(adapterSupportsAgentRole(cursor, "verification")).toBe(false);
+    expect(adapterSupportsAgentRole(cursor, "planning")).toBe(false);
+    expect(adapterSupportsAgentRole(cursor, "documentation")).toBe(false);
+    expect(adapterSupportsAgentRole(cursor, "orchestrator")).toBe(false);
   });
 });

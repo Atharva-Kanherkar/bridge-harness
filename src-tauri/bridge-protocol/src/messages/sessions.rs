@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 
 use super::common::HarnessId;
+use super::state::BridgeState;
 
 pub const DEFAULT_REPLAY_EVENT_LIMIT: u32 = 500;
 pub const MAX_REPLAY_EVENT_LIMIT: u32 = 1_000;
@@ -189,6 +190,27 @@ pub struct CreateChatParams {
     pub model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateAsideChatParams {
+    pub source_session_id: String,
+    pub harness: HarnessId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateAsideChatResult {
+    pub state: BridgeState,
+    pub source_session_id: String,
+    pub session_id: String,
+    pub handoff_status: String,
+    pub fidelity: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]

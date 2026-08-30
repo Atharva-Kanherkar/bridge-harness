@@ -39,6 +39,7 @@ export type BridgeMethod =
   | "sessions/replay_session_events"
   | "sessions/activate_session_entry"
   | "sessions/create_chat"
+  | "sessions/create_aside_chat"
   | "sessions/create_workspace_session"
   | "sessions/start_session"
   | "sessions/start_chat"
@@ -70,6 +71,7 @@ export type BridgeMethod =
   | "memory/get_consolidation_settings"
   | "memory/update_consolidation_settings"
   | "approvals/resolve_approval"
+  | "approvals/resolve_question"
   | "auth/start_provider_login"
   | "terminal/open_terminal"
   | "terminal/write_terminal"
@@ -194,6 +196,7 @@ export const BRIDGE_METHODS = [
   { method: "sessions/replay_session_events", domain: "sessions", command: "replay_session_events" },
   { method: "sessions/activate_session_entry", domain: "sessions", command: "activate_session_entry" },
   { method: "sessions/create_chat", domain: "sessions", command: "create_chat" },
+  { method: "sessions/create_aside_chat", domain: "sessions", command: "create_aside_chat" },
   { method: "sessions/create_workspace_session", domain: "sessions", command: "create_workspace_session" },
   { method: "sessions/start_session", domain: "sessions", command: "start_session" },
   { method: "sessions/start_chat", domain: "sessions", command: "start_chat" },
@@ -225,6 +228,7 @@ export const BRIDGE_METHODS = [
   { method: "memory/get_consolidation_settings", domain: "memory", command: "get_consolidation_settings" },
   { method: "memory/update_consolidation_settings", domain: "memory", command: "update_consolidation_settings" },
   { method: "approvals/resolve_approval", domain: "approvals", command: "resolve_approval" },
+  { method: "approvals/resolve_question", domain: "approvals", command: "resolve_question" },
   { method: "auth/start_provider_login", domain: "auth", command: "start_provider_login" },
   { method: "terminal/open_terminal", domain: "terminal", command: "open_terminal" },
   { method: "terminal/write_terminal", domain: "terminal", command: "write_terminal" },
@@ -409,6 +413,7 @@ export interface BridgeMethodParams {
   "sessions/replay_session_events": ReplaySessionEventsParams;
   "sessions/activate_session_entry": ActivateSessionEntryParams;
   "sessions/create_chat": CreateChatParams;
+  "sessions/create_aside_chat": CreateAsideChatParams;
   "sessions/create_workspace_session": CreateWorkspaceSessionParams;
   "sessions/start_session": StartSessionParams;
   "sessions/start_chat": StartChatParams;
@@ -440,6 +445,7 @@ export interface BridgeMethodParams {
   "memory/get_consolidation_settings": undefined;
   "memory/update_consolidation_settings": UpdateConsolidationSettingsParams;
   "approvals/resolve_approval": ResolveApprovalParams;
+  "approvals/resolve_question": ResolveQuestionParams;
   "auth/start_provider_login": StartProviderLoginParams;
   "terminal/open_terminal": OpenTerminalParams;
   "terminal/write_terminal": WriteTerminalParams;
@@ -566,6 +572,7 @@ export interface BridgeMethodResults {
   "sessions/replay_session_events": ReplaySessionEventsResult;
   "sessions/activate_session_entry": SessionForestSnapshot;
   "sessions/create_chat": BridgeState;
+  "sessions/create_aside_chat": CreateAsideChatResult;
   "sessions/create_workspace_session": BridgeState;
   "sessions/start_session": BridgeState;
   "sessions/start_chat": BridgeState;
@@ -596,7 +603,8 @@ export interface BridgeMethodResults {
   "memory/list_memory_records_as_of": ListMemoryRecordsResult;
   "memory/get_consolidation_settings": MemoryConsolidationSettings;
   "memory/update_consolidation_settings": MemoryConsolidationSettings;
-  "approvals/resolve_approval": UnitResult;
+  "approvals/resolve_approval": InteractionResolutionResult;
+  "approvals/resolve_question": InteractionResolutionResult;
   "auth/start_provider_login": StartProviderLoginResult;
   "terminal/open_terminal": UnitResult;
   "terminal/write_terminal": UnitResult;
@@ -735,6 +743,13 @@ export interface BridgeEvent {
   id: JsSafeI64;
   kind: string;
   source: string;
+}
+
+export interface BridgeState {
+  events: BridgeEvent[];
+  projects: Project[];
+  sessions: Session[];
+  workspaces: Workspace[];
 }
 
 export interface BrowserActionRequest {
@@ -925,6 +940,8 @@ export interface HealthWarning {
 
 export type InputDisposition = "startedNewTurn" | "steeredActiveTurn" | "queuedForPhaseBoundary";
 
+export type InteractionResolutionDisposition = "resolved" | "alreadyResolved";
+
 export interface IssueDetail {
   body: string;
   comments: GithubComment[];
@@ -1090,7 +1107,7 @@ export interface ModelProfileDraft {
 export type Params = Record<string, unknown> | unknown[];
 
 export interface PermissionPolicy {
-  bypassAll?: boolean;
+  autoApproveProviderPermissions?: boolean;
   updatedAt?: string;
 }
 
@@ -1209,6 +1226,8 @@ export interface PullRequestSummary {
   title: string;
   url: string;
 }
+
+export type QuestionAction = "answer" | "decline" | "cancel";
 
 export interface QueuedWorkerRequest {
   actualModel: string;
@@ -1767,13 +1786,6 @@ export interface HealthResult {
   warnings?: HealthWarning[];
 }
 
-export interface BridgeState {
-  events: BridgeEvent[];
-  projects: Project[];
-  sessions: Session[];
-  workspaces: Workspace[];
-}
-
 export interface AddProjectParams {
   path: string;
 }
@@ -2039,6 +2051,21 @@ export interface CreateChatParams {
   title?: string | null;
 }
 
+export interface CreateAsideChatParams {
+  harness: HarnessId;
+  model?: string | null;
+  sourceSessionId: string;
+  title?: string | null;
+}
+
+export interface CreateAsideChatResult {
+  fidelity: string;
+  handoffStatus: string;
+  sessionId: string;
+  sourceSessionId: string;
+  state: BridgeState;
+}
+
 export interface CreateWorkspaceSessionParams {
   createWorktree?: boolean | null;
   workspaceId: string;
@@ -2242,6 +2269,23 @@ export interface UpdateConsolidationSettingsParams {
 
 export interface ResolveApprovalParams {
   decision: ApprovalDecision;
+  eventId: number;
+  optionId?: string | null;
+  sessionId: string;
+}
+
+export interface InteractionResolutionResult {
+  decision: string;
+  disposition: InteractionResolutionDisposition;
+  interactionKind: string;
+  reason?: string | null;
+  resolvedBy: string;
+  status: string;
+}
+
+export interface ResolveQuestionParams {
+  action: QuestionAction;
+  answers?: Record<string, string[]>;
   eventId: number;
   sessionId: string;
 }

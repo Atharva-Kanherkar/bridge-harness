@@ -16,6 +16,34 @@ pub enum ApprovalDecision {
     Cancel,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum QuestionAction {
+    Answer,
+    Decline,
+    Cancel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum InteractionResolutionDisposition {
+    Resolved,
+    AlreadyResolved,
+}
+
+/// Durable result shared by permission decisions and question replies.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct InteractionResolutionResult {
+    pub disposition: InteractionResolutionDisposition,
+    pub interaction_kind: String,
+    pub status: String,
+    pub resolved_by: String,
+    pub decision: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResolveApprovalParams {
@@ -23,6 +51,22 @@ pub struct ResolveApprovalParams {
     /// The durable sequence of the `approval.requested` event being answered.
     pub event_id: i64,
     pub decision: ApprovalDecision,
+    /// Exact provider option id when the permission protocol advertises one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub option_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ResolveQuestionParams {
+    pub session_id: String,
+    /// The durable sequence of the `question.requested` event.
+    pub event_id: i64,
+    pub action: QuestionAction,
+    /// Question id to one or more exact selected/free-form values. Form
+    /// elicitations use property names as ids.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub answers: std::collections::BTreeMap<String, Vec<String>>,
 }
 
 #[cfg(test)]
@@ -37,10 +81,29 @@ mod tests {
             session_id: "s-1".into(),
             event_id: 42,
             decision: ApprovalDecision::AcceptForSession,
+            option_id: Some("allow-always".into()),
         };
         assert_eq!(
             serde_json::to_value(&resolve).unwrap(),
-            json!({"sessionId": "s-1", "eventId": 42, "decision": "acceptForSession"})
+            json!({"sessionId": "s-1", "eventId": 42, "decision": "acceptForSession", "optionId": "allow-always"})
+        );
+        assert_eq!(round_trip(&resolve), resolve);
+    }
+
+    #[test]
+    fn question_resolution_keeps_answers_typed_and_separate() {
+        let resolve = ResolveQuestionParams {
+            session_id: "s-1".into(),
+            event_id: 7,
+            action: QuestionAction::Answer,
+            answers: std::collections::BTreeMap::from([(
+                "target".into(),
+                vec!["Core".into()],
+            )]),
+        };
+        assert_eq!(
+            serde_json::to_value(&resolve).unwrap(),
+            json!({"sessionId":"s-1","eventId":7,"action":"answer","answers":{"target":["Core"]}})
         );
         assert_eq!(round_trip(&resolve), resolve);
     }

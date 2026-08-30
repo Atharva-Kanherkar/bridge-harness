@@ -17,6 +17,10 @@ import type { WorkerTone } from "./workerStatus";
 import { bridgeApi } from "../api";
 import { computeNarration, type NarrationView } from "../startupNarration";
 import { HarnessMark } from "./harnessMarks";
+import type { InteractionResolutionResult, QuestionAction } from "../protocol/generated/protocol";
+
+type ResolvePermission = (eventId: number, decision: ApprovalDecision, optionId?: string) => Promise<InteractionResolutionResult | void> | void;
+type ResolveQuestion = (eventId: number, action: QuestionAction, answers: Record<string, string[]>) => Promise<InteractionResolutionResult | void> | void;
 
 function providerLabel(harness?: string | null): string | undefined {
   return harness ? harnessLabel(harness) : undefined;
@@ -498,7 +502,7 @@ function StartupStatusRow({ view, harness }: { view: NarrationView; harness?: st
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onOpenSession, onExpandWorker, onWaiveCompletion, onRefreshBase, onRetryWorker, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, modelSwitch }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: (eventId: number, decision: ApprovalDecision) => void; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onExpandWorker, onWaiveCompletion, onRefreshBase, onRetryWorker, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, modelSwitch }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null }) {
   const visibleItems = useMemo(() => {
     const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
     const nextLiveItems = reduceConversation(events);
@@ -583,7 +587,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
               entryId={entry.item.entryId}
               className={highlightEntryId && entry.item.entryId === highlightEntryId ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
             >
-              <ItemView item={entry.item} workers={workers} now={now} onResolve={onResolve} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRefreshBase={onRefreshBase} onRetryWorker={onRetryWorker} onRemember={onRemember} errorContext={errorContext}/>
+              <ItemView item={entry.item} workers={workers} now={now} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRefreshBase={onRefreshBase} onRetryWorker={onRetryWorker} onRemember={onRemember} errorContext={errorContext}/>
             </TranscriptRow>)}
         {pendingRows.map(row => <TranscriptRow key={row.key}><div className={BUBBLE}><MentionText text={row.text}/></div></TranscriptRow>)}
         {pendingAttachmentRows.map(row => <TranscriptRow key={row.key}><div className={`${BUBBLE} p-1.5`}><img src={row.dataUri} alt="Image you attached, still sending" className="max-h-40 rounded-xl"/></div></TranscriptRow>)}
@@ -697,7 +701,7 @@ function Empty({ title, copy }: { title: string; copy: string }) {
   </div>;
 }
 
-function ItemView({ item, workers, now, onResolve, onOpenSession, onExpandWorker, onRefreshBase, onRetryWorker, onRemember, errorContext }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; onResolve: (eventId: number, decision: ApprovalDecision) => void; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onRemember?: (text: string) => void; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
+function ItemView({ item, workers, now, onResolve, onAnswerQuestion, onOpenSession, onExpandWorker, onRefreshBase, onRetryWorker, onRemember, errorContext }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onRemember?: (text: string) => void; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
   if (item.type === "message") {
     if (item.role === "user") {
       const attachments = attachmentUris(item.data);
@@ -726,6 +730,8 @@ function ItemView({ item, workers, now, onResolve, onOpenSession, onExpandWorker
   if (item.type === "reasoning") return <Reasoning item={item}/>;
   if (item.type === "plan") return <PlanCard item={item}/>;
   if (item.type === "approval") return <ApprovalCard item={item} onResolve={onResolve}/>;
+  if (item.type === "permission") return <PermissionCard item={item} onResolve={onResolve}/>;
+  if (item.type === "question") return <QuestionCard item={item} onResolve={onAnswerQuestion}/>;
   if (item.type === "delegation") return <DelegationRow item={item} workers={workers} now={now} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRetryWorker={onRetryWorker}/>;
   if (item.type === "checkpoint" || item.type === "compaction" || item.type === "branch-summary") return <ForestCard item={item}/>;
   if (item.data.freshProviderSession === true) return <ModelChangedRow item={item}/>;
@@ -847,8 +853,164 @@ function PlanCard({ item }: { item: ConversationItem }) {
   </div>;
 }
 
-function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: (eventId: number, decision: ApprovalDecision) => void }) {
+type PermissionAction = { decision: ApprovalDecision; optionId?: string; label: string };
+
+function offeredPermissionActions(data: Record<string, unknown>): PermissionAction[] {
+  if (!Array.isArray(data.actions)) return [];
+  return data.actions.flatMap(value => {
+    if (!value || typeof value !== "object") return [];
+    const action = value as Record<string, unknown>;
+    const decision = action.decision;
+    const label = action.label;
+    if (!(["accept", "acceptForSession", "decline", "cancel"] as unknown[]).includes(decision) || typeof label !== "string") return [];
+    return [{ decision: decision as ApprovalDecision, optionId: typeof action.optionId === "string" ? action.optionId : undefined, label }];
+  });
+}
+
+function resolutionCopy(item: ConversationItem): string {
+  const actor = typeof item.data.resolvedBy === "string" ? item.data.resolvedBy : "";
+  const reason = typeof item.data.reason === "string" ? item.data.reason : "";
+  const labels: Record<string, string> = {
+    settling: "Applying decision…",
+    allowed_once: "Allowed once",
+    allowed_for_session: "Allowed for this session",
+    accept: "Allowed once",
+    acceptForSession: "Allowed for this session",
+    answered: "Answered",
+    declined: "Declined",
+    decline: "Declined",
+    cancelled: "Cancelled",
+    cancel: "Cancelled",
+    failed: "Could not be delivered",
+  };
+  const outcome = labels[item.status ?? ""] ?? item.status ?? "Resolved";
+  return [outcome, actor ? `by ${actor}` : "", reason ? `— ${reason}` : ""].filter(Boolean).join(" ");
+}
+
+function PermissionCard({ item, onResolve }: { item: ConversationItem; onResolve: ResolvePermission }) {
+  const actions = offeredPermissionActions(item.data);
+  const pending = item.status === "pending";
+  const settling = item.status === "settling";
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const act = async (action: PermissionAction) => {
+    setBusy(action.optionId ?? action.decision);
+    setError(null);
+    try { await onResolve(item.eventId, action.decision, action.optionId); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setBusy(null); }
+  };
+  return <div role={pending ? "alert" : "status"} className={`${PANEL} border-l-warning`}>
+    <header className="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-3.5 pt-3 sm:px-4">
+      <b className="text-[13px] font-semibold text-foreground">{item.title || "Permission needed"}</b>
+      {pending && <small className="text-[10.5px] tracking-[0.03em] text-warning">waiting for you</small>}
+      {settling && <small className="text-[10.5px] tracking-[0.03em] text-warning">settling…</small>}
+    </header>
+    {item.text && <p className="mt-1.5 px-3.5 text-[12.5px] leading-relaxed text-muted-foreground sm:px-4">{item.text}</p>}
+    {item.data.command ? <code className={`mx-3.5 mt-2.5 sm:mx-4 ${WELL}`}>{String(item.data.command)}</code> : null}
+    {pending && actions.length > 0 && <div className="flex flex-wrap justify-end gap-[7px] px-3.5 py-3 sm:px-4">
+      {actions.map(action => <button
+        key={`${action.optionId ?? "bridge"}:${action.decision}`}
+        disabled={!!busy}
+        className={action.decision === "accept" ? BTN_PRIMARY : BTN_SECONDARY}
+        onClick={() => void act(action)}
+      >{action.decision === "decline" ? <X size={12} aria-hidden="true" /> : action.decision === "accept" ? <Check size={12} aria-hidden="true" /> : null}{busy === (action.optionId ?? action.decision) ? "Applying…" : action.label}</button>)}
+    </div>}
+    {pending && actions.length === 0 && <p className="px-3.5 py-3 text-[11.5px] text-muted-foreground sm:px-4">The provider offered no supported action.</p>}
+    {!pending && <p className={`px-3.5 py-3 text-[11.5px] sm:px-4 ${item.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>{resolutionCopy(item)}</p>}
+    {typeof item.data.failure === "string" && <p role="alert" className="px-3.5 pb-3 text-[11.5px] text-destructive sm:px-4">{item.data.failure}</p>}
+    {error && <p role="alert" className="px-3.5 pb-3 text-[11.5px] text-destructive sm:px-4">{error}</p>}
+  </div>;
+}
+
+type QuestionField = { id: string; prompt: string; options: string[]; multiple: boolean };
+
+function questionFields(data: Record<string, unknown>): QuestionField[] {
+  if (Array.isArray(data.questions)) {
+    return data.questions.flatMap((value, index) => {
+      if (!value || typeof value !== "object") return [];
+      const question = value as Record<string, unknown>;
+      const options = Array.isArray(question.options)
+        ? question.options.flatMap(option => typeof option === "string" ? [option] : option && typeof option === "object" && typeof (option as Record<string, unknown>).label === "string" ? [String((option as Record<string, unknown>).label)] : [])
+        : [];
+      return [{
+        id: typeof question.id === "string" ? question.id : String(index),
+        prompt: String(question.question ?? question.header ?? "Answer"),
+        options,
+        multiple: question.multiple === true || question.multiSelect === true,
+      }];
+    });
+  }
+  const schema = data.requestedSchema && typeof data.requestedSchema === "object" ? data.requestedSchema as Record<string, unknown> : {};
+  const properties = schema.properties && typeof schema.properties === "object" ? schema.properties as Record<string, unknown> : {};
+  return Object.entries(properties).map(([id, value]) => {
+    const property = value && typeof value === "object" ? value as Record<string, unknown> : {};
+    return {
+      id,
+      prompt: String(property.title ?? property.description ?? id),
+      options: Array.isArray(property.enum) ? property.enum.map(String) : [],
+      multiple: property.type === "array",
+    };
+  });
+}
+
+function QuestionCard({ item, onResolve }: { item: ConversationItem; onResolve: ResolveQuestion }) {
+  const fields = questionFields(item.data);
+  const [answers, setAnswers] = useState<Record<string, string[]>>({});
+  const [busy, setBusy] = useState<QuestionAction | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const pending = item.status === "pending";
+  const setAnswer = (field: QuestionField, value: string) => setAnswers(current => ({
+    ...current,
+    [field.id]: field.multiple
+      ? (current[field.id] ?? []).includes(value) ? (current[field.id] ?? []).filter(option => option !== value) : [...(current[field.id] ?? []), value]
+      : [value],
+  }));
+  const act = async (action: QuestionAction) => {
+    setBusy(action);
+    setError(null);
+    try { await onResolve(item.eventId, action, answers); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { setBusy(null); }
+  };
+  return <div role={pending ? "alert" : "status"} className={`${PANEL} border-l-info`}>
+    <header className="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-3.5 pt-3 sm:px-4">
+      <b className="text-[13px] font-semibold text-foreground">{item.title || "Question"}</b>
+      {pending && <small className="text-[10.5px] tracking-[0.03em] text-info">waiting for your answer</small>}
+    </header>
+    {item.text && <p className="mt-1.5 px-3.5 text-[12.5px] leading-relaxed text-muted-foreground sm:px-4">{item.text}</p>}
+    {pending && <div className="space-y-3 px-3.5 py-3 sm:px-4">
+      {fields.map(field => <fieldset key={field.id} className="space-y-2">
+        <legend className="text-[12px] font-medium text-foreground">{field.prompt}</legend>
+        {field.options.length > 0 ? <div className="flex flex-wrap gap-1.5">{field.options.map(option => <button
+          type="button"
+          key={option}
+          aria-pressed={(answers[field.id] ?? []).includes(option)}
+          className={(answers[field.id] ?? []).includes(option) ? BTN_PRIMARY : BTN_SECONDARY}
+          onClick={() => setAnswer(field, option)}
+        >{option}</button>)}</div> : <input
+          value={answers[field.id]?.[0] ?? ""}
+          onChange={event => setAnswers(current => ({ ...current, [field.id]: [event.target.value] }))}
+          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-[12.5px] text-foreground outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-ring"
+          placeholder="Type your answer"
+        />}
+      </fieldset>)}
+      {fields.length === 0 && <p className="text-[11.5px] text-muted-foreground">This provider did not supply an answerable question shape.</p>}
+      <div className="flex flex-wrap justify-end gap-[7px] pt-1">
+        <button disabled={!!busy} className={BTN_SECONDARY} onClick={() => void act("decline")}><X size={12} aria-hidden="true" />{busy === "decline" ? "Declining…" : "Decline"}</button>
+        <button disabled={!!busy || fields.length === 0 || !Object.values(answers).some(values => values.some(value => value.trim()))} className={BTN_PRIMARY} onClick={() => void act("answer")}><Check size={12} aria-hidden="true" />{busy === "answer" ? "Sending…" : "Send answer"}</button>
+      </div>
+    </div>}
+    {!pending && <p className={`px-3.5 py-3 text-[11.5px] sm:px-4 ${item.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>{resolutionCopy(item)}</p>}
+    {typeof item.data.failure === "string" && <p role="alert" className="px-3.5 pb-3 text-[11.5px] text-destructive sm:px-4">{item.data.failure}</p>}
+    {error && <p role="alert" className="px-3.5 pb-3 text-[11.5px] text-destructive sm:px-4">{error}</p>}
+  </div>;
+}
+
+function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: ResolvePermission }) {
   const transition = useMotionTransition(MOTION_DURATION.tick);
+  const [busy, setBusy] = useState<ApprovalDecision | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const pending = item.status === "pending";
   const accepted = item.status === "accept" || item.status === "acceptForSession";
   const scope = Array.isArray(item.data.requestedOwnedPaths) ? item.data.requestedOwnedPaths.map(String) : [];
@@ -882,9 +1044,9 @@ function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: 
             exit={{ opacity: 0 }}
             transition={transition}
           >
-            <button className={BTN_SECONDARY} onClick={() => onResolve(item.eventId, "decline")}><X size={12} aria-hidden="true" /> Decline</button>
-            {item.data.approvalType !== "delegation_path_scope" && <button className={BTN_SECONDARY} onClick={() => onResolve(item.eventId, "acceptForSession")}>Allow for session</button>}
-            <button className={BTN_PRIMARY} onClick={() => onResolve(item.eventId, "accept")}><Check size={12} aria-hidden="true" /> Allow once</button>
+            <button disabled={!!busy} className={BTN_SECONDARY} onClick={() => { setBusy("decline"); setError(null); void Promise.resolve(onResolve(item.eventId, "decline")).catch(cause => setError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBusy(null)); }}><X size={12} aria-hidden="true" /> Decline</button>
+            {item.data.approvalType !== "delegation_path_scope" && <button disabled={!!busy} className={BTN_SECONDARY} onClick={() => { setBusy("acceptForSession"); setError(null); void Promise.resolve(onResolve(item.eventId, "acceptForSession")).catch(cause => setError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBusy(null)); }}>Allow for session</button>}
+            <button disabled={!!busy} className={BTN_PRIMARY} onClick={() => { setBusy("accept"); setError(null); void Promise.resolve(onResolve(item.eventId, "accept")).catch(cause => setError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBusy(null)); }}><Check size={12} aria-hidden="true" /> {busy === "accept" ? "Allowing…" : "Allow once"}</button>
           </motion.div>
         : <motion.div
             key="resolved"
@@ -895,6 +1057,7 @@ function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: 
             transition={transition}
           >{accepted ? <Check size={12} aria-hidden="true" /> : <X size={12} aria-hidden="true" />} {item.status}</motion.div>}
     </AnimatePresence>
+    {error && <p role="alert" className="px-3.5 pb-3 text-[11.5px] text-destructive sm:px-4">{error}</p>}
   </div>;
 }
 

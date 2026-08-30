@@ -97,6 +97,11 @@ fn github_wire<T: DeserializeOwned, U: Serialize>(value: U) -> Result<T, BridgeE
         .map_err(|error| BridgeError::Invalid(format!("GitHub protocol conversion failed: {error}")))
 }
 
+fn protocol_wire<T: DeserializeOwned, U: Serialize>(value: U) -> Result<T, BridgeError> {
+    serde_json::from_value(serde_json::to_value(value).map_err(|error| BridgeError::Invalid(error.to_string()))?)
+        .map_err(|error| BridgeError::Invalid(format!("Protocol conversion failed: {error}")))
+}
+
 fn github_error(error: crate::github_surface::GithubSurfaceError) -> BridgeError {
     BridgeError::Invalid(error.to_string())
 }
@@ -771,6 +776,23 @@ pub fn create_chat(
     core.create_chat(harness, model, title)
 }
 
+pub fn create_aside_chat(
+    core: &Arc<BridgeCore>,
+    source_session_id: &str,
+    harness: &Harness,
+    model: Option<&str>,
+    title: Option<&str>,
+) -> Result<wire::CreateAsideChatResult, BridgeError> {
+    let (session_id, carried) = core.create_aside_chat_id(source_session_id, harness, model, title)?;
+    Ok(wire::CreateAsideChatResult {
+        state: protocol_wire(core.state_snapshot()?)?,
+        source_session_id: source_session_id.to_owned(),
+        session_id,
+        handoff_status: if carried { "carried" } else { "empty" }.into(),
+        fidelity: if carried { "projected_at_boundary" } else { "native" }.into(),
+    })
+}
+
 /// Create an orchestrator session inside a workspace (the classic Bridge agent
 /// that plans and delegates to workers). Multiple are allowed per workspace.
 pub fn create_workspace_session(
@@ -1297,6 +1319,51 @@ pub fn resolve_approval(
     session_id: &str,
     event_id: i64,
     decision: &str,
+    option_id: Option<&str>,
+) -> Result<wire::InteractionResolutionResult, BridgeError> {
+    let kind: String = core.db.lock().unwrap().query_row(
+        "SELECT kind FROM session_entries WHERE session_id=?1 AND sequence=?2",
+        params![session_id, event_id],
+        |row| row.get(0),
+    )?;
+    match kind.as_str() {
+        "permission.requested" => resolve_provider_permission(
+            core,
+            session_id,
+            event_id,
+            Some(decision),
+            option_id,
+            "human",
+            None,
+        ),
+        "question.requested" => Err(BridgeError::Invalid(
+            "This interaction is a question; answer it through the question reply channel".into(),
+        )),
+        // Host-side delegation authorization predates provider interactions
+        // and has no provider response to deduplicate. Keep its existing
+        // transaction, but return the same typed command result.
+        "approval.requested" => {
+            resolve_legacy_approval(core, session_id, event_id, decision)?;
+            Ok(interaction_result(
+                wire::InteractionResolutionDisposition::Resolved,
+                "permission",
+                decision_status(decision),
+                "human",
+                decision,
+                None,
+            ))
+        }
+        _ => Err(BridgeError::Invalid(
+            "The requested event is not a permission interaction".into(),
+        )),
+    }
+}
+
+fn resolve_legacy_approval(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    event_id: i64,
+    decision: &str,
 ) -> Result<(), BridgeError> {
     if !matches!(
         decision,
@@ -1516,6 +1583,524 @@ pub fn resolve_approval(
     }
     core.events.publish(CoreEvent::StateChanged);
     Ok(())
+}
+
+fn decision_status(decision: &str) -> &'static str {
+    match decision {
+        "accept" => "allowed_once",
+        "acceptForSession" => "allowed_for_session",
+        "decline" => "declined",
+        "cancel" => "cancelled",
+        _ => "resolved",
+    }
+}
+
+fn interaction_result(
+    disposition: wire::InteractionResolutionDisposition,
+    interaction_kind: &str,
+    status: &str,
+    resolved_by: &str,
+    decision: &str,
+    reason: Option<&str>,
+) -> wire::InteractionResolutionResult {
+    wire::InteractionResolutionResult {
+        disposition,
+        interaction_kind: interaction_kind.into(),
+        status: status.into(),
+        resolved_by: resolved_by.into(),
+        decision: decision.into(),
+        reason: reason.map(str::to_owned),
+    }
+}
+
+fn stored_interaction_result(
+    db: &Connection,
+    session_id: &str,
+    event_id: i64,
+) -> Result<wire::InteractionResolutionResult, BridgeError> {
+    let (kind, status, decision, actor, reason): (String, String, String, String, Option<String>) =
+        db.query_row(
+            "SELECT interaction_kind,status,decision,resolved_by,reason
+             FROM interaction_resolutions
+             WHERE session_id=?1 AND request_sequence=?2",
+            params![session_id, event_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )?;
+    Ok(interaction_result(
+        wire::InteractionResolutionDisposition::AlreadyResolved,
+        &kind,
+        &status,
+        &actor,
+        &decision,
+        reason.as_deref(),
+    ))
+}
+
+fn interaction_payload(
+    db: &Connection,
+    session_id: &str,
+    event_id: i64,
+    expected_kind: &str,
+) -> Result<(Value, String, bool), BridgeError> {
+    let (kind, payload, adapter_id): (String, String, String) = db.query_row(
+        "SELECT e.kind,e.payload,s.harness FROM session_entries e
+         JOIN sessions s ON s.id=e.session_id
+         WHERE e.session_id=?1 AND e.sequence=?2",
+        params![session_id, event_id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    if kind != expected_kind {
+        return Err(BridgeError::Invalid(format!(
+            "Expected {expected_kind}, found {kind}"
+        )));
+    }
+    let payload: Value = serde_json::from_str(&payload)
+        .map_err(|error| BridgeError::Invalid(format!("Interaction metadata is invalid: {error}")))?;
+    let is_worker = store::worker_runtime(db, session_id)?.is_some();
+    Ok((payload, adapter_id, is_worker))
+}
+
+fn claim_interaction(
+    db: &Connection,
+    session_id: &str,
+    event_id: i64,
+    interaction_kind: &str,
+    decision: &str,
+    option_id: Option<&str>,
+    actor: &str,
+    reason: Option<&str>,
+    item_id: Option<&str>,
+) -> Result<Option<AgentEvent>, BridgeError> {
+    let transaction = db.unchecked_transaction()?;
+    let now = chrono::Utc::now().to_rfc3339();
+    let inserted = transaction.execute(
+        "INSERT OR IGNORE INTO interaction_resolutions(
+            session_id,request_sequence,interaction_kind,status,decision,option_id,
+            resolved_by,reason,created_at,updated_at
+         ) VALUES(?1,?2,?3,'settling',?4,?5,?6,?7,?8,?8)",
+        params![session_id, event_id, interaction_kind, decision, option_id, actor, reason, now],
+    )?;
+    if inserted == 0 {
+        transaction.rollback()?;
+        return Ok(None);
+    }
+    let resolving = agent::NormalizedEvent {
+        kind: format!("{interaction_kind}.resolving"),
+        item_id: item_id.map(str::to_owned),
+        role: None,
+        status: Some("settling".into()),
+        title: Some(if interaction_kind == "question" {
+            "Sending answer"
+        } else {
+            "Applying permission decision"
+        }
+        .into()),
+        text: None,
+        data: serde_json::json!({
+            "requestEventId": event_id,
+            "decision": decision,
+            "optionId": option_id,
+            "resolvedBy": actor,
+            "reason": reason,
+        }),
+    };
+    let event = store::session_event_in_transaction(
+        &transaction,
+        session_id,
+        &resolving,
+        &serde_json::json!({"actor":actor}),
+    )?;
+    transaction.commit()?;
+    Ok(Some(event))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_interaction(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    event_id: i64,
+    interaction_kind: &str,
+    decision: &str,
+    option_id: Option<&str>,
+    actor: &str,
+    reason: Option<&str>,
+    adapter_id: &str,
+    is_worker: bool,
+    item_id: Option<&str>,
+    failure: Option<&str>,
+) -> Result<wire::InteractionResolutionResult, BridgeError> {
+    let status = failure.map_or_else(
+        || {
+            if interaction_kind == "question" && decision == "answer" {
+                "answered"
+            } else {
+                decision_status(decision)
+            }
+        },
+        |_| "failed",
+    );
+    let db = core.db.lock().unwrap();
+    let transaction = db.unchecked_transaction()?;
+    let resolved = agent::NormalizedEvent {
+        kind: format!("{interaction_kind}.resolved"),
+        item_id: item_id.map(str::to_owned),
+        role: None,
+        status: Some(status.into()),
+        title: Some(if failure.is_some() {
+            format!("{} resolution failed", if interaction_kind == "question" { "Question" } else { "Permission" })
+        } else if interaction_kind == "question" {
+            "Question answered".into()
+        } else {
+            "Permission resolved".into()
+        }),
+        text: failure.map(str::to_owned),
+        data: serde_json::json!({
+            "requestEventId": event_id,
+            "decision": decision,
+            "optionId": option_id,
+            "resolvedBy": actor,
+            "reason": reason,
+            "failure": failure,
+        }),
+    };
+    let event = store::session_event_in_transaction(
+        &transaction,
+        session_id,
+        &resolved,
+        &serde_json::json!({"adapter":adapter_id,"actor":actor}),
+    )?;
+    transaction.execute(
+        "UPDATE interaction_resolutions
+         SET status=?3,result_event_sequence=?4,updated_at=?5
+         WHERE session_id=?1 AND request_sequence=?2",
+        params![session_id, event_id, status, event.sequence, chrono::Utc::now().to_rfc3339()],
+    )?;
+    if failure.is_none() {
+        if is_worker {
+            session_supervisor::SessionSupervisor::transition_in_transaction(
+                &transaction,
+                session_id,
+                worker_lifecycle::WorkerLifecycleState::Working,
+                Some(if interaction_kind == "question" { "question_resolved" } else { "permission_resolved" }),
+            )?;
+        } else {
+            transaction.execute(
+                "UPDATE sessions SET status='working' WHERE id=?1",
+                params![session_id],
+            )?;
+        }
+        transaction.execute(
+            "UPDATE workspaces SET status=CASE
+                WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status='waiting') THEN 'waiting'
+                WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status='working') THEN 'working'
+                ELSE 'ready' END
+             WHERE id=(SELECT workspace_id FROM sessions WHERE id=?1)",
+            params![session_id],
+        )?;
+    }
+    transaction.commit()?;
+    drop(db);
+    core.events.publish(CoreEvent::Agent(event));
+    if is_worker && failure.is_none() {
+        live_turn::notify_parent_child_left_waiting(core, session_id, status);
+    }
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(interaction_result(
+        wire::InteractionResolutionDisposition::Resolved,
+        interaction_kind,
+        status,
+        actor,
+        decision,
+        reason,
+    ))
+}
+
+fn offered_permission_action(
+    details: &Value,
+    decision: Option<&str>,
+    option_id: Option<&str>,
+    actor: &str,
+) -> Result<(String, Option<String>), BridgeError> {
+    let actions = details
+        .get("actions")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    if actions.is_empty() {
+        let decision = decision.ok_or_else(|| BridgeError::Invalid("Permission has no supported allow action".into()))?;
+        return Ok((decision.into(), option_id.map(str::to_owned)));
+    }
+    let selected = if actor == "policy" {
+        actions
+            .iter()
+            .find(|action| action.get("decision").and_then(Value::as_str) == Some("acceptForSession"))
+            .or_else(|| actions.iter().find(|action| action.get("decision").and_then(Value::as_str) == Some("accept")))
+    } else {
+        actions.iter().find(|action| {
+            action.get("decision").and_then(Value::as_str) == decision
+                && match (option_id, action.get("optionId").and_then(Value::as_str)) {
+                    (Some(requested), Some(offered)) => requested == offered,
+                    (None, None) => true,
+                    _ => false,
+                }
+        })
+    }
+    .ok_or_else(|| BridgeError::Invalid("The provider did not offer that permission action".into()))?;
+    Ok((
+        selected.get("decision").and_then(Value::as_str).unwrap_or_default().into(),
+        selected.get("optionId").and_then(Value::as_str).map(str::to_owned),
+    ))
+}
+
+pub(crate) fn auto_resolve_provider_permission(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    event_id: i64,
+) -> Result<wire::InteractionResolutionResult, BridgeError> {
+    resolve_provider_permission(
+        core,
+        session_id,
+        event_id,
+        None,
+        None,
+        "policy",
+        Some("Auto-approve provider permissions"),
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_provider_permission(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    event_id: i64,
+    requested_decision: Option<&str>,
+    requested_option_id: Option<&str>,
+    actor: &str,
+    reason: Option<&str>,
+) -> Result<wire::InteractionResolutionResult, BridgeError> {
+    let db = core.db.lock().unwrap();
+    let (payload, adapter_id, is_worker) =
+        interaction_payload(&db, session_id, event_id, "permission.requested")?;
+    let details = payload.get("data").cloned().unwrap_or_else(|| serde_json::json!({}));
+    let (decision, option_id) = offered_permission_action(
+        &details,
+        requested_decision,
+        requested_option_id,
+        actor,
+    )?;
+    let request_id = details
+        .get("requestId")
+        .cloned()
+        .ok_or_else(|| BridgeError::Invalid("Permission has no provider request id".into()))?;
+    let item_id = payload.get("itemId").and_then(Value::as_str).map(str::to_owned);
+    let claim = claim_interaction(
+        &db,
+        session_id,
+        event_id,
+        "permission",
+        &decision,
+        option_id.as_deref(),
+        actor,
+        reason,
+        item_id.as_deref(),
+    )?;
+    let Some(resolving_event) = claim else {
+        return stored_interaction_result(&db, session_id, event_id);
+    };
+    drop(db);
+    core.events.publish(CoreEvent::Agent(resolving_event));
+
+    let adapters = core.adapters.lock().unwrap();
+    let response = match adapters.get(session_id) {
+        Some(runtime) => runtime.respond_with_option(request_id, &decision, option_id.as_deref()),
+        None => Err(BridgeError::Invalid(
+            "Structured adapter session is not running".into(),
+        )),
+    };
+    drop(adapters);
+    if let Err(error) = response {
+        let message = error.to_string();
+        let _ = finish_interaction(
+            core,
+            session_id,
+            event_id,
+            "permission",
+            &decision,
+            option_id.as_deref(),
+            actor,
+            reason,
+            &adapter_id,
+            is_worker,
+            item_id.as_deref(),
+            Some(&message),
+        );
+        return Err(error);
+    }
+    finish_interaction(
+        core,
+        session_id,
+        event_id,
+        "permission",
+        &decision,
+        option_id.as_deref(),
+        actor,
+        reason,
+        &adapter_id,
+        is_worker,
+        item_id.as_deref(),
+        None,
+    )
+}
+
+pub fn resolve_question(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    event_id: i64,
+    action: &str,
+    mut answers: std::collections::BTreeMap<String, Vec<String>>,
+) -> Result<wire::InteractionResolutionResult, BridgeError> {
+    if !matches!(action, "answer" | "decline" | "cancel") {
+        return Err(BridgeError::Invalid("Unsupported question action".into()));
+    }
+    let db = core.db.lock().unwrap();
+    let (payload, adapter_id, is_worker) =
+        interaction_payload(&db, session_id, event_id, "question.requested")?;
+    let details = payload.get("data").cloned().unwrap_or_else(|| serde_json::json!({}));
+    let request_id = details
+        .get("requestId")
+        .cloned()
+        .ok_or_else(|| BridgeError::Invalid("Question has no provider request id".into()))?;
+    let request_method = details
+        .get("requestMethod")
+        .and_then(Value::as_str)
+        .ok_or_else(|| BridgeError::Invalid("Question has no provider reply channel".into()))?;
+    if action == "answer" && answers.values().all(Vec::is_empty) {
+        return Err(BridgeError::Invalid("Enter an answer before sending".into()));
+    }
+    for values in answers.values_mut() {
+        for value in values.iter_mut() {
+            let intercepted = secret_interception::intercept(value);
+            core.credential_broker.register(session_id, intercepted.captured);
+            *value = intercepted.sanitized.text;
+        }
+    }
+    let item_id = payload.get("itemId").and_then(Value::as_str).map(str::to_owned);
+    let claim = claim_interaction(
+        &db,
+        session_id,
+        event_id,
+        "question",
+        action,
+        None,
+        "human",
+        None,
+        item_id.as_deref(),
+    )?;
+    let Some(resolving_event) = claim else {
+        return stored_interaction_result(&db, session_id, event_id);
+    };
+    drop(db);
+    core.events.publish(CoreEvent::Agent(resolving_event));
+
+    let adapters = core.adapters.lock().unwrap();
+    let response = match (adapters.get(session_id), request_method) {
+        (None, _) => Err(BridgeError::Invalid(
+            "Structured adapter session is not running".into(),
+        )),
+        (Some(runtime), agent::OPENCODE_QUESTION_REQUEST_METHOD) => {
+            if action == "answer" {
+                let ordered = details
+                    .get("questions")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .enumerate()
+                    .map(|(index, question)| {
+                        let id = question
+                            .get("id")
+                            .and_then(Value::as_str)
+                            .map(str::to_owned)
+                            .unwrap_or_else(|| index.to_string());
+                        Value::Array(
+                            answers
+                                .get(&id)
+                                .cloned()
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(Value::String)
+                                .collect(),
+                        )
+                    })
+                    .collect();
+                runtime.answer_question(request_id, Value::Array(ordered))
+            } else {
+                runtime.reject_question(request_id)
+            }
+        }
+        (Some(runtime), "item/tool/requestUserInput") => {
+            let mapped = answers
+                .iter()
+                .map(|(id, values)| (id.clone(), serde_json::json!({"answers":values})))
+                .collect::<serde_json::Map<_, _>>();
+            runtime.answer_question(request_id, serde_json::json!({"answers":mapped}))
+        }
+        (Some(runtime), "mcpServer/elicitation/request") => {
+            let content = answers
+                .iter()
+                .map(|(id, values)| {
+                    let value = if values.len() == 1 {
+                        Value::String(values[0].clone())
+                    } else {
+                        Value::Array(values.iter().cloned().map(Value::String).collect())
+                    };
+                    (id.clone(), value)
+                })
+                .collect::<serde_json::Map<_, _>>();
+            runtime.answer_question(
+                request_id,
+                serde_json::json!({
+                    "action": if action == "answer" { "accept" } else if action == "cancel" { "cancel" } else { "decline" },
+                    "content": if action == "answer" { Value::Object(content) } else { Value::Null },
+                }),
+            )
+        }
+        (Some(_), other) => Err(BridgeError::Invalid(format!(
+            "Unsupported question reply channel {other}"
+        ))),
+    };
+    drop(adapters);
+    if let Err(error) = response {
+        let message = error.to_string();
+        let _ = finish_interaction(
+            core,
+            session_id,
+            event_id,
+            "question",
+            action,
+            None,
+            "human",
+            None,
+            &adapter_id,
+            is_worker,
+            item_id.as_deref(),
+            Some(&message),
+        );
+        return Err(error);
+    }
+    finish_interaction(
+        core,
+        session_id,
+        event_id,
+        "question",
+        action,
+        None,
+        "human",
+        None,
+        &adapter_id,
+        is_worker,
+        item_id.as_deref(),
+        None,
+    )
 }
 
 // --- terminal ----------------------------------------------------------------
@@ -2984,6 +3569,16 @@ pub fn save_agent_config(
     core: &Arc<BridgeCore>,
     agent: agent_config::AgentDefinition,
 ) -> Result<agent_config::ConfigState, BridgeError> {
+    if agent.harness != "bridge" {
+        let descriptor = core.adapter_registry.descriptors().into_iter()
+            .find(|descriptor| descriptor.id == agent.harness)
+            .ok_or_else(|| BridgeError::Invalid(format!("Unknown agent runtime {}", agent.harness)))?;
+        if !adapters::descriptor_supports_agent_role(&descriptor, &agent.role) {
+            return Err(BridgeError::Invalid(format!(
+                "{} cannot run {} agents with the authority that role requires", descriptor.label, agent.role,
+            )));
+        }
+    }
     agent_config::save_agent(&core.db.lock().unwrap(), agent)
 }
 

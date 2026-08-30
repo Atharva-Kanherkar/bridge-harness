@@ -38,6 +38,9 @@ import type {
   GithubPullRequestsResult,
   GithubRepositoryResult,
   GithubStatusResult,
+  InteractionResolutionResult,
+  CreateAsideChatResult,
+  QuestionAction,
   SuggestCompletionResult,
   SuggestionSettings,
   SuggestionSettingsSnapshot,
@@ -95,7 +98,7 @@ let mockConfigState: ConfigState = {
     { id: "bridge-documentation", name: "Documentation agent", description: "Produces concise project documentation.", role: "documentation", harness: "bridge", model: null, effort: "low", systemPrompt: "", enabled: true, isDefault: false, isBuiltIn: true, createdAt: "", updatedAt: "" },
   ],
   defaultAgentId: "bridge-orchestrator",
-  permissionPolicy: { bypassAll: false, updatedAt: "" },
+  permissionPolicy: { autoApproveProviderPermissions: false, updatedAt: "" },
 };
 let mockOpenCodeCatalog: OpenCodeCatalog = {
   executablePath: "/usr/local/bin/opencode",
@@ -913,7 +916,7 @@ export const bridgeApi = {
     mockConfigState.agents = mockConfigState.agents.filter(item => item.isBuiltIn).map(item => ({ ...item, enabled: true, model: null, systemPrompt: "", isDefault: item.id === "bridge-orchestrator" }));
     mockConfigState.defaultAgentId = "bridge-orchestrator";
     // Reset clears every configuration row on the real path, the policy included.
-    mockConfigState.permissionPolicy = { bypassAll: false, updatedAt: "" };
+    mockConfigState.permissionPolicy = { autoApproveProviderPermissions: false, updatedAt: "" };
     // Prompt-section overrides are configuration rows too: cleared, but their
     // history survives as appended reset revisions.
     mockPromptResetAll();
@@ -1348,6 +1351,41 @@ export const bridgeApi = {
     const id = crypto.randomUUID();
     mockState.sessions.push({ id, workspaceId: null, harness, label: title || "New chat", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model, requestedTier: "fast", restorationMode: "fresh", continuationFidelity: "native", title, kind: "direct", cwd: null }); emitState(); return snapshot();
   },
+  createAsideChat: async (sourceSessionId: string, harness: Harness, model: string | null, title: string | null): Promise<CreateAsideChatResult> => {
+    if (isTauri()) return call("sessions/create_aside_chat", { sourceSessionId, harness, model, title });
+    const source = mockState.sessions.find(item => item.id === sourceSessionId);
+    if (!source) throw new Error("Aside source session does not exist");
+    const id = crypto.randomUUID();
+    mockState.sessions.push({
+      id,
+      workspaceId: source.workspaceId,
+      harness,
+      label: title || "New aside",
+      status: "idle",
+      startedAt: null,
+      endedAt: null,
+      contextPercent: null,
+      usagePercent: null,
+      metricSource: "estimated",
+      providerSessionId: null,
+      activeTurnId: null,
+      model,
+      requestedTier: "standard",
+      restorationMode: "fresh",
+      continuationFidelity: "projected_at_boundary",
+      title,
+      kind: "direct",
+      cwd: source.cwd ?? null,
+    });
+    emitState();
+    return {
+      state: snapshot(),
+      sourceSessionId,
+      sessionId: id,
+      handoffStatus: "carried",
+      fidelity: "projected_at_boundary",
+    };
+  },
   createWorkspaceSession: async (workspaceId: string, createWorktree = false): Promise<BridgeState> => {
     if (isTauri()) return call("sessions/create_workspace_session", { workspaceId, createWorktree });
     const id = crypto.randomUUID();
@@ -1468,9 +1506,19 @@ export const bridgeApi = {
   // its own for a cause it cannot show has changed.
   retryWorkerTask: (childSessionId: string): Promise<void> => isTauri() ? unit(call("sessions/retry_worker_task", { childSessionId })) : Promise.resolve(),
   refreshAccountUsage: (): Promise<void> => isTauri() ? unit(call("sessions/refresh_account_usage")) : Promise.resolve(),
-  resolveApproval: async (sessionId: string, eventId: number, decision: ApprovalDecision): Promise<void> => {
-    if (isTauri()) return unit(call("approvals/resolve_approval", { sessionId, eventId, decision }));
-    const request = mockState.agentEvents.find(item => item.id === eventId); if (request) appendAgent(request.sessionId, "approval.resolved", { status: decision, data: { requestEventId: eventId, decision } }); emitState();
+  resolveApproval: async (sessionId: string, eventId: number, decision: ApprovalDecision, optionId?: string): Promise<InteractionResolutionResult> => {
+    if (isTauri()) return call("approvals/resolve_approval", { sessionId, eventId, decision, optionId });
+    const request = mockState.agentEvents.find(item => item.id === eventId);
+    if (request) appendAgent(request.sessionId, request.kind === "permission.requested" ? "permission.resolved" : "approval.resolved", { status: decision, data: { requestEventId: eventId, decision, optionId, resolvedBy: "human" } });
+    emitState();
+    return { disposition: "resolved", interactionKind: "permission", status: decision, resolvedBy: "human", decision };
+  },
+  resolveQuestion: async (sessionId: string, eventId: number, action: QuestionAction, answers: Record<string, string[]> = {}): Promise<InteractionResolutionResult> => {
+    if (isTauri()) return call("approvals/resolve_question", { sessionId, eventId, action, answers });
+    const request = mockState.agentEvents.find(item => item.id === eventId);
+    if (request) appendAgent(request.sessionId, "question.resolved", { status: action === "answer" ? "answered" : action, data: { requestEventId: eventId, decision: action, resolvedBy: "human" } });
+    emitState();
+    return { disposition: "resolved", interactionKind: "question", status: action === "answer" ? "answered" : action, resolvedBy: "human", decision: action };
   },
   startProviderLogin: (provider: string): Promise<{ workspaceId: string; terminalId: string }> =>
     isTauri() ? call("auth/start_provider_login", { provider }) : Promise.resolve({ workspaceId: "provider-login", terminalId: provider }),

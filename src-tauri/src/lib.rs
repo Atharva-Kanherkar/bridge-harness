@@ -983,6 +983,25 @@ async fn create_chat(
     api::create_chat(state.inner(), &harness, model.as_deref(), title.as_deref())
 }
 
+/// Create a source-scoped aside and return the exact session id that was
+/// committed with its handoff, so the caller never has to infer it from state.
+#[tauri::command]
+async fn create_aside_chat(
+    source_session_id: String,
+    harness: Harness,
+    model: Option<String>,
+    title: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::CreateAsideChatResult, BridgeError> {
+    api::create_aside_chat(
+        state.inner(),
+        &source_session_id,
+        &harness,
+        model.as_deref(),
+        title.as_deref(),
+    )
+}
+
 /// Create an orchestrator session inside a workspace (the classic Bridge agent
 /// that plans and delegates to workers). Multiple are allowed per workspace.
 #[tauri::command]
@@ -1526,9 +1545,32 @@ async fn resolve_approval(
     session_id: String,
     event_id: i64,
     decision: String,
+    option_id: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
-) -> Result<(), BridgeError> {
-    api::resolve_approval(state.inner(), &session_id, event_id, &decision)
+) -> Result<bridge_protocol::messages::InteractionResolutionResult, BridgeError> {
+    api::resolve_approval(
+        state.inner(),
+        &session_id,
+        event_id,
+        &decision,
+        option_id.as_deref(),
+    )
+}
+
+#[tauri::command]
+async fn resolve_question(
+    session_id: String,
+    event_id: i64,
+    action: wire::QuestionAction,
+    answers: std::collections::BTreeMap<String, Vec<String>>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::InteractionResolutionResult, BridgeError> {
+    let action = match action {
+        wire::QuestionAction::Answer => "answer",
+        wire::QuestionAction::Decline => "decline",
+        wire::QuestionAction::Cancel => "cancel",
+    };
+    api::resolve_question(state.inner(), &session_id, event_id, action, answers)
 }
 
 #[tauri::command]
@@ -1918,6 +1960,7 @@ pub fn run() {
             add_project,
             create_workspace,
             create_chat,
+            create_aside_chat,
             create_workspace_session,
             connect_workspace_folder,
             update_chat_model,
@@ -1960,6 +2003,7 @@ pub fn run() {
             retry_worker_task,
             refresh_account_usage,
             resolve_approval,
+            resolve_question,
             start_provider_login,
             stop_session,
             refresh_workspace,
@@ -2360,6 +2404,7 @@ mod tests {
         Number,
         Reference(String),
         Array(Box<ParameterShape>),
+        Map(Box<ParameterShape>),
         Optional(Box<ParameterShape>),
     }
 
@@ -2373,6 +2418,14 @@ mod tests {
         }
         if let Some(inner) = generic_inner(kind, "Vec") {
             return ParameterShape::Array(Box::new(rust_parameter_shape(method, field, inner)));
+        }
+        if let Some((key, value)) = generic_pair(kind, "std::collections::BTreeMap") {
+            assert_eq!(key.trim(), "String", "JSON map keys must be strings");
+            return ParameterShape::Map(Box::new(rust_parameter_shape(
+                method,
+                field,
+                value.trim(),
+            )));
         }
 
         let leaf = kind.rsplit("::").next().unwrap_or(kind);
@@ -2421,6 +2474,10 @@ mod tests {
         kind.strip_prefix(container)?
             .strip_prefix('<')?
             .strip_suffix('>')
+    }
+
+    fn generic_pair<'a>(kind: &'a str, container: &str) -> Option<(&'a str, &'a str)> {
+        generic_inner(kind, container)?.split_once(',')
     }
 
     fn schema_parameter_shape(schema: &serde_json::Value) -> ParameterShape {
@@ -2482,6 +2539,11 @@ mod tests {
                     .get("items")
                     .expect("array params schemas declare items"),
             ))),
+            "object" => ParameterShape::Map(Box::new(schema_parameter_shape(
+                schema
+                    .get("additionalProperties")
+                    .expect("map params schemas declare additionalProperties"),
+            ))),
             _ => panic!("unsupported params type {kind}: {schema}"),
         }
     }
@@ -2505,6 +2567,16 @@ mod tests {
         assert_eq!(
             rust_parameter_shape(MethodName::SaveAgentConfig, "args", "Vec<String>"),
             ParameterShape::Array(Box::new(ParameterShape::String))
+        );
+        assert_eq!(
+            rust_parameter_shape(
+                MethodName::ResolveQuestion,
+                "answers",
+                "std::collections::BTreeMap<String, Vec<String>>"
+            ),
+            ParameterShape::Map(Box::new(ParameterShape::Array(Box::new(
+                ParameterShape::String
+            ))))
         );
         assert_eq!(
             rust_parameter_shape(
