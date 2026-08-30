@@ -2326,13 +2326,14 @@ fn provider_login_command(provider: &str) -> Result<CommandBuilder, BridgeError>
             command.args(["login"]);
             Ok(command)
         }
-        // locate() rather than a bare binary::resolve: the ambiguous `agent`
-        // name only counts as Cursor after the identity check, so a login
-        // cannot be launched against an executable that merely shares the name.
+        // The adapter's own resolution rather than a bare binary::resolve: it
+        // prefers a Bridge-managed payload, and it refuses the ambiguous `agent`
+        // name outright, so a login is never spawned against an executable that
+        // merely shares that name and has never said who it is.
         "cursor" => {
-            let executable = crate::cursor_adapter::locate()
+            let executable = crate::cursor_adapter::login_executable()
                 .map_err(|unavailable| BridgeError::Invalid(unavailable.reason()))?;
-            let mut command = CommandBuilder::new(executable.path);
+            let mut command = CommandBuilder::new(executable);
             command.args(["login"]);
             Ok(command)
         }

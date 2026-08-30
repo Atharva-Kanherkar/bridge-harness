@@ -130,7 +130,11 @@ impl RuntimeSource {
         validate_relative_entrypoint(self.entrypoint())?;
         match self {
             Self::ReleaseArtifact {
-                url, sha256, kind, ..
+                url,
+                sha256,
+                kind,
+                version,
+                ..
             } => {
                 if !url.starts_with("https://") {
                     return Err(BridgeError::Invalid(format!(
@@ -149,6 +153,12 @@ impl RuntimeSource {
                 {
                     return Err(BridgeError::Invalid(format!(
                         "managed runtime archive must be a .tar.gz or .tgz: {url}"
+                    )));
+                }
+                if !version_is_path_safe(version) {
+                    return Err(BridgeError::Invalid(format!(
+                        "managed runtime release version must be a safe path component: \
+                         {version:?}"
                     )));
                 }
                 Ok(())
@@ -212,6 +222,23 @@ fn version_is_exact(version: &str) -> bool {
             .split('.')
             .take(3)
             .all(|part| !part.is_empty() && part.bytes().next().is_some_and(|b| b.is_ascii_digit()))
+}
+
+/// A version safe to spell as a directory name and to carry in a receipt.
+///
+/// The payload engine checks the receipt's version, but a staging directory is
+/// built from the same string well before any of that runs — so an empty or
+/// traversing version would shape a directory and pull a whole artifact into it
+/// before the only check fired. The rule is the engine's own, restated at the
+/// earlier of the two gates rather than as a second opinion.
+fn version_is_path_safe(version: &str) -> bool {
+    !version.is_empty()
+        && version.len() <= 128
+        && version != "."
+        && version != ".."
+        && version
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
 
 fn validate_relative_entrypoint(entrypoint: &Path) -> Result<(), BridgeError> {
@@ -913,8 +940,13 @@ pub fn opencode_recipe() -> Option<RuntimeSource> {
 /// Cursor publishes no npm package: the CLI ships as a per-platform tarball from
 /// the vendor's own download host, so this is a release artifact pinned by
 /// digest per platform rather than a lockfile-pinned closure. The digests were
-/// computed from the published tarballs at pin time; a vendor republish under
-/// the same version fails integrity rather than installing.
+/// computed from the published tarballs at pin time; a republish under the same
+/// version fails integrity on a first install, and on a reinstall is treated as
+/// a superseded pin because the digest is part of what the receipt records.
+///
+/// `None` on Windows: the vendor publishes darwin and linux builds only, so
+/// there is nothing to pin there and installing reports the platform as
+/// unsupported instead of fetching a url that does not exist.
 pub fn cursor_recipe() -> Option<RuntimeSource> {
     let (platform, sha256) = match (std::env::consts::OS, std::env::consts::ARCH) {
         ("macos", "aarch64") => (
@@ -2063,10 +2095,14 @@ mod tests {
     #[test]
     fn each_agent_recipe_pins_an_exact_version_and_entrypoint() {
         let recipes = builtin_recipes();
+        // Three npm closures wherever a vendor publishes at all, plus Cursor
+        // wherever its vendor ships a tarball. Counted rather than hardcoded:
+        // Cursor has no Windows build, and a fixed number here would fail on a
+        // platform whose recipe set is correct.
         assert_eq!(
             recipes.len(),
-            4,
-            "all four agents must have a recipe on a supported platform"
+            3 + usize::from(cursor_recipe().is_some()),
+            "every agent with a published build must have a recipe on a supported platform"
         );
         for (agent_id, source) in recipes {
             source

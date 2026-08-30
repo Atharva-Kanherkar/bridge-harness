@@ -226,19 +226,24 @@ fn resolution_of(agent_id: &str, payload: &ManagedPayloadStatus) -> Option<Runti
         None,
         payload,
         &[],
-        crate::binary::resolve(system_executable(agent_id)),
+        system_runtime(agent_id),
     )
     .ok()
 }
 
-/// The executable name a user's own install of `agent_id` goes by on PATH.
+/// A user's own install of `agent_id`, resolved the way that agent's adapter
+/// resolves it.
 ///
-/// Every agent but Cursor publishes a binary named after its id; Cursor's CLI
-/// installs as `cursor-agent` (`cursor` is the editor).
-fn system_executable(agent_id: &str) -> &str {
+/// Every agent but Cursor publishes a binary named after its id. Cursor's CLI
+/// installs as `cursor-agent` (`cursor` is the editor) and its adapter also
+/// accepts the ambiguous `agent`, so the name preference is asked for rather
+/// than restated here: a card offering to install a CLI the adapter is already
+/// launching is worse than no card, and the uninstall guard that refuses to
+/// remove an unmanaged copy reads the same answer.
+fn system_runtime(agent_id: &str) -> Option<std::path::PathBuf> {
     match agent_id {
-        "cursor" => "cursor-agent",
-        other => other,
+        "cursor" => crate::cursor_adapter::system_executable(),
+        other => crate::binary::resolve(other),
     }
 }
 
@@ -445,7 +450,12 @@ fn perform_install(agent_id: &str, repair: bool) -> Result<ManagedAgentOperation
     let existing = store.status(agent_id).map_err(ManagedAgentError::Runtime)?;
     if !repair && matches!(existing, ManagedPayloadStatus::Installed { .. }) {
         if let Some(receipt) = receipt_of(&existing) {
-            if receipt.version == pinned_version(&source) {
+            // Both halves, because a vendor's version string is not a promise
+            // about bytes: a re-pinned digest under an unchanged version has to
+            // reinstall rather than report the superseded payload as current.
+            if receipt.version == pinned_version(&source)
+                && receipt.source == source_label(&source)
+            {
                 return Ok(ManagedAgentOperationOutcome::AlreadyCurrent);
             }
         }
@@ -454,7 +464,7 @@ fn perform_install(agent_id: &str, repair: bool) -> Result<ManagedAgentOperation
     let staging = store
         .root()
         .join(".staging-fetch")
-        .join(format!("{agent_id}-{}", pinned_version(&source)));
+        .join(staging_key(agent_id, &source));
     let staged = managed_runtime::prepare(&source, &staging, &HttpsArtifactFetcher).map_err(
         |(stage, error)| match stage {
             managed_runtime::PrepareStage::Integrity => ManagedAgentError::IntegrityFailure {
@@ -500,12 +510,36 @@ fn pinned_version(source: &managed_runtime::RuntimeSource) -> String {
     }
 }
 
+/// Where the installed bytes came from, exactly precise enough to tell two pins
+/// apart.
+///
+/// An npm closure is identified by its package and exact version. A release
+/// artifact carries its digest beside the url, because the url alone is stable
+/// across a corrected pin and the receipt is the only record of which bytes were
+/// actually installed.
 fn source_label(source: &managed_runtime::RuntimeSource) -> String {
     match source {
         managed_runtime::RuntimeSource::NpmClosure {
             package, version, ..
         } => format!("npm:{package}@{version}"),
-        managed_runtime::RuntimeSource::ReleaseArtifact { url, .. } => url.clone(),
+        managed_runtime::RuntimeSource::ReleaseArtifact { url, sha256, .. } => {
+            format!("{url}#sha256={sha256}")
+        }
+    }
+}
+
+/// The staging directory name for one fetch.
+///
+/// Keyed on the pinned bytes, not only the version: two pins of the same vendor
+/// version with different digests would otherwise share a directory, and a
+/// leftover fetch from the superseded pin could stand in for the corrected one.
+fn staging_key(agent_id: &str, source: &managed_runtime::RuntimeSource) -> String {
+    let version = pinned_version(source);
+    match source {
+        managed_runtime::RuntimeSource::NpmClosure { .. } => format!("{agent_id}-{version}"),
+        managed_runtime::RuntimeSource::ReleaseArtifact { sha256, .. } => {
+            format!("{agent_id}-{version}-{}", sha256.get(..12).unwrap_or(sha256))
+        }
     }
 }
 
