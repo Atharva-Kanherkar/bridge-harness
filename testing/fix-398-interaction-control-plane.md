@@ -90,4 +90,3 @@
 - Double-click a permission in two windows and verify one provider response; the later attempt shows the durable already-resolved outcome.
 - From a repository session, create an aside and verify its persisted `workspace_id` and `cwd` equal the source session values.
 - Stall scripted ACP `session/new` after successful `initialize`; verify the configured complete-handshake deadline terminates discovery and no child remains.
-
