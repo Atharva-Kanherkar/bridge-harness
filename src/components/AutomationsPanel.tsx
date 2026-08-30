@@ -7,7 +7,10 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 
-const providerLabel = (provider: AutomationProvider) => provider === "codex" ? "Codex" : provider === "claude" ? "Claude Code" : "Cursor";
+const PROVIDER_LABELS: Record<AutomationProvider, string> = { claude: "Claude Code", codex: "Codex", cursor: "Cursor", opencode: "OpenCode" };
+const providerLabel = (provider: AutomationProvider) => PROVIDER_LABELS[provider] ?? provider;
+const CRON_HINT = "Five fields: minute hour day-of-month month day-of-week.";
+const looksLikeCron = (expression: string) => expression.trim().split(/\s+/).length === 5;
 const capabilityLabel = (capability: AutomationCapability) => capability === "runNow" ? "Run now" : capability[0].toUpperCase() + capability.slice(1);
 
 function relativeTime(epochMs: number | null, now: number): string | null {
@@ -59,8 +62,12 @@ export function AutomationsPanel({ initialCatalog }: { initialCatalog?: Automati
     [catalog, provider, status],
   );
   const providerState = (owner: AutomationProvider) => catalog?.providers.find(state => state.provider === owner);
-  const supports = (owner: AutomationProvider, capability: AutomationCapability) => providerState(owner)?.capabilities.includes(capability) ?? false;
-  const canCreateClaude = !!providerState("claude")?.available && supports("claude", "create");
+  const supports = (owner: AutomationProvider, capability: AutomationCapability) => {
+    const state = providerState(owner);
+    // An unreadable store advertises its shape, not a working control.
+    return !!state?.available && state.capabilities.includes(capability);
+  };
+  const canCreateClaude = supports("claude", "create");
 
   const act = async (automation: UnifiedAutomation, action: AutomationAction) => {
     setBusy(true); setFailure(undefined);
@@ -103,16 +110,16 @@ export function AutomationsPanel({ initialCatalog }: { initialCatalog?: Automati
         <div className="flex items-center gap-2">{canCreateClaude && <Button size="xs" disabled={busy} onClick={openCreate}><Plus size={11}/>New Claude automation</Button>}<Button size="xs" variant="secondary" disabled={busy} onClick={() => void refresh()}><RefreshCw size={11}/>Refresh</Button></div>
       </div>
 
-      <div className="mt-5 grid gap-2 sm:grid-cols-3" aria-label="Automation provider capabilities">
+      <div className="mt-5 grid gap-2 sm:grid-cols-2 lg:grid-cols-4" aria-label="Automation provider capabilities">
         {(catalog?.providers ?? []).map(state => <section key={state.provider} className="u-glass-soft rounded-xl p-3" aria-label={`${providerLabel(state.provider)} automation support`}>
           <div className="flex items-center justify-between gap-2 text-[11px] font-medium text-foreground"><span>{providerLabel(state.provider)}</span><span className={`h-1.5 w-1.5 rounded-full ${state.available ? "bg-success" : "bg-muted-foreground/40"}`}/></div>
           <p className="mt-1 truncate text-[9.5px] text-muted-foreground" title={state.detail}>{state.available ? `${state.count} native schedule${state.count === 1 ? "" : "s"}` : state.detail}</p>
-          <div className="mt-2 flex flex-wrap gap-1">{state.capabilities.length ? state.capabilities.map(capability => <span key={capability} className="rounded-full border border-border bg-muted px-1.5 py-0.5 text-[8.5px] text-muted-foreground">{capabilityLabel(capability)}</span>) : <span className="text-[8.5px] text-muted-foreground/60">No native automation controls</span>}</div>
+          <div className="mt-2 flex flex-wrap gap-1">{state.available && state.capabilities.length ? state.capabilities.map(capability => <span key={capability} className="rounded-full border border-border bg-muted px-1.5 py-0.5 text-[8.5px] text-muted-foreground">{capabilityLabel(capability)}</span>) : <span className="text-[8.5px] text-muted-foreground/60">No native automation controls</span>}</div>
         </section>)}
       </div>
 
       <div className="mt-5 flex flex-wrap gap-2">
-        <div className="u-segmented w-fit" aria-label="Filter automations by provider">{(["all", "claude", "codex", "cursor"] as const).map(value => <button type="button" key={value} data-active={provider === value} aria-pressed={provider === value} onClick={() => setProvider(value)} className="u-segmented-item">{value === "all" ? "All providers" : providerLabel(value)}</button>)}</div>
+        <div className="u-segmented w-fit" aria-label="Filter automations by provider">{(["all", ...(catalog?.providers ?? []).map(state => state.provider)] as Array<AutomationProvider | "all">).map(value => <button type="button" key={value} data-active={provider === value} aria-pressed={provider === value} onClick={() => setProvider(value)} className="u-segmented-item">{value === "all" ? "All providers" : providerLabel(value)}</button>)}</div>
         <div className="u-segmented w-fit" aria-label="Filter automations by status">{(["all", "active", "paused"] as const).map(value => <button type="button" key={value} data-active={status === value} aria-pressed={status === value} onClick={() => setStatus(value)} className="u-segmented-item">{value === "all" ? "All statuses" : value[0].toUpperCase() + value.slice(1)}</button>)}</div>
       </div>
 
@@ -149,7 +156,7 @@ export function AutomationsPanel({ initialCatalog }: { initialCatalog?: Automati
       {!!results.length && <div className="u-overlay-strong fixed bottom-5 right-5 z-40 w-80 max-w-[calc(100vw-2.5rem)] rounded-2xl p-3.5"><button type="button" aria-label="Dismiss automation results" onClick={() => setResults([])} className="absolute right-2.5 top-2.5 text-muted-foreground transition-colors hover:text-foreground"><X size={12}/></button>{results.map(result => <p key={result.key} className="flex gap-2 py-1 text-[10.5px] text-muted-foreground"><Check size={12} className="shrink-0 text-success"/><span><b className="text-foreground">{providerLabel(result.provider)}:</b> {result.message}</span></p>)}</div>}
     </main>
 
-    <Dialog open={!!draft} onOpenChange={open => { if (!open && !busy) setDraft(undefined); }}>{draft && <DialogContent showCloseButton={!busy}><DialogHeader><DialogTitle>{draft.mode === "create" ? "New Claude automation" : "Edit Claude automation"}</DialogTitle><DialogDescription>Saved directly to Claude Code's native schedule file. Claude Code remains responsible for execution.</DialogDescription></DialogHeader><DialogPanel className="space-y-3"><label className="block text-[10px] font-medium text-muted-foreground">Prompt<Textarea aria-label="Automation prompt" className="mt-1" value={draft.prompt} onChange={event => setDraft(current => current ? { ...current, prompt: event.target.value } : current)}/></label><label className="block text-[10px] font-medium text-muted-foreground">Cron schedule<Input aria-label="Automation cron schedule" className="mt-1 font-mono" value={draft.scheduleExpression} onChange={event => setDraft(current => current ? { ...current, scheduleExpression: event.target.value } : current)}/></label><label className="flex items-center gap-2 text-[10px] text-muted-foreground"><input type="checkbox" checked={draft.recurring} onChange={event => setDraft(current => current ? { ...current, recurring: event.target.checked } : current)} className="size-3.5 rounded border-border accent-foreground"/>Recurring</label></DialogPanel><DialogFooter><Button variant="ghost" disabled={busy} onClick={() => setDraft(undefined)}>Cancel</Button><Button disabled={busy || !draft.prompt.trim() || draft.scheduleExpression.trim().split(/\s+/).length !== 5} onClick={() => void saveDraft()}>{busy && <LoaderCircle className="animate-spin" size={12}/>}Save in Claude Code</Button></DialogFooter></DialogContent>}</Dialog>
+    <Dialog open={!!draft} onOpenChange={open => { if (!open && !busy) setDraft(undefined); }}>{draft && <DialogContent showCloseButton={!busy}><DialogHeader><DialogTitle>{draft.mode === "create" ? "New Claude automation" : "Edit Claude automation"}</DialogTitle><DialogDescription>Saved directly to Claude Code's native schedule file. Claude Code remains responsible for execution.</DialogDescription></DialogHeader><DialogPanel className="space-y-3"><label className="block text-[10px] font-medium text-muted-foreground">Prompt<Textarea aria-label="Automation prompt" className="mt-1" value={draft.prompt} onChange={event => setDraft(current => current ? { ...current, prompt: event.target.value } : current)}/></label><label className="block text-[10px] font-medium text-muted-foreground">Cron schedule<Input aria-label="Automation cron schedule" className="mt-1 font-mono" value={draft.scheduleExpression} onChange={event => setDraft(current => current ? { ...current, scheduleExpression: event.target.value } : current)}/>{!!draft.scheduleExpression.trim() && !looksLikeCron(draft.scheduleExpression) && <p className="mt-1 text-[9.5px] text-destructive">{CRON_HINT}</p>}</label><label className="flex items-center gap-2 text-[10px] text-muted-foreground"><input type="checkbox" checked={draft.recurring} onChange={event => setDraft(current => current ? { ...current, recurring: event.target.checked } : current)} className="size-3.5 rounded border-border accent-foreground"/>Recurring</label></DialogPanel><DialogFooter><Button variant="ghost" disabled={busy} onClick={() => setDraft(undefined)}>Cancel</Button><Button disabled={busy || !draft.prompt.trim() || !looksLikeCron(draft.scheduleExpression)} onClick={() => void saveDraft()}>{busy && <LoaderCircle className="animate-spin" size={12}/>}Save in Claude Code</Button></DialogFooter></DialogContent>}</Dialog>
     <Dialog open={!!confirmDelete} onOpenChange={open => { if (!open && !busy) setConfirmDelete(undefined); }}>{confirmDelete && <DialogContent showCloseButton={!busy}><DialogHeader><DialogTitle>Delete this automation?</DialogTitle><DialogDescription>This removes it from {providerLabel(confirmDelete.provider)}'s native schedule. There is no undo from Bridge.</DialogDescription></DialogHeader><DialogPanel><p className="rounded-xl border border-border bg-muted p-3 text-[10px] text-foreground">{confirmDelete.name}</p></DialogPanel><DialogFooter><Button variant="ghost" disabled={busy} onClick={() => setConfirmDelete(undefined)}>Cancel</Button><Button variant="destructive" disabled={busy} onClick={() => void act(confirmDelete, "delete")}>Delete</Button></DialogFooter></DialogContent>}</Dialog>
   </div>;
 }

@@ -172,6 +172,7 @@ fn mirror_automation_provider(
         automations::AutomationProvider::Claude => wire::AutomationProvider::Claude,
         automations::AutomationProvider::Codex => wire::AutomationProvider::Codex,
         automations::AutomationProvider::Cursor => wire::AutomationProvider::Cursor,
+        automations::AutomationProvider::OpenCode => wire::AutomationProvider::OpenCode,
     }
 }
 
@@ -505,6 +506,7 @@ fn marketplace_and_skill_enums_share_their_wire_values() {
         automations::AutomationProvider::Claude,
         automations::AutomationProvider::Codex,
         automations::AutomationProvider::Cursor,
+        automations::AutomationProvider::OpenCode,
     ] {
         assert_same_wire_value(&provider, &mirror_automation_provider(provider));
     }

@@ -12,8 +12,8 @@
 //!   `automations` table (the app has shipped both `codex.db` and
 //!   `codex-dev.db`). Read-only connections for the catalog; a short-lived
 //!   writable connection for actions.
-//! * Cursor has no automations feature; the catalog reports it absent so
-//!   the UI can say so instead of guessing.
+//! * Cursor and OpenCode have no automations feature; the catalog reports
+//!   them absent so the UI can say so instead of guessing.
 
 use crate::BridgeError;
 use rusqlite::{Connection, OpenFlags};
@@ -40,6 +40,7 @@ pub enum AutomationProvider {
     Claude,
     Codex,
     Cursor,
+    OpenCode,
 }
 
 impl AutomationProvider {
@@ -48,6 +49,7 @@ impl AutomationProvider {
             Self::Claude => "Claude Code",
             Self::Codex => "Codex",
             Self::Cursor => "Cursor",
+            Self::OpenCode => "OpenCode",
         }
     }
 }
@@ -170,7 +172,19 @@ pub fn provider_capabilities(provider: AutomationProvider) -> Vec<AutomationCapa
             AutomationCapability::Resume,
             AutomationCapability::Delete,
         ],
-        AutomationProvider::Cursor => Vec::new(),
+        // Neither ships an automations store, so neither exposes a control.
+        AutomationProvider::Cursor | AutomationProvider::OpenCode => Vec::new(),
+    }
+}
+
+/// A provider Bridge can only report on, never mutate.
+fn unsupported_provider_state(provider: AutomationProvider) -> AutomationProviderState {
+    AutomationProviderState {
+        provider,
+        available: false,
+        detail: format!("{} has no native automations feature", provider.display_name()),
+        count: 0,
+        capabilities: provider_capabilities(provider),
     }
 }
 
@@ -539,29 +553,93 @@ pub fn catalog(home: &Path) -> AutomationCatalog {
         providers: vec![
             claude_state,
             codex_state,
-            AutomationProviderState {
-                provider: AutomationProvider::Cursor,
-                available: false,
-                detail: format!("{} has no native automations feature", AutomationProvider::Cursor.display_name()),
-                count: 0,
-                capabilities: provider_capabilities(AutomationProvider::Cursor),
-            },
+            unsupported_provider_state(AutomationProvider::Cursor),
+            unsupported_provider_state(AutomationProvider::OpenCode),
         ],
     }
 }
 
 // ---- actions ----------------------------------------------------------------
 
+const MONTH_NAMES: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+const DAY_NAMES: [&str; 7] = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
+
+/// One cron field's numeric domain, plus the three-letter aliases it accepts.
+struct CronField {
+    label: &'static str,
+    min: u8,
+    max: u8,
+    names: &'static [&'static str],
+}
+
+const CRON_FIELDS: [CronField; 5] = [
+    CronField { label: "minute", min: 0, max: 59, names: &[] },
+    CronField { label: "hour", min: 0, max: 23, names: &[] },
+    CronField { label: "day of month", min: 1, max: 31, names: &[] },
+    CronField { label: "month", min: 1, max: 12, names: &MONTH_NAMES },
+    // 0 and 7 both mean Sunday, the way every cron implementation reads it.
+    CronField { label: "day of week", min: 0, max: 7, names: &DAY_NAMES },
+];
+
+impl CronField {
+    fn value(&self, token: &str) -> Option<u8> {
+        let lowered = token.to_ascii_lowercase();
+        let number = match self.names.iter().position(|name| *name == lowered) {
+            // Named months are one-based; named weekdays are zero-based.
+            Some(index) => u8::try_from(index).ok()? + self.min,
+            None => token.parse::<u8>().ok()?,
+        };
+        (self.min..=self.max).contains(&number).then_some(number)
+    }
+
+    /// A field is a comma-separated list of `*`, `n`, `a-b`, or any of those
+    /// followed by `/step`. Anything else is not a schedule Claude Code can run.
+    fn accepts(&self, field: &str) -> bool {
+        !field.is_empty()
+            && field.split(',').all(|item| {
+                let (spec, step) = match item.split_once('/') {
+                    Some((spec, step)) => (spec, Some(step)),
+                    None => (item, None),
+                };
+                if step.is_some_and(|step| !matches!(step.parse::<u8>(), Ok(1..=u8::MAX))) {
+                    return false;
+                }
+                match spec.split_once('-') {
+                    Some((low, high)) => matches!((self.value(low), self.value(high)), (Some(low), Some(high)) if low <= high),
+                    None => spec == "*" || self.value(spec).is_some(),
+                }
+            })
+    }
+}
+
+/// Claude Code parses these expressions itself, and a file it cannot parse is
+/// a file it may reject wholesale — so Bridge refuses to write a cron it does
+/// not understand rather than reporting success for a task that never fires.
+fn validate_cron(expression: &str) -> Result<(), BridgeError> {
+    let fields: Vec<&str> = expression.split_whitespace().collect();
+    let Ok(fields) = <[&str; 5]>::try_from(fields.as_slice()) else {
+        return Err(BridgeError::Invalid(format!(
+            "Claude Code schedules require a five-field cron expression (minute hour day-of-month month day-of-week); got {} field{}",
+            expression.split_whitespace().count(),
+            if expression.split_whitespace().count() == 1 { "" } else { "s" }
+        )));
+    };
+    for (field, spec) in CRON_FIELDS.iter().zip(fields) {
+        if !field.accepts(spec) {
+            return Err(BridgeError::Invalid(format!(
+                "`{spec}` is not a valid cron {} field",
+                field.label
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn validate_claude_draft(prompt: &str, schedule_expression: &str) -> Result<(), BridgeError> {
     if prompt.trim().is_empty() {
         return Err(BridgeError::Invalid("Automation prompt cannot be empty".to_string()));
     }
-    if schedule_expression.split_whitespace().count() != 5 {
-        return Err(BridgeError::Invalid(
-            "Claude Code schedules require a five-field cron expression".to_string(),
-        ));
-    }
-    Ok(())
+    validate_cron(schedule_expression)
 }
 
 /// Create or edit an automation only through a native provider store that
@@ -583,6 +661,27 @@ pub fn save(
             if id.is_some() { "editing" } else { "creation" }
         )));
     }
+    // Capabilities say *whether* a provider can be written; this match says
+    // *where* that write lands. Both have to agree before a byte moves, so
+    // widening a capability list can never redirect one store into another.
+    match provider {
+        AutomationProvider::Claude => save_claude(home, id, prompt, schedule_expression, recurring),
+        AutomationProvider::Codex | AutomationProvider::Cursor | AutomationProvider::OpenCode => {
+            Err(BridgeError::Invalid(format!(
+                "Bridge has no native write path for {} automations",
+                provider.display_name()
+            )))
+        }
+    }
+}
+
+fn save_claude(
+    home: &Path,
+    id: Option<&str>,
+    prompt: &str,
+    schedule_expression: &str,
+    recurring: bool,
+) -> Result<AutomationSaveResult, BridgeError> {
     validate_claude_draft(prompt, schedule_expression)?;
 
     let created = id.is_none();
@@ -616,7 +715,7 @@ pub fn save(
     })?;
 
     Ok(AutomationSaveResult {
-        provider,
+        provider: AutomationProvider::Claude,
         id: automation_id,
         created,
         message: if created {
@@ -666,7 +765,15 @@ pub fn execute(
             "Deleted from Claude Code's schedule file".to_string()
         }
         (AutomationProvider::Codex, action) => codex_execute(home, id, action)?,
-        _ => unreachable!("capability gate limits executable provider actions"),
+        // Same contract as `save`: the capability list decides whether an
+        // action is offered, this match decides which store performs it. A
+        // capability with no store behind it is an error, never a panic.
+        (provider, action) => {
+            return Err(BridgeError::Invalid(format!(
+                "Bridge has no native {action:?} path for {} automations",
+                provider.display_name()
+            )));
+        }
     };
     Ok(AutomationActionResult {
         provider,
@@ -678,34 +785,41 @@ pub fn execute(
 }
 
 fn codex_execute(home: &Path, id: &str, action: AutomationAction) -> Result<String, BridgeError> {
+    // Resolved once, up front: every action Codex's schema can perform maps to
+    // one statement and one message here, and anything else leaves with an
+    // error rather than reaching a panic further in.
+    let (statement, stamps_updated_at, success) = match action {
+        AutomationAction::Pause => (
+            "UPDATE automations SET status='PAUSED', updated_at=?2 WHERE id=?1",
+            true,
+            "Paused in Codex",
+        ),
+        AutomationAction::Resume => (
+            "UPDATE automations SET status='ACTIVE', updated_at=?2 WHERE id=?1",
+            true,
+            "Resumed in Codex",
+        ),
+        AutomationAction::Delete => ("DELETE FROM automations WHERE id=?1", false, "Deleted from Codex"),
+        AutomationAction::RunNow => {
+            return Err(BridgeError::Invalid(
+                "Codex has no native run-now API; Bridge will not fake one by starting a session"
+                    .to_string(),
+            ));
+        }
+    };
     let now_ms = chrono::Utc::now().timestamp_millis();
     for path in codex_automation_dbs(home) {
         let db = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         if !has_codex_automation_schema(&db) {
             continue;
         }
-        let changed = match action {
-            AutomationAction::Pause => db.execute(
-                "UPDATE automations SET status='PAUSED', updated_at=?2 WHERE id=?1",
-                rusqlite::params![id, now_ms],
-            )?,
-            AutomationAction::Resume => db.execute(
-                "UPDATE automations SET status='ACTIVE', updated_at=?2 WHERE id=?1",
-                rusqlite::params![id, now_ms],
-            )?,
-            AutomationAction::Delete => db.execute(
-                "DELETE FROM automations WHERE id=?1",
-                rusqlite::params![id],
-            )?,
-            AutomationAction::RunNow => unreachable!("Codex does not advertise run-now"),
+        let changed = if stamps_updated_at {
+            db.execute(statement, rusqlite::params![id, now_ms])?
+        } else {
+            db.execute(statement, rusqlite::params![id])?
         };
         if changed > 0 {
-            return Ok(match action {
-                AutomationAction::Pause => "Paused in Codex".to_string(),
-                AutomationAction::Resume => "Resumed in Codex".to_string(),
-                AutomationAction::Delete => "Deleted from Codex".to_string(),
-                AutomationAction::RunNow => unreachable!("Codex does not advertise run-now"),
-            });
+            return Ok(success.to_string());
         }
     }
     Err(BridgeError::Invalid(format!("No Codex automation with id {id}")))
@@ -873,9 +987,14 @@ mod tests {
         assert_eq!(claude_state.capabilities, vec![AutomationCapability::Create, AutomationCapability::Edit, AutomationCapability::Delete]);
         let codex_state = catalog.providers.iter().find(|state| state.provider == AutomationProvider::Codex).unwrap();
         assert_eq!(codex_state.capabilities, vec![AutomationCapability::Pause, AutomationCapability::Resume, AutomationCapability::Delete]);
-        let cursor = catalog.providers.iter().find(|state| state.provider == AutomationProvider::Cursor).unwrap();
-        assert!(!cursor.available);
-        assert!(cursor.capabilities.is_empty());
+        // Bridge ships four harnesses; the two without an automations store
+        // must still be named, or the strip silently under-reports the machine.
+        for provider in [AutomationProvider::Cursor, AutomationProvider::OpenCode] {
+            let state = catalog.providers.iter().find(|state| state.provider == provider).unwrap();
+            assert!(!state.available, "{provider:?}");
+            assert!(state.capabilities.is_empty(), "{provider:?}");
+            assert!(state.detail.contains("no native automations feature"), "{provider:?}: {}", state.detail);
+        }
     }
 
     #[test]
@@ -1027,9 +1146,67 @@ mod tests {
     }
 
     #[test]
+    fn cron_validation_refuses_expressions_claude_code_cannot_run() {
+        for good in [
+            "0 9 * * 1-5",
+            "*/15 * * * *",
+            "7 9 1,15 * *",
+            "0 0 1 JAN *",
+            "30 8 * * MON-FRI",
+            "0 12 * * 7",
+        ] {
+            assert!(validate_cron(good).is_ok(), "{good} should be accepted");
+        }
+        for (bad, needle) in [
+            // Five words is not five cron fields.
+            ("every day at nine am", "minute"),
+            ("60 9 * * *", "minute"),
+            ("0 24 * * *", "hour"),
+            ("0 9 0 * *", "day of month"),
+            ("0 9 * 13 *", "month"),
+            ("0 9 * * 8", "day of week"),
+            ("0 9 * * MONDAY", "day of week"),
+            ("*/0 * * * *", "minute"),
+            ("9-5 9 * * *", "minute"),
+            ("0 9 * *", "five-field"),
+            ("0 9 * * * *", "five-field"),
+            ("", "five-field"),
+        ] {
+            let error = validate_cron(bad).unwrap_err().to_string();
+            assert!(error.contains(needle), "{bad:?} -> {error}");
+        }
+    }
+
+    #[test]
+    fn a_garbage_cron_never_reaches_claude_codes_schedule_file() {
+        let home = fixture_home();
+        let error = save(home.path(), AutomationProvider::Claude, None, "do a thing", "every day at nine am", true)
+            .unwrap_err();
+        assert!(error.to_string().contains("minute"), "{error}");
+        assert!(!claude_tasks_path(home.path()).exists(), "no file written for a cron Claude cannot parse");
+    }
+
+    #[test]
+    fn only_claude_has_a_write_path_even_if_a_capability_list_widens() {
+        // The capability gate is bypassed here on purpose: this asserts the
+        // second, independent guard that decides *which* store a save touches.
+        let home = fixture_home();
+        for provider in [AutomationProvider::Codex, AutomationProvider::Cursor, AutomationProvider::OpenCode] {
+            let error = save(home.path(), provider, None, "valid", "0 9 * * *", true).unwrap_err();
+            assert!(error.to_string().contains(provider.display_name()), "{provider:?}: {error}");
+            assert!(!claude_tasks_path(home.path()).exists(), "{provider:?} must not write Claude's store");
+        }
+    }
+
+    #[test]
     fn unsupported_run_now_is_explicit_for_every_provider() {
         let home = fixture_home();
-        for provider in [AutomationProvider::Claude, AutomationProvider::Codex, AutomationProvider::Cursor] {
+        for provider in [
+            AutomationProvider::Claude,
+            AutomationProvider::Codex,
+            AutomationProvider::Cursor,
+            AutomationProvider::OpenCode,
+        ] {
             let error = execute(home.path(), provider, "anything", AutomationAction::RunNow).unwrap_err();
             assert!(error.to_string().contains("run-now"), "{provider:?}: {error}");
         }

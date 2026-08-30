@@ -738,7 +738,7 @@ export type AuthState = "signed_in" | "signed_out" | "unknown";
 
 export type AutomationAction = "pause" | "resume" | "runNow" | "delete";
 
-export type AutomationProvider = "claude" | "codex" | "cursor";
+export type AutomationProvider = "claude" | "codex" | "cursor" | "opencode";
 
 export interface BridgeEvent {
   body: string;

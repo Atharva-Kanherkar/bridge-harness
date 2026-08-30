@@ -14,6 +14,7 @@ pub enum AutomationProvider {
     Claude,
     Codex,
     Cursor,
+    OpenCode,
 }
 
 /// Native operations exposed by a provider's own automation surface. Clients
@@ -130,5 +131,6 @@ mod tests {
         );
         assert_eq!(serde_json::to_value(AutomationAction::RunNow).unwrap(), json!("runNow"));
         assert_eq!(serde_json::to_value(AutomationProvider::Cursor).unwrap(), json!("cursor"));
+        assert_eq!(serde_json::to_value(AutomationProvider::OpenCode).unwrap(), json!("opencode"));
     }
 }

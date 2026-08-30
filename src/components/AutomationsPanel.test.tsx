@@ -25,6 +25,7 @@ const catalog: AutomationCatalog = {
     { provider: "claude", available: true, detail: "~/.claude/scheduled_tasks.json", count: 1, capabilities: ["create", "edit", "delete"] },
     { provider: "codex", available: true, detail: "~/.codex/sqlite/codex.db", count: 1, capabilities: ["pause", "resume", "delete"] },
     { provider: "cursor", available: false, detail: "Cursor has no native automations feature", count: 0, capabilities: [] },
+    { provider: "opencode", available: false, detail: "OpenCode has no native automations feature", count: 0, capabilities: [] },
   ],
 };
 
@@ -50,9 +51,29 @@ describe("AutomationsPanel", () => {
     expect(html).toContain("Summarize overnight CI failures");
     expect(html).toContain("Nightly dependency audit");
     expect(html).toContain("Cursor has no native automations feature");
+    // Bridge ships four harnesses; every one is named, including the two with
+    // no automations store of their own.
+    expect(html).toContain("OpenCode has no native automations feature");
     expect(html).toContain("No native automation controls");
     expect(html).toContain("New Claude automation");
     expect(html).not.toContain("Run now");
+    // Human phrasing and status still carry the row.
+    expect(html).toContain("Weekdays at 09:07");
+    expect(html).toContain("Daily at 03:15");
+    expect(html).toContain("paused");
+  });
+
+  it("withholds capability chips and controls from a store it cannot read", () => {
+    const unreadable: AutomationCatalog = {
+      automations: [],
+      providers: catalog.providers.map(state => state.provider === "claude"
+        ? { ...state, available: false, detail: "~/.claude/scheduled_tasks.json is unreadable: bad json", count: 0 }
+        : state),
+    };
+    const html = renderToStaticMarkup(<AutomationsPanel initialCatalog={unreadable} />);
+    expect(html).toContain("is unreadable");
+    expect(html).not.toContain("New Claude automation");
+    expect(html).not.toContain(">Create<");
   });
 
   it("shows only actions advertised by each owning harness", async () => {

@@ -491,6 +491,7 @@ const mockAutomations: AutomationCatalog = {
     { provider: "claude", available: true, detail: "~/.claude/scheduled_tasks.json", count: 1, capabilities: ["create", "edit", "delete"] },
     { provider: "codex", available: true, detail: "~/.codex/sqlite/codex.db", count: 1, capabilities: ["pause", "resume", "delete"] },
     { provider: "cursor", available: false, detail: "Cursor has no native automations feature", count: 0, capabilities: [] },
+    { provider: "opencode", available: false, detail: "OpenCode has no native automations feature", count: 0, capabilities: [] },
   ],
 };
 
