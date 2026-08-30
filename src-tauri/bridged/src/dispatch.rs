@@ -174,6 +174,10 @@ pub fn dispatch(
             let p: wire::CreateChatParams = decode(method, params)?;
             reply(api::create_chat(core, &p.harness.into(), p.model.as_deref(), p.title.as_deref()))
         }
+        MethodName::CreateAsideChat => {
+            let p: wire::CreateAsideChatParams = decode(method, params)?;
+            reply(api::create_aside_chat(core, &p.source_session_id, &p.harness.into(), p.model.as_deref(), p.title.as_deref()))
+        }
         MethodName::CreateWorkspaceSession => {
             let p: wire::CreateWorkspaceSessionParams = decode(method, params)?;
             reply(api::create_workspace_session(

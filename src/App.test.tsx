@@ -592,11 +592,11 @@ describe("the dock in the session view", () => {
     };
     // A Claude chat to consult from, then a Codex side chat over it.
     await type("$claude review the plan");
-    const createSpy = vi.spyOn(bridgeApi, "createChat");
+    const createSpy = vi.spyOn(bridgeApi, "createAsideChat");
     await type("$codex sanity check");
     const aside = container.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Codex"]');
     expect(aside).not.toBeNull();
-    expect(createSpy).toHaveBeenCalledWith("codex", "gpt-5.6-terra", expect.anything());
+    expect(createSpy).toHaveBeenCalledWith(expect.any(String), "codex", "gpt-5.6-terra", expect.anything());
   });
 
   // Contract: testing/fix-side-chat-model.md. The header picker switches the

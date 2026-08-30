@@ -74,7 +74,7 @@ use crate::{
         ContextSegmentObservation,
     },
     delegation::WriteMode,
-    model::{AdapterDescriptor, AuthState, CapabilityTier, ModelOption, SandboxMode},
+    model::{AdapterDescriptor, AuthState, CapabilityTier, ModelOption},
     BridgeError,
 };
 use agent_client_protocol::schema::v1::{
@@ -497,41 +497,27 @@ pub fn advertised_auth_method(profile: &CursorProfile) -> Option<&str> {
 /// invalid-params error that reads like a lapsed subscription. Labels are the
 /// agent's too.
 ///
-/// Tiers are Bridge's own, because the protocol has no notion of one. They are
-/// assigned positionally over the order the agent advertised, which is the only
-/// ranking on offer, using the same thirds split
-/// [`crate::opencode_adapter::model_options`] already uses for a runtime
-/// catalog — so a harness whose models come from the wire is still routable by
-/// tier instead of being routable only by name.
+/// ACP does not rank models by capability. Keep the catalog deliberately
+/// unranked (represented by Bridge's neutral Standard tier) instead of turning
+/// vendor display order into a false Fast/Standard/Strong claim.
 fn model_options(options: &[SessionConfigOption]) -> Vec<ModelOption> {
     let Some(select) = model_selector(options) else {
         return Vec::new();
     };
     let values = flatten_options(&select.options);
-    let count = values.len();
     let current = select.current_value.0.to_string();
     let mut models: Vec<ModelOption> = values
         .into_iter()
-        .enumerate()
-        .map(|(index, (id, label))| ModelOption {
+        .map(|(id, label)| ModelOption {
             id,
             label,
-            tier: positional_tier(index, count),
+            tier: CapabilityTier::Standard,
             default_for_tier: false,
         })
         .collect();
-    for tier in [
-        CapabilityTier::Fast,
-        CapabilityTier::Standard,
-        CapabilityTier::Strong,
-    ] {
-        let preferred = models
-            .iter()
-            .position(|model| model.tier == tier && model.id == current)
-            .or_else(|| models.iter().position(|model| model.tier == tier));
-        if let Some(index) = preferred {
-            models[index].default_for_tier = true;
-        }
+    if let Some(index) = models.iter().position(|model| model.id == current)
+        .or_else(|| (!models.is_empty()).then_some(0)) {
+        models[index].default_for_tier = true;
     }
     models
 }
@@ -573,24 +559,6 @@ fn flatten_options(options: &SessionConfigSelectOptions) -> Vec<(String, String)
             })
             .collect(),
         _ => Vec::new(),
-    }
-}
-
-const fn positional_tier(index: usize, count: usize) -> CapabilityTier {
-    if count < 2 {
-        CapabilityTier::Standard
-    } else if count == 2 {
-        if index == 0 {
-            CapabilityTier::Fast
-        } else {
-            CapabilityTier::Strong
-        }
-    } else if index < count / 3 {
-        CapabilityTier::Fast
-    } else if index >= (count * 2) / 3 {
-        CapabilityTier::Strong
-    } else {
-        CapabilityTier::Standard
     }
 }
 
@@ -1340,7 +1308,7 @@ impl crate::adapters::HarnessAdapter for CursorAdapter {
             },
             version: profile.map(|profile| profile.version.clone()),
             capabilities: CAPABILITIES.iter().copied().map(str::to_owned).collect(),
-            sandbox_modes: SandboxMode::ALL.to_vec(),
+            sandbox_modes: crate::builtin_compatibility::CURSOR_SANDBOXES.to_vec(),
             // Every unavailable state names a reason. Discovery that has not
             // landed yet is distinguished from an absent binary without
             // spawning anything: the descriptor is rebuilt on every state read.
@@ -1928,7 +1896,7 @@ mod tests {
     }
 
     #[test]
-    fn models_span_the_tiers_so_the_router_can_reach_the_harness() {
+    fn vendor_order_never_becomes_a_capability_ranking() {
         let options = model_options(&[model_selector_option(
             "b",
             vec![
@@ -1938,33 +1906,10 @@ mod tests {
             ]
             .into(),
         )]);
-        assert_eq!(
-            options.iter().map(|model| model.tier).collect::<Vec<_>>(),
-            [
-                CapabilityTier::Fast,
-                CapabilityTier::Standard,
-                CapabilityTier::Strong
-            ]
-        );
-        for tier in [
-            CapabilityTier::Fast,
-            CapabilityTier::Standard,
-            CapabilityTier::Strong,
-        ] {
-            assert!(
-                options
-                    .iter()
-                    .any(|model| model.tier == tier && model.default_for_tier),
-                "{tier:?} has no default"
-            );
-        }
-        // The agent's own current value is the default of whichever tier it
-        // landed in, rather than the first entry there.
-        let standard = options
-            .iter()
-            .find(|model| model.tier == CapabilityTier::Standard && model.default_for_tier)
-            .expect("a standard default");
-        assert_eq!(standard.id, "b");
+        assert!(options.iter().all(|model| model.tier == CapabilityTier::Standard));
+        let selected = options.iter().find(|model| model.default_for_tier).expect("a catalog default");
+        assert_eq!(selected.id, "b");
+        assert_eq!(options.iter().filter(|model| model.default_for_tier).count(), 1);
 
         // A single advertised model is a standard model, not a third of one.
         let single = model_options(&[model_selector_option(

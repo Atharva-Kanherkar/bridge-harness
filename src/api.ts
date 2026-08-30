@@ -39,6 +39,7 @@ import type {
   GithubRepositoryResult,
   GithubStatusResult,
   InteractionResolutionResult,
+  CreateAsideChatResult,
   QuestionAction,
   SuggestCompletionResult,
   SuggestionSettings,
@@ -1349,6 +1350,41 @@ export const bridgeApi = {
     if (isTauri()) return call("sessions/create_chat", { harness, model, title });
     const id = crypto.randomUUID();
     mockState.sessions.push({ id, workspaceId: null, harness, label: title || "New chat", status: "idle", startedAt: null, endedAt: null, contextPercent: null, usagePercent: null, metricSource: "estimated", providerSessionId: null, activeTurnId: null, model, requestedTier: "fast", restorationMode: "fresh", continuationFidelity: "native", title, kind: "direct", cwd: null }); emitState(); return snapshot();
+  },
+  createAsideChat: async (sourceSessionId: string, harness: Harness, model: string | null, title: string | null): Promise<CreateAsideChatResult> => {
+    if (isTauri()) return call("sessions/create_aside_chat", { sourceSessionId, harness, model, title });
+    const source = mockState.sessions.find(item => item.id === sourceSessionId);
+    if (!source) throw new Error("Aside source session does not exist");
+    const id = crypto.randomUUID();
+    mockState.sessions.push({
+      id,
+      workspaceId: source.workspaceId,
+      harness,
+      label: title || "New aside",
+      status: "idle",
+      startedAt: null,
+      endedAt: null,
+      contextPercent: null,
+      usagePercent: null,
+      metricSource: "estimated",
+      providerSessionId: null,
+      activeTurnId: null,
+      model,
+      requestedTier: "standard",
+      restorationMode: "fresh",
+      continuationFidelity: "projected_at_boundary",
+      title,
+      kind: "direct",
+      cwd: source.cwd ?? null,
+    });
+    emitState();
+    return {
+      state: snapshot(),
+      sourceSessionId,
+      sessionId: id,
+      handoffStatus: "carried",
+      fidelity: "projected_at_boundary",
+    };
   },
   createWorkspaceSession: async (workspaceId: string, createWorktree = false): Promise<BridgeState> => {
     if (isTauri()) return call("sessions/create_workspace_session", { workspaceId, createWorktree });

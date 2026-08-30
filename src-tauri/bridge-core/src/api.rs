@@ -97,6 +97,11 @@ fn github_wire<T: DeserializeOwned, U: Serialize>(value: U) -> Result<T, BridgeE
         .map_err(|error| BridgeError::Invalid(format!("GitHub protocol conversion failed: {error}")))
 }
 
+fn protocol_wire<T: DeserializeOwned, U: Serialize>(value: U) -> Result<T, BridgeError> {
+    serde_json::from_value(serde_json::to_value(value).map_err(|error| BridgeError::Invalid(error.to_string()))?)
+        .map_err(|error| BridgeError::Invalid(format!("Protocol conversion failed: {error}")))
+}
+
 fn github_error(error: crate::github_surface::GithubSurfaceError) -> BridgeError {
     BridgeError::Invalid(error.to_string())
 }
@@ -769,6 +774,23 @@ pub fn create_chat(
     title: Option<&str>,
 ) -> Result<BridgeState, BridgeError> {
     core.create_chat(harness, model, title)
+}
+
+pub fn create_aside_chat(
+    core: &Arc<BridgeCore>,
+    source_session_id: &str,
+    harness: &Harness,
+    model: Option<&str>,
+    title: Option<&str>,
+) -> Result<wire::CreateAsideChatResult, BridgeError> {
+    let (session_id, carried) = core.create_aside_chat_id(source_session_id, harness, model, title)?;
+    Ok(wire::CreateAsideChatResult {
+        state: protocol_wire(core.state_snapshot()?)?,
+        source_session_id: source_session_id.to_owned(),
+        session_id,
+        handoff_status: if carried { "carried" } else { "empty" }.into(),
+        fidelity: if carried { "projected_at_boundary" } else { "native" }.into(),
+    })
 }
 
 /// Create an orchestrator session inside a workspace (the classic Bridge agent
@@ -3547,6 +3569,16 @@ pub fn save_agent_config(
     core: &Arc<BridgeCore>,
     agent: agent_config::AgentDefinition,
 ) -> Result<agent_config::ConfigState, BridgeError> {
+    if agent.harness != "bridge" {
+        let descriptor = core.adapter_registry.descriptors().into_iter()
+            .find(|descriptor| descriptor.id == agent.harness)
+            .ok_or_else(|| BridgeError::Invalid(format!("Unknown agent runtime {}", agent.harness)))?;
+        if !adapters::descriptor_supports_agent_role(&descriptor, &agent.role) {
+            return Err(BridgeError::Invalid(format!(
+                "{} cannot run {} agents with the authority that role requires", descriptor.label, agent.role,
+            )));
+        }
+    }
     agent_config::save_agent(&core.db.lock().unwrap(), agent)
 }
 

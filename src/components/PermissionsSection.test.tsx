@@ -2,8 +2,8 @@
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { describe, expect, it, vi } from "vitest";
-import { PermissionsSection } from "./SettingsScreen";
-import type { BridgeEvent, PermissionPolicy } from "../types";
+import { adapterSupportsAgentRole, PermissionsSection } from "./SettingsScreen";
+import type { AdapterDescriptor, BridgeEvent, PermissionPolicy } from "../types";
 
 const policy = (autoApproveProviderPermissions: boolean): PermissionPolicy => ({ autoApproveProviderPermissions, updatedAt: "2026-08-21T10:00:00Z" });
 const ledgerRow = (id: number, body: string): BridgeEvent => ({
@@ -93,5 +93,22 @@ describe("PermissionsSection", () => {
     await act(async () => toggle.click());
     expect(onChange).not.toHaveBeenCalled();
     await unmount();
+  });
+});
+
+describe("adapterSupportsAgentRole", () => {
+  const cursor: AdapterDescriptor = {
+    id: "cursor", label: "Cursor", available: true, authState: "signed_in", version: "test",
+    capabilities: ["messages"], sandboxModes: ["workspace_write", "danger_full_access"],
+    unavailableReason: null, models: [], defaultModel: null,
+  };
+
+  it("keeps Cursor available for implementation but not roles its adapter rejects", () => {
+    expect(adapterSupportsAgentRole(cursor, "implementation")).toBe(true);
+    expect(adapterSupportsAgentRole(cursor, "research")).toBe(false);
+    expect(adapterSupportsAgentRole(cursor, "verification")).toBe(false);
+    expect(adapterSupportsAgentRole(cursor, "planning")).toBe(false);
+    expect(adapterSupportsAgentRole(cursor, "documentation")).toBe(false);
+    expect(adapterSupportsAgentRole(cursor, "orchestrator")).toBe(false);
   });
 });

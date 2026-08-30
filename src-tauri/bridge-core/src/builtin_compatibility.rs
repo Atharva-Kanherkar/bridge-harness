@@ -62,6 +62,8 @@ pub struct BuiltInCompatibilityReport {
 const ALL_SANDBOXES: &[SandboxMode] = &SandboxMode::ALL;
 const OPENCODE_SANDBOXES: &[SandboxMode] =
     &[SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess];
+pub(crate) const CURSOR_SANDBOXES: &[SandboxMode] =
+    &[SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess];
 
 const CODEX_CAPABILITIES: &[&str] = &[
     "messages",
@@ -75,6 +77,7 @@ const CODEX_CAPABILITIES: &[&str] = &[
     "usage",
     "history",
     "interrupt",
+    "briefings",
 ];
 
 const CLAUDE_CAPABILITIES: &[&str] = &[
@@ -86,6 +89,7 @@ const CLAUDE_CAPABILITIES: &[&str] = &[
     "approvals",
     "usage",
     "interrupt",
+    "briefings",
     // Claude alone: the sidecar drives one streaming-input query, so a user
     // message written mid-turn is folded into the turn in flight. Codex and
     // OpenCode would take a second concurrent turn instead, so they must not
@@ -155,7 +159,7 @@ const BUILT_IN_AGENTS: &[BuiltInAgentContract] = &[
         credential_owner: CredentialOwner::Vendor,
         native_resume: NativeResumeContract::WhenSessionAdvertises,
         capabilities: CURSOR_CAPABILITIES,
-        sandbox_modes: ALL_SANDBOXES,
+        sandbox_modes: CURSOR_SANDBOXES,
         model_source: ModelSource::RuntimeCatalog,
         model_ids: &[],
         default_model_id: None,

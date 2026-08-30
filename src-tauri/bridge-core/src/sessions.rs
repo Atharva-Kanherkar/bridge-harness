@@ -16,7 +16,7 @@ use crate::model::*;
 use crate::runtime::BridgeCore;
 use crate::{
     adapters, agent, agent_config, binary, claude_adapter, compaction_controller, completion,
-    context::ContextProjector, git, model_profiles, orchestrator, policy, restoration,
+    context::ContextProjector, git, handoff, model_profiles, orchestrator, policy, restoration,
     session_forest, session_supervisor, store, BridgeError,
 };
 use rusqlite::{params, Connection, OptionalExtension};
@@ -248,6 +248,35 @@ impl BridgeCore {
         )?;
         transaction.commit()?;
         Ok(id)
+    }
+
+    /// Create a source-scoped aside and carry its handoff in the same
+    /// transaction. The exact inserted id is returned to prevent races.
+    pub fn create_aside_chat_id(
+        &self,
+        source_session_id: &str,
+        harness: &Harness,
+        model: Option<&str>,
+        title: Option<&str>,
+    ) -> Result<(String, bool), BridgeError> {
+        let adapter_id = store::harness_name(harness);
+        let id = Uuid::new_v4().to_string();
+        let label = chat_label(title);
+        let mut db = self.db.lock().unwrap();
+        let transaction = db.transaction()?;
+        let (workspace_id, source_cwd): (Option<String>, Option<String>) = transaction.query_row(
+            "SELECT workspace_id,cwd FROM sessions WHERE id=?1", params![source_session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional()?.ok_or_else(|| BridgeError::Invalid("Aside source session does not exist".into()))?;
+        let cwd = source_cwd.unwrap_or_else(|| self.chat_scratch_dir(&id).to_string_lossy().into_owned());
+        transaction.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,'direct',?6,?7,0)",
+            params![id, workspace_id, adapter_id, label, model, title, cwd],
+        )?;
+        store::event(&transaction, "chat", "aside.created", &id, &format!("Created aside {label} from {source_session_id}"))?;
+        let carried = handoff::carry_brief_in_transaction(&transaction, &id, source_session_id)?;
+        transaction.commit()?;
+        Ok((id, carried))
     }
 
     /// Move a session's conversation head. Publishes the state-changed
@@ -1326,6 +1355,38 @@ mod tests {
             .unwrap()
             .query_row("SELECT id FROM sessions", [], |row| row.get(0))
             .unwrap()
+    }
+
+    #[test]
+    fn aside_creation_returns_exact_id_and_inherits_source_scope_atomically() {
+        let (_scratch, core) = fixture();
+        seed_workspace(&core, true);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,cwd,kind,depth) VALUES('source','w','codex','Source','idle','estimated','/tmp/sessions-demo','orchestrator',0)", [],
+            ).unwrap();
+            session_forest::SessionForest::new(&db).append(
+                "source", session_forest::EntryKind::UserMessage,
+                serde_json::json!({"text":"Keep the repository context"}),
+            ).unwrap();
+        }
+        let (aside_id, carried) = core.create_aside_chat_id(
+            "source", &Harness::Codex, Some("stub-standard"), Some("Check"),
+        ).unwrap();
+        assert!(carried);
+        let db = core.db.lock().unwrap();
+        let (workspace_id, cwd): (Option<String>, Option<String>) = db.query_row(
+            "SELECT workspace_id,cwd FROM sessions WHERE id=?1", params![aside_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(workspace_id.as_deref(), Some("w"));
+        assert_eq!(cwd.as_deref(), Some("/tmp/sessions-demo"));
+        let handoffs: i64 = db.query_row(
+            "SELECT COUNT(*) FROM session_entries WHERE session_id=?1 AND kind='handoff.brief'",
+            params![aside_id], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(handoffs, 1);
     }
 
     #[test]

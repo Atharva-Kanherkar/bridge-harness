@@ -17,6 +17,7 @@
         "approvals",
         "usage",
         "interrupt",
+        "briefings",
         "steering"
       ],
       "sandboxModes": [
@@ -51,7 +52,8 @@
         "approvals",
         "usage",
         "history",
-        "interrupt"
+        "interrupt",
+        "briefings"
       ],
       "sandboxModes": [
         "read_only",
@@ -88,7 +90,6 @@
         "interrupt"
       ],
       "sandboxModes": [
-        "read_only",
         "workspace_write",
         "danger_full_access"
       ],
@@ -114,7 +115,8 @@
         "approvals",
         "usage",
         "history",
-        "interrupt"
+        "interrupt",
+        "briefings"
       ],
       "sandboxModes": [
         "workspace_write",

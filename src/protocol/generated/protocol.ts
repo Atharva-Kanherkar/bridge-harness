@@ -39,6 +39,7 @@ export type BridgeMethod =
   | "sessions/replay_session_events"
   | "sessions/activate_session_entry"
   | "sessions/create_chat"
+  | "sessions/create_aside_chat"
   | "sessions/create_workspace_session"
   | "sessions/start_session"
   | "sessions/start_chat"
@@ -195,6 +196,7 @@ export const BRIDGE_METHODS = [
   { method: "sessions/replay_session_events", domain: "sessions", command: "replay_session_events" },
   { method: "sessions/activate_session_entry", domain: "sessions", command: "activate_session_entry" },
   { method: "sessions/create_chat", domain: "sessions", command: "create_chat" },
+  { method: "sessions/create_aside_chat", domain: "sessions", command: "create_aside_chat" },
   { method: "sessions/create_workspace_session", domain: "sessions", command: "create_workspace_session" },
   { method: "sessions/start_session", domain: "sessions", command: "start_session" },
   { method: "sessions/start_chat", domain: "sessions", command: "start_chat" },
@@ -411,6 +413,7 @@ export interface BridgeMethodParams {
   "sessions/replay_session_events": ReplaySessionEventsParams;
   "sessions/activate_session_entry": ActivateSessionEntryParams;
   "sessions/create_chat": CreateChatParams;
+  "sessions/create_aside_chat": CreateAsideChatParams;
   "sessions/create_workspace_session": CreateWorkspaceSessionParams;
   "sessions/start_session": StartSessionParams;
   "sessions/start_chat": StartChatParams;
@@ -569,6 +572,7 @@ export interface BridgeMethodResults {
   "sessions/replay_session_events": ReplaySessionEventsResult;
   "sessions/activate_session_entry": SessionForestSnapshot;
   "sessions/create_chat": BridgeState;
+  "sessions/create_aside_chat": CreateAsideChatResult;
   "sessions/create_workspace_session": BridgeState;
   "sessions/start_session": BridgeState;
   "sessions/start_chat": BridgeState;
@@ -739,6 +743,13 @@ export interface BridgeEvent {
   id: JsSafeI64;
   kind: string;
   source: string;
+}
+
+export interface BridgeState {
+  events: BridgeEvent[];
+  projects: Project[];
+  sessions: Session[];
+  workspaces: Workspace[];
 }
 
 export interface BrowserActionRequest {
@@ -1775,13 +1786,6 @@ export interface HealthResult {
   warnings?: HealthWarning[];
 }
 
-export interface BridgeState {
-  events: BridgeEvent[];
-  projects: Project[];
-  sessions: Session[];
-  workspaces: Workspace[];
-}
-
 export interface AddProjectParams {
   path: string;
 }
@@ -2045,6 +2049,21 @@ export interface CreateChatParams {
   harness: HarnessId;
   model?: string | null;
   title?: string | null;
+}
+
+export interface CreateAsideChatParams {
+  harness: HarnessId;
+  model?: string | null;
+  sourceSessionId: string;
+  title?: string | null;
+}
+
+export interface CreateAsideChatResult {
+  fidelity: string;
+  handoffStatus: string;
+  sessionId: string;
+  sourceSessionId: string;
+  state: BridgeState;
 }
 
 export interface CreateWorkspaceSessionParams {

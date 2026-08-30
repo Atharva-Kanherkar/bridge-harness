@@ -10,12 +10,16 @@ let root: Root;
 
 const adapters: AdapterDescriptor[] = [
   {
-    id: "codex", label: "Codex", available: true, authState: "signed_in", version: "test", capabilities: [], unavailableReason: null,
+    id: "codex", label: "Codex", available: true, authState: "signed_in", version: "test", capabilities: ["messages"], unavailableReason: null,
     models: [{ id: "gpt-balanced", label: "GPT Balanced", tier: "standard", defaultForTier: true }], defaultModel: "gpt-balanced",
   },
   {
-    id: "opencode", label: "OpenCode", available: true, authState: "signed_in", version: "test", capabilities: [], unavailableReason: null,
+    id: "opencode", label: "OpenCode", available: true, authState: "signed_in", version: "test", capabilities: ["messages"], unavailableReason: null,
     models: [{ id: "ox-alpha-free", label: "Ox Alpha Free (Unlimited)", tier: "fast", defaultForTier: true }], defaultModel: "ox-alpha-free",
+  },
+  {
+    id: "cursor", label: "Cursor", available: true, authState: "signed_in", version: "test", capabilities: ["messages"], unavailableReason: null,
+    models: [{ id: "cursor/claude-opus-4.1", label: "Claude Opus 4.1", tier: "standard", defaultForTier: true }], defaultModel: "cursor/claude-opus-4.1",
   },
 ];
 
@@ -113,6 +117,17 @@ describe("ChatModelControl", () => {
     const option = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Ox Alpha Free"))!;
     await act(async () => option.click());
     expect(onChange).toHaveBeenCalledWith("opencode", "ox-alpha-free");
+  });
+
+  it("derives Cursor from descriptors and returns its exact ACP model id", async () => {
+    const onChange = vi.fn();
+    await act(async () => root.render(
+      <ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" compact onChange={onChange} />,
+    ));
+    await act(async () => trigger().click());
+    const option = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Claude Opus 4.1"))!;
+    await act(async () => option.click());
+    expect(onChange).toHaveBeenCalledWith("cursor", "cursor/claude-opus-4.1");
   });
 
   it("closes an open picker on Escape without letting the key reach modal hosts", async () => {

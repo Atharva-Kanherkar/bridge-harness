@@ -3,10 +3,10 @@
 use crate::{
     model::ContinuationFidelity,
     restoration,
-    session_forest::{EntryKind, SessionForest},
+    session_forest::{append_in_transaction, EntryKind, SessionForest},
     store, BridgeError,
 };
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -122,6 +122,36 @@ pub fn carry_brief(
         "chat",
         "chat.handoff_carried",
         target_session_id,
+        &format!("Carried projected context from session {source_session_id}"),
+    )?;
+    Ok(true)
+}
+
+/// Transaction-aware variant used when session creation and handoff must
+/// commit as one operation. It shares the caller's forest and audit commit.
+pub fn carry_brief_in_transaction(
+    transaction: &Transaction<'_>,
+    target_session_id: &str,
+    source_session_id: &str,
+) -> Result<bool, BridgeError> {
+    if target_session_id == source_session_id { return Ok(false); }
+    for session_id in [target_session_id, source_session_id] {
+        let exists: i64 = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)", params![session_id], |row| row.get(0),
+        )?;
+        if exists != 1 { return Ok(false); }
+    }
+    let Some(context) = restoration::checkpoint_context(transaction, source_session_id)? else { return Ok(false); };
+    let source_harness: String = transaction.query_row(
+        "SELECT harness FROM sessions WHERE id=?1", params![source_session_id], |row| row.get(0),
+    )?;
+    append_in_transaction(transaction, target_session_id, EntryKind::HandoffBrief, json!({
+        "text": context,
+        "sourceSessionId": source_session_id,
+        "sourceHarness": source_harness,
+    })).map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    store::event(
+        transaction, "chat", "chat.handoff_carried", target_session_id,
         &format!("Carried projected context from session {source_session_id}"),
     )?;
     Ok(true)

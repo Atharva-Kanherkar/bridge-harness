@@ -226,6 +226,13 @@
       "resultSchema": "bridge-state.json"
     },
     {
+      "command": "create_aside_chat",
+      "domain": "sessions",
+      "method": "sessions/create_aside_chat",
+      "paramsSchema": "create-aside-chat-params.json",
+      "resultSchema": "create-aside-chat-result.json"
+    },
+    {
       "command": "create_workspace_session",
       "domain": "sessions",
       "method": "sessions/create_workspace_session",
