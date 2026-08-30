@@ -547,7 +547,20 @@ struct Shared {
     /// Set the moment a caller asks for shutdown, so the connection ending is
     /// reported as a stop rather than as the agent falling over.
     stopping: Mutex<Option<ShutdownReason>>,
+    /// Assistant text accumulated from the live deltas of the turn in flight.
+    ///
+    /// ACP streams a reply only as `agent_message_chunk` updates and then ends
+    /// the prompt request; there is no terminal message on the wire. The forest
+    /// stores deltas as transient, so without an assembled `message.completed`
+    /// at turn end the reply would stream once and never persist.
+    turn_message: Mutex<TurnMessage>,
     closed: AtomicBool,
+}
+
+#[derive(Default)]
+struct TurnMessage {
+    text: String,
+    item_id: Option<String>,
 }
 
 impl Shared {
@@ -561,10 +574,36 @@ impl Shared {
             return;
         }
         drop(replay);
+        if event.kind == "message.delta" && event.role.as_deref() == Some("assistant") {
+            let mut message = self.turn_message.lock().expect("acp turn message poisoned");
+            if let Some(text) = event.text.as_deref() {
+                message.text.push_str(text);
+            }
+            if message.item_id.is_none() {
+                message.item_id.clone_from(&event.item_id);
+            }
+        }
         self.events
             .lock()
             .expect("acp event queue poisoned")
             .push(event);
+    }
+
+    /// The assembled assistant message of the turn that just ended, if any
+    /// text streamed. Taking it resets the accumulator for the next turn.
+    fn take_turn_message(&self) -> Option<NormalizedEvent> {
+        let mut message = self.turn_message.lock().expect("acp turn message poisoned");
+        let taken = std::mem::take(&mut *message);
+        if taken.text.is_empty() {
+            return None;
+        }
+        let mut event = NormalizedEvent::new("message.completed");
+        event.item_id = taken.item_id;
+        event.role = Some("assistant".into());
+        event.status = Some("completed".into());
+        event.text = Some(taken.text);
+        event.data = serde_json::json!({"assembledFrom": "message.delta"});
+        Some(event)
     }
 
     fn failure_context(&self) -> Option<String> {
@@ -1356,22 +1395,29 @@ async fn run_turn(
     match response {
         Ok(response) => {
             let outcome = AcpTurnOutcome::from_stop_reason(response.stop_reason);
-            shared
-                .events
-                .lock()
-                .expect("acp event queue poisoned")
-                .push(turn_completed_event(outcome));
+            let completed = shared.take_turn_message();
+            let mut events = shared.events.lock().expect("acp event queue poisoned");
+            if let Some(completed) = completed {
+                events.push(completed);
+            }
+            events.push(turn_completed_event(outcome));
             Ok(outcome)
         }
-        Err(error) if is_incoming_transport_closed(&error) => Err(AcpError::Closed {
-            reason: shared
-                .failure_context()
-                .unwrap_or_else(|| error.message.clone()),
-        }),
-        Err(error) => Err(AcpError::Agent {
-            code: error.code.into(),
-            message: error.message,
-        }),
+        Err(error) if is_incoming_transport_closed(&error) => {
+            drop(shared.take_turn_message());
+            Err(AcpError::Closed {
+                reason: shared
+                    .failure_context()
+                    .unwrap_or_else(|| error.message.clone()),
+            })
+        }
+        Err(error) => {
+            drop(shared.take_turn_message());
+            Err(AcpError::Agent {
+                code: error.code.into(),
+                message: error.message,
+            })
+        }
     }
 }
 
@@ -2094,11 +2140,16 @@ mod tests {
                 "mode.updated",
                 "commands.updated",
                 "usage.updated",
+                "message.completed",
                 "turn.completed",
             ]
         );
         assert_eq!(events[1].text.as_deref(), Some("hello"));
         assert_eq!(events[1].role.as_deref(), Some("assistant"));
+        let completed = &events[kinds.len() - 2];
+        assert_eq!(completed.text.as_deref(), Some("hello"));
+        assert_eq!(completed.role.as_deref(), Some("assistant"));
+        assert_eq!(completed.status.as_deref(), Some("completed"));
         assert_eq!(events[2].item_id.as_deref(), Some("t1"));
         assert_eq!(events[2].status.as_deref(), Some("inProgress"));
         assert_eq!(events[3].status.as_deref(), Some("completed"));
