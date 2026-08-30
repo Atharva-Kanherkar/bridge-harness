@@ -998,7 +998,7 @@ mod tests {
                     vec![event]
                 }
                 Some("permission") => {
-                    let mut event = NormalizedEvent::new("approval.requested");
+                    let mut event = NormalizedEvent::new("permission.requested");
                     event.data =
                         json!({"requestId": frame.get("id").cloned().unwrap_or(json!(null))});
                     vec![event]
@@ -1154,7 +1154,7 @@ mod tests {
         assert_eq!(session.permissions(), PermissionModel::RequestsApproval);
 
         let events = session.drain();
-        assert_eq!(events[0].kind, "approval.requested");
+        assert_eq!(events[0].kind, "permission.requested");
         // Draining a permission request sends nothing. The only frame on the
         // wire is the startup one: no self-approval happened on the way past.
         assert_eq!(

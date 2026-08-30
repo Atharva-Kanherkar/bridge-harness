@@ -10349,7 +10349,7 @@ mod submit_input_tests {
                 &db,
                 "chat",
                 &agent::NormalizedEvent {
-                    kind: "approval.requested".into(),
+                    kind: "question.requested".into(),
                     item_id: None,
                     role: None,
                     status: Some("pending".into()),
@@ -10751,12 +10751,12 @@ mod submit_input_tests {
         );
     }
 
-    /// Persist an `opencode.question` `approval.requested` for "chat" with
+    /// Persist an `opencode.question` `question.requested` for "chat" with
     /// `questions`, as `agent.rs`'s `question.asked` normalization would have
     /// produced it, and return its event id.
     fn persist_pending_question(core: &Arc<BridgeCore>, questions: serde_json::Value) -> i64 {
         let approval = agent::NormalizedEvent {
-            kind: "approval.requested".into(),
+            kind: "question.requested".into(),
             item_id: Some("call_1".into()),
             role: None,
             status: Some("pending".into()),
@@ -10785,7 +10785,7 @@ mod submit_input_tests {
             .unwrap()
             .query_row(
                 "SELECT json_extract(payload,'$.data.decision') FROM session_entries
-                 WHERE session_id='chat' AND kind='approval.resolved'",
+                 WHERE session_id='chat' AND kind='question.resolved'",
                 [],
                 |row| row.get(0),
             )
@@ -10986,7 +10986,7 @@ mod submit_input_tests {
     /// `provider.unknown`, so a question settled through any channel other
     /// than this exact `answer_pending_question` call — a decline, a
     /// different client on the same OpenCode session — left Bridge's own
-    /// `approval.requested` row open forever even though OpenCode itself
+    /// `question.requested` row open forever even though OpenCode itself
     /// considers the question closed.
     #[test]
     fn a_question_settled_by_the_provider_directly_unblocks_a_waiting_session() {
@@ -11131,7 +11131,7 @@ mod submit_input_tests {
         let handles = attach_handles(&core, false);
 
         let approval = agent::NormalizedEvent {
-            kind: "approval.requested".into(),
+            kind: "question.requested".into(),
             item_id: Some("call_1".into()),
             role: None,
             status: Some("pending".into()),
@@ -11184,7 +11184,7 @@ mod submit_input_tests {
         );
         let resolved: i64 = db
             .query_row(
-                "SELECT COUNT(*) FROM session_entries WHERE session_id='chat' AND kind='approval.resolved'",
+                "SELECT COUNT(*) FROM session_entries WHERE session_id='chat' AND kind='question.resolved'",
                 [],
                 |row| row.get(0),
             )

@@ -997,7 +997,7 @@ fn record_approval(
         return;
     };
     match event.kind.as_str() {
-        "approval.requested" => {
+        "permission.requested" => {
             let offered = event
                 .data
                 .pointer("/options")
@@ -2058,9 +2058,9 @@ mod tests {
     }
 
     #[test]
-    fn an_approval_is_recorded_as_it_passes_and_retired_when_it_settles() {
+    fn a_permission_is_recorded_as_it_passes_and_retired_when_it_settles() {
         let approvals: Arc<Mutex<BTreeMap<u64, Vec<OfferedOption>>>> = Arc::default();
-        let mut requested = NormalizedEvent::new("approval.requested");
+        let mut requested = NormalizedEvent::new("permission.requested");
         requested.data = json!({
             "requestId": 7,
             "options": [

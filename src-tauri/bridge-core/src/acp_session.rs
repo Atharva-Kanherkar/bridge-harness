@@ -1855,7 +1855,7 @@ mod tests {
     fn approvals(events: &[NormalizedEvent]) -> Vec<&NormalizedEvent> {
         events
             .iter()
-            .filter(|event| event.kind == "approval.requested")
+            .filter(|event| event.kind == "permission.requested")
             .collect()
     }
 
@@ -2242,7 +2242,7 @@ mod tests {
 
         thread::scope(|scope| {
             let turn = scope.spawn(|| session.prompt("go"));
-            let events = drain_until(&session, "approval.requested", 1);
+            let events = drain_until(&session, "permission.requested", 1);
             let approval = approvals(&events)[0];
             assert_eq!(approval.item_id.as_deref(), Some("t9"));
             assert_eq!(approval.title.as_deref(), Some("rm -rf build"));
@@ -2274,7 +2274,7 @@ mod tests {
 
         thread::scope(|scope| {
             let turn = scope.spawn(|| session.prompt("go"));
-            let events = drain_until(&session, "approval.requested", 1);
+            let events = drain_until(&session, "permission.requested", 1);
             let request_id = approval_id(approvals(&events)[0]);
 
             assert_eq!(
@@ -2313,7 +2313,7 @@ mod tests {
 
         thread::scope(|scope| {
             let turn = scope.spawn(|| session.prompt("go"));
-            let events = drain_until(&session, "approval.requested", 1);
+            let events = drain_until(&session, "permission.requested", 1);
             let request_id = approval_id(approvals(&events)[0]);
             session
                 .answer_approval(request_id, "allow-once")
@@ -2371,7 +2371,7 @@ mod tests {
 
         thread::scope(|scope| {
             let turn = scope.spawn(|| session.prompt("go"));
-            drain_until(&session, "approval.requested", 2);
+            drain_until(&session, "permission.requested", 2);
             session.cancel().expect("the cancel is delivered");
             let outcome = turn
                 .join()

@@ -1215,10 +1215,17 @@ mod tests {
                 descriptor.id
             );
         }
+        let cursor = registry
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.id == "cursor")
+            .expect("cursor adapter is registered");
+        assert!(!cursor.supports_sandbox(SandboxMode::ReadOnly));
+        assert!(cursor.supports_sandbox(SandboxMode::WorkspaceWrite));
         for other in registry
             .descriptors()
             .into_iter()
-            .filter(|descriptor| descriptor.id != "opencode")
+            .filter(|descriptor| !matches!(descriptor.id.as_str(), "opencode" | "cursor"))
         {
             assert!(
                 other.supports_sandbox(SandboxMode::ReadOnly),

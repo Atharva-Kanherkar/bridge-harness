@@ -1191,7 +1191,7 @@ fn migration_42_memory_consolidation(transaction: &Transaction<'_>) -> Result<()
 /// crash: an uncertain external side effect is never retried automatically.
 fn migration_43_interaction_resolutions(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     transaction.execute_batch(
-        "CREATE TABLE interaction_resolutions (
+        "CREATE TABLE IF NOT EXISTS interaction_resolutions (
             session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
             request_sequence INTEGER NOT NULL,
             interaction_kind TEXT NOT NULL,
@@ -1205,7 +1205,7 @@ fn migration_43_interaction_resolutions(transaction: &Transaction<'_>) -> Result
             updated_at TEXT NOT NULL,
             PRIMARY KEY(session_id, request_sequence)
         );
-        CREATE INDEX interaction_resolutions_status
+        CREATE INDEX IF NOT EXISTS interaction_resolutions_status
             ON interaction_resolutions(status, updated_at);",
     )?;
     Ok(())

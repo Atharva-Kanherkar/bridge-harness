@@ -983,6 +983,25 @@ async fn create_chat(
     api::create_chat(state.inner(), &harness, model.as_deref(), title.as_deref())
 }
 
+/// Create a source-scoped aside and return the exact session id that was
+/// committed with its handoff, so the caller never has to infer it from state.
+#[tauri::command]
+async fn create_aside_chat(
+    source_session_id: String,
+    harness: Harness,
+    model: Option<String>,
+    title: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::CreateAsideChatResult, BridgeError> {
+    api::create_aside_chat(
+        state.inner(),
+        &source_session_id,
+        &harness,
+        model.as_deref(),
+        title.as_deref(),
+    )
+}
+
 /// Create an orchestrator session inside a workspace (the classic Bridge agent
 /// that plans and delegates to workers). Multiple are allowed per workspace.
 #[tauri::command]
@@ -1936,6 +1955,7 @@ pub fn run() {
             add_project,
             create_workspace,
             create_chat,
+            create_aside_chat,
             create_workspace_session,
             connect_workspace_folder,
             update_chat_model,
