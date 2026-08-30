@@ -66,7 +66,8 @@ pub struct AgentDefinition {
 /// grants, command allowlists) must be `#[serde(default)]` so a policy written by
 /// an older build still reads — the stored payload is durable and outlives the
 /// binary that wrote it.
-/// The derived default is the safe one and that is load-bearing: `bypass_all`
+/// The derived default is the safe one and that is load-bearing:
+/// `auto_approve_provider_permissions`
 /// defaults to `false`, so a fresh install asks and an unreadable stored payload
 /// falls back to asking rather than to granting.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
@@ -75,7 +76,8 @@ pub struct PermissionPolicy {
     /// Auto-accept every provider approval, for every agent. The two structural
     /// gates — worker write scope and browser outward effects — are unaffected;
     /// they are authorization, not convenience.
-    pub bypass_all: bool,
+    #[serde(alias = "bypassAll")]
+    pub auto_approve_provider_permissions: bool,
     pub updated_at: String,
 }
 
@@ -366,7 +368,8 @@ pub fn save_permission_policy(
     policy.updated_at = Utc::now().to_rfc3339();
     // One transaction covering the write *and* the response it is reported by.
     // Committing first and then failing to build the snapshot told the UI the
-    // save had failed while `bypass_all` was already durable and live — for a
+    // save had failed while automatic permission approval was already durable
+    // and live — for a
     // security control that asymmetry runs the wrong way, so it fails closed.
     let transaction = db.unchecked_transaction()?;
     upsert(&transaction, "permission_policy", "global", &policy)?;
@@ -656,8 +659,8 @@ mod tests {
     fn permission_policy_defaults_to_asking() {
         let db = store::open(std::path::Path::new(":memory:")).unwrap();
         assert_eq!(permission_policy(&db).unwrap(), PermissionPolicy::default());
-        assert!(!permission_policy(&db).unwrap().bypass_all);
-        assert!(!state(&db).unwrap().permission_policy.bypass_all);
+        assert!(!permission_policy(&db).unwrap().auto_approve_provider_permissions);
+        assert!(!state(&db).unwrap().permission_policy.auto_approve_provider_permissions);
     }
 
     fn custom_agent(id: &str, name: &str, role: &str) -> AgentDefinition {
@@ -769,22 +772,22 @@ mod tests {
         let saved = save_permission_policy(
             &db,
             PermissionPolicy {
-                bypass_all: true,
+                auto_approve_provider_permissions: true,
                 // Claimed by the client and ignored: the host stamps it.
                 updated_at: "whenever-i-say".into(),
             },
         )
         .unwrap();
 
-        assert!(saved.permission_policy.bypass_all);
+        assert!(saved.permission_policy.auto_approve_provider_permissions);
         assert_ne!(saved.permission_policy.updated_at, "whenever-i-say");
         assert!(!saved.permission_policy.updated_at.is_empty());
         // Re-read from durable state, not from the returned value.
-        assert!(permission_policy(&db).unwrap().bypass_all);
-        assert!(state(&db).unwrap().permission_policy.bypass_all);
+        assert!(permission_policy(&db).unwrap().auto_approve_provider_permissions);
+        assert!(state(&db).unwrap().permission_policy.auto_approve_provider_permissions);
 
         save_permission_policy(&db, PermissionPolicy::default()).unwrap();
-        assert!(!permission_policy(&db).unwrap().bypass_all);
+        assert!(!permission_policy(&db).unwrap().auto_approve_provider_permissions);
     }
 
     /// The write and the response it is reported by are one transaction. A save
@@ -800,7 +803,7 @@ mod tests {
         let outcome = save_permission_policy(
             &db,
             PermissionPolicy {
-                bypass_all: true,
+                auto_approve_provider_permissions: true,
                 updated_at: String::new(),
             },
         );
@@ -828,7 +831,7 @@ mod tests {
         let after = save_permission_policy(
             &db,
             PermissionPolicy {
-                bypass_all: true,
+                auto_approve_provider_permissions: true,
                 updated_at: String::new(),
             },
         )
@@ -855,7 +858,7 @@ mod tests {
 
         let policy = permission_policy(&db).unwrap();
         assert!(
-            policy.bypass_all,
+            policy.auto_approve_provider_permissions,
             "an unknown future field must not discard the whole policy"
         );
     }

@@ -1162,7 +1162,7 @@ fn result_payloads_mirror_core() {
         }],
         default_agent_id: "reviewer".into(),
         permission_policy: agent_config::PermissionPolicy {
-            bypass_all: true,
+            auto_approve_provider_permissions: true,
             updated_at: "now".into(),
         },
     });

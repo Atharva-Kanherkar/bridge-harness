@@ -238,6 +238,39 @@ describe("AgentConversation", () => {
     expect(html).toContain("Allow once");
     expect(html).not.toContain("Allow for session");
   });
+  it("renders only provider-offered permission actions and makes policy decisions inert", () => {
+    const requested = event(41, "permission.requested", { status:"pending", title:"Run command", data:{actions:[{decision:"accept",optionId:"yes-once",label:"Proceed once"}]} });
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[requested]}/>);
+    expect(html).toContain("Proceed once");
+    expect(html).not.toContain("Allow for session");
+    expect(html).not.toContain("Decline");
+
+    const automatic = event(42, "permission.requested", { status:"settling", title:"Run command", data:{resolvedBy:"policy",reason:"Auto-approve provider permissions",actions:[{decision:"accept",label:"Allow once"}]} });
+    const policyHtml = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[automatic]}/>);
+    expect(policyHtml).toContain("Applying decision");
+    expect(policyHtml).toContain("by policy");
+    expect(policyHtml).not.toContain("Allow once</button>");
+  });
+
+  it("holds permission actions disabled until a deferred resolution settles", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    let release!: () => void;
+    const deferred = new Promise<void>(resolve => { release = resolve; });
+    const onResolve = vi.fn(() => deferred);
+    const requested = event(43, "permission.requested", { status:"pending", title:"Run command", data:{actions:[{decision:"accept",optionId:"once",label:"Allow once"},{decision:"decline",optionId:"no",label:"Decline"}]} });
+    await act(async () => root.render(<AgentConversation session={session} onResolve={onResolve} events={[requested]}/>));
+    const allow = [...container.querySelectorAll("button")].find(button => button.textContent === "Allow once")!;
+    await act(async () => allow.dispatchEvent(new MouseEvent("click", { bubbles:true })));
+    expect(onResolve).toHaveBeenCalledWith(43, "accept", "once");
+    expect([...container.querySelectorAll("button")].every(button => button.disabled)).toBe(true);
+    expect(container.textContent).toContain("Applying…");
+    await act(async () => release());
+    await act(async () => root.unmount());
+    container.remove();
+  });
   it("surfaces a rejected delegation as a distinct row instead of silently dropping it", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[
       event(1, "delegation.rejected", { role: "system", status: "failed", title: "Delegation rejected", text: "unknown variant `none`", data: { reason: "unknown variant `none`", willRetry: true, attempt: 1 } })

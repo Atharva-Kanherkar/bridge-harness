@@ -440,7 +440,14 @@
       "domain": "approvals",
       "method": "approvals/resolve_approval",
       "paramsSchema": "resolve-approval-params.json",
-      "resultSchema": "unit-result.json"
+      "resultSchema": "interaction-resolution-result.json"
+    },
+    {
+      "command": "resolve_question",
+      "domain": "approvals",
+      "method": "approvals/resolve_question",
+      "paramsSchema": "resolve-question-params.json",
+      "resultSchema": "interaction-resolution-result.json"
     },
     {
       "command": "start_provider_login",

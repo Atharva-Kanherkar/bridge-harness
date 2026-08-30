@@ -1096,7 +1096,7 @@ export interface ModelProfileDraft {
 export type Params = Record<string, unknown> | unknown[];
 
 export interface PermissionPolicy {
-  bypassAll?: boolean;
+  autoApproveProviderPermissions?: boolean;
   updatedAt?: string;
 }
 

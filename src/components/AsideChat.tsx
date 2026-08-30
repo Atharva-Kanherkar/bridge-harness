@@ -15,6 +15,7 @@ import { activeTurnAction } from "../sessionInput";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "../pasteAttachments";
 import { cn } from "@/lib/utils";
 import type { AdapterDescriptor, AgentEvent, ApprovalDecision, Harness, Session, SessionForestSnapshot } from "../types";
+import type { InteractionResolutionResult, QuestionAction } from "../protocol/generated/protocol";
 
 // An aside: a standalone chat the user delegated to another agent from inside
 // a conversation, shown as a panel floating over that conversation instead of
@@ -24,7 +25,7 @@ import type { AdapterDescriptor, AgentEvent, ApprovalDecision, Harness, Session,
 // real chat in the sidebar after the panel closes. The panel is the delegation
 // surface, not the session's home; reopening later is ordinary navigation.
 
-export function AsideChat({ session, adapters, events, pendingMessages, working, modelSwitch = null, onSend, onChangeModel, onResolve, onPromote, onClose }: {
+export function AsideChat({ session, adapters, events, pendingMessages, working, modelSwitch = null, onSend, onChangeModel, onResolve, onAnswerQuestion = async () => undefined, onPromote, onClose }: {
   session: Session;
   /** The chat adapters, for the header model picker. */
   adapters: AdapterDescriptor[];
@@ -40,7 +41,8 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
    *  May reject — the panel wears the failure itself, because the main error
    *  banner sits behind the scrim where nobody is looking. */
   onChangeModel: (harness: Harness, model: string | null) => void | Promise<void>;
-  onResolve: (eventId: number, decision: ApprovalDecision) => void;
+  onResolve: (eventId: number, decision: ApprovalDecision, optionId?: string) => Promise<InteractionResolutionResult | void> | void;
+  onAnswerQuestion?: (eventId: number, action: QuestionAction, answers: Record<string, string[]>) => Promise<InteractionResolutionResult | void> | void;
   /** Make the aside the active session and close the panel. */
   onPromote: () => void;
   onClose: () => void;
@@ -215,6 +217,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
             pendingMessages={pendingMessages}
             modelSwitch={modelSwitch}
             onResolve={onResolve}
+            onAnswerQuestion={onAnswerQuestion}
           />
         </div>
 

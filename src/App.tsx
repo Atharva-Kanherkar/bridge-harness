@@ -15,7 +15,7 @@ import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
 import { ComposerContextStrip } from "./components/ComposerContextStrip";
 import { ProjectsScreen } from "./components/ProjectsScreen";
-import type { SuggestCompletionResult, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
+import type { QuestionAction, SuggestCompletionResult, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
 import { isHiddenSession } from "./components/sidebarChats";
@@ -1497,10 +1497,15 @@ function AppContent() {
     }
     catch (e) { setComposer(retryText); setAttachments(sentAttachments); setPending(current => current.filter(item => item.key !== key)); setError(errorMessage(e)); }
   }
-  const resolveApproval = useCallback(async (eventId: number, decision: ApprovalDecision) => {
+  const resolveApproval = useCallback(async (eventId: number, decision: ApprovalDecision, optionId?: string) => {
     if (!session?.id) return;
-    try { await bridgeApi.resolveApproval(session.id, eventId, decision); await reload(); }
-    catch (e) { setError(errorMessage(e)); }
+    try { const result = await bridgeApi.resolveApproval(session.id, eventId, decision, optionId); await reload(); return result; }
+    catch (e) { setError(errorMessage(e)); throw e; }
+  }, [reload, session?.id]);
+  const resolveQuestion = useCallback(async (eventId: number, action: QuestionAction, answers: Record<string, string[]>) => {
+    if (!session?.id) return;
+    try { const result = await bridgeApi.resolveQuestion(session.id, eventId, action, answers); await reload(); return result; }
+    catch (e) { setError(errorMessage(e)); throw e; }
   }, [reload, session?.id]);
   // The "Memory used" chip is audit-backed: what this session's prompt actually
   // received, re-read on every memory change.
@@ -1788,7 +1793,7 @@ function AppContent() {
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
   const isSessionChrome = view === "workspace" && paradigm !== "grid" && !!session;
-  const bypassBadge = <BypassBadge bypassing={!!permissionPolicy?.bypassAll} onOpenSettings={() => { setSettingsSection("permissions"); setView("settings"); }} />;
+  const bypassBadge = <BypassBadge bypassing={!!permissionPolicy?.autoApproveProviderPermissions} onOpenSettings={() => { setSettingsSection("permissions"); setView("settings"); }} />;
   const usageWidget = <UsageWidget usage={usageByProvider} adapters={health?.adapters} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} focusedSessionId={session?.id ?? null} onOpenPromptStudio={() => { setSettingsSection("prompts"); setView("settings"); }} />;
   const titleBarActions = <>{bypassBadge}{usageWidget}</>;
   const sidebar = (
@@ -1952,8 +1957,13 @@ function AppContent() {
               try { setState(await bridgeApi.updateChatModel(asideSession.id, harness, model)); }
               finally { setModelSwitch(null); }
             }}
-            onResolve={(eventId, decision) => {
-              void bridgeApi.resolveApproval(asideSession.id, eventId, decision).then(reload).catch(e => setError(errorMessage(e)));
+            onResolve={async (eventId, decision, optionId) => {
+              try { const result = await bridgeApi.resolveApproval(asideSession.id, eventId, decision, optionId); await reload(); return result; }
+              catch (e) { setError(errorMessage(e)); throw e; }
+            }}
+            onAnswerQuestion={async (eventId, action, answers) => {
+              try { const result = await bridgeApi.resolveQuestion(asideSession.id, eventId, action, answers); await reload(); return result; }
+              catch (e) { setError(errorMessage(e)); throw e; }
             }}
             onPromote={() => { setAsideChatId(undefined); openSession(asideSession.id); }}
             onClose={() => setAsideChatId(undefined)}
@@ -1995,6 +2005,7 @@ function AppContent() {
                    pendingMessages={pendingForSession}
                    pendingAttachments={pendingForSessionAttachments}
                   onResolve={resolveApproval}
+                  onAnswerQuestion={resolveQuestion}
                   workspaceFiles={hasRepo ? workspaceFiles : undefined}
                   onOpenFile={hasRepo && workspace ? openFileInDock : undefined}
                   highlightEntryId={highlightEntryId}

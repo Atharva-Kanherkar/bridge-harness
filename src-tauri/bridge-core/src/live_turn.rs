@@ -2232,7 +2232,7 @@ fn handle_agent_value(
                     auto_approve_this_event = !is_write_scope
                         && is_permission_request
                         && agent_config::permission_policy(&db)
-                            .map(|policy| policy.bypass_all)
+                            .map(|policy| policy.auto_approve_provider_permissions)
                             .unwrap_or(false);
                     if own_depth > 0 {
                         let _ = session_supervisor::SessionSupervisor::transition(
@@ -12206,7 +12206,7 @@ mod permission_policy_tests {
                 agent_config::save_permission_policy(
                     &db,
                     agent_config::PermissionPolicy {
-                        bypass_all: true,
+                        auto_approve_provider_permissions: true,
                         updated_at: String::new(),
                     },
                 )
@@ -12288,7 +12288,7 @@ mod permission_policy_tests {
             }).unwrap();
             if bypass {
                 agent_config::save_permission_policy(&db, agent_config::PermissionPolicy {
-                    bypass_all: true, updated_at: String::new(),
+                    auto_approve_provider_permissions: true, updated_at: String::new(),
                 }).unwrap();
             }
         }
@@ -12825,7 +12825,7 @@ mod permission_policy_tests {
     #[test]
     fn the_permission_policy_is_not_reachable_from_the_browser_gate() {
         let browser = include_str!("browser_bridge.rs");
-        for marker in ["permission_policy", "bypass_all", "PermissionPolicy"] {
+        for marker in ["permission_policy", "auto_approve_provider_permissions", "PermissionPolicy"] {
             assert!(
                 !browser.contains(marker),
                 "the browser outward-effect gate must not consult the permission \

@@ -77,7 +77,7 @@ export function PermissionsSection({ policy, autoApprovals, busy, onChange }: {
   busy: boolean;
   onChange: (next: PermissionPolicy) => void;
 }) {
-  const on = policy.bypassAll;
+  const on = policy.autoApproveProviderPermissions;
   return <div className="mx-auto max-w-2xl">
     <div className="mb-5">
       <h2 className="font-display text-lg font-semibold">Permissions</h2>
@@ -89,7 +89,7 @@ export function PermissionsSection({ policy, autoApprovals, busy, onChange }: {
       role="switch"
       aria-checked={on}
       disabled={busy}
-      onClick={() => onChange({ ...policy, bypassAll: !on })}
+      onClick={() => onChange({ ...policy, autoApproveProviderPermissions: !on })}
       // The ON state is carried by the border, the icon, and the pill — not by a
       // background swap. Tinting the card put `text-muted-foreground` body copy
       // on a lighter surface and the explanation went unreadable in dark mode,
@@ -103,9 +103,9 @@ export function PermissionsSection({ policy, autoApprovals, busy, onChange }: {
         {on ? <ShieldOff size={16} /> : <Shield size={16} />}
       </span>
       <span className="min-w-0 flex-1">
-        <span className="block text-[13px] font-medium text-foreground">Bypass all approvals</span>
+        <span className="block text-[13px] font-medium text-foreground">Auto-approve provider permissions</span>
         <span className="mt-1 block text-[11.5px] leading-relaxed text-muted-foreground">
-          Every agent — orchestrator, workers, and direct chats — has its approvals accepted automatically. No prompt appears anywhere.
+          Permission requests from Claude, Codex, OpenCode, and Cursor are accepted automatically when the provider offers an allow option. Questions and macOS prompts still wait for you.
         </span>
       </span>
       <span className={cn(
@@ -180,7 +180,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
   /// sent — only because the host confirmed it.
   async function savePolicy(policy: PermissionPolicy) {
     setBusy(true);
-    try { setConfig(await bridgeApi.savePermissionPolicy(policy)); }
+    try { setConfig(await bridgeApi.savePermissionPolicy(policy)); flashSaved(); }
     catch (error) { onError(String(error)); }
     finally { setBusy(false); }
   }
