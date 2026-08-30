@@ -831,6 +831,8 @@ pub const CLAUDE_SDK_VERSION: &str = "0.3.209";
 pub const CODEX_VERSION: &str = "0.147.0";
 /// Pinned version of the OpenCode runtime closure.
 pub const OPENCODE_VERSION: &str = "1.18.16";
+/// Pinned version of the Cursor agent CLI release.
+pub const CURSOR_VERSION: &str = "2026.08.25-3e8eec8";
 
 const CLAUDE_MANIFEST: &str = include_str!("../../../runtimes/claude/package.json");
 const CLAUDE_LOCKFILE: &str = include_str!("../../../runtimes/claude/package-lock.json");
@@ -899,11 +901,49 @@ pub fn opencode_recipe() -> Option<RuntimeSource> {
     })
 }
 
+/// The Cursor agent CLI release artifact.
+///
+/// Cursor publishes no npm package: the CLI ships as a per-platform tarball from
+/// the vendor's own download host, so this is a release artifact pinned by
+/// digest per platform rather than a lockfile-pinned closure. The digests were
+/// computed from the published tarballs at pin time; a vendor republish under
+/// the same version fails integrity rather than installing.
+pub fn cursor_recipe() -> Option<RuntimeSource> {
+    let (platform, sha256) = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("macos", "aarch64") => (
+            "darwin/arm64",
+            "81d4de7349e208d4ce441ca9c2d4e7d019ec2fbeb1137a79099fd8c4b8662f5f",
+        ),
+        ("macos", "x86_64") => (
+            "darwin/x64",
+            "851f5412f603cff4cb37d4d87d5a940c5e642077c0459238398c866a69d3f495",
+        ),
+        ("linux", "aarch64") => (
+            "linux/arm64",
+            "f1c1c2330d89fa4ef5b6cc04fcffba15012ff50eacd07e0f3baec0716f25ac5d",
+        ),
+        ("linux", "x86_64") => (
+            "linux/x64",
+            "7a212e5a17ff9316f5acc78808e33c536940d5455645022e6388d99ba48c8425",
+        ),
+        _ => return None,
+    };
+    Some(RuntimeSource::ReleaseArtifact {
+        url: format!(
+            "https://downloads.cursor.com/lab/{CURSOR_VERSION}/{platform}/agent-cli-package.tar.gz"
+        ),
+        sha256: sha256.into(),
+        kind: ArtifactKind::TarGz,
+        entrypoint: PathBuf::from("dist-package").join("cursor-agent"),
+    })
+}
+
 /// Every built-in managed runtime, by agent id.
 pub fn builtin_recipes() -> Vec<(&'static str, RuntimeSource)> {
     [
         ("claude", claude_recipe()),
         ("codex", codex_recipe()),
+        ("cursor", cursor_recipe()),
         ("opencode", opencode_recipe()),
     ]
     .into_iter()
@@ -1961,7 +2001,8 @@ mod tests {
                 manifest, lockfile, ..
             } = &source
             else {
-                panic!("{agent_id} must install from npm");
+                // A release artifact carries no closure to borrow.
+                continue;
             };
             assert!(
                 matches!(manifest, Cow::Borrowed(_)),
@@ -2010,8 +2051,8 @@ mod tests {
         let recipes = builtin_recipes();
         assert_eq!(
             recipes.len(),
-            3,
-            "all three agents must have a recipe on a supported platform"
+            4,
+            "all four agents must have a recipe on a supported platform"
         );
         for (agent_id, source) in recipes {
             source
@@ -2027,7 +2068,18 @@ mod tests {
                 ..
             } = &source
             else {
-                panic!("{agent_id} must install from npm");
+                // Cursor is the one vendor with no npm distribution: its recipe
+                // is a release artifact whose pinning is the url's version
+                // component plus the digest validate() already checked.
+                let RuntimeSource::ReleaseArtifact { url, .. } = &source else {
+                    unreachable!("{agent_id} has an unknown source kind");
+                };
+                assert_eq!(agent_id, "cursor", "only cursor may skip npm: {url}");
+                assert!(
+                    url.contains(CURSOR_VERSION),
+                    "cursor url does not pin {CURSOR_VERSION}: {url}"
+                );
+                continue;
             };
             assert!(
                 version_is_exact(version),

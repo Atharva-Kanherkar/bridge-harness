@@ -36,9 +36,10 @@ use std::{error::Error, fmt};
 /// The single list this domain iterates. A new agent is not added here without
 /// also being added to the recipes, so the two cannot drift into disagreeing
 /// about which agents exist.
-pub const BUILT_IN_AGENTS: [(&str, &str); 3] = [
+pub const BUILT_IN_AGENTS: [(&str, &str); 4] = [
     ("claude", "Claude Code"),
     ("codex", "Codex"),
+    ("cursor", "Cursor"),
     ("opencode", "OpenCode"),
 ];
 
@@ -225,9 +226,20 @@ fn resolution_of(agent_id: &str, payload: &ManagedPayloadStatus) -> Option<Runti
         None,
         payload,
         &[],
-        crate::binary::resolve(agent_id),
+        crate::binary::resolve(system_executable(agent_id)),
     )
     .ok()
+}
+
+/// The executable name a user's own install of `agent_id` goes by on PATH.
+///
+/// Every agent but Cursor publishes a binary named after its id; Cursor's CLI
+/// installs as `cursor-agent` (`cursor` is the editor).
+fn system_executable(agent_id: &str) -> &str {
+    match agent_id {
+        "cursor" => "cursor-agent",
+        other => other,
+    }
 }
 
 fn backing_of(resolution: Option<&RuntimeResolution>) -> ManagedAgentBacking {

@@ -1842,6 +1842,10 @@ const mockManagedAgents: ManagedAgentList = {
       executable: "/opt/homebrew/bin/codex", version: "0.147.0", consecutiveFailures: 0,
     },
     {
+      agentId: "cursor", label: "Cursor", state: "external", backing: "external", removable: false,
+      executable: "/Users/demo/.local/bin/cursor-agent", consecutiveFailures: 0,
+    },
+    {
       agentId: "opencode", label: "OpenCode", state: "not_installed", backing: "none", removable: false,
       consecutiveFailures: 0,
     },

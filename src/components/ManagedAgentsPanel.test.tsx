@@ -56,12 +56,14 @@ describe("ManagedAgentsPanel", () => {
     const view = await render([
       agent({ agentId: "claude", label: "Claude Code" }),
       agent({ agentId: "codex", label: "Codex" }),
+      agent({ agentId: "cursor", label: "Cursor", state: "external", backing: "external", removable: false }),
       agent({ agentId: "opencode", label: "OpenCode", state: "not_installed", backing: "none", removable: false }),
     ]);
-    for (const id of ["claude", "codex", "opencode"]) {
+    for (const id of ["claude", "codex", "cursor", "opencode"]) {
       expect(view.host.querySelector(`[data-testid="agent-card-${id}"]`)).not.toBeNull();
     }
     expect(view.text()).toContain("Claude Code");
+    expect(view.text()).toContain("Cursor");
     expect(view.text()).toContain("OpenCode");
     await view.unmount();
   });
