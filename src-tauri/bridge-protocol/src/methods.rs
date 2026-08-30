@@ -111,6 +111,7 @@ methods![
     (UpdateConsolidationSettings, "memory", "update_consolidation_settings"),
     // approvals
     (ResolveApproval, "approvals", "resolve_approval"),
+    (ResolveQuestion, "approvals", "resolve_question"),
     // auth — provider sign-in
     (StartProviderLogin, "auth", "start_provider_login"),
     // terminal

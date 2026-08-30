@@ -429,6 +429,9 @@ impl AdapterRuntime for CodexRuntime {
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError> {
         CodexRuntime::respond(self, request_id, decision)
     }
+    fn answer_question(&self, request_id: Value, result: Value) -> Result<(), BridgeError> {
+        write_value(&self.writer, &json!({"id":request_id,"result":result}))
+    }
     fn read_usage(&self) -> Result<(), BridgeError> {
         // `account/rateLimits/read` is a read-only account query (no quota cost).
         // Its response lands on the event stream and is normalized to usage.updated.

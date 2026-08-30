@@ -32,17 +32,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
-/// The `requestMethod` marker on an ACP permission normalized to
-/// `approval.requested`.
-///
-/// This is the real wire method, and it deliberately does not end with
-/// `requestApproval`, so `live_turn.rs`'s bypass-policy gate refuses to
-/// auto-grant it. That refusal is the correct behaviour rather than an
-/// oversight: an ACP permission is answered with one of the option ids the
-/// agent offered, and a generic auto-grant has no way to know which of
-/// `allow_once`, `allow_always`, `reject_once`, or `reject_always` an agent
-/// actually put on the wire. The same reasoning already keeps
-/// [`crate::agent::OPENCODE_QUESTION_REQUEST_METHOD`] off that path.
+/// The exact wire method carried by an ACP permission interaction.
 pub const ACP_PERMISSION_REQUEST_METHOD: &str = "session/request_permission";
 
 /// How a prompt turn ended.
@@ -189,7 +179,27 @@ pub fn permission_request_event(
             })
         })
         .collect();
-    let mut event = NormalizedEvent::new("approval.requested");
+    let actions: Vec<Value> = options
+        .iter()
+        .filter_map(|option| {
+            let option_id = option.get("id")?.as_str()?;
+            let kind = option.get("kind")?.as_str()?;
+            let (decision, fallback_label) = match kind {
+                "allow_always" => ("acceptForSession", "Allow for session"),
+                "allow_once" => ("accept", "Allow once"),
+                "reject_once" => ("decline", "Decline once"),
+                "reject_always" => ("decline", "Always decline"),
+                _ => return None,
+            };
+            Some(json!({
+                "id": option_id,
+                "optionId": option_id,
+                "decision": decision,
+                "label": option.get("name").and_then(Value::as_str).unwrap_or(fallback_label),
+            }))
+        })
+        .collect();
+    let mut event = NormalizedEvent::new("permission.requested");
     event.item_id = Some(request.tool_call.tool_call_id.0.to_string());
     event.status = Some("pending".into());
     event.title = request
@@ -201,6 +211,8 @@ pub fn permission_request_event(
     event.data = json!({
         "requestId": request_id,
         "requestMethod": ACP_PERMISSION_REQUEST_METHOD,
+        "interactionKind": "permission",
+        "actions": actions,
         "options": options,
         "toolCall": serde_json::to_value(&request.tool_call).unwrap_or(Value::Null),
     });
@@ -610,7 +622,7 @@ mod tests {
             ],
         );
         let event = permission_request_event(42, &request);
-        assert_eq!(event.kind, "approval.requested");
+        assert_eq!(event.kind, "permission.requested");
         assert_eq!(event.item_id.as_deref(), Some("call-3"));
         assert_eq!(event.title.as_deref(), Some("rm -rf build"));
         assert_eq!(event.status.as_deref(), Some("pending"));
@@ -637,6 +649,15 @@ mod tests {
             .filter_map(|option| option.get("name").and_then(Value::as_str))
             .collect();
         assert_eq!(names, ["Allow once", "Reject"]);
+        let actions = event
+            .data
+            .pointer("/actions")
+            .and_then(Value::as_array)
+            .unwrap();
+        assert_eq!(actions[0]["optionId"], "yes-once");
+        assert_eq!(actions[0]["decision"], "accept");
+        assert_eq!(actions[1]["optionId"], "no");
+        assert_eq!(actions[1]["decision"], "decline");
     }
 
     #[test]

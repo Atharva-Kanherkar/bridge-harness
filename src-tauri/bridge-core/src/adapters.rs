@@ -83,6 +83,16 @@ pub trait AdapterRuntime: Send {
     }
     fn interrupt(&self) -> Result<(), BridgeError>;
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError>;
+    /// Resolve a permission with the exact provider option advertised on the
+    /// request. Providers without option ids use the decision vocabulary.
+    fn respond_with_option(
+        &self,
+        request_id: Value,
+        decision: &str,
+        _option_id: Option<&str>,
+    ) -> Result<(), BridgeError> {
+        self.respond(request_id, decision)
+    }
     /// Answer a pending question this provider raised on its own channel —
     /// distinct from `respond`, which grants or denies a permission decision.
     /// `answers` is provider-shaped (OpenCode expects one array of chosen

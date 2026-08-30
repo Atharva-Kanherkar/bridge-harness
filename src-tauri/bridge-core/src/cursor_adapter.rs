@@ -821,6 +821,15 @@ impl AdapterRuntime for CursorRuntime {
     /// option covers is told nothing rather than told the wrong thing — the
     /// approval stays outstanding and the error names the decision.
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError> {
+        self.respond_with_option(request_id, decision, None)
+    }
+
+    fn respond_with_option(
+        &self,
+        request_id: Value,
+        decision: &str,
+        exact_option_id: Option<&str>,
+    ) -> Result<(), BridgeError> {
         let request_id = request_id.as_u64().ok_or_else(|| {
             BridgeError::Invalid(format!("Cursor approval id {request_id} is not a number"))
         })?;
@@ -833,11 +842,23 @@ impl AdapterRuntime for CursorRuntime {
             .ok_or_else(|| {
                 BridgeError::Invalid("This Cursor approval is no longer outstanding".into())
             })?;
-        let option_id = option_for_decision(decision, &options).ok_or_else(|| {
-            BridgeError::Invalid(format!(
-                "Cursor did not offer an option for the decision {decision:?}"
-            ))
-        })?;
+        let option_id = if let Some(exact) = exact_option_id {
+            let offered = options.iter().find(|option| option.id == exact).ok_or_else(|| {
+                BridgeError::Invalid(format!("Cursor did not offer option {exact:?}"))
+            })?;
+            let compatible = option_for_decision(decision, std::slice::from_ref(offered));
+            compatible.ok_or_else(|| {
+                BridgeError::Invalid(format!(
+                    "Cursor option {exact:?} does not represent decision {decision:?}"
+                ))
+            })?
+        } else {
+            option_for_decision(decision, &options).ok_or_else(|| {
+                BridgeError::Invalid(format!(
+                    "Cursor did not offer an option for the decision {decision:?}"
+                ))
+            })?
+        };
         self.session
             .answer_approval(request_id, option_id)
             .map_err(|error| BridgeError::Invalid(error.to_string()))

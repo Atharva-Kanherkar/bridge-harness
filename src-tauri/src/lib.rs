@@ -1526,9 +1526,27 @@ async fn resolve_approval(
     session_id: String,
     event_id: i64,
     decision: String,
+    option_id: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
-) -> Result<(), BridgeError> {
-    api::resolve_approval(state.inner(), &session_id, event_id, &decision)
+) -> Result<bridge_protocol::messages::InteractionResolutionResult, BridgeError> {
+    api::resolve_approval(
+        state.inner(),
+        &session_id,
+        event_id,
+        &decision,
+        option_id.as_deref(),
+    )
+}
+
+#[tauri::command]
+async fn resolve_question(
+    session_id: String,
+    event_id: i64,
+    action: String,
+    answers: std::collections::BTreeMap<String, Vec<String>>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::InteractionResolutionResult, BridgeError> {
+    api::resolve_question(state.inner(), &session_id, event_id, &action, answers)
 }
 
 #[tauri::command]
@@ -1960,6 +1978,7 @@ pub fn run() {
             retry_worker_task,
             refresh_account_usage,
             resolve_approval,
+            resolve_question,
             start_provider_login,
             stop_session,
             refresh_workspace,

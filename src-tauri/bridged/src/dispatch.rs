@@ -324,6 +324,17 @@ pub fn dispatch(
                 &p.session_id,
                 p.event_id,
                 &unit_variant_wire_value(&p.decision),
+                p.option_id.as_deref(),
+            ))
+        }
+        MethodName::ResolveQuestion => {
+            let p: wire::ResolveQuestionParams = decode(method, params)?;
+            reply(api::resolve_question(
+                core,
+                &p.session_id,
+                p.event_id,
+                &unit_variant_wire_value(&p.action),
+                p.answers,
             ))
         }
 

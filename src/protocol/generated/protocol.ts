@@ -70,6 +70,7 @@ export type BridgeMethod =
   | "memory/get_consolidation_settings"
   | "memory/update_consolidation_settings"
   | "approvals/resolve_approval"
+  | "approvals/resolve_question"
   | "auth/start_provider_login"
   | "terminal/open_terminal"
   | "terminal/write_terminal"
@@ -225,6 +226,7 @@ export const BRIDGE_METHODS = [
   { method: "memory/get_consolidation_settings", domain: "memory", command: "get_consolidation_settings" },
   { method: "memory/update_consolidation_settings", domain: "memory", command: "update_consolidation_settings" },
   { method: "approvals/resolve_approval", domain: "approvals", command: "resolve_approval" },
+  { method: "approvals/resolve_question", domain: "approvals", command: "resolve_question" },
   { method: "auth/start_provider_login", domain: "auth", command: "start_provider_login" },
   { method: "terminal/open_terminal", domain: "terminal", command: "open_terminal" },
   { method: "terminal/write_terminal", domain: "terminal", command: "write_terminal" },
@@ -440,6 +442,7 @@ export interface BridgeMethodParams {
   "memory/get_consolidation_settings": undefined;
   "memory/update_consolidation_settings": UpdateConsolidationSettingsParams;
   "approvals/resolve_approval": ResolveApprovalParams;
+  "approvals/resolve_question": ResolveQuestionParams;
   "auth/start_provider_login": StartProviderLoginParams;
   "terminal/open_terminal": OpenTerminalParams;
   "terminal/write_terminal": WriteTerminalParams;
@@ -596,7 +599,8 @@ export interface BridgeMethodResults {
   "memory/list_memory_records_as_of": ListMemoryRecordsResult;
   "memory/get_consolidation_settings": MemoryConsolidationSettings;
   "memory/update_consolidation_settings": MemoryConsolidationSettings;
-  "approvals/resolve_approval": UnitResult;
+  "approvals/resolve_approval": InteractionResolutionResult;
+  "approvals/resolve_question": InteractionResolutionResult;
   "auth/start_provider_login": StartProviderLoginResult;
   "terminal/open_terminal": UnitResult;
   "terminal/write_terminal": UnitResult;
@@ -925,6 +929,8 @@ export interface HealthWarning {
 
 export type InputDisposition = "startedNewTurn" | "steeredActiveTurn" | "queuedForPhaseBoundary";
 
+export type InteractionResolutionDisposition = "resolved" | "alreadyResolved";
+
 export interface IssueDetail {
   body: string;
   comments: GithubComment[];
@@ -1209,6 +1215,8 @@ export interface PullRequestSummary {
   title: string;
   url: string;
 }
+
+export type QuestionAction = "answer" | "decline" | "cancel";
 
 export interface QueuedWorkerRequest {
   actualModel: string;
@@ -2242,6 +2250,23 @@ export interface UpdateConsolidationSettingsParams {
 
 export interface ResolveApprovalParams {
   decision: ApprovalDecision;
+  eventId: number;
+  optionId?: string | null;
+  sessionId: string;
+}
+
+export interface InteractionResolutionResult {
+  decision: string;
+  disposition: InteractionResolutionDisposition;
+  interactionKind: string;
+  reason?: string | null;
+  resolvedBy: string;
+  status: string;
+}
+
+export interface ResolveQuestionParams {
+  action: QuestionAction;
+  answers?: Record<string, string[]>;
   eventId: number;
   sessionId: string;
 }

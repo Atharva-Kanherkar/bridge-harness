@@ -1,11 +1,22 @@
 use serde_json::{json, Value};
 use std::collections::HashMap;
 
-/// The `requestMethod` marker for an OpenCode `question.asked` request
-/// normalized to `approval.requested`. It deliberately does not end with
-/// `requestApproval`, so `live_turn.rs`'s bypass-policy gate refuses to
-/// auto-grant it: a question needs an answer, not a decision.
+/// The `requestMethod` marker for an OpenCode `question.asked` request.
 pub const OPENCODE_QUESTION_REQUEST_METHOD: &str = "opencode.question";
+
+fn permission_actions(allow_session: bool) -> Value {
+    let mut actions = vec![
+        json!({"id":"decline","decision":"decline","label":"Decline"}),
+        json!({"id":"accept","decision":"accept","label":"Allow once"}),
+    ];
+    if allow_session {
+        actions.insert(
+            1,
+            json!({"id":"acceptForSession","decision":"acceptForSession","label":"Allow for session"}),
+        );
+    }
+    Value::Array(actions)
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct NormalizedEvent {
@@ -143,7 +154,7 @@ pub fn normalize_opencode_message_with_state(
             vec![event]
         }
         "permission.v2.asked" | "permission.asked" => {
-            let mut event = with_data("approval.requested", &properties, properties.clone());
+            let mut event = with_data("permission.requested", &properties, properties.clone());
             event.item_id = properties
                 .pointer("/source/callID")
                 .or_else(|| properties.pointer("/tool/callID"))
@@ -168,22 +179,20 @@ pub fn normalize_opencode_message_with_state(
                 });
             event.status = Some("pending".into());
             event.data["requestId"] = properties.get("id").cloned().unwrap_or(Value::Null);
+            event.data["interactionKind"] = Value::String("permission".into());
+            event.data["actions"] = permission_actions(true);
             vec![event]
         }
         // OpenCode's `question` tool is a distinct channel from `permission`:
         // it is answered with a text/option payload over
-        // `POST /question/{requestID}/reply`, never with an accept/decline
-        // decision. Folding it into `approval.requested` reuses the existing
-        // generic "mark the session waiting" handling in `live_turn.rs`
-        // instead of a parallel branch; the `requestMethod` marker is what
-        // stops it from ever being treated as an approval.
+        // `POST /question/{requestID}/reply`, never with a permission decision.
         "question.asked" => {
             let questions = properties
                 .get("questions")
                 .cloned()
                 .unwrap_or_else(|| json!([]));
             let first_question = questions.get(0).cloned().unwrap_or_else(|| json!({}));
-            let mut event = with_data("approval.requested", &properties, properties.clone());
+            let mut event = with_data("question.requested", &properties, properties.clone());
             event.item_id = properties
                 .pointer("/tool/callID")
                 .and_then(Value::as_str)
@@ -207,6 +216,7 @@ pub fn normalize_opencode_message_with_state(
             event.status = Some("pending".into());
             event.data["requestId"] = properties.get("id").cloned().unwrap_or(Value::Null);
             event.data["requestMethod"] = Value::String(OPENCODE_QUESTION_REQUEST_METHOD.into());
+            event.data["interactionKind"] = Value::String("question".into());
             event.data["questions"] = questions;
             vec![event]
         }
@@ -491,7 +501,19 @@ pub fn normalize_codex_request(message: &Value) -> Option<NormalizedEvent> {
     {
         return None;
     }
-    let mut event = with_data("approval.requested", &params, params.clone());
+    let is_question = matches!(
+        method,
+        "item/tool/requestUserInput" | "mcpServer/elicitation/request"
+    );
+    let mut event = with_data(
+        if is_question {
+            "question.requested"
+        } else {
+            "permission.requested"
+        },
+        &params,
+        params.clone(),
+    );
     event.item_id = params
         .get("itemId")
         .and_then(Value::as_str)
@@ -512,6 +534,12 @@ pub fn normalize_codex_request(message: &Value) -> Option<NormalizedEvent> {
     event.status = Some("pending".into());
     event.data["requestId"] = message.get("id").cloned().unwrap_or(Value::Null);
     event.data["requestMethod"] = Value::String(method.into());
+    event.data["interactionKind"] = Value::String(
+        if is_question { "question" } else { "permission" }.into(),
+    );
+    if !is_question {
+        event.data["actions"] = permission_actions(true);
+    }
     Some(event)
 }
 
@@ -923,7 +951,7 @@ fn normalize_claude_control_request(message: &Value) -> Option<NormalizedEvent> 
     if subtype != "permission" && subtype != "can_use_tool" {
         return None;
     }
-    let mut event = with_data("approval.requested", message, request.clone());
+    let mut event = with_data("permission.requested", message, request.clone());
     event.item_id = request
         .get("tool_use_id")
         .or_else(|| request.get("request_id"))
@@ -950,6 +978,8 @@ fn normalize_claude_control_request(message: &Value) -> Option<NormalizedEvent> 
         .pointer("/tool_input/command")
         .cloned()
         .unwrap_or(Value::Null);
+    event.data["interactionKind"] = Value::String("permission".into());
+    event.data["actions"] = permission_actions(true);
     Some(event)
 }
 
@@ -992,9 +1022,15 @@ mod tests {
         assert_eq!(events[0].data["value"], 7);
     }
     #[test]
-    fn converts_server_request_to_approval() {
+    fn converts_server_request_to_permission() {
         let event=normalize_codex_request(&json!({"id":42,"method":"item/commandExecution/requestApproval","params":{"itemId":"c1","command":"cargo test","reason":"needs access"}})).unwrap();
-        assert_eq!(event.kind, "approval.requested");
+        assert_eq!(event.kind, "permission.requested");
+        assert_eq!(event.data["interactionKind"], "permission");
+        assert!(event.data["actions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|action| action["decision"] == "acceptForSession"));
         assert_eq!(event.data["requestId"], 42);
         assert_eq!(event.status.as_deref(), Some("pending"));
     }
@@ -1151,7 +1187,8 @@ mod tests {
             }),
             &mut state,
         );
-        assert_eq!(permission[0].kind, "approval.requested");
+        assert_eq!(permission[0].kind, "permission.requested");
+        assert_eq!(permission[0].data["interactionKind"], "permission");
         assert_eq!(permission[0].data["requestId"], "per_1");
 
         let busy = normalize_opencode_message_with_state(
@@ -1195,7 +1232,8 @@ mod tests {
         );
         assert_eq!(question.len(), 1);
         let event = &question[0];
-        assert_eq!(event.kind, "approval.requested");
+        assert_eq!(event.kind, "question.requested");
+        assert_eq!(event.data["interactionKind"], "question");
         assert_eq!(event.item_id.as_deref(), Some("call_1"));
         assert_eq!(event.title.as_deref(), Some("Stale workspace"));
         assert_eq!(
