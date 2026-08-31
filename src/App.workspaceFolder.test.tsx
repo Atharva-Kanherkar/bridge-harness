@@ -4,9 +4,22 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 import { bridgeApi } from "./api";
+import type { Workspace } from "./types";
 
 let container: HTMLDivElement;
 let root: Root;
+
+const setTextareaValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+
+async function typeAndSubmit(composer: HTMLTextAreaElement, text: string) {
+  await act(async () => {
+    setTextareaValue.call(composer, text);
+    composer.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await act(async () => {
+    composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+  });
+}
 
 async function settle() {
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
@@ -73,35 +86,65 @@ describe("new project folder flow (#351)", () => {
 });
 
 describe("welcome composer resolves a pasted repo directly (#288)", () => {
-  const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
-
-  it("clones a bare repo URL instead of sending it as a chat message", async () => {
+  it("clones a bare repo URL, clears the composer, and starts the next message in that workspace", async () => {
     const clone = vi.spyOn(bridgeApi, "cloneWorkspaceRepo");
+    const createSession = vi.spyOn(bridgeApi, "createWorkspaceSession");
     const composer = container.querySelector<HTMLTextAreaElement>("textarea")!;
-    await act(async () => {
-      setValue.call(composer, "https://github.com/rimo/bridge-harness");
-      composer.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await act(async () => {
-      composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
-    });
+
+    await typeAndSubmit(composer, "https://github.com/rimo/bridge-harness");
     await settle();
 
     expect(clone).toHaveBeenCalledWith("https://github.com/rimo/bridge-harness");
+    // No session exists yet after a clone, so <Welcome> stays mounted — the
+    // resolved URL must not linger in the box (#413 review finding 1).
+    expect(composer.value).toBe("");
+
+    const clonedState = await clone.mock.results[0]!.value;
+    const cloned = (clonedState.workspaces as Workspace[]).find(item => item.title === "bridge-harness");
+    expect(cloned).toBeDefined();
+
+    await typeAndSubmit(composer, "what does this repo do?");
+    await settle();
+
+    expect(createSession).toHaveBeenCalledWith(cloned!.id, false);
   });
 
   it("leaves an ordinary message alone", async () => {
     const clone = vi.spyOn(bridgeApi, "cloneWorkspaceRepo");
     const composer = container.querySelector<HTMLTextAreaElement>("textarea")!;
-    await act(async () => {
-      setValue.call(composer, "what does this project do?");
-      composer.dispatchEvent(new Event("input", { bubbles: true }));
-    });
-    await act(async () => {
-      composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
-    });
+    await typeAndSubmit(composer, "what does this project do?");
     await settle();
 
     expect(clone).not.toHaveBeenCalled();
+  });
+});
+
+describe("welcome composer works with no model adapter installed (#413 review finding 2)", () => {
+  it("still resolves a pasted repo URL when every adapter is unavailable", async () => {
+    const base = await bridgeApi.health();
+    vi.spyOn(bridgeApi, "health").mockResolvedValue({
+      ...base,
+      adapters: base.adapters.map(adapter => ({ ...adapter, available: false, authState: "signed_out" as const })),
+    });
+    const clone = vi.spyOn(bridgeApi, "cloneWorkspaceRepo");
+
+    const bareContainer = document.createElement("div");
+    document.body.append(bareContainer);
+    const bareRoot = createRoot(bareContainer);
+    await act(async () => bareRoot.render(<App />));
+    await settle();
+
+    // No adapters means no chat is possible, but opening a project needs none —
+    // the composer must stay typable, unlike before this fix.
+    const composer = bareContainer.querySelector<HTMLTextAreaElement>("textarea")!;
+    expect(composer.disabled).toBe(false);
+
+    await typeAndSubmit(composer, "https://github.com/rimo/bridge-harness");
+    await settle();
+
+    expect(clone).toHaveBeenCalledWith("https://github.com/rimo/bridge-harness");
+
+    act(() => bareRoot.unmount());
+    bareContainer.remove();
   });
 });

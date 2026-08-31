@@ -27,9 +27,10 @@ describe("workspaceForFolder", () => {
 });
 
 describe("repoCloneTarget", () => {
-  it("accepts a bare git URL as-is", () => {
+  it("accepts every GitHub URL shape the backend clone validator accepts", () => {
     expect(repoCloneTarget("https://github.com/rimo/bridge-harness")).toBe("https://github.com/rimo/bridge-harness");
     expect(repoCloneTarget("  git@github.com:rimo/bridge-harness.git  ")).toBe("git@github.com:rimo/bridge-harness.git");
+    expect(repoCloneTarget("ssh://git@github.com/rimo/bridge-harness.git")).toBe("ssh://git@github.com/rimo/bridge-harness.git");
   });
 
   it("expands an owner/repo shorthand into a GitHub URL", () => {
@@ -38,6 +39,10 @@ describe("repoCloneTarget", () => {
 
   it("ignores shorthand that looks like a pasted file path", () => {
     expect(repoCloneTarget("src/App.tsx")).toBeUndefined();
+  });
+
+  it("ignores a non-GitHub host, which the backend clone validator would reject anyway", () => {
+    expect(repoCloneTarget("https://gitlab.com/rimo/bridge-harness")).toBeUndefined();
   });
 
   it("ignores normal chat messages, even ones mentioning a URL", () => {
