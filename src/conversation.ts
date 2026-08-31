@@ -100,7 +100,7 @@ export function projectSessionConversation(entries: SessionEntry[], activeLeafId
       interactionsBySequence.set(`${interactionKind}:${entry.sequence}`, item);
     }
   }
-  return items;
+  return items.filter(item => item.type !== "message" || !isInternalCompactionEnvelope(item.text));
 }
 
 function projectSessionEntry(entry: SessionEntry): ConversationItem {
@@ -292,9 +292,41 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
   }
   return [...items.values()]
     .map(item => item.type === "message" ? { ...item, text: stripWorkerResultBlocks(item.text) } : item)
+    .filter(item => item.type !== "message" || !isInternalCompactionEnvelope(item.text))
     .filter(item => item.type !== "reasoning" || item.text.trim().length > 0)
     .filter(item => item.type !== "message" || item.text.trim().length > 0)
     .sort((a,b)=>a.sequence-b.sequence);
+}
+
+/** Defense in depth for old history and boundary races. The backend consumes
+ * maintenance replies before persistence, but an assistant message carrying
+ * Bridge's complete checkpoint protocol signature can never be conversation
+ * content even if it came from an older build or a late provider frame.
+ * Ordinary JSON stays visible because all typed bookkeeping fields are
+ * required. */
+export function isInternalCompactionEnvelope(text: string): boolean {
+  let candidate = text.trim();
+  if (candidate.startsWith("```")) {
+    const firstLine = candidate.indexOf("\n");
+    const closing = candidate.lastIndexOf("```");
+    if (firstLine < 0 || closing <= firstLine) return false;
+    candidate = candidate.slice(firstLine + 1, closing).trim();
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(candidate);
+  } catch {
+    return false;
+  }
+  const value = objectValue(parsed);
+  return value.schemaVersion === 1
+    && typeof value.summary === "string"
+    && Array.isArray(value.decisions)
+    && Array.isArray(value.filesTouched)
+    && typeof value.sourceAgent === "string"
+    && typeof value.firstRetainedEntryId === "string"
+    && typeof value.tokensBefore === "number"
+    && typeof value.reason === "string";
 }
 
 /**

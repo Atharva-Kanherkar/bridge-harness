@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attachmentUris, compactionReasonLabel, delegationChildSessionId, undeliveredPending, delegationFacet, foldWorkerDelegations, projectSessionConversation, reduceConversation, selectActiveBranch, toolCallDisplay, type ConversationItem } from "./conversation";
+import { attachmentUris, compactionReasonLabel, delegationChildSessionId, undeliveredPending, delegationFacet, foldWorkerDelegations, isInternalCompactionEnvelope, projectSessionConversation, reduceConversation, selectActiveBranch, toolCallDisplay, type ConversationItem } from "./conversation";
 import type { AgentEvent, SessionEntry } from "./types";
 
 const event = (id:number,kind:string,overrides:Partial<AgentEvent>={}):AgentEvent => ({ id,sessionId:"s",sequence:id,protocolVersion:1,kind,itemId:null,role:null,status:null,title:null,text:null,data:{},providerMeta:{},createdAt:"now",...overrides });
@@ -379,6 +379,35 @@ describe("toolCallDisplay", () => {
     );
     expect(failed.status).toBe("failed");
     expect(failed.text).toBe("checkpoint metadata does not match its controller request");
+  });
+
+  it("suppresses internal checkpoint envelopes from live and durable conversation", () => {
+    const payload = JSON.stringify({
+      schemaVersion: 1,
+      summary: "Internal summary",
+      decisions: [],
+      filesTouched: [],
+      sourceAgent: "session-1",
+      firstRetainedEntryId: "retained-1",
+      tokensBefore: 4200,
+      reason: "before_downgrade",
+    });
+    expect(isInternalCompactionEnvelope(payload)).toBe(true);
+    expect(isInternalCompactionEnvelope(`\`\`\`json\n${payload}\n\`\`\``)).toBe(true);
+    expect(reduceConversation([
+      event(1, "message.completed", { itemId: "internal", role: "assistant", text: payload }),
+      event(2, "message.completed", { itemId: "safe", role: "assistant", text: '{"answer":42}' }),
+    ]).map(item => item.text)).toEqual(['{"answer":42}']);
+
+    const durable = projectSessionConversation([
+      entry("e1", null, "assistant.message", { role: "assistant", text: `\`\`\`json\n${payload}\n\`\`\`` }, 1),
+      entry("e2", "e1", "assistant.message", { role: "assistant", text: '{"answer":42}' }, 2),
+    ], "e2");
+    expect(durable.map(item => item.text)).toEqual(['{"answer":42}']);
+  });
+
+  it("does not hide ordinary JSON answers that lack the compaction signature", () => {
+    expect(isInternalCompactionEnvelope('{"schemaVersion":1,"summary":"public answer"}')).toBe(false);
   });
 
   it("does not mistake a title echoed as the body for output", () => {
