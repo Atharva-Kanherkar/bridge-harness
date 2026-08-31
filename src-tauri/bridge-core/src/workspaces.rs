@@ -148,11 +148,12 @@ impl BridgeCore {
     /// submission or streaming writes.
     pub fn workspace_path(&self, workspace_id: &str) -> Result<String, BridgeError> {
         let db = self.db.lock().unwrap();
-        Ok(db.query_row(
+        let path: Option<String> = db.query_row(
             "SELECT path FROM workspaces WHERE id=?1",
             params![workspace_id],
             |r| r.get(0),
-        )?)
+        )?;
+        path.ok_or_else(|| BridgeError::Invalid("Connect a folder to this project first".into()))
     }
 
     /// Record the result of a Git status scan produced by [`git::stats`].
@@ -514,6 +515,24 @@ mod tests {
             core.workspace_path("missing"),
             Err(BridgeError::Db(_))
         ));
+    }
+
+    #[test]
+    fn workspace_path_distinguishes_folderless_and_connected_workspaces() {
+        let (scratch, core) = fixture();
+        let snapshot = core.create_workspace("Task").unwrap();
+        let workspace_id = &snapshot.workspaces[0].id;
+
+        let error = core.workspace_path(workspace_id).unwrap_err();
+        assert!(matches!(error, BridgeError::Invalid(_)));
+        assert_eq!(error.to_string(), "Connect a folder to this project first");
+
+        core.connect_workspace_folder(workspace_id, scratch.path().to_str().unwrap())
+            .unwrap();
+        assert_eq!(
+            core.workspace_path(workspace_id).unwrap(),
+            scratch.path().to_string_lossy()
+        );
     }
 
     #[test]
