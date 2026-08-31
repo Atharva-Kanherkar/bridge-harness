@@ -44,35 +44,6 @@ Always run `bun run build` and `bun run test` before opening or merging a PR; bo
 - **Tests:** colocated `*.test.ts(x)` run under Vitest. Add coverage for logic in `utils`, `conversation`, `observability`, and `usage`.
 - **Commits:** Conventional Commits (`feat:`, `fix:`, `refactor:`, `chore:`). Describe the change; don't cite issue/PR numbers in code or messages.
 
-## Memory Core surface — design primitives (Geist-derived)
+## Memory surface
 
-The Memory Core surface (the full-screen memory graph UI) is a **dark-only surface** with its own token set. It does not inherit the app chrome. Every value below comes from a real system — [Geist](https://vercel.com/geist/introduction) scales, Geist materials, and the vgpu.sh application recipe (a geistdocs site). **Never invent hex values for this surface**; if a color is needed, it must be one of these tokens, added to the `@theme` block in `src/index.css` and used via Tailwind utilities.
-
-**Scale semantics (Geist):** every color scale has steps 100–1000 with fixed jobs — 100–300 component backgrounds (default/hover/active), 400–600 borders (default/hover/active), 700–800 high-contrast backgrounds, 900–1000 text and icons (secondary/primary).
-
-**Neutral foundation (Geist dark values):**
-
-| token | value | job |
-|---|---|---|
-| `background-100` | `#000000` | page background |
-| `gray-100/200/300` | `#1a1a1a` / `#1f1f1f` / `#292929` | card bg default/hover/active |
-| `gray-400/500/600` | `#2e2e2e` / `#454545` / `#878787` | border default/hover/active |
-| `gray-900` | `#a0a0a0` | secondary text (`on-background-weak`) |
-| `gray-1000` | `#ededed` | primary text (`on-background-strong`) |
-
-**Accents — Geist semantic step-900 (dark) only.** These are exactly the vgpu.sh "neon" colors; they are Geist tokens, not custom hexes:
-
-| role | token | value |
-|---|---|---|
-| life / recall / positive | `green-900` | `#00ca52` |
-| proposed / speculative | `purple-900` | `#c472fb` |
-| conflict / destructive | `pink-900` | `#ff518d` |
-| optional info accent | `blue-900` / `teal-900` | `#50a8ff` / `#00c9b5` |
-
-Accents color data and status only — never chrome, never body text. Identity is never color-alone: pair every accent with a shape, ring, dash pattern, icon, or label.
-
-**Hero backdrop (vgpu recipe):** `radial-gradient(#2b1740 0%, #11121d 40%, #000 72%)`. These two hexes (`#2b1740`, `#11121d`) are the only non-Geist values on the surface; they exist solely inside this gradient token.
-
-**Materials (Geist radii):** 6px for base/small surfaces and tooltips; 12px for cards, menus, modals; 16px for fullscreen. No other radii.
-
-**Type:** Geist Variable for text, Geist Mono Variable for ids/metadata/values — both already wired via `@fontsource-variable/*`. Naming follows the Once UI role vocabulary where a semantic name is needed (`on-background-weak/strong`, `neutral-alpha-weak` for hairlines).
+Memory has exactly **one** surface: the Memory dialog (`src/components/MemoryDialog.tsx`), rendered in the app's normal Graphite & Paper chrome with the same tokens as every other dialog. Do not build a second memory UI, a separate dark-only memory surface, or a parallel token family for it — that was tried (the "Memory Core" constellation) and removed. Analytics (recall stats, packet budget, consolidation log) live inside the dialog's Activity tab, achromatic like the rest of the chrome.

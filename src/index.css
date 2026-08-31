@@ -68,33 +68,6 @@
     /* Nested chrome shares a corner center with the window: inner = outer − inset. */
     --radius-window: var(--window-radius);
     --radius-window-control: calc(var(--window-radius) - var(--window-control-inset));
-
-    /* ── Memory Core surface — Geist-derived (AGENTS.md, issue #416) ──────────
-       A dark-only full-screen surface with its own token set; it does NOT
-       inherit the Graphite & Paper chrome. Every value is a real Geist token —
-       dark neutrals for the ladder, semantic step-900 for the three accents —
-       registered here so Tailwind emits `bg-mc-*`, `text-mc-*`, `fill-mc-*`,
-       `stroke-mc-*`, `ring-mc-*`, `border-mc-*` utilities. No invented hexes:
-       the only non-Geist values on the surface are the two gradient stops in
-       `.mc-hero` below. */
-    --color-mc-bg: #000000;              /* background-100 — page */
-    --color-mc-surface: #1a1a1a;         /* gray-100 — card default */
-    --color-mc-surface-hover: #1f1f1f;   /* gray-200 — card hover */
-    --color-mc-surface-active: #292929;  /* gray-300 — card active */
-    --color-mc-border: #2e2e2e;          /* gray-400 — border default */
-    --color-mc-border-hover: #454545;    /* gray-500 — border hover */
-    --color-mc-border-active: #878787;   /* gray-600 — border active */
-    --color-mc-text-weak: #a0a0a0;       /* gray-900 — on-background-weak */
-    --color-mc-text: #ededed;            /* gray-1000 — on-background-strong */
-    --color-mc-life: #00ca52;            /* green-900 — life / recall / positive */
-    --color-mc-proposed: #c472fb;        /* purple-900 — proposed / speculative */
-    --color-mc-conflict: #ff518d;        /* pink-900 — conflict / destructive */
-    --color-mc-info: #50a8ff;            /* blue-900 — optional info accent */
-    --color-mc-info-2: #00c9b5;          /* teal-900 — optional info accent */
-    /* Geist radii — 6 base/tooltip, 12 cards/menus, 16 fullscreen. No others. */
-    --radius-mc-sm: 6px;
-    --radius-mc: 12px;
-    --radius-mc-lg: 16px;
 }
 
 /* ── Light · paper ────────────────────────────────────────────────────────── */
@@ -383,24 +356,6 @@ html[data-native-fullscreen] .u-traffic-inset {
 
   .u-hairline-t {
     border-top: 1px solid var(--color-border);
-  }
-
-  /* Memory Core hero backdrop — the vgpu.sh application recipe. These two
-     stops (`#2b1740`, `#11121d`) are the only non-Geist hexes on the surface;
-     they exist solely inside this gradient, never as standalone tokens. */
-  .mc-hero {
-    background:
-      radial-gradient(120% 120% at 50% 0%, #2b1740 0%, #11121d 40%, #000000 72%);
-  }
-  /* Faint circuit grid over the void, drawn from the border token so it never
-     introduces a new value. Pairs with `.mc-hero` under the constellation. */
-  .mc-grid {
-    background-image:
-      linear-gradient(to right, color-mix(in srgb, var(--color-mc-border) 55%, transparent) 1px, transparent 1px),
-      linear-gradient(to bottom, color-mix(in srgb, var(--color-mc-border) 55%, transparent) 1px, transparent 1px);
-    background-size: 44px 44px;
-    -webkit-mask-image: radial-gradient(120% 100% at 50% 0%, #000 30%, transparent 78%);
-    mask-image: radial-gradient(120% 100% at 50% 0%, #000 30%, transparent 78%);
   }
 
   /* Apple squircles where the engine supports them. Unsupported browsers keep

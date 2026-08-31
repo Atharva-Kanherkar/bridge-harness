@@ -49,6 +49,14 @@ const setBody = (value: string) => {
     textarea().dispatchEvent(new Event("input", { bubbles: true }));
   });
 };
+const setSearch = (value: string) => {
+  const input = document.querySelector<HTMLInputElement>('input[aria-label="Search memory"]')!;
+  const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+  act(() => {
+    setter.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+};
 
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -122,6 +130,20 @@ beforeEach(() => {
     memoryHandler = handler;
     return () => { memoryHandler = undefined; };
   });
+  const noDaily = Array<number>(14).fill(0);
+  vi.spyOn(bridgeApi, "memoryRecallStats").mockResolvedValue({
+    perRecord: [
+      { id: "r-tabs", recalls: 3, lastRecalledDay: 12, inPacketRatio: 0.75, daily: [...noDaily] },
+      { id: "r-tz", recalls: 0, lastRecalledDay: -1, inPacketRatio: 0, daily: [...noDaily] },
+    ],
+    injectionsPerDay: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 2, 0, 4],
+    budgetCharsUsed: 1234,
+    budgetCharsMax: 4000,
+  });
+  vi.spyOn(bridgeApi, "memoryConsolidationLog").mockResolvedValue([
+    { op: "merge", detail: "2 worktree notes folded into one", day: 12 },
+    { op: "retire", detail: "r-old tombstoned", day: 2 },
+  ]);
 });
 
 afterEach(() => {
@@ -137,7 +159,7 @@ describe("MemoryDialog", () => {
     expect(container.textContent).toContain("Prefers tabs over spaces");
     expect(container.textContent).toContain("Works in IST");
     expect(container.textContent).toContain("not the helper picker");
-    expect(container.textContent).toContain("Not this chat's history");
+    expect(container.textContent).toContain("not this chat's history");
     expect(container.textContent).toContain("account:local");
   });
 
@@ -157,6 +179,42 @@ describe("MemoryDialog", () => {
     expect(container.textContent).not.toContain("Prefers tabs over spaces");
     click(buttonByText("fact"));
     expect(container.textContent).toContain("Prefers tabs over spaces");
+  });
+
+  it("search filters pins client-side and clearing restores the list", async () => {
+    mount();
+    await flush();
+    setSearch("ist");
+    expect(container.textContent).toContain("Works in IST");
+    expect(container.textContent).not.toContain("Prefers tabs over spaces");
+    setSearch("zzz-no-match");
+    expect(container.textContent).toContain("No pins match your search.");
+    setSearch("");
+    expect(container.textContent).toContain("Prefers tabs over spaces");
+  });
+
+  it("shows a recall meta line only for pins that were recalled", async () => {
+    mount();
+    await flush();
+    const rows = [...document.querySelectorAll("li")];
+    const recalled = rows.find(row => row.textContent?.includes("Prefers tabs over spaces"))!;
+    expect(recalled.textContent).toContain("recalled 3× · last 1d ago");
+    const quiet = rows.find(row => row.textContent?.includes("Works in IST"))!;
+    expect(quiet.textContent).not.toContain("recalled");
+  });
+
+  it("the Activity tab shows recall volume, the packet budget, and the consolidation log", async () => {
+    mount();
+    await flush();
+    click(buttonByText("Activity"));
+    expect(container.textContent).toContain("peak 4 injections / day");
+    expect(container.textContent).toContain("1234 / 4000 chars");
+    expect(container.textContent).toContain("Consolidation log");
+    expect(container.textContent).toContain("2 worktree notes folded into one");
+    expect(container.textContent).toContain("merge");
+    expect(container.textContent).toContain("11d ago");
+    const meter = document.querySelector('[role="meter"][aria-label="Packet budget"]')!;
+    expect(meter.getAttribute("aria-valuenow")).toBe("31");
   });
 
   it("saving goes through the api and the list refreshes on the hint", async () => {

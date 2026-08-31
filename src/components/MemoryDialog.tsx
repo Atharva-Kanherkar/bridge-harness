@@ -1,8 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, Pencil, Pin, X } from "lucide-react";
+import { Check, Pencil, Pin, Search, X } from "lucide-react";
 import { bridgeApi } from "../api";
+import { searchRecords } from "../memoryStats";
 import { harnessLabel } from "../utils";
-import type { AdapterDescriptor, MemoryCapabilities, MemoryExtractionSettings, MemoryRecord } from "../types";
+import type {
+  AdapterDescriptor,
+  MemoryCapabilities,
+  MemoryConsolidationEntry,
+  MemoryExtractionSettings,
+  MemoryRecallStats,
+  MemoryRecord,
+} from "../types";
 
 const KINDS = ["preference", "fact", "decision", "constraint"] as const;
 /** Mirrors the contract cap in bridge-protocol's memory messages. */
@@ -28,9 +36,12 @@ export function rememberAction(text: string): "save" | "open-dialog" {
 }
 
 /**
- * Account memory on this machine (`account:local`). Deliberately not this
- * chat's history and not the helper picker — the header says so, because the
- * one-dialog-three-products confusion is the bug this surface exists to fix.
+ * Account memory on this machine (`account:local`) — the one and only memory
+ * surface. Deliberately not this chat's history and not the helper picker —
+ * the header says so, because the one-dialog-three-products confusion is the
+ * bug this surface exists to fix. The Activity tab carries the read-only
+ * recall analytics (injections, packet budget, consolidation log) that used to
+ * live on a separate full-screen surface; one product, one UI.
  */
 export function MemoryDialog({
   open,
@@ -46,13 +57,16 @@ export function MemoryDialog({
   onClose: () => void;
   onError: (message: string) => void;
 }) {
-  const [tab, setTab] = useState<"pins" | "queue">("pins");
+  const [tab, setTab] = useState<"pins" | "queue" | "activity">("pins");
   const [records, setRecords] = useState<MemoryRecord[]>();
   const [proposed, setProposed] = useState<MemoryRecord[]>();
   const [settings, setSettings] = useState<MemoryExtractionSettings>();
   const [capabilities, setCapabilities] = useState<MemoryCapabilities>();
   const [injection, setInjection] = useState<boolean>();
+  const [stats, setStats] = useState<MemoryRecallStats>();
+  const [log, setLog] = useState<MemoryConsolidationEntry[]>();
   const [filter, setFilter] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
   const [body, setBody] = useState("");
   const [kind, setKind] = useState<string>("preference");
   // Edit is supersession: the row's body moves here, and saving writes a
@@ -76,7 +90,10 @@ export function MemoryDialog({
     setSettings(undefined);
     setCapabilities(undefined);
     setInjection(undefined);
+    setStats(undefined);
+    setLog(undefined);
     setFilter(null);
+    setQuery("");
     setBody("");
     setKind("preference");
     setEditingId(null);
@@ -99,12 +116,16 @@ export function MemoryDialog({
         bridgeApi.listMemoryRecords("account:local", "proposed"),
         bridgeApi.getExtractionSettings(),
         bridgeApi.getMemoryInjection(),
-      ]).then(([activeList, proposedList, extraction, injectionSettings]) => {
+        bridgeApi.memoryRecallStats("account:local"),
+        bridgeApi.memoryConsolidationLog("account:local"),
+      ]).then(([activeList, proposedList, extraction, injectionSettings, recallStats, consolidation]) => {
         if (!active || generation !== readGeneration.current) return;
         setRecords(activeList.records);
         setProposed(proposedList.records);
         setSettings(extraction);
         setInjection(injectionSettings.enabled);
+        setStats(recallStats);
+        setLog(consolidation);
         setProfileHarness(current => current || extraction.harness || "");
         setProfileModel(current => current || extraction.model || "");
       }).catch(error => {
@@ -137,8 +158,12 @@ export function MemoryDialog({
   const trimmed = body.trim();
   const bodyChars = bodyLength(body);
   const overLimit = bodyChars > MAX_MEMORY_BODY_CHARS;
-  const visible = (records ?? []).filter(record => !filter || record.kind === filter);
+  const visible = searchRecords(records ?? [], query).filter(record => !filter || record.kind === filter);
   const queueCount = proposed?.length ?? 0;
+  const statById = new Map((stats?.perRecord ?? []).map(stat => [stat.id, stat]));
+  const injections = stats?.injectionsPerDay ?? [];
+  const peakInjections = injections.length ? Math.max(...injections) : 0;
+  const budgetPct = stats && stats.budgetCharsMax > 0 ? Math.round((stats.budgetCharsUsed / stats.budgetCharsMax) * 100) : 0;
 
   const act = async (work: () => Promise<unknown>) => {
     setBusy(true);
@@ -183,8 +208,7 @@ export function MemoryDialog({
         <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-muted text-foreground"><Pin size={18} aria-hidden="true" /></span>
         <div className="min-w-0 flex-1">
           <h2 id="memory-title" className="font-display text-base font-semibold text-foreground">Memory</h2>
-          <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">Account memory on this machine. Pins live under <span className="font-mono text-[11px]">account:local</span> and follow you across every chat here.</p>
-          <p className="mt-2 text-[12px] leading-relaxed text-muted-foreground">Not this chat's history, not the helper picker, and not a provider's <span className="font-mono text-[11px]">/memory</span> — those stay where they live.</p>
+          <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">Account memory on this machine. Pins live under <span className="font-mono text-[11px]">account:local</span> and follow you across every chat here — not this chat's history, not the helper picker, and not a provider's <span className="font-mono text-[11px]">/memory</span>.</p>
         </div>
         <button type="button" className="shrink-0 rounded-xl p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" onClick={onClose} aria-label="Close"><X size={16} aria-hidden="true" /></button>
       </header>
@@ -193,6 +217,7 @@ export function MemoryDialog({
         <button type="button" aria-pressed={tab === "queue"} className={tabClass(tab === "queue")} onClick={() => setTab("queue")}>
           Review queue{queueCount > 0 && <span className="ml-1.5 rounded-full bg-accent px-1 font-mono text-[10px] leading-4 text-muted-foreground">{queueCount}</span>}
         </button>
+        <button type="button" aria-pressed={tab === "activity"} className={tabClass(tab === "activity")} onClick={() => setTab("activity")}>Activity</button>
       </div>
       {tab === "pins" && <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
         <div className="space-y-2">
@@ -243,6 +268,17 @@ export function MemoryDialog({
           Use pins in new chats — sessions start with your pins in context, cited by id.
         </label>
         <div className="flex flex-wrap items-center gap-1.5">
+          <div className="relative mr-1.5 min-w-40 flex-1">
+            <Search size={13} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <input
+              type="text"
+              value={query}
+              onChange={event => setQuery(event.target.value)}
+              placeholder="Search memory"
+              aria-label="Search memory"
+              className={`${fieldClass} h-8 pl-8 text-[12px]`}
+            />
+          </div>
           {KINDS.map(item => (
             <button
               key={item}
@@ -263,6 +299,9 @@ export function MemoryDialog({
                   {record.provenance === "model_proposal" && <> · suggested</>}
                   {record.confidenceBps != null && <> · {Math.round(record.confidenceBps / 100)}% confident</>}
                   {record.supersedes && <> · replaced an earlier pin</>}
+                  {(statById.get(record.id)?.recalls ?? 0) > 0 && (
+                    <span className="tabular-nums"> · recalled {statById.get(record.id)!.recalls}× · last {dayAge(statById.get(record.id)!.lastRecalledDay)}</span>
+                  )}
                 </p>
               </div>
               <button
@@ -285,7 +324,7 @@ export function MemoryDialog({
           ))}
           {records !== undefined && visible.length === 0 && (
             <li className="rounded-2xl border border-dashed border-border px-3.5 py-6 text-center text-[13px] text-muted-foreground">
-              {filter ? `No ${filter} pins yet.` : "Nothing pinned yet. Save something above, or use /pin in any chat."}
+              {query.trim() ? "No pins match your search." : filter ? `No ${filter} pins yet.` : "Nothing pinned yet. Save something above, or use /pin in any chat."}
             </li>
           )}
         </ul>
@@ -359,6 +398,63 @@ export function MemoryDialog({
           )}
         </ul>
       </div>}
+      {tab === "activity" && <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-5">
+        <div className="grid grid-cols-2 gap-3">
+          <section className="u-glass-soft rounded-2xl px-3.5 py-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Recall · 14 days</p>
+            <Sparkbars values={injections} className="mt-2.5" />
+            <p className="mt-1.5 text-[11px] tabular-nums text-muted-foreground">peak {peakInjections} injections / day</p>
+          </section>
+          <section className="u-glass-soft rounded-2xl px-3.5 py-3">
+            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Packet budget</p>
+            <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-accent" role="meter" aria-label="Packet budget" aria-valuenow={budgetPct} aria-valuemin={0} aria-valuemax={100}>
+              <div className={`h-full rounded-full ${budgetPct > 90 ? "bg-destructive" : "bg-foreground/70"}`} style={{ width: `${Math.min(100, budgetPct)}%` }} />
+            </div>
+            <p className="mt-2 text-[11px] tabular-nums text-muted-foreground">
+              {stats?.budgetCharsUsed ?? 0} / {stats?.budgetCharsMax ?? 0} chars · refuses at capacity, never evicts
+            </p>
+          </section>
+        </div>
+        <section className="u-glass-soft rounded-2xl px-3.5 py-3">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Consolidation log</p>
+          <ul className="mt-2 space-y-1.5">
+            {(log ?? []).map((entry, index) => (
+              <li key={index} className="flex items-baseline gap-2 text-[12px]">
+                <span className="w-14 shrink-0 rounded-full border border-border px-1.5 text-center font-mono text-[10px] uppercase leading-4 text-muted-foreground">{entry.op}</span>
+                <span className="min-w-0 flex-1 truncate text-foreground" title={entry.detail}>{entry.detail}</span>
+                <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">{dayAge(entry.day)}</span>
+              </li>
+            ))}
+            {log !== undefined && log.length === 0 && (
+              <li className="rounded-2xl border border-dashed border-border px-3.5 py-6 text-center text-[13px] text-muted-foreground">
+                No consolidation runs yet.
+              </li>
+            )}
+          </ul>
+        </section>
+      </div>}
     </div>
   </div>;
+}
+
+/** Day buckets run 0 = 13 days ago … 13 = today. */
+function dayAge(day: number): string {
+  return day >= 13 ? "today" : `${13 - day}d ago`;
+}
+
+/** A tiny achromatic bar sparkline. `values` are non-negative counts; the
+ *  tallest bar is full height. Pure presentation, no axis. */
+function Sparkbars({ values, className }: { values: number[]; className?: string }) {
+  const max = values.length ? Math.max(1, ...values) : 1;
+  return (
+    <div className={`flex h-8 items-end gap-0.5 ${className ?? ""}`} aria-hidden="true">
+      {values.map((value, index) => (
+        <div
+          key={index}
+          className="min-h-px flex-1 rounded-sm bg-foreground/55"
+          style={{ height: `${Math.round((value / max) * 100)}%` }}
+        />
+      ))}
+    </div>
+  );
 }

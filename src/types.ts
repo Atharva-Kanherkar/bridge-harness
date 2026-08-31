@@ -167,10 +167,9 @@ export interface TerminalExit { sessionId: string; terminalId: string }
 export interface MemoryChangedPayload { scopeKey: string }
 
 // ---------------------------------------------------------------------------
-// Memory Core aggregations (issue #416). Read-only, display-only. Served today
-// by the derived mock layer in `api.ts`; the protocol-first `memory.recall_stats`
-// / `memory.co_recall_pairs` Rust+daemon methods are the tracked follow-up, and
-// these shapes are what they will return.
+// Memory aggregations. Read-only, display-only. Served today by the derived
+// mock layer in `api.ts`; the protocol-first `memory.recall_stats` Rust+daemon
+// method is the tracked follow-up, and these shapes are what it will return.
 // ---------------------------------------------------------------------------
 
 /** Per-record recall aggregation over the packet-injection audit. */
@@ -192,9 +191,6 @@ export interface MemoryRecallStats {
   budgetCharsUsed: number;
   budgetCharsMax: number;
 }
-
-/** Two records frequently injected in the same packet — a graph edge. */
-export interface MemoryCoRecallPair { a: string; b: string; weight: number }
 
 /** The closed consolidation op vocabulary from `memory_consolidation.rs`. */
 export type MemoryConsolidationOp = "merge" | "correct" | "expire" | "group" | "retire" | "keep";
