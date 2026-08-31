@@ -14,6 +14,19 @@ use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
 impl BridgeCore {
+    /// Clone a GitHub repository, then deliberately reuse the normal folder
+    /// connection path so all downstream workspace/session semantics stay identical.
+    pub fn clone_workspace_repo(&self, url: &str, destination: Option<&str>) -> Result<BridgeState, BridgeError> {
+        let name = crate::project_onboarding::validate_github_url(url)?
+            .trim_end_matches('/').rsplit(['/', ':']).next().unwrap_or("project").trim_end_matches(".git").to_string();
+        let target = destination.map(PathBuf::from).unwrap_or_else(|| self.database_path.parent().unwrap_or(Path::new(".")).join("projects").join(&name));
+        let cloned = crate::project_onboarding::clone_repo(url, &target)?;
+        let existing_ids: std::collections::HashSet<_> = self.state_snapshot()?.workspaces.into_iter().map(|workspace| workspace.id).collect();
+        let state = self.create_workspace(&name)?;
+        let workspace = state.workspaces.iter().find(|workspace| !existing_ids.contains(&workspace.id))
+            .ok_or_else(|| BridgeError::Invalid("Bridge could not register the cloned project".into()))?;
+        self.connect_workspace_folder(&workspace.id, cloned.to_str().ok_or_else(|| BridgeError::Invalid("Clone path is not valid UTF-8".into()))?)
+    }
     pub fn add_project(&self, path: &str) -> Result<BridgeState, BridgeError> {
         let clean = git::validate_repo(Path::new(path))?;
         let name = Path::new(&clean)

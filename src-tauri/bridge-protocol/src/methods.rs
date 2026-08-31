@@ -58,6 +58,9 @@ methods![
     // workspaces
     (CreateWorkspace, "workspaces", "create_workspace"),
     (ConnectWorkspaceFolder, "workspaces", "connect_workspace_folder"),
+    (CloneWorkspaceRepo, "workspaces", "clone_workspace_repo"),
+    (SearchGithubRepos, "workspaces", "search_github_repos"),
+    (LocateWorkspaceFolders, "workspaces", "locate_workspace_folders"),
     (ListWorkspaceFiles, "workspaces", "list_workspace_files"),
     (ListWorkspaceTree, "workspaces", "list_workspace_tree"),
     (ReadWorkspaceFile, "workspaces", "read_workspace_file"),

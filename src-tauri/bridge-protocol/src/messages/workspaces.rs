@@ -19,6 +19,50 @@ pub struct ConnectWorkspaceFolderParams {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CloneWorkspaceRepoParams {
+    /// GitHub HTTPS or SSH clone URL.
+    pub url: String,
+    /// Exact destination directory. When absent, Bridge uses its managed projects root.
+    pub destination: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SearchGithubReposParams {
+    pub query: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubRepoCandidate {
+    pub name_with_owner: String,
+    pub url: String,
+    pub ssh_url: String,
+    pub is_private: bool,
+    pub pushed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchGithubReposResult {
+    pub repositories: Vec<GithubRepoCandidate>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LocateWorkspaceFoldersParams {
+    pub query: String,
+    pub search_roots: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LocateWorkspaceFoldersResult {
+    pub candidates: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct ListWorkspaceFilesParams {
     pub session_id: String,

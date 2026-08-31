@@ -114,6 +114,27 @@
       "resultSchema": "bridge-state.json"
     },
     {
+      "command": "clone_workspace_repo",
+      "domain": "workspaces",
+      "method": "workspaces/clone_workspace_repo",
+      "paramsSchema": "clone-workspace-repo-params.json",
+      "resultSchema": "bridge-state.json"
+    },
+    {
+      "command": "search_github_repos",
+      "domain": "workspaces",
+      "method": "workspaces/search_github_repos",
+      "paramsSchema": "search-github-repos-params.json",
+      "resultSchema": "search-github-repos-result.json"
+    },
+    {
+      "command": "locate_workspace_folders",
+      "domain": "workspaces",
+      "method": "workspaces/locate_workspace_folders",
+      "paramsSchema": "locate-workspace-folders-params.json",
+      "resultSchema": "locate-workspace-folders-result.json"
+    },
+    {
       "command": "list_workspace_files",
       "domain": "workspaces",
       "method": "workspaces/list_workspace_files",

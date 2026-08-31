@@ -163,6 +163,9 @@ typed_methods![
     // workspaces
     (CreateWorkspace, CreateWorkspaceParams, BridgeState),
     (ConnectWorkspaceFolder, ConnectWorkspaceFolderParams, BridgeState),
+    (CloneWorkspaceRepo, CloneWorkspaceRepoParams, BridgeState),
+    (SearchGithubRepos, SearchGithubReposParams, SearchGithubReposResult),
+    (LocateWorkspaceFolders, LocateWorkspaceFoldersParams, LocateWorkspaceFoldersResult),
     (ListWorkspaceFiles, ListWorkspaceFilesParams, ListWorkspaceFilesResult),
     (ListWorkspaceTree, ListWorkspaceTreeParams, ListWorkspaceTreeResult),
     (ReadWorkspaceFile, ReadWorkspaceFileParams, ReadWorkspaceFileResult),

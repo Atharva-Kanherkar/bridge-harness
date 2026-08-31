@@ -1098,6 +1098,22 @@ async fn connect_workspace_folder(
 }
 
 #[tauri::command]
+async fn clone_workspace_repo(url: String, destination: Option<String>, state: State<'_, Arc<BridgeCore>>) -> Result<BridgeState, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Repository clone", move || api::clone_workspace_repo(&core, &url, destination.as_deref())).await
+}
+
+#[tauri::command]
+async fn search_github_repos(query: String) -> Result<bridge_protocol::messages::SearchGithubReposResult, BridgeError> {
+    blocking("GitHub repository search", move || api::search_github_repos(&query)).await
+}
+
+#[tauri::command]
+async fn locate_workspace_folders(query: String, search_roots: Vec<String>) -> Result<bridge_protocol::messages::LocateWorkspaceFoldersResult, BridgeError> {
+    blocking("Project folder search", move || api::locate_workspace_folders(&query, &search_roots)).await
+}
+
+#[tauri::command]
 async fn start_session(
     workspace_id: String,
     harness: Option<Harness>,
@@ -1980,6 +1996,9 @@ pub fn run() {
             create_aside_chat,
             create_workspace_session,
             connect_workspace_folder,
+            clone_workspace_repo,
+            search_github_repos,
+            locate_workspace_folders,
             update_chat_model,
             carry_session_handoff,
             list_slash_commands,

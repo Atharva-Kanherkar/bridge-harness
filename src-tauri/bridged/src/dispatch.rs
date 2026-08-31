@@ -93,6 +93,18 @@ pub fn dispatch(
             let p: wire::ConnectWorkspaceFolderParams = decode(method, params)?;
             reply(api::connect_workspace_folder(core, &p.workspace_id, &p.path))
         }
+        MethodName::CloneWorkspaceRepo => {
+            let p: wire::CloneWorkspaceRepoParams = decode(method, params)?;
+            reply(api::clone_workspace_repo(core, &p.url, p.destination.as_deref()))
+        }
+        MethodName::SearchGithubRepos => {
+            let p: wire::SearchGithubReposParams = decode(method, params)?;
+            reply(api::search_github_repos(&p.query))
+        }
+        MethodName::LocateWorkspaceFolders => {
+            let p: wire::LocateWorkspaceFoldersParams = decode(method, params)?;
+            reply(api::locate_workspace_folders(&p.query, &p.search_roots))
+        }
         MethodName::ListWorkspaceFiles => {
             let p: wire::ListWorkspaceFilesParams = decode(method, params)?;
             reply(api::list_workspace_files(core, &p.session_id))

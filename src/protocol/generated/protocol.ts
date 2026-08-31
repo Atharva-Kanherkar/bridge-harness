@@ -23,6 +23,9 @@ export type BridgeMethod =
   | "github/github_checkout"
   | "workspaces/create_workspace"
   | "workspaces/connect_workspace_folder"
+  | "workspaces/clone_workspace_repo"
+  | "workspaces/search_github_repos"
+  | "workspaces/locate_workspace_folders"
   | "workspaces/list_workspace_files"
   | "workspaces/list_workspace_tree"
   | "workspaces/read_workspace_file"
@@ -181,6 +184,9 @@ export const BRIDGE_METHODS = [
   { method: "github/github_checkout", domain: "github", command: "github_checkout" },
   { method: "workspaces/create_workspace", domain: "workspaces", command: "create_workspace" },
   { method: "workspaces/connect_workspace_folder", domain: "workspaces", command: "connect_workspace_folder" },
+  { method: "workspaces/clone_workspace_repo", domain: "workspaces", command: "clone_workspace_repo" },
+  { method: "workspaces/search_github_repos", domain: "workspaces", command: "search_github_repos" },
+  { method: "workspaces/locate_workspace_folders", domain: "workspaces", command: "locate_workspace_folders" },
   { method: "workspaces/list_workspace_files", domain: "workspaces", command: "list_workspace_files" },
   { method: "workspaces/list_workspace_tree", domain: "workspaces", command: "list_workspace_tree" },
   { method: "workspaces/read_workspace_file", domain: "workspaces", command: "read_workspace_file" },
@@ -399,6 +405,9 @@ export interface BridgeMethodParams {
   "github/github_checkout": GithubCheckoutParams;
   "workspaces/create_workspace": CreateWorkspaceParams;
   "workspaces/connect_workspace_folder": ConnectWorkspaceFolderParams;
+  "workspaces/clone_workspace_repo": CloneWorkspaceRepoParams;
+  "workspaces/search_github_repos": SearchGithubReposParams;
+  "workspaces/locate_workspace_folders": LocateWorkspaceFoldersParams;
   "workspaces/list_workspace_files": ListWorkspaceFilesParams;
   "workspaces/list_workspace_tree": ListWorkspaceTreeParams;
   "workspaces/read_workspace_file": ReadWorkspaceFileParams;
@@ -559,6 +568,9 @@ export interface BridgeMethodResults {
   "github/github_checkout": GithubCheckoutResult;
   "workspaces/create_workspace": BridgeState;
   "workspaces/connect_workspace_folder": BridgeState;
+  "workspaces/clone_workspace_repo": BridgeState;
+  "workspaces/search_github_repos": SearchGithubReposResult;
+  "workspaces/locate_workspace_folders": LocateWorkspaceFoldersResult;
   "workspaces/list_workspace_files": ListWorkspaceFilesResult;
   "workspaces/list_workspace_tree": ListWorkspaceTreeResult;
   "workspaces/read_workspace_file": ReadWorkspaceFileResult;
@@ -914,6 +926,14 @@ export interface GithubLabel {
   color: string;
   description: string;
   name: string;
+}
+
+export interface GithubRepoCandidate {
+  isPrivate: boolean;
+  nameWithOwner: string;
+  pushedAt?: string | null;
+  sshUrl: string;
+  url: string;
 }
 
 export interface GithubRepository {
@@ -1917,6 +1937,28 @@ export interface CreateWorkspaceParams {
 export interface ConnectWorkspaceFolderParams {
   path: string;
   workspaceId: string;
+}
+
+export interface CloneWorkspaceRepoParams {
+  destination?: string | null;
+  url: string;
+}
+
+export interface SearchGithubReposParams {
+  query: string;
+}
+
+export interface SearchGithubReposResult {
+  repositories: GithubRepoCandidate[];
+}
+
+export interface LocateWorkspaceFoldersParams {
+  query: string;
+  searchRoots: string[];
+}
+
+export interface LocateWorkspaceFoldersResult {
+  candidates: string[];
 }
 
 export interface ListWorkspaceFilesParams {
