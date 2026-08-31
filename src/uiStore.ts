@@ -1,6 +1,6 @@
 import { create } from "zustand";
 
-export type AppModal = "workspace" | "orchestrator" | "router" | "memory" | "memory-core";
+export type AppModal = "workspace" | "orchestrator" | "router" | "memory";
 
 type UiState = {
   modal: AppModal | null;

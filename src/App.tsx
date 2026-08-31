@@ -49,7 +49,6 @@ import { PatchView } from "./components/DiffView";
 import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
 import { MemoryDialog, rememberAction } from "./components/MemoryDialog";
-import { MemoryCore } from "./components/MemoryCore";
 import { MemoryUsedChip } from "./components/MemoryUsedChip";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
@@ -1930,7 +1929,6 @@ function AppContent() {
       onOpenMissionControl={() => { setView("workspace"); setParadigm("grid"); }}
       onOpenWorkBoard={openWorkBoard}
       onOpenMemory={() => openModal("memory")}
-      onOpenMemoryCore={() => openModal("memory-core")}
       onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
       collapsed={sidebarCollapsed}
@@ -2420,7 +2418,6 @@ function AppContent() {
     <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={acceptModelSetup} onClose={closeModal} onError={setError} />
     <ShortcutsSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
     <MemoryDialog open={modal === "memory"} initialBody={memoryDraft} adapters={adapters} onClose={() => { closeModal(); setMemoryDraft(null); }} onError={setError} />
-    <MemoryCore open={modal === "memory-core"} onClose={closeModal} onError={setError} />
   </div>;
 }
 

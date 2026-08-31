@@ -4,8 +4,8 @@ import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { normalizeAgentToken } from "./agentMention";
 import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
-import type { MemoryRecallStats, MemoryCoRecallPair, MemoryConsolidationEntry } from "./types";
-import { deriveCoRecall, deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryCore";
+import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
+import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult } from "./protocol/generated/protocol";
 import type { TurnImage } from "./protocol/generated/protocol";
 import type { ComposerAttachment } from "./pasteAttachments";
@@ -356,7 +356,7 @@ const demoEntries: SessionEntry[] = [
   forestEntry("entry-13b", "session-1", 15, "command.completed", { status: "completed", title: "bun test src/auth", data: { type: "commandExecution", command: "bun test src/auth", exitCode: 0, durationMs: 2400, aggregatedOutput: "bun test v1.1.34\n\n 42 pass\n 0 fail\nRan 42 tests across 6 files. [2.41s]" } }, "entry-12b"),
   forestEntry("entry-raw", "session-1", 16, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-13b")
 ];
-// Seed memory for the mock host: a spread the Memory Core surface can actually
+// Seed memory for the mock host: a spread the Memory surface can actually
 // render — pinned + accepted + proposed records, a supersession lineage, a
 // conflict group, and a tombstone. `bun run dev` and component tests read this.
 function memRecord(
@@ -387,7 +387,7 @@ const mockMemoryRecords: MemoryRecord[] = [
 ];
 
 // Deterministic packet-injection audit over the recall-eligible ids — the mock
-// stand-in for `memory_retrieval_audits`. Feeds recall stats and co-recall edges.
+// stand-in for `memory_retrieval_audits`. Feeds the recall stats.
 const RECALL_ELIGIBLE = ["mem_a1c4", "mem_a2f7", "mem_a3b0", "mem_a4d9", "mem_a5aa", "mem_c1f3"];
 function buildMockAudit(ids: string[]): PacketInjection[] {
   const audit: PacketInjection[] = [];
@@ -1413,27 +1413,11 @@ export const bridgeApi = {
     emitMemoryChanged(record.scopeKey);
     return structuredClone(record);
   },
-  // Memory Core read-only aggregations (issue #416). Display-only: they grant
-  // nothing and rank nothing. The protocol-first `memory.recall_stats` /
-  // `memory.co_recall_pairs` Rust+daemon methods are the tracked follow-up; on
-  // the desktop host they return empty until that lands, and in the mock host
-  // they fold the deterministic audit above so the surface is fully exercisable.
-  // The full node set for the constellation: active + proposed + superseded +
-  // tombstoned, so lineage arrows and the sunk/dead nodes have something to
-  // draw. The mock host returns every status; the desktop host merges the two
-  // lists the ledger exposes today (superseded/deleted arrive with the backend).
-  memoryGraphRecords: async (scopeKey: string): Promise<MemoryRecord[]> => {
-    const trimmed = scopeKey.trim();
-    if (!trimmed) throw new Error("Memory scope is required; it cannot be empty or NULL");
-    if (isTauri()) {
-      const [active, proposed] = await Promise.all([
-        call("memory/list_memory_records", { scopeKey: trimmed }) as Promise<ListMemoryRecordsResult>,
-        call("memory/list_memory_records", { scopeKey: trimmed, status: "proposed" }) as Promise<ListMemoryRecordsResult>,
-      ]);
-      return [...active.records, ...proposed.records];
-    }
-    return mockMemoryRecords.filter(record => record.scopeKey === trimmed).map(record => structuredClone(record));
-  },
+  // Memory read-only aggregations. Display-only: they grant nothing and rank
+  // nothing. The protocol-first `memory.recall_stats` Rust+daemon method is the
+  // tracked follow-up; on the desktop host these return empty until that lands,
+  // and in the mock host they fold the deterministic audit above so the surface
+  // is fully exercisable.
   memoryRecallStats: async (scopeKey: string): Promise<MemoryRecallStats> => {
     const trimmed = scopeKey.trim();
     if (!trimmed) throw new Error("Memory scope is required; it cannot be empty or NULL");
@@ -1441,11 +1425,6 @@ export const bridgeApi = {
       return { perRecord: [], injectionsPerDay: Array<number>(14).fill(0), budgetCharsUsed: 0, budgetCharsMax: PACKET_BUDGET_CHARS };
     }
     return deriveRecallStats(mockMemoryRecords.filter(record => record.scopeKey === trimmed), mockPacketAudit);
-  },
-  memoryCoRecallPairs: async (scopeKey: string): Promise<MemoryCoRecallPair[]> => {
-    if (!scopeKey.trim()) throw new Error("Memory scope is required; it cannot be empty or NULL");
-    if (isTauri()) return [];
-    return deriveCoRecall(mockPacketAudit);
   },
   memoryConsolidationLog: async (scopeKey: string): Promise<MemoryConsolidationEntry[]> => {
     if (!scopeKey.trim()) throw new Error("Memory scope is required; it cannot be empty or NULL");
