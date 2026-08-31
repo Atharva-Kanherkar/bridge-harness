@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronRight, ClipboardList, Folder, FolderGit2, FolderPlus, GitBranch, Home, LayoutGrid, Pin, Search, Settings2, SquarePen, Store, type LucideIcon } from "lucide-react";
+import { ChevronRight, ClipboardList, Folder, FolderGit2, FolderPlus, GitBranch, Home, LayoutGrid, Pin, Search, Settings2, SquarePen, Store, Waypoints, type LucideIcon } from "lucide-react";
 import { WindowNavButtons, WindowPanelButton } from "./WindowNavButtons";
 import type { Session, SessionStatus, Workspace } from "../types";
 import { chordLabel, type CommandId } from "../keymap";
@@ -257,6 +257,8 @@ export type BridgeSidebarProps = {
   onOpenWorkBoard: () => void;
   /** Account memory. Not workspace-gated: a plain chat reaches it identically. */
   onOpenMemory: () => void;
+  /** The full-screen memory-graph surface (Memory Core, issue #416). */
+  onOpenMemoryCore: () => void;
   onOpenSettings: () => void;
   onOpenSession: (id: string) => void;
   /** When set, the rail uses this collapse state instead of its own. */
@@ -289,6 +291,7 @@ export function BridgeSidebar({
   onOpenMissionControl,
   onOpenWorkBoard,
   onOpenMemory,
+  onOpenMemoryCore,
   onOpenSettings,
   onOpenSession,
   collapsed: collapsedProp,
@@ -507,6 +510,7 @@ export function BridgeSidebar({
           <ActionRow icon={LayoutGrid} label="Mission Control" collapsed={collapsed} onClick={onOpenMissionControl} active={missionControlActive} />
           <ActionRow icon={FolderGit2} label="Projects" chord="open-projects" collapsed={collapsed} onClick={onOpenProjects} active={projectsActive} />
           <ActionRow icon={Pin} label="Memory" collapsed={collapsed} onClick={onOpenMemory} />
+          <ActionRow icon={Waypoints} label="Memory Core" collapsed={collapsed} onClick={onOpenMemoryCore} />
           <ActionRow icon={ClipboardList} label="Work board" collapsed={collapsed} onClick={onOpenWorkBoard} active={workActive} />
         </div>
 

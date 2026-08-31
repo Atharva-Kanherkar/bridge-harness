@@ -4,6 +4,8 @@ import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { normalizeAgentToken } from "./agentMention";
 import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
+import type { MemoryRecallStats, MemoryCoRecallPair, MemoryConsolidationEntry } from "./types";
+import { deriveCoRecall, deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryCore";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult } from "./protocol/generated/protocol";
 import type { TurnImage } from "./protocol/generated/protocol";
 import type { ComposerAttachment } from "./pasteAttachments";
@@ -354,7 +356,58 @@ const demoEntries: SessionEntry[] = [
   forestEntry("entry-13b", "session-1", 15, "command.completed", { status: "completed", title: "bun test src/auth", data: { type: "commandExecution", command: "bun test src/auth", exitCode: 0, durationMs: 2400, aggregatedOutput: "bun test v1.1.34\n\n 42 pass\n 0 fail\nRan 42 tests across 6 files. [2.41s]" } }, "entry-12b"),
   forestEntry("entry-raw", "session-1", 16, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-13b")
 ];
-const mockMemoryRecords: MemoryRecord[] = [];
+// Seed memory for the mock host: a spread the Memory Core surface can actually
+// render — pinned + accepted + proposed records, a supersession lineage, a
+// conflict group, and a tombstone. `bun run dev` and component tests read this.
+function memRecord(
+  id: string,
+  body: string,
+  kind: string,
+  status: string,
+  provenance: string,
+  extra: Partial<MemoryRecord> = {},
+): MemoryRecord {
+  const at = extra.createdAt ?? "2026-08-24T10:00:00Z";
+  return {
+    id, scopeKey: "account:local", kind, body, provenance, status,
+    validFrom: at, createdAt: at, updatedAt: at, ...extra,
+  };
+}
+const mockMemoryRecords: MemoryRecord[] = [
+  memRecord("mem_a1c4", "Styles exclusively with Tailwind v4 utilities — no CSS-in-JS, no inline style a utility can express.", "preference", "active", "user_explicit", { confidenceBps: 9600 }),
+  memRecord("mem_a2f7", "Ships every commit as Conventional Commits; never cites issue or PR numbers in the message.", "decision", "active", "user_explicit", { confidenceBps: 8800 }),
+  memRecord("mem_a3b0", "Works in IST (UTC+5:30); schedule anything time-bound against that.", "fact", "active", "user_explicit", { confidenceBps: 9200 }),
+  memRecord("mem_a4d9", "Graphite & Paper v2 is the locked chrome direction — achromatic, accents reserved for meaning.", "decision", "active", "user_explicit", { confidenceBps: 9600, conflictGroup: "design-direction" }),
+  memRecord("mem_b1e2", "Accent color for the app is orange.", "decision", "superseded", "user_explicit", { confidenceBps: 4200, conflictGroup: "design-direction", createdAt: "2026-08-10T09:00:00Z", validTo: "2026-08-21T09:00:00Z" }),
+  memRecord("mem_a5aa", "No loud accents in chrome — orange and purple were rejected for the resting surface.", "constraint", "active", "user_explicit", { confidenceBps: 9000, conflictGroup: "design-direction", supersedes: "mem_b1e2", createdAt: "2026-08-21T09:00:00Z" }),
+  memRecord("mem_c1f3", "Uses bun (not npm) for this repo's install, dev, test, and build scripts.", "fact", "active", "model_proposal", { confidenceBps: 7400, rationale: "observed across 6 sessions" }),
+  memRecord("mem_p1a8", "Read-only workers need an injected GH_TOKEN — the sandbox blocks the keychain.", "fact", "proposed", "model_proposal", { confidenceBps: 7100, rationale: "run 8821 · seen in 3 sessions" }),
+  memRecord("mem_p2b5", "Prefers vitest -t filters over whole-file runs while triaging.", "preference", "proposed", "model_proposal", { confidenceBps: 6200, rationale: "run 8813" }),
+  memRecord("mem_d1c9", "Sprint-scoped: land the onboarding picker before Friday.", "constraint", "deleted", "model_proposal", { confidenceBps: 3000, createdAt: "2026-08-05T09:00:00Z", validTo: "2026-08-18T09:00:00Z" }),
+];
+
+// Deterministic packet-injection audit over the recall-eligible ids — the mock
+// stand-in for `memory_retrieval_audits`. Feeds recall stats and co-recall edges.
+const RECALL_ELIGIBLE = ["mem_a1c4", "mem_a2f7", "mem_a3b0", "mem_a4d9", "mem_a5aa", "mem_c1f3"];
+function buildMockAudit(ids: string[]): PacketInjection[] {
+  const audit: PacketInjection[] = [];
+  for (let day = 0; day < 14; day++) {
+    for (let rep = 0; rep <= day % 3; rep++) {
+      const picked = ids.filter((_, i) => ((day + 1) * (i + 2) + rep) % 4 !== 0);
+      if (picked.length) audit.push({ day, ids: picked });
+    }
+  }
+  return audit;
+}
+const mockPacketAudit = buildMockAudit(RECALL_ELIGIBLE);
+const mockConsolidationLog: MemoryConsolidationEntry[] = [
+  { op: "merge", detail: "2 worktree notes folded into one", day: 12 },
+  { op: "correct", detail: "mem_a5aa superseded the orange-accent decision", day: 11 },
+  { op: "keep", detail: "design-direction conflict resolved to the pinned winner", day: 9 },
+  { op: "expire", detail: "sprint-scoped onboarding note lapsed", day: 6 },
+  { op: "group", detail: "3 records tied under conflict-group design-direction", day: 4 },
+  { op: "retire", detail: "mem_d1c9 tombstoned", day: 2 },
+];
 let mockExtractionSettings: MemoryExtractionSettings = { scopeKey: "account:local", mode: "remember" };
 let mockMemoryInjection = true;
 const mockForests: Record<string, SessionForestSnapshot> = {
@@ -1359,6 +1412,45 @@ export const bridgeApi = {
     record.updatedAt = closedAt;
     emitMemoryChanged(record.scopeKey);
     return structuredClone(record);
+  },
+  // Memory Core read-only aggregations (issue #416). Display-only: they grant
+  // nothing and rank nothing. The protocol-first `memory.recall_stats` /
+  // `memory.co_recall_pairs` Rust+daemon methods are the tracked follow-up; on
+  // the desktop host they return empty until that lands, and in the mock host
+  // they fold the deterministic audit above so the surface is fully exercisable.
+  // The full node set for the constellation: active + proposed + superseded +
+  // tombstoned, so lineage arrows and the sunk/dead nodes have something to
+  // draw. The mock host returns every status; the desktop host merges the two
+  // lists the ledger exposes today (superseded/deleted arrive with the backend).
+  memoryGraphRecords: async (scopeKey: string): Promise<MemoryRecord[]> => {
+    const trimmed = scopeKey.trim();
+    if (!trimmed) throw new Error("Memory scope is required; it cannot be empty or NULL");
+    if (isTauri()) {
+      const [active, proposed] = await Promise.all([
+        call("memory/list_memory_records", { scopeKey: trimmed }) as Promise<ListMemoryRecordsResult>,
+        call("memory/list_memory_records", { scopeKey: trimmed, status: "proposed" }) as Promise<ListMemoryRecordsResult>,
+      ]);
+      return [...active.records, ...proposed.records];
+    }
+    return mockMemoryRecords.filter(record => record.scopeKey === trimmed).map(record => structuredClone(record));
+  },
+  memoryRecallStats: async (scopeKey: string): Promise<MemoryRecallStats> => {
+    const trimmed = scopeKey.trim();
+    if (!trimmed) throw new Error("Memory scope is required; it cannot be empty or NULL");
+    if (isTauri()) {
+      return { perRecord: [], injectionsPerDay: Array<number>(14).fill(0), budgetCharsUsed: 0, budgetCharsMax: PACKET_BUDGET_CHARS };
+    }
+    return deriveRecallStats(mockMemoryRecords.filter(record => record.scopeKey === trimmed), mockPacketAudit);
+  },
+  memoryCoRecallPairs: async (scopeKey: string): Promise<MemoryCoRecallPair[]> => {
+    if (!scopeKey.trim()) throw new Error("Memory scope is required; it cannot be empty or NULL");
+    if (isTauri()) return [];
+    return deriveCoRecall(mockPacketAudit);
+  },
+  memoryConsolidationLog: async (scopeKey: string): Promise<MemoryConsolidationEntry[]> => {
+    if (!scopeKey.trim()) throw new Error("Memory scope is required; it cannot be empty or NULL");
+    if (isTauri()) return [];
+    return structuredClone(mockConsolidationLog);
   },
   addProject: async (path: string): Promise<BridgeState> => {
     if (isTauri()) return call("projects/add_project", { path });
