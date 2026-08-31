@@ -514,6 +514,15 @@ describe("the dock in the session view", () => {
     expect(container.querySelector('[aria-label^="Open usage health details"]')).not.toBeNull();
   });
 
+  it("keeps usage health reachable on the pre-session Welcome view, where there is no composer to trail", async () => {
+    await mountApp();
+    // No session is selected yet: the pre-session Welcome screen keeps the
+    // title bar, and usage health must remain reachable from it — the move
+    // into the composer relocates the trigger, it does not remove it.
+    expect(container.querySelector("header")).not.toBeNull();
+    expect(container.querySelector('[aria-label^="Open usage health details"]')).not.toBeNull();
+  });
+
   it("lets Escape restore an expanded pane before it leaves fullscreen", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");

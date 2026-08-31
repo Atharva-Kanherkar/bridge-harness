@@ -348,8 +348,7 @@ function ProviderLoginPane({ provider, label, onClose }: { provider: UsageProvid
   useEffect(() => {
     outputRef.current?.scrollTo?.({ top: outputRef.current.scrollHeight });
   }, [output]);
-  const submit = (event: React.FormEvent) => {
-    event.preventDefault();
+  const send = () => {
     if (!entry.trim()) return;
     void bridgeApi.writeTerminal("provider-login", provider, `${entry}\r`);
     setEntry("");
@@ -362,16 +361,22 @@ function ProviderLoginPane({ provider, label, onClose }: { provider: UsageProvid
     </div>
     <pre ref={outputRef} aria-live="polite" aria-label={`${label} sign-in output`} className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-md border border-border bg-card p-2 font-mono text-[9.5px] leading-relaxed text-foreground">{output || "Starting…"}</pre>
     {error && <p role="alert" className="text-[9.5px] text-destructive">{error}</p>}
-    <form onSubmit={submit} className="flex gap-1.5">
+    {/* Deliberately not a <form>. This pane renders through the composer's
+        `trailing` slot — inside the composer's own <form> — and a nested
+        form's submit event still bubbles, so an Enter here would also invoke
+        the composer's onSubmit and send the draft. A plain row with an
+        explicit Enter handler keeps the reply local to the provider terminal. */}
+    <div className="flex gap-1.5">
       <input
         value={entry}
         onChange={event => setEntry(event.target.value)}
+        onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); send(); } }}
         placeholder="Type a response or paste a code / URL, press Enter"
         aria-label={`Reply to the ${label} sign-in prompt`}
         className="min-w-0 flex-1 rounded-md border border-border bg-card px-2 py-1 font-mono text-[10px] text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring"
       />
-      <button type="submit" className="rounded-md border border-border px-2 py-1 text-[9px] font-medium text-foreground transition-colors hover:bg-accent">Send</button>
-    </form>
+      <button type="button" onClick={send} className="rounded-md border border-border px-2 py-1 text-[9px] font-medium text-foreground transition-colors hover:bg-accent">Send</button>
+    </div>
   </div>;
 }
 

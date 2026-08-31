@@ -1903,7 +1903,12 @@ function AppContent() {
   // Lives beside the composer's send button, not in a title-bar corner — see
   // its `trailing` usage on the session ComposerPill below.
   const usageWidget = <UsageWidget usage={usageByProvider} adapters={health?.adapters} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} focusedSessionId={session?.id ?? null} onOpenPromptStudio={() => { setSettingsSection("prompts"); setView("settings"); }} />;
-  const titleBarActions = bypassBadge;
+  // On a session view the indicator lives beside the composer's send button
+  // (its `trailing` usage below). Every other view — the pre-session Welcome
+  // screen, Projects, Settings, Marketplace, Mission Control — has no such
+  // composer, so it keeps a title-bar trigger; otherwise usage health would be
+  // unreachable before the first session exists.
+  const titleBarActions = <>{usageWidget}{bypassBadge}</>;
   const sidebar = (
     <BridgeSidebar
       mobileOpen={navOpen}
