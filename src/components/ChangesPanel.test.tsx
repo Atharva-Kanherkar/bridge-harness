@@ -276,6 +276,16 @@ describe("ChangesPanel in the dock", () => {
     expect(container.textContent).toContain("old");
   });
 
+  it("does not offer the Code pane handoff for a deleted file", async () => {
+    const onOpenFile = vi.fn();
+    vi.spyOn(bridgeApi, "workspaceChanges").mockResolvedValue(changesResult([
+      fileChange("removed.ts", { changeKind: "deleted", additions: 0, deletions: 1 }),
+    ]));
+
+    await mount(<ChangesPanel workspace={workspace()} onOpenFile={onOpenFile} />);
+    expect(button("Open removed.ts in the Code pane")).toBeNull();
+  });
+
   it("keeps importance ordering and reversible low-signal disclosure", async () => {
     await mount(<ChangesPanel workspace={workspace()} />);
     const rows = [...container.querySelectorAll<HTMLButtonElement>("button[aria-expanded]")];

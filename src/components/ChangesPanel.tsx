@@ -94,7 +94,7 @@ function ChangeFileRow({ file, viewed, expanded, workspaceId, onToggleViewed, on
       >
         <Quote size={11} strokeWidth={1.8} aria-hidden="true" />
       </button>}
-      {onOpenFile && <button
+      {onOpenFile && file.changeKind !== "deleted" && <button
         type="button"
         onClick={() => onOpenFile(file.path)}
         aria-label={`Open ${file.path} in the Code pane`}

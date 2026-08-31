@@ -230,7 +230,19 @@ pub const MAX_WORKSPACE_PATCH_BYTES: usize = 64 * 1024;
 pub const MAX_WORKSPACE_TOTAL_PATCH_BYTES: usize = 512 * 1024;
 const MAX_WORKSPACE_METADATA_BYTES: usize = 2 * 1024 * 1024;
 const MAX_GIT_ERROR_BYTES: usize = 64 * 1024;
+/// SHA-1 empty-tree OID, used only as a last-resort fallback: an
+/// `--object-format=sha256` repository has no object with this name, so an
+/// unborn-HEAD diff against it fails. [`empty_tree_oid`] computes the
+/// object-format-correct OID instead.
 const EMPTY_TREE_OID: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+/// The empty tree's OID for `worktree`'s object format (SHA-1 or SHA-256), so
+/// diffing an unborn HEAD against it doesn't fail in a SHA-256 repository.
+fn empty_tree_oid(worktree: &Path) -> String {
+    run(worktree, ["hash-object", "-t", "tree", "/dev/null"])
+        .map(|value| value.trim().to_owned())
+        .unwrap_or_else(|_| EMPTY_TREE_OID.to_owned())
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -1004,7 +1016,14 @@ pub fn workspace_changeset(path: &Path) -> Result<WorkspaceChangeset, BridgeErro
     } else {
         WorkspaceRepositoryState::Unborn
     };
-    let base = base_commit.as_deref().unwrap_or(EMPTY_TREE_OID);
+    let computed_empty_tree;
+    let base = match base_commit.as_deref() {
+        Some(base) => base,
+        None => {
+            computed_empty_tree = empty_tree_oid(path);
+            &computed_empty_tree
+        }
+    };
 
     // Both metadata streams are NUL-delimited. Git's quoted line format cannot
     // represent tabs/newlines/backslashes without a second decoding pass, and
@@ -1094,7 +1113,13 @@ pub fn workspace_changeset(path: &Path) -> Result<WorkspaceChangeset, BridgeErro
         {
             untracked_file_patch(path, &descriptor.path, patch_budget)
         } else {
-            tracked_file_patch(path, base, &descriptor.path, patch_budget)?
+            tracked_file_patch(
+                path,
+                base,
+                &descriptor.path,
+                descriptor.previous_path.as_deref(),
+                patch_budget,
+            )?
         };
         if descriptor.change_kind == WorkspaceChangeKind::Modified
             && descriptor.additions == 0
@@ -1214,25 +1239,28 @@ fn tracked_file_patch(
     worktree: &Path,
     base: &str,
     relative_path: &str,
+    previous_path: Option<&str>,
     budget: usize,
 ) -> Result<(String, bool), BridgeError> {
     if budget == 0 {
         return Ok((String::new(), true));
     }
-    let output = run_bounded_bytes(
-        worktree,
-        [
-            "diff",
-            "--no-ext-diff",
-            "--no-textconv",
-            "--find-renames",
-            base,
-            "--",
-            relative_path,
-        ],
-        budget.saturating_add(8192),
-        &[0],
-    )?;
+    // A pathspec of only the new name hides the old name's deletion from git,
+    // so it has nothing to pair the addition with and can't detect the rename
+    // — it emits a full "file added" patch instead of a rename+modify one.
+    let mut args = vec![
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--find-renames",
+        base,
+        "--",
+    ];
+    if let Some(previous_path) = previous_path {
+        args.push(previous_path);
+    }
+    args.push(relative_path);
+    let output = run_bounded_bytes(worktree, args, budget.saturating_add(8192), &[0])?;
     Ok(bounded_patch(output, budget))
 }
 
@@ -1296,12 +1324,13 @@ fn parse_raw_changes(bytes: &[u8]) -> Vec<ChangeDescriptor> {
             break;
         }
         let header_text = String::from_utf8_lossy(header);
-        let mut columns = header_text.split_ascii_whitespace();
-        let old_mode = columns.next().unwrap_or(":0").trim_start_matches(':');
-        let new_mode = columns.next().unwrap_or("0");
         let status = header_text.split_ascii_whitespace().last().unwrap_or("M");
         let first_path = path_string(fields[index]);
         index += 1;
+        // A mode change alone (no content change) is reclassified to
+        // `ModeOnly` further down once the numstat merge shows zero
+        // additions/deletions — a chmod bundled with real edits must stay
+        // `Modified`, and that later pass is where content is known.
         let (path, previous_path, change_kind) = match status.as_bytes().first().copied() {
             Some(b'R') | Some(b'C') if index < fields.len() && !fields[index].is_empty() => {
                 let new_path = path_string(fields[index]);
@@ -1311,7 +1340,6 @@ fn parse_raw_changes(bytes: &[u8]) -> Vec<ChangeDescriptor> {
             Some(b'R') | Some(b'C') => break,
             Some(b'A') => (first_path, None, WorkspaceChangeKind::Added),
             Some(b'D') => (first_path, None, WorkspaceChangeKind::Deleted),
-            _ if old_mode != new_mode => (first_path, None, WorkspaceChangeKind::ModeOnly),
             _ => (first_path, None, WorkspaceChangeKind::Modified),
         };
         changes.push(ChangeDescriptor {
@@ -1381,6 +1409,24 @@ fn parse_untracked_paths(bytes: &[u8]) -> Vec<String> {
         .collect()
 }
 
+/// Count entries in `git status --porcelain=v1 -z` output. A rename/copy
+/// entry is `XY new_path\0orig_path\0`: the orig path is a second
+/// NUL-delimited record with no `XY ` prefix of its own, so a naive count of
+/// non-empty records double-counts every rename/copy.
+fn count_porcelain_entries(bytes: &[u8]) -> i64 {
+    let mut records = bytes.split(|byte| *byte == 0).filter(|record| !record.is_empty());
+    let mut count = 0_i64;
+    while let Some(record) = records.next() {
+        count += 1;
+        if matches!(record.first(), Some(b'R') | Some(b'C'))
+            || matches!(record.get(1), Some(b'R') | Some(b'C'))
+        {
+            records.next();
+        }
+    }
+    count
+}
+
 fn path_string(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
@@ -1418,15 +1464,12 @@ pub fn stats(path: &Path) -> Result<(i64, i64, i64), BridgeError> {
     let base = run(path, ["rev-parse", "--verify", "HEAD"])
         .ok()
         .map(|value| value.trim().to_owned())
-        .unwrap_or_else(|| EMPTY_TREE_OID.to_owned());
+        .unwrap_or_else(|| empty_tree_oid(path));
     let porcelain = run_bytes(
         path,
         ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
     )?;
-    let dirty = porcelain
-        .split(|byte| *byte == 0)
-        .filter(|record| record.len() >= 3 && record[2] == b' ')
-        .count() as i64;
+    let dirty = count_porcelain_entries(&porcelain);
 
     let diff = run_bytes(
         path,
@@ -2386,7 +2429,86 @@ mod tests {
         assert_eq!(rename.path, "renamed.txt");
         assert_eq!(rename.previous_path.as_deref(), Some("shared.txt"));
         assert_eq!(rename.change_kind, WorkspaceChangeKind::Renamed);
+        // A pathspec of only the new path hides the old path's deletion from
+        // git, so it can't pair the two sides and falls back to a full-file
+        // "added" patch instead of a compact rename diff.
+        assert!(
+            !rename.patch.contains("+base"),
+            "rename patch should not re-render unchanged content as an addition: {}",
+            rename.patch
+        );
         assert_eq!(stats(&repo).unwrap().0, 1);
+    }
+
+    #[test]
+    fn workspace_changeset_reports_rename_with_edit() {
+        let (_fixture, repo) = repository();
+        // A one-line file edited to two lines drops below git's rename
+        // similarity threshold and is reported as a plain add+delete, not a
+        // rename — give it enough shared content to stay a detected rename.
+        let base_lines: String = (1..=20).map(|n| format!("line-{n}\n")).collect();
+        commit_file(&repo, "shared.txt", &base_lines, "grow shared.txt");
+        git(&repo, &["mv", "shared.txt", "renamed.txt"]);
+        std::fs::write(repo.join("renamed.txt"), format!("{base_lines}extra\n")).unwrap();
+
+        let changeset = workspace_changeset(&repo).unwrap();
+
+        assert_eq!(changeset.files.len(), 1);
+        let rename = &changeset.files[0];
+        assert_eq!(rename.change_kind, WorkspaceChangeKind::Renamed);
+        assert_eq!(rename.additions, 1);
+        assert_eq!(rename.deletions, 0);
+        assert!(
+            rename.patch.contains("+extra"),
+            "rename+edit patch should show the small edit, not a full-file add: {}",
+            rename.patch
+        );
+        assert!(
+            !rename.patch.contains("+line-1\n"),
+            "unchanged content should not appear as an addition: {}",
+            rename.patch
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_changeset_keeps_chmod_with_edit_as_modified() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_fixture, repo) = repository();
+        std::fs::write(repo.join("shared.txt"), "base\nextra\n").unwrap();
+        let mut permissions = std::fs::metadata(repo.join("shared.txt"))
+            .unwrap()
+            .permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(repo.join("shared.txt"), permissions).unwrap();
+
+        let changeset = workspace_changeset(&repo).unwrap();
+        let change = changeset
+            .files
+            .iter()
+            .find(|file| file.path == "shared.txt")
+            .unwrap();
+
+        assert_eq!(
+            change.change_kind,
+            WorkspaceChangeKind::Modified,
+            "a chmod bundled with a real content edit must not be hidden as mode_only"
+        );
+        assert_eq!((change.additions, change.deletions), (1, 0));
+    }
+
+    #[test]
+    fn stats_counts_rename_once_with_awkward_old_path() {
+        let (_fixture, repo) = repository();
+        // A space at byte offset 2 of the old path used to be misread as an
+        // `XY ` status prefix on the rename's orig-path continuation record,
+        // double-counting this single rename as two dirty files.
+        std::fs::rename(repo.join("shared.txt"), repo.join("ab cdef.txt")).unwrap();
+        git(&repo, &["add", "-A"]);
+
+        let (dirty, _, _) = stats(&repo).unwrap();
+        assert_eq!(dirty, 1);
     }
 
     #[test]
