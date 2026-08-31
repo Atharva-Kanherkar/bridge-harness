@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   appendAgentEventBatch,
   MAX_MERGED_EVENT_TEXT,
+  MAX_PENDING_AGENT_EVENTS,
   MAX_TOTAL_EVENT_TEXT,
+  queueAgentEvent,
 } from "./agentEvents";
 import type { AgentEvent } from "./types";
 
@@ -24,6 +26,10 @@ function event(id: number, kind = "message.delta", text = "x"): AgentEvent {
   };
 }
 
+function itemEvent(itemId: string, kind: string, text: string, id = 0): AgentEvent {
+  return { ...event(id, kind, text), sequence: id, itemId };
+}
+
 describe("appendAgentEventBatch", () => {
   it("coalesces adjacent streaming deltas and ignores duplicate delivery", () => {
     const result = appendAgentEventBatch([], [event(1, "message.delta", "hel"), event(2, "message.delta", "lo"), event(2, "message.delta", "lo")]);
@@ -36,6 +42,47 @@ describe("appendAgentEventBatch", () => {
     const completed = event(2, "message.completed", "hello");
     const result = appendAgentEventBatch([event(1)], [completed, event(3, "message.delta", "next")], 2);
     expect(result.map(item => item.id)).toEqual([2, 3]);
+  });
+
+  it("does not deduplicate unrelated transient id-zero events", () => {
+    const result = appendAgentEventBatch([], [
+      itemEvent("message-1", "message.delta", "hello"),
+      itemEvent("tool-1", "tool.progress", "searching"),
+      itemEvent("message-2", "reasoning.delta", "thinking"),
+    ]);
+    expect(result.map(item => item.itemId)).toEqual(["message-1", "tool-1", "message-2"]);
+  });
+
+  it("scopes durable ids to their session", () => {
+    const first = event(7, "message.completed", "one");
+    const second = { ...event(7, "message.completed", "two"), sessionId: "session-2" };
+    const result = appendAgentEventBatch([], [first, second, first]);
+    expect(result.map(item => `${item.sessionId}:${item.text}`)).toEqual([
+      "session-1:one",
+      "session-2:two",
+    ]);
+  });
+
+  it("replaces repeated progress snapshots while additive deltas append", () => {
+    const result = appendAgentEventBatch([], [
+      itemEvent("tool-1", "tool.progress", "Searched 1 file"),
+      itemEvent("message-1", "message.delta", "hel"),
+      itemEvent("tool-1", "tool.progress", "Searched 20 files"),
+      itemEvent("message-1", "message.delta", "lo"),
+    ]);
+    expect(result).toHaveLength(2);
+    expect(result.find(item => item.itemId === "tool-1")?.text).toBe("Searched 20 files");
+    expect(result.find(item => item.itemId === "message-1")?.text).toBe("hello");
+  });
+
+  it("bounds and coalesces the pre-render queue during a large tool burst", () => {
+    let queue: AgentEvent[] = [];
+    for (let index = 0; index < 10_000; index += 1) {
+      queue = queueAgentEvent(queue, itemEvent(`tool-${index % 16}`, "tool.progress", `Scanned ${index} files`));
+    }
+    expect(queue).toHaveLength(16);
+    expect(queue.length).toBeLessThanOrEqual(MAX_PENDING_AGENT_EVENTS);
+    expect(queue.at(-1)?.text).toBe("Scanned 9999 files");
   });
 
   it("caps a merged item's text at the byte budget, keeping the tail", () => {

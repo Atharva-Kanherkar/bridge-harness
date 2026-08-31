@@ -8,7 +8,7 @@ import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, Fi
 import { bridgeApi } from "./api";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
 import { openExternalUrl } from "./externalLinks";
-import { appendAgentEventBatch } from "./agentEvents";
+import { appendAgentEventBatch, queueAgentEvent as queueAgentEventBatch } from "./agentEvents";
 import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
@@ -289,7 +289,7 @@ function AppContent() {
       reloadHealth();
     });
     const queueAgentEvent = (event: AgentEvent) => {
-      agentEventQueueRef.current.push(event);
+      agentEventQueueRef.current = queueAgentEventBatch(agentEventQueueRef.current, event);
       if (agentEventTimerRef.current !== undefined) return;
       agentEventTimerRef.current = window.setTimeout(() => {
         const batch = agentEventQueueRef.current.splice(0);
