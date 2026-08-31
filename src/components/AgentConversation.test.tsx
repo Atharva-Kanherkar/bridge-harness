@@ -114,6 +114,50 @@ describe("AgentConversation", () => {
     expect(html.split("Before switching models").length - 1).toBe(1);
   });
 
+  it("explains compaction recovery and prevents duplicate retries", async () => {
+    let rejectRetry!: (reason: Error) => void;
+    const onRetryCompaction = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectRetry = reject; }));
+    const failed: SessionEntry = {
+      id: "failed",
+      sessionId: "s",
+      parentEntryId: null,
+      sequence: 1,
+      semanticSchemaVersion: 2,
+      kind: "compaction.failed",
+      payload: {
+        reason: "checkpoint turn could not start: provider pipe is closed",
+        message: "Compaction could not reach a ready provider. The original conversation history is intact.",
+        retryable: true,
+        recoveryAction: "Retry compaction when the provider is ready, or keep working with the original history.",
+      },
+      providerEventId: null,
+      contextVisibility: "eligible",
+      tokenEstimate: null,
+      createdAt: "now",
+    };
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    await act(async () => root.render(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={[failed]} activeLeafId="failed" onRetryCompaction={onRetryCompaction}/>));
+
+    expect(container.textContent).toContain("original conversation history is intact");
+    expect(container.textContent).toContain("Retry compaction when the provider is ready");
+    expect(container.textContent).not.toContain("provider pipe is closed");
+    const retry = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Retry compaction"))!;
+    await act(async () => {
+      retry.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      retry.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onRetryCompaction).toHaveBeenCalledTimes(1);
+    expect(retry.disabled).toBe(true);
+
+    await act(async () => rejectRetry(new Error("The provider is still offline")));
+    expect(container.textContent).toContain("The provider is still offline");
+    expect(retry.disabled).toBe(false);
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
   // Lifecycle plumbing replayed as collapsed "Used tools" groups before and
   // around the user's messages after a reload; a model change replayed as a
   // group of one. Contract: fix-cross-harness-switch-and-shell-polish.md §3.

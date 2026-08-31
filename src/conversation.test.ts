@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attachmentUris, compactionReasonLabel, delegationChildSessionId, undeliveredPending, delegationFacet, foldWorkerDelegations, projectSessionConversation, reduceConversation, selectActiveBranch, toolCallDisplay, type ConversationItem } from "./conversation";
+import { attachmentUris, compactionReasonLabel, delegationChildSessionId, undeliveredPending, delegationFacet, foldWorkerDelegations, isInternalCompactionEnvelope, projectSessionConversation, reduceConversation, selectActiveBranch, toolCallDisplay, type ConversationItem } from "./conversation";
 import type { AgentEvent, SessionEntry } from "./types";
 
 const event = (id:number,kind:string,overrides:Partial<AgentEvent>={}):AgentEvent => ({ id,sessionId:"s",sequence:id,protocolVersion:1,kind,itemId:null,role:null,status:null,title:null,text:null,data:{},providerMeta:{},createdAt:"now",...overrides });
@@ -370,15 +370,67 @@ describe("toolCallDisplay", () => {
     expect(compactionReasonLabel(undefined)).toBe("");
   });
 
-  // `compaction.failed` puts the failure text under the same field name. Same
-  // key, different field — mapping it would be a category error.
-  it("keeps a compaction failure's own words", () => {
+  it("projects classified compaction copy while retaining the diagnostic", () => {
     const [failed] = projectSessionConversation(
-      [entry("e1", null, "compaction.failed", { reason: "checkpoint metadata does not match its controller request" }, 1)],
+      [entry("e1", null, "compaction.failed", {
+        reason: "checkpoint metadata does not match its controller request",
+        message: "Bridge could not verify the provider's checkpoint, so no conversation history was replaced.",
+        retryable: true,
+      }, 1)],
       "e1",
     );
     expect(failed.status).toBe("failed");
-    expect(failed.text).toBe("checkpoint metadata does not match its controller request");
+    expect(failed.text).toContain("could not verify");
+    expect(failed.text).not.toContain("metadata does not match");
+    expect(failed.data.reason).toBe("checkpoint metadata does not match its controller request");
+  });
+
+  it("suppresses checkpoint output only when backend origin or persisted state identifies it", () => {
+    const payload = JSON.stringify({
+      schemaVersion: 1,
+      summary: "Internal summary",
+      decisions: [],
+      filesTouched: [],
+      sourceAgent: "session-1",
+      firstRetainedEntryId: "retained-1",
+      tokensBefore: 4200,
+      reason: "before_downgrade",
+    });
+    const internal = { bridgeInternalOrigin: "compaction" };
+    expect(isInternalCompactionEnvelope(payload, internal)).toBe(true);
+    expect(isInternalCompactionEnvelope(`\`\`\`json\n${payload}\n\`\`\``, internal)).toBe(true);
+    expect(reduceConversation([
+      event(1, "message.completed", { itemId: "internal", role: "assistant", text: payload, data: internal }),
+      event(2, "message.completed", { itemId: "safe", role: "assistant", text: '{"answer":42}' }),
+    ]).map(item => item.text)).toEqual(['{"answer":42}']);
+
+    const durable = projectSessionConversation([
+      entry("e1", null, "compaction.requested", { reason: "before_downgrade" }, 1),
+      entry("e2", "e1", "assistant.message", { role: "assistant", text: `\`\`\`json\n${payload}\n\`\`\`` }, 2),
+      entry("e3", "e2", "compaction", { summary: "Compacted" }, 3),
+      entry("e4", "e3", "assistant.message", { role: "assistant", text: '{"answer":42}' }, 4),
+    ], "e4");
+    expect(durable.filter(item => item.type === "message").map(item => item.text)).toEqual(['{"answer":42}']);
+  });
+
+  it("keeps a complete checkpoint-shaped answer from an ordinary turn", () => {
+    const payload = JSON.stringify({
+      schemaVersion: 1,
+      summary: "Public example",
+      decisions: [],
+      filesTouched: [],
+      sourceAgent: "example",
+      firstRetainedEntryId: "entry-1",
+      tokensBefore: 42,
+      reason: "manual",
+    });
+    expect(isInternalCompactionEnvelope(payload)).toBe(false);
+    expect(reduceConversation([
+      event(1, "message.completed", { itemId: "public", role: "assistant", text: payload }),
+    ]).map(item => item.text)).toEqual([payload]);
+    expect(projectSessionConversation([
+      entry("e1", null, "assistant.message", { role: "assistant", text: payload }, 1),
+    ], "e1").map(item => item.text)).toEqual([payload]);
   });
 
   it("does not mistake a title echoed as the body for output", () => {

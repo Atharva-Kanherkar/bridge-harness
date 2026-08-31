@@ -148,6 +148,92 @@ pub struct PendingCompaction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompactionFailurePresentation {
+    pub kind: &'static str,
+    pub message: String,
+    pub retryable: bool,
+    pub recovery_action: String,
+}
+
+/// Convert implementation diagnostics into stable, safe UI copy while the
+/// original reason remains available for the transcript inspector and audit
+/// log. Classification is deliberately conservative: a failure never claims
+/// history was lost, because compaction only moves the active boundary after a
+/// fully verified checkpoint commits.
+pub fn classify_failure(
+    reason: &str,
+    trigger: Option<CompactionReason>,
+) -> CompactionFailurePresentation {
+    let lower = reason.to_ascii_lowercase();
+    let kind = if [
+        "timed out",
+        "without an assistant response",
+        "adapter exited",
+        "adapter exit",
+        "connection closed",
+        "connection reset",
+    ]
+    .iter()
+    .any(|signal| lower.contains(signal))
+    {
+        "timeout_or_exit"
+    } else if [
+        "could not start",
+        "could not be delivered",
+        "not running",
+        "pipe is closed",
+        "wait failed",
+    ]
+    .iter()
+    .any(|signal| lower.contains(signal))
+    {
+        "provider_unavailable"
+    } else if [
+        "invalid",
+        "parse",
+        "schema",
+        "metadata does not match",
+        "missing decision",
+        "missing file",
+        "durable evidence",
+        "omits",
+        "checkpoint response",
+    ]
+    .iter()
+    .any(|signal| lower.contains(signal))
+    {
+        "invalid_checkpoint"
+    } else {
+        "unknown"
+    };
+    let switching = trigger == Some(CompactionReason::BeforeDowngrade);
+    let message = if switching {
+        match kind {
+            "invalid_checkpoint" => "The previous model returned a checkpoint Bridge could not verify. The model switch continued with stored conversation history.",
+            _ => "The previous model did not finish the checkpoint. The model switch continued with stored conversation history.",
+        }
+    } else {
+        match kind {
+            "timeout_or_exit" => "The provider did not finish compaction. The original conversation history is intact.",
+            "provider_unavailable" => "Compaction could not reach a ready provider. The original conversation history is intact.",
+            "invalid_checkpoint" => "Bridge could not verify the provider's checkpoint, so no conversation history was replaced.",
+            _ => "Compaction failed before a verified checkpoint was stored. The original conversation history is intact.",
+        }
+    };
+    let recovery_action = if switching {
+        "Retry compaction after the new model starts, or keep working; the original history is intact."
+    } else {
+        "Retry compaction when the provider is ready, or keep working with the original history."
+    };
+    CompactionFailurePresentation {
+        kind,
+        message: message.to_owned(),
+        retryable: true,
+        recovery_action: recovery_action.to_owned(),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct CheckpointEvidence {
     decisions: BTreeSet<String>,
     files_touched: BTreeSet<String>,
@@ -557,11 +643,22 @@ impl CompactionController {
         reason: &str,
         attempt: u8,
     ) -> Result<(), BridgeError> {
+        let trigger = Self::pending(db, session_id)?.map(|pending| pending.reason);
+        let presentation = classify_failure(reason, trigger);
         SessionForest::new(db)
             .append(
                 session_id,
                 EntryKind::CompactionFailed,
-                json!({"reason": reason, "attempt": attempt, "failedAt": Utc::now().to_rfc3339()}),
+                json!({
+                    "reason": reason,
+                    "attempt": attempt,
+                    "failedAt": Utc::now().to_rfc3339(),
+                    "failureKind": presentation.kind,
+                    "message": presentation.message,
+                    "retryable": presentation.retryable,
+                    "recoveryAction": presentation.recovery_action,
+                    "trigger": trigger.map(CompactionReason::as_str),
+                }),
             )
             .map_err(|error| BridgeError::Invalid(error.to_string()))?;
         store::event(db, "compaction", "compaction.failed", session_id, reason)?;
@@ -1045,7 +1142,50 @@ mod tests {
         assert_eq!(entries[0].kind, "user.message");
         assert_eq!(entries[0].payload["text"], "Keep the durable decision");
         assert_eq!(entries.last().unwrap().kind, "compaction.failed");
+        assert_eq!(entries.last().unwrap().payload["failureKind"], "invalid_checkpoint");
+        assert_eq!(entries.last().unwrap().payload["retryable"], true);
+        assert!(entries.last().unwrap().payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("could not verify"));
         assert!(CompactionController::pending(&db, "s").unwrap().is_none());
+    }
+
+    #[test]
+    fn compaction_failure_classification_explains_retry_and_model_switch_fallback() {
+        let timeout = classify_failure(
+            "checkpoint turn completed without an assistant response",
+            Some(CompactionReason::Manual),
+        );
+        assert_eq!(timeout.kind, "timeout_or_exit");
+        assert!(timeout.retryable);
+        assert!(timeout.message.contains("history is intact"));
+
+        let unavailable = classify_failure(
+            "checkpoint turn could not start: provider pipe is closed",
+            Some(CompactionReason::Manual),
+        );
+        assert_eq!(unavailable.kind, "provider_unavailable");
+        assert!(unavailable.recovery_action.contains("Retry compaction"));
+
+        let switching = classify_failure(
+            "checkpoint metadata does not match its controller request",
+            Some(CompactionReason::BeforeDowngrade),
+        );
+        assert_eq!(switching.kind, "invalid_checkpoint");
+        assert!(switching.message.contains("model switch continued"));
+        assert!(switching.recovery_action.contains("new model"));
+
+        let evidence = classify_failure(
+            "checkpoint omits durable evidence (decisions: Keep the API)",
+            Some(CompactionReason::ContextPressure),
+        );
+        assert_eq!(evidence.kind, "invalid_checkpoint");
+        assert!(evidence.message.contains("could not verify"));
+
+        let unknown = classify_failure("unexpected controller failure", None);
+        assert_eq!(unknown.kind, "unknown");
+        assert!(unknown.message.contains("original conversation history is intact"));
     }
 
     #[test]

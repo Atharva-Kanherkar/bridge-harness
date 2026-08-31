@@ -426,7 +426,9 @@ pub fn normalize_codex_message(message: &Value) -> Vec<NormalizedEvent> {
             vec![event]
         }
         "item/commandExecution/outputDelta" => {
-            let mut event = with_data("command.output_delta", &params, params.clone());
+            // `delta` is already carried in `text`; retaining the complete
+            // params duplicates the largest field in every transient frame.
+            let mut event = with_data("command.output_delta", &params, json!({}));
             event.text = params
                 .get("delta")
                 .and_then(Value::as_str)
@@ -435,7 +437,7 @@ pub fn normalize_codex_message(message: &Value) -> Vec<NormalizedEvent> {
             vec![event]
         }
         "item/fileChange/outputDelta" => {
-            let mut event = with_data("diff.delta", &params, params.clone());
+            let mut event = with_data("diff.delta", &params, json!({}));
             event.text = params
                 .get("delta")
                 .and_then(Value::as_str)
@@ -443,7 +445,10 @@ pub fn normalize_codex_message(message: &Value) -> Vec<NormalizedEvent> {
             vec![event]
         }
         "item/mcpToolCall/progress" => {
-            let mut event = with_data("tool.progress", &params, params.clone());
+            // App-server progress is a latest-state snapshot, not an output
+            // delta. Keep only its display text and semantic item id; the
+            // started/completed lifecycle items carry the durable tool shape.
+            let mut event = with_data("tool.progress", &params, json!({}));
             event.text = params
                 .get("message")
                 .and_then(Value::as_str)
@@ -483,13 +488,108 @@ pub fn normalize_codex_message(message: &Value) -> Vec<NormalizedEvent> {
             );
             vec![event]
         }
+        "model/rerouted" => {
+            let from_model = params
+                .get("fromModel")
+                .and_then(Value::as_str)
+                .unwrap_or("the requested model");
+            let to_model = params
+                .get("toModel")
+                .and_then(Value::as_str)
+                .unwrap_or("a fallback model");
+            let reason = params.get("reason").and_then(Value::as_str);
+            let mut event = with_data("model.rerouted", &params, params.clone());
+            event.title = Some("Model rerouted".into());
+            event.text = Some(match reason {
+                Some(reason) => format!("Codex switched from {from_model} to {to_model}: {reason}"),
+                None => format!("Codex switched from {from_model} to {to_model}."),
+            });
+            event.status = Some("completed".into());
+            vec![event]
+        }
+        "thread/realtime/error" => {
+            let mut event = with_data("error", &params, params.clone());
+            event.title = Some("Realtime connection error".into());
+            event.text = params
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| Some("Codex realtime encountered an error.".into()));
+            event.status = Some("failed".into());
+            vec![event]
+        }
         "item/started" | "item/completed" => normalize_item(method, &params),
+        _ if is_codex_internal_notification(method) => vec![],
         _ => {
             let mut event = with_data("provider.unknown", &params, params.clone());
             event.title = Some(method.into());
             vec![event]
         }
     }
+}
+
+/// Documented app-server notifications that are transport/control-plane
+/// bookkeeping rather than conversation. Letting these fall through to
+/// `provider.unknown` made every progress tick durable, moved the forest
+/// digest, and forced full-history reconciliation even though the UI hid the
+/// row. This list is intentionally exact: a genuinely new method still falls
+/// through as an inspectable unknown event.
+fn is_codex_internal_notification(method: &str) -> bool {
+    matches!(
+        method,
+        "thread/archived"
+            | "thread/deleted"
+            | "thread/unarchived"
+            | "thread/closed"
+            | "thread/reverted"
+            | "skills/changed"
+            | "thread/name/updated"
+            | "thread/goal/updated"
+            | "thread/goal/cleared"
+            | "thread/queue/changed"
+            | "project/changed"
+            | "thread/project/updated"
+            | "thread/environment/connected"
+            | "thread/environment/disconnected"
+            | "thread/settings/updated"
+            | "hook/started"
+            | "hook/completed"
+            | "item/autoApprovalReview/started"
+            | "item/autoApprovalReview/completed"
+            | "autoApprovalReview/strictReviewRequired"
+            | "item/plan/delta"
+            | "command/exec/outputDelta"
+            | "process/outputDelta"
+            | "process/exited"
+            | "item/commandExecution/terminalInteraction"
+            | "serverRequest/resolved"
+            | "item/reasoning/summaryPartAdded"
+            | "mcpServer/oauthLogin/completed"
+            | "mcpServer/startupStatus/updated"
+            | "mcpServer/event/stream/notification"
+            | "account/updated"
+            | "app/list/updated"
+            | "remoteControl/status/changed"
+            | "externalAgentConfig/import/progress"
+            | "externalAgentConfig/import/completed"
+            | "fs/changed"
+            | "thread/compacted"
+            | "model/verification"
+            | "turn/moderationMetadata"
+            | "model/safetyBuffering/updated"
+            | "fuzzyFileSearch/sessionUpdated"
+            | "fuzzyFileSearch/sessionCompleted"
+            | "thread/realtime/started"
+            | "thread/realtime/itemAdded"
+            | "thread/realtime/item/started"
+            | "thread/realtime/item/transcript/delta"
+            | "thread/realtime/item/completed"
+            | "thread/realtime/transcript/delta"
+            | "thread/realtime/transcript/done"
+            | "thread/realtime/outputAudio/delta"
+            | "thread/realtime/sdp"
+            | "thread/realtime/closed"
+    )
 }
 
 pub fn normalize_codex_request(message: &Value) -> Option<NormalizedEvent> {
@@ -1020,6 +1120,71 @@ mod tests {
         assert_eq!(events[0].kind, "provider.unknown");
         assert_eq!(events[0].title.as_deref(), Some("future/newThing"));
         assert_eq!(events[0].data["value"], 7);
+    }
+    #[test]
+    fn codex_internal_notifications_do_not_become_unknown_events() {
+        for method in [
+            "hook/started",
+            "item/reasoning/summaryPartAdded",
+            "item/commandExecution/terminalInteraction",
+            "mcpServer/event/stream/notification",
+            "fs/changed",
+            "thread/compacted",
+        ] {
+            assert!(
+                normalize_codex_message(&json!({"method": method, "params": {"value": 7}}))
+                    .is_empty(),
+                "{method} is documented internal traffic"
+            );
+        }
+        let future =
+            normalize_codex_message(&json!({"method":"future/newThing","params":{"value":7}}));
+        assert_eq!(future.len(), 1);
+        assert_eq!(future[0].kind, "provider.unknown");
+    }
+
+    #[test]
+    fn codex_user_significant_notifications_remain_visible() {
+        let rerouted = normalize_codex_message(&json!({
+            "method":"model/rerouted",
+            "params":{
+                "threadId":"thread-1",
+                "turnId":"turn-1",
+                "fromModel":"gpt-5.6-sol",
+                "toModel":"gpt-5.6-terra",
+                "reason":"highRiskCyberActivity"
+            }
+        }));
+        assert_eq!(rerouted[0].kind, "model.rerouted");
+        assert_eq!(rerouted[0].title.as_deref(), Some("Model rerouted"));
+        assert!(rerouted[0]
+            .text
+            .as_deref()
+            .unwrap()
+            .contains("gpt-5.6-terra"));
+
+        let realtime_error = normalize_codex_message(&json!({
+            "method":"thread/realtime/error",
+            "params":{"threadId":"thread-1","message":"voice transport disconnected"}
+        }));
+        assert_eq!(realtime_error[0].kind, "error");
+        assert_eq!(realtime_error[0].status.as_deref(), Some("failed"));
+        assert_eq!(
+            realtime_error[0].text.as_deref(),
+            Some("voice transport disconnected")
+        );
+    }
+
+    #[test]
+    fn codex_progress_keeps_display_text_without_duplicating_params() {
+        let events = normalize_codex_message(&json!({
+            "method":"item/mcpToolCall/progress",
+            "params":{"itemId":"tool-1","message":"Searching 20 files","large":"payload"}
+        }));
+        assert_eq!(events[0].kind, "tool.progress");
+        assert_eq!(events[0].item_id.as_deref(), Some("tool-1"));
+        assert_eq!(events[0].text.as_deref(), Some("Searching 20 files"));
+        assert_eq!(events[0].data, json!({}));
     }
     #[test]
     fn converts_server_request_to_permission() {

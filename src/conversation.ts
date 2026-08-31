@@ -44,6 +44,7 @@ export function projectSessionConversation(entries: SessionEntry[], activeLeafId
   const approvalsBySequence = new Map<number, ConversationItem>();
   const interactionsBySequence = new Map<string, ConversationItem>();
   const lifecycleByItemId = new Map<string, ConversationItem>();
+  let compactionMaintenanceActive = false;
   for (const entry of selectActiveBranch(entries, activeLeafId)) {
     if (entry.semanticSchemaVersion < 1 || entry.semanticSchemaVersion > 2) {
       throw new Error(`Unsupported semantic event schema version ${entry.semanticSchemaVersion} on entry ${entry.id}`);
@@ -78,7 +79,14 @@ export function projectSessionConversation(entries: SessionEntry[], activeLeafId
         continue;
       }
     }
+    if (entry.kind === "compaction.requested") compactionMaintenanceActive = true;
     const item = projectSessionEntry(entry);
+    const internalCompactionMessage = item.type === "message"
+      && (compactionMaintenanceActive || isInternalCompactionEnvelope(item.text, item.data));
+    if (entry.kind === "compaction" || entry.kind === "compaction.failed") {
+      compactionMaintenanceActive = false;
+    }
+    if (internalCompactionMessage) continue;
     // Tool calls are stored as separate started/completed entries — fold them
     // into a single row so a stale "inProgress" ghost never lingers.
     const itemId = stringValue(entry.payload.itemId);
@@ -137,10 +145,16 @@ function projectSessionEntry(entry: SessionEntry): ConversationItem {
       return { ...base, type: "compaction", title: "Context compacted", text: stringValue(payload.summary) ?? "" };
     case "compaction.requested":
       return { ...base, type: "compaction", title: "Compaction requested", text: compactionReasonLabel(stringValue(payload.reason)) };
-    // `compaction.failed`'s `reason` is the failure text, not a reason code —
-    // same field name, different field. It stays as the host wrote it.
     case "compaction.failed":
-      return { ...base, type: "compaction", status: "failed", title: "Compaction failed", text: stringValue(payload.reason) ?? "" };
+      return {
+        ...base,
+        type: "compaction",
+        status: "failed",
+        title: "Compaction failed",
+        // New entries carry safe, classified copy. Keep the raw reason only as
+        // a compatibility fallback for transcripts written by older builds.
+        text: stringValue(payload.message) ?? stringValue(payload.reason) ?? "",
+      };
     case "branch.summary":
       return { ...base, type: "branch-summary", title: "Branch summary", text: stringValue(payload.summary) ?? "" };
     case "error":
@@ -230,9 +244,19 @@ export function isLifecycleNoise(kind: string): boolean {
 
 export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
   const items = new Map<string, ConversationItem>();
+  const internalCompactionMessageKeys = new Set<string>();
+  let compactionMaintenanceActive = false;
   for (const event of [...events].sort((a, b) => a.sequence - b.sequence)) {
     if (event.kind === "provider.unknown" || event.kind.startsWith("session.") || event.kind.startsWith("turn.") || event.kind === "usage.updated") continue;
     const itemKey = event.itemId ?? `${event.kind}:${event.id}`;
+    if (event.kind === "compaction.requested") compactionMaintenanceActive = true;
+    if (event.kind.startsWith("message.")
+      && (compactionMaintenanceActive || isInternalCompactionEnvelope(event.text ?? "", event.data))) {
+      internalCompactionMessageKeys.add(itemKey);
+    }
+    if (event.kind === "compaction" || event.kind === "compaction.failed") {
+      compactionMaintenanceActive = false;
+    }
     if (event.kind === "message.delta" || event.kind === "reasoning.delta") {
       if (!event.text) continue;
       const type = event.kind.startsWith("message") ? "message" : "reasoning";
@@ -292,9 +316,20 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
   }
   return [...items.values()]
     .map(item => item.type === "message" ? { ...item, text: stripWorkerResultBlocks(item.text) } : item)
+    .filter(item => item.type !== "message" || !internalCompactionMessageKeys.has(item.key))
     .filter(item => item.type !== "reasoning" || item.text.trim().length > 0)
     .filter(item => item.type !== "message" || item.text.trim().length > 0)
     .sort((a,b)=>a.sequence-b.sequence);
+}
+
+/** Defense in depth for a backend-tagged maintenance frame. Content shape is
+ * deliberately irrelevant: a user may legitimately ask for the checkpoint
+ * schema, while a malformed maintenance reply or refusal is still internal. */
+export function isInternalCompactionEnvelope(
+  _text: string,
+  data: Record<string, unknown> = {},
+): boolean {
+  return data.bridgeInternalOrigin === "compaction";
 }
 
 /**

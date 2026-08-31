@@ -8,7 +8,7 @@ import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, Fi
 import { bridgeApi } from "./api";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
 import { openExternalUrl } from "./externalLinks";
-import { appendAgentEventBatch } from "./agentEvents";
+import { appendAgentEventBatch, queueAgentEvent as queueAgentEventBatch } from "./agentEvents";
 import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
@@ -288,7 +288,7 @@ function AppContent() {
       reloadHealth();
     });
     const queueAgentEvent = (event: AgentEvent) => {
-      agentEventQueueRef.current.push(event);
+      agentEventQueueRef.current = queueAgentEventBatch(agentEventQueueRef.current, event);
       if (agentEventTimerRef.current !== undefined) return;
       agentEventTimerRef.current = window.setTimeout(() => {
         const batch = agentEventQueueRef.current.splice(0);
@@ -1645,6 +1645,18 @@ function AppContent() {
     await bridgeApi.retryWorkerTask(childSessionId);
     await reload();
   }, [reload]);
+  const retryCompaction = useCallback(async (sessionId: string) => {
+    const target = state.sessions.find(item => item.id === sessionId);
+    if (!target) throw new Error("This conversation is no longer available");
+    if (!liveStatuses.includes(target.status)) {
+      setState(await bridgeApi.startChat(sessionId));
+    }
+    await bridgeApi.compactSession(sessionId);
+    if (selectedSessionId === sessionId) {
+      forestKeyRef.current = "";
+      setForest(await bridgeApi.sessionForest(sessionId));
+    }
+  }, [selectedSessionId, state.sessions]);
   const waiveCompletion = useCallback(async (attemptId: string, checkIds: string[], reason: string) => {
     const completion = await bridgeApi.waiveCompletion(attemptId, checkIds, reason);
     setForest(current => current ? { ...current, completion } : current);
@@ -2072,6 +2084,7 @@ function AppContent() {
               try { const result = await bridgeApi.resolveQuestion(asideSession.id, eventId, action, answers); await reload(); return result; }
               catch (e) { setError(errorMessage(e)); throw e; }
             }}
+            onRetryCompaction={() => retryCompaction(asideSession.id)}
             onPromote={() => { setAsideLifecycle(undefined); openSession(asideSession.id); }}
             onClose={() => setAsideLifecycle(undefined)}
           />}
@@ -2103,6 +2116,7 @@ function AppContent() {
                   onWaiveCompletion={waiveCompletion}
                   onRefreshBase={refreshWorkspaceBase}
                   onRetryWorker={retryWorkerTask}
+                  onRetryCompaction={() => retryCompaction(session.id)}
                   pendingAdoptions={pendingAdoptions}
                   onResolveAdoption={resolveAdoption}
                   continuationFidelity={session?.continuationFidelity}
