@@ -94,6 +94,7 @@ describe("new project folder flow (#351)", () => {
   it("opens a direct-chat draft when that project choice is selected", async () => {
     const createChat = vi.spyOn(bridgeApi, "createChat");
     const createWorkspaceSession = vi.spyOn(bridgeApi, "createWorkspaceSession");
+    localStorage.setItem("bridge.chat.lastWorkspaceId", "demo-1");
     const projects = container.querySelector<HTMLButtonElement>('button[aria-label="Projects"]')!;
     await act(async () => projects.click());
     await settle();
@@ -102,6 +103,10 @@ describe("new project folder flow (#351)", () => {
     await settle();
     await act(async () => buttonByText("Start a chat")!.click());
     await settle();
+
+    const context = container.querySelector<HTMLElement>('[aria-label="Chat context"]')!;
+    expect(context.textContent).toContain("No project");
+    expect(context.textContent).not.toContain("Build session supervisor");
 
     const composer = container.querySelector<HTMLTextAreaElement>("textarea")!;
     expect(composer).toBeDefined();

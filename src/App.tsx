@@ -1933,11 +1933,13 @@ function AppContent() {
       onForward={goForward}
     />
   );
-  const resolvedWelcomeWorkspaceId = resolveNewChatWorkspaceId({
-    activeWorkspaceId: welcomeWorkspaceId,
-    lastWorkspaceId: readLastWorkspaceId(),
-    workspaces: state.workspaces,
-  });
+  const resolvedWelcomeWorkspaceId = newChatDraft
+    ? newChatDraft.workspaceId
+    : resolveNewChatWorkspaceId({
+      activeWorkspaceId: welcomeWorkspaceId,
+      lastWorkspaceId: readLastWorkspaceId(),
+      workspaces: state.workspaces,
+    });
   const welcomeWorkspace = state.workspaces.find(item => item.id === resolvedWelcomeWorkspaceId) ?? null;
 
   return <div data-fullscreen={chromeFullscreen ? "" : undefined} className="u-app-shell relative flex h-[100dvh] flex-row overflow-hidden text-foreground">
