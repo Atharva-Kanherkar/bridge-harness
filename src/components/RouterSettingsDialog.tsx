@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useForm } from "@tanstack/react-form";
 import { BrainCircuit, CalendarClock, CircleCheck, Copy, ExternalLink, LoaderCircle, Play, RotateCcw, ShieldCheck, Undo2, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import { openExternalUrl } from "../externalLinks";
@@ -15,8 +16,55 @@ const defaults: RouterPreferences = {
   excludedModels: [],
 };
 
+const defaultSchedule: LearningSchedule = {
+  jobId: "", enabled: false, cadenceMinutes: 1440, nextRunAt: null, runBudgetMicrousd: 0, runBudgetTokens: 0, mode: "manual",
+};
+
+interface RouterFormValues {
+  mode: RouterMode;
+  passFloorPercent: string;
+  pinnedHarness: string;
+  pinnedModel: string;
+  excludedHarnesses: string;
+  excludedModels: string;
+  schedule: LearningSchedule;
+}
+
+const defaultFormValues: RouterFormValues = {
+  mode: defaults.mode,
+  passFloorPercent: String(Math.round(defaults.minimumPassBps / 100)),
+  pinnedHarness: "",
+  pinnedModel: "",
+  excludedHarnesses: "",
+  excludedModels: "",
+  schedule: defaultSchedule,
+};
+
 function parseList(value: string): string[] {
   return [...new Set(value.split(",").map(item => item.trim().toLowerCase()).filter(Boolean))];
+}
+
+function validatePercent(value: string): string | undefined {
+  const trimmed = value.trim();
+  if (trimmed === "") return undefined;
+  const parsed = Number(trimmed);
+  if (Number.isNaN(parsed) || parsed < 0 || parsed > 100) return "Enter a percentage between 0 and 100.";
+  return undefined;
+}
+
+// The schedule crosses to Rust as an i64; a fractional value must never reach
+// canSubmit, or Save fails downstream with a raw deserialization error instead
+// of this message.
+function validateCadence(value: number): string | undefined {
+  if (!Number.isInteger(value)) return "Cadence must be a whole number of minutes.";
+  if (value < 15) return "Cadence must be at least 15 minutes.";
+  return undefined;
+}
+
+function validateNonNegativeInteger(value: number): string | undefined {
+  if (!Number.isInteger(value)) return "Enter a whole number.";
+  if (value < 0) return "Must be zero or greater.";
+  return undefined;
 }
 
 /** Cadence, mode, and enabled — not nextRunAt or the unused evaluator ceilings. */
@@ -46,9 +94,10 @@ export function evaluatorExecutionLabel(execution: LearningReport["evaluationExe
   }
 }
 
-function mergeLearningState(current: LearningState | undefined, fresh: LearningState, saved: LearningSchedule | null): LearningState {
-  if (!current || !saved || !scheduleUserFieldsChanged(saved, current.schedule)) return fresh;
-  return { ...fresh, schedule: current.schedule };
+/** A draft the user is actively editing wins over a background refresh, unless nothing user-facing changed. */
+function mergeLearningState(fresh: LearningState, saved: LearningSchedule | null, draftSchedule: LearningSchedule): LearningState {
+  if (!saved || !scheduleUserFieldsChanged(saved, draftSchedule)) return fresh;
+  return { ...fresh, schedule: draftSchedule };
 }
 
 export function LearningRunSummary({ learning, running = false, onApprove, onCancel, onRollback }: {
@@ -89,12 +138,13 @@ export function RouterSettingsDialog({
   onClose: () => void;
   onError: (message: string) => void;
 }) {
-  const [preferences, setPreferences] = useState<RouterPreferences>(defaults);
-  // The field keeps draft text and commits on blur: an emptied input must
-  // never commit a 0% quality floor on the way to typing a number.
-  const [passDraft, setPassDraft] = useState(String(Math.round(defaults.minimumPassBps / 100)));
-  const [excludedHarnesses, setExcludedHarnesses] = useState("");
-  const [excludedModels, setExcludedModels] = useState("");
+  const form = useForm({
+    defaultValues: defaultFormValues,
+    onSubmit: async ({ value }) => { await save(value); },
+  });
+  // The last percentage a blur committed. An emptied input reverts to this on
+  // blur rather than committing a 0% quality floor on the way to typing a number.
+  const lastValidPassPercentRef = useRef(defaultFormValues.passFloorPercent);
   const [modelSetup, setModelSetup] = useState<ModelSetupState>();
   const [profiles, setProfiles] = useState<ModelProfileDraft[]>([]);
   const [learning, setLearning] = useState<LearningState>();
@@ -125,63 +175,78 @@ export function RouterSettingsDialog({
     const initialGeneration = ++learningReadGeneration.current;
     Promise.all([bridgeApi.routerPreferences(workspaceId), bridgeApi.modelSetup(), bridgeApi.learningState(workspaceId)]).then(([value, setup, learningState]) => {
       if (!active) return;
-      setPreferences(value);
-      setPassDraft(String(Math.round(value.minimumPassBps / 100)));
-      setExcludedHarnesses((value.excludedHarnesses ?? []).join(", "));
-      setExcludedModels((value.excludedModels ?? []).join(", "));
+      const passPercent = String(Math.round(value.minimumPassBps / 100));
+      lastValidPassPercentRef.current = passPercent;
+      form.setFieldValue("mode", value.mode);
+      form.setFieldValue("passFloorPercent", passPercent);
+      form.setFieldValue("pinnedHarness", value.pinnedHarness ?? "");
+      form.setFieldValue("pinnedModel", value.pinnedModel ?? "");
+      form.setFieldValue("excludedHarnesses", (value.excludedHarnesses ?? []).join(", "));
+      form.setFieldValue("excludedModels", (value.excludedModels ?? []).join(", "));
       setModelSetup(setup);
       setProfiles(profileDraftsFromSetup(setup));
       if (initialGeneration === learningReadGeneration.current) {
         savedScheduleRef.current = learningState.schedule;
         setLearning(learningState);
+        form.setFieldValue("schedule", learningState.schedule);
       }
     }).catch(error => { if (active) onError(String(error)); }).finally(() => { if (active) setBusy(false); });
     void bridgeApi.onLearningJobChanged(() => {
       const generation = ++learningReadGeneration.current;
       void bridgeApi.learningState(workspaceId).then(fresh => {
         if (!active || generation !== learningReadGeneration.current) return;
-        setLearning(current => {
-          const next = mergeLearningState(current, fresh, savedScheduleRef.current);
-          if (next.schedule === fresh.schedule) savedScheduleRef.current = fresh.schedule;
-          return next;
-        });
+        applyLearning(generation, fresh);
       }).catch(error => { if (active) onError(String(error)); });
     }).then(fn => {
       if (!active) { fn(); return; }
       off = fn;
     }).catch(error => { if (active) onError(String(error)); });
     return () => { active = false; off?.(); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [onError, open, workspaceId]);
 
   if (!open || !workspaceId) return null;
   const fieldClass = "h-10 w-full min-w-0 rounded-xl border border-input bg-card px-3 text-sm text-foreground transition-colors disabled:opacity-45";
+  const errorClass = "text-[11px] font-normal normal-case tracking-normal text-danger";
   const applyLearning = (generation: number, fresh: LearningState) => {
     if (generation !== learningReadGeneration.current) return;
-    setLearning(current => {
-      const next = mergeLearningState(current, fresh, savedScheduleRef.current);
-      if (next.schedule === fresh.schedule) savedScheduleRef.current = fresh.schedule;
-      return next;
-    });
+    const draftSchedule = form.getFieldValue("schedule");
+    const next = mergeLearningState(fresh, savedScheduleRef.current, draftSchedule);
+    if (next.schedule === fresh.schedule) savedScheduleRef.current = fresh.schedule;
+    setLearning(next);
+    form.setFieldValue("schedule", next.schedule);
   };
-  const save = async () => {
+  const save = async (value: RouterFormValues) => {
     setBusy(true);
     try {
+      const minimumPassBps = Math.round(Number(value.passFloorPercent)) * 100;
       const saved = await bridgeApi.updateRouterPreferences(workspaceId, {
-        ...preferences,
-        excludedHarnesses: parseList(excludedHarnesses),
-        excludedModels: parseList(excludedModels),
+        mode: value.mode,
+        minimumPassBps,
+        pinnedHarness: value.pinnedHarness || null,
+        pinnedModel: value.pinnedModel || null,
+        excludedHarnesses: parseList(value.excludedHarnesses),
+        excludedModels: parseList(value.excludedModels),
       });
-      setPreferences(saved);
+      const passPercent = String(Math.round(saved.minimumPassBps / 100));
+      lastValidPassPercentRef.current = passPercent;
+      form.setFieldValue("mode", saved.mode);
+      form.setFieldValue("passFloorPercent", passPercent);
+      form.setFieldValue("pinnedHarness", saved.pinnedHarness ?? "");
+      form.setFieldValue("pinnedModel", saved.pinnedModel ?? "");
+      form.setFieldValue("excludedHarnesses", (saved.excludedHarnesses ?? []).join(", "));
+      form.setFieldValue("excludedModels", (saved.excludedModels ?? []).join(", "));
       if (profiles.length && modelProfilesChanged(profiles, modelSetup)) {
         const setup = await bridgeApi.saveModelProfiles(profiles);
         setModelSetup(setup);
         onModelSetupChange?.(setup);
       }
-      if (learning && savedScheduleRef.current && scheduleUserFieldsChanged(savedScheduleRef.current, learning.schedule)) {
-        const schedule = await bridgeApi.updateLearningSchedule(learning.schedule);
+      if (savedScheduleRef.current && scheduleUserFieldsChanged(savedScheduleRef.current, value.schedule)) {
+        const schedule = await bridgeApi.updateLearningSchedule(value.schedule);
         learningReadGeneration.current += 1;
         savedScheduleRef.current = schedule;
         setLearning(current => current ? { ...current, schedule } : current);
+        form.setFieldValue("schedule", schedule);
       }
       onClose();
     } catch (error) {
@@ -266,36 +331,58 @@ export function RouterSettingsDialog({
       </header>
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-5">
         <div className="grid gap-4 sm:grid-cols-2">
-          <label className="space-y-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Mode
-            <select className={fieldClass} value={preferences.mode} disabled={busy} onChange={event => setPreferences(current => ({ ...current, mode: event.target.value as RouterMode }))}>
-              <option value="disabled">Disabled</option><option value="shadow">Shadow</option><option value="autonomous">Autonomous</option>
-            </select>
-          </label>
-          <label className="space-y-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Minimum pass probability
-            <div className="relative"><input className={fieldClass} type="number" min={0} max={100} step={1} value={passDraft} disabled={busy} onChange={event => setPassDraft(event.target.value)} onBlur={() => {
-              const parsed = Number(passDraft);
-              if (passDraft.trim() === "" || Number.isNaN(parsed)) {
-                setPassDraft(String(Math.round(preferences.minimumPassBps / 100)));
+          <form.Field name="mode">{field => (
+            <label className="space-y-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Mode
+              <select className={fieldClass} value={field.state.value} disabled={busy} onChange={event => field.handleChange(event.target.value as RouterMode)}>
+                <option value="disabled">Disabled</option><option value="shadow">Shadow</option><option value="autonomous">Autonomous</option>
+              </select>
+            </label>
+          )}</form.Field>
+          <form.Field name="passFloorPercent" validators={{ onChange: ({ value }) => validatePercent(value) }} listeners={{
+            onBlur: ({ value, fieldApi }) => {
+              const trimmed = value.trim();
+              const parsed = Number(trimmed);
+              if (trimmed === "" || Number.isNaN(parsed)) {
+                fieldApi.setValue(lastValidPassPercentRef.current);
                 return;
               }
-              const clamped = Math.max(0, Math.min(10000, Math.round(parsed) * 100));
-              setPreferences(current => ({ ...current, minimumPassBps: clamped }));
-              setPassDraft(String(Math.round(clamped / 100)));
-            }} /><span className="pointer-events-none absolute right-3 top-2.5 text-sm text-muted-foreground">%</span></div>
-          </label>
-          <label className="space-y-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Pin harness
-            <select className={fieldClass} value={preferences.pinnedHarness ?? ""} disabled={busy} onChange={event => setPreferences(current => ({ ...current, pinnedHarness: event.target.value || null, pinnedModel: null }))}>
-              <option value="">Automatic</option>{adapters.map(adapter => <option key={adapter.id} value={adapter.id}>{adapter.label}{adapter.available ? "" : " (unavailable)"}</option>)}
-            </select>
-          </label>
-          <label className="space-y-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Pin model
-            <select className={fieldClass} value={preferences.pinnedModel ?? ""} disabled={busy} onChange={event => setPreferences(current => ({ ...current, pinnedModel: event.target.value || null }))}>
-              <option value="">Automatic</option>{models.filter(model => !preferences.pinnedHarness || model.harness === preferences.pinnedHarness).map(model => <option key={`${model.harness}:${model.id}`} value={model.id}>{model.harnessLabel} · {model.label}</option>)}
-            </select>
-          </label>
+              if (parsed >= 0 && parsed <= 100) {
+                const normalized = String(Math.round(parsed));
+                lastValidPassPercentRef.current = normalized;
+                fieldApi.setValue(normalized);
+              }
+            },
+          }}>{field => (
+            <label className="space-y-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Minimum pass probability
+              <div className="relative"><input className={fieldClass} type="number" min={0} max={100} step={1} value={field.state.value} disabled={busy} onChange={event => field.handleChange(event.target.value)} onBlur={field.handleBlur} /><span className="pointer-events-none absolute right-3 top-2.5 text-sm text-muted-foreground">%</span></div>
+              {field.state.meta.errors.length > 0 && <p className={errorClass}>{String(field.state.meta.errors[0])}</p>}
+            </label>
+          )}</form.Field>
+          <form.Field name="pinnedHarness" listeners={{
+            onChange: ({ fieldApi }) => fieldApi.form.setFieldValue("pinnedModel", ""),
+          }}>{field => (
+            <label className="space-y-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Pin harness
+              <select className={fieldClass} value={field.state.value} disabled={busy} onChange={event => field.handleChange(event.target.value)}>
+                <option value="">Automatic</option>{adapters.map(adapter => <option key={adapter.id} value={adapter.id}>{adapter.label}{adapter.available ? "" : " (unavailable)"}</option>)}
+              </select>
+            </label>
+          )}</form.Field>
+          <form.Subscribe selector={state => state.values.pinnedHarness}>{pinnedHarness => (
+            <form.Field name="pinnedModel">{field => (
+              <label className="space-y-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Pin model
+                <select className={fieldClass} value={field.state.value} disabled={busy} onChange={event => field.handleChange(event.target.value)}>
+                  <option value="">Automatic</option>{models.filter(model => !pinnedHarness || model.harness === pinnedHarness).map(model => <option key={`${model.harness}:${model.id}`} value={model.id}>{model.harnessLabel} · {model.label}</option>)}
+                </select>
+              </label>
+            )}</form.Field>
+          )}</form.Subscribe>
         </div>
-        <label className="block space-y-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Exclude harnesses <span className="normal-case tracking-normal text-muted-foreground/70">comma-separated IDs</span><input className={fieldClass} value={excludedHarnesses} disabled={busy} placeholder="e.g. claude" onChange={event => setExcludedHarnesses(event.target.value)} /></label>
-        <label className="block space-y-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Exclude models <span className="normal-case tracking-normal text-muted-foreground/70">comma-separated IDs</span><input className={fieldClass} value={excludedModels} disabled={busy} placeholder="e.g. opus, gpt-5.3-codex" onChange={event => setExcludedModels(event.target.value)} /></label>
+        <form.Field name="excludedHarnesses">{field => (
+          <label className="block space-y-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Exclude harnesses <span className="normal-case tracking-normal text-muted-foreground/70">comma-separated IDs</span><input className={fieldClass} value={field.state.value} disabled={busy} placeholder="e.g. claude" onChange={event => field.handleChange(event.target.value)} /></label>
+        )}</form.Field>
+        <form.Field name="excludedModels">{field => (
+          <label className="block space-y-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Exclude models <span className="normal-case tracking-normal text-muted-foreground/70">comma-separated IDs</span><input className={fieldClass} value={field.state.value} disabled={busy} placeholder="e.g. opus, gpt-5.3-codex" onChange={event => field.handleChange(event.target.value)} /></label>
+        )}</form.Field>
         <div className="flex gap-3 rounded-2xl border border-success/20 bg-success/10 p-4"><ShieldCheck className="mt-0.5 shrink-0 text-success" size={17} aria-hidden="true" /><p className="text-[12px] leading-relaxed text-muted-foreground">Shadow mode measures recommendations without changing execution. Autonomous mode unlocks only after 20 completed shadow outcomes with fewer than 5% manual or no-route decisions. Pins never bypass permissions or budgets.</p></div>
 
         <section className="border-t border-border pt-5">
@@ -307,7 +394,31 @@ export function RouterSettingsDialog({
           <div className="flex flex-wrap items-start justify-between gap-4"><div><h3 className="font-display text-base font-semibold text-foreground">Adaptive learning</h3><p className="mt-1 text-xs leading-relaxed text-muted-foreground">One local runner freezes typed evidence, replays held-out outcomes, and manages immutable policy versions. Active policy v{learning?.activePolicyVersion ?? "—"}{learning?.canaryPolicyVersion ? ` · canary v${learning.canaryPolicyVersion}` : ""}.</p></div><button type="button" disabled={running || busy} onClick={() => void runNow()} className="inline-flex shrink-0 items-center gap-2 rounded-xl bg-primary px-3.5 py-2 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-40">{running ? <LoaderCircle className="animate-spin" size={14} aria-hidden="true" /> : <Play size={14} aria-hidden="true" />}Run learning now</button></div>
           {learning && <LearningRunSummary learning={learning} running={running} onApprove={() => void approveCandidate()} onCancel={() => void cancelCandidate()} onRollback={() => void rollbackPolicy()} />}
 
-          {learning && <div className="mt-4 grid gap-3 rounded-2xl border border-border p-4 sm:grid-cols-2 lg:grid-cols-5"><label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={learning.schedule.enabled} onChange={event => setLearning(current => current ? { ...current, schedule: { ...current.schedule, enabled: event.target.checked, nextRunAt: event.target.checked && !current.schedule.nextRunAt ? new Date(Date.now() + 86_400_000).toISOString() : current.schedule.nextRunAt } } : current)} /><CalendarClock size={14} aria-hidden="true" />In-app schedule</label><label className="space-y-1 text-[10px] uppercase tracking-wider text-muted-foreground/70">Learning mode<select aria-label="Learning mode" className={fieldClass} value={learning.schedule.mode} onChange={event => setLearning(current => current ? { ...current, schedule: { ...current.schedule, mode: event.target.value as LearningState["schedule"]["mode"] } } : current)}><option value="manual">Manual · recommend</option><option value="ask">Ask · approval required</option><option value="automatic">Automatic · guarded canary</option></select></label><label className="space-y-1 text-[10px] uppercase tracking-wider text-muted-foreground/70">Cadence<input className={fieldClass} type="number" min={15} value={learning.schedule.cadenceMinutes} onChange={event => setLearning(current => current ? { ...current, schedule: { ...current.schedule, cadenceMinutes: Math.max(15, Number(event.target.value)) } } : current)} /></label><label className="space-y-1 text-[10px] uppercase tracking-wider text-muted-foreground/70">Spend ceiling (µUSD)<input className={fieldClass} type="number" min={0} value={learning.schedule.runBudgetMicrousd} onChange={event => setLearning(current => current ? { ...current, schedule: { ...current.schedule, runBudgetMicrousd: Math.max(0, Number(event.target.value)) } } : current)} /></label><label className="space-y-1 text-[10px] uppercase tracking-wider text-muted-foreground/70">Token ceiling<input className={fieldClass} type="number" min={0} value={learning.schedule.runBudgetTokens} onChange={event => setLearning(current => current ? { ...current, schedule: { ...current.schedule, runBudgetTokens: Math.max(0, Number(event.target.value)) } } : current)} /></label>{learning.schedule.mode === "automatic" && <p className="text-[10px] leading-relaxed text-warning sm:col-span-2 lg:col-span-5">Automatic mode is opt-in. It promotes only replay-approved candidates to a canary and creates an immutable rollback version on regression.</p>}<p className="text-[10px] leading-relaxed text-muted-foreground sm:col-span-2 lg:col-span-5">Spend and token ceilings cap what one learning run's bounded evaluations may observe; once a run reaches either, its remaining evaluations are skipped. A zero ceiling makes the whole learning run an auditable no-op.</p></div>}
+          {learning && <div className="mt-4 grid gap-3 rounded-2xl border border-border p-4 sm:grid-cols-2 lg:grid-cols-5">
+            <form.Field name="schedule.enabled" listeners={{
+              onChange: ({ value, fieldApi }) => {
+                if (value && !fieldApi.form.getFieldValue("schedule.nextRunAt")) {
+                  fieldApi.form.setFieldValue("schedule.nextRunAt", new Date(Date.now() + 86_400_000).toISOString());
+                }
+              },
+            }}>{field => (
+              <label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={field.state.value} onChange={event => field.handleChange(event.target.checked)} /><CalendarClock size={14} aria-hidden="true" />In-app schedule</label>
+            )}</form.Field>
+            <form.Field name="schedule.mode">{field => (
+              <label className="space-y-1 text-[10px] uppercase tracking-wider text-muted-foreground/70">Learning mode<select aria-label="Learning mode" className={fieldClass} value={field.state.value} onChange={event => field.handleChange(event.target.value)}><option value="manual">Manual · recommend</option><option value="ask">Ask · approval required</option><option value="automatic">Automatic · guarded canary</option></select></label>
+            )}</form.Field>
+            <form.Field name="schedule.cadenceMinutes" validators={{ onChange: ({ value }) => validateCadence(value) }}>{field => (
+              <label className="space-y-1 text-[10px] uppercase tracking-wider text-muted-foreground/70">Cadence<input className={fieldClass} type="number" min={15} value={field.state.value} onChange={event => field.handleChange(Number(event.target.value))} onBlur={field.handleBlur} />{field.state.meta.errors.length > 0 && <p className={errorClass}>{String(field.state.meta.errors[0])}</p>}</label>
+            )}</form.Field>
+            <form.Field name="schedule.runBudgetMicrousd" validators={{ onChange: ({ value }) => validateNonNegativeInteger(value) }}>{field => (
+              <label className="space-y-1 text-[10px] uppercase tracking-wider text-muted-foreground/70">Spend ceiling (µUSD)<input className={fieldClass} type="number" min={0} value={field.state.value} onChange={event => field.handleChange(Number(event.target.value))} onBlur={field.handleBlur} />{field.state.meta.errors.length > 0 && <p className={errorClass}>{String(field.state.meta.errors[0])}</p>}</label>
+            )}</form.Field>
+            <form.Field name="schedule.runBudgetTokens" validators={{ onChange: ({ value }) => validateNonNegativeInteger(value) }}>{field => (
+              <label className="space-y-1 text-[10px] uppercase tracking-wider text-muted-foreground/70">Token ceiling<input className={fieldClass} type="number" min={0} value={field.state.value} onChange={event => field.handleChange(Number(event.target.value))} onBlur={field.handleBlur} />{field.state.meta.errors.length > 0 && <p className={errorClass}>{String(field.state.meta.errors[0])}</p>}</label>
+            )}</form.Field>
+            <form.Subscribe selector={state => state.values.schedule.mode}>{mode => mode === "automatic" && <p className="text-[10px] leading-relaxed text-warning sm:col-span-2 lg:col-span-5">Automatic mode is opt-in. It promotes only replay-approved candidates to a canary and creates an immutable rollback version on regression.</p>}</form.Subscribe>
+            <p className="text-[10px] leading-relaxed text-muted-foreground sm:col-span-2 lg:col-span-5">Spend and token ceilings cap what one learning run's bounded evaluations may observe; once a run reaches either, its remaining evaluations are skipped. A zero ceiling makes the whole learning run an auditable no-op.</p>
+          </div>}
 
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <article className="rounded-2xl border border-border p-4"><h4 className="text-xs font-medium text-foreground">Codex Scheduled <span className="font-normal text-muted-foreground/70">· optional</span></h4><p className="mt-2 text-[11px] leading-relaxed text-muted-foreground">Managed in Codex/ChatGPT. Bridge cannot create or enumerate schedules. Registration copies a tested narrow local wake-up task; it never grants promotion authority.</p><div className="mt-3 flex flex-wrap gap-3"><button type="button" disabled={running} onClick={() => void registerAndCopy("codex")} className="inline-flex items-center gap-1.5 text-[11px] text-info transition-colors hover:text-info/80"><Copy size={12} aria-hidden="true" />Register + copy task</button><button type="button" onClick={() => void openExternalUrl("https://chatgpt.com/codex")} className="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground transition-colors hover:text-foreground"><ExternalLink size={12} aria-hidden="true" />Open Codex Scheduled setup</button></div></article>
@@ -316,7 +427,9 @@ export function RouterSettingsDialog({
           </div>
         </section>
       </div>
-      <footer className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-border px-5 py-4"><button type="button" className="rounded-xl px-4 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" disabled={busy} onClick={onClose}>Cancel</button><button type="button" className="inline-flex min-w-24 items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-40" disabled={busy} onClick={() => void save()}>{busy && <LoaderCircle className="animate-spin" size={14} aria-hidden="true" />}Save</button></footer>
+      <footer className="flex shrink-0 flex-wrap justify-end gap-2 border-t border-border px-5 py-4"><button type="button" className="rounded-xl px-4 py-2 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" disabled={busy} onClick={onClose}>Cancel</button><form.Subscribe selector={state => state.canSubmit}>{canSubmit => (
+        <button type="button" className="inline-flex min-w-24 items-center justify-center gap-2 rounded-xl bg-primary px-4 py-2 text-sm font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-40" disabled={busy || !canSubmit} onClick={() => void form.handleSubmit()}>{busy && <LoaderCircle className="animate-spin" size={14} aria-hidden="true" />}Save</button>
+      )}</form.Subscribe></footer>
     </div>
   </div>;
 }

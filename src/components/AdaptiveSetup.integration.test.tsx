@@ -165,6 +165,101 @@ describe("adaptive setup journeys", () => {
     expect(committed?.[1]?.minimumPassBps).toBe(6500);
   });
 
+  it("typing an out-of-range pass floor shows a validation message and disables Save", async () => {
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    const field = container.querySelector<HTMLInputElement>('input[type="number"][max="100"]')!;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(field, "150");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    });
+    expect(container.textContent).toContain("Enter a percentage between 0 and 100.");
+    expect(button(container, "Save").disabled).toBe(true);
+  });
+
+  it("typing a sub-minimum cadence shows a validation message and disables Save", async () => {
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    const cadenceLabel = [...container.querySelectorAll("label")].find(label => label.textContent?.startsWith("Cadence"))!;
+    const field = cadenceLabel.querySelector("input") as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(field, "5");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    });
+    expect(container.textContent).toContain("Cadence must be at least 15 minutes.");
+    expect(button(container, "Save").disabled).toBe(true);
+  });
+
+  it("typing a fractional cadence shows a validation message and disables Save", async () => {
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    const cadenceLabel = [...container.querySelectorAll("label")].find(label => label.textContent?.startsWith("Cadence"))!;
+    const field = cadenceLabel.querySelector("input") as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(field, "15.5");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    });
+    expect(container.textContent).toContain("Cadence must be a whole number of minutes.");
+    expect(button(container, "Save").disabled).toBe(true);
+  });
+
+  it("typing a negative spend ceiling shows a validation message and disables Save", async () => {
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    const ceilingLabel = [...container.querySelectorAll("label")].find(label => label.textContent?.startsWith("Spend ceiling"))!;
+    const field = ceilingLabel.querySelector("input") as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(field, "-1");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    });
+    expect(container.textContent).toContain("Must be zero or greater.");
+    expect(button(container, "Save").disabled).toBe(true);
+  });
+
+  it("picking a harness clears a previously pinned model", async () => {
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    const select = (label: string) => [...container.querySelectorAll("label")].find(candidate => candidate.textContent?.includes(label))!.querySelector("select") as HTMLSelectElement;
+    const harnessSelect = select("Pin harness");
+    const modelSelect = select("Pin model");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(harnessSelect, "catalog");
+      harnessSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      await flush();
+    });
+    await act(async () => {
+      setter.call(modelSelect, "balanced");
+      modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      await flush();
+    });
+    expect(modelSelect.value).toBe("balanced");
+    await act(async () => {
+      setter.call(harnessSelect, "");
+      harnessSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      await flush();
+    });
+    expect(modelSelect.value).toBe("");
+  });
+
   it("does not rewrite the learning schedule when save has no schedule edits", async () => {
     const update = vi.spyOn(bridgeApi, "updateLearningSchedule");
     await act(async () => {
