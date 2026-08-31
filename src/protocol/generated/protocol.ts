@@ -1734,16 +1734,23 @@ export interface Workspace {
   title: string;
 }
 
+export type WorkspaceChangeKind = "added" | "modified" | "deleted" | "renamed" | "mode_only";
+
 export interface WorkspaceFileChange {
   additions: number;
   binary: boolean;
+  changeKind: WorkspaceChangeKind;
   deletions: number;
   importance: RiskTier;
   labels: string[];
   lowSignal: boolean;
   patch: string;
+  patchTruncated: boolean;
   path: string;
+  previousPath?: string | null;
 }
+
+export type WorkspaceRepositoryState = "normal" | "unborn" | "not_git";
 
 export interface RpcRequest {
   id: RequestId;
@@ -1985,6 +1992,9 @@ export interface WorkspaceChangesParams {
 export interface WorkspaceChangesResult {
   baseCommit?: string | null;
   files: WorkspaceFileChange[];
+  filesTruncated: boolean;
+  repositoryState: WorkspaceRepositoryState;
+  totalFiles?: number | null;
 }
 
 export interface GetSessionForestParams {

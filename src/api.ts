@@ -1802,12 +1802,18 @@ function mockWriteFile(path: string, content: string, baseSha256: string | null)
 function mockWorkspaceChanges(): WorkspaceChangesResult {
   return {
     baseCommit: "a1b2c3d4",
+    repositoryState: "normal",
+    totalFiles: 4,
+    filesTruncated: false,
     files: [
       {
         path: "src-tauri/bridge-core/src/policy.rs",
+        previousPath: null,
+        changeKind: "modified",
         additions: 18,
         deletions: 4,
         patch: "@@ -10,7 +10,21 @@\n-fn allow(path: &str) -> bool {\n+fn allow(path: &str, owner: &str) -> bool {\n     true\n }\n",
+        patchTruncated: false,
         binary: false,
         importance: "high",
         labels: ["rust"],
@@ -1815,9 +1821,12 @@ function mockWorkspaceChanges(): WorkspaceChangesResult {
       },
       {
         path: "src/components/ChangesPanel.tsx",
+        previousPath: null,
+        changeKind: "modified",
         additions: 42,
         deletions: 6,
         patch: "@@ -1,3 +1,5 @@\n+import { useState } from \"react\";\n export function ChangesPanel() {\n   return null;\n }\n",
+        patchTruncated: false,
         binary: false,
         importance: "medium",
         labels: ["frontend"],
@@ -1825,9 +1834,12 @@ function mockWorkspaceChanges(): WorkspaceChangesResult {
       },
       {
         path: "src/utils.ts",
+        previousPath: null,
+        changeKind: "modified",
         additions: 3,
         deletions: 1,
         patch: "@@ -4,5 +4,7 @@\n export function slug(value: string) {\n-  return value;\n+  return value.toLowerCase();\n }\n",
+        patchTruncated: false,
         binary: false,
         importance: "low",
         labels: ["frontend"],
@@ -1835,9 +1847,12 @@ function mockWorkspaceChanges(): WorkspaceChangesResult {
       },
       {
         path: "bun.lock",
+        previousPath: null,
+        changeKind: "modified",
         additions: 240,
         deletions: 12,
         patch: "",
+        patchTruncated: false,
         binary: false,
         importance: "low",
         labels: [],

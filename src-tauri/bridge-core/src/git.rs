@@ -2,9 +2,11 @@ use crate::{completion, completion::RiskTier, policy, BridgeError};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
+    io::Read,
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
+    thread,
 };
 
 pub const CITIES: &[&str] = &[
@@ -220,15 +222,46 @@ pub struct WorkerChangeSet {
     pub patch: String,
 }
 
+/// Hard bounds for the Changes-tab snapshot. The response is an interactive
+/// review aid, not an archive format: callers receive explicit truncation
+/// metadata and can open the underlying file when a patch exceeds the budget.
+pub const MAX_WORKSPACE_CHANGE_FILES: usize = 100;
+pub const MAX_WORKSPACE_PATCH_BYTES: usize = 64 * 1024;
+pub const MAX_WORKSPACE_TOTAL_PATCH_BYTES: usize = 512 * 1024;
+const MAX_WORKSPACE_METADATA_BYTES: usize = 2 * 1024 * 1024;
+const MAX_GIT_ERROR_BYTES: usize = 64 * 1024;
+const EMPTY_TREE_OID: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceRepositoryState {
+    Normal,
+    Unborn,
+    NotGit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceChangeKind {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    ModeOnly,
+}
+
 /// One file's working-tree diff against `HEAD`, with the importance signal an
 /// importance-first review UI needs to triage it without opening every file.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceFileChange {
     pub path: String,
+    pub previous_path: Option<String>,
+    pub change_kind: WorkspaceChangeKind,
     pub additions: i64,
     pub deletions: i64,
     pub patch: String,
+    pub patch_truncated: bool,
     pub binary: bool,
     pub importance: RiskTier,
     pub labels: Vec<String>,
@@ -243,7 +276,12 @@ pub struct WorkspaceFileChange {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceChangeset {
     pub base_commit: Option<String>,
+    pub repository_state: WorkspaceRepositoryState,
     pub files: Vec<WorkspaceFileChange>,
+    /// Exact when present. `None` means Git metadata itself exceeded its bound,
+    /// so `files.len()` is only a lower bound.
+    pub total_files: Option<usize>,
+    pub files_truncated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -948,105 +986,167 @@ fn nonempty_lines(value: &str) -> Vec<String> {
 /// `HEAD`, tracked or not — with per-file importance for an importance-first
 /// review UI. Working-tree diff vs `HEAD`, the same scope [`stats`] covers.
 pub fn workspace_changeset(path: &Path) -> Result<WorkspaceChangeset, BridgeError> {
-    let base_commit = run(path, ["rev-parse", "HEAD"])
+    if !is_repository(path) {
+        return Ok(WorkspaceChangeset {
+            base_commit: None,
+            repository_state: WorkspaceRepositoryState::NotGit,
+            files: Vec::new(),
+            total_files: Some(0),
+            files_truncated: false,
+        });
+    }
+
+    let base_commit = run(path, ["rev-parse", "--verify", "HEAD"])
         .ok()
         .map(|value| value.trim().to_owned());
-    let mut files = Vec::new();
-    let mut seen: HashSet<String> = HashSet::new();
+    let repository_state = if base_commit.is_some() {
+        WorkspaceRepositoryState::Normal
+    } else {
+        WorkspaceRepositoryState::Unborn
+    };
+    let base = base_commit.as_deref().unwrap_or(EMPTY_TREE_OID);
 
-    let numstat = run(
+    // Both metadata streams are NUL-delimited. Git's quoted line format cannot
+    // represent tabs/newlines/backslashes without a second decoding pass, and
+    // feeding that display spelling back to Git targets the wrong path.
+    let raw = run_bounded_bytes(
         path,
         [
-            "-c",
-            "core.quotePath=false",
             "diff",
-            "--no-renames",
-            "--numstat",
-            "HEAD",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--raw",
+            "-z",
+            "--find-renames",
+            base,
         ],
+        MAX_WORKSPACE_METADATA_BYTES,
+        &[0],
     )?;
-    for line in numstat.lines().filter(|line| !line.trim().is_empty()) {
-        let columns: Vec<&str> = line.split('\t').collect();
-        if columns.len() < 3 {
-            continue;
-        }
-        let file_path = columns[2].trim().to_owned();
-        let binary = columns[0] == "-" || columns[1] == "-";
-        let additions = columns[0].parse::<i64>().unwrap_or(0);
-        let deletions = columns[1].parse::<i64>().unwrap_or(0);
-        let patch = if binary {
-            String::new()
-        } else {
-            strip_diff_header(
-                &run(
-                    path,
-                    [
-                        "-c",
-                        "core.quotePath=false",
-                        "diff",
-                        "--no-renames",
-                        "HEAD",
-                        "--",
-                        file_path.as_str(),
-                    ],
-                )
-                .unwrap_or_default(),
-            )
-        };
-        seen.insert(file_path.clone());
-        files.push(workspace_file_change(
-            file_path, additions, deletions, patch, binary,
-        ));
-    }
-
-    let porcelain = run(
+    let numstat = run_bounded_bytes(
         path,
         [
-            "-c",
-            "core.quotePath=false",
-            "status",
-            "--porcelain",
-            "--untracked-files=all",
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--numstat",
+            "-z",
+            "--find-renames",
+            base,
         ],
+        MAX_WORKSPACE_METADATA_BYTES,
+        &[0],
     )?;
-    for line in porcelain.lines() {
-        if line.len() <= 3 || &line[0..2] != "??" {
-            continue;
+    let porcelain = run_bounded_bytes(
+        path,
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        MAX_WORKSPACE_METADATA_BYTES,
+        &[0],
+    )?;
+
+    let mut descriptors = parse_raw_changes(complete_nul_records(&raw));
+    let stats = parse_numstat(complete_nul_records(&numstat));
+    for descriptor in &mut descriptors {
+        if let Some((additions, deletions, binary)) = stats.get(&descriptor.path) {
+            descriptor.additions = *additions;
+            descriptor.deletions = *deletions;
+            descriptor.binary = *binary;
         }
-        let file_path = line[3..].trim().trim_matches('"').to_owned();
-        if file_path.is_empty() || seen.contains(&file_path) {
-            continue;
-        }
-        let (patch, additions, binary) = untracked_file_patch(path, &file_path);
-        files.push(workspace_file_change(
-            file_path,
-            additions,
-            0,
-            strip_diff_header(&patch),
-            binary,
-        ));
     }
 
-    files.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(WorkspaceChangeset { base_commit, files })
+    let mut seen: HashSet<String> = descriptors
+        .iter()
+        .map(|descriptor| descriptor.path.clone())
+        .collect();
+    for file_path in parse_untracked_paths(complete_nul_records(&porcelain)) {
+        if !file_path.is_empty() && seen.insert(file_path.clone()) {
+            let (additions, binary) = inspect_untracked_file(path, &file_path);
+            descriptors.push(ChangeDescriptor {
+                path: file_path,
+                previous_path: None,
+                change_kind: WorkspaceChangeKind::Added,
+                additions,
+                deletions: 0,
+                binary,
+            });
+        }
+    }
+
+    // Apply the row budget after importance ranking so a generated tree cannot
+    // push auth/policy/migration changes out of the transported review window.
+    descriptors.sort_by(|left, right| {
+        risk_rank(completion::risk_tier_for_path(&left.path))
+            .cmp(&risk_rank(completion::risk_tier_for_path(&right.path)))
+            .then_with(|| left.path.cmp(&right.path))
+    });
+    let metadata_truncated = raw.truncated || numstat.truncated || porcelain.truncated;
+    let total_files = (!metadata_truncated).then_some(descriptors.len());
+    let files_truncated = metadata_truncated || descriptors.len() > MAX_WORKSPACE_CHANGE_FILES;
+
+    let mut remaining_patch_bytes = MAX_WORKSPACE_TOTAL_PATCH_BYTES;
+    let mut files = Vec::new();
+    for mut descriptor in descriptors.into_iter().take(MAX_WORKSPACE_CHANGE_FILES) {
+        let patch_budget = remaining_patch_bytes.min(MAX_WORKSPACE_PATCH_BYTES);
+        let (patch, patch_truncated) = if descriptor.binary {
+            (String::new(), false)
+        } else if descriptor.change_kind == WorkspaceChangeKind::Added
+            && descriptor.previous_path.is_none()
+        {
+            untracked_file_patch(path, &descriptor.path, patch_budget)
+        } else {
+            tracked_file_patch(path, base, &descriptor.path, patch_budget)?
+        };
+        if descriptor.change_kind == WorkspaceChangeKind::Modified
+            && descriptor.additions == 0
+            && descriptor.deletions == 0
+            && patch.lines().any(|line| line.starts_with("old mode "))
+        {
+            descriptor.change_kind = WorkspaceChangeKind::ModeOnly;
+        }
+        remaining_patch_bytes = remaining_patch_bytes.saturating_sub(patch.len());
+        files.push(workspace_file_change(descriptor, patch, patch_truncated));
+    }
+    // Preserve the longstanding stable wire order. The frontend applies the
+    // visible importance sort, while pre-cap selection above ensures the
+    // bounded response still contains the highest-risk paths.
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+
+    Ok(WorkspaceChangeset {
+        base_commit,
+        repository_state,
+        files,
+        total_files,
+        files_truncated,
+    })
+}
+
+#[derive(Debug)]
+struct ChangeDescriptor {
+    path: String,
+    previous_path: Option<String>,
+    change_kind: WorkspaceChangeKind,
+    additions: i64,
+    deletions: i64,
+    binary: bool,
 }
 
 fn workspace_file_change(
-    path: String,
-    additions: i64,
-    deletions: i64,
+    descriptor: ChangeDescriptor,
     patch: String,
-    binary: bool,
+    patch_truncated: bool,
 ) -> WorkspaceFileChange {
-    let importance = completion::risk_tier_for_path(&path);
-    let labels = completion::labels_for_paths(std::slice::from_ref(&path));
-    let low_signal = completion::is_low_signal_path(&path);
+    let importance = completion::risk_tier_for_path(&descriptor.path);
+    let labels = completion::labels_for_paths(std::slice::from_ref(&descriptor.path));
+    let low_signal = completion::is_low_signal_path(&descriptor.path);
     WorkspaceFileChange {
-        path,
-        additions,
-        deletions,
+        path: descriptor.path,
+        previous_path: descriptor.previous_path,
+        change_kind: descriptor.change_kind,
+        additions: descriptor.additions,
+        deletions: descriptor.deletions,
         patch,
-        binary,
+        patch_truncated,
+        binary: descriptor.binary,
         importance,
         labels,
         low_signal,
@@ -1054,61 +1154,254 @@ fn workspace_file_change(
 }
 
 /// Drop the `diff --git`/`index`/`--- a/…`/`+++ b/…` file-header block that
-/// precedes the first `@@` hunk. The Changes panel already shows the file path
-/// in its own row, so the header's `a/…`, `b/…` and `/dev/null` variants only
-/// read as duplicated, confusing paths stacked on top of the diff. A patch with
-/// no hunk (mode-only change, empty new file) carries nothing worth rendering.
+/// precedes the first `@@` hunk. Mode and rename metadata has no hunk, but is
+/// itself review content and must survive.
 fn strip_diff_header(patch: &str) -> String {
     if patch.starts_with("@@") {
         return patch.to_owned();
     }
     match patch.find("\n@@") {
         Some(index) => patch[index + 1..].to_owned(),
-        None => String::new(),
+        None => patch
+            .lines()
+            .filter(|line| {
+                [
+                    "old mode ",
+                    "new mode ",
+                    "new file mode ",
+                    "deleted file mode ",
+                    "similarity index ",
+                    "rename from ",
+                    "rename to ",
+                ]
+                .iter()
+                .any(|prefix| line.starts_with(prefix))
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
     }
 }
 
 /// A new, untracked file has nothing in `HEAD` to diff against; synthesize an
 /// "entirely added" patch via `git diff --no-index` instead of touching the
 /// index (`--intent-to-add` would mutate state this read-only view must not).
-fn untracked_file_patch(worktree: &Path, relative_path: &str) -> (String, i64, bool) {
-    let full_path = worktree.join(relative_path);
-    let bytes = match std::fs::read(&full_path) {
-        Ok(bytes) => bytes,
-        Err(_) => return (String::new(), 0, true),
-    };
-    if bytes.contains(&0) {
-        return (String::new(), 0, true);
+fn untracked_file_patch(worktree: &Path, relative_path: &str, budget: usize) -> (String, bool) {
+    if budget == 0 {
+        return (String::new(), true);
     }
-    let additions = String::from_utf8_lossy(&bytes).lines().count() as i64;
-    let output = git_command(worktree)
-        .args([
+    let output = run_bounded_bytes(
+        worktree,
+        [
             "diff",
+            "--no-ext-diff",
+            "--no-textconv",
             "--no-index",
             "--no-renames",
             "--",
             "/dev/null",
             relative_path,
-        ])
-        .output();
-    let patch = match output {
-        // `--no-index` exits 1 when it finds differences, which is the normal
-        // case here; only a genuinely failed invocation has no usable status.
-        Ok(result) if matches!(result.status.code(), Some(0) | Some(1)) => {
-            String::from_utf8_lossy(&result.stdout).into_owned()
-        }
-        _ => String::new(),
+        ],
+        budget.saturating_add(8192),
+        &[0, 1],
+    );
+    match output {
+        Ok(output) => bounded_patch(output, budget),
+        Err(_) => (String::new(), true),
+    }
+}
+
+fn tracked_file_patch(
+    worktree: &Path,
+    base: &str,
+    relative_path: &str,
+    budget: usize,
+) -> Result<(String, bool), BridgeError> {
+    if budget == 0 {
+        return Ok((String::new(), true));
+    }
+    let output = run_bounded_bytes(
+        worktree,
+        [
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--find-renames",
+            base,
+            "--",
+            relative_path,
+        ],
+        budget.saturating_add(8192),
+        &[0],
+    )?;
+    Ok(bounded_patch(output, budget))
+}
+
+fn bounded_patch(output: BoundedOutput, budget: usize) -> (String, bool) {
+    let patch = strip_diff_header(&String::from_utf8_lossy(&output.stdout));
+    let truncated = output.truncated || patch.len() > budget;
+    (truncate_utf8(patch, budget), truncated)
+}
+
+fn truncate_utf8(mut value: String, limit: usize) -> String {
+    if value.len() <= limit {
+        return value;
+    }
+    let mut end = limit;
+    while end > 0 && !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value.truncate(end);
+    value
+}
+
+fn inspect_untracked_file(worktree: &Path, relative_path: &str) -> (i64, bool) {
+    let mut file = match std::fs::File::open(worktree.join(relative_path)) {
+        Ok(file) => file,
+        Err(_) => return (0, true),
     };
-    (patch, additions, false)
+    let mut buffer = [0_u8; 8192];
+    let mut additions = 0_i64;
+    let mut any = false;
+    let mut last = 0_u8;
+    loop {
+        let read = match file.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(read) => read,
+            Err(_) => return (0, true),
+        };
+        any = true;
+        last = buffer[read - 1];
+        if buffer[..read].contains(&0) {
+            return (0, true);
+        }
+        additions += buffer[..read].iter().filter(|byte| **byte == b'\n').count() as i64;
+    }
+    if any && last != b'\n' {
+        additions += 1;
+    }
+    (additions, false)
+}
+
+fn parse_raw_changes(bytes: &[u8]) -> Vec<ChangeDescriptor> {
+    let fields: Vec<&[u8]> = bytes.split(|byte| *byte == 0).collect();
+    let mut changes = Vec::new();
+    let mut index = 0;
+    while index < fields.len() {
+        let header = fields[index];
+        index += 1;
+        if header.is_empty() || !header.starts_with(b":") || index >= fields.len() {
+            continue;
+        }
+        if fields[index].is_empty() {
+            break;
+        }
+        let header_text = String::from_utf8_lossy(header);
+        let mut columns = header_text.split_ascii_whitespace();
+        let old_mode = columns.next().unwrap_or(":0").trim_start_matches(':');
+        let new_mode = columns.next().unwrap_or("0");
+        let status = header_text.split_ascii_whitespace().last().unwrap_or("M");
+        let first_path = path_string(fields[index]);
+        index += 1;
+        let (path, previous_path, change_kind) = match status.as_bytes().first().copied() {
+            Some(b'R') | Some(b'C') if index < fields.len() && !fields[index].is_empty() => {
+                let new_path = path_string(fields[index]);
+                index += 1;
+                (new_path, Some(first_path), WorkspaceChangeKind::Renamed)
+            }
+            Some(b'R') | Some(b'C') => break,
+            Some(b'A') => (first_path, None, WorkspaceChangeKind::Added),
+            Some(b'D') => (first_path, None, WorkspaceChangeKind::Deleted),
+            _ if old_mode != new_mode => (first_path, None, WorkspaceChangeKind::ModeOnly),
+            _ => (first_path, None, WorkspaceChangeKind::Modified),
+        };
+        changes.push(ChangeDescriptor {
+            path,
+            previous_path,
+            change_kind,
+            additions: 0,
+            deletions: 0,
+            binary: false,
+        });
+    }
+    changes
+}
+
+fn parse_numstat(bytes: &[u8]) -> HashMap<String, (i64, i64, bool)> {
+    let fields: Vec<&[u8]> = bytes.split(|byte| *byte == 0).collect();
+    let mut stats = HashMap::new();
+    let mut index = 0;
+    while index < fields.len() {
+        let record = fields[index];
+        index += 1;
+        if record.is_empty() {
+            continue;
+        }
+        let Some(first_tab) = record.iter().position(|byte| *byte == b'\t') else {
+            continue;
+        };
+        let Some(second_offset) = record[first_tab + 1..]
+            .iter()
+            .position(|byte| *byte == b'\t')
+        else {
+            continue;
+        };
+        let second_tab = first_tab + 1 + second_offset;
+        let additions_text = String::from_utf8_lossy(&record[..first_tab]);
+        let deletions_text = String::from_utf8_lossy(&record[first_tab + 1..second_tab]);
+        let binary = additions_text == "-" || deletions_text == "-";
+        let additions = additions_text.parse().unwrap_or(0);
+        let deletions = deletions_text.parse().unwrap_or(0);
+        let inline_path = &record[second_tab + 1..];
+        let path = if inline_path.is_empty()
+            && index + 1 < fields.len()
+            && !fields[index].is_empty()
+            && !fields[index + 1].is_empty()
+        {
+            // Rename/copy records carry old and new paths as two following
+            // NUL fields. The new path is the identity shown by the review.
+            index += 1;
+            let new_path = path_string(fields[index]);
+            index += 1;
+            new_path
+        } else if !inline_path.is_empty() {
+            path_string(inline_path)
+        } else {
+            break;
+        };
+        stats.insert(path, (additions, deletions, binary));
+    }
+    stats
+}
+
+fn parse_untracked_paths(bytes: &[u8]) -> Vec<String> {
+    bytes
+        .split(|byte| *byte == 0)
+        .filter_map(|record| record.strip_prefix(b"?? "))
+        .map(path_string)
+        .collect()
+}
+
+fn path_string(bytes: &[u8]) -> String {
+    String::from_utf8_lossy(bytes).into_owned()
+}
+
+fn risk_rank(tier: RiskTier) -> u8 {
+    match tier {
+        RiskTier::High => 0,
+        RiskTier::Medium => 1,
+        RiskTier::Low => 2,
+    }
 }
 
 /// How many lines an untracked file contributes as additions, or 0 when it is
 /// binary or unreadable. Mirrors `untracked_file_patch`'s count without paying
 /// for the extra `git diff --no-index` the patch view needs.
 fn untracked_addition_count(worktree: &Path, relative_path: &str) -> i64 {
-    match std::fs::read(worktree.join(relative_path)) {
-        Ok(bytes) if !bytes.contains(&0) => String::from_utf8_lossy(&bytes).lines().count() as i64,
-        _ => 0,
+    let (additions, binary) = inspect_untracked_file(worktree, relative_path);
+    if binary {
+        0
+    } else {
+        additions
     }
 }
 
@@ -1119,40 +1412,40 @@ pub fn stats(path: &Path) -> Result<(i64, i64, i64), BridgeError> {
     // code) count toward both the file total and additions — matching
     // `workspace_changeset`, which the Changes panel reads. Without this the
     // chip reads "N files +0 −0".
-    let porcelain = run(
+    if !is_repository(path) {
+        return Ok((0, 0, 0));
+    }
+    let base = run(path, ["rev-parse", "--verify", "HEAD"])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .unwrap_or_else(|| EMPTY_TREE_OID.to_owned());
+    let porcelain = run_bytes(
         path,
-        [
-            "-c",
-            "core.quotePath=false",
-            "status",
-            "--porcelain",
-            "--untracked-files=all",
-        ],
+        ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
     )?;
     let dirty = porcelain
-        .lines()
-        .filter(|line| !line.trim().is_empty())
+        .split(|byte| *byte == 0)
+        .filter(|record| record.len() >= 3 && record[2] == b' ')
         .count() as i64;
 
-    let diff = run(path, ["diff", "--numstat", "HEAD"])?;
-    let mut adds = 0;
-    let mut dels = 0;
-    for l in diff.lines() {
-        let p: Vec<_> = l.split('\t').collect();
-        if p.len() > 1 {
-            adds += p[0].parse::<i64>().unwrap_or(0);
-            dels += p[1].parse::<i64>().unwrap_or(0)
-        }
-    }
+    let diff = run_bytes(
+        path,
+        [
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--numstat",
+            "-z",
+            "--find-renames",
+            &base,
+        ],
+    )?;
+    let tracked = parse_numstat(&diff);
+    let mut adds = tracked.values().map(|(adds, _, _)| *adds).sum();
+    let dels = tracked.values().map(|(_, dels, _)| *dels).sum();
 
-    for line in porcelain.lines() {
-        if line.len() <= 3 || &line[0..2] != "??" {
-            continue;
-        }
-        let file_path = line[3..].trim().trim_matches('"');
-        if !file_path.is_empty() {
-            adds += untracked_addition_count(path, file_path);
-        }
+    for file_path in parse_untracked_paths(&porcelain) {
+        adds += untracked_addition_count(path, &file_path);
     }
 
     Ok((dirty, adds, dels))
@@ -1172,6 +1465,96 @@ pub(crate) fn git_command(cwd: &Path) -> Command {
     let mut command = Command::new("git");
     command.current_dir(cwd);
     command
+}
+
+struct BoundedOutput {
+    stdout: Vec<u8>,
+    truncated: bool,
+}
+
+fn complete_nul_records(output: &BoundedOutput) -> &[u8] {
+    if !output.truncated {
+        return &output.stdout;
+    }
+    let completed = output
+        .stdout
+        .iter()
+        .rposition(|byte| *byte == 0)
+        .map_or(0, |index| index + 1);
+    &output.stdout[..completed]
+}
+
+/// Read stdout only through the configured byte budget. stderr is drained on
+/// a sibling thread so Git cannot deadlock when a command fails verbosely.
+fn run_bounded_bytes<'a, I>(
+    cwd: &Path,
+    args: I,
+    limit: usize,
+    accepted_statuses: &[i32],
+) -> Result<BoundedOutput, BridgeError>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let mut child = git_command(cwd)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let stderr = child.stderr.take().expect("piped stderr");
+    let stderr_reader = thread::spawn(move || read_capped(stderr, MAX_GIT_ERROR_BYTES));
+    let mut stdout = Vec::with_capacity(limit.min(64 * 1024).saturating_add(1));
+    child
+        .stdout
+        .take()
+        .expect("piped stdout")
+        .take(limit as u64 + 1)
+        .read_to_end(&mut stdout)?;
+    let truncated = stdout.len() > limit;
+    if truncated {
+        stdout.truncate(limit);
+        let _ = child.kill();
+    }
+    let status = child.wait()?;
+    let stderr = stderr_reader.join().unwrap_or_default();
+    if !truncated
+        && !status
+            .code()
+            .is_some_and(|code| accepted_statuses.contains(&code))
+    {
+        return Err(BridgeError::Git(
+            String::from_utf8_lossy(&stderr).trim().into(),
+        ));
+    }
+    Ok(BoundedOutput { stdout, truncated })
+}
+
+fn read_capped(mut reader: impl Read, limit: usize) -> Vec<u8> {
+    let mut retained = Vec::with_capacity(limit.min(8192));
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let Ok(read) = reader.read(&mut buffer) else {
+            break;
+        };
+        if read == 0 {
+            break;
+        }
+        let available = limit.saturating_sub(retained.len());
+        retained.extend_from_slice(&buffer[..read.min(available)]);
+    }
+    retained
+}
+
+fn run_bytes<'a, I>(cwd: &Path, args: I) -> Result<Vec<u8>, BridgeError>
+where
+    I: IntoIterator<Item = &'a str>,
+{
+    let output = git_command(cwd).args(args).output()?;
+    if !output.status.success() {
+        return Err(BridgeError::Git(
+            String::from_utf8_lossy(&output.stderr).trim().into(),
+        ));
+    }
+    Ok(output.stdout)
 }
 
 /// How many `git` processes the calling thread has started. Compare two readings
@@ -1804,7 +2187,13 @@ mod tests {
 
         let changeset = workspace_changeset(&repo).unwrap();
         assert!(changeset.base_commit.is_some());
-        let by_path = |path: &str| changeset.files.iter().find(|file| file.path == path).unwrap();
+        let by_path = |path: &str| {
+            changeset
+                .files
+                .iter()
+                .find(|file| file.path == path)
+                .unwrap()
+        };
 
         let shared = by_path("shared.txt");
         assert_eq!(shared.additions, 1);
@@ -1819,12 +2208,20 @@ mod tests {
         let lock = by_path("bun.lock");
         assert!(lock.low_signal);
 
-        let mut sorted_paths: Vec<_> = changeset.files.iter().map(|file| file.path.clone()).collect();
+        let mut sorted_paths: Vec<_> = changeset
+            .files
+            .iter()
+            .map(|file| file.path.clone())
+            .collect();
         let mut expected = sorted_paths.clone();
         expected.sort();
         assert_eq!(sorted_paths, expected, "files are sorted by path");
         sorted_paths.dedup();
-        assert_eq!(sorted_paths.len(), changeset.files.len(), "no duplicate paths");
+        assert_eq!(
+            sorted_paths.len(),
+            changeset.files.len(),
+            "no duplicate paths"
+        );
     }
 
     #[test]
@@ -1853,13 +2250,188 @@ mod tests {
         let changeset = workspace_changeset(&repo).unwrap();
         for name in ["shared.txt", "fresh.txt"] {
             let file = changeset.files.iter().find(|f| f.path == name).unwrap();
-            assert!(file.patch.starts_with("@@"), "{name} patch keeps its header: {:?}", file.patch);
+            assert!(
+                file.patch.starts_with("@@"),
+                "{name} patch keeps its header: {:?}",
+                file.patch
+            );
             for noise in ["diff --git", "--- a/", "+++ b/", "/dev/null"] {
-                assert!(!file.patch.contains(noise), "{name} patch still shows `{noise}`");
+                assert!(
+                    !file.patch.contains(noise),
+                    "{name} patch still shows `{noise}`"
+                );
             }
         }
         // Content survives the strip.
-        assert!(changeset.files.iter().find(|f| f.path == "fresh.txt").unwrap().patch.contains("+one"));
+        assert!(changeset
+            .files
+            .iter()
+            .find(|f| f.path == "fresh.txt")
+            .unwrap()
+            .patch
+            .contains("+one"));
+    }
+
+    #[test]
+    fn workspace_changeset_handles_non_repository() {
+        let fixture = tempfile::tempdir().unwrap();
+        std::fs::write(fixture.path().join("plain.txt"), "not a repository\n").unwrap();
+
+        let changeset = workspace_changeset(fixture.path()).unwrap();
+
+        assert_eq!(changeset.repository_state, WorkspaceRepositoryState::NotGit);
+        assert_eq!(changeset.base_commit, None);
+        assert_eq!(changeset.total_files, Some(0));
+        assert!(changeset.files.is_empty());
+        assert!(!changeset.files_truncated);
+        assert_eq!(stats(fixture.path()).unwrap(), (0, 0, 0));
+    }
+
+    #[test]
+    fn workspace_changeset_handles_unborn_repository() {
+        let fixture = tempfile::tempdir().unwrap();
+        git(fixture.path(), &["init", "-q"]);
+        std::fs::write(fixture.path().join("staged.txt"), "staged\n").unwrap();
+        std::fs::write(fixture.path().join("loose.txt"), "one\ntwo\n").unwrap();
+        git(fixture.path(), &["add", "staged.txt"]);
+
+        let changeset = workspace_changeset(fixture.path()).unwrap();
+
+        assert_eq!(changeset.repository_state, WorkspaceRepositoryState::Unborn);
+        assert_eq!(changeset.base_commit, None);
+        assert_eq!(changeset.total_files, Some(2));
+        let staged = changeset
+            .files
+            .iter()
+            .find(|file| file.path == "staged.txt")
+            .unwrap();
+        let loose = changeset
+            .files
+            .iter()
+            .find(|file| file.path == "loose.txt")
+            .unwrap();
+        assert_eq!(staged.change_kind, WorkspaceChangeKind::Added);
+        assert_eq!(loose.change_kind, WorkspaceChangeKind::Added);
+        assert!(staged.patch.contains("+staged"));
+        assert!(loose.patch.contains("+one"));
+        assert_eq!(stats(fixture.path()).unwrap(), (2, 3, 0));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_changeset_preserves_mode_only_changes() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let (_fixture, repo) = repository();
+        let script = repo.join("shared.txt");
+        let mut permissions = std::fs::metadata(&script).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&script, permissions).unwrap();
+
+        let changeset = workspace_changeset(&repo).unwrap();
+        let change = changeset
+            .files
+            .iter()
+            .find(|file| file.path == "shared.txt")
+            .unwrap();
+
+        assert_eq!(change.change_kind, WorkspaceChangeKind::ModeOnly);
+        assert_eq!((change.additions, change.deletions), (0, 0));
+        assert!(change.patch.contains("old mode 100644"));
+        assert!(change.patch.contains("new mode 100755"));
+        assert!(!change.patch_truncated);
+    }
+
+    #[test]
+    fn workspace_changeset_parses_unusual_filenames() {
+        let (_fixture, repo) = repository();
+        let paths = [
+            "tab\tname.txt",
+            "line\nbreak.txt",
+            "quote\"name.txt",
+            "back\\slash.txt",
+            "snowman-☃.txt",
+        ];
+        for (index, path) in paths.iter().enumerate() {
+            std::fs::write(repo.join(path), format!("unusual-{index}\n")).unwrap();
+        }
+
+        let changeset = workspace_changeset(&repo).unwrap();
+
+        for (index, path) in paths.iter().enumerate() {
+            let change = changeset
+                .files
+                .iter()
+                .find(|file| file.path == *path)
+                .unwrap();
+            assert_eq!(change.change_kind, WorkspaceChangeKind::Added);
+            assert!(change.patch.contains(&format!("+unusual-{index}")));
+        }
+        assert_eq!(
+            stats(&repo).unwrap(),
+            (paths.len() as i64, paths.len() as i64, 0)
+        );
+    }
+
+    #[test]
+    fn workspace_changeset_reports_rename_once() {
+        let (_fixture, repo) = repository();
+        git(&repo, &["mv", "shared.txt", "renamed.txt"]);
+
+        let changeset = workspace_changeset(&repo).unwrap();
+
+        assert_eq!(changeset.total_files, Some(1));
+        assert_eq!(changeset.files.len(), 1);
+        let rename = &changeset.files[0];
+        assert_eq!(rename.path, "renamed.txt");
+        assert_eq!(rename.previous_path.as_deref(), Some("shared.txt"));
+        assert_eq!(rename.change_kind, WorkspaceChangeKind::Renamed);
+        assert_eq!(stats(&repo).unwrap().0, 1);
+    }
+
+    #[test]
+    fn workspace_changeset_bounds_file_and_patch_payloads() {
+        let (_fixture, repo) = repository();
+        let large = "bounded payload line\n".repeat(MAX_WORKSPACE_PATCH_BYTES / 10);
+        for index in 0..9 {
+            std::fs::write(repo.join(format!("000-large-{index}.txt")), &large).unwrap();
+        }
+        for index in 0..(MAX_WORKSPACE_CHANGE_FILES - 8) {
+            std::fs::write(repo.join(format!("z-{index:03}.txt")), "").unwrap();
+        }
+
+        let processes_before = git_processes_started_on_this_thread();
+        let changeset = workspace_changeset(&repo).unwrap();
+        let processes_used = git_processes_started_on_this_thread() - processes_before;
+
+        assert_eq!(changeset.total_files, Some(MAX_WORKSPACE_CHANGE_FILES + 1));
+        assert!(changeset.files_truncated);
+        assert_eq!(changeset.files.len(), MAX_WORKSPACE_CHANGE_FILES);
+        let large = changeset
+            .files
+            .iter()
+            .find(|file| file.path == "000-large-0.txt")
+            .unwrap();
+        assert!(large.patch_truncated);
+        assert!(large.patch.len() <= MAX_WORKSPACE_PATCH_BYTES);
+        assert!(
+            changeset
+                .files
+                .iter()
+                .map(|file| file.patch.len())
+                .sum::<usize>()
+                <= MAX_WORKSPACE_TOTAL_PATCH_BYTES
+        );
+        assert!(processes_used <= MAX_WORKSPACE_CHANGE_FILES as u64 + 5);
+    }
+
+    #[test]
+    fn workspace_changeset_marks_deleted_files() {
+        let (_fixture, repo) = repository();
+        std::fs::remove_file(repo.join("shared.txt")).unwrap();
+
+        let changeset = workspace_changeset(&repo).unwrap();
+        assert_eq!(changeset.files[0].change_kind, WorkspaceChangeKind::Deleted);
     }
 
     #[test]
@@ -1872,7 +2444,10 @@ mod tests {
         std::fs::write(repo.join("nested/beta.txt"), "x\ny\n").unwrap();
 
         let (dirty, adds, dels) = stats(&repo).unwrap();
-        assert_eq!(dirty, 2, "both new files count, even inside a new directory");
+        assert_eq!(
+            dirty, 2,
+            "both new files count, even inside a new directory"
+        );
         assert_eq!(adds, 5, "3 + 2 added lines from untracked files");
         assert_eq!(dels, 0);
     }

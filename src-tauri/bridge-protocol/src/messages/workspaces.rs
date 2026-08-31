@@ -136,16 +136,37 @@ pub enum RiskTier {
     High,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceRepositoryState {
+    Normal,
+    Unborn,
+    NotGit,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceChangeKind {
+    Added,
+    Modified,
+    Deleted,
+    Renamed,
+    ModeOnly,
+}
+
 /// One file's working-tree diff against `HEAD`. Mirrors
 /// `bridge_core::git::WorkspaceFileChange`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceFileChange {
     pub path: String,
+    pub previous_path: Option<String>,
+    pub change_kind: WorkspaceChangeKind,
     pub additions: i64,
     pub deletions: i64,
     /// Unified diff text; empty for files detected as binary.
     pub patch: String,
+    pub patch_truncated: bool,
     pub binary: bool,
     pub importance: RiskTier,
     pub labels: Vec<String>,
@@ -161,7 +182,10 @@ pub struct WorkspaceFileChange {
 #[serde(rename_all = "camelCase")]
 pub struct WorkspaceChangesResult {
     pub base_commit: Option<String>,
+    pub repository_state: WorkspaceRepositoryState,
     pub files: Vec<WorkspaceFileChange>,
+    pub total_files: Option<usize>,
+    pub files_truncated: bool,
 }
 
 #[cfg(test)]
@@ -181,14 +205,23 @@ mod tests {
         assert_eq!(round_trip(&connect), connect);
 
         assert_eq!(
-            serde_json::to_value(ListWorkspaceFilesParams { session_id: "s".into() }).unwrap(),
+            serde_json::to_value(ListWorkspaceFilesParams {
+                session_id: "s".into()
+            })
+            .unwrap(),
             json!({"sessionId": "s"})
         );
-        let create = CreateWorkspaceParams { title: "Payments".into() };
+        let create = CreateWorkspaceParams {
+            title: "Payments".into(),
+        };
         assert_eq!(round_trip(&create), create);
-        let refresh = RefreshWorkspaceParams { workspace_id: "w-1".into() };
+        let refresh = RefreshWorkspaceParams {
+            workspace_id: "w-1".into(),
+        };
         assert_eq!(round_trip(&refresh), refresh);
-        let list_branches = ListWorkspaceBranchesParams { workspace_id: "w-1".into() };
+        let list_branches = ListWorkspaceBranchesParams {
+            workspace_id: "w-1".into(),
+        };
         assert_eq!(round_trip(&list_branches), list_branches);
         let checkout = CheckoutWorkspaceBranchParams {
             workspace_id: "w-1".into(),
@@ -199,9 +232,13 @@ mod tests {
             json!({"workspaceId": "w-1", "branch": "feat/real-branch-menu"})
         );
         assert_eq!(round_trip(&checkout), checkout);
-        let archive = ArchiveWorkspaceParams { workspace_id: "w-1".into() };
+        let archive = ArchiveWorkspaceParams {
+            workspace_id: "w-1".into(),
+        };
         assert_eq!(round_trip(&archive), archive);
-        let changes = WorkspaceChangesParams { workspace_id: "w-1".into() };
+        let changes = WorkspaceChangesParams {
+            workspace_id: "w-1".into(),
+        };
         assert_eq!(round_trip(&changes), changes);
     }
 
@@ -209,9 +246,12 @@ mod tests {
     fn workspace_change_serializes_with_snake_case_importance() {
         let change = WorkspaceFileChange {
             path: "src/App.tsx".into(),
+            previous_path: Some("src/OldApp.tsx".into()),
+            change_kind: WorkspaceChangeKind::Renamed,
             additions: 4,
             deletions: 1,
             patch: "@@ -1 +1,4 @@".into(),
+            patch_truncated: true,
             binary: false,
             importance: RiskTier::Medium,
             labels: vec!["frontend".into()],
@@ -222,9 +262,12 @@ mod tests {
             wire,
             json!({
                 "path": "src/App.tsx",
+                "previousPath": "src/OldApp.tsx",
+                "changeKind": "renamed",
                 "additions": 4,
                 "deletions": 1,
                 "patch": "@@ -1 +1,4 @@",
+                "patchTruncated": true,
                 "binary": false,
                 "importance": "medium",
                 "labels": ["frontend"],
@@ -233,7 +276,13 @@ mod tests {
         );
         assert_eq!(round_trip(&change), change);
 
-        let result = WorkspaceChangesResult { base_commit: Some("abc123".into()), files: vec![change] };
+        let result = WorkspaceChangesResult {
+            base_commit: Some("abc123".into()),
+            repository_state: WorkspaceRepositoryState::Normal,
+            files: vec![change],
+            total_files: Some(1),
+            files_truncated: false,
+        };
         assert_eq!(round_trip(&result), result);
     }
 
@@ -264,8 +313,10 @@ mod tests {
         .is_err());
         assert!(serde_json::from_value::<ArchiveWorkspaceParams>(json!({})).is_err());
         // Wire names are camelCase; snake_case spellings are not accepted.
-        assert!(serde_json::from_value::<ArchiveWorkspaceParams>(json!({"workspace_id": "w-1"}))
-            .is_err());
+        assert!(
+            serde_json::from_value::<ArchiveWorkspaceParams>(json!({"workspace_id": "w-1"}))
+                .is_err()
+        );
         assert!(serde_json::from_value::<WorkspaceChangesParams>(json!({})).is_err());
         assert!(serde_json::from_value::<WorkspaceChangesParams>(
             json!({"workspaceId": "w-1", "unexpected": true})
