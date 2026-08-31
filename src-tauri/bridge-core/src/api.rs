@@ -16,8 +16,8 @@ use crate::model::{
 };
 use crate::{
     adapters, agent, agent_config, agent_integration, automations, binary, browser_bridge,
-    completion, delegation, git, handoff, learning_job, learning_router, live_turn, marketplace,
-    memory_ledger,
+    compaction_controller, completion, delegation, git, handoff, learning_job, learning_router,
+    live_turn, marketplace, memory_ledger,
     model_profiles, opencode_adapter, prompt_studio, prompts, routing_evaluation,
     secret_interception,
     session_recall, session_supervisor,
@@ -995,7 +995,30 @@ pub fn dispatch_agent_shortcut(
 
 pub fn compact_session(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
     let prompt = core.begin_manual_compaction(session_id)?;
-    live_turn::send_internal_checkpoint_turn(core, session_id, &prompt)
+    match live_turn::send_internal_checkpoint_turn(core, session_id, &prompt) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            // `begin_manual_compaction` already appended the request. Settle it
+            // on delivery failure or every later retry sees a phantom pending
+            // compaction and is refused forever.
+            let attempt = compaction_controller::CompactionController::pending(
+                &core.db.lock().unwrap(),
+                session_id,
+            )?
+            .map_or(0, |pending| pending.attempt);
+            let reason = format!("checkpoint turn could not start: {error}");
+            compaction_controller::CompactionController::record_failure(
+                &core.db.lock().unwrap(),
+                session_id,
+                &reason,
+                attempt,
+            )?;
+            Err(BridgeError::Invalid(
+                "Compaction could not start because the provider is unavailable. Your conversation history is intact; reconnect the provider and retry."
+                    .into(),
+            ))
+        }
+    }
 }
 
 pub fn search_session_entries(

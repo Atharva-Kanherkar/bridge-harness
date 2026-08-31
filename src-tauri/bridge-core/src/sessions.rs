@@ -2166,6 +2166,68 @@ mod tests {
     }
 
     #[test]
+    fn failed_switch_summary_commits_new_model_with_mechanical_history_only() {
+        let (_scratch, core) = fixture();
+        let session_id = core.create_chat_id(&Harness::Claude, None, None).unwrap();
+        {
+            let db = core.db.lock().unwrap();
+            session_forest::SessionForest::new(&db)
+                .append(
+                    &session_id,
+                    session_forest::EntryKind::UserMessage,
+                    serde_json::json!({"text":"Keep this original history"}),
+                )
+                .unwrap();
+        }
+        let change = core
+            .plan_chat_model_change(&session_id, &Harness::Codex, None)
+            .unwrap()
+            .expect("claude to codex changes the runtime");
+        {
+            let db = core.db.lock().unwrap();
+            compaction_controller::CompactionController::begin(
+                &db,
+                &session_id,
+                compaction_controller::CompactionReason::BeforeDowngrade,
+                120,
+            )
+            .unwrap()
+            .unwrap();
+            compaction_controller::CompactionController::record_failure(
+                &db,
+                &session_id,
+                "checkpoint metadata does not match its controller request",
+                1,
+            )
+            .unwrap();
+        }
+
+        let event = core.commit_chat_model_change(change).unwrap();
+        assert_eq!(event.data["harness"], "codex");
+        assert_eq!(event.data["model"], "stub-fast");
+        assert_eq!(event.data["carriedContext"]["summary"], false);
+        assert_eq!(event.data["carriedContext"]["recentEntries"], 1);
+        let entries = store::session_entries(&core.db.lock().unwrap(), &session_id).unwrap();
+        let failure = entries
+            .iter()
+            .find(|entry| entry.kind == "compaction.failed")
+            .unwrap();
+        assert_eq!(failure.payload["trigger"], "before_downgrade");
+        assert!(failure.payload["message"]
+            .as_str()
+            .unwrap()
+            .contains("model switch continued"));
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|entry| entry.kind == "compaction")
+                .count(),
+            0,
+            "a failed outgoing summary cannot create a reconstructed boundary"
+        );
+    }
+
+    #[test]
     fn chat_model_changes_are_validated_planned_and_committed() {
         let (_scratch, core) = fixture();
         core.create_chat(&Harness::Claude, None, None).unwrap();

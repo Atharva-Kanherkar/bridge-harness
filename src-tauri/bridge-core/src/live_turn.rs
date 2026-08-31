@@ -2491,7 +2491,7 @@ fn handle_agent_value(
                         recover_compaction = matches!(
                             outcome,
                             compaction_controller::CheckpointOutcome::Failed
-                        );
+                        ) && should_recover_compaction(pending_compaction.as_ref());
                         finish_checkpointing = own_depth > 0;
                         finish_requested_shutdown = pending_compaction.is_some_and(|pending| {
                             pending.reason
@@ -2697,7 +2697,7 @@ fn handle_agent_value(
                             "checkpoint repair turn completed without an assistant response",
                             pending.attempt,
                         );
-                        recover_compaction = true;
+                        recover_compaction = should_recover_compaction(Some(&pending));
                         finish_checkpointing = own_depth > 0;
                         finish_requested_shutdown = shutdown;
                     } else {
@@ -2726,7 +2726,7 @@ fn handle_agent_value(
                         "checkpoint turn completed without an assistant response",
                         pending.attempt,
                     );
-                    recover_compaction = true;
+                    recover_compaction = should_recover_compaction(Some(&pending));
                     finish_checkpointing = own_depth > 0;
                     finish_requested_shutdown = shutdown;
                 }
@@ -2798,7 +2798,7 @@ fn handle_agent_value(
                     .ok()
                     .flatten();
                 let attempt = pending.as_ref().map_or(0, |pending| pending.attempt);
-                let shutdown = pending.is_some_and(|pending| {
+                let shutdown = pending.as_ref().is_some_and(|pending| {
                     pending.reason == compaction_controller::CompactionReason::BeforeShutdown
                 });
                 let _ = compaction_controller::CompactionController::record_failure(
@@ -2807,6 +2807,7 @@ fn handle_agent_value(
                     &format!("checkpoint turn could not start: {error}"),
                     attempt,
                 );
+                recover_compaction = should_recover_compaction(pending.as_ref());
                 finish_checkpointing = true;
                 finish_requested_shutdown = shutdown;
             }
@@ -3180,6 +3181,19 @@ fn run_compaction_recovery(core: &Arc<BridgeCore>, session_id: &str) -> Result<(
         &git_status,
     )?;
     Ok(())
+}
+
+/// Model-switch compaction has its own safe fallback: the incoming model gets
+/// Bridge's mechanical projection. Starting generic reconstruction after that
+/// failure races the switch commit and can append old-provider state past the
+/// new model boundary. Other compaction reasons retain the established
+/// recovery path.
+fn should_recover_compaction(
+    pending: Option<&compaction_controller::PendingCompaction>,
+) -> bool {
+    pending.is_some_and(|pending| {
+        pending.reason != compaction_controller::CompactionReason::BeforeDowngrade
+    })
 }
 
 /// Spawn a child worker session in the parent's workspace and hand it its task.
@@ -10439,6 +10453,68 @@ mod submit_input_tests {
         compaction_controller::CompactionController::pending(&db, "chat")
             .unwrap()
             .expect("checkpoint request remains pending")
+    }
+
+    #[test]
+    fn model_switch_failure_uses_projection_instead_of_racing_reconstruction() {
+        let mut switching = compaction_controller::PendingCompaction {
+            reason: compaction_controller::CompactionReason::BeforeDowngrade,
+            attempt: 1,
+            tokens_before: 42,
+            requested_at: "now".into(),
+            first_retained_entry_id: "retained".into(),
+        };
+        assert!(!should_recover_compaction(Some(&switching)));
+        switching.reason = compaction_controller::CompactionReason::Manual;
+        assert!(should_recover_compaction(Some(&switching)));
+        switching.reason = compaction_controller::CompactionReason::ContextPressure;
+        assert!(should_recover_compaction(Some(&switching)));
+        assert!(!should_recover_compaction(None));
+    }
+
+    #[test]
+    fn manual_compaction_delivery_failure_settles_pending_and_allows_retry() {
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        session_forest::SessionForest::new(&core.db.lock().unwrap())
+            .append(
+                "chat",
+                session_forest::EntryKind::UserMessage,
+                serde_json::json!({"text":"History worth keeping"}),
+            )
+            .unwrap();
+        let handles = attach_handles(&core, false);
+        handles.refuse.store(true, Ordering::SeqCst);
+
+        let error = crate::api::compact_session(&core, "chat").unwrap_err();
+        assert!(error.to_string().contains("history is intact"), "{error}");
+        assert!(
+            compaction_controller::CompactionController::pending(
+                &core.db.lock().unwrap(),
+                "chat",
+            )
+            .unwrap()
+            .is_none(),
+            "delivery failure is terminal, not a stranded request"
+        );
+        let failed = store::session_entries(&core.db.lock().unwrap(), "chat")
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.kind == "compaction.failed")
+            .expect("classified failure is durable");
+        assert_eq!(failed.payload["failureKind"], "provider_unavailable");
+        assert_eq!(failed.payload["retryable"], true);
+
+        handles.refuse.store(false, Ordering::SeqCst);
+        crate::api::compact_session(&core, "chat").expect("a later retry can begin");
+        assert!(
+            compaction_controller::CompactionController::pending(
+                &core.db.lock().unwrap(),
+                "chat",
+            )
+            .unwrap()
+            .is_some()
+        );
+        assert_eq!(handles.sent.lock().unwrap().len(), 1);
     }
 
     fn assistant_message_count(core: &Arc<BridgeCore>) -> i64 {
