@@ -160,17 +160,21 @@ describe("UsageWidget", () => {
     expect(html).not.toContain("stroke-dashoffset");
   });
 
-  it("colors the compact indicator by the worst reported usage, not an average", () => {
+  it("colors the compact indicator by the worst reported usage, not an average, and names that state in its accessible label", () => {
     const low: UsageSnapshot = { windows: [{ id: "weekly", label: "Weekly", usedPercent: 20, source: "reported" }], source: "reported", capturedAt: "2026-07-16T10:00:00Z" };
     const critical: UsageSnapshot = { windows: [{ id: "weekly", label: "Weekly", usedPercent: 95, source: "reported" }], source: "reported", capturedAt: "2026-07-16T10:00:00Z" };
     const html = renderToStaticMarkup(<UsageWidget usage={{ codex: low, claude: critical }} />);
     expect(html).toContain("text-destructive");
-    expect(html).toContain("Usage health — 95% used");
+    expect(html).toContain("Usage health — critical, 95% used");
+    // The tier and percent must be in the accessible name itself, not only the
+    // hover title — a screen reader never reads `title`.
+    expect(html).toContain('aria-label="Open usage health details — critical, 95% used"');
   });
 
   it("leaves the compact indicator neutral when no provider has reported usage", () => {
     const html = renderToStaticMarkup(<UsageWidget usage={{}} />);
     expect(html).toContain("Usage health — no reported usage yet");
+    expect(html).toContain('aria-label="Open usage health details — no reported usage yet"');
     expect(html).not.toContain("text-destructive");
     expect(html).not.toContain("text-warning");
   });

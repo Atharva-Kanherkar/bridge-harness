@@ -497,6 +497,23 @@ describe("the dock in the session view", () => {
     expect(tasksTab.textContent).toContain("1");
   });
 
+  // A worker session renders SteerComposer instead of the chat ComposerPill,
+  // so anything wired only into the latter (usage health included) silently
+  // disappears the moment you open a background worker.
+  it("keeps usage health reachable from a worker session's steer composer, not only the chat composer", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    await click(dockToggle()!);
+    await key({ ...chord, code: "Digit6", key: "6" });
+    await settle(3);
+    const openWorker = dockAside()!.querySelector<HTMLButtonElement>('button[aria-label="Open worker Implementation · strong"]')!;
+    await click(openWorker);
+
+    expect(container.querySelector("h1")!.textContent).toContain("Implementation");
+    expect(container.textContent).toContain("This is a background worker");
+    expect(container.querySelector('[aria-label^="Open usage health details"]')).not.toBeNull();
+  });
+
   it("lets Escape restore an expanded pane before it leaves fullscreen", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");

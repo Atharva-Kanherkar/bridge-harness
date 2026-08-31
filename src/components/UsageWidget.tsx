@@ -96,6 +96,16 @@ const TIER_RING_CLASS: Record<UsageTier, string> = {
   critical: "text-destructive",
 };
 
+/** What the ring's color means, in words — the accessible name relies on this
+ *  rather than the color alone, since a ring's tier is otherwise conveyed only
+ *  by hue. */
+const TIER_LABEL: Record<UsageTier, string> = {
+  unknown: "unknown",
+  ok: "healthy",
+  warning: "elevated",
+  critical: "critical",
+};
+
 /** The compact trigger: a single colorful ring sized to sit beside the
  *  composer's send button, rather than a labelled strip competing with it. */
 function UsageIndicatorRing({ percent, tier }: { percent: number | null; tier: UsageTier }) {
@@ -145,7 +155,10 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
 
   const overall = overallUsedPercent(usage, adapters);
   const tier = usageTier(overall);
-  const indicatorTitle = overall == null ? "Usage health — no reported usage yet" : `Usage health — ${Math.round(overall)}% used`;
+  // Not just the percent: the tier word carries the same meaning the ring's
+  // color does, so the accessible name doesn't depend on color alone.
+  const usageStateLabel = overall == null ? "no reported usage yet" : `${TIER_LABEL[tier]}, ${Math.round(overall)}% used`;
+  const indicatorTitle = `Usage health — ${usageStateLabel}`;
 
   return <div ref={rootRef} className="relative">
     <button
@@ -154,7 +167,7 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
         "relative grid size-8 shrink-0 cursor-pointer place-items-center rounded-full border border-border bg-card transition-colors hover:bg-accent",
         open && "bg-accent",
       )}
-      aria-label={open ? "Close usage health details" : "Open usage health details"}
+      aria-label={`${open ? "Close" : "Open"} usage health details — ${usageStateLabel}`}
       aria-expanded={open}
       aria-controls="usage-health-panel"
       title={indicatorTitle}
