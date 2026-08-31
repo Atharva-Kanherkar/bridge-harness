@@ -46,7 +46,6 @@ import { activeTurnAction, queuedFollowUps } from "./sessionInput";
 import { BrowserSurface } from "./components/BrowserSurface";
 import { PatchView } from "./components/DiffView";
 import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
-import { ProjectOnboardingDialog } from "./components/ProjectOnboardingDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
 import { MemoryDialog, rememberAction } from "./components/MemoryDialog";
 import { MemoryUsedChip } from "./components/MemoryUsedChip";
@@ -61,7 +60,7 @@ import { pickGreeting } from "./greetings";
 import { useThemePreference } from "./theme";
 import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
 import { readLastWorkspaceId, resolveNewChatWorkspaceId, writeLastWorkspaceId } from "./lastWorkspace";
-import { selectedFolder, workspaceForFolder, workspaceTitleFromFolder } from "./workspaceFolder";
+import { repoCloneTarget, selectedFolder, workspaceForFolder, workspaceTitleFromFolder } from "./workspaceFolder";
 import { FLUSH_WINDOW_EVENT, isFlushWindowDocument, notifyLayoutFullscreen, setLayoutFullscreenDocument } from "./windowChrome";
 import { isTypingTarget, matchShortcut, MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { ShortcutsSheet } from "./components/ShortcutsSheet";
@@ -574,7 +573,6 @@ function AppContent() {
   }, [forest, pendingForSession.length, session]);
   const [worktreeOn, setWorktreeOn] = useState(false);
   const [welcomeWorkspaceId, setWelcomeWorkspaceId] = useState<string | null>(null);
-  const [projectOnboardingOpen, setProjectOnboardingOpen] = useState(false);
   // The pending unstarted new chat, if any. Non-null ⇒ the empty-state surface is a
   // draft: the choices are held here and the session is created on first submit.
   const [newChatDraft, setNewChatDraft] = useState<NewChatDraft | null>(null);
@@ -1214,11 +1212,30 @@ function AppContent() {
   }
   // Entry point for the Welcome screen's own composer, which has no session
   // to skip past — a `$harness` prefix there is the only branch either way.
-  async function startChatOrShortcut(text?: string, initialAttachments: ComposerAttachment[] = []) {
-    if (newChatPendingRef.current) return;
+  // Returns whether the welcome composer should clear its draft. Only a
+  // resolved project needs this: it updates workspace state but creates no
+  // session, so <Welcome> stays mounted and would otherwise keep showing the
+  // URL that was just resolved. Every other path either creates a session
+  // (which unmounts <Welcome> and discards the draft anyway) or fails
+  // (leaving the draft in place so the user can fix and resubmit it) —
+  // both already behaved correctly before this flag existed.
+  async function startChatOrShortcut(text?: string, initialAttachments: ComposerAttachment[] = []): Promise<boolean> {
+    if (newChatPendingRef.current) return false;
     newChatPendingRef.current = true;
     try {
-      if (text && initialAttachments.length === 0 && await openHarnessShortcut(text, true)) return;
+      if (text && initialAttachments.length === 0 && await openHarnessShortcut(text, true)) return false;
+      // A bare repo URL or "owner/repo" typed into the welcome composer is a
+      // project to open, not a chat message — resolve and land in it directly
+      // instead of making the user go through a separate "add a project" flow.
+      const cloneTarget = text && initialAttachments.length === 0 ? repoCloneTarget(text) : undefined;
+      if (cloneTarget) {
+        setBusy(true); setError(undefined);
+        try {
+          acceptOnboardedProject(await bridgeApi.cloneWorkspaceRepo(cloneTarget));
+          return true;
+        } catch (e) { setError(errorMessage(e)); return false; }
+        finally { setBusy(false); }
+      }
       // Submit the open draft's choices; on the fresh welcome surface (no draft yet)
       // resolve them from the welcome workspace, just as this path used to.
       const draft: NewChatDraft = newChatDraft ?? {
@@ -1231,6 +1248,7 @@ function AppContent() {
         createWorktree: false,
       };
       await submitNewChatDraft(draft, text, true, initialAttachments);
+      return false;
     } finally {
       newChatPendingRef.current = false;
     }
@@ -2324,9 +2342,8 @@ function AppContent() {
           // Fresh welcome surface with no draft yet: the worktree decision is now
           // held on the draft (#350), created on submit — not started immediately.
           : { ...resolveDraftHarnessModel(), workspaceId: resolvedWelcomeWorkspaceId, createWorktree: true })}
-        onStartChat={(text, initialAttachments) => void startChatOrShortcut(text, initialAttachments)}
+        onStartChat={(text, initialAttachments) => startChatOrShortcut(text, initialAttachments)}
         onNewWorkspace={() => void createWorkspaceFromFolder()}
-        onAddProject={() => setProjectOnboardingOpen(true)}
       />}
     </main>
     </div>
@@ -2363,13 +2380,6 @@ function AppContent() {
       onUseCurrentFolder={() => void newWorkspaceSession(false)}
       onClose={() => void newWorkspaceSession(false)}
     />
-    <ProjectOnboardingDialog
-      open={projectOnboardingOpen}
-      onClose={() => setProjectOnboardingOpen(false)}
-      onBrowse={() => void createWorkspaceFromFolder()}
-      onConnectFolder={path => void connectNewWorkspaceFolder(path)}
-      onConnected={acceptOnboardedProject}
-    />
     <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={acceptModelSetup} onClose={closeModal} onError={setError} />
     <ShortcutsSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
     <MemoryDialog open={modal === "memory"} initialBody={memoryDraft} adapters={adapters} onClose={() => { closeModal(); setMemoryDraft(null); }} onError={setError} />
@@ -2400,16 +2410,15 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
   </aside>;
 }
 
-function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, onStartChat, onNewWorkspace, onAddProject, workspaces, workspace, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree }: {
+function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, onStartChat, onNewWorkspace, workspaces, workspace, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree }: {
   adapters: import("./types").AdapterDescriptor[];
   harness: Harness;
   model: string | null;
   onSelectModel: (harness: Harness, model: string | null) => void;
   busy: boolean;
   canStartChat: boolean;
-  onStartChat: (text?: string, attachments?: ComposerAttachment[]) => void;
+  onStartChat: (text?: string, attachments?: ComposerAttachment[]) => Promise<boolean>;
   onNewWorkspace: () => void;
-  onAddProject: () => void;
   workspaces: Workspace[];
   workspace: Workspace | null;
   worktree: boolean;
@@ -2428,8 +2437,8 @@ function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, 
   const [composerError, setComposerError] = useState<string>();
   const submit = () => {
     const text = draft.trim();
-    if (text || attachments.length > 0) onStartChat(text, attachments);
-    else onStartChat();
+    const started = text || attachments.length > 0 ? onStartChat(text, attachments) : onStartChat();
+    void started.then(cleared => { if (cleared) { setDraft(""); setAttachments([]); } });
   };
   const handlePaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
     const items = event.clipboardData?.items;
@@ -2475,8 +2484,13 @@ function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, 
       onPaste={handlePaste}
       attachments={attachments}
       onRemoveAttachment={id => setAttachments(current => current.filter(attachment => attachment.id !== id))}
-      placeholder={canStartChat ? "Ask Bridge…" : "Install or sign in to a model adapter…"}
-      disabled={busy || !canStartChat}
+      placeholder={canStartChat ? "Ask Bridge, or paste a repo to open it…" : "Paste a repo to open it, or install a model adapter to chat…"}
+      // Opening a project (typing a bare repo URL, or the folder `+` below)
+      // needs no adapter — only starting an actual chat turn does, and
+      // submitNewChatDraft already guards that with its own adaptersReady
+      // check. Gating the whole composer on canStartChat would block adding
+      // a project before any adapter is installed.
+      disabled={busy}
       // There is no conversation or folder here yet, so the structural `+`
       // still creates a workspace. Clipboard images are first-turn content and
       // use the paste path above instead of pretending to be repository files.
@@ -2486,7 +2500,6 @@ function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, 
       // before the first message, the same picker the session composer uses.
       trailing={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} compact roleLabel="Chat" />}
     />
-    <Button type="button" variant="link" size="sm" disabled={busy} className="mt-3 text-xs text-muted-foreground" onClick={onAddProject}>Add a project another way</Button>
     {composerError && <p className="mt-2 max-w-2xl text-left text-[11px] text-destructive">{composerError}</p>}
     <p className="mt-6 max-w-md text-[13px] leading-relaxed text-muted-foreground">{greeting.hint}</p>
   </div>;
