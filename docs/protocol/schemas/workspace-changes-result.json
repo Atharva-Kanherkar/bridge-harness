@@ -11,6 +11,16 @@
       ],
       "type": "string"
     },
+    "WorkspaceChangeKind": {
+      "enum": [
+        "added",
+        "modified",
+        "deleted",
+        "renamed",
+        "mode_only"
+      ],
+      "type": "string"
+    },
     "WorkspaceFileChange": {
       "description": "One file's working-tree diff against `HEAD`. Mirrors `bridge_core::git::WorkspaceFileChange`.",
       "properties": {
@@ -20,6 +30,9 @@
         },
         "binary": {
           "type": "boolean"
+        },
+        "changeKind": {
+          "$ref": "#/definitions/WorkspaceChangeKind"
         },
         "deletions": {
           "format": "int64",
@@ -42,21 +55,40 @@
           "description": "Unified diff text; empty for files detected as binary.",
           "type": "string"
         },
+        "patchTruncated": {
+          "type": "boolean"
+        },
         "path": {
           "type": "string"
+        },
+        "previousPath": {
+          "type": [
+            "string",
+            "null"
+          ]
         }
       },
       "required": [
         "additions",
         "binary",
+        "changeKind",
         "deletions",
         "importance",
         "labels",
         "lowSignal",
         "patch",
+        "patchTruncated",
         "path"
       ],
       "type": "object"
+    },
+    "WorkspaceRepositoryState": {
+      "enum": [
+        "normal",
+        "unborn",
+        "not_git"
+      ],
+      "type": "string"
     }
   },
   "description": "`workspaces/workspace_changes`' result: every path that differs from `HEAD` in the workspace's working tree, tracked or not. Mirrors `bridge_core::git::WorkspaceChangeset`.",
@@ -72,10 +104,26 @@
         "$ref": "#/definitions/WorkspaceFileChange"
       },
       "type": "array"
+    },
+    "filesTruncated": {
+      "type": "boolean"
+    },
+    "repositoryState": {
+      "$ref": "#/definitions/WorkspaceRepositoryState"
+    },
+    "totalFiles": {
+      "format": "uint",
+      "minimum": 0.0,
+      "type": [
+        "integer",
+        "null"
+      ]
     }
   },
   "required": [
-    "files"
+    "files",
+    "filesTruncated",
+    "repositoryState"
   ],
   "title": "WorkspaceChangesResult",
   "type": "object"
