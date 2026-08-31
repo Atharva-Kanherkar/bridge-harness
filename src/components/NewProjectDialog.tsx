@@ -21,7 +21,7 @@ export function NewProjectDialog({ open, busy, canStartChat, onClose, onStartCha
             type="button"
             disabled={busy || !canStartChat}
             onClick={onStartChat}
-            className="u-glass-soft group flex min-h-28 flex-col items-start rounded-xl border border-border p-4 text-left transition-colors hover:border-ring/50 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-45"
+            className="u-glass-soft group flex min-h-28 flex-col items-start rounded-xl border border-border p-4 text-left outline-none transition-colors hover:border-ring/50 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-45"
           >
             <MessageSquareText size={18} strokeWidth={1.7} className="mb-4 text-muted-foreground transition-colors group-hover:text-foreground" aria-hidden="true" />
             <span className="text-[13px] font-semibold text-foreground">Start a chat</span>
@@ -33,7 +33,7 @@ export function NewProjectDialog({ open, busy, canStartChat, onClose, onStartCha
             type="button"
             disabled={busy}
             onClick={onChooseFolder}
-            className="u-glass-soft group flex min-h-28 flex-col items-start rounded-xl border border-border p-4 text-left transition-colors hover:border-ring/50 hover:bg-accent disabled:cursor-not-allowed disabled:opacity-45"
+            className="u-glass-soft group flex min-h-28 flex-col items-start rounded-xl border border-border p-4 text-left outline-none transition-colors hover:border-ring/50 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background disabled:cursor-not-allowed disabled:opacity-45"
           >
             <FolderOpen size={18} strokeWidth={1.7} className="mb-4 text-muted-foreground transition-colors group-hover:text-foreground" aria-hidden="true" />
             <span className="text-[13px] font-semibold text-foreground">Choose a folder</span>
