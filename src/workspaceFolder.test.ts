@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Workspace } from "./types";
-import { selectedFolder, workspaceForFolder, workspaceTitleFromFolder } from "./workspaceFolder";
+import { repoCloneTarget, selectedFolder, workspaceForFolder, workspaceTitleFromFolder } from "./workspaceFolder";
 
 const workspace = (path: string | null, id = "workspace"): Workspace => ({ id, path } as Workspace);
 
@@ -23,5 +23,26 @@ describe("workspaceForFolder", () => {
   it("finds an already-connected project and ignores pathless rows", () => {
     const existing = workspace("/Users/you/Projects/bridge", "existing");
     expect(workspaceForFolder([workspace(null, "pathless"), existing], "/Users/you/Projects/bridge")).toBe(existing);
+  });
+});
+
+describe("repoCloneTarget", () => {
+  it("accepts a bare git URL as-is", () => {
+    expect(repoCloneTarget("https://github.com/rimo/bridge-harness")).toBe("https://github.com/rimo/bridge-harness");
+    expect(repoCloneTarget("  git@github.com:rimo/bridge-harness.git  ")).toBe("git@github.com:rimo/bridge-harness.git");
+  });
+
+  it("expands an owner/repo shorthand into a GitHub URL", () => {
+    expect(repoCloneTarget("rimo/bridge-harness")).toBe("https://github.com/rimo/bridge-harness");
+  });
+
+  it("ignores shorthand that looks like a pasted file path", () => {
+    expect(repoCloneTarget("src/App.tsx")).toBeUndefined();
+  });
+
+  it("ignores normal chat messages, even ones mentioning a URL", () => {
+    expect(repoCloneTarget("can you open https://github.com/rimo/bridge-harness for me")).toBeUndefined();
+    expect(repoCloneTarget("")).toBeUndefined();
+    expect(repoCloneTarget("what does this repo do")).toBeUndefined();
   });
 });

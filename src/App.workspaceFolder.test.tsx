@@ -71,3 +71,37 @@ describe("new project folder flow (#351)", () => {
     expect(connect).toHaveBeenCalledOnce();
   });
 });
+
+describe("welcome composer resolves a pasted repo directly (#288)", () => {
+  const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+
+  it("clones a bare repo URL instead of sending it as a chat message", async () => {
+    const clone = vi.spyOn(bridgeApi, "cloneWorkspaceRepo");
+    const composer = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => {
+      setValue.call(composer, "https://github.com/rimo/bridge-harness");
+      composer.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    await settle();
+
+    expect(clone).toHaveBeenCalledWith("https://github.com/rimo/bridge-harness");
+  });
+
+  it("leaves an ordinary message alone", async () => {
+    const clone = vi.spyOn(bridgeApi, "cloneWorkspaceRepo");
+    const composer = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    await act(async () => {
+      setValue.call(composer, "what does this project do?");
+      composer.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      composer.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    await settle();
+
+    expect(clone).not.toHaveBeenCalled();
+  });
+});

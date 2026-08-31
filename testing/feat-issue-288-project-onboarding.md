@@ -2,24 +2,22 @@
 
 ## Functional Behavior
 
-- The folder-first welcome action remains the direct way to create a project from a known local folder.
-- A user can choose an **Add project** action and select **Clone from URL** or **Search GitHub** without leaving Bridge.
-- Cloning uses a user-editable destination, defaulted beneath the configurable Bridge-managed project root, registers the cloned folder as a workspace, and returns the updated `BridgeState`.
-- GitHub search returns only repositories available to the authenticated `gh` user. Selecting a result starts the same clone-and-register path.
-- Failures (invalid URLs, clone failures, no GitHub results, missing `gh` authentication) are reported explicitly and do not create/register a workspace.
+- There is no separate "Add a project" dialog. The welcome composer is the only entry point: the user types what they want and Bridge resolves it.
+- Pasting a bare git URL, or an `owner/repo` GitHub shorthand, as the entire welcome message clones it (destination defaults beneath the configurable Bridge-managed project root) and lands directly in the new workspace — no confirmation step, no destination prompt.
+- Any other welcome message (including one that merely mentions a URL among other words) is treated as a normal chat message and starts an ordinary session, falling back to the existing pathless scratch-directory session start.
+- Choosing a known local folder still goes through the native OS folder picker via the composer's `+` action.
+- Failures (invalid URL, clone failure) surface as the existing inline error banner and do not create/register a workspace.
 - Existing workspace/session behavior is unchanged once the workspace is registered.
 
 ## Unit Tests
 
-- `clone_workspace_repo` validates its URL and destination, clones with Git, and registers the resulting directory using the existing workspace connection path.
-- `search_github_repos` invokes `gh repo list`/search safely, parses the expected repository fields, and distinguishes an empty result from command failure.
-- Frontend API wrappers invoke the matching native commands with their request payloads.
-- The onboarding dialog exposes clone and GitHub search options and sends the selected result through the clone path.
+- `repoCloneTarget` (`src/workspaceFolder.ts`) recognizes bare git URLs and `owner/repo` shorthand, expands shorthand to a GitHub URL, and rejects anything with surrounding text, whitespace, or a file-path-shaped extension.
+- `clone_workspace_repo` (backend) validates its URL and destination, clones with Git, and registers the resulting directory using the existing workspace connection path — unchanged.
 
 ## Integration / Functional Tests
 
-- A temporary local Git repository cloned by the backend becomes a registered workspace in the returned state.
-- A selected GitHub result populates the clone URL and follows the same registration flow as a pasted URL.
+- Submitting a bare repo URL from the welcome composer calls `bridgeApi.cloneWorkspaceRepo` and does not send it as a chat turn.
+- Submitting an ordinary message from the welcome composer does not call `bridgeApi.cloneWorkspaceRepo`.
 
 ## Smoke Tests
 
@@ -32,8 +30,7 @@ N/A — desktop native dialog and authenticated GitHub state are not available i
 
 ## Manual Tests
 
-1. Open the welcome screen and choose **Add project → Clone from URL**.
-2. Paste a cloneable repository URL, verify the destination is editable, then clone it.
-3. Confirm the cloned project is selected and can start a chat.
-4. Choose **Add project → Search GitHub**, search for a visible repository, select it, and verify it reaches the same clone confirmation.
-5. Enter an invalid URL and verify the dialog shows an error without adding a workspace.
+1. Open the welcome screen, paste a cloneable repository URL as the entire message, and send it.
+2. Confirm the cloned project is selected immediately, with no intermediate dialog, and can start a chat.
+3. Type an ordinary first message (e.g. a question) and confirm it starts a normal chat instead of attempting a clone.
+4. Paste an invalid/unreachable URL and verify the composer shows an error without adding a workspace.
