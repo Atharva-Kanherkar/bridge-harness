@@ -75,8 +75,11 @@ describe("UsageWidget sign-in control", () => {
       setValue.call(input!, "123456");
       input!.dispatchEvent(new Event("input", { bubbles: true }));
     });
+    // Enter forwards the line. The pane is intentionally not a <form> (it
+    // renders inside the composer's form via the `trailing` slot), so there is
+    // no submit event to dispatch — the key handler is the contract.
     await act(async () => {
-      input!.form!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      input!.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
     });
     expect(writeTerminal).toHaveBeenCalledWith("provider-login", "codex", "123456\r");
   });
