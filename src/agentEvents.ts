@@ -56,16 +56,24 @@ export function appendAgentEventBatch(current: AgentEvent[], incoming: AgentEven
     if (id) ids.add(id);
     const key = mergeKey(event);
     const mergeIndex = key === undefined ? undefined : mergeIndexes.get(key);
-    if (mergeIndex !== undefined) {
+    if (key !== undefined && mergeIndex !== undefined) {
       const previous = next[mergeIndex];
       const text = ADDITIVE_DELTAS.has(event.kind)
         ? `${previous.text ?? ""}${event.text ?? ""}`
         : event.text ?? previous.text ?? "";
-      next[mergeIndex] = {
+      const merged = {
         ...event,
         text: clampText(text),
         data: { ...previous.data, ...event.data },
       };
+      // A merge is new activity. Move it to the tail so positional eviction
+      // removes the least-recently-touched item, not an actively updating one.
+      next.splice(mergeIndex, 1);
+      for (const [indexedKey, indexedPosition] of mergeIndexes) {
+        if (indexedPosition > mergeIndex) mergeIndexes.set(indexedKey, indexedPosition - 1);
+      }
+      next.push(merged);
+      mergeIndexes.set(key, next.length - 1);
     } else {
       if (!key) clearItemMergeIndexes(mergeIndexes, event);
       // Terminal/durable items keep their complete text. Only transient text

@@ -385,7 +385,7 @@ describe("toolCallDisplay", () => {
     expect(failed.data.reason).toBe("checkpoint metadata does not match its controller request");
   });
 
-  it("suppresses internal checkpoint envelopes from live and durable conversation", () => {
+  it("suppresses checkpoint output only when backend origin or persisted state identifies it", () => {
     const payload = JSON.stringify({
       schemaVersion: 1,
       summary: "Internal summary",
@@ -396,22 +396,41 @@ describe("toolCallDisplay", () => {
       tokensBefore: 4200,
       reason: "before_downgrade",
     });
-    expect(isInternalCompactionEnvelope(payload)).toBe(true);
-    expect(isInternalCompactionEnvelope(`\`\`\`json\n${payload}\n\`\`\``)).toBe(true);
+    const internal = { bridgeInternalOrigin: "compaction" };
+    expect(isInternalCompactionEnvelope(payload, internal)).toBe(true);
+    expect(isInternalCompactionEnvelope(`\`\`\`json\n${payload}\n\`\`\``, internal)).toBe(true);
     expect(reduceConversation([
-      event(1, "message.completed", { itemId: "internal", role: "assistant", text: payload }),
+      event(1, "message.completed", { itemId: "internal", role: "assistant", text: payload, data: internal }),
       event(2, "message.completed", { itemId: "safe", role: "assistant", text: '{"answer":42}' }),
     ]).map(item => item.text)).toEqual(['{"answer":42}']);
 
     const durable = projectSessionConversation([
-      entry("e1", null, "assistant.message", { role: "assistant", text: `\`\`\`json\n${payload}\n\`\`\`` }, 1),
-      entry("e2", "e1", "assistant.message", { role: "assistant", text: '{"answer":42}' }, 2),
-    ], "e2");
-    expect(durable.map(item => item.text)).toEqual(['{"answer":42}']);
+      entry("e1", null, "compaction.requested", { reason: "before_downgrade" }, 1),
+      entry("e2", "e1", "assistant.message", { role: "assistant", text: `\`\`\`json\n${payload}\n\`\`\`` }, 2),
+      entry("e3", "e2", "compaction", { summary: "Compacted" }, 3),
+      entry("e4", "e3", "assistant.message", { role: "assistant", text: '{"answer":42}' }, 4),
+    ], "e4");
+    expect(durable.filter(item => item.type === "message").map(item => item.text)).toEqual(['{"answer":42}']);
   });
 
-  it("does not hide ordinary JSON answers that lack the compaction signature", () => {
-    expect(isInternalCompactionEnvelope('{"schemaVersion":1,"summary":"public answer"}')).toBe(false);
+  it("keeps a complete checkpoint-shaped answer from an ordinary turn", () => {
+    const payload = JSON.stringify({
+      schemaVersion: 1,
+      summary: "Public example",
+      decisions: [],
+      filesTouched: [],
+      sourceAgent: "example",
+      firstRetainedEntryId: "entry-1",
+      tokensBefore: 42,
+      reason: "manual",
+    });
+    expect(isInternalCompactionEnvelope(payload)).toBe(false);
+    expect(reduceConversation([
+      event(1, "message.completed", { itemId: "public", role: "assistant", text: payload }),
+    ]).map(item => item.text)).toEqual([payload]);
+    expect(projectSessionConversation([
+      entry("e1", null, "assistant.message", { role: "assistant", text: payload }, 1),
+    ], "e1").map(item => item.text)).toEqual([payload]);
   });
 
   it("does not mistake a title echoed as the body for output", () => {

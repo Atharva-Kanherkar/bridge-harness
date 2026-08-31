@@ -488,6 +488,36 @@ pub fn normalize_codex_message(message: &Value) -> Vec<NormalizedEvent> {
             );
             vec![event]
         }
+        "model/rerouted" => {
+            let from_model = params
+                .get("fromModel")
+                .and_then(Value::as_str)
+                .unwrap_or("the requested model");
+            let to_model = params
+                .get("toModel")
+                .and_then(Value::as_str)
+                .unwrap_or("a fallback model");
+            let reason = params.get("reason").and_then(Value::as_str);
+            let mut event = with_data("model.rerouted", &params, params.clone());
+            event.title = Some("Model rerouted".into());
+            event.text = Some(match reason {
+                Some(reason) => format!("Codex switched from {from_model} to {to_model}: {reason}"),
+                None => format!("Codex switched from {from_model} to {to_model}."),
+            });
+            event.status = Some("completed".into());
+            vec![event]
+        }
+        "thread/realtime/error" => {
+            let mut event = with_data("error", &params, params.clone());
+            event.title = Some("Realtime connection error".into());
+            event.text = params
+                .get("message")
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| Some("Codex realtime encountered an error.".into()));
+            event.status = Some("failed".into());
+            vec![event]
+        }
         "item/started" | "item/completed" => normalize_item(method, &params),
         _ if is_codex_internal_notification(method) => vec![],
         _ => {
@@ -544,7 +574,6 @@ fn is_codex_internal_notification(method: &str) -> bool {
             | "externalAgentConfig/import/completed"
             | "fs/changed"
             | "thread/compacted"
-            | "model/rerouted"
             | "model/verification"
             | "turn/moderationMetadata"
             | "model/safetyBuffering/updated"
@@ -559,7 +588,6 @@ fn is_codex_internal_notification(method: &str) -> bool {
             | "thread/realtime/transcript/done"
             | "thread/realtime/outputAudio/delta"
             | "thread/realtime/sdp"
-            | "thread/realtime/error"
             | "thread/realtime/closed"
     )
 }
@@ -1113,6 +1141,38 @@ mod tests {
             normalize_codex_message(&json!({"method":"future/newThing","params":{"value":7}}));
         assert_eq!(future.len(), 1);
         assert_eq!(future[0].kind, "provider.unknown");
+    }
+
+    #[test]
+    fn codex_user_significant_notifications_remain_visible() {
+        let rerouted = normalize_codex_message(&json!({
+            "method":"model/rerouted",
+            "params":{
+                "threadId":"thread-1",
+                "turnId":"turn-1",
+                "fromModel":"gpt-5.6-sol",
+                "toModel":"gpt-5.6-terra",
+                "reason":"highRiskCyberActivity"
+            }
+        }));
+        assert_eq!(rerouted[0].kind, "model.rerouted");
+        assert_eq!(rerouted[0].title.as_deref(), Some("Model rerouted"));
+        assert!(rerouted[0]
+            .text
+            .as_deref()
+            .unwrap()
+            .contains("gpt-5.6-terra"));
+
+        let realtime_error = normalize_codex_message(&json!({
+            "method":"thread/realtime/error",
+            "params":{"threadId":"thread-1","message":"voice transport disconnected"}
+        }));
+        assert_eq!(realtime_error[0].kind, "error");
+        assert_eq!(realtime_error[0].status.as_deref(), Some("failed"));
+        assert_eq!(
+            realtime_error[0].text.as_deref(),
+            Some("voice transport disconnected")
+        );
     }
 
     #[test]

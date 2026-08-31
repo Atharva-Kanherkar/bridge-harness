@@ -2476,6 +2476,14 @@ fn handle_agent_value(
                     normalized_event.kind.as_str(),
                     "turn.started" | "turn.completed" | "usage.updated" | "error"
                 );
+            if suppress_checkpoint_frame {
+                if let Some(data) = normalized_event.data.as_object_mut() {
+                    data.insert(
+                        "bridgeInternalOrigin".into(),
+                        serde_json::json!("compaction"),
+                    );
+                }
+            }
             if is_checkpoint_reply {
                 checkpoint_response_seen = true;
                 checkpoint_turn_handled = true;

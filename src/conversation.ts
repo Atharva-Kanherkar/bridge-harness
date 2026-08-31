@@ -44,6 +44,7 @@ export function projectSessionConversation(entries: SessionEntry[], activeLeafId
   const approvalsBySequence = new Map<number, ConversationItem>();
   const interactionsBySequence = new Map<string, ConversationItem>();
   const lifecycleByItemId = new Map<string, ConversationItem>();
+  let compactionMaintenanceActive = false;
   for (const entry of selectActiveBranch(entries, activeLeafId)) {
     if (entry.semanticSchemaVersion < 1 || entry.semanticSchemaVersion > 2) {
       throw new Error(`Unsupported semantic event schema version ${entry.semanticSchemaVersion} on entry ${entry.id}`);
@@ -78,7 +79,14 @@ export function projectSessionConversation(entries: SessionEntry[], activeLeafId
         continue;
       }
     }
+    if (entry.kind === "compaction.requested") compactionMaintenanceActive = true;
     const item = projectSessionEntry(entry);
+    const internalCompactionMessage = item.type === "message"
+      && (compactionMaintenanceActive || isInternalCompactionEnvelope(item.text, item.data));
+    if (entry.kind === "compaction" || entry.kind === "compaction.failed") {
+      compactionMaintenanceActive = false;
+    }
+    if (internalCompactionMessage) continue;
     // Tool calls are stored as separate started/completed entries — fold them
     // into a single row so a stale "inProgress" ghost never lingers.
     const itemId = stringValue(entry.payload.itemId);
@@ -100,7 +108,7 @@ export function projectSessionConversation(entries: SessionEntry[], activeLeafId
       interactionsBySequence.set(`${interactionKind}:${entry.sequence}`, item);
     }
   }
-  return items.filter(item => item.type !== "message" || !isInternalCompactionEnvelope(item.text));
+  return items;
 }
 
 function projectSessionEntry(entry: SessionEntry): ConversationItem {
@@ -236,9 +244,19 @@ export function isLifecycleNoise(kind: string): boolean {
 
 export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
   const items = new Map<string, ConversationItem>();
+  const internalCompactionMessageKeys = new Set<string>();
+  let compactionMaintenanceActive = false;
   for (const event of [...events].sort((a, b) => a.sequence - b.sequence)) {
     if (event.kind === "provider.unknown" || event.kind.startsWith("session.") || event.kind.startsWith("turn.") || event.kind === "usage.updated") continue;
     const itemKey = event.itemId ?? `${event.kind}:${event.id}`;
+    if (event.kind === "compaction.requested") compactionMaintenanceActive = true;
+    if (event.kind.startsWith("message.")
+      && (compactionMaintenanceActive || isInternalCompactionEnvelope(event.text ?? "", event.data))) {
+      internalCompactionMessageKeys.add(itemKey);
+    }
+    if (event.kind === "compaction" || event.kind === "compaction.failed") {
+      compactionMaintenanceActive = false;
+    }
     if (event.kind === "message.delta" || event.kind === "reasoning.delta") {
       if (!event.text) continue;
       const type = event.kind.startsWith("message") ? "message" : "reasoning";
@@ -298,41 +316,20 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
   }
   return [...items.values()]
     .map(item => item.type === "message" ? { ...item, text: stripWorkerResultBlocks(item.text) } : item)
-    .filter(item => item.type !== "message" || !isInternalCompactionEnvelope(item.text))
+    .filter(item => item.type !== "message" || !internalCompactionMessageKeys.has(item.key))
     .filter(item => item.type !== "reasoning" || item.text.trim().length > 0)
     .filter(item => item.type !== "message" || item.text.trim().length > 0)
     .sort((a,b)=>a.sequence-b.sequence);
 }
 
-/** Defense in depth for old history and boundary races. The backend consumes
- * maintenance replies before persistence, but an assistant message carrying
- * Bridge's complete checkpoint protocol signature can never be conversation
- * content even if it came from an older build or a late provider frame.
- * Ordinary JSON stays visible because all typed bookkeeping fields are
- * required. */
-export function isInternalCompactionEnvelope(text: string): boolean {
-  let candidate = text.trim();
-  if (candidate.startsWith("```")) {
-    const firstLine = candidate.indexOf("\n");
-    const closing = candidate.lastIndexOf("```");
-    if (firstLine < 0 || closing <= firstLine) return false;
-    candidate = candidate.slice(firstLine + 1, closing).trim();
-  }
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(candidate);
-  } catch {
-    return false;
-  }
-  const value = objectValue(parsed);
-  return value.schemaVersion === 1
-    && typeof value.summary === "string"
-    && Array.isArray(value.decisions)
-    && Array.isArray(value.filesTouched)
-    && typeof value.sourceAgent === "string"
-    && typeof value.firstRetainedEntryId === "string"
-    && typeof value.tokensBefore === "number"
-    && typeof value.reason === "string";
+/** Defense in depth for a backend-tagged maintenance frame. Content shape is
+ * deliberately irrelevant: a user may legitimately ask for the checkpoint
+ * schema, while a malformed maintenance reply or refusal is still internal. */
+export function isInternalCompactionEnvelope(
+  _text: string,
+  data: Record<string, unknown> = {},
+): boolean {
+  return data.bridgeInternalOrigin === "compaction";
 }
 
 /**

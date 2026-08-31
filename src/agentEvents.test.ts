@@ -85,6 +85,19 @@ describe("appendAgentEventBatch", () => {
     expect(queue.at(-1)?.text).toBe("Scanned 9999 files");
   });
 
+  it("evicts the stalest snapshot instead of freshly merged progress", () => {
+    let queue = Array.from({ length: MAX_PENDING_AGENT_EVENTS }, (_, index) =>
+      itemEvent(`tool-${index}`, "tool.progress", `Initial ${index}`),
+    );
+    queue = queueAgentEvent(queue, itemEvent("tool-0", "tool.progress", "Still active"));
+    queue = queueAgentEvent(queue, itemEvent("tool-new", "tool.progress", "New tool"));
+
+    expect(queue).toHaveLength(MAX_PENDING_AGENT_EVENTS);
+    expect(queue.find(item => item.itemId === "tool-0")?.text).toBe("Still active");
+    expect(queue.some(item => item.itemId === "tool-1")).toBe(false);
+    expect(queue.at(-1)?.itemId).toBe("tool-new");
+  });
+
   it("caps a merged item's text at the byte budget, keeping the tail", () => {
     const half = "a".repeat(MAX_MERGED_EVENT_TEXT - 1);
     const result = appendAgentEventBatch(
