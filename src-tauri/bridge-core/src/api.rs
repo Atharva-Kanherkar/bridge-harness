@@ -2349,6 +2349,13 @@ fn provider_login_command(provider: &str) -> Result<CommandBuilder, BridgeError>
             command.args(["login"]);
             Ok(command)
         }
+        "grok" => {
+            let executable = crate::grok_adapter::login_executable()
+                .map_err(|unavailable| BridgeError::Invalid(unavailable.reason()))?;
+            let mut command = CommandBuilder::new(executable);
+            command.args(["login"]);
+            Ok(command)
+        }
         "opencode" => {
             let binary = binary::resolve("opencode")
                 .ok_or_else(|| BridgeError::Invalid("OpenCode binary is not installed".into()))?;

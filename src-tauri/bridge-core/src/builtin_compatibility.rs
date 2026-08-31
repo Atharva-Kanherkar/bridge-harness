@@ -165,6 +165,19 @@ const BUILT_IN_AGENTS: &[BuiltInAgentContract] = &[
         default_model_id: None,
     },
     BuiltInAgentContract {
+        id: "grok",
+        label: "Grok Build",
+        transport: "grok_agent_acp_stdio",
+        runtime_source: "grok agent --no-leader stdio",
+        credential_owner: CredentialOwner::Vendor,
+        native_resume: NativeResumeContract::WhenSessionAdvertises,
+        capabilities: CURSOR_CAPABILITIES,
+        sandbox_modes: CURSOR_SANDBOXES,
+        model_source: ModelSource::RuntimeCatalog,
+        model_ids: &[],
+        default_model_id: None,
+    },
+    BuiltInAgentContract {
         id: "opencode",
         label: "OpenCode",
         transport: "opencode_authenticated_loopback_http",
@@ -312,7 +325,7 @@ mod builtin_compatibility_tests {
             .iter()
             .map(|agent| agent.id)
             .collect::<Vec<_>>();
-        assert_eq!(ids, ["claude", "codex", "cursor", "opencode"]);
+        assert_eq!(ids, ["claude", "codex", "cursor", "grok", "opencode"]);
         assert_eq!(ids.iter().copied().collect::<HashSet<_>>().len(), ids.len());
     }
 
@@ -339,6 +352,10 @@ mod builtin_compatibility_tests {
         );
         assert_eq!(
             built_in_agent_contracts()[3].transport,
+            "grok_agent_acp_stdio"
+        );
+        assert_eq!(
+            built_in_agent_contracts()[4].transport,
             "opencode_authenticated_loopback_http"
         );
     }
@@ -394,7 +411,7 @@ mod builtin_compatibility_tests {
         assert_eq!(actual, expected);
         let value: serde_json::Value = serde_json::from_str(&actual).unwrap();
         assert_eq!(value["schemaVersion"], SCHEMA_VERSION);
-        assert_eq!(value["agents"].as_array().unwrap().len(), 4);
+        assert_eq!(value["agents"].as_array().unwrap().len(), 5);
         let lowercase = actual.to_ascii_lowercase();
         for forbidden in [
             "api_key",

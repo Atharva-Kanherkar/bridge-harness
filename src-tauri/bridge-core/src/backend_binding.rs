@@ -198,6 +198,12 @@ const BUILT_IN_BACKENDS: &[(&str, &str, BackendKind, &str)] = &[
         "cursor_agent_acp_stdio",
     ),
     (
+        "grok",
+        "grok.acp",
+        BackendKind::Acp,
+        "grok_agent_acp_stdio",
+    ),
+    (
         "opencode",
         "opencode.server",
         BackendKind::StructuredServer,
@@ -900,6 +906,7 @@ mod tests {
             ("claude", "claude.agent-sdk", BackendKind::SdkSidecar),
             ("codex", "codex.app-server", BackendKind::StructuredServer),
             ("cursor", "cursor.acp", BackendKind::Acp),
+            ("grok", "grok.acp", BackendKind::Acp),
             ("opencode", "opencode.server", BackendKind::StructuredServer),
         ];
         assert_eq!(

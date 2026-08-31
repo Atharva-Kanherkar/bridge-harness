@@ -17,5 +17,5 @@ export default defineConfig(({ mode }) => ({
   // Bridge and its coding agents create task worktrees inside the repo
   // (.worktrees/ and .claude/worktrees/). They are checkouts of other
   // branches, so their tests belong to those branches, not to this run.
-  test: { exclude: ["node_modules/**", "dist/**", ".worktrees/**", ".claude/worktrees/**"] }
+  test: { exclude: ["node_modules/**", "dist/**", ".worktrees/**", ".claude/worktrees/**", ".codex-worktrees/**"] }
 }));

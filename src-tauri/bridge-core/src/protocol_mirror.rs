@@ -202,6 +202,7 @@ fn harness_ids_round_trip_with_identical_wire_values() {
         model::Harness::Claude,
         model::Harness::Codex,
         model::Harness::Cursor,
+        model::Harness::Grok,
         model::Harness::OpenCode,
         model::Harness::Shell,
         model::Harness::from_stored("gemini"),
@@ -240,6 +241,7 @@ fn a_registry_agent_sharing_a_builtin_name_is_one_identity_not_two() {
     for (stored, expected) in [
         ("opencode", model::Harness::OpenCode),
         ("cursor", model::Harness::Cursor),
+        ("grok", model::Harness::Grok),
     ] {
         let from_registry = model::Harness::from_stored(stored);
         assert_eq!(from_registry, expected);

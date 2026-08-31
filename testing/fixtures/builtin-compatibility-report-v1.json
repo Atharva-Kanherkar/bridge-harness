@@ -98,6 +98,34 @@
       "defaultModelId": null
     },
     {
+      "id": "grok",
+      "label": "Grok Build",
+      "transport": "grok_agent_acp_stdio",
+      "runtimeSource": "grok agent --no-leader stdio",
+      "credentialOwner": "vendor",
+      "nativeResume": "when_session_advertises",
+      "capabilities": [
+        "messages",
+        "streaming",
+        "reasoning",
+        "plans",
+        "tools",
+        "commands",
+        "file_changes",
+        "approvals",
+        "usage",
+        "history",
+        "interrupt"
+      ],
+      "sandboxModes": [
+        "workspace_write",
+        "danger_full_access"
+      ],
+      "modelSource": "runtime_catalog",
+      "modelIds": [],
+      "defaultModelId": null
+    },
+    {
       "id": "opencode",
       "label": "OpenCode",
       "transport": "opencode_authenticated_loopback_http",
