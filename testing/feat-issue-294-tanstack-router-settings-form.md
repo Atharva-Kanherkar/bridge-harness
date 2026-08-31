@@ -23,6 +23,11 @@ single-field dialog.
   15. Save is disabled while the error is present.
 - Spend ceiling / token ceiling: a negative value shows "Must be zero or greater." instead of
   being silently clamped to 0.
+- Cadence, spend ceiling, and token ceiling cross to the Rust host as `i64` fields
+  (`bridge-protocol/src/messages/learning.rs`). A fractional value (e.g. `15.5`) must fail
+  validation client-side too ("Cadence must be a whole number of minutes." / "Enter a whole
+  number.") and disable Save — it must never reach `updateLearningSchedule` and surface as a
+  raw deserialization error instead of an inline message.
 - Emptying the pass-probability field and blurring it still reverts the displayed value to
   the last-saved percentage (existing behavior, unchanged — this is a discard-invalid-draft
   action, not a silent clamp of a real number).
@@ -58,6 +63,10 @@ New cases to add:
 - typing 150 into the pass-probability field shows "Enter a percentage between 0 and 100."
   and the Save button is disabled until the value is corrected.
 - typing 5 into the cadence field shows "Cadence must be at least 15 minutes." and Save is
+  disabled until corrected.
+- typing 15.5 into the cadence field shows "Cadence must be a whole number of minutes." and
+  Save is disabled until corrected.
+- typing -1 into the spend-ceiling field shows "Must be zero or greater." and Save is
   disabled until corrected.
 - picking a harness in "Pin harness" after a model was pinned clears "Pin model" back to
   "Automatic".

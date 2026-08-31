@@ -52,6 +52,21 @@ function validatePercent(value: string): string | undefined {
   return undefined;
 }
 
+// The schedule crosses to Rust as an i64; a fractional value must never reach
+// canSubmit, or Save fails downstream with a raw deserialization error instead
+// of this message.
+function validateCadence(value: number): string | undefined {
+  if (!Number.isInteger(value)) return "Cadence must be a whole number of minutes.";
+  if (value < 15) return "Cadence must be at least 15 minutes.";
+  return undefined;
+}
+
+function validateNonNegativeInteger(value: number): string | undefined {
+  if (!Number.isInteger(value)) return "Enter a whole number.";
+  if (value < 0) return "Must be zero or greater.";
+  return undefined;
+}
+
 /** Cadence, mode, and enabled — not nextRunAt or the unused evaluator ceilings. */
 export function scheduleUserFieldsChanged(saved: LearningSchedule, draft: LearningSchedule): boolean {
   return saved.enabled !== draft.enabled || saved.cadenceMinutes !== draft.cadenceMinutes || saved.mode !== draft.mode
@@ -392,13 +407,13 @@ export function RouterSettingsDialog({
             <form.Field name="schedule.mode">{field => (
               <label className="space-y-1 text-[10px] uppercase tracking-wider text-muted-foreground/70">Learning mode<select aria-label="Learning mode" className={fieldClass} value={field.state.value} onChange={event => field.handleChange(event.target.value)}><option value="manual">Manual · recommend</option><option value="ask">Ask · approval required</option><option value="automatic">Automatic · guarded canary</option></select></label>
             )}</form.Field>
-            <form.Field name="schedule.cadenceMinutes" validators={{ onChange: ({ value }) => (value < 15 ? "Cadence must be at least 15 minutes." : undefined) }}>{field => (
+            <form.Field name="schedule.cadenceMinutes" validators={{ onChange: ({ value }) => validateCadence(value) }}>{field => (
               <label className="space-y-1 text-[10px] uppercase tracking-wider text-muted-foreground/70">Cadence<input className={fieldClass} type="number" min={15} value={field.state.value} onChange={event => field.handleChange(Number(event.target.value))} onBlur={field.handleBlur} />{field.state.meta.errors.length > 0 && <p className={errorClass}>{String(field.state.meta.errors[0])}</p>}</label>
             )}</form.Field>
-            <form.Field name="schedule.runBudgetMicrousd" validators={{ onChange: ({ value }) => (value < 0 ? "Must be zero or greater." : undefined) }}>{field => (
+            <form.Field name="schedule.runBudgetMicrousd" validators={{ onChange: ({ value }) => validateNonNegativeInteger(value) }}>{field => (
               <label className="space-y-1 text-[10px] uppercase tracking-wider text-muted-foreground/70">Spend ceiling (µUSD)<input className={fieldClass} type="number" min={0} value={field.state.value} onChange={event => field.handleChange(Number(event.target.value))} onBlur={field.handleBlur} />{field.state.meta.errors.length > 0 && <p className={errorClass}>{String(field.state.meta.errors[0])}</p>}</label>
             )}</form.Field>
-            <form.Field name="schedule.runBudgetTokens" validators={{ onChange: ({ value }) => (value < 0 ? "Must be zero or greater." : undefined) }}>{field => (
+            <form.Field name="schedule.runBudgetTokens" validators={{ onChange: ({ value }) => validateNonNegativeInteger(value) }}>{field => (
               <label className="space-y-1 text-[10px] uppercase tracking-wider text-muted-foreground/70">Token ceiling<input className={fieldClass} type="number" min={0} value={field.state.value} onChange={event => field.handleChange(Number(event.target.value))} onBlur={field.handleBlur} />{field.state.meta.errors.length > 0 && <p className={errorClass}>{String(field.state.meta.errors[0])}</p>}</label>
             )}</form.Field>
             <form.Subscribe selector={state => state.values.schedule.mode}>{mode => mode === "automatic" && <p className="text-[10px] leading-relaxed text-warning sm:col-span-2 lg:col-span-5">Automatic mode is opt-in. It promotes only replay-approved candidates to a canary and creates an immutable rollback version on regression.</p>}</form.Subscribe>

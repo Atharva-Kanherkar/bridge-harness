@@ -198,6 +198,40 @@ describe("adaptive setup journeys", () => {
     expect(button(container, "Save").disabled).toBe(true);
   });
 
+  it("typing a fractional cadence shows a validation message and disables Save", async () => {
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    const cadenceLabel = [...container.querySelectorAll("label")].find(label => label.textContent?.startsWith("Cadence"))!;
+    const field = cadenceLabel.querySelector("input") as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(field, "15.5");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    });
+    expect(container.textContent).toContain("Cadence must be a whole number of minutes.");
+    expect(button(container, "Save").disabled).toBe(true);
+  });
+
+  it("typing a negative spend ceiling shows a validation message and disables Save", async () => {
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    const ceilingLabel = [...container.querySelectorAll("label")].find(label => label.textContent?.startsWith("Spend ceiling"))!;
+    const field = ceilingLabel.querySelector("input") as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(field, "-1");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    });
+    expect(container.textContent).toContain("Must be zero or greater.");
+    expect(button(container, "Save").disabled).toBe(true);
+  });
+
   it("picking a harness clears a previously pinned model", async () => {
     await act(async () => {
       root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
