@@ -1270,16 +1270,35 @@ function AppContent() {
         await openNewChat(undefined, undefined, true);
         return;
       }
-      // Open an unstarted workspace draft (#350) — no row until the first submit.
-      // Snapshot harness/model before deselecting so the carry-over survives.
-      const { harness, model } = resolveDraftHarnessModel();
-      setView("workspace"); setParadigm("single");
-      setWelcomeWorkspaceId(workspaceId);
-      setNewChatDraft({ harness, model, workspaceId, createWorktree: false });
-      setSelectedSessionId(undefined);
+      openWorkspaceDraft(workspaceId);
     } finally {
       newChatPendingRef.current = false;
     }
+  }
+
+  // Same unstarted-draft flow as `startChatInCurrentRepo`, but for a
+  // caller that already knows exactly which project it means — a sidebar
+  // project group's own "+" — so there is no workspace to resolve or
+  // picker to show.
+  async function startChatInWorkspace(workspaceId: string) {
+    if (newChatPendingRef.current) return;
+    newChatPendingRef.current = true;
+    try {
+      if (!adaptersReady) { setError("No model adapter is available. Install or sign in to Codex, Claude, or OpenCode, then retry model setup."); return; }
+      openWorkspaceDraft(workspaceId);
+    } finally {
+      newChatPendingRef.current = false;
+    }
+  }
+
+  // Open an unstarted workspace draft (#350) — no row until the first submit.
+  // Snapshot harness/model before deselecting so the carry-over survives.
+  function openWorkspaceDraft(workspaceId: string) {
+    const { harness, model } = resolveDraftHarnessModel();
+    setView("workspace"); setParadigm("single");
+    setWelcomeWorkspaceId(workspaceId);
+    setNewChatDraft({ harness, model, workspaceId, createWorktree: false });
+    setSelectedSessionId(undefined);
   }
 
   async function retargetWorkspace(workspaceId: string, createWorktree: boolean) {
@@ -1924,6 +1943,7 @@ function AppContent() {
       accountName={localAccountName(health.database, workspace?.path)}
       newChatBusy={busy}
       onOpenNewChat={() => void startChatInCurrentRepo()}
+      onNewChatInProject={workspaceId => void startChatInWorkspace(workspaceId)}
       onOpenProjects={() => setView("projects")}
       onOpenMarketplace={() => setView("marketplace")}
       onOpenMissionControl={() => { setView("workspace"); setParadigm("grid"); }}
