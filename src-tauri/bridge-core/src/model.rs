@@ -139,6 +139,7 @@ pub enum Harness {
     Claude,
     Codex,
     Cursor,
+    Grok,
     OpenCode,
     Shell,
     /// Any other agent — installed from the registry and run through a
@@ -175,6 +176,7 @@ impl Harness {
             Self::Claude => Cow::Borrowed("claude"),
             Self::Codex => Cow::Borrowed("codex"),
             Self::Cursor => Cow::Borrowed("cursor"),
+            Self::Grok => Cow::Borrowed("grok"),
             Self::OpenCode => Cow::Borrowed("opencode"),
             Self::Shell => Cow::Borrowed("shell"),
             Self::Agent(agent) => Cow::Owned(agent.as_str().to_owned()),
@@ -204,6 +206,7 @@ impl Harness {
             Self::Claude => Cow::Borrowed("Claude"),
             Self::Codex => Cow::Borrowed("Codex"),
             Self::Cursor => Cow::Borrowed("Cursor"),
+            Self::Grok => Cow::Borrowed("Grok Build"),
             Self::OpenCode => Cow::Borrowed("OpenCode"),
             Self::Shell => Cow::Borrowed("Shell"),
             // An agent Bridge has no bespoke adapter for has no display name
@@ -224,6 +227,7 @@ impl From<HarnessId> for Harness {
             "claude" => Self::Claude,
             "codex" => Self::Codex,
             "cursor" => Self::Cursor,
+            "grok" => Self::Grok,
             "opencode" => Self::OpenCode,
             "shell" => Self::Shell,
             _ => Self::Agent(id),

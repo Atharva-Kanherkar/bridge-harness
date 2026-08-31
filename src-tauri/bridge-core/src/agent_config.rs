@@ -6,7 +6,7 @@ use serde_json::{json, Value};
 use uuid::Uuid;
 
 const MAX_PROMPT_BYTES: usize = 64 * 1024;
-const VALID_HARNESSES: [&str; 5] = ["bridge", "codex", "claude", "cursor", "opencode"];
+const VALID_HARNESSES: [&str; 6] = ["bridge", "codex", "claude", "cursor", "grok", "opencode"];
 const VALID_ROLES: [&str; 6] = [
     "orchestrator",
     "research",
@@ -100,6 +100,7 @@ fn default_harnesses() -> Vec<HarnessConfig> {
         ("codex", "Codex"),
         ("claude", "Claude Code"),
         ("cursor", "Cursor"),
+        ("grok", "Grok Build"),
         ("opencode", "OpenCode"),
     ]
     .into_iter()

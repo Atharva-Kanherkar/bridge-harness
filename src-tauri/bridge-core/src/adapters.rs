@@ -2,6 +2,7 @@ use crate::{
     briefing_policy::BriefingRuntimePolicy,
     agent, claude_adapter, codex_adapter, cursor_adapter,
     delegation::WriteMode,
+    grok_adapter,
     model::{AdapterDescriptor, CapabilityTier, ModelOption, SandboxMode},
     opencode_adapter,
     worker_sandbox::ReadOnlySandbox,
@@ -597,6 +598,9 @@ impl AdapterRegistry {
         // wait on. It keeps the shared notify rather than a one-shot: its probe
         // is retaken after a sign-in, and each retake announces itself too.
         registry.register(Box::new(cursor_adapter::CursorAdapter::new(
+            on_discovered.clone(),
+        )))?;
+        registry.register(Box::new(grok_adapter::GrokAdapter::new(
             on_discovered,
         )))?;
         Ok(registry)
@@ -1295,10 +1299,17 @@ mod tests {
             .expect("cursor adapter is registered");
         assert!(!cursor.supports_sandbox(SandboxMode::ReadOnly));
         assert!(cursor.supports_sandbox(SandboxMode::WorkspaceWrite));
+        let grok = registry
+            .descriptors()
+            .into_iter()
+            .find(|descriptor| descriptor.id == "grok")
+            .expect("grok adapter is registered");
+        assert!(!grok.supports_sandbox(SandboxMode::ReadOnly));
+        assert!(grok.supports_sandbox(SandboxMode::WorkspaceWrite));
         for other in registry
             .descriptors()
             .into_iter()
-            .filter(|descriptor| !matches!(descriptor.id.as_str(), "opencode" | "cursor"))
+            .filter(|descriptor| !matches!(descriptor.id.as_str(), "opencode" | "cursor" | "grok"))
         {
             assert!(
                 other.supports_sandbox(SandboxMode::ReadOnly),
