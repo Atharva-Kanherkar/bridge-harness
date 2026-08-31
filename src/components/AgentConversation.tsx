@@ -502,7 +502,7 @@ function StartupStatusRow({ view, harness }: { view: NarrationView; harness?: st
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onExpandWorker, onWaiveCompletion, onRefreshBase, onRetryWorker, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, modelSwitch }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onExpandWorker, onWaiveCompletion, onRefreshBase, onRetryWorker, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, modelSwitch }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null }) {
   const visibleItems = useMemo(() => {
     const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
     const nextLiveItems = reduceConversation(events);
@@ -587,7 +587,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
               entryId={entry.item.entryId}
               className={highlightEntryId && entry.item.entryId === highlightEntryId ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
             >
-              <ItemView item={entry.item} workers={workers} now={now} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRefreshBase={onRefreshBase} onRetryWorker={onRetryWorker} onRemember={onRemember} errorContext={errorContext}/>
+              <ItemView item={entry.item} workers={workers} now={now} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRefreshBase={onRefreshBase} onRetryWorker={onRetryWorker} onRetryCompaction={onRetryCompaction} onRemember={onRemember} errorContext={errorContext}/>
             </TranscriptRow>)}
         {pendingRows.map(row => <TranscriptRow key={row.key}><div className={BUBBLE}><MentionText text={row.text}/></div></TranscriptRow>)}
         {pendingAttachmentRows.map(row => <TranscriptRow key={row.key}><div className={`${BUBBLE} p-1.5`}><img src={row.dataUri} alt="Image you attached, still sending" className="max-h-40 rounded-xl"/></div></TranscriptRow>)}
@@ -701,7 +701,7 @@ function Empty({ title, copy }: { title: string; copy: string }) {
   </div>;
 }
 
-function ItemView({ item, workers, now, onResolve, onAnswerQuestion, onOpenSession, onExpandWorker, onRefreshBase, onRetryWorker, onRemember, errorContext }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onRemember?: (text: string) => void; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
+function ItemView({ item, workers, now, onResolve, onAnswerQuestion, onOpenSession, onExpandWorker, onRefreshBase, onRetryWorker, onRetryCompaction, onRemember, errorContext }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
   if (item.type === "message") {
     if (item.role === "user") {
       const attachments = attachmentUris(item.data);
@@ -733,7 +733,7 @@ function ItemView({ item, workers, now, onResolve, onAnswerQuestion, onOpenSessi
   if (item.type === "permission") return <PermissionCard item={item} onResolve={onResolve}/>;
   if (item.type === "question") return <QuestionCard item={item} onResolve={onAnswerQuestion}/>;
   if (item.type === "delegation") return <DelegationRow item={item} workers={workers} now={now} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRetryWorker={onRetryWorker}/>;
-  if (item.type === "checkpoint" || item.type === "compaction" || item.type === "branch-summary") return <ForestCard item={item}/>;
+  if (item.type === "checkpoint" || item.type === "compaction" || item.type === "branch-summary") return <ForestCard item={item} onRetryCompaction={onRetryCompaction}/>;
   if (item.data.freshProviderSession === true) return <ModelChangedRow item={item}/>;
   if (item.type === "raw") return <RawEvent item={item}/>;
   if (item.type === "error") return <ErrorCard item={item} errorContext={errorContext}/>;
@@ -784,16 +784,37 @@ function ModelChangedRow({ item }: { item: ConversationItem }) {
   </div>;
 }
 
-function ForestCard({ item }: { item: ConversationItem }) {
+function ForestCard({ item, onRetryCompaction }: { item: ConversationItem; onRetryCompaction?: () => Promise<void> }) {
+  const [retrying, setRetrying] = useState(false);
+  const retryingRef = useRef(false);
+  const [retryAccepted, setRetryAccepted] = useState(false);
+  const [retryError, setRetryError] = useState<string>();
   const label = item.type === "checkpoint" ? "Checkpoint" : item.type === "compaction" ? "Context" : "Branch";
-  return <div className={`my-2 min-w-0 px-3 py-2.5 border border-border rounded-lg bg-card ${item.type}`}>
+  const retryable = item.type === "compaction" && item.status === "failed" && item.data.retryable === true && !!onRetryCompaction;
+  const recoveryAction = typeof item.data.recoveryAction === "string" ? item.data.recoveryAction : undefined;
+  const retry = async () => {
+    if (!retryable || retryingRef.current) return;
+    retryingRef.current = true;
+    setRetrying(true);
+    setRetryError(undefined);
+    try { await onRetryCompaction(); setRetryAccepted(true); }
+    catch (cause) { setRetryError(cause instanceof Error ? cause.message : String(cause)); }
+    finally { retryingRef.current = false; setRetrying(false); }
+  };
+  return <div role={item.status === "failed" ? "alert" : undefined} className={`my-2 min-w-0 px-3 py-2.5 border border-border rounded-lg bg-card ${item.type}`}>
     <header className="flex gap-2 items-center"><GitFork size={13} className="shrink-0" aria-hidden="true" /><b className="min-w-0 truncate text-foreground">{item.title || label}</b><small className="ml-auto shrink-0 text-muted-foreground">{item.status || "durable"}</small></header>
-    {/* `data.reason` is the only source `item.text` has on the two entries that
-        carry one (`compaction.requested` reads it through
-        `compactionReasonLabel`, `compaction.failed` uses it verbatim), so the
-        <code> block that used to sit below this line could only ever repeat it
-        — which is how a model switch came to show `before_downgrade` twice. */}
+    {/* The former raw reason block only repeated the primary copy and exposed
+        protocol diagnostics. Failure details now remain in the inspector data
+        while the card renders the backend's classified message. */}
     {item.text && <p className="mt-2 text-muted-foreground text-[12px]">{item.text}</p>}
+    {recoveryAction && <p className="mt-1.5 text-muted-foreground text-[11px] leading-relaxed">{recoveryAction}</p>}
+    {retryError && <p className="mt-1.5 text-destructive text-[11px] leading-relaxed">{retryError}</p>}
+    {retryable && <div className="mt-2.5 flex justify-end">
+      <button type="button" disabled={retrying || retryAccepted} className={BTN_SECONDARY} onClick={() => void retry()}>
+        {retrying ? <LoaderCircle size={12} className="animate-spin" aria-hidden="true"/> : retryAccepted ? <Check size={12} aria-hidden="true"/> : <RotateCcw size={12} aria-hidden="true"/>}
+        {retrying ? "Retrying…" : retryAccepted ? "Retry requested" : "Retry compaction"}
+      </button>
+    </div>}
   </div>;
 }
 

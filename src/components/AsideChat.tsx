@@ -25,7 +25,7 @@ import type { InteractionResolutionResult, QuestionAction } from "../protocol/ge
 // real chat in the sidebar after the panel closes. The panel is the delegation
 // surface, not the session's home; reopening later is ordinary navigation.
 
-export function AsideChat({ session, adapters, events, pendingMessages, working, modelSwitch = null, lifecycle, initialDraft, onSend, onChangeModel, onResolve, onAnswerQuestion = async () => undefined, onPromote, onClose }: {
+export function AsideChat({ session, adapters, events, pendingMessages, working, modelSwitch = null, lifecycle, initialDraft, onSend, onChangeModel, onResolve, onAnswerQuestion = async () => undefined, onRetryCompaction, onPromote, onClose }: {
   session: Session;
   /** The chat adapters, for the header model picker. */
   adapters: AdapterDescriptor[];
@@ -46,6 +46,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   onChangeModel: (harness: Harness, model: string | null) => void | Promise<void>;
   onResolve: (eventId: number, decision: ApprovalDecision, optionId?: string) => Promise<InteractionResolutionResult | void> | void;
   onAnswerQuestion?: (eventId: number, action: QuestionAction, answers: Record<string, string[]>) => Promise<InteractionResolutionResult | void> | void;
+  onRetryCompaction?: () => Promise<void>;
   /** Make the aside the active session and close the panel. */
   onPromote: () => void;
   onClose: () => void;
@@ -238,6 +239,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
             modelSwitch={modelSwitch}
             onResolve={onResolve}
             onAnswerQuestion={onAnswerQuestion}
+            onRetryCompaction={onRetryCompaction}
           />
         </div>
 

@@ -137,10 +137,16 @@ function projectSessionEntry(entry: SessionEntry): ConversationItem {
       return { ...base, type: "compaction", title: "Context compacted", text: stringValue(payload.summary) ?? "" };
     case "compaction.requested":
       return { ...base, type: "compaction", title: "Compaction requested", text: compactionReasonLabel(stringValue(payload.reason)) };
-    // `compaction.failed`'s `reason` is the failure text, not a reason code —
-    // same field name, different field. It stays as the host wrote it.
     case "compaction.failed":
-      return { ...base, type: "compaction", status: "failed", title: "Compaction failed", text: stringValue(payload.reason) ?? "" };
+      return {
+        ...base,
+        type: "compaction",
+        status: "failed",
+        title: "Compaction failed",
+        // New entries carry safe, classified copy. Keep the raw reason only as
+        // a compatibility fallback for transcripts written by older builds.
+        text: stringValue(payload.message) ?? stringValue(payload.reason) ?? "",
+      };
     case "branch.summary":
       return { ...base, type: "branch-summary", title: "Branch summary", text: stringValue(payload.summary) ?? "" };
     case "error":

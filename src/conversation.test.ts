@@ -370,15 +370,19 @@ describe("toolCallDisplay", () => {
     expect(compactionReasonLabel(undefined)).toBe("");
   });
 
-  // `compaction.failed` puts the failure text under the same field name. Same
-  // key, different field — mapping it would be a category error.
-  it("keeps a compaction failure's own words", () => {
+  it("projects classified compaction copy while retaining the diagnostic", () => {
     const [failed] = projectSessionConversation(
-      [entry("e1", null, "compaction.failed", { reason: "checkpoint metadata does not match its controller request" }, 1)],
+      [entry("e1", null, "compaction.failed", {
+        reason: "checkpoint metadata does not match its controller request",
+        message: "Bridge could not verify the provider's checkpoint, so no conversation history was replaced.",
+        retryable: true,
+      }, 1)],
       "e1",
     );
     expect(failed.status).toBe("failed");
-    expect(failed.text).toBe("checkpoint metadata does not match its controller request");
+    expect(failed.text).toContain("could not verify");
+    expect(failed.text).not.toContain("metadata does not match");
+    expect(failed.data.reason).toBe("checkpoint metadata does not match its controller request");
   });
 
   it("suppresses internal checkpoint envelopes from live and durable conversation", () => {
