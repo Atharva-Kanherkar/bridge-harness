@@ -53,6 +53,7 @@
     "@fontsource/bricolage-grotesque": "^5.2.10",
     "@fontsource/dm-sans": "^5.2.8",
     "@lezer/highlight": "^1.2.3",
+    "@tanstack/react-form": "^1.33.5",
     "@tanstack/react-query": "^5.102.8",
     "@tauri-apps/api": "^2.8.0",
     "@tauri-apps/plugin-dialog": "^2.4.0",
