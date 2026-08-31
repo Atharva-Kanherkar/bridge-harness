@@ -209,14 +209,21 @@ describe("copy affordances (interactive)", () => {
     expect(open).toBeTruthy();
 
     await act(async () => { open.click(); });
-    const iframe = container.querySelector("iframe") as HTMLIFrameElement;
+    // The overlay is portalled to document.body so no transformed ancestor can
+    // become its `position: fixed` containing block and clip it to the bubble.
+    // It therefore lives outside the message container, not inside it.
+    expect(container.querySelector('[aria-label="Exit fullscreen"]')).toBeNull();
+    const overlay = document.body.querySelector('.fixed.inset-0') as HTMLElement;
+    expect(overlay).toBeTruthy();
+    expect(container.contains(overlay)).toBe(false);
+    const iframe = overlay.querySelector("iframe") as HTMLIFrameElement;
     expect(iframe.getAttribute("sandbox")).toBe("");
     expect(iframe.getAttribute("allow")).toBeNull();
 
-    const close = container.querySelector('[aria-label="Exit fullscreen"]') as HTMLButtonElement;
+    const close = document.body.querySelector('[aria-label="Exit fullscreen"]') as HTMLButtonElement;
     expect(close).toBeTruthy();
     await act(async () => { close.click(); });
-    expect(container.querySelector('[aria-label="Exit fullscreen"]')).toBeNull();
+    expect(document.body.querySelector('[aria-label="Exit fullscreen"]')).toBeNull();
     expect(container.querySelector('[aria-label="Fullscreen"]')).toBeTruthy();
   });
 });

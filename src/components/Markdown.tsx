@@ -1,4 +1,5 @@
 import { createContext, memo, useContext, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
 import { Check, Copy, Maximize2, Minimize2 } from "lucide-react";
 import katex from "katex";
 import { COLORIZE_DEBOUNCE_MS, colorizeCode, escapeHtml, normalizeLang } from "./highlight";
@@ -351,7 +352,12 @@ function HtmlBlock({ html }: { html: string }) {
   );
 
   if (fullscreen) {
-    return (
+    // Portalled to `document.body`: the transcript row is a Framer Motion
+    // `layout` element that keeps a `transform` on the wrapper, and any non-none
+    // transform on an ancestor becomes the containing block for `position: fixed`.
+    // Nested inline, the overlay would size against the chat bubble, not the
+    // viewport. The portal decouples it from every ancestor transform.
+    return createPortal(
       <div className="fixed inset-0 z-50 flex flex-col bg-scrim p-4 backdrop-blur-md sm:p-8">
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[0.9rem] border border-border bg-background">
           <div className="code-block-header">
@@ -363,7 +369,8 @@ function HtmlBlock({ html }: { html: string }) {
           </div>
           {frame}
         </div>
-      </div>
+      </div>,
+      document.body,
     );
   }
 
