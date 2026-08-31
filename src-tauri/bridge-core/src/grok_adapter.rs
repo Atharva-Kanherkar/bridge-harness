@@ -226,51 +226,57 @@ pub fn login_executable() -> Result<PathBuf, GrokUnavailable> {
     Ok(locate()?.path)
 }
 
-fn configured_key() -> Option<String> {
-    KEY_VARIABLES.iter().find_map(|name| {
-        std::env::var(name)
-            .ok()
-            .map(|value| value.trim().to_owned())
-            .filter(|value| !value.is_empty())
-    })
+/// Every configured Grok credential, each paired with the variable it came
+/// from. All of them are active: the child inherits the parent environment, so
+/// a value set under either name reaches the agent and can surface in a
+/// diagnostic. Redaction and injection therefore work over the whole set rather
+/// than a single first-found key.
+fn configured_keys() -> Vec<(&'static str, String)> {
+    KEY_VARIABLES
+        .iter()
+        .filter_map(|name| {
+            std::env::var(name)
+                .ok()
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+                .map(|value| (*name, value))
+        })
+        .collect()
 }
 
-fn launch_for(executable: &Path, cwd: &Path, key: Option<&str>, timeout: Duration) -> AcpLaunch {
+fn launch_for(
+    executable: &Path,
+    cwd: &Path,
+    keys: &[(&'static str, String)],
+    timeout: Duration,
+) -> AcpLaunch {
     let mut launch = AcpLaunch::new(executable, cwd)
         .arg(ACP_SUBCOMMANDS[0])
         .arg(ACP_SUBCOMMANDS[1])
         .arg(ACP_SUBCOMMANDS[2])
         .handshake_timeout(timeout);
-    if let Some(key) = key {
-        launch = launch.env(KEY_VARIABLES[0], key);
+    for (name, value) in keys {
+        launch = launch.env(*name, value);
     }
     launch
 }
 
-fn redact(text: &str, key: Option<&str>) -> String {
-    match key.filter(|k| !k.is_empty()) {
-        Some(k) => text.replace(k, "[redacted]"),
-        None => text.to_owned(),
+fn redact(text: &str, keys: &[(&'static str, String)]) -> String {
+    let mut redacted = text.to_owned();
+    for (_, value) in keys {
+        if !value.is_empty() {
+            redacted = redacted.replace(value.as_str(), "[redacted]");
+        }
     }
+    redacted
 }
 
 fn probe(executable: &GrokExecutable, timeout: Duration) -> Result<GrokProfile, GrokUnavailable> {
-    let key = configured_key();
-    let launch = launch_for(
-        &executable.path,
-        &std::env::temp_dir(),
-        key.as_deref(),
-        timeout,
-    );
+    let keys = configured_keys();
+    let launch = launch_for(&executable.path, &std::env::temp_dir(), &keys, timeout);
     let session = match AcpSession::connect(launch) {
         Ok(session) => session,
-        Err(error) => {
-            return Err(classify_probe_failure(
-                &executable.version,
-                &error,
-                key.as_deref(),
-            ))
-        }
+        Err(error) => return Err(classify_probe_failure(&executable.version, &error, &keys)),
     };
     let profile = read_profile(executable, session.capabilities(), session.session_state());
     session.shutdown(ShutdownReason::Completed);
@@ -291,16 +297,20 @@ fn identifies_as_grok(agent_name: Option<&str>) -> bool {
     })
 }
 
-fn classify_probe_failure(version: &str, error: &AcpError, key: Option<&str>) -> GrokUnavailable {
+fn classify_probe_failure(
+    version: &str,
+    error: &AcpError,
+    keys: &[(&'static str, String)],
+) -> GrokUnavailable {
     match error {
         AcpError::Launch { reason } => GrokUnavailable::ProbeFailed {
             version: version.to_owned(),
-            reason: redact(reason, key),
+            reason: redact(reason, keys),
         },
         AcpError::HandshakeTimeout { output, .. } | AcpError::HandshakeFailed { output, .. } => {
             GrokUnavailable::NotProtocol {
                 version: version.to_owned(),
-                output: output.as_deref().map(|output| redact(output, key)),
+                output: output.as_deref().map(|output| redact(output, keys)),
             }
         }
         AcpError::AuthenticationRequired { .. } => GrokUnavailable::NeedsSignIn {
@@ -308,7 +318,7 @@ fn classify_probe_failure(version: &str, error: &AcpError, key: Option<&str>) ->
         },
         other => GrokUnavailable::ProbeFailed {
             version: version.to_owned(),
-            reason: redact(&other.to_string(), key),
+            reason: redact(&other.to_string(), keys),
         },
     }
 }
@@ -506,7 +516,7 @@ impl GrokRuntime {
             "The Grok session is no longer running{}",
             self.session
                 .failure_context()
-                .map(|context| format!(": {}", redact(&context, configured_key().as_deref())))
+                .map(|context| format!(": {}", redact(&context, &configured_keys())))
                 .unwrap_or_default()
         ))
     }
@@ -559,7 +569,7 @@ impl AdapterRuntime for GrokRuntime {
             .name("grok-turn".into())
             .spawn(move || {
                 if let Err(error) = session.prompt(&text) {
-                    let reason = redact(&error.to_string(), configured_key().as_deref());
+                    let reason = redact(&error.to_string(), &configured_keys());
                     let event = crate::acp_events::runtime_failed_event(error.code(), &reason);
                     drop(events.send(encode_event(&event)));
                 }
@@ -625,7 +635,7 @@ impl AdapterRuntime for GrokRuntime {
     fn failure_context(&mut self) -> Option<String> {
         self.session
             .failure_context()
-            .map(|context| redact(&context, configured_key().as_deref()))
+            .map(|context| redact(&context, &configured_keys()))
     }
 
     fn stop(&mut self, reason: ShutdownReason) {
@@ -790,17 +800,17 @@ fn launch(
     instructions: Option<&str>,
     on_progress: Option<crate::adapters::StartupProgress<'_>>,
 ) -> Result<StartedAdapter, BridgeError> {
-    let key = configured_key();
+    let keys = configured_keys();
     if let Some(on_progress) = on_progress {
         on_progress(StartupPhase::Spawning);
     }
     let session = AcpSession::connect(launch_for(
         &profile.executable,
         Path::new(cwd),
-        key.as_deref(),
+        &keys,
         crate::acp_session::DEFAULT_HANDSHAKE_TIMEOUT,
     ))
-    .map_err(|error| launch_error(&error, key.as_deref()))?;
+    .map_err(|error| launch_error(&error, &keys))?;
     if let Some(on_progress) = on_progress {
         on_progress(StartupPhase::Handshake);
     }
@@ -891,12 +901,12 @@ fn model_selector_id(options: &[SessionConfigOption]) -> Option<String> {
         .map(|option| option.id.0.to_string())
 }
 
-fn launch_error(error: &AcpError, key: Option<&str>) -> BridgeError {
+fn launch_error(error: &AcpError, keys: &[(&'static str, String)]) -> BridgeError {
     match error {
         AcpError::AuthenticationRequired { .. } => {
             BridgeError::Invalid(format!("Grok is not signed in; run {SIGN_IN_COMMAND}"))
         }
-        other => BridgeError::Invalid(redact(&other.to_string(), key)),
+        other => BridgeError::Invalid(redact(&other.to_string(), keys)),
     }
 }
 
@@ -928,14 +938,23 @@ impl GrokAdapter {
     }
 
     fn profile(&self) -> Result<GrokProfile, GrokUnavailable> {
-        if let Some(cached) = self.probe.read().unwrap().as_ref() {
-            if let Ok(profile) = &cached.outcome {
-                return Ok(profile.clone());
-            }
-        }
+        // Resolve the binary first, then accept a cached outcome only when it
+        // still describes that exact `(path, version)`. Short-circuiting on a
+        // cached success before locating would pin `start()` to a stale
+        // executable after `BRIDGE_GROK_BIN` changes or the binary is upgraded.
+        // Locating is the cheap `--version` read; the expensive ACP handshake
+        // is what the `(path, version)` cache spares us here.
         let executable = locate()?;
+        self.profile_for(&executable)
+    }
+
+    /// Cache decision for an already-located executable: reuse the cached
+    /// outcome only when it still describes this exact `(path, version)`,
+    /// otherwise re-probe. Split out so cache invalidation is testable without
+    /// depending on what `locate()` finds in the ambient environment.
+    fn profile_for(&self, executable: &GrokExecutable) -> Result<GrokProfile, GrokUnavailable> {
         if let Some(cached) = self.probe.read().unwrap().as_ref() {
-            if cached.describes(&executable) {
+            if cached.describes(executable) {
                 return cached.outcome.clone();
             }
         }
@@ -1095,10 +1114,28 @@ impl crate::adapters::HarnessAdapter for GrokAdapter {
         )
     }
 
+    /// Unreachable while [`Self::supports_native_resume`] is false — the
+    /// registry refuses the call before it reaches here — and stated rather
+    /// than left to a panic so the reason a Grok session returns through a
+    /// checkpoint is legible where a reader looks for it.
     fn resume(&self, _request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
         Err(BridgeError::Invalid(RESUME_UNAVAILABLE.into()))
     }
 
+    /// Grok is restored from a checkpoint, not reconnected natively, for the
+    /// same two independent reasons the Cursor adapter documents.
+    ///
+    /// The `resume_session` flag recorded on the negotiated profile is the
+    /// agent's advertisement, not a green light Bridge can act on: the shared
+    /// ACP client scopes every turn to the session its handshake opened, so it
+    /// has no reconnect-and-rebind path a `resume()` could drive today, and
+    /// `session/load` is history replay rather than resumption. Wiring true
+    /// native `session/resume` — the throwaway-`session/new`-then-rebind dance
+    /// the shared layer would need — is a follow-up that must be validated
+    /// against a live Grok build advertising the capability, not asserted from
+    /// an offline handshake. Until then Bridge hands the session over at a
+    /// checkpoint, which is what it can actually do, and this returns false so
+    /// the registry never offers a resume Bridge cannot perform.
     fn supports_native_resume(&self) -> bool {
         false
     }
@@ -1185,25 +1222,30 @@ mod tests {
         let exec_path = FakeGrokCli::speaking_protocol().install(temp_dir.path(), "grok");
 
         let executable = GrokExecutable {
-            path: exec_path,
+            path: exec_path.clone(),
             version: "1.0.4-e2b819f".into(),
         };
         let profile = probe(&executable, Duration::from_secs(5)).unwrap();
         let adapter = GrokAdapter::with_probe(Ok(profile));
 
+        // start() re-locates the binary to validate the cache is still current;
+        // point discovery at the fake CLI so its `(path, version)` matches the
+        // seeded probe and the cached profile is reused rather than re-probed.
+        std::env::set_var("BRIDGE_GROK_BIN", &exec_path);
+
         let worktree = tempfile::tempdir().unwrap();
-        let mut started = adapter
-            .start(StartRequest {
-                cwd: worktree.path().to_str().unwrap(),
-                model: Some("grok-code"),
-                effort: None,
-                instructions: Some("You are a helpful assistant"),
-                write_mode: None,
-                read_only_sandbox: None,
-                briefing: None,
-                on_progress: None,
-            })
-            .unwrap();
+        let started = adapter.start(StartRequest {
+            cwd: worktree.path().to_str().unwrap(),
+            model: Some("grok-code"),
+            effort: None,
+            instructions: Some("You are a helpful assistant"),
+            write_mode: None,
+            read_only_sandbox: None,
+            briefing: None,
+            on_progress: None,
+        });
+        std::env::remove_var("BRIDGE_GROK_BIN");
+        let mut started = started.unwrap();
 
         started.runtime.send_turn("Hello Grok").unwrap();
 
@@ -1275,7 +1317,8 @@ mod tests {
     fn launch_for_constructs_no_leader_args_and_env() {
         let exec = Path::new("/bin/grok");
         let cwd = Path::new("/tmp/worktree");
-        let launch = launch_for(exec, cwd, Some("xai-secret-key-123"), Duration::from_secs(5));
+        let keys = vec![("XAI_API_KEY", "xai-secret-key-123".to_string())];
+        let launch = launch_for(exec, cwd, &keys, Duration::from_secs(5));
 
         assert_eq!(launch.executable, PathBuf::from("/bin/grok"));
         assert_eq!(launch.cwd, PathBuf::from("/tmp/worktree"));
@@ -1287,18 +1330,41 @@ mod tests {
     }
 
     #[test]
+    fn launch_for_injects_every_configured_key_under_its_own_name() {
+        let exec = Path::new("/bin/grok");
+        let cwd = Path::new("/tmp/worktree");
+        let keys = vec![
+            ("XAI_API_KEY", "xai-value".to_string()),
+            ("GROK_API_KEY", "grok-value".to_string()),
+        ];
+        let launch = launch_for(exec, cwd, &keys, Duration::from_secs(5));
+
+        assert_eq!(launch.env.get("XAI_API_KEY"), Some(&"xai-value".to_string()));
+        assert_eq!(launch.env.get("GROK_API_KEY"), Some(&"grok-value".to_string()));
+    }
+
+    #[test]
     fn redact_sanitizes_configured_keys() {
+        let one = vec![("XAI_API_KEY", "xai-secret-12345".to_string())];
         assert_eq!(
-            redact("Error with token xai-secret-12345 in output", Some("xai-secret-12345")),
+            redact("Error with token xai-secret-12345 in output", &one),
             "Error with token [redacted] in output"
         );
+        assert_eq!(redact("Normal error message", &one), "Normal error message");
+        assert_eq!(redact("Normal error message", &[]), "Normal error message");
+    }
+
+    #[test]
+    fn redact_sanitizes_every_active_key_when_both_are_set() {
+        // Both variables set to distinct values: a diagnostic can carry either,
+        // so redaction must strip both, not just the first-found key.
+        let keys = vec![
+            ("XAI_API_KEY", "xai-secret-aaa".to_string()),
+            ("GROK_API_KEY", "grok-secret-bbb".to_string()),
+        ];
         assert_eq!(
-            redact("Normal error message", Some("xai-secret-12345")),
-            "Normal error message"
-        );
-        assert_eq!(
-            redact("Normal error message", None),
-            "Normal error message"
+            redact("leaked xai-secret-aaa and grok-secret-bbb here", &keys),
+            "leaked [redacted] and [redacted] here"
         );
     }
 
@@ -1326,6 +1392,46 @@ mod tests {
         assert!(probe.describes(&match_exec));
         assert!(!probe.describes(&diff_version));
         assert!(!probe.describes(&diff_path));
+    }
+
+    #[test]
+    fn profile_reuses_cache_only_for_the_same_binary() {
+        let cached_profile = GrokProfile {
+            executable: PathBuf::from("/synthetic/grok"),
+            version: "1.0.0-cached".into(),
+            agent_name: Some("grok".into()),
+            load_session: true,
+            resume_session: false,
+            additional_directories: false,
+            prompt_images: false,
+            auth_methods: Vec::new(),
+            modes: Vec::new(),
+            current_mode: None,
+            models: Vec::new(),
+            default_model: None,
+        };
+        let adapter = GrokAdapter::with_probe(Ok(cached_profile));
+
+        // Same (path, version): the cached success is reused verbatim.
+        let same = GrokExecutable {
+            path: PathBuf::from("/synthetic/grok"),
+            version: "1.0.0-cached".into(),
+        };
+        assert_eq!(adapter.profile_for(&same).unwrap().version, "1.0.0-cached");
+
+        // Binary upgraded in place (version changed): the stale cached profile
+        // must not be returned. Re-probing the synthetic path cannot reproduce
+        // the cached version, so any outcome here is an error or a freshly read
+        // profile — never the stale success the old short-circuit returned.
+        let upgraded = GrokExecutable {
+            path: PathBuf::from("/synthetic/grok"),
+            version: "1.0.1-upgraded".into(),
+        };
+        assert!(
+            adapter.profile_for(&upgraded).map(|profile| profile.version)
+                != Ok("1.0.0-cached".to_string()),
+            "cache invalidation must not return the stale profile"
+        );
     }
 
     #[test]
@@ -1428,7 +1534,7 @@ mod tests {
             &AcpError::AuthenticationRequired {
                 reason: "auth required".into(),
             },
-            None,
+            &[],
         );
         assert_eq!(err, GrokUnavailable::NeedsSignIn { version: "1.0.0".into() });
 
@@ -1438,7 +1544,7 @@ mod tests {
                 reason: "failed".into(),
                 output: Some("ANSI terminal noise".into()),
             },
-            None,
+            &[],
         );
         assert_eq!(
             err2,
