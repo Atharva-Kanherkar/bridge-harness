@@ -15,6 +15,7 @@ import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
 import { ComposerContextStrip } from "./components/ComposerContextStrip";
 import { ProjectsScreen } from "./components/ProjectsScreen";
+import { NewProjectDialog } from "./components/NewProjectDialog";
 import type { QuestionAction, SuggestCompletionResult, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
@@ -573,6 +574,7 @@ function AppContent() {
   }, [forest, pendingForSession.length, session]);
   const [worktreeOn, setWorktreeOn] = useState(false);
   const [welcomeWorkspaceId, setWelcomeWorkspaceId] = useState<string | null>(null);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
   // The pending unstarted new chat, if any. Non-null ⇒ the empty-state surface is a
   // draft: the choices are held here and the session is created on first submit.
   const [newChatDraft, setNewChatDraft] = useState<NewChatDraft | null>(null);
@@ -1969,7 +1971,7 @@ function AppContent() {
         activeSessionId={session?.id}
         busy={busy}
         onOpenSession={openSession}
-        onNewWorkspace={() => void createWorkspaceFromFolder()}
+        onNewWorkspace={() => setNewProjectOpen(true)}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
       /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
@@ -2393,6 +2395,14 @@ function AppContent() {
       onCreateWorktree={() => void newWorkspaceSession(true)}
       onUseCurrentFolder={() => void newWorkspaceSession(false)}
       onClose={() => void newWorkspaceSession(false)}
+    />
+    <NewProjectDialog
+      open={newProjectOpen}
+      busy={busy}
+      canStartChat={adaptersReady}
+      onClose={() => setNewProjectOpen(false)}
+      onStartChat={() => { setNewProjectOpen(false); void openNewChat(); }}
+      onChooseFolder={() => { setNewProjectOpen(false); void createWorkspaceFromFolder(); }}
     />
     <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={acceptModelSetup} onClose={closeModal} onError={setError} />
     <ShortcutsSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />

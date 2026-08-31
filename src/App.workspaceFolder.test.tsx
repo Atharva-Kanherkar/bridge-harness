@@ -25,6 +25,9 @@ async function settle() {
   await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
 }
 
+const buttonByText = (text: string) => [...document.body.querySelectorAll<HTMLButtonElement>("button")]
+  .find(button => button.textContent?.includes(text));
+
 beforeEach(async () => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const store = new Map<string, string>();
@@ -57,20 +60,20 @@ afterEach(() => {
 });
 
 describe("new project folder flow (#351)", () => {
-  it("creates and connects a leaf-named project, then reuses it on a repeat pick", async () => {
+  it("asks before opening the folder picker, then reuses a repeat pick", async () => {
     const create = vi.spyOn(bridgeApi, "createWorkspace");
     const connect = vi.spyOn(bridgeApi, "connectWorkspaceFolder");
     const projects = container.querySelector<HTMLButtonElement>('button[aria-label="Projects"]')!;
     await act(async () => projects.click());
     await settle();
 
-    const newProject = [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find(button => button.textContent?.includes("New project"))!;
-    await act(async () => projects.click());
+    await act(async () => buttonByText("New project")!.click());
     await settle();
-    const repeatNewProject = [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find(button => button.textContent?.includes("New project"))!;
-    await act(async () => repeatNewProject.click());
+    expect(document.body.textContent).toContain("Start with a conversation");
+    expect(create).not.toHaveBeenCalled();
+    expect(connect).not.toHaveBeenCalled();
+
+    await act(async () => buttonByText("Choose a folder")!.click());
     await settle();
 
     expect(create).toHaveBeenCalledWith("project");
@@ -78,10 +81,35 @@ describe("new project folder flow (#351)", () => {
     expect(connect.mock.calls[0][1]).toBe("/Users/you/Developer/project");
     expect(container.textContent).not.toContain("Workspace name");
 
-    await act(async () => newProject.click());
+    await act(async () => projects.click());
+    await settle();
+    await act(async () => buttonByText("New project")!.click());
+    await settle();
+    await act(async () => buttonByText("Choose a folder")!.click());
     await settle();
     expect(create).toHaveBeenCalledOnce();
     expect(connect).toHaveBeenCalledOnce();
+  });
+
+  it("opens a direct-chat draft when that project choice is selected", async () => {
+    const createChat = vi.spyOn(bridgeApi, "createChat");
+    const createWorkspaceSession = vi.spyOn(bridgeApi, "createWorkspaceSession");
+    const projects = container.querySelector<HTMLButtonElement>('button[aria-label="Projects"]')!;
+    await act(async () => projects.click());
+    await settle();
+
+    await act(async () => buttonByText("New project")!.click());
+    await settle();
+    await act(async () => buttonByText("Start a chat")!.click());
+    await settle();
+
+    const composer = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    expect(composer).toBeDefined();
+    await typeAndSubmit(composer, "help me plan this project");
+    await settle();
+
+    expect(createChat).toHaveBeenCalledOnce();
+    expect(createWorkspaceSession).not.toHaveBeenCalled();
   });
 });
 
