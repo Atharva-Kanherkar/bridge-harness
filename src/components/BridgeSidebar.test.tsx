@@ -158,6 +158,26 @@ describe("BridgeSidebar theming", () => {
     expect(repository).not.toContain("bg-sidebar ");
   });
 
+  it("fills only the repository that holds the open chat", () => {
+    localStorage.setItem(CHAT_VIEW_KEY, JSON.stringify({ status: "all", agent: "all", groupBy: "project", sortBy: "recency" }));
+    const other: Workspace = { ...workspace, id: "workspace-2", title: "deck-shell" };
+    const html = render({
+      workspaces: [workspace, other],
+      activeSessionId: "chat-1",
+      chats: [
+        session("chat-1", { title: "Policy engine budget", workspaceId: "workspace-1" }),
+        session("chat-2", { title: "Deck polish", workspaceId: "workspace-2" }),
+      ],
+    });
+    const buttons = html.split("<button");
+    const active = buttons.find(chunk => chunk.includes('title="Hide harness"')) ?? "";
+    const idle = buttons.find(chunk => chunk.includes('title="Hide deck-shell"')) ?? "";
+    expect(active).toContain("bg-accent font-medium");
+    expect(idle).not.toContain("bg-accent font-medium");
+    expect(idle).toContain("hover:bg-accent/70");
+    expect(idle.split("hover:bg-accent/70").join("")).not.toContain("bg-accent/70");
+  });
+
   it("lets repository groups scroll out instead of pinning the active repository", () => {
     localStorage.setItem(CHAT_VIEW_KEY, JSON.stringify({ status: "all", agent: "all", groupBy: "project", sortBy: "recency" }));
     const html = render({
@@ -299,6 +319,12 @@ describe("BridgeSidebar without the projects tree", () => {
     expect(projectsButton(render())).toBeTruthy();
     expect(projectsButton(render())).not.toContain("aria-current");
     expect(projectsButton(render({ projectsActive: true }))).toContain('aria-current="page"');
+  });
+
+  it("marks Memory current when that screen is open", () => {
+    const memoryButton = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Memory"')) ?? "";
+    expect(memoryButton(render())).not.toContain("aria-current");
+    expect(memoryButton(render({ memoryActive: true }))).toContain('aria-current="page"');
   });
 
   it("uses a real local account row as the settings entry", () => {

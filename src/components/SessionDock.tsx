@@ -26,7 +26,7 @@ export type DockPaneDescriptor = {
   /** Count badge (e.g. dirty files). Rendered whether or not the pane is active. */
   badge?: number;
   /** A state that needs the human — waiting_for_you, a pending approval, a
-   *  failure. Rendered as a pulsing warning dot on the tab and the rail. */
+   *  failure. Rendered as a pulsing warning dot on the tab and the toolbar. */
   alert?: boolean;
 };
 
@@ -105,11 +105,10 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
         aria-label="Dock"
         className={cn(
           "flex min-w-0 flex-col border-l border-border bg-sidebar",
-          concealed && "hidden",
+          (concealed || !state.open) && "hidden",
           !concealed && state.open && state.expanded && "flex-1",
           !concealed && state.open && !state.expanded && sheet && "absolute inset-y-0 right-0 z-30 shadow-2xl",
           !concealed && state.open && !state.expanded && !sheet && "shrink-0",
-          !concealed && !state.open && "w-11 shrink-0 items-stretch",
         )}
         style={!concealed && state.open && !state.expanded ? { width: state.width } : undefined}
       >
@@ -170,36 +169,6 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
             >
               <X size={14} strokeWidth={1.8} aria-hidden="true" />
             </button>
-          </div>
-        )}
-
-        {!state.open && !concealed && (
-          <div className="flex flex-col items-center gap-1 py-2">
-            {panes.map((pane, index) => {
-              const Icon = pane.icon;
-              return (
-                <button
-                  key={pane.id}
-                  type="button"
-                  onClick={() => onAction({ type: "open-pane", pane: pane.id })}
-                  aria-label={pane.label}
-                  title={`${pane.label}  ⌥⌘${index + 1}`}
-                  className={cn(
-                    "relative inline-flex h-8 w-8 items-center justify-center rounded-md transition-colors",
-                    pane.id === state.pane ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-                    !pane.available && "opacity-40",
-                  )}
-                >
-                  <Icon size={15} strokeWidth={1.7} aria-hidden="true" />
-                  {!!pane.badge && pane.available && !pane.alert && (
-                    <span className="pointer-events-none absolute right-1 top-1 h-[5px] w-[5px] rounded-full bg-muted-foreground/70" />
-                  )}
-                  {pane.alert && pane.available && (
-                    <span data-testid={`dock-alert-rail-${pane.id}`} className="mission-live-accent pointer-events-none absolute right-1 top-1 h-[5px] w-[5px] rounded-full bg-warning" />
-                  )}
-                </button>
-              );
-            })}
           </div>
         )}
 

@@ -2,7 +2,9 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { Code2, FileCode2, GitPullRequest, TerminalSquare } from "lucide-react";
 import { SessionToolbar, type SessionToolbarProps } from "./SessionToolbar";
+import type { DockPaneDescriptor } from "./SessionDock";
 
 let container: HTMLDivElement;
 let root: Root;
@@ -58,7 +60,7 @@ describe("SessionToolbar", () => {
     expect(container.textContent).not.toContain("Orchestrator · Claude");
   });
 
-  it("carries no tablist — the panel switcher lives in the dock now", () => {
+  it("carries no tablist — the pane switcher stays a tablist only on the open dock", () => {
     mount();
     expect(container.querySelector('[role="tablist"]')).toBeNull();
   });
@@ -175,5 +177,34 @@ describe("SessionToolbar", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     click(toggle);
     expect(onOpenNav).toHaveBeenCalledTimes(1);
+  });
+
+  it("folds dock panes into the overflow menu and leaves GitHub on the strip", () => {
+    const onOpenPane = vi.fn();
+    const dockPanes: DockPaneDescriptor[] = [
+      { id: "changes", label: "Changes", icon: FileCode2, available: true, badge: 4 },
+      { id: "code", label: "Code", icon: Code2, available: true },
+      { id: "terminal", label: "Terminal", icon: TerminalSquare, available: true, alert: true },
+      { id: "github", label: "GitHub", icon: GitPullRequest, available: true },
+    ];
+    mount({
+      onToggleRecall: noop,
+      dockPanes,
+      activePane: "changes",
+      dockOpen: true,
+      onOpenPane,
+    });
+    const search = container.querySelector<HTMLButtonElement>('button[aria-label="Search this chat"]')!;
+    expect(container.querySelector('button[aria-label="Changes"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Code"]')).toBeNull();
+    expect(search.nextElementSibling?.getAttribute("aria-label")).toBe("GitHub");
+    expect(container.querySelector('[data-testid="dock-alert-overflow"]')).not.toBeNull();
+    click(overflow());
+    expect(menu()!.textContent).toContain("Changes");
+    expect(menu()!.textContent).toContain("Code");
+    expect(menu()!.textContent).toContain("Terminal");
+    expect(menu()!.querySelector('[data-testid="dock-alert-rail-terminal"]')).not.toBeNull();
+    click([...menu()!.querySelectorAll("button")].find(button => button.textContent?.includes("Code"))!);
+    expect(onOpenPane).toHaveBeenCalledWith("code");
   });
 });

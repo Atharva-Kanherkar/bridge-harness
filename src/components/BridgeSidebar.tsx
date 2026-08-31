@@ -123,7 +123,7 @@ function GroupLabel({
       title={folded ? `Show ${label}` : `Hide ${label}`}
       className={cn(
         "flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] tracking-[-0.008em] text-foreground/90 transition-colors",
-        active ? "bg-accent font-medium" : "bg-accent/70",
+        active ? "bg-accent font-medium text-foreground" : "hover:bg-accent/70 hover:text-foreground",
       )}
     >
       <ChevronRight
@@ -241,6 +241,7 @@ export type BridgeSidebarProps = {
   workspaces: Workspace[];
   activeSessionId?: string;
   projectsActive: boolean;
+  memoryActive?: boolean;
   marketplaceActive: boolean;
   missionControlActive: boolean;
   workActive?: boolean;
@@ -275,6 +276,7 @@ export function BridgeSidebar({
   workspaces,
   activeSessionId,
   projectsActive,
+  memoryActive = false,
   marketplaceActive,
   missionControlActive,
   workActive = false,
@@ -506,7 +508,7 @@ export function BridgeSidebar({
           <ActionRow icon={Store} label="Marketplace" collapsed={collapsed} onClick={onOpenMarketplace} active={marketplaceActive} />
           <ActionRow icon={LayoutGrid} label="Mission Control" collapsed={collapsed} onClick={onOpenMissionControl} active={missionControlActive} />
           <ActionRow icon={FolderGit2} label="Projects" chord="open-projects" collapsed={collapsed} onClick={onOpenProjects} active={projectsActive} />
-          <ActionRow icon={Pin} label="Memory" collapsed={collapsed} onClick={onOpenMemory} />
+          <ActionRow icon={Pin} label="Memory" collapsed={collapsed} onClick={onOpenMemory} active={memoryActive} />
           <ActionRow icon={ClipboardList} label="Work board" collapsed={collapsed} onClick={onOpenWorkBoard} active={workActive} />
         </div>
 

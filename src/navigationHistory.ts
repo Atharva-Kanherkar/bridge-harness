@@ -1,4 +1,4 @@
-export type AppView = "workspace" | "work" | "projects" | "marketplace" | "settings";
+export type AppView = "workspace" | "work" | "projects" | "memory" | "marketplace" | "settings";
 
 export type AppPlace = {
   view: AppView;

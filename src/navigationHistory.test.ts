@@ -40,8 +40,8 @@ describe("placesEqual", () => {
     // Catalog and Automations are sections of one screen, so history holds one
     // entry for both. Re-adding an "automations" view breaks this exhaustive
     // record at compile time, which is the point of writing it out.
-    const views: Record<AppView, true> = { workspace: true, work: true, projects: true, marketplace: true, settings: true };
-    expect(Object.keys(views).sort()).toEqual(["marketplace", "projects", "settings", "work", "workspace"]);
+    const views: Record<AppView, true> = { workspace: true, work: true, projects: true, memory: true, marketplace: true, settings: true };
+    expect(Object.keys(views).sort()).toEqual(["marketplace", "memory", "projects", "settings", "work", "workspace"]);
 
     const marketplace: AppPlace = { view: "marketplace", sessionId: null, paradigm: "single" };
     expect(recordPlace([marketplace], 0, marketplace)).toEqual({ stack: [marketplace], index: 0 });
