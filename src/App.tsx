@@ -1900,8 +1900,10 @@ function AppContent() {
   // keeps the title bar.
   const isSessionChrome = view === "workspace" && paradigm !== "grid" && !!session;
   const bypassBadge = <BypassBadge bypassing={!!permissionPolicy?.autoApproveProviderPermissions} onOpenSettings={() => { setSettingsSection("permissions"); setView("settings"); }} />;
+  // Lives beside the composer's send button, not in a title-bar corner — see
+  // its `trailing` usage on the session ComposerPill below.
   const usageWidget = <UsageWidget usage={usageByProvider} adapters={health?.adapters} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} focusedSessionId={session?.id ?? null} onOpenPromptStudio={() => { setSettingsSection("prompts"); setView("settings"); }} />;
-  const titleBarActions = <>{bypassBadge}{usageWidget}</>;
+  const titleBarActions = bypassBadge;
   const sidebar = (
     <BridgeSidebar
       mobileOpen={navOpen}
@@ -2004,7 +2006,6 @@ function AppContent() {
             roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"}
           />}
           bypassBadge={bypassBadge}
-          actions={usageWidget}
           navOpen={navOpen}
           onOpenNav={() => setNavOpen(true)}
           dockOpen={dock.open}
@@ -2271,9 +2272,12 @@ function AppContent() {
                     onStop={session ? () => void bridgeApi.interruptTurn(session.id) : undefined}
                     inputRef={composerRef}
                     onPlusClick={() => void attachFile()}
-                    trailing={session.kind === "direct" || session.kind === "orchestrator"
-                      ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} />
-                      : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
+                    trailing={<>
+                      {session.kind === "direct" || session.kind === "orchestrator"
+                        ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} />
+                        : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
+                      {usageWidget}
+                    </>}
                   />
                 </div>}
               </div>

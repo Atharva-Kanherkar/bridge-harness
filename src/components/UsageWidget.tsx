@@ -68,6 +68,46 @@ function UsageRing({ used, inert = false }: { used?: number; inert?: boolean }) 
   </svg>;
 }
 
+/** Worst-case usage across every provider that actually reports one — the
+ *  single number the compact indicator colors itself by. Providers that are
+ *  signed out, not installed, or simply haven't reported yet stay out of the
+ *  computation rather than being treated as 0% used. */
+function overallUsedPercent(usage: Partial<Record<UsageProvider, UsageSnapshot>>, adapters?: AdapterDescriptor[]): number | null {
+  const values = PROVIDERS
+    .filter(provider => providerStatus(adapters?.find(item => item.id === provider.id)) === "normal")
+    .map(provider => highestUse(usage[provider.id]))
+    .filter((value): value is number => value != null);
+  return values.length ? Math.max(...values) : null;
+}
+
+type UsageTier = "unknown" | "ok" | "warning" | "critical";
+
+function usageTier(percent: number | null): UsageTier {
+  if (percent == null) return "unknown";
+  if (percent >= 90) return "critical";
+  if (percent >= 70) return "warning";
+  return "ok";
+}
+
+const TIER_RING_CLASS: Record<UsageTier, string> = {
+  unknown: "text-muted-foreground/35",
+  ok: "text-success",
+  warning: "text-warning",
+  critical: "text-destructive",
+};
+
+/** The compact trigger: a single colorful ring sized to sit beside the
+ *  composer's send button, rather than a labelled strip competing with it. */
+function UsageIndicatorRing({ percent, tier }: { percent: number | null; tier: UsageTier }) {
+  const clamped = percent == null ? 0 : clampPercent(percent);
+  const radius = 8;
+  const circumference = 2 * Math.PI * radius;
+  return <svg width="20" height="20" viewBox="0 0 20 20" className="shrink-0 -rotate-90" aria-hidden="true">
+    <circle cx="10" cy="10" r={radius} fill="none" strokeWidth="2.25" stroke="currentColor" className="text-foreground/10" />
+    {percent != null && <circle cx="10" cy="10" r={radius} fill="none" strokeWidth="2.25" strokeLinecap="round" stroke="currentColor" strokeDasharray={circumference} strokeDashoffset={circumference * (1 - clamped / 100)} className={cn(TIER_RING_CLASS[tier], "transition-[stroke-dashoffset,color] duration-700 ease-out")} />}
+  </svg>;
+}
+
 function UsageBar({ used }: { used: number }) {
   const clamped = clampPercent(used);
   return <span className="block h-1.5 w-full overflow-hidden rounded-full bg-muted">
@@ -77,7 +117,6 @@ function UsageBar({ used }: { used: number }) {
 
 export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples = {}, history = [], cacheDiagnostics = [], contextPercent, contextSource = "measured", focusedSessionId = null, onOpenPromptStudio }: UsageWidgetProps) {
   const [open, setOpen] = useState(false);
-  const [dismissed, setDismissed] = useState(false);
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [activeLogin, setActiveLogin] = useState<UsageProvider | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -104,32 +143,28 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
     };
   }, [open]);
 
-  if (dismissed) return null;
+  const overall = overallUsedPercent(usage, adapters);
+  const tier = usageTier(overall);
+  const indicatorTitle = overall == null ? "Usage health — no reported usage yet" : `Usage health — ${Math.round(overall)}% used`;
 
   return <div ref={rootRef} className="relative">
-    <button type="button" className="flex h-8 max-w-full cursor-pointer items-center gap-2 overflow-hidden rounded-window-control border border-border bg-card py-0 pl-2.5 pr-8 text-foreground transition-colors hover:bg-accent" aria-label={open ? "Close usage health details" : "Open usage health details"} aria-expanded={open} aria-controls="usage-health-panel" onClick={() => setOpen(value => !value)}>
-      <Gauge size={12} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-      {PROVIDERS.map((provider, index) => {
-        const adapter = adapters?.find(item => item.id === provider.id);
-        const status = providerStatus(adapter);
-        const snapshot = usage[provider.id];
-        const used = status === "normal" ? highestUse(snapshot) : undefined;
-        const label = status === "not_installed" ? "not installed" : status === "signed_out" ? "Not signed in" : used == null ? "unknown" : `${Math.round(used)}% · ${snapshot?.source}`;
-        const title = status === "not_installed" ? (adapter?.unavailableReason ?? `${provider.label} isn't installed. Add it in Settings → Harnesses.`) : undefined;
-        return <div key={provider.id} className="flex shrink-0 items-center gap-1.5" title={title}>
-          {index > 0 && <span className="mr-0.5 h-3.5 w-px bg-border" aria-hidden="true" />}
-          <UsageRing used={used} inert={status !== "normal"} />
-          <span className="hidden text-[10px] font-medium sm:inline">{provider.label}</span>
-          <span className="hidden font-mono text-[9px] tabular-nums text-muted-foreground md:inline">{label}</span>
-        </div>;
-      })}
-      <span className="hidden h-3.5 w-px bg-border sm:block" aria-hidden="true" />
-      <span className="hidden whitespace-nowrap text-[9px] text-muted-foreground sm:inline">Ctx {pressure.percent == null ? "unknown" : `${Math.round(pressure.percent)}% · ${contextSource}`}</span>
-      {projections.length > 0 && <AlertTriangle size={12} className="shrink-0 text-warning" aria-label="Projected usage exhaustion" />}
+    <button
+      type="button"
+      className={cn(
+        "relative grid size-8 shrink-0 cursor-pointer place-items-center rounded-full border border-border bg-card transition-colors hover:bg-accent",
+        open && "bg-accent",
+      )}
+      aria-label={open ? "Close usage health details" : "Open usage health details"}
+      aria-expanded={open}
+      aria-controls="usage-health-panel"
+      title={indicatorTitle}
+      onClick={() => setOpen(value => !value)}
+    >
+      <UsageIndicatorRing percent={overall} tier={tier} />
+      {projections.length > 0 && <span className="absolute -right-0.5 -top-0.5 grid size-3.5 place-items-center rounded-full bg-warning text-warning-foreground" aria-label="Projected usage exhaustion"><AlertTriangle size={9} strokeWidth={2.5} aria-hidden="true" /></span>}
     </button>
-    <button type="button" onClick={() => { setOpen(false); setDismissed(true); }} className="absolute right-1.5 top-1/2 z-10 grid size-5 -translate-y-1/2 place-items-center rounded-[calc(var(--radius-window-control)-6px)] text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground" aria-label="Hide usage widget"><X size={11} aria-hidden="true" /></button>
 
-    <div id="usage-health-panel" role="dialog" aria-label="Usage health details" className={`absolute right-0 top-full z-50 pt-2 transition-all duration-150 ${open ? "visible pointer-events-auto opacity-100" : "invisible pointer-events-none opacity-0"}`}>
+    <div id="usage-health-panel" role="dialog" aria-label="Usage health details" className={`absolute bottom-full right-0 z-50 pb-2 transition-all duration-150 ${open ? "visible pointer-events-auto opacity-100" : "invisible pointer-events-none opacity-0"}`}>
       <div className={cn("u-overlay-strong max-h-[80dvh] w-[390px] max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-2xl", PANEL_PAD)}>
         {showBreakdown && focusedSessionId ? <ContextBreakdownPanel
           state={breakdownState}
