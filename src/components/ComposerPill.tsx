@@ -39,6 +39,10 @@ export type ComposerPillProps = {
   /// own — opening the file picker from `+` is useless if the user then has to
   /// click into the box to filter it.
   inputRef?: MutableRefObject<HTMLTextAreaElement | null>;
+  /// Sits immediately after `+`, at the composer's leading edge. The usage ring
+  /// rides here on a session so the health it reports is next to the box that
+  /// spends it, rather than a title-bar corner the session view no longer has.
+  leading?: ReactNode;
   trailing?: ReactNode;
   className?: string;
   layout?: "hero" | "dock";
@@ -72,6 +76,7 @@ export function ComposerPill({
   plusLabel = "Attach a file",
   plusUnavailableReason,
   inputRef,
+  leading,
   trailing,
   className,
   layout = "dock",
@@ -118,160 +123,166 @@ export function ComposerPill({
 
   return (
     <div className={cn("w-full", isHero ? "mx-auto max-w-2xl" : "mx-auto max-w-2xl px-3 pb-4 pt-3 sm:px-6 sm:pb-6", className)}>
-      <form
-        className={cn(
-          "relative flex flex-col gap-1.5 rounded-[1.4rem]",
-          // Resting surface: one ladder step above the canvas, no blur.
-          "border border-input bg-card",
-          "transition-colors duration-200",
-          "focus-within:border-ring",
-          isHero ? "px-4 py-3.5 sm:px-5 sm:py-4" : "px-3.5 py-2.5 sm:px-4 sm:py-3",
-        )}
-        onSubmit={event => {
-          event.preventDefault();
-          if (canSend) onSubmit();
-        }}
-      >
-        {hasAttachments && (
-          <div className="flex flex-wrap items-center gap-2 px-1 pt-0.5">
-            {attachments!.map(attachment => (
-              <div
-                key={attachment.id}
-                className="group relative h-14 w-14 shrink-0 overflow-hidden rounded-lg border border-border bg-accent"
-              >
-                <img
-                  src={attachment.dataUri}
-                  alt={`Attached image, ${attachment.mediaType}`}
-                  className="h-full w-full object-cover"
-                />
-                {onRemoveAttachment && (
-                  <button
-                    type="button"
-                    onClick={() => onRemoveAttachment(attachment.id)}
-                    className="absolute right-0.5 top-0.5 grid h-4.5 w-4.5 place-items-center rounded-full bg-background/80 text-foreground opacity-90 transition-opacity hover:opacity-100"
-                    aria-label="Remove attached image"
-                  >
-                    <X className="h-3 w-3" strokeWidth={2} aria-hidden="true" />
-                  </button>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
-        <div className="relative">
-          {/* The mirror overlay: `value` rendered invisibly so it occupies the
-              same box the textarea's own text does, followed by the visible
-              ghost text — which then only ever shows past where the real text
-              ends. Sizing must track the textarea exactly, or the seam shows. */}
-          {showSuggestion && (
-            <div
-              ref={overlayRef}
-              aria-hidden="true"
-              className={cn(
-                "pointer-events-none absolute inset-0 max-h-44 min-h-[28px] w-full overflow-hidden whitespace-pre-wrap break-words text-[15px] leading-relaxed tracking-[-0.006em]",
-                isHero ? "px-1 py-1" : "px-1 py-0.5",
-              )}
-            >
-              <span className="invisible">{value}</span>
-              <span className="text-muted-foreground/50">{suggestion}</span>
+      {/* The pill's own box, and the anchor a `leading` control can portal a
+          panel onto — `data-composer-frame` is how the usage panel matches the
+          composer's width instead of guessing at it. */}
+      <div data-composer-frame className="relative">
+        <form
+          className={cn(
+            "relative flex flex-col gap-1.5 rounded-[1.4rem]",
+            // Resting surface: one ladder step above the canvas, no blur.
+            "border border-input bg-card",
+            "transition-colors duration-200",
+            "focus-within:border-ring",
+            isHero ? "px-4 py-3.5 sm:px-5 sm:py-4" : "px-3.5 py-2.5 sm:px-4 sm:py-3",
+          )}
+          onSubmit={event => {
+            event.preventDefault();
+            if (canSend) onSubmit();
+          }}
+        >
+          {hasAttachments && (
+            <div className="flex flex-wrap items-center gap-2 px-1 pt-0.5">
+              {attachments!.map(attachment => (
+                <div
+                  key={attachment.id}
+                  className="group relative h-14 w-14 shrink-0 overflow-hidden rounded-lg border border-border bg-accent"
+                >
+                  <img
+                    src={attachment.dataUri}
+                    alt={`Attached image, ${attachment.mediaType}`}
+                    className="h-full w-full object-cover"
+                  />
+                  {onRemoveAttachment && (
+                    <button
+                      type="button"
+                      onClick={() => onRemoveAttachment(attachment.id)}
+                      className="absolute right-0.5 top-0.5 grid h-4.5 w-4.5 place-items-center rounded-full bg-background/80 text-foreground opacity-90 transition-opacity hover:opacity-100"
+                      aria-label="Remove attached image"
+                    >
+                      <X className="h-3 w-3" strokeWidth={2} aria-hidden="true" />
+                    </button>
+                  )}
+                </div>
+              ))}
             </div>
           )}
-          <textarea
-            ref={node => {
-              textareaRef.current = node;
-              if (inputRef) inputRef.current = node;
-            }}
-            value={value}
-            rows={1}
-            placeholder={placeholder}
-            disabled={locked}
-            role={autocomplete ? "combobox" : undefined}
-            aria-autocomplete={autocomplete ? "list" : undefined}
-            aria-expanded={autocomplete ? true : undefined}
-            aria-controls={autocomplete?.controls}
-            aria-activedescendant={autocomplete?.activeDescendant}
-            onChange={event => onChange(event.target.value)}
-            onSelect={noteCaret}
-            onClick={noteCaret}
-            onKeyUp={noteCaret}
-            onScroll={syncOverlayScroll}
-            onPaste={event => {
-              // The owner owns the policy: intercept-and-become-attachments
-              // (preventDefault) or fall through to normal text insertion.
-              onPaste?.(event);
-            }}
-            onKeyDown={event => {
-              onKeyDown?.(event);
-              if (event.defaultPrevented) return;
-              // Read the caret live: `showSuggestion` can lag a click that has
-              // not yet flushed through `onSelect`.
-              if (event.key === "Tab" && suggestion && caretAtEnd() && onAcceptSuggestion) {
-                event.preventDefault();
-                onAcceptSuggestion();
-                return;
-              }
-              if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-                event.preventDefault();
-                if (canSend) onSubmit();
-              }
-            }}
-            className={cn(
-              "relative z-10 max-h-44 min-h-[28px] w-full resize-none bg-transparent text-[15px] leading-relaxed tracking-[-0.006em] text-foreground outline-none placeholder:text-muted-foreground/70",
-              isHero ? "px-1 py-1" : "px-1 py-0.5",
+          <div className="relative">
+            {/* The mirror overlay: `value` rendered invisibly so it occupies the
+                same box the textarea's own text does, followed by the visible
+                ghost text — which then only ever shows past where the real text
+                ends. Sizing must track the textarea exactly, or the seam shows. */}
+            {showSuggestion && (
+              <div
+                ref={overlayRef}
+                aria-hidden="true"
+                className={cn(
+                  "pointer-events-none absolute inset-0 max-h-44 min-h-[28px] w-full overflow-hidden whitespace-pre-wrap break-words text-[15px] leading-relaxed tracking-[-0.006em]",
+                  isHero ? "px-1 py-1" : "px-1 py-0.5",
+                )}
+              >
+                <span className="invisible">{value}</span>
+                <span className="text-muted-foreground/50">{suggestion}</span>
+              </div>
             )}
-          />
-        </div>
+            <textarea
+              ref={node => {
+                textareaRef.current = node;
+                if (inputRef) inputRef.current = node;
+              }}
+              value={value}
+              rows={1}
+              placeholder={placeholder}
+              disabled={locked}
+              role={autocomplete ? "combobox" : undefined}
+              aria-autocomplete={autocomplete ? "list" : undefined}
+              aria-expanded={autocomplete ? true : undefined}
+              aria-controls={autocomplete?.controls}
+              aria-activedescendant={autocomplete?.activeDescendant}
+              onChange={event => onChange(event.target.value)}
+              onSelect={noteCaret}
+              onClick={noteCaret}
+              onKeyUp={noteCaret}
+              onScroll={syncOverlayScroll}
+              onPaste={event => {
+                // The owner owns the policy: intercept-and-become-attachments
+                // (preventDefault) or fall through to normal text insertion.
+                onPaste?.(event);
+              }}
+              onKeyDown={event => {
+                onKeyDown?.(event);
+                if (event.defaultPrevented) return;
+                // Read the caret live: `showSuggestion` can lag a click that has
+                // not yet flushed through `onSelect`.
+                if (event.key === "Tab" && suggestion && caretAtEnd() && onAcceptSuggestion) {
+                  event.preventDefault();
+                  onAcceptSuggestion();
+                  return;
+                }
+                if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
+                  event.preventDefault();
+                  if (canSend) onSubmit();
+                }
+              }}
+              className={cn(
+                "relative z-10 max-h-44 min-h-[28px] w-full resize-none bg-transparent text-[15px] leading-relaxed tracking-[-0.006em] text-foreground outline-none placeholder:text-muted-foreground/70",
+                isHero ? "px-1 py-1" : "px-1 py-0.5",
+              )}
+            />
+          </div>
 
-        <div className="flex items-center justify-between gap-2 px-1">
-          <button
-            type="button"
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-95 disabled:opacity-40"
-            onClick={onPlusClick}
-            // Not gated on `working`: adding context is not a turn action, and an
-            // agent mid-work is exactly when the user reaches for it.
-            disabled={disabled || !onPlusClick || !!plusUnavailableReason}
-            aria-label={plusLabel}
-            title={plusUnavailableReason ?? plusLabel}
-          >
-            <Plus className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
-          </button>
-
-          <div className="flex items-center gap-2">
-            {trailing}
-            {/* Stop and submit are separate actions, and while a turn is running
-                both are present: sending guidance must never read as cancelling
-                the work. */}
-            {working && onStop && (
+          <div className="flex items-center justify-between gap-2 px-1">
+            <div className="flex items-center gap-0.5">
               <button
                 type="button"
-                onClick={onStop}
-                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-input bg-card text-foreground transition-colors duration-150 active:scale-95 hover:bg-accent"
-                aria-label="Stop"
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-95 disabled:opacity-40"
+                onClick={onPlusClick}
+                disabled={disabled || !onPlusClick || !!plusUnavailableReason}
+                aria-label={plusLabel}
+                title={plusUnavailableReason ?? plusLabel}
               >
-                <Square className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
+                <Plus className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
               </button>
-            )}
-            {(!working || steerable) && (
-              <button
-                type="submit"
-                disabled={!canSend}
-                className={cn(
-                  "inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full transition-opacity duration-150 active:scale-95",
-                  steerable ? "px-3 text-[13px] font-medium" : "w-9",
-                  canSend
-                    ? "bg-primary text-primary-foreground hover:opacity-90"
-                    : "bg-accent text-muted-foreground/70",
-                )}
-                aria-label={submitLabel}
-                title={activeAction === "queue" && working ? "Held until the current step finishes" : undefined}
-              >
-                {steerable && <span>{submitLabel}</span>}
-                <ArrowUp className="h-4 w-4" strokeWidth={2.5} aria-hidden="true" />
-              </button>
-            )}
+              {leading}
+            </div>
+
+            <div className="flex items-center gap-2">
+              {trailing}
+              {/* Stop and submit are separate actions, and while a turn is running
+                  both are present: sending guidance must never read as cancelling
+                  the work. */}
+              {working && onStop && (
+                <button
+                  type="button"
+                  onClick={onStop}
+                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-input bg-card text-foreground transition-colors duration-150 active:scale-95 hover:bg-accent"
+                  aria-label="Stop"
+                >
+                  <Square className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
+                </button>
+              )}
+              {(!working || steerable) && (
+                <button
+                  type="submit"
+                  disabled={!canSend}
+                  className={cn(
+                    "inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full transition-opacity duration-150 active:scale-95",
+                    steerable ? "px-3 text-[13px] font-medium" : "w-9",
+                    canSend
+                      ? "bg-primary text-primary-foreground hover:opacity-90"
+                      : "bg-accent text-muted-foreground/70",
+                  )}
+                  aria-label={submitLabel}
+                  title={activeAction === "queue" && working ? "Held until the current step finishes" : undefined}
+                >
+                  {steerable && <span>{submitLabel}</span>}
+                  <ArrowUp className="h-4 w-4" strokeWidth={2.5} aria-hidden="true" />
+                </button>
+              )}
+            </div>
           </div>
-        </div>
-      </form>
+        </form>
+      </div>
     </div>
   );
 }

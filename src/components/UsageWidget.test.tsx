@@ -21,6 +21,8 @@ describe("UsageWidget", () => {
     expect(html).not.toContain("group-hover:");
     expect(html).toContain("Open usage health details");
     expect(html).toContain("Close usage health details");
+    expect(html).toContain("Show more");
+    expect(html).not.toContain("Resize usage panel");
   });
 
   it("labels reported meters and explains context pressure", () => {
@@ -177,5 +179,23 @@ describe("UsageWidget", () => {
     expect(html).toContain('aria-label="Open usage health details — no reported usage yet"');
     expect(html).not.toContain("text-destructive");
     expect(html).not.toContain("text-warning");
+  });
+
+  it("renders a compact ring trigger that still carries the full usage panel", () => {
+    const html = renderToStaticMarkup(<UsageWidget compact usage={{}} contextPercent={76} contextSource="measured" />);
+    expect(html).not.toContain("w-[390px]");
+    expect(html).toContain("rounded-full");
+    expect(html).toContain("Open usage health details");
+    expect(html).toContain("bottom-full");
+    expect(html).toContain("Show more");
+    expect(html).toContain("grid-rows-[0fr]");
+    expect(html).toContain("Resize usage panel");
+    expect(html).toContain("Codex");
+    expect(html).toContain("Claude");
+    expect(html).toContain("Cursor");
+    expect(html).toContain("OpenCode");
+    expect(html).toContain("Limit unknown");
+    expect(html).toContain("Prompt cache");
+    expect(html).toContain("Recent work units");
   });
 });

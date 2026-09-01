@@ -163,6 +163,24 @@ describe("MemoryDialog", () => {
     expect(container.textContent).toContain("account:local");
   });
 
+  it("fills the main canvas like Projects, not a floating overlay", async () => {
+    mount();
+    await flush();
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    const page = container.firstElementChild as HTMLElement;
+    expect(page.className).toContain("h-full");
+    expect(page.className).toContain("overflow-y-auto");
+    expect(page.className).not.toContain("fixed");
+    expect(page.className).not.toContain("inset-0");
+    expect(page.className).not.toContain("bg-scrim");
+    const inner = page.firstElementChild as HTMLElement;
+    expect(inner.className).toContain("max-w-5xl");
+    expect(inner.className).not.toContain("max-w-2xl");
+    expect(inner.className).not.toContain("rounded-3xl");
+    expect(inner.className).not.toContain("u-overlay-strong");
+    expect(container.querySelector("h1")?.textContent).toBe("Memory");
+  });
+
   it("names provider-owned memory as staying on its provider", async () => {
     mount();
     await flush();

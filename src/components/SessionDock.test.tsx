@@ -97,14 +97,12 @@ describe("SessionDock", () => {
     expect(body("terminal")).toBeNull();
   });
 
-  it("renders the collapsed rail with every pane one click away", () => {
+  it("hides the collapsed dock without unmounting visited pane bodies", () => {
     const onAction = vi.fn();
     mount({ state: { ...defaultDockState(), visited: [] }, onAction });
     expect(container.querySelector('[role="tablist"]')).toBeNull();
-    const rail = [...container.querySelectorAll<HTMLButtonElement>("aside button")];
-    expect(rail.map(button => button.getAttribute("aria-label"))).toEqual(["Changes", "Code", "Terminal"]);
-    click(rail[2]);
-    expect(onAction).toHaveBeenCalledWith({ type: "open-pane", pane: "terminal" });
+    expect(container.querySelector("aside")!.classList.contains("hidden")).toBe(true);
+    expect(container.querySelectorAll("aside button")).toHaveLength(0);
   });
 
   it("keeps visited pane bodies mounted while collapsed", () => {
@@ -173,21 +171,16 @@ describe("SessionDock", () => {
     expect(onConnectFolder).toHaveBeenCalledTimes(1);
   });
 
-  it("rides badges on the switcher and the rail", () => {
+  it("rides badges on the switcher whether or not the pane is active", () => {
     mount({ state: open({ pane: "code", visited: ["code"] }) });
     const changesTab = tabs().find(tab => tab.getAttribute("aria-label") === "Changes")!;
     expect(changesTab.textContent).toContain("4");
-    mount({ state: { ...defaultDockState(), visited: [] } });
-    const railChanges = container.querySelector<HTMLButtonElement>('aside button[aria-label="Changes"]')!;
-    expect(railChanges.querySelector("span.rounded-full")).not.toBeNull();
   });
 
-  it("marks an alerting pane on the tab and the rail", () => {
+  it("marks an alerting pane on the open switcher", () => {
     const panes = PANES.map(pane => pane.id === "terminal" ? { ...pane, alert: true } : pane);
     mount({ state: open(), panes });
     expect(container.querySelector('[data-testid="dock-alert-terminal"]')).not.toBeNull();
-    mount({ state: { ...defaultDockState(), visited: [] }, panes });
-    expect(container.querySelector('[data-testid="dock-alert-rail-terminal"]')).not.toBeNull();
   });
 
   it("conceals everything without unmounting when hidden by fullscreen", () => {

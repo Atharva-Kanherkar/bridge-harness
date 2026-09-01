@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, Pencil, Pin, Search, X } from "lucide-react";
+import { Check, Pencil, Search, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import { searchRecords } from "../memoryStats";
 import { harnessLabel } from "../utils";
@@ -202,24 +202,22 @@ export function MemoryDialog({
     `rounded-full px-3 py-1 text-[12px] font-medium transition-colors ${active ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`;
   const models = adapters.find(adapter => adapter.id === profileHarness)?.models ?? [];
 
-  return <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-scrim p-4 pt-[6vh] backdrop-blur-md" role="dialog" aria-modal="true" aria-labelledby="memory-title" onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}>
-    <div className="u-overlay-strong animate-page-enter flex max-h-[90dvh] w-full max-w-2xl flex-col overflow-hidden rounded-3xl">
-      <header className="flex shrink-0 items-start gap-3 border-b border-border px-5 py-4">
-        <span className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-muted text-foreground"><Pin size={18} aria-hidden="true" /></span>
+  return <div className="h-full overflow-y-auto" aria-labelledby="memory-title">
+    <div className="mx-auto w-full max-w-5xl px-5 py-6 sm:px-8 sm:py-8">
+      <header className="mb-5 flex items-end gap-3" data-tauri-drag-region="deep">
         <div className="min-w-0 flex-1">
-          <h2 id="memory-title" className="font-display text-base font-semibold text-foreground">Memory</h2>
+          <h1 id="memory-title" className="m-0 font-display text-[19px] font-semibold tracking-[-0.02em] text-foreground">Memory</h1>
           <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">Account memory on this machine. Pins live under <span className="font-mono text-[11px]">account:local</span> and follow you across every chat here — not this chat's history, not the helper picker, and not a provider's <span className="font-mono text-[11px]">/memory</span>.</p>
         </div>
-        <button type="button" className="shrink-0 rounded-xl p-2 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" onClick={onClose} aria-label="Close"><X size={16} aria-hidden="true" /></button>
       </header>
-      <div className="flex shrink-0 items-center gap-1.5 border-b border-border px-5 py-2">
+      <div className="mb-5 flex flex-wrap items-center gap-1.5">
         <button type="button" aria-pressed={tab === "pins"} className={tabClass(tab === "pins")} onClick={() => setTab("pins")}>About me</button>
         <button type="button" aria-pressed={tab === "queue"} className={tabClass(tab === "queue")} onClick={() => setTab("queue")}>
           Review queue{queueCount > 0 && <span className="ml-1.5 rounded-full bg-accent px-1 font-mono text-[10px] leading-4 text-muted-foreground">{queueCount}</span>}
         </button>
         <button type="button" aria-pressed={tab === "activity"} className={tabClass(tab === "activity")} onClick={() => setTab("activity")}>Activity</button>
       </div>
-      {tab === "pins" && <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+      {tab === "pins" && <div className="space-y-4">
         <div className="space-y-2">
           <textarea
             className={`${fieldClass} min-h-24 py-2.5`}
@@ -233,18 +231,18 @@ export function MemoryDialog({
             <select className={`${fieldClass} h-9 w-36`} value={kind} disabled={busy} onChange={event => setKind(event.target.value)} aria-label="Kind">
               {KINDS.map(item => <option key={item} value={item}>{item}</option>)}
             </select>
-            <span className={`text-[11px] tabular-nums ${overLimit ? "text-destructive" : "text-muted-foreground"}`}>{bodyChars} / {MAX_MEMORY_BODY_CHARS}</span>
+            <span className={`shrink-0 text-[11px] tabular-nums ${overLimit ? "text-destructive" : "text-muted-foreground"}`}>{bodyChars} / {MAX_MEMORY_BODY_CHARS}</span>
             {editingId && (
               <button
                 type="button"
-                className="ml-auto h-9 rounded-xl border border-border px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                className="ml-auto h-9 shrink-0 rounded-xl border border-border px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                 disabled={busy}
                 onClick={cancelEdit}
               >Cancel</button>
             )}
             <button
               type="button"
-              className={`h-9 rounded-xl bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity disabled:opacity-45 ${editingId ? "" : "ml-auto"}`}
+              className={`h-9 shrink-0 rounded-xl bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity disabled:opacity-45 ${editingId ? "" : "ml-auto"}`}
               disabled={busy || !trimmed || overLimit}
               onClick={() => void save()}
             >{editingId ? "Save edit" : "Save pin"}</button>
@@ -341,7 +339,7 @@ export function MemoryDialog({
           </div>
         )}
       </div>}
-      {tab === "queue" && <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-5">
+      {tab === "queue" && <div className="space-y-4">
         <div className="space-y-2">
           <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">After a chat turn</p>
           <div className="flex flex-wrap items-center gap-1.5">
@@ -398,7 +396,7 @@ export function MemoryDialog({
           )}
         </ul>
       </div>}
-      {tab === "activity" && <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-5">
+      {tab === "activity" && <div className="space-y-3">
         <div className="grid grid-cols-2 gap-3">
           <section className="u-glass-soft rounded-2xl px-3.5 py-3">
             <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Recall · 14 days</p>
