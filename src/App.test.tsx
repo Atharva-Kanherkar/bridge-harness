@@ -69,6 +69,7 @@ describe("shell flags", () => {
     expect(source).toContain("BridgeSidebar");
     expect(source).toContain('onOpenMarketplace={() => setView("marketplace")}');
     expect(source).toContain('onOpenMemory={() => setView("memory")}');
+    expect(source).toContain('if (view !== "memory") setMemoryDraft(null)');
     expect(source).not.toContain('setView("automations")');
     expect(source).not.toContain('view === "automations"');
     expect(source).toContain("chromeFullscreen");

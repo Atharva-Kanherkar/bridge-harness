@@ -326,6 +326,9 @@ function AppContent() {
   useEffect(() => {
     if (selectedSessionId || view !== "workspace" || paradigm !== "single") setNewChatDraft(null);
   }, [selectedSessionId, view, paradigm]);
+  useEffect(() => {
+    if (view !== "memory") setMemoryDraft(null);
+  }, [view]);
 
   useEffect(() => {
     const place: AppPlace = { view, sessionId: selectedSessionId ?? null, paradigm };
