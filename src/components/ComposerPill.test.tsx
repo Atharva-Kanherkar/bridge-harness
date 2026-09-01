@@ -88,6 +88,14 @@ describe("ComposerPill", () => {
     expect(plus().title).toBe("Connect a folder to this chat to attach files from it");
   });
 
+  it("renders a leading control beside +", () => {
+    render({
+      onPlusClick: () => {},
+      leading: <button type="button" aria-label="Open usage health details">ring</button>,
+    });
+    expect(plus().nextElementSibling?.getAttribute("aria-label")).toBe("Open usage health details");
+  });
+
   it("stays editable while working, with Steer and Stop both reachable", () => {
     const onSubmit = vi.fn();
     const onStop = vi.fn();

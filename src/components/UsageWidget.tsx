@@ -1,5 +1,6 @@
 import { memo, useEffect, useRef, useState } from "react";
-import { AlertTriangle, Gauge, Layers, X } from "lucide-react";
+import { createPortal } from "react-dom";
+import { AlertTriangle, ChevronDown, Gauge, Layers, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
 import { clampPercent, contextPressure, formatReset, projectUsageExhaustion, type CacheDiagnostic, type MetricSource, type UsageHistoryEntry, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "../usage";
@@ -10,6 +11,9 @@ import { ContextBreakdownPanel } from "./ContextBreakdown";
 /** Details panel padding; inner cards use panel radius minus this so the arcs share a center. */
 const PANEL_PAD = "p-2.5";
 const PANEL_NESTED = "rounded-[calc(var(--radius-2xl)-0.625rem)]";
+/** Floor for the compact panel's dragged height — below this the provider grid stops being readable. */
+const MIN_COMPACT_HEIGHT = 180;
+const COMPACT_RESIZE_STEP = 16;
 
 const PROVIDERS: Array<{ id: UsageProvider; label: string }> = [
   { id: "codex", label: "Codex" },
@@ -28,6 +32,7 @@ export interface UsageWidgetProps {
   contextSource?: MetricSource;
   focusedSessionId?: string | null;
   onOpenPromptStudio?: (segmentClass: string) => void;
+  compact?: boolean;
 }
 
 function sourceLabel(source: MetricSource): string {
@@ -125,11 +130,18 @@ function UsageBar({ used }: { used: number }) {
   </span>;
 }
 
-export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples = {}, history = [], cacheDiagnostics = [], contextPercent, contextSource = "measured", focusedSessionId = null, onOpenPromptStudio }: UsageWidgetProps) {
+export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples = {}, history = [], cacheDiagnostics = [], contextPercent, contextSource = "measured", focusedSessionId = null, onOpenPromptStudio, compact = false }: UsageWidgetProps) {
   const [open, setOpen] = useState(false);
   const [showBreakdown, setShowBreakdown] = useState(false);
+  const [showMore, setShowMore] = useState(false);
+  const [panelHeight, setPanelHeight] = useState<number | null>(null);
+  const [detailsMax, setDetailsMax] = useState(0);
   const [activeLogin, setActiveLogin] = useState<UsageProvider | null>(null);
+  const [frame, setFrame] = useState<HTMLElement | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const panelInnerRef = useRef<HTMLDivElement>(null);
+  const detailsInnerRef = useRef<HTMLDivElement>(null);
   const pressure = contextPressure(contextPercent);
   const breakdownState = useContextBreakdown(focusedSessionId, open && showBreakdown);
   const projections = PROVIDERS.map(provider => {
@@ -137,10 +149,23 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
     return projection ? { provider, projection } : null;
   }).filter((value): value is NonNullable<typeof value> => value != null);
 
+  // Compact rides the composer, so its panel belongs to the pill's own box
+  // rather than this button: portalling onto `[data-composer-frame]` is what
+  // makes the panel exactly as wide as the composer instead of guessing.
+  useEffect(() => {
+    if (!compact) {
+      setFrame(null);
+      return;
+    }
+    setFrame(rootRef.current?.closest<HTMLElement>("[data-composer-frame]") ?? null);
+  }, [compact]);
+
   useEffect(() => {
     if (!open) return;
     const dismiss = (event: PointerEvent) => {
-      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      if (rootRef.current?.contains(target) || panelRef.current?.contains(target)) return;
+      setOpen(false);
     };
     const dismissOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") setOpen(false);
@@ -153,6 +178,18 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
     };
   }, [open]);
 
+  // Measured only while expanded: `max-height` is 0 when collapsed, so reading
+  // scrollHeight then would report 0 and the panel would never open. The last
+  // measurement is kept across a collapse so Show less has a height to
+  // interpolate from rather than snapping shut.
+  useEffect(() => {
+    if (!showMore) return;
+    const node = detailsInnerRef.current;
+    if (!node) return;
+    const next = node.scrollHeight;
+    if (next > 0) setDetailsMax(next);
+  }, [showMore, cacheDiagnostics.length, history.length]);
+
   const overall = overallUsedPercent(usage, adapters);
   const tier = usageTier(overall);
   // Not just the percent: the tier word carries the same meaning the ring's
@@ -160,11 +197,163 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
   const usageStateLabel = overall == null ? "no reported usage yet" : `${TIER_LABEL[tier]}, ${Math.round(overall)}% used`;
   const indicatorTitle = `Usage health — ${usageStateLabel}`;
 
+  const startResize = (event: React.PointerEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const originY = event.clientY;
+    const originHeight = panelInnerRef.current?.getBoundingClientRect().height ?? MIN_COMPACT_HEIGHT;
+    const maxHeight = () => Math.max(MIN_COMPACT_HEIGHT, Math.round(window.innerHeight * 0.8));
+    event.currentTarget.setPointerCapture(event.pointerId);
+    const move = (pointer: PointerEvent) => {
+      const next = originHeight + (originY - pointer.clientY);
+      setPanelHeight(Math.min(maxHeight(), Math.max(MIN_COMPACT_HEIGHT, next)));
+    };
+    const release = () => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", release);
+    };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", release);
+  };
+
+  const onResizeKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
+    event.preventDefault();
+    const delta = event.key === "ArrowUp" ? COMPACT_RESIZE_STEP : -COMPACT_RESIZE_STEP;
+    const maxHeight = Math.max(MIN_COMPACT_HEIGHT, Math.round(window.innerHeight * 0.8));
+    setPanelHeight(current => {
+      const base = current ?? panelInnerRef.current?.getBoundingClientRect().height ?? MIN_COMPACT_HEIGHT;
+      return Math.min(maxHeight, Math.max(MIN_COMPACT_HEIGHT, base + delta));
+    });
+  };
+
+  const panel = (
+    <div
+      ref={panelRef}
+      id="usage-health-panel"
+      role="dialog"
+      aria-label="Usage health details"
+      className={cn(
+        "absolute z-50 transition-opacity duration-150",
+        compact
+          ? frame
+            ? "inset-x-0 bottom-full mb-2"
+            : "bottom-full left-0 w-[min(100vw-1.5rem,42rem)] pb-2"
+          : "right-0 top-full pt-2",
+        open ? "visible pointer-events-auto opacity-100" : "invisible pointer-events-none opacity-0",
+      )}
+    >
+      <div
+        ref={panelInnerRef}
+        className={cn(
+          "u-overlay-strong flex flex-col rounded-2xl",
+          PANEL_PAD,
+          compact ? "w-full max-h-[80dvh] overflow-hidden" : "max-h-[80dvh] w-[390px] max-w-[calc(100vw-1.5rem)] overflow-y-auto",
+        )}
+        style={compact && panelHeight != null ? { height: panelHeight } : undefined}
+      >
+        {compact && (
+          <div
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Resize usage panel"
+            tabIndex={0}
+            onPointerDown={startResize}
+            onKeyDown={onResizeKeyDown}
+            onDoubleClick={() => setPanelHeight(null)}
+            title="Drag to resize · double-click to reset"
+            className="group relative z-10 -mt-0.5 mb-1 flex h-3 shrink-0 cursor-ns-resize items-center justify-center"
+          >
+            <span className="h-1 w-8 rounded-full bg-border transition-colors group-hover:bg-ring/60 group-focus-visible:bg-ring" />
+          </div>
+        )}
+        <div className={cn(compact ? cn("min-h-0", (panelHeight != null || showMore) && "overflow-y-auto") : "contents")}>
+          {showBreakdown && focusedSessionId ? <ContextBreakdownPanel
+            state={breakdownState}
+            sessionId={focusedSessionId}
+            onClose={() => setShowBreakdown(false)}
+            onOpenPromptStudio={onOpenPromptStudio}
+          /> : <>
+          <div className="mb-2.5 flex items-center gap-2 px-0.5">
+            <Gauge size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+            <h2 className="font-display text-sm font-semibold text-foreground">Usage health</h2>
+            <span className="ml-auto truncate text-[9px] text-muted-foreground/70">No invented limits</span>
+            <button type="button" onClick={() => setOpen(false)} className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label="Close usage health details"><X size={13} aria-hidden="true" /></button>
+          </div>
+
+          <div className={cn("grid gap-2", compact ? "grid-cols-2" : "grid-cols-1")}>
+            {PROVIDERS.map(provider => <ProviderDetail key={provider.id} provider={provider} snapshot={usage[provider.id]} samples={samples[provider.id] ?? []} adapter={adapters?.find(item => item.id === provider.id)} activeLogin={activeLogin} onStartLogin={setActiveLogin} onCloseLogin={() => setActiveLogin(null)} />)}
+          </div>
+
+          <section className={cn("mt-2 border border-border p-3", PANEL_NESTED)} aria-label="Context pressure">
+            <div className="flex flex-wrap items-center gap-2">
+              <b className="text-[11px] text-foreground">{pressure.label}</b>
+              {pressure.percent != null && <span className="font-mono text-[10px] text-muted-foreground">{Math.round(pressure.percent)}%</span>}
+              {pressure.percent != null && <SourceBadge source={contextSource} />}
+            </div>
+            <p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">{pressure.explanation}</p>
+            {focusedSessionId && <button type="button" onClick={() => setShowBreakdown(true)} aria-haspopup="dialog" className="mt-2 inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 text-[9.5px] font-medium text-ring transition-colors hover:bg-accent">
+              <Layers size={10} aria-hidden="true" />Open context breakdown
+            </button>}
+          </section>
+
+          <button
+            type="button"
+            aria-expanded={showMore}
+            aria-controls="usage-health-details"
+            onClick={() => {
+              setPanelHeight(null);
+              setShowMore(value => !value);
+            }}
+            className="mt-2 flex w-full items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          >
+            {showMore ? "Show less" : "Show more"}
+            <ChevronDown size={12} aria-hidden="true" className={cn("transition-transform duration-300 ease-in-out motion-reduce:transition-none", showMore && "rotate-180")} />
+          </button>
+
+          <div
+            id="usage-health-details"
+            className={cn(
+              "overflow-hidden transition-[max-height] duration-300 ease-in-out motion-reduce:transition-none",
+              showMore ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
+            )}
+            style={{ maxHeight: showMore ? (detailsMax || undefined) : 0 }}
+            aria-hidden={!showMore}
+          >
+            <div ref={detailsInnerRef}>
+              <section className="mt-3" aria-label="Prompt cache diagnostics">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-0.5">
+                  <h3 className="text-[9px] font-semibold uppercase tracking-[0.13em] text-muted-foreground">Prompt cache</h3>
+                  <span className="text-[9px] text-muted-foreground/70">Provider-reported tokens</span>
+                </div>
+                {cacheDiagnostics.length ? <>
+                  <div className="grid gap-1.5">{cacheDiagnostics.slice(0, 6).map(diagnostic => <CacheRow key={diagnostic.key} diagnostic={diagnostic} />)}</div>
+                  {cacheDiagnostics.length > 6 && <p className="mt-2 px-0.5 text-[9px] text-muted-foreground/70">Showing 6 of {cacheDiagnostics.length} recent prompt groups.</p>}
+                </> : <p className={cn("border border-dashed border-border px-3 py-4 text-center text-[10px] text-muted-foreground/70", PANEL_NESTED)}>No prompt-cache telemetry reported yet.</p>}
+              </section>
+
+              <section className="mt-3" aria-label="Usage history">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-0.5">
+                  <h3 className="text-[9px] font-semibold uppercase tracking-[0.13em] text-muted-foreground">Recent work units</h3>
+                  <span className="text-[9px] text-muted-foreground/70">Newest first</span>
+                </div>
+                {history.length ? <div className="grid gap-1.5">{history.slice(0, 6).map(entry => <HistoryRow key={entry.id} entry={entry} />)}</div> : <p className={cn("border border-dashed border-border px-3 py-4 text-center text-[10px] text-muted-foreground/70", PANEL_NESTED)}>No measured work-unit history yet.</p>}
+              </section>
+            </div>
+          </div>
+          </>}
+        </div>
+      </div>
+    </div>
+  );
+
   return <div ref={rootRef} className="relative">
     <button
       type="button"
       className={cn(
-        "relative grid size-8 shrink-0 cursor-pointer place-items-center rounded-full border border-border bg-card transition-colors hover:bg-accent",
+        compact
+          ? "relative inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-95"
+          : "relative grid size-8 shrink-0 cursor-pointer place-items-center rounded-full border border-border bg-card transition-colors hover:bg-accent",
         open && "bg-accent",
       )}
       aria-label={`${open ? "Close" : "Open"} usage health details — ${usageStateLabel}`}
@@ -176,59 +365,7 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
       <UsageIndicatorRing percent={overall} tier={tier} />
       {projections.length > 0 && <span className="absolute -right-0.5 -top-0.5 grid size-3.5 place-items-center rounded-full bg-warning text-warning-foreground" aria-label="Projected usage exhaustion"><AlertTriangle size={9} strokeWidth={2.5} aria-hidden="true" /></span>}
     </button>
-
-    <div id="usage-health-panel" role="dialog" aria-label="Usage health details" className={`absolute bottom-full right-0 z-50 pb-2 transition-all duration-150 ${open ? "visible pointer-events-auto opacity-100" : "invisible pointer-events-none opacity-0"}`}>
-      <div className={cn("u-overlay-strong max-h-[80dvh] w-[390px] max-w-[calc(100vw-1.5rem)] overflow-y-auto rounded-2xl", PANEL_PAD)}>
-        {showBreakdown && focusedSessionId ? <ContextBreakdownPanel
-          state={breakdownState}
-          sessionId={focusedSessionId}
-          onClose={() => setShowBreakdown(false)}
-          onOpenPromptStudio={onOpenPromptStudio}
-        /> : <>
-        <div className="mb-2.5 flex items-center gap-2 px-0.5">
-          <Gauge size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-          <h2 className="font-display text-sm font-semibold text-foreground">Usage health</h2>
-          <span className="ml-auto truncate text-[9px] text-muted-foreground/70">No invented limits</span>
-          <button type="button" onClick={() => setOpen(false)} className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label="Close usage health details"><X size={13} aria-hidden="true" /></button>
-        </div>
-
-        <div className="grid gap-2">
-          {PROVIDERS.map(provider => <ProviderDetail key={provider.id} provider={provider} snapshot={usage[provider.id]} samples={samples[provider.id] ?? []} adapter={adapters?.find(item => item.id === provider.id)} activeLogin={activeLogin} onStartLogin={setActiveLogin} onCloseLogin={() => setActiveLogin(null)} />)}
-        </div>
-
-        <section className={cn("mt-2 border border-border p-3", PANEL_NESTED)} aria-label="Context pressure">
-          <div className="flex flex-wrap items-center gap-2">
-            <b className="text-[11px] text-foreground">{pressure.label}</b>
-            {pressure.percent != null && <span className="font-mono text-[10px] text-muted-foreground">{Math.round(pressure.percent)}%</span>}
-            {pressure.percent != null && <SourceBadge source={contextSource} />}
-          </div>
-          <p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">{pressure.explanation}</p>
-          {focusedSessionId && <button type="button" onClick={() => setShowBreakdown(true)} aria-haspopup="dialog" className="mt-2 inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 text-[9.5px] font-medium text-ring transition-colors hover:bg-accent">
-            <Layers size={10} aria-hidden="true" />Open context breakdown
-          </button>}
-        </section>
-
-        <section className="mt-3" aria-label="Prompt cache diagnostics">
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-0.5">
-            <h3 className="text-[9px] font-semibold uppercase tracking-[0.13em] text-muted-foreground">Prompt cache</h3>
-            <span className="text-[9px] text-muted-foreground/70">Provider-reported tokens</span>
-          </div>
-          {cacheDiagnostics.length ? <>
-            <div className="grid gap-1.5">{cacheDiagnostics.slice(0, 6).map(diagnostic => <CacheRow key={diagnostic.key} diagnostic={diagnostic} />)}</div>
-            {cacheDiagnostics.length > 6 && <p className="mt-2 px-0.5 text-[9px] text-muted-foreground/70">Showing 6 of {cacheDiagnostics.length} recent prompt groups.</p>}
-          </> : <p className={cn("border border-dashed border-border px-3 py-4 text-center text-[10px] text-muted-foreground/70", PANEL_NESTED)}>No prompt-cache telemetry reported yet.</p>}
-        </section>
-
-        <section className="mt-3" aria-label="Usage history">
-          <div className="mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-0.5">
-            <h3 className="text-[9px] font-semibold uppercase tracking-[0.13em] text-muted-foreground">Recent work units</h3>
-            <span className="text-[9px] text-muted-foreground/70">Newest first</span>
-          </div>
-          {history.length ? <div className="grid gap-1.5">{history.slice(0, 6).map(entry => <HistoryRow key={entry.id} entry={entry} />)}</div> : <p className={cn("border border-dashed border-border px-3 py-4 text-center text-[10px] text-muted-foreground/70", PANEL_NESTED)}>No measured work-unit history yet.</p>}
-        </section>
-        </>}
-      </div>
-    </div>
+    {compact && frame ? createPortal(panel, frame) : panel}
   </div>;
 });
 
@@ -272,7 +409,7 @@ function ProviderDetail({ provider, snapshot, samples, adapter, activeLogin, onS
   const used = status === "normal" ? highestUse(snapshot) : undefined;
   const projection = status === "normal" ? projectUsageExhaustion(samples) : null;
   const loginActive = activeLogin === provider.id;
-  return <section className={cn("border border-border p-3", PANEL_NESTED)} aria-label={`${provider.label} usage`}>
+  return <section className={cn("border border-border p-3", PANEL_NESTED, loginActive && "col-span-2")} aria-label={`${provider.label} usage`}>
     <div className="flex min-w-0 flex-wrap items-center gap-2">
       <UsageRing used={used} inert={status !== "normal"} />
       <b className="text-[11px] text-foreground">{provider.label}</b>
@@ -362,7 +499,7 @@ function ProviderLoginPane({ provider, label, onClose }: { provider: UsageProvid
     <pre ref={outputRef} aria-live="polite" aria-label={`${label} sign-in output`} className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-md border border-border bg-card p-2 font-mono text-[9.5px] leading-relaxed text-foreground">{output || "Starting…"}</pre>
     {error && <p role="alert" className="text-[9.5px] text-destructive">{error}</p>}
     {/* Deliberately not a <form>. This pane renders through the composer's
-        `trailing` slot — inside the composer's own <form> — and a nested
+        `leading` slot — inside the composer's own <form> — and a nested
         form's submit event still bubbles, so an Enter here would also invoke
         the composer's onSubmit and send the draft. A plain row with an
         explicit Enter handler keeps the reply local to the provider terminal. */}

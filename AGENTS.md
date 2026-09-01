@@ -46,4 +46,4 @@ Always run `bun run build` and `bun run test` before opening or merging a PR; bo
 
 ## Memory surface
 
-Memory has exactly **one** surface: the Memory dialog (`src/components/MemoryDialog.tsx`), rendered in the app's normal Graphite & Paper chrome with the same tokens as every other dialog. Do not build a second memory UI, a separate dark-only memory surface, or a parallel token family for it — that was tried (the "Memory Core" constellation) and removed. Analytics (recall stats, packet budget, consolidation log) live inside the dialog's Activity tab, achromatic like the rest of the chrome.
+Memory has exactly **one** surface: the Memory screen (`src/components/MemoryDialog.tsx`), a canvas view beside the sidebar like Projects, rendered in the app's normal Graphite & Paper chrome with the same tokens as every other screen. Do not build a second memory UI, a separate dark-only memory surface, or a parallel token family for it — that was tried (the "Memory Core" constellation) and removed. Analytics (recall stats, packet budget, consolidation log) live inside its Activity tab, achromatic like the rest of the chrome.

@@ -138,3 +138,59 @@ describe("UsageWidget sign-in control", () => {
     expect(container.querySelector('[aria-label="Codex sign-in output"]')).toBeNull();
   });
 });
+
+describe("UsageWidget compact panel", () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    container = document.createElement("div");
+    document.body.append(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => root.unmount());
+    container.remove();
+  });
+
+  it("keeps cache and history collapsed until Show more is pressed", async () => {
+    await act(async () => {
+      root.render(<UsageWidget compact usage={{}} />);
+    });
+    const details = container.querySelector("#usage-health-details") as HTMLElement | null;
+    expect(details?.getAttribute("aria-hidden")).toBe("true");
+    const toggle = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Show more"));
+    expect(toggle).toBeDefined();
+    await act(async () => { toggle!.click(); });
+    expect(details?.getAttribute("aria-hidden")).toBe("false");
+    expect(toggle?.textContent).toContain("Show less");
+    expect(details?.className).toContain("grid-rows-[1fr]");
+    const card = container.querySelector("#usage-health-panel > div");
+    expect(card?.className).toContain("max-h-[80dvh]");
+    expect(card?.className).not.toContain("max-h-[min(28rem,55vh)]");
+    expect(card?.className).not.toContain("flex-1 overflow-y-auto");
+    await act(async () => { toggle!.click(); });
+    expect(toggle?.textContent).toContain("Show more");
+    expect(details?.className).toContain("grid-rows-[0fr]");
+    expect(details?.getAttribute("aria-hidden")).toBe("true");
+    expect(card?.className).toContain("max-h-[80dvh]");
+    expect(card?.className).not.toContain("max-h-[min(28rem,55vh)]");
+  });
+
+  it("portals the compact panel onto the composer frame at full width", async () => {
+    await act(async () => {
+      root.render(
+        <div data-composer-frame className="relative">
+          <UsageWidget compact usage={{}} />
+        </div>,
+      );
+    });
+    const panel = container.querySelector("#usage-health-panel");
+    expect(panel?.parentElement?.hasAttribute("data-composer-frame")).toBe(true);
+    expect(panel?.className).toContain("inset-x-0");
+    expect(panel?.className).toContain("bottom-full");
+    expect(container.querySelector('[aria-label="Resize usage panel"]')).not.toBeNull();
+  });
+});

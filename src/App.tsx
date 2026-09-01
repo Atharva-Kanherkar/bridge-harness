@@ -326,6 +326,9 @@ function AppContent() {
   useEffect(() => {
     if (selectedSessionId || view !== "workspace" || paradigm !== "single") setNewChatDraft(null);
   }, [selectedSessionId, view, paradigm]);
+  useEffect(() => {
+    if (view !== "memory") setMemoryDraft(null);
+  }, [view]);
 
   useEffect(() => {
     const place: AppPlace = { view, sessionId: selectedSessionId ?? null, paradigm };
@@ -1644,10 +1647,10 @@ function AppContent() {
   // "Remember this" on an assistant message. Over the cap the dialog opens with
   // the full text for the user to trim — never a clip, never a truncated save.
   const rememberMessage = useCallback(async (text: string) => {
-    if (rememberAction(text) === "open-dialog") { setMemoryDraft(text); openModal("memory"); return; }
+    if (rememberAction(text) === "open-dialog") { setMemoryDraft(text); setView("memory"); return; }
     try { await bridgeApi.saveMemoryRecord(text, undefined, session?.id ?? undefined); }
     catch (e) { setError(errorMessage(e)); }
-  }, [openModal, session?.id]);
+  }, [session?.id]);
 
   /// Send guidance into a running worker.
   ///
@@ -1913,20 +1916,15 @@ function AppContent() {
   const startupError = error ?? (healthError ? errorMessage(healthError) : modelSetupError ? errorMessage(modelSetupError) : undefined);
   if (!health || !modelSetup) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{startupError ? <><X size={14} className="text-destructive" aria-hidden="true" />{startupError}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
   if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard adapters={health.adapters} onComplete={acceptModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
-  const chromeTitle = view === "work" ? "Work" : view === "projects" ? "Projects" : view === "marketplace" ? "Marketplace" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge";
+  const chromeTitle = view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
   const isSessionChrome = view === "workspace" && paradigm !== "grid" && !!session;
   const bypassBadge = <BypassBadge bypassing={!!permissionPolicy?.autoApproveProviderPermissions} onOpenSettings={() => { setSettingsSection("permissions"); setView("settings"); }} />;
-  // Lives beside the composer's send button, not in a title-bar corner — see
-  // its `trailing` usage on the session ComposerPill below.
-  const usageWidget = <UsageWidget usage={usageByProvider} adapters={health?.adapters} samples={usageSamples} history={usageHistory} cacheDiagnostics={cacheDiagnostics} contextPercent={latestContext ?? undefined} contextSource={latestContextSource} focusedSessionId={session?.id ?? null} onOpenPromptStudio={() => { setSettingsSection("prompts"); setView("settings"); }} />;
-  // On a session view the indicator lives beside the composer's send button
-  // (its `trailing` usage below). Every other view — the pre-session Welcome
-  // screen, Projects, Settings, Marketplace, Mission Control — has no such
-  // composer, so it keeps a title-bar trigger; otherwise usage health would be
-  // unreachable before the first session exists.
+  const usageProps = { usage: usageByProvider, adapters: health?.adapters, samples: usageSamples, history: usageHistory, cacheDiagnostics, contextPercent: latestContext ?? undefined, contextSource: latestContextSource, focusedSessionId: session?.id ?? null, onOpenPromptStudio: () => { setSettingsSection("prompts"); setView("settings"); } };
+  const usageWidget = <UsageWidget {...usageProps} />;
+  const usageRing = <UsageWidget compact {...usageProps} />;
   const titleBarActions = <>{usageWidget}{bypassBadge}</>;
   const sidebar = (
     <BridgeSidebar
@@ -1936,6 +1934,7 @@ function AppContent() {
       workspaces={state.workspaces}
       activeSessionId={session?.id}
       projectsActive={view === "projects"}
+      memoryActive={view === "memory"}
       marketplaceActive={view === "marketplace"}
       missionControlActive={view === "workspace" && paradigm === "grid"}
       workActive={view === "work"}
@@ -1948,7 +1947,7 @@ function AppContent() {
       onOpenMarketplace={() => setView("marketplace")}
       onOpenMissionControl={() => { setView("workspace"); setParadigm("grid"); }}
       onOpenWorkBoard={openWorkBoard}
-      onOpenMemory={() => openModal("memory")}
+      onOpenMemory={() => setView("memory")}
       onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
       collapsed={sidebarCollapsed}
@@ -2003,6 +2002,16 @@ function AppContent() {
         onNewWorkspace={() => setNewProjectOpen(true)}
         onNewWorkspaceSession={requestWorkspaceSession}
         onConnectFolder={workspaceId => void connectFolder(workspaceId)}
+      /> : view === "memory" ? <MemoryDialog
+        open
+        initialBody={memoryDraft}
+        adapters={adapters}
+        onClose={() => {
+          setMemoryDraft(null);
+          if (navPlaces.index > 0) goBack();
+          else setView("workspace");
+        }}
+        onError={setError}
       /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
         sessions={visibleSessions}
         runtimes={forest?.workerRuntimes ?? []}
@@ -2035,6 +2044,9 @@ function AppContent() {
           onOpenNav={() => setNavOpen(true)}
           dockOpen={dock.open}
           onToggleDock={() => dispatchDock({ type: "toggle" })}
+          dockPanes={dockPanes}
+          activePane={dock.pane}
+          onOpenPane={pane => dispatchDock({ type: "open-pane", pane })}
           browserOpen={dock.open && dock.pane === "browser"}
           onToggleBrowser={() => dispatchDock(
             // The menu item is a checkbox, so it has to close what it opened:
@@ -2297,12 +2309,10 @@ function AppContent() {
                     onStop={session ? () => void bridgeApi.interruptTurn(session.id) : undefined}
                     inputRef={composerRef}
                     onPlusClick={() => void attachFile()}
-                    trailing={<>
-                      {session.kind === "direct" || session.kind === "orchestrator"
-                        ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} />
-                        : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
-                      {usageWidget}
-                    </>}
+                    leading={usageRing}
+                    trailing={session.kind === "direct" || session.kind === "orchestrator"
+                      ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} />
+                      : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
                   />
                 </div>}
               </div>
@@ -2437,7 +2447,6 @@ function AppContent() {
     />
     <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={acceptModelSetup} onClose={closeModal} onError={setError} />
     <ShortcutsSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
-    <MemoryDialog open={modal === "memory"} initialBody={memoryDraft} adapters={adapters} onClose={() => { closeModal(); setMemoryDraft(null); }} onError={setError} />
   </div>;
 }
 
