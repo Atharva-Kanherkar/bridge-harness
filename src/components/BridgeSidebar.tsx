@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronRight, ClipboardList, Folder, FolderGit2, FolderPlus, GitBranch, Home, LayoutGrid, Pin, Plus, Search, Settings2, SquarePen, Store, type LucideIcon } from "lucide-react";
+import { ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, Home, Pin, Plus, Search, Settings2, SquarePen, Store, type LucideIcon } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import type { Session, SessionStatus, Workspace } from "../types";
 import { chordLabel, type CommandId } from "../keymap";
@@ -273,8 +273,6 @@ export function BridgeSidebar({
   projectsActive,
   memoryActive = false,
   marketplaceActive,
-  missionControlActive,
-  workActive = false,
   settingsActive,
   accountName,
   newChatBusy = false,
@@ -284,8 +282,6 @@ export function BridgeSidebar({
   onNewChatInProject,
   onOpenProjects,
   onOpenMarketplace,
-  onOpenMissionControl,
-  onOpenWorkBoard,
   onOpenMemory,
   onOpenSettings,
   onOpenSession,
@@ -512,10 +508,11 @@ export function BridgeSidebar({
           <ActionRow icon={SquarePen} label="New Chat" chord="new-chat" disabled={newChatBusy} onClick={onOpenNewChat} />
           <ActionRow icon={Search} label="Search" onClick={toggleSearch} />
           <ActionRow icon={Store} label="Marketplace" onClick={onOpenMarketplace} active={marketplaceActive} />
-          <ActionRow icon={LayoutGrid} label="Mission Control" onClick={onOpenMissionControl} active={missionControlActive} />
+          {/* Mission Control and the work-board stay off the nav for now.
+           * Routing props remain on the type (and wired in App) so the screens
+           * and their data plumbing are untouched. */}
           <ActionRow icon={FolderGit2} label="Projects" chord="open-projects" onClick={onOpenProjects} active={projectsActive} />
           <ActionRow icon={Pin} label="Memory" onClick={onOpenMemory} active={memoryActive} />
-          <ActionRow icon={ClipboardList} label="Work board" onClick={onOpenWorkBoard} active={workActive} />
         </div>
 
         {searchOpen && (

@@ -159,20 +159,20 @@ describe("BridgeSidebar action rows", () => {
   it("fires the matching handler from each action row", () => {
     const onOpenNewChat = vi.fn();
     const onOpenMarketplace = vi.fn();
-    const onOpenMissionControl = vi.fn();
-    const onOpenWorkBoard = vi.fn();
     const onOpenSettings = vi.fn();
-    mount({ onOpenNewChat, onOpenMarketplace, onOpenMissionControl, onOpenWorkBoard, onOpenSettings });
+    mount({ onOpenNewChat, onOpenMarketplace, onOpenSettings });
     click(container.querySelector('button[aria-label="New Chat"]')!);
     click(container.querySelector('button[aria-label="Marketplace"]')!);
-    click(container.querySelector('button[aria-label="Mission Control"]')!);
-    click(container.querySelector('button[aria-label="Work board"]')!);
     click(container.querySelector('button[aria-label="Open settings for cestercian"]')!);
     expect(onOpenNewChat).toHaveBeenCalledOnce();
     expect(onOpenMarketplace).toHaveBeenCalledOnce();
-    expect(onOpenMissionControl).toHaveBeenCalledOnce();
-    expect(onOpenWorkBoard).toHaveBeenCalledOnce();
     expect(onOpenSettings).toHaveBeenCalledOnce();
+  });
+
+  it("does not render Mission Control or Work board rows (#457, #458)", () => {
+    mount();
+    expect(container.querySelector('button[aria-label="Mission Control"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Work board"]')).toBeNull();
   });
 
   it("opens the filter from the Search row and closes it on Escape", () => {

@@ -25,6 +25,7 @@ import "./components/TerminalPane";
 import "./components/CodePanel";
 import type { AdapterDescriptor } from "./types";
 import { bridgeApi } from "./api";
+import { SHORTCUTS } from "./keymap";
 
 const adapters: AdapterDescriptor[] = [
   {
@@ -663,5 +664,30 @@ describe("the dock in the session view", () => {
     await click(container.querySelector<HTMLButtonElement>('button[title^="Settings"]')!);
     expect(appTitleBar()).not.toBeNull();
     expect(container.querySelector('button[aria-label="Toggle dock"]')).toBeNull();
+  });
+
+  // #457 / #458: the screens stay in the tree, but nothing in the mounted
+  // shell — rail, title bar, session chrome, or the keymap/menu table —
+  // may offer a way into them. Sidebar-only tests would miss a later
+  // title-bar, menu, or chord entry point.
+  it("exposes no Mission Control or Work board navigation control in the shell", async () => {
+    await mountApp();
+
+    const hiddenNav = /^(Mission Control|Work board)$/;
+    const namedControls = (root: ParentNode) =>
+      [...root.querySelectorAll<HTMLElement>("button, [role='menuitem'], [role='link'], a")]
+        .filter(node => hiddenNav.test((node.getAttribute("aria-label") ?? node.textContent ?? "").trim()));
+
+    expect(namedControls(container), "welcome chrome").toEqual([]);
+    expect(container.querySelector("h1")?.textContent).not.toMatch(hiddenNav);
+
+    await openWorkspaceSession("4 files");
+    expect(namedControls(container), "session chrome").toEqual([]);
+    expect(container.querySelector("h1")?.textContent).not.toMatch(hiddenNav);
+
+    // The sheet and the native menu both read this table; a new chord or
+    // menu item for either screen has to land here first.
+    expect(SHORTCUTS.some(shortcut => /mission|work-board|workboard/i.test(shortcut.id))).toBe(false);
+    expect(SHORTCUTS.some(shortcut => /Mission Control|Work board/i.test(shortcut.label))).toBe(false);
   });
 });
