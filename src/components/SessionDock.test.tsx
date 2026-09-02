@@ -3,8 +3,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { Code2, FileCode2, TerminalSquare } from "lucide-react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_DOCK_WIDTH, defaultDockState, type DockAction, type DockState } from "../dockLayout";
-import { SessionDock, type DockPaneDescriptor } from "./SessionDock";
+import { DEFAULT_DOCK_WIDTH, defaultDockState, MIN_DOCK_WIDTH, type DockAction, type DockState } from "../dockLayout";
+import { DOCK_TAB_LABEL_MIN_WIDTH, SessionDock, type DockPaneDescriptor } from "./SessionDock";
 
 // Contract: testing/feat-dock-shell.md §3.
 
@@ -15,6 +15,19 @@ const PANES: DockPaneDescriptor[] = [
   { id: "changes", label: "Changes", icon: FileCode2, available: true, badge: 4 },
   { id: "code", label: "Code", icon: Code2, available: true },
   { id: "terminal", label: "Terminal", icon: TerminalSquare, available: true },
+];
+
+// The shipped switcher: seven panes, so the active tab's inline label is the
+// last thing that fits beside the Expand and Close buttons. Icons are reused
+// from the three above — only the labels and the count matter here.
+const ALL_PANES: DockPaneDescriptor[] = [
+  { id: "changes", label: "Changes", icon: FileCode2, available: true },
+  { id: "code", label: "Code", icon: Code2, available: true },
+  { id: "terminal", label: "Terminal", icon: TerminalSquare, available: true },
+  { id: "browser", label: "Browser", icon: Code2, available: true },
+  { id: "transcript", label: "Transcript", icon: Code2, available: true },
+  { id: "tasks", label: "Tasks", icon: Code2, available: true },
+  { id: "github", label: "GitHub", icon: Code2, available: true },
 ];
 
 const open = (overrides: Partial<DockState> = {}): DockState => ({
@@ -53,6 +66,7 @@ function mount(options: MountOptions = {}) {
 }
 
 const tabs = () => [...container.querySelectorAll<HTMLButtonElement>('[role="tab"]')];
+const activeTab = () => tabs().find(tab => tab.getAttribute("aria-selected") === "true")!;
 const body = (pane: string) => container.querySelector<HTMLElement>(`output[data-pane="${pane}"]`);
 const hidden = (element: HTMLElement | null) => !!element?.closest(".hidden");
 const click = (element: Element) => {
@@ -191,5 +205,42 @@ describe("SessionDock", () => {
     expect(body("changes")).toBe(before);
     expect(hidden(body("changes"))).toBe(true);
     expect(container.querySelector('[role="separator"]')).toBeNull();
+  });
+  // Seven icon tabs plus an inline label are wider than the room the header
+  // leaves beside Expand and Close: at the dock's minimum the label used to
+  // spill past the strip's own rounded border and over those buttons.
+  it("drops the active tab's inline label at the dock's minimum width", () => {
+    mount({ state: open({ pane: "github", visited: ["github"], width: MIN_DOCK_WIDTH }), panes: ALL_PANES });
+    expect(activeTab().textContent).toBe("");
+    expect(activeTab().getAttribute("aria-label")).toBe("GitHub");
+    expect(activeTab().title).toContain("GitHub");
+  });
+
+  it("shows the active tab's inline label at the default width", () => {
+    mount({ state: open({ pane: "github", visited: ["github"], width: DEFAULT_DOCK_WIDTH }), panes: ALL_PANES });
+    expect(activeTab().textContent).toContain("GitHub");
+    expect(activeTab().getAttribute("aria-label")).toBe("GitHub");
+  });
+
+  it("flips the inline label at the width threshold, not before it", () => {
+    const state = open({ pane: "transcript", visited: ["transcript"] });
+    mount({ state: { ...state, width: DOCK_TAB_LABEL_MIN_WIDTH - 1 }, panes: ALL_PANES });
+    expect(activeTab().textContent).not.toContain("Transcript");
+    mount({ state: { ...state, width: DOCK_TAB_LABEL_MIN_WIDTH }, panes: ALL_PANES });
+    expect(activeTab().textContent).toContain("Transcript");
+  });
+
+  it("keeps the inline label while expanded, where the dock owns the whole split", () => {
+    mount({ state: open({ pane: "github", visited: ["github"], width: MIN_DOCK_WIDTH, expanded: true }), panes: ALL_PANES });
+    expect(activeTab().textContent).toContain("GitHub");
+  });
+
+  it("clips the tab strip at its own border and keeps the header buttons", () => {
+    mount({ state: open({ pane: "github", visited: ["github"], width: MIN_DOCK_WIDTH }), panes: ALL_PANES });
+    const list = container.querySelector<HTMLElement>('[role="tablist"]')!;
+    expect(list.className).toContain("min-w-0");
+    expect(list.className).toContain("overflow-hidden");
+    expect(container.querySelector('button[aria-label="Expand dock"]')).not.toBeNull();
+    expect(container.querySelector('aside button[aria-label="Close dock"]')).not.toBeNull();
   });
 });

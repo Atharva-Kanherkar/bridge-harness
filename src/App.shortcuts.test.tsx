@@ -154,6 +154,25 @@ describe("keyboard shortcuts inside the app", () => {
     expect(localStorage.getItem("bridge.sidebar.collapsed")).toBe("0");
   });
 
+  it("hands the rail's panel control to the chrome row while it is hidden", async () => {
+    const rail = () => container.querySelector("aside")!;
+    expect(container.querySelector('header button[aria-label="Show sidebar"]'), "nothing on the chrome row while the rail is up").toBeNull();
+
+    await press({ key: "b", code: "KeyB", metaKey: true });
+    await settle();
+    // Gone, not shrunk to a strip of icons.
+    expect(rail().style.getPropertyValue("--sidebar-w")).toBe("0px");
+    expect(rail().hasAttribute("inert"), "nothing inside the rail is reachable").toBe(true);
+
+    const show = container.querySelector<HTMLButtonElement>('header button[aria-label="Show sidebar"]');
+    expect(show, "the chrome row carries the way back in").not.toBeNull();
+    await act(async () => { show!.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+    await settle();
+    expect(rail().style.getPropertyValue("--sidebar-w")).not.toBe("0px");
+    expect(rail().hasAttribute("inert")).toBe(false);
+    expect(localStorage.getItem("bridge.sidebar.collapsed")).toBe("0");
+  });
+
   it("never reads the composer's own typing as a command", async () => {
     await press({ key: "n", code: "KeyN", metaKey: true });
     await settle();

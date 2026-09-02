@@ -77,8 +77,11 @@ describe("shell flags", () => {
     expect(source).toContain("setLayoutFullscreenDocument");
     expect(source).toContain("notifyLayoutFullscreen");
     expect(source).not.toContain("chromeFullscreen && <AppTitleBar");
-    expect(source).not.toContain("WindowHistoryChevrons");
-    expect(source).not.toContain("WindowPanelButton");
+    // A hidden rail has no header to hold them, so the chrome row does — and
+    // the panel button is then the only pointer route back to the sidebar.
+    expect(source).toContain("WindowHistoryChevrons");
+    expect(source).toContain("WindowPanelButton");
+    expect(source).toContain("sidebarHidden={sidebarCollapsed}");
     expect(source).not.toContain('paradigm === "grid" ? "Focus" : "Mission Control"');
     expect(source).toContain("showWindowNav");
     expect(source).toContain("flex h-[100dvh] flex-row");
