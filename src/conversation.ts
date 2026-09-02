@@ -32,6 +32,7 @@ const LIFECYCLE_KINDS = new Set([
   "tool.started", "tool.completed",
   "command.started", "command.completed",
   "file_change.started", "file_change.completed",
+  "reasoning.started", "reasoning.completed",
   "item.started", "item.completed",
   // A mirrored child approval is blocked-then-resolved under one item id; folding
   // keeps the durable projection from showing both halves as separate alerts.
@@ -108,7 +109,7 @@ export function projectSessionConversation(entries: SessionEntry[], activeLeafId
       interactionsBySequence.set(`${interactionKind}:${entry.sequence}`, item);
     }
   }
-  return items;
+  return items.filter(item => item.type !== "reasoning" || item.text.trim().length > 0);
 }
 
 function projectSessionEntry(entry: SessionEntry): ConversationItem {
@@ -159,6 +160,17 @@ function projectSessionEntry(entry: SessionEntry): ConversationItem {
       return { ...base, type: "branch-summary", title: "Branch summary", text: stringValue(payload.summary) ?? "" };
     case "error":
       return { ...base, type: "error", status: stringValue(payload.status) ?? "failed", title: stringValue(payload.title) ?? "Agent error", text: errorTextFromPayload(payload) };
+    case "reasoning":
+    case "reasoning.completed":
+    case "reasoning.started":
+    case "reasoning.delta":
+      return {
+        ...base,
+        type: "reasoning",
+        status: stringValue(payload.status) ?? "completed",
+        title: stringValue(payload.title) ?? "Thought for a moment",
+        text: stringValue(payload.text) ?? stringValue(payload.summary) ?? "",
+      };
     default:
       return {
         ...base,
@@ -166,7 +178,7 @@ function projectSessionEntry(entry: SessionEntry): ConversationItem {
         // has always typed it that way; the durable projection called it plain
         // activity, so a patch replayed from history lost the one label that
         // says "render me as a diff" and came back as a generic tool row.
-        type: interactionType(entry.kind) ?? (entry.kind === "approval.requested" || entry.kind === "approval.resolved" ? "approval" : entry.kind === "artifact.created" ? "artifact" : entry.kind.startsWith("delegation.") || entry.kind === "worker.result" ? "delegation" : entry.kind.startsWith("file_change.") || entry.kind.startsWith("diff.") ? "diff" : "activity"),
+        type: interactionType(entry.kind) ?? (entry.kind === "approval.requested" || entry.kind === "approval.resolved" ? "approval" : entry.kind === "artifact.created" ? "artifact" : entry.kind.startsWith("delegation.") || entry.kind === "worker.result" ? "delegation" : entry.kind.startsWith("file_change.") || entry.kind.startsWith("diff.") ? "diff" : entry.kind.startsWith("reasoning.") ? "reasoning" : "activity"),
         role: stringValue(payload.role),
         title: stringValue(payload.title) ?? humanizeKind(entry.kind),
         text: stringValue(payload.text) ?? stringValue(payload.summary) ?? stringValue(payload.reason) ?? "",

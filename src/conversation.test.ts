@@ -83,6 +83,25 @@ describe("session forest conversation projection",()=>{
     expect(rightKeys.slice(0,2)).toEqual(leftKeys.slice(0,2));
   });
 
+  it("projects forest reasoning entries to type: reasoning with completed status", () => {
+    const reasoningEntry = entry("r1", null, "reasoning.completed", {
+      text: "Thought through the problem architecture thoroughly.",
+      status: "completed",
+    }, 1);
+    const items = projectSessionConversation([reasoningEntry], "r1");
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe("reasoning");
+    expect(items[0].status).toBe("completed");
+    expect(items[0].title).toBe("Thought for a moment");
+    expect(items[0].text).toBe("Thought through the problem architecture thoroughly.");
+  });
+
+  it("filters out empty historical reasoning entries", () => {
+    const emptyReasoning = entry("r2", null, "reasoning.completed", { text: "" }, 1);
+    const items = projectSessionConversation([emptyReasoning], "r2");
+    expect(items).toHaveLength(0);
+  });
+
   it("projects current and N-1 semantic event schemas equivalently",()=>{
     const current=entry("current",null,"assistant.message",{text:"stable"},1,{semanticSchemaVersion:2});
     const previous=entry("previous",null,"assistant.message",{text:"stable"},1,{semanticSchemaVersion:1});
