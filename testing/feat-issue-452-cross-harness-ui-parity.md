@@ -24,11 +24,14 @@
 
 5. **Turn-Aware Activity & Thought Coalescing**
    - In `src/conversation.ts` and `src/components/AgentConversation.tsx`, interleaved plan updates (`turn/plan/updated`) and reasoning do not shatter consecutive tool calls in an assistant turn into multiple 1-item `ActivityGroup`s.
+   - All distinct plan items are preserved in arrival sequence without dropping or overwriting.
    - Tool calls, diffs, and exploratory commands coalesce into a unified `ActivityGroup` summarizing what ran (e.g. `Ran commands, read files`) with a green checkmark upon completion.
+   - Thoughts occurring after commands preserve their natural post-execution position rather than being reordered above commands.
    - In `ActivityGroup`, user toggle state (`toggled`) takes precedence over `live`, allowing the user to collapse live groups, and completed groups collapse cleanly.
 
 6. **Error Handling & State Hardening**
    - Codex `turn/completed` with `status: "failed"` or `"error"` synthesizes a conversation `error` event, rendering an actionable `ErrorCard` in chat.
+   - `process/exited` represents spawned command/exec sessions rather than the host binary, so it remains in `is_codex_internal_notification` to prevent failing sessions on tool command exit codes.
    - Codex errors with `willRetry: true` or fatal errors do not leave the session permanently in a "working" or hung state.
    - OpenCode stream disconnects or errors reliably surface visible error notices.
 
@@ -37,12 +40,12 @@
 ## Unit Tests
 
 ### Rust (`bridge-core::agent`)
-- `tests::normalizes_codex_reasoning_deltas_with_stable_item_id` — verifies Codex text deltas carry stable `item_id`.
+- `tests::normalizes_codex_reasoning_deltas_with_stable_item_id` — verifies Codex text deltas carry stable, incrementing per-turn `item_id`.
 - `tests::normalizes_codex_summary_part_added_into_reasoning` — verifies summary part is not dropped.
 - `tests::normalizes_codex_turn_completed_with_failure_synthesizes_error` — verifies failed/error turn produces error event.
-- `tests::normalizes_opencode_reasoning_deltas_without_prior_message_updated` — verifies early reasoning deltas stream through.
-- `tests::normalizes_opencode_reasoning_field_variants` — verifies `part.reasoning` is read when `part.text` is absent.
-- `tests::normalizes_opencode_reasoning_completed_without_time_end` — verifies reasoning completes cleanly.
+- `tests::normalizes_opencode_reasoning_deltas_before_message_updated` — verifies early reasoning deltas stream through without misattributing non-reasoning parts.
+- `tests::normalizes_opencode_reasoning_streaming_midstream_snapshot` — verifies midstream reasoning snapshots default to inProgress delta.
+- `tests::normalizes_opencode_reasoning_field_variants_and_completion` — verifies `part.reasoning` is read when `part.text` is absent and completes on finish.
 
 ### TypeScript (`src/`)
 - `src/agentEvents.test.ts`:
@@ -52,13 +55,17 @@
   - `projects forest reasoning entries to type: "reasoning" with completed status`
   - `reduces Codex reasoning deltas and transitions to completed upon item/completed`
   - `settles streaming reasoning to completed on turn.completed`
+  - `keeps separate reasoning cards across turns when itemId is null`
   - `classifies read-only commands (cat, ls, grep, git status, git diff) into read/search verbs`
-  - `keeps mutating commands (git commit, bun test, rm) as run verb`
-  - `extracts target and file path for exploratory commands`
-- `src/components/AgentConversation.test.tsx` (or new test):
+  - `keeps mutating commands (git commit, bun test, rm, redirects) as run verb`
+  - `handles pipe and && chains in exploratory commands`
+  - `handles quoted arguments with spaces and harmless arrow patterns`
+- `src/components/AgentConversation.transcript.test.tsx`:
   - `renders replayed reasoning as collapsible Thought for a moment details block`
   - `coalesces tool calls across interleaved plan updates into a single ActivityGroup`
-  - `renders exploratory commands inside Explored group label without bulky cards`
+  - `preserves multiple distinct plan items without dropping`
+  - `preserves reasoning order when a thought occurs after commands`
+  - `folds exploratory CLI commands into Explored hairline section`
 
 ---
 

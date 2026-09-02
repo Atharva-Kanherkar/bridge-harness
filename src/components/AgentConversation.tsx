@@ -51,7 +51,7 @@ function groupItems(items: ConversationItem[]): Rendered[] {
   }
 
   let currentGroup: ConversationItem[] | null = null;
-  let currentPlan: ConversationItem | null = null;
+  let currentPlans: ConversationItem[] = [];
   let currentReasoning: ConversationItem | null = null;
 
   function flushGroup() {
@@ -59,10 +59,10 @@ function groupItems(items: ConversationItem[]): Rendered[] {
       out.push({ kind: "item", item: currentReasoning });
       currentReasoning = null;
     }
-    if (currentPlan) {
-      out.push({ kind: "item", item: currentPlan });
-      currentPlan = null;
+    for (const plan of currentPlans) {
+      out.push({ kind: "item", item: plan });
     }
+    currentPlans = [];
     if (currentGroup && currentGroup.length > 0) {
       out.push({ kind: "group", key: `group-${currentGroup[0].key}`, items: currentGroup });
       currentGroup = null;
@@ -77,6 +77,9 @@ function groupItems(items: ConversationItem[]): Rendered[] {
     }
 
     if (item.type === "reasoning") {
+      if (currentGroup && currentGroup.length > 0) {
+        flushGroup();
+      }
       if (currentReasoning) {
         const combinedText: string = currentReasoning.text
           ? `${currentReasoning.text}\n${item.text}`
@@ -94,7 +97,7 @@ function groupItems(items: ConversationItem[]): Rendered[] {
     }
 
     if (item.type === "plan") {
-      currentPlan = item;
+      currentPlans.push(item);
       continue;
     }
 

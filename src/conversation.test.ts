@@ -61,6 +61,22 @@ describe("normalized conversation reducer",()=>{
     expect(items[0].status).toBe("completed");
     expect(items[0].text).toBe("Thinking deeply...");
   });
+  it("keeps separate reasoning cards across turns when itemId is null", () => {
+    const items = reduceConversation([
+      event(1, "turn.started", { status: "working" }),
+      event(2, "reasoning.delta", { itemId: null, text: "Turn 1 thoughts" }),
+      event(3, "turn.completed", { status: "completed" }),
+      event(4, "turn.started", { status: "working" }),
+      event(5, "reasoning.delta", { itemId: null, text: "Turn 2 thoughts" }),
+      event(6, "turn.completed", { status: "completed" }),
+    ]);
+    const reasoningItems = items.filter(i => i.type === "reasoning");
+    expect(reasoningItems).toHaveLength(2);
+    expect(reasoningItems[0].text).toBe("Turn 1 thoughts");
+    expect(reasoningItems[0].status).toBe("completed");
+    expect(reasoningItems[1].text).toBe("Turn 2 thoughts");
+    expect(reasoningItems[1].status).toBe("completed");
+  });
 });
 
 describe("session forest conversation projection",()=>{
@@ -345,7 +361,36 @@ describe("toolCallDisplay", () => {
     expect(toolCallDisplay(call({ data: { type: "commandExecution", command: "git push origin main" } })).verb).toBe("run");
     expect(toolCallDisplay(call({ data: { type: "commandExecution", command: "rm -rf /tmp/foo" } })).verb).toBe("run");
     expect(toolCallDisplay(call({ data: { type: "commandExecution", command: "echo 'hello' > file.txt" } })).verb).toBe("run");
+    expect(toolCallDisplay(call({ data: { type: "commandExecution", command: "cat file.txt >> out.txt" } })).verb).toBe("run");
     expect(toolCallDisplay(call({ data: { type: "commandExecution", command: "bun run check" } })).verb).toBe("run");
+  });
+
+  it("handles pipe and && chains in exploratory commands", () => {
+    const pipeDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "cat src/auth.rs | grep \"token\"" } }));
+    expect(pipeDisplay.verb).toBe("read");
+    expect(pipeDisplay.target).toBe("cat src/auth.rs | grep \"token\"");
+
+    const chainDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "git status && git diff" } }));
+    expect(chainDisplay.verb).toBe("read");
+    expect(chainDisplay.done).toBe("Explored");
+    expect(chainDisplay.target).toBe("git status && git diff");
+
+    // If any part of chain is mutating, whole chain is treated as run
+    const mixedChain = toolCallDisplay(call({ data: { type: "commandExecution", command: "git status && rm -rf file.txt" } }));
+    expect(mixedChain.verb).toBe("run");
+  });
+
+  it("handles quoted arguments with spaces and harmless arrow patterns", () => {
+    const quotedDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "cat \"my docs/notes.txt\"" } }));
+    expect(quotedDisplay.verb).toBe("read");
+    expect(quotedDisplay.target).toBe("notes.txt");
+    expect(quotedDisplay.path).toBe("my docs/notes.txt");
+
+    // grep "->" contains > inside quotes so it is not rejected as a shell redirect
+    const arrowGrep = toolCallDisplay(call({ data: { type: "commandExecution", command: "grep \"->\" src/types.ts" } }));
+    expect(arrowGrep.verb).toBe("search");
+    expect(arrowGrep.target).toBe("“->”");
+    expect(arrowGrep.path).toBe("src/types.ts");
   });
 
   describe("exit codes", () => {

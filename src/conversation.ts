@@ -258,9 +258,13 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
   const items = new Map<string, ConversationItem>();
   const internalCompactionMessageKeys = new Set<string>();
   let compactionMaintenanceActive = false;
+  let turnIndex = 0;
   for (const event of [...events].sort((a, b) => a.sequence - b.sequence)) {
     if (event.kind === "provider.unknown" || event.kind === "usage.updated") continue;
     if (event.kind.startsWith("turn.") || event.kind.startsWith("session.")) {
+      if (event.kind === "turn.started") {
+        turnIndex += 1;
+      }
       if (event.kind === "turn.completed" || event.kind === "turn.failed" || event.kind === "session.idle") {
         for (const item of items.values()) {
           if (item.type === "reasoning" && item.status === "streaming") {
@@ -270,7 +274,8 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
       }
       continue;
     }
-    const itemKey = event.itemId ?? (event.kind.startsWith("reasoning.") ? "reasoning:live" : `${event.kind}:${event.id}`);
+    const fallbackReasoningKey = `reasoning:live:${turnIndex}`;
+    const itemKey = event.itemId ?? (event.kind.startsWith("reasoning.") ? fallbackReasoningKey : `${event.kind}:${event.id}`);
     if (event.kind === "compaction.requested") compactionMaintenanceActive = true;
     if (event.kind.startsWith("message.")
       && (compactionMaintenanceActive || isInternalCompactionEnvelope(event.text ?? "", event.data))) {
@@ -282,7 +287,7 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
     if (event.kind === "message.delta" || event.kind === "reasoning.delta") {
       if (!event.text) continue;
       const type = event.kind.startsWith("message") ? "message" : "reasoning";
-      const key = type === "reasoning" ? (event.itemId ?? "reasoning:live") : itemKey;
+      const key = type === "reasoning" ? (event.itemId ?? fallbackReasoningKey) : itemKey;
       const existing = items.get(key) ?? { key, type, eventId:event.id, role:event.role ?? undefined, status:"streaming", text:"", data:{}, sequence:event.sequence };
       existing.text += event.text ?? ""; existing.status = "streaming"; existing.eventId = event.id; items.set(key, existing); continue;
     }
@@ -292,7 +297,8 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
       existing.text += event.text ?? ""; existing.status = event.status ?? existing.status; existing.eventId = event.id; existing.data = { ...existing.data, ...event.data }; items.set(itemKey, existing); continue;
     }
     if (event.kind === "plan.updated" || event.kind.startsWith("plan.")) {
-      items.set("current-plan", { key:"current-plan", type:"plan", eventId:event.id, status:event.status ?? undefined, title:event.title ?? "Plan", text:event.text ?? "", data:event.data, sequence:event.sequence }); continue;
+      const planKey = event.itemId ?? "current-plan";
+      items.set(planKey, { key: planKey, type:"plan", eventId:event.id, status:event.status ?? undefined, title:event.title ?? "Plan", text:event.text ?? "", data:event.data, sequence:event.sequence }); continue;
     }
     // Every `delegation.*` frame is a delegation row. Listing them by name meant
     // a new one (a resumed warm worker, a steer) silently rendered as generic
@@ -333,7 +339,7 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
     if (type === "reasoning") {
       let target = items.get(itemKey);
       if (!target) {
-        for (const candidate of items.values()) {
+        for (const candidate of [...items.values()].reverse()) {
           if (candidate.type === "reasoning" && candidate.status === "streaming") {
             target = candidate;
             break;
@@ -629,6 +635,10 @@ function matchesAny(bin: string, names: string[]): boolean {
   return names.includes(base);
 }
 
+function isFlag(arg: string): boolean {
+  return /^--?[a-zA-Z0-9]/.test(arg);
+}
+
 function classifySingleCommand(cmd: string): {
   verb: ToolVerb;
   glyph: ToolGlyph;
@@ -650,7 +660,7 @@ function classifySingleCommand(cmd: string): {
     while (idx < args.length) {
       if (args[idx] === "-n" || args[idx] === "-c") {
         idx += 2;
-      } else if (args[idx].startsWith("-")) {
+      } else if (isFlag(args[idx])) {
         idx += 1;
       } else {
         break;
@@ -669,7 +679,7 @@ function classifySingleCommand(cmd: string): {
   }
 
   if (matchesAny(bin, ["ls", "dir", "tree"])) {
-    const nonFlags = args.filter(arg => !arg.startsWith("-"));
+    const nonFlags = args.filter(arg => !isFlag(arg));
     const dirPath = nonFlags[0];
     return {
       verb: "read",
@@ -682,7 +692,7 @@ function classifySingleCommand(cmd: string): {
   }
 
   if (matchesAny(bin, ["grep", "egrep", "fgrep", "rg", "ag", "ack"])) {
-    const nonFlags = args.filter(arg => !arg.startsWith("-"));
+    const nonFlags = args.filter(arg => !isFlag(arg));
     const pattern = nonFlags[0];
     const filePath = nonFlags[1];
     return {
@@ -696,7 +706,7 @@ function classifySingleCommand(cmd: string): {
   }
 
   if (matchesAny(bin, ["find", "fd", "locate", "which", "whereis", "wc", "stat", "file"])) {
-    const nonFlags = args.filter(arg => !arg.startsWith("-"));
+    const nonFlags = args.filter(arg => !isFlag(arg));
     const target = nonFlags[0];
     return {
       verb: "search",
@@ -710,7 +720,7 @@ function classifySingleCommand(cmd: string): {
 
   if (bin === "git") {
     let subIdx = 0;
-    while (subIdx < args.length && args[subIdx].startsWith("-")) {
+    while (subIdx < args.length && isFlag(args[subIdx])) {
       if (args[subIdx] === "-C" || args[subIdx] === "-c") subIdx += 2;
       else subIdx += 1;
     }
@@ -768,6 +778,30 @@ function classifySingleCommand(cmd: string): {
   return null;
 }
 
+export function hasUnquotedRedirect(command: string): boolean {
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (ch === "\\" && !inSingle) {
+      i++;
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (!inSingle && !inDouble && ch === ">") {
+      return true;
+    }
+  }
+  return false;
+}
+
 export function classifyExploratoryCommand(rawCommand: string): {
   verb: ToolVerb;
   glyph: ToolGlyph;
@@ -778,7 +812,7 @@ export function classifyExploratoryCommand(rawCommand: string): {
 } | null {
   const trimmed = rawCommand.trim();
   if (!trimmed) return null;
-  if (trimmed.includes(">") || trimmed.includes(">>")) return null;
+  if (hasUnquotedRedirect(trimmed)) return null;
 
   const parts = trimmed.split(/\s*(?:&&|;|\|\|)\s*/).filter(Boolean);
   if (parts.length > 1) {
@@ -804,7 +838,7 @@ export function classifyExploratoryCommand(rawCommand: string): {
       glyph: first.glyph,
       doing: first.doing,
       done: first.done,
-      target: first.target ?? trimmed,
+      target: trimmed,
       path: first.path,
     };
   }

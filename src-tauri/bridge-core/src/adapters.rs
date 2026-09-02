@@ -1079,6 +1079,11 @@ impl HarnessAdapter for CodexAdapter {
         if value.get("id").is_some() && value.get("method").is_some() {
             agent::normalize_codex_request(value).into_iter().collect()
         } else {
+            // Standard Codex app-server stdio notifications carry threadId on
+            // thread/turn boundaries, but omit session identity on mid-turn deltas.
+            // Stream state therefore resolves the session key when present and
+            // safely defaults to "default", with per-turn counter resets in
+            // CodexStreamState preventing cross-turn reasoning collision.
             let session_key = value
                 .pointer("/params/conversationId")
                 .or_else(|| value.pointer("/params/threadId"))

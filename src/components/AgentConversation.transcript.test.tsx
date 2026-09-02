@@ -186,6 +186,30 @@ describe("three layers", () => {
     expect(host.textContent).toContain("Next step");
   });
 
+  it("preserves multiple distinct plan items without dropping", () => {
+    mount([
+      event(1, "command.completed", { title: "bun test", data: { type: "commandExecution", command: "bun test" } }),
+      event(2, "plan.updated", { itemId: "plan-1", title: "Plan Phase 1", data: { steps: [{ step: "Phase 1", status: "completed" }] } }),
+      event(3, "plan.updated", { itemId: "plan-2", title: "Plan Phase 2", data: { steps: [{ step: "Phase 2", status: "inProgress" }] } }),
+      event(4, "command.completed", { title: "bun run check", data: { type: "commandExecution", command: "bun run check" } }),
+    ]);
+    expect(host.textContent).toContain("Plan Phase 1");
+    expect(host.textContent).toContain("Plan Phase 2");
+  });
+
+  it("preserves reasoning order when a thought occurs after commands", () => {
+    mount([
+      event(1, "command.completed", { title: "bun test", data: { type: "commandExecution", command: "bun test" } }),
+      event(2, "reasoning.completed", { itemId: "r-after", text: "Post-execution thought reflection", status: "completed" }),
+    ]);
+    const fullText = host.textContent ?? "";
+    const commandIndex = fullText.indexOf("Ran commands");
+    const reasoningIndex = fullText.indexOf("Thought for a moment");
+    expect(commandIndex).toBeGreaterThan(-1);
+    expect(reasoningIndex).toBeGreaterThan(commandIndex);
+    expect(fullText).toContain("Post-execution thought reflection");
+  });
+
   it("folds exploratory CLI commands into Explored hairline section", () => {
     mount([
       event(1, "command.completed", { title: "cat src/auth.rs", data: { type: "commandExecution", command: "cat src/auth.rs" } }),
