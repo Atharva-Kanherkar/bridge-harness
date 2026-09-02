@@ -366,7 +366,7 @@ describe("BridgeSidebar without the projects tree", () => {
     expect(html).not.toContain("Connect folder");
   });
 
-  it("offers Projects below Mission Control and marks it active when that screen is open", () => {
+  it("marks Projects active when that screen is open", () => {
     const projectsButton = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Projects"')) ?? "";
     expect(projectsButton(render())).toBeTruthy();
     expect(projectsButton(render())).not.toContain("aria-current");
@@ -402,7 +402,8 @@ describe("BridgeSidebar list", () => {
     expect(html).not.toContain('aria-label="Work"');
     expect(html).not.toContain('aria-label="Code"');
     expect(html).not.toContain("Needs you");
-    expect(html).toContain('aria-label="Work board"');
+    // Hidden until v2 (#458) — see "BridgeSidebar action rows" below.
+    expect(html).not.toContain('aria-label="Work board"');
   });
 
   it("says how New Chat picks a repo when the list is empty", () => {
@@ -421,18 +422,21 @@ describe("BridgeSidebar search", () => {
 });
 
 describe("BridgeSidebar action rows", () => {
-  it("offers Mission Control followed by Projects and Memory near the top", () => {
+  it("offers New Chat, Marketplace, Projects, and Memory near the top", () => {
     const html = render();
     expect(html).toContain("New Chat");
     expect(html).toContain("Marketplace");
-    expect(html).toContain("Mission Control");
     expect(html.indexOf("New Chat")).toBeLessThan(html.indexOf("Marketplace"));
-    expect(html.indexOf("Marketplace")).toBeLessThan(html.indexOf("Mission Control"));
-    expect(html.indexOf("Mission Control")).toBeLessThan(html.indexOf("Projects"));
+    expect(html.indexOf("Marketplace")).toBeLessThan(html.indexOf("Projects"));
     expect(html.indexOf("Projects")).toBeLessThan(html.indexOf("Memory"));
-    expect(html.indexOf("Memory")).toBeLessThan(html.indexOf("Work board"));
     expect(html).not.toContain("Customize");
     expect(html).not.toContain("Needs you");
+  });
+
+  it("hides Mission Control and Work board from the nav for now (#457, #458)", () => {
+    const html = render();
+    expect(html).not.toContain("Mission Control");
+    expect(html).not.toContain("Work board");
   });
 
   it("drops the filled primary new-chat button", () => {
@@ -441,7 +445,7 @@ describe("BridgeSidebar action rows", () => {
 
   it("labels every row rather than reducing any of them to a bare icon", () => {
     const html = render();
-    for (const label of ["New Chat", "Search", "Marketplace", "Mission Control", "Projects", "Memory", "Work board"]) {
+    for (const label of ["New Chat", "Search", "Marketplace", "Projects", "Memory"]) {
       expect(html).toContain(`aria-label="${label}"`);
       expect(html).toContain(`>${label}</button>`);
     }
@@ -450,14 +454,10 @@ describe("BridgeSidebar action rows", () => {
     expect(html).not.toContain("mx-auto size-10");
   });
 
-  it("marks Marketplace, Mission Control, Work board, and account settings current", () => {
+  it("marks Marketplace and account settings current", () => {
     const marketplace = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Marketplace"')) ?? "";
-    const missionControl = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Mission Control"')) ?? "";
-    const work = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Work board"')) ?? "";
     const account = (html: string) => html.split("<button").find(chunk => chunk.includes('aria-label="Open settings for cestercian"')) ?? "";
     expect(marketplace(render({ marketplaceActive: true }))).toContain('aria-current="page"');
-    expect(missionControl(render({ missionControlActive: true }))).toContain('aria-current="page"');
-    expect(work(render({ workActive: true }))).toContain('aria-current="page"');
     expect(account(render({ settingsActive: true }))).toContain('aria-current="page"');
     expect(marketplace(render())).not.toContain("aria-current");
   });

@@ -89,20 +89,20 @@ describe("the shell knows about Work", () => {
     expect(APP).toContain('view === "work" ? "Work"');
   });
 
-  it("keeps the Needs-you count off the rail and opens Work from Work board", () => {
+  it("keeps the Needs-you count off the rail; Work board is wired but hidden from the nav (#458)", () => {
     expect(APP).toContain("onOpenWorkBoard={openWorkBoard}");
     expect(APP).not.toContain("workBoardActive");
     expect(APP).not.toContain("workNeedsYouCount");
     expect(APP).not.toContain('import { needsYouCount } from "./components/workFacts";');
     expect(SIDEBAR).toContain("onOpenWorkBoard");
-    expect(SIDEBAR).toContain("Work board");
+    expect(SIDEBAR).not.toContain("Work board");
     expect(SIDEBAR).not.toContain("Needs you");
   });
 
   it("does not revive the Work/Code scope switch", () => {
     const footer = SIDEBAR.slice(SIDEBAR.indexOf("onOpenProjects}"));
     expect(footer).not.toContain('aria-label="Work"');
-    expect(SIDEBAR).toContain('label="Work board"');
+    expect(SIDEBAR).not.toContain('label="Work board"');
   });
 
   it("counts what needs you on the board itself, not a rail badge", () => {
