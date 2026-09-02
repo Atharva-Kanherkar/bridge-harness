@@ -2018,6 +2018,7 @@ function AppContent() {
             // the composer's upward panel would open above the viewport.
             placement="down"
             roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"}
+            effort={session.effort}
           />}
           tierLabel={tierRuntimeLabel(session.requestedTier, session.model, session.effort)}
           bypassBadge={bypassBadge}
@@ -2292,7 +2293,7 @@ function AppContent() {
                     onPlusClick={() => void attachFile()}
                     leading={usageRing}
                     trailing={session.kind === "direct" || session.kind === "orchestrator"
-                      ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} />
+                      ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
                   />
                 </div>}
