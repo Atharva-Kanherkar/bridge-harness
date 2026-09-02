@@ -321,11 +321,12 @@ impl BridgeCore {
         // gone would otherwise block its parent forever.
         crate::worker_adoption::recover(&connection)?;
         session_supervisor::SessionSupervisor::reconcile_workspace_statuses(&connection)?;
-        let _ = store::export_history_snapshot_if_stale(
-            &connection,
-            &snapshot_dir,
-            crate::live_turn::HISTORY_SNAPSHOT_INTERVAL,
-        );
+        // No history snapshot here on purpose. `VACUUM INTO` plus a full-file
+        // hash grows with total history, and running it before the daemon
+        // bound its socket pushed readiness past the desktop shell's start
+        // deadline on a large history, so the app fell back to the embedded
+        // host. `live_turn::start_history_snapshot_maintenance` takes the
+        // first, staleness-gated export as soon as the host is serving.
         let opencode_config = agent_config::state(&connection)?
             .harnesses
             .into_iter()
@@ -460,6 +461,16 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get(0))
             .unwrap();
         assert_eq!(sessions, 0);
+    }
+
+    #[test]
+    fn boot_leaves_the_history_snapshot_export_to_the_maintenance_thread() {
+        let fixture = tempfile::tempdir().unwrap();
+        let data_dir = fixture.path();
+        let _core = BridgeCore::boot(seeded_config(data_dir)).unwrap();
+        // Readiness must never wait on an O(history) `VACUUM INTO`: the first
+        // export belongs to `live_turn::start_history_snapshot_maintenance`.
+        assert!(!data_dir.join("history-snapshots").exists());
     }
 
     #[test]

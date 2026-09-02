@@ -173,37 +173,65 @@ pub fn export_history_snapshot(
         Utc::now().format("%Y%m%dT%H%M%S%fZ"),
         Uuid::new_v4().simple()
     );
-    let database_path = snapshot_dir.join(format!("bridge-history-{id}.sqlite"));
-    // `VACUUM INTO` writes a complete SQLite file, but a process interruption
-    // between it and manifest publication used to leave an apparently-final
-    // orphan behind forever. Publish the database only after the hash is
-    // calculated, then let the manifest's atomic rename make the pair visible.
-    let pending_database = snapshot_dir.join(format!(".{id}.sqlite.tmp"));
+    let database_file = format!("bridge-history-{id}.sqlite");
+    let database_path = snapshot_dir.join(&database_file);
+    let manifest_path = snapshot_dir.join(format!("bridge-history-{id}.manifest.json"));
+    // Everything slow — `VACUUM INTO`, the hash, the manifest write — happens
+    // under dotted, Bridge-prefixed pending names that retention recognises as
+    // this process's own debris. Publication is then two adjacent renames, so
+    // the only torn state a crash can leave is a final-named database with no
+    // manifest, which `reclaim_incomplete_snapshot_artifacts` removes once it
+    // is older than the grace period.
+    let pending_database = snapshot_dir.join(format!("{PENDING_PREFIX}{id}.sqlite.tmp"));
+    let pending_manifest = snapshot_dir.join(format!("{PENDING_PREFIX}{id}.manifest.tmp"));
     let escaped = pending_database.to_string_lossy().replace('\'', "''");
     db.execute_batch(&format!("VACUUM INTO '{escaped}'"))?;
     let sha256 = hash_file_streaming(&pending_database)?;
-    std::fs::rename(&pending_database, &database_path)?;
     let manifest = HistorySnapshotManifest {
         schema_version: 1,
-        database_file: database_path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or_default()
-            .to_owned(),
+        database_file,
         sha256,
         created_at: Utc::now().to_rfc3339(),
     };
-    let manifest_path = snapshot_dir.join(format!("bridge-history-{id}.manifest.json"));
-    let pending_manifest = snapshot_dir.join(format!(".{id}.manifest.tmp"));
     let manifest_bytes = serde_json::to_vec_pretty(&manifest)
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
     std::fs::write(&pending_manifest, manifest_bytes)?;
+    std::fs::rename(&pending_database, &database_path)?;
     std::fs::rename(&pending_manifest, &manifest_path)?;
     // Every producer prunes, so the directory stays within policy no matter
-    // which cadence (boot or the maintenance loop) wrote last. Best effort: a
-    // prune failure must not fail the export that just succeeded.
-    let _ = prune_history_snapshots(snapshot_dir, HistorySnapshotRetention::default());
+    // which cadence wrote last. Best effort: a prune failure must not fail the
+    // export that just succeeded.
+    prune_history_snapshots_and_report(snapshot_dir);
     Ok((database_path, manifest_path))
+}
+
+/// Prefix of the dotted pending files an export writes before publication.
+/// Retention reclaims only pending files carrying this prefix, so another
+/// tool's `.something.sqlite.tmp` in the directory is never Bridge's to delete.
+const PENDING_PREFIX: &str = ".bridge-history-";
+
+/// Prune under the default policy and log anything worth a human's attention:
+/// deletions, files that could not be deleted, and a retained set over budget.
+/// Both producers call this, and both used to discard the outcome, which left
+/// a heuristic deletion path with no observability at all.
+fn prune_history_snapshots_and_report(snapshot_dir: &Path) {
+    match prune_history_snapshots(snapshot_dir, HistorySnapshotRetention::default()) {
+        Ok(outcome) if outcome.is_quiet() => {}
+        Ok(outcome) => eprintln!(
+            "bridge: history snapshot retention removed_pairs={} removed_bytes={} \
+             removed_incomplete_files={} removed_incomplete_bytes={} skipped_files={} \
+             retained_pairs={} retained_bytes={} over_budget_bytes={}",
+            outcome.removed_pairs,
+            outcome.removed_bytes,
+            outcome.removed_incomplete_files,
+            outcome.removed_incomplete_bytes,
+            outcome.skipped_files,
+            outcome.retained_pairs,
+            outcome.retained_bytes,
+            outcome.over_budget_bytes,
+        ),
+        Err(error) => eprintln!("bridge: history snapshot retention failed: {error}"),
+    }
 }
 
 /// Export unless the newest snapshot is younger than `max_age`. Booting used
@@ -226,7 +254,7 @@ pub fn export_history_snapshot_if_stale(
             age >= chrono::Duration::zero()
                 && age.to_std().is_ok_and(|elapsed| elapsed < max_age)
         }) {
-            let _ = prune_history_snapshots(snapshot_dir, HistorySnapshotRetention::default());
+            prune_history_snapshots_and_report(snapshot_dir);
             return Ok(None);
         }
     }
@@ -272,11 +300,16 @@ fn hash_file_streaming(path: &Path) -> Result<String, BridgeError> {
 pub struct HistorySnapshotRetention {
     /// Newest snapshots always kept.
     pub keep_recent: usize,
-    /// Beyond those, the newest snapshot of each of this many most recent
-    /// distinct days is kept.
+    /// Beyond those, the newest snapshot from each of this many further
+    /// distinct days is kept. A day counts only when a snapshot from it
+    /// actually survives, so the ladder is reachable whatever `keep_recent`
+    /// covers.
     pub keep_daily_days: usize,
-    /// Hard ceiling for retained snapshot pairs. The first snapshot selected
-    /// by the retention policy survives even when it exceeds this budget.
+    /// Ceiling for retained snapshot pairs. The newest pair survives even when
+    /// it alone exceeds the budget, and that breach is reported in
+    /// `SnapshotPruneOutcome::over_budget_bytes`. Once a pair would cross the
+    /// ceiling, nothing older is retained: the budget never trades a newer
+    /// recovery point for older, smaller ones.
     pub max_total_bytes: u64,
     /// Interrupted exports are only removed after this grace period so a
     /// running export can never be mistaken for stale storage.
@@ -287,10 +320,11 @@ impl Default for HistorySnapshotRetention {
     fn default() -> Self {
         Self {
             // A snapshot is a complete database copy, not an incremental
-            // backup. Keep a short recovery window, then make the byte budget
-            // the final authority as the database grows.
-            keep_recent: 2,
-            keep_daily_days: 1,
+            // backup. Keep a short recent window plus a week-long daily ladder
+            // for late-noticed corruption, and let the byte budget be the
+            // final authority as the database grows.
+            keep_recent: 4,
+            keep_daily_days: 7,
             max_total_bytes: 2 * 1024 * 1024 * 1024,
             incomplete_grace: std::time::Duration::from_secs(60 * 60),
         }
@@ -303,6 +337,24 @@ pub struct SnapshotPruneOutcome {
     pub removed_bytes: u64,
     pub removed_incomplete_files: usize,
     pub removed_incomplete_bytes: u64,
+    /// Files retention decided to delete but could not. Deletion is best
+    /// effort per file: one undeletable file must never stall the rest.
+    pub skipped_files: usize,
+    pub retained_pairs: usize,
+    pub retained_bytes: u64,
+    /// How far the retained set sits above `max_total_bytes`. Non-zero only
+    /// when the newest pair alone is larger than the budget.
+    pub over_budget_bytes: u64,
+}
+
+impl SnapshotPruneOutcome {
+    /// True when nothing happened that deserves a log line.
+    pub fn is_quiet(&self) -> bool {
+        self.removed_pairs == 0
+            && self.removed_incomplete_files == 0
+            && self.skipped_files == 0
+            && self.over_budget_bytes == 0
+    }
 }
 
 struct SnapshotPair {
@@ -312,7 +364,10 @@ struct SnapshotPair {
     created_at: String,
 }
 
-/// Snapshots with a valid manifest/database pairing.
+/// Snapshots with a valid manifest/database pairing. Pairs this version
+/// cannot vouch for are simply not retention candidates; they are never
+/// treated as debris on that basis (see
+/// `is_reclaimable_incomplete_snapshot_artifact`).
 fn valid_snapshot_pairs(snapshot_dir: &Path) -> Vec<SnapshotPair> {
     let Ok(entries) = std::fs::read_dir(snapshot_dir) else {
         return Vec::new();
@@ -348,9 +403,11 @@ fn valid_snapshot_pairs(snapshot_dir: &Path) -> Vec<SnapshotPair> {
 }
 
 /// Delete snapshots beyond the retention policy, newest first. Valid pairs
-/// follow the recency/day policy and a hard byte ceiling. Incomplete Bridge
-/// snapshot artifacts are reclaimed only after `incomplete_grace`; foreign
-/// files are never touched.
+/// follow the recency/day policy under a byte ceiling; incomplete Bridge
+/// artifacts are reclaimed after `incomplete_grace`; foreign files and pairs
+/// this version cannot read are never touched. Every deletion is best effort:
+/// a file that will not go is counted in `skipped_files` and the pass moves
+/// on, so one stuck file cannot turn retention back into unbounded growth.
 pub fn prune_history_snapshots(
     snapshot_dir: &Path,
     retention: HistorySnapshotRetention,
@@ -358,65 +415,89 @@ pub fn prune_history_snapshots(
     let mut pairs = valid_snapshot_pairs(snapshot_dir);
     // The file name embeds the UTC timestamp, so name order is time order.
     pairs.sort_by(|left, right| right.database_file.cmp(&left.database_file));
-    let mut days_kept = std::collections::BTreeSet::new();
+    let mut days_represented = std::collections::BTreeSet::new();
+    let mut daily_days_kept = 0_usize;
+    let mut budget_exhausted = false;
+    let mut retained_paths = std::collections::HashSet::new();
     let mut outcome = SnapshotPruneOutcome::default();
-    let mut retained_bytes = 0_u64;
-    let mut retained_any = false;
     for (index, pair) in pairs.iter().enumerate() {
         let day = pair
             .database_file
             .get("bridge-history-".len().."bridge-history-".len() + 8)
             .unwrap_or_default()
             .to_owned();
-        let keep_by_age = if index < retention.keep_recent {
-            days_kept.insert(day);
-            true
-        } else if days_kept.len() < retention.keep_daily_days && !days_kept.contains(&day) {
-            days_kept.insert(day);
-            true
-        } else {
-            false
-        };
+        let in_recent_window = index < retention.keep_recent;
+        let keep_by_age = in_recent_window
+            || (daily_days_kept < retention.keep_daily_days && !days_represented.contains(&day));
         let bytes = std::fs::metadata(&pair.database_path)
             .map(|meta| meta.len())
             .unwrap_or_default()
             + std::fs::metadata(&pair.manifest_path)
                 .map(|meta| meta.len())
                 .unwrap_or_default();
-        if keep_by_age
-            && (!retained_any || retained_bytes.saturating_add(bytes) <= retention.max_total_bytes)
-        {
-            retained_any = true;
-            retained_bytes = retained_bytes.saturating_add(bytes);
+        let within_budget = outcome.retained_pairs == 0
+            || outcome.retained_bytes.saturating_add(bytes) <= retention.max_total_bytes;
+        if keep_by_age && !within_budget {
+            // Stop at the ceiling rather than packing: an older pair must
+            // never survive in place of the newer one that did not fit.
+            budget_exhausted = true;
+        }
+        if keep_by_age && !budget_exhausted {
+            // Day bookkeeping happens only for pairs that actually survive, so
+            // a pair the budget vetoes cannot mark its day as covered.
+            if !in_recent_window {
+                daily_days_kept += 1;
+            }
+            days_represented.insert(day);
+            outcome.retained_pairs += 1;
+            outcome.retained_bytes = outcome.retained_bytes.saturating_add(bytes);
+            retained_paths.insert(pair.database_path.clone());
+            retained_paths.insert(pair.manifest_path.clone());
             continue;
         }
-        std::fs::remove_file(&pair.database_path)?;
-        std::fs::remove_file(&pair.manifest_path)?;
+        // Database first: if it will not go, the manifest stays so the pair
+        // remains a valid, verifiable snapshot rather than a torn one. A
+        // manifest that then fails to go is an orphan the reclaim below (or a
+        // later pass) picks up.
+        if std::fs::remove_file(&pair.database_path).is_err() {
+            outcome.skipped_files += 1;
+            continue;
+        }
+        if std::fs::remove_file(&pair.manifest_path).is_err() {
+            outcome.skipped_files += 1;
+        }
         outcome.removed_pairs += 1;
         outcome.removed_bytes += bytes;
     }
-    reclaim_incomplete_snapshot_artifacts(snapshot_dir, retention.incomplete_grace, &mut outcome)?;
+    outcome.over_budget_bytes = outcome
+        .retained_bytes
+        .saturating_sub(retention.max_total_bytes);
+    reclaim_incomplete_snapshot_artifacts(
+        snapshot_dir,
+        retention.incomplete_grace,
+        &retained_paths,
+        &mut outcome,
+    );
     Ok(outcome)
 }
 
 /// Remove stale files from a torn snapshot publication. Names are deliberately
 /// narrow and the directory is Bridge-owned, so user files in the snapshot
-/// directory remain outside this cleanup boundary.
+/// directory remain outside this cleanup boundary. `retained_paths` is the set
+/// the pair loop just kept, so this pass reuses that scan instead of parsing
+/// every manifest a second time.
 fn reclaim_incomplete_snapshot_artifacts(
     snapshot_dir: &Path,
     grace: std::time::Duration,
+    retained_paths: &std::collections::HashSet<PathBuf>,
     outcome: &mut SnapshotPruneOutcome,
-) -> Result<(), BridgeError> {
-    let paired_paths: std::collections::HashSet<PathBuf> = valid_snapshot_pairs(snapshot_dir)
-        .into_iter()
-        .flat_map(|pair| [pair.database_path, pair.manifest_path])
-        .collect();
+) {
     let Ok(entries) = std::fs::read_dir(snapshot_dir) else {
-        return Ok(());
+        return;
     };
     for entry in entries.flatten() {
         let path = entry.path();
-        if paired_paths.contains(&path) || !is_incomplete_snapshot_artifact(&path) {
+        if retained_paths.contains(&path) || !is_reclaimable_incomplete_snapshot_artifact(&path) {
             continue;
         }
         let Ok(metadata) = entry.metadata() else {
@@ -426,22 +507,65 @@ fn reclaim_incomplete_snapshot_artifacts(
             continue;
         }
         let bytes = metadata.len();
-        std::fs::remove_file(path)?;
+        if std::fs::remove_file(&path).is_err() {
+            outcome.skipped_files += 1;
+            continue;
+        }
         outcome.removed_incomplete_files += 1;
         outcome.removed_incomplete_bytes += bytes;
     }
-    Ok(())
 }
 
-fn is_incomplete_snapshot_artifact(path: &Path) -> bool {
+/// Return true only when an artifact is provably debris from an interrupted
+/// publication by this manifest version: a Bridge-prefixed pending file, a
+/// final-named database with no manifest file of the same stem at all, or a
+/// readable schema-1 manifest whose database is gone. The load-bearing
+/// distinction is "no manifest exists" versus "a manifest exists that this
+/// version cannot read": the latter is data from a newer Bridge (or a
+/// corrupted file whose checksum exists to make corruption visible) and must
+/// survive unchanged.
+fn is_reclaimable_incomplete_snapshot_artifact(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
-    (name.starts_with("bridge-history-")
-        && (name.ends_with(".sqlite") || name.ends_with(".manifest.json")))
-        || (name.starts_with('.')
-            && name.ends_with(".tmp")
-            && (name.ends_with(".sqlite.tmp") || name.ends_with(".manifest.tmp")))
+    if name.starts_with(PENDING_PREFIX)
+        && (name.ends_with(".sqlite.tmp") || name.ends_with(".manifest.tmp"))
+    {
+        return true;
+    }
+    if !name.starts_with("bridge-history-") {
+        return false;
+    }
+    if let Some(stem) = name.strip_suffix(".sqlite") {
+        // A same-stem manifest, even one this version cannot parse, proves
+        // the database is not an abandoned manifest-less export.
+        return !path
+            .with_file_name(format!("{stem}.manifest.json"))
+            .exists();
+    }
+    let Some(stem) = name.strip_suffix(".manifest.json") else {
+        return false;
+    };
+    if path.with_file_name(format!("{stem}.sqlite")).exists() {
+        return false;
+    }
+    let Ok(bytes) = std::fs::read(path) else {
+        return false;
+    };
+    let Ok(manifest) = serde_json::from_slice::<HistorySnapshotManifest>(&bytes) else {
+        return false;
+    };
+    if manifest.schema_version != 1
+        || !manifest.database_file.starts_with("bridge-history-")
+        || !manifest.database_file.ends_with(".sqlite")
+    {
+        return false;
+    }
+    !path
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join(manifest.database_file)
+        .exists()
 }
 
 fn is_older_than(metadata: &std::fs::Metadata, grace: std::time::Duration) -> bool {
@@ -3720,8 +3844,42 @@ mod tests {
         .unwrap();
     }
 
+    fn fabricate_sized_snapshot_pair(dir: &Path, stamp: &str, database_bytes: usize) {
+        fabricate_snapshot_pair(dir, stamp);
+        std::fs::write(
+            dir.join(format!("bridge-history-{stamp}.sqlite")),
+            vec![0_u8; database_bytes],
+        )
+        .unwrap();
+    }
+
+    /// Move a fixture's mtime two hours into the past so grace-period tests
+    /// never depend on `now()` landing after the write within the same tick.
+    fn backdate(path: &Path) {
+        let two_hours_ago =
+            std::time::SystemTime::now() - std::time::Duration::from_secs(2 * 60 * 60);
+        std::fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(two_hours_ago)
+            .unwrap();
+    }
+
+    fn database_names(dir: &Path) -> Vec<String> {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| name.ends_with(".sqlite"))
+            .collect();
+        names.sort();
+        names.reverse();
+        names
+    }
+
     #[test]
-    fn retention_keeps_recent_and_one_pair_per_day() {
+    fn retention_keeps_recent_pairs_plus_a_daily_ladder_of_further_days() {
         let dir = tempfile::tempdir().unwrap();
         // Three snapshots on the newest day, two on the day before, one each
         // on two older days.
@@ -3736,93 +3894,99 @@ mod tests {
         ] {
             fabricate_snapshot_pair(dir.path(), stamp);
         }
-        let outcome = prune_history_snapshots(
-            dir.path(),
-            HistorySnapshotRetention {
-                keep_recent: 2,
-                keep_daily_days: 3,
-                ..HistorySnapshotRetention::default()
-            },
-        )
-        .unwrap();
-        let kept: Vec<String> = std::fs::read_dir(dir.path())
-            .unwrap()
-            .flatten()
-            .filter_map(|entry| entry.file_name().into_string().ok())
-            .filter(|name| name.ends_with(".sqlite"))
-            .collect();
-        // Newest two, plus the newest of each of the next two distinct days
-        // (the newest day is already represented by the recent set).
-        assert_eq!(outcome.removed_pairs, 7 - kept.len());
-        assert!(kept.contains(&"bridge-history-20260820T120000000000000Z-f1.sqlite".into()));
-        assert!(kept.contains(&"bridge-history-20260820T110000000000000Z-f2.sqlite".into()));
-        assert!(kept.contains(&"bridge-history-20260819T120000000000000Z-f4.sqlite".into()));
-        assert!(kept.contains(&"bridge-history-20260818T120000000000000Z-f6.sqlite".into()));
-        assert_eq!(kept.len(), 4, "{kept:?}");
+        let retention = HistorySnapshotRetention {
+            keep_recent: 2,
+            keep_daily_days: 3,
+            ..HistorySnapshotRetention::default()
+        };
+        let outcome = prune_history_snapshots(dir.path(), retention).unwrap();
+        // The recent window covers the newest day; the ladder then keeps the
+        // newest snapshot of each of the three days beyond it. Days already
+        // represented by the recent window do not consume ladder slots, which
+        // is what keeps the ladder reachable for any `keep_recent`.
+        assert_eq!(
+            database_names(dir.path()),
+            [
+                "bridge-history-20260820T120000000000000Z-f1.sqlite",
+                "bridge-history-20260820T110000000000000Z-f2.sqlite",
+                "bridge-history-20260819T120000000000000Z-f4.sqlite",
+                "bridge-history-20260818T120000000000000Z-f6.sqlite",
+                "bridge-history-20260817T120000000000000Z-f7.sqlite",
+            ]
+        );
+        assert_eq!(outcome.removed_pairs, 2);
+        assert_eq!(outcome.retained_pairs, 5);
         assert!(outcome.removed_bytes > 0);
+        assert_eq!(outcome.over_budget_bytes, 0);
         // Deterministic: pruning again removes nothing.
-        let second = prune_history_snapshots(
+        let second = prune_history_snapshots(dir.path(), retention).unwrap();
+        assert_eq!(second.removed_pairs, 0);
+        assert_eq!(second.removed_incomplete_files, 0);
+        assert_eq!(second.retained_pairs, 5);
+        assert!(second.is_quiet());
+    }
+
+    #[test]
+    fn default_retention_keeps_a_daily_ladder_under_the_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        // Four snapshots a day for three days, all far below the byte budget:
+        // the daily rule must be reachable with the shipped defaults.
+        for day in ["20260820", "20260819", "20260818"] {
+            for hour in ["12", "11", "10", "09"] {
+                fabricate_snapshot_pair(dir.path(), &format!("{day}T{hour}0000000000000Z-x"));
+            }
+        }
+        let outcome =
+            prune_history_snapshots(dir.path(), HistorySnapshotRetention::default()).unwrap();
+        assert_eq!(
+            database_names(dir.path()),
+            [
+                "bridge-history-20260820T120000000000000Z-x.sqlite",
+                "bridge-history-20260820T110000000000000Z-x.sqlite",
+                "bridge-history-20260820T100000000000000Z-x.sqlite",
+                "bridge-history-20260820T090000000000000Z-x.sqlite",
+                "bridge-history-20260819T120000000000000Z-x.sqlite",
+                "bridge-history-20260818T120000000000000Z-x.sqlite",
+            ],
+            "four recent plus the newest of each earlier day"
+        );
+        assert_eq!(outcome.retained_pairs, 6);
+        assert_eq!(outcome.removed_pairs, 6);
+    }
+
+    #[test]
+    fn retention_budget_stops_at_the_ceiling_instead_of_packing_older_pairs() {
+        let dir = tempfile::tempdir().unwrap();
+        fabricate_sized_snapshot_pair(dir.path(), "20260820T120000000000000Z-a", 500);
+        fabricate_sized_snapshot_pair(dir.path(), "20260820T110000000000000Z-b", 1900);
+        fabricate_sized_snapshot_pair(dir.path(), "20260819T120000000000000Z-c", 400);
+        fabricate_sized_snapshot_pair(dir.path(), "20260818T120000000000000Z-d", 400);
+        let manifest_bytes = std::fs::metadata(
+            dir.path()
+                .join("bridge-history-20260820T120000000000000Z-a.manifest.json"),
+        )
+        .unwrap()
+        .len();
+        let outcome = prune_history_snapshots(
             dir.path(),
             HistorySnapshotRetention {
                 keep_recent: 2,
                 keep_daily_days: 3,
+                max_total_bytes: 2000 + 2 * manifest_bytes,
                 ..HistorySnapshotRetention::default()
             },
         )
         .unwrap();
-        assert_eq!(second, SnapshotPruneOutcome::default());
-    }
-
-    #[test]
-    fn retention_reclaims_stale_incomplete_artifacts_without_touching_foreign_files() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join("bridge-history-orphan.sqlite"), b"x").unwrap();
-        std::fs::write(
-            dir.path().join("bridge-history-loner.manifest.json"),
-            serde_json::to_vec(&HistorySnapshotManifest {
-                schema_version: 1,
-                database_file: "bridge-history-gone.sqlite".into(),
-                sha256: "x".into(),
-                created_at: Utc::now().to_rfc3339(),
-            })
-            .unwrap(),
-        )
-        .unwrap();
-        std::fs::write(dir.path().join("user-notes.txt"), b"keep").unwrap();
-        let outcome = prune_history_snapshots(
-            dir.path(),
-            HistorySnapshotRetention {
-                keep_recent: 0,
-                keep_daily_days: 0,
-                incomplete_grace: std::time::Duration::ZERO,
-                ..HistorySnapshotRetention::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(outcome.removed_pairs, 0);
-        assert_eq!(outcome.removed_incomplete_files, 2);
-        assert!(outcome.removed_incomplete_bytes > 0);
-        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
-        assert!(dir.path().join("user-notes.txt").exists());
-    }
-
-    #[test]
-    fn retention_leaves_fresh_incomplete_artifacts_for_an_active_export() {
-        let dir = tempfile::tempdir().unwrap();
-        let pending = dir.path().join(".snapshot.sqlite.tmp");
-        std::fs::write(&pending, b"still exporting").unwrap();
-        let outcome = prune_history_snapshots(
-            dir.path(),
-            HistorySnapshotRetention {
-                keep_recent: 0,
-                keep_daily_days: 0,
-                incomplete_grace: std::time::Duration::from_secs(60 * 60),
-                ..HistorySnapshotRetention::default()
-            },
-        )
-        .unwrap();
-        assert_eq!(outcome, SnapshotPruneOutcome::default());
-        assert!(pending.exists());
+        // `b` does not fit after `a`; `c` and `d` would, but retaining older
+        // pairs after dropping a newer one leaves a hole in the middle of the
+        // recovery window, so the ceiling ends retention outright.
+        assert_eq!(
+            database_names(dir.path()),
+            ["bridge-history-20260820T120000000000000Z-a.sqlite"]
+        );
+        assert_eq!(outcome.retained_pairs, 1);
+        assert_eq!(outcome.removed_pairs, 3);
+        assert_eq!(outcome.over_budget_bytes, 0);
     }
 
     #[test]
@@ -3853,21 +4017,269 @@ mod tests {
         )
         .unwrap();
         assert_eq!(outcome.removed_pairs, 2);
+        assert_eq!(outcome.retained_pairs, 1);
+        assert_eq!(outcome.retained_bytes, newest_pair_bytes);
+        assert_eq!(outcome.over_budget_bytes, 0);
+        assert_eq!(
+            database_names(dir.path()),
+            ["bridge-history-20260820T120000000000000Z-f1.sqlite"]
+        );
+    }
+
+    #[test]
+    fn retention_reports_a_newest_pair_that_alone_exceeds_the_budget() {
+        let dir = tempfile::tempdir().unwrap();
+        fabricate_sized_snapshot_pair(dir.path(), "20260820T120000000000000Z-big", 3000);
+        fabricate_sized_snapshot_pair(dir.path(), "20260820T110000000000000Z-old", 10);
+        let outcome = prune_history_snapshots(
+            dir.path(),
+            HistorySnapshotRetention {
+                keep_recent: 2,
+                max_total_bytes: 1000,
+                ..HistorySnapshotRetention::default()
+            },
+        )
+        .unwrap();
+        // The newest recovery point is never deleted to satisfy the budget,
+        // but the breach is not silent: it is reported for the log line and
+        // the ceiling still stops everything older.
+        assert_eq!(
+            database_names(dir.path()),
+            ["bridge-history-20260820T120000000000000Z-big.sqlite"]
+        );
+        assert_eq!(outcome.retained_pairs, 1);
+        assert_eq!(outcome.over_budget_bytes, outcome.retained_bytes - 1000);
+        assert!(outcome.over_budget_bytes >= 2000);
+        assert!(!outcome.is_quiet());
+    }
+
+    #[test]
+    fn retention_reclaims_stale_incomplete_artifacts_without_touching_foreign_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let debris = [
+            "bridge-history-orphan.sqlite",
+            "bridge-history-loner.manifest.json",
+            ".bridge-history-torn.sqlite.tmp",
+            ".bridge-history-torn.manifest.tmp",
+        ];
+        std::fs::write(dir.path().join(debris[0]), b"x").unwrap();
+        std::fs::write(
+            dir.path().join(debris[1]),
+            serde_json::to_vec(&HistorySnapshotManifest {
+                schema_version: 1,
+                database_file: "bridge-history-gone.sqlite".into(),
+                sha256: "x".into(),
+                created_at: Utc::now().to_rfc3339(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(dir.path().join(debris[2]), b"x").unwrap();
+        std::fs::write(dir.path().join(debris[3]), b"x").unwrap();
+        // Foreign files, also stale: a user's notes and another tool's
+        // dotted temp file that merely shares the `.sqlite.tmp` suffix.
+        let foreign = ["user-notes.txt", ".mydb.sqlite.tmp", ".backup.manifest.tmp"];
+        for name in foreign {
+            std::fs::write(dir.path().join(name), b"keep").unwrap();
+        }
+        for name in debris.iter().chain(foreign.iter()) {
+            backdate(&dir.path().join(name));
+        }
+        let outcome =
+            prune_history_snapshots(dir.path(), HistorySnapshotRetention::default()).unwrap();
+        assert_eq!(outcome.removed_pairs, 0);
+        assert_eq!(outcome.removed_incomplete_files, 4);
+        assert!(outcome.removed_incomplete_bytes > 0);
+        assert_eq!(outcome.skipped_files, 0);
+        let mut remaining: Vec<String> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect();
+        remaining.sort();
+        let mut expected: Vec<String> = foreign.iter().map(|name| name.to_string()).collect();
+        expected.sort();
+        assert_eq!(remaining, expected);
+    }
+
+    #[test]
+    fn retention_reclaim_never_touches_live_pairs() {
+        let dir = tempfile::tempdir().unwrap();
+        fabricate_snapshot_pair(dir.path(), "20260820T120000000000000Z-f1");
+        fabricate_snapshot_pair(dir.path(), "20260820T110000000000000Z-f2");
+        std::fs::write(dir.path().join("bridge-history-orphan.sqlite"), b"x").unwrap();
+        for entry in std::fs::read_dir(dir.path()).unwrap().flatten() {
+            backdate(&entry.path());
+        }
+        // Zero grace: every file is old enough, so only the classification
+        // stands between the reclaim and the live snapshots.
+        let outcome = prune_history_snapshots(
+            dir.path(),
+            HistorySnapshotRetention {
+                keep_recent: 2,
+                incomplete_grace: std::time::Duration::ZERO,
+                ..HistorySnapshotRetention::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome.retained_pairs, 2);
+        assert_eq!(outcome.removed_pairs, 0);
+        assert_eq!(outcome.removed_incomplete_files, 1);
+        assert_eq!(
+            database_names(dir.path()),
+            [
+                "bridge-history-20260820T120000000000000Z-f1.sqlite",
+                "bridge-history-20260820T110000000000000Z-f2.sqlite",
+            ]
+        );
         assert!(dir
             .path()
-            .join("bridge-history-20260820T120000000000000Z-f1.sqlite")
+            .join("bridge-history-20260820T110000000000000Z-f2.manifest.json")
             .exists());
-        assert_eq!(
-            std::fs::read_dir(dir.path())
-                .unwrap()
-                .flatten()
-                .filter(|entry| entry
-                    .path()
-                    .extension()
-                    .is_some_and(|extension| extension == "sqlite"))
-                .count(),
-            1
+    }
+
+    #[test]
+    fn retention_leaves_fresh_incomplete_artifacts_for_an_active_export() {
+        let dir = tempfile::tempdir().unwrap();
+        let pending = dir.path().join(".bridge-history-active.sqlite.tmp");
+        std::fs::write(&pending, b"still exporting").unwrap();
+        let outcome = prune_history_snapshots(
+            dir.path(),
+            HistorySnapshotRetention {
+                keep_recent: 0,
+                keep_daily_days: 0,
+                incomplete_grace: std::time::Duration::from_secs(60 * 60),
+                ..HistorySnapshotRetention::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(outcome, SnapshotPruneOutcome::default());
+        assert!(pending.exists());
+    }
+
+    #[test]
+    fn retention_preserves_unknown_manifests_across_a_downgrade() {
+        let dir = tempfile::tempdir().unwrap();
+        let newer_database = "bridge-history-newer.sqlite";
+        let newer_manifest = "bridge-history-newer.manifest.json";
+        std::fs::write(dir.path().join(newer_database), b"newer snapshot").unwrap();
+        std::fs::write(
+            dir.path().join(newer_manifest),
+            serde_json::to_vec(&HistorySnapshotManifest {
+                schema_version: 2,
+                database_file: newer_database.into(),
+                sha256: "newer-hash-format".into(),
+                created_at: Utc::now().to_rfc3339(),
+            })
+            .unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("bridge-history-future-only.manifest.json"),
+            br#"{"schema_version":2,"database_file":"future-layout.snapshot"}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.path().join("bridge-history-opaque.sqlite"), b"opaque").unwrap();
+        std::fs::write(
+            dir.path().join("bridge-history-opaque.manifest.json"),
+            b"a future manifest encoding",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.path().join("bridge-history-opaque-only.manifest.json"),
+            b"an unreadable manifest",
+        )
+        .unwrap();
+        for entry in std::fs::read_dir(dir.path()).unwrap().flatten() {
+            backdate(&entry.path());
+        }
+
+        let outcome = prune_history_snapshots(
+            dir.path(),
+            HistorySnapshotRetention {
+                keep_recent: 0,
+                keep_daily_days: 0,
+                incomplete_grace: std::time::Duration::ZERO,
+                ..HistorySnapshotRetention::default()
+            },
+        )
+        .unwrap();
+
+        // An intact database whose manifest this version cannot read is a
+        // recovery point, not debris: nothing here is deleted.
+        assert_eq!(outcome, SnapshotPruneOutcome::default());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 6);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn retention_counts_undeletable_files_and_keeps_going() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        fabricate_snapshot_pair(dir.path(), "20260820T120000000000000Z-f1");
+        fabricate_snapshot_pair(dir.path(), "20260820T110000000000000Z-f2");
+        fabricate_snapshot_pair(dir.path(), "20260820T100000000000000Z-f3");
+        // A read-only directory refuses every unlink, the same way a busy or
+        // foreign-owned file would refuse one.
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o555)).unwrap();
+        let outcome = prune_history_snapshots(
+            dir.path(),
+            HistorySnapshotRetention {
+                keep_recent: 1,
+                keep_daily_days: 0,
+                ..HistorySnapshotRetention::default()
+            },
         );
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o755)).unwrap();
+        let outcome = outcome.expect("an undeletable file is counted, not propagated");
+        assert_eq!(outcome.retained_pairs, 1);
+        assert_eq!(
+            outcome.skipped_files, 2,
+            "both stale databases were attempted"
+        );
+        assert_eq!(outcome.removed_pairs, 0);
+        // Manifests stay with their databases, so the skipped pairs remain
+        // valid snapshots rather than torn ones.
+        assert_eq!(database_names(dir.path()).len(), 3);
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 6);
+    }
+
+    #[test]
+    fn export_publishes_only_final_names_and_prefixes_its_pending_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = open(&dir.path().join("bridge.db")).unwrap();
+        let snapshots = dir.path().join("snapshots");
+        let (database, manifest) = export_history_snapshot(&primary, &snapshots).unwrap();
+        let names: Vec<String> = std::fs::read_dir(&snapshots)
+            .unwrap()
+            .flatten()
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .collect();
+        assert_eq!(
+            names.len(),
+            2,
+            "no pending files survive publication: {names:?}"
+        );
+        assert!(database.exists() && manifest.exists());
+        assert!(verify_history_snapshot(&database, &manifest).unwrap());
+        // The pending names retention recognises are the ones the export
+        // actually writes.
+        let stem = database.file_name().unwrap().to_str().unwrap();
+        let stem = stem
+            .strip_prefix("bridge-history-")
+            .and_then(|rest| rest.strip_suffix(".sqlite"))
+            .unwrap();
+        for pending in [
+            format!("{PENDING_PREFIX}{stem}.sqlite.tmp"),
+            format!("{PENDING_PREFIX}{stem}.manifest.tmp"),
+        ] {
+            assert!(is_reclaimable_incomplete_snapshot_artifact(
+                &snapshots.join(pending)
+            ));
+        }
+        assert!(!is_reclaimable_incomplete_snapshot_artifact(
+            &snapshots.join(".other-tool.sqlite.tmp")
+        ));
     }
 
     #[test]
