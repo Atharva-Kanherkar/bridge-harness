@@ -40,6 +40,27 @@ describe("normalized conversation reducer",()=>{
     expect(items[0].text).not.toContain("bridge-worker-result");
     expect(source.text).toBe(raw);
   });
+  it("reduces Codex reasoning deltas and transitions to completed upon item/completed", () => {
+    const items = reduceConversation([
+      event(1, "reasoning.delta", { itemId: null, text: "Thinking step 1\n" }),
+      event(2, "reasoning.delta", { itemId: null, text: "Thinking step 2\n" }),
+      event(3, "reasoning.completed", { itemId: "reasoning-1", text: "", status: "completed" }),
+    ]);
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe("reasoning");
+    expect(items[0].status).toBe("completed");
+    expect(items[0].text).toBe("Thinking step 1\nThinking step 2\n");
+  });
+  it("settles streaming reasoning to completed on turn.completed", () => {
+    const items = reduceConversation([
+      event(1, "reasoning.delta", { itemId: null, text: "Thinking deeply..." }),
+      event(2, "turn.completed", { status: "completed" }),
+    ]);
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe("reasoning");
+    expect(items[0].status).toBe("completed");
+    expect(items[0].text).toBe("Thinking deeply...");
+  });
 });
 
 describe("session forest conversation projection",()=>{

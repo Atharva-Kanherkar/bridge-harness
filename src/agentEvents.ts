@@ -18,8 +18,10 @@ export const MAX_TOTAL_EVENT_TEXT = 2_000_000;
 export const MAX_PENDING_AGENT_EVENTS = 256;
 
 function mergeKey(event: AgentEvent): string | undefined {
-  if (!event.itemId || (!ADDITIVE_DELTAS.has(event.kind) && !REPLACEABLE_SNAPSHOTS.has(event.kind))) return undefined;
-  return `${event.sessionId}\u0000${event.kind}\u0000${event.itemId}`;
+  if (!ADDITIVE_DELTAS.has(event.kind) && !REPLACEABLE_SNAPSHOTS.has(event.kind)) return undefined;
+  const itemId = event.itemId || (event.kind === "reasoning.delta" ? "reasoning:live" : undefined);
+  if (!itemId) return undefined;
+  return `${event.sessionId}\u0000${event.kind}\u0000${itemId}`;
 }
 
 function durableKey(event: AgentEvent): string | undefined {
@@ -31,9 +33,10 @@ function clampText(text: string): string {
 }
 
 function clearItemMergeIndexes(indexes: Map<string, number>, event: AgentEvent): void {
-  if (!event.itemId) return;
+  const itemId = event.itemId ?? (event.kind.startsWith("reasoning.") || event.kind.startsWith("turn.") ? "reasoning:live" : undefined);
+  if (!itemId) return;
   for (const kind of [...ADDITIVE_DELTAS, ...REPLACEABLE_SNAPSHOTS]) {
-    indexes.delete(`${event.sessionId}\u0000${kind}\u0000${event.itemId}`);
+    indexes.delete(`${event.sessionId}\u0000${kind}\u0000${itemId}`);
   }
 }
 

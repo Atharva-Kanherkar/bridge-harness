@@ -378,7 +378,19 @@ impl NormalizedEvent {
     }
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct CodexStreamState {
+    pub active_reasoning_id: Option<String>,
+}
+
 pub fn normalize_codex_message(message: &Value) -> Vec<NormalizedEvent> {
+    normalize_codex_message_with_state(message, &mut CodexStreamState::default())
+}
+
+pub fn normalize_codex_message_with_state(
+    message: &Value,
+    state: &mut CodexStreamState,
+) -> Vec<NormalizedEvent> {
     let Some(method) = message.get("method").and_then(Value::as_str) else {
         return vec![];
     };
@@ -400,6 +412,7 @@ pub fn normalize_codex_message(message: &Value) -> Vec<NormalizedEvent> {
             vec![event]
         }
         "turn/completed" => {
+            state.active_reasoning_id = None;
             let status = params
                 .pointer("/turn/status")
                 .and_then(Value::as_str)
@@ -419,11 +432,48 @@ pub fn normalize_codex_message(message: &Value) -> Vec<NormalizedEvent> {
         }
         "item/reasoning/summaryTextDelta" | "item/reasoning/textDelta" => {
             let mut event = with_data("reasoning.delta", &params, json!({}));
+            let item_id = params
+                .get("itemId")
+                .or_else(|| params.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| state.active_reasoning_id.clone())
+                .unwrap_or_else(|| {
+                    let id = "reasoning-1".to_string();
+                    state.active_reasoning_id = Some(id.clone());
+                    id
+                });
+            event.item_id = Some(item_id);
             event.text = params
                 .get("delta")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
             vec![event]
+        }
+        "item/reasoning/summaryPartAdded" => {
+            let mut event = with_data("reasoning.delta", &params, json!({}));
+            let item_id = params
+                .get("itemId")
+                .or_else(|| params.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| state.active_reasoning_id.clone())
+                .unwrap_or_else(|| {
+                    let id = "reasoning-1".to_string();
+                    state.active_reasoning_id = Some(id.clone());
+                    id
+                });
+            event.item_id = Some(item_id);
+            event.text = params
+                .get("summary")
+                .or_else(|| params.get("text"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            if event.text.is_some() {
+                vec![event]
+            } else {
+                vec![]
+            }
         }
         "item/commandExecution/outputDelta" => {
             // `delta` is already carried in `text`; retaining the complete
@@ -518,7 +568,24 @@ pub fn normalize_codex_message(message: &Value) -> Vec<NormalizedEvent> {
             event.status = Some("failed".into());
             vec![event]
         }
-        "item/started" | "item/completed" => normalize_item(method, &params),
+        "item/started" | "item/completed" => {
+            let item_type = params
+                .pointer("/item/type")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            if item_type == "reasoning" {
+                if method == "item/started" {
+                    let id = params
+                        .pointer("/item/id")
+                        .and_then(Value::as_str)
+                        .unwrap_or("reasoning-1");
+                    state.active_reasoning_id = Some(id.to_string());
+                } else {
+                    state.active_reasoning_id = None;
+                }
+            }
+            normalize_item(method, &params)
+        }
         _ if is_codex_internal_notification(method) => vec![],
         _ => {
             let mut event = with_data("provider.unknown", &params, params.clone());
@@ -563,7 +630,6 @@ fn is_codex_internal_notification(method: &str) -> bool {
             | "process/exited"
             | "item/commandExecution/terminalInteraction"
             | "serverRequest/resolved"
-            | "item/reasoning/summaryPartAdded"
             | "mcpServer/oauthLogin/completed"
             | "mcpServer/startupStatus/updated"
             | "mcpServer/event/stream/notification"
@@ -1106,6 +1172,40 @@ mod tests {
         assert_eq!(events[0].text.as_deref(), Some("hello"));
     }
     #[test]
+    fn normalizes_codex_reasoning_deltas_with_stable_item_id() {
+        let mut state = CodexStreamState::default();
+        let _ = normalize_codex_message_with_state(
+            &json!({"method":"item/started","params":{"item":{"type":"reasoning","id":"reasoning-42"}}}),
+            &mut state,
+        );
+        let deltas = normalize_codex_message_with_state(
+            &json!({"method":"item/reasoning/textDelta","params":{"delta":"Thinking line 1\n"}}),
+            &mut state,
+        );
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].kind, "reasoning.delta");
+        assert_eq!(deltas[0].item_id.as_deref(), Some("reasoning-42"));
+        assert_eq!(deltas[0].text.as_deref(), Some("Thinking line 1\n"));
+
+        let summary = normalize_codex_message_with_state(
+            &json!({"method":"item/reasoning/summaryPartAdded","params":{"summary":"Step completed"}}),
+            &mut state,
+        );
+        assert_eq!(summary.len(), 1);
+        assert_eq!(summary[0].kind, "reasoning.delta");
+        assert_eq!(summary[0].item_id.as_deref(), Some("reasoning-42"));
+        assert_eq!(summary[0].text.as_deref(), Some("Step completed"));
+
+        let completed = normalize_codex_message_with_state(
+            &json!({"method":"item/completed","params":{"item":{"type":"reasoning","id":"reasoning-42","status":"completed"}}}),
+            &mut state,
+        );
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].kind, "reasoning.completed");
+        assert_eq!(completed[0].status.as_deref(), Some("completed"));
+        assert_eq!(state.active_reasoning_id, None);
+    }
+    #[test]
     fn normalizes_tool_without_leaking_provider_type() {
         let events = normalize_codex_message(
             &json!({"method":"item/started","params":{"item":{"type":"mcpToolCall","id":"t1","tool":"search","status":"inProgress"}}}),
@@ -1125,7 +1225,7 @@ mod tests {
     fn codex_internal_notifications_do_not_become_unknown_events() {
         for method in [
             "hook/started",
-            "item/reasoning/summaryPartAdded",
+            "hook/completed",
             "item/commandExecution/terminalInteraction",
             "mcpServer/event/stream/notification",
             "fs/changed",

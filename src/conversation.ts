@@ -247,8 +247,18 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
   const internalCompactionMessageKeys = new Set<string>();
   let compactionMaintenanceActive = false;
   for (const event of [...events].sort((a, b) => a.sequence - b.sequence)) {
-    if (event.kind === "provider.unknown" || event.kind.startsWith("session.") || event.kind.startsWith("turn.") || event.kind === "usage.updated") continue;
-    const itemKey = event.itemId ?? `${event.kind}:${event.id}`;
+    if (event.kind === "provider.unknown" || event.kind === "usage.updated") continue;
+    if (event.kind.startsWith("turn.") || event.kind.startsWith("session.")) {
+      if (event.kind === "turn.completed" || event.kind === "turn.failed" || event.kind === "session.idle") {
+        for (const item of items.values()) {
+          if (item.type === "reasoning" && item.status === "streaming") {
+            item.status = "completed";
+          }
+        }
+      }
+      continue;
+    }
+    const itemKey = event.itemId ?? (event.kind.startsWith("reasoning.") ? "reasoning:live" : `${event.kind}:${event.id}`);
     if (event.kind === "compaction.requested") compactionMaintenanceActive = true;
     if (event.kind.startsWith("message.")
       && (compactionMaintenanceActive || isInternalCompactionEnvelope(event.text ?? "", event.data))) {
@@ -260,8 +270,9 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
     if (event.kind === "message.delta" || event.kind === "reasoning.delta") {
       if (!event.text) continue;
       const type = event.kind.startsWith("message") ? "message" : "reasoning";
-      const existing = items.get(itemKey) ?? { key:itemKey, type, eventId:event.id, role:event.role ?? undefined, status:"streaming", text:"", data:{}, sequence:event.sequence };
-      existing.text += event.text ?? ""; existing.status = "streaming"; existing.eventId = event.id; items.set(itemKey, existing); continue;
+      const key = type === "reasoning" ? (event.itemId ?? "reasoning:live") : itemKey;
+      const existing = items.get(key) ?? { key, type, eventId:event.id, role:event.role ?? undefined, status:"streaming", text:"", data:{}, sequence:event.sequence };
+      existing.text += event.text ?? ""; existing.status = "streaming"; existing.eventId = event.id; items.set(key, existing); continue;
     }
     if (event.kind.endsWith(".output_delta") || event.kind === "diff.delta" || event.kind === "tool.progress") {
       const type: ConversationItemType = event.kind.startsWith("diff") ? "diff" : "activity";
@@ -307,7 +318,31 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
       continue;
     }
     const type: ConversationItemType = event.kind.startsWith("message.") ? "message" : event.kind.startsWith("reasoning.") ? "reasoning" : event.kind.startsWith("diff.") || event.kind.startsWith("file_change.") ? "diff" : event.kind.startsWith("artifact.") ? "artifact" : event.kind === "error" ? "error" : "activity";
-    if (type === "reasoning" && !(event.text || stringList(event.data.summary))) continue;
+    if (type === "reasoning") {
+      let target = items.get(itemKey);
+      if (!target) {
+        for (const candidate of items.values()) {
+          if (candidate.type === "reasoning" && candidate.status === "streaming") {
+            target = candidate;
+            break;
+          }
+        }
+      }
+      if (target) {
+        target.status = event.status ?? "completed";
+        if (event.text) target.text = event.text;
+        else if (stringList(event.data?.summary)) target.text = stringList(event.data.summary);
+        target.data = { ...target.data, ...event.data };
+        target.eventId = event.id;
+        if (event.itemId && target.key !== event.itemId) {
+          items.delete(target.key);
+          target.key = event.itemId;
+          items.set(target.key, target);
+        }
+        continue;
+      }
+      if (!(event.text || stringList(event.data?.summary))) continue;
+    }
     if (type === "message" && !event.text && !items.has(itemKey)) continue;
     const existing = items.get(itemKey);
     const next: ConversationItem = existing ?? { key:itemKey, type, eventId:event.id, role:event.role ?? undefined, status:event.status ?? undefined, title:event.title ?? undefined, text:"", data:{}, sequence:event.sequence };
