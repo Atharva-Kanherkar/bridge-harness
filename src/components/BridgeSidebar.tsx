@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronRight, ClipboardList, Folder, FolderGit2, FolderPlus, GitBranch, Home, LayoutGrid, Pin, Search, Settings2, SquarePen, Store, type LucideIcon } from "lucide-react";
+import { ChevronRight, ClipboardList, Folder, FolderGit2, FolderPlus, GitBranch, Home, LayoutGrid, Pin, Plus, Search, Settings2, SquarePen, Store, type LucideIcon } from "lucide-react";
 import { WindowNavButtons, WindowPanelButton } from "./WindowNavButtons";
 import type { Session, SessionStatus, Workspace } from "../types";
 import { chordLabel, type CommandId } from "../keymap";
@@ -107,6 +107,7 @@ function GroupLabel({
   active,
   icon: Icon,
   onToggle,
+  action,
 }: {
   label: string;
   count: number;
@@ -114,28 +115,34 @@ function GroupLabel({
   active: boolean;
   icon?: LucideIcon;
   onToggle: () => void;
+  action?: React.ReactNode;
 }) {
   return (
-    <button
-      type="button"
-      onClick={onToggle}
-      aria-expanded={!folded}
-      title={folded ? `Show ${label}` : `Hide ${label}`}
+    <div
       className={cn(
-        "flex h-7 w-full items-center gap-2 rounded-md px-2 text-left text-[13px] tracking-[-0.008em] text-foreground/90 transition-colors",
+        "group flex h-7 w-full items-center gap-2 rounded-md pl-2 pr-1 text-left text-[13px] tracking-[-0.008em] text-foreground/90 transition-colors",
         active ? "bg-accent font-medium text-foreground" : "hover:bg-accent/70 hover:text-foreground",
       )}
     >
-      <ChevronRight
-        size={11}
-        strokeWidth={2}
-        aria-hidden="true"
-        className={cn("shrink-0 text-muted-foreground/60 transition-transform", !folded && "rotate-90")}
-      />
-      {Icon && <Icon size={14} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />}
-      <span className="min-w-0 truncate">{label}</span>
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={!folded}
+        title={folded ? `Show ${label}` : `Hide ${label}`}
+        className="flex h-full min-w-0 flex-1 items-center gap-2 text-left"
+      >
+        <ChevronRight
+          size={11}
+          strokeWidth={2}
+          aria-hidden="true"
+          className={cn("shrink-0 text-muted-foreground/60 transition-transform", !folded && "rotate-90")}
+        />
+        {Icon && <Icon size={14} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />}
+        <span className="min-w-0 truncate">{label}</span>
+      </button>
       <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground/60">{count}</span>
-    </button>
+      {action}
+    </div>
   );
 }
 
@@ -252,6 +259,9 @@ export type BridgeSidebarProps = {
   mobileOpen?: boolean;
   onCloseMobile?: () => void;
   onOpenNewChat: () => void;
+  /** Per-project "+" on a project group header, grouped-by-project only —
+   * skips the picker step since the group already names the workspace. */
+  onNewChatInProject?: (workspaceId: string) => void;
   onOpenProjects: () => void;
   onOpenMarketplace: () => void;
   onOpenMissionControl: () => void;
@@ -286,6 +296,7 @@ export function BridgeSidebar({
   mobileOpen = false,
   onCloseMobile,
   onOpenNewChat,
+  onNewChatInProject,
   onOpenProjects,
   onOpenMarketplace,
   onOpenMissionControl,
@@ -549,6 +560,7 @@ export function BridgeSidebar({
             // Folding needs a header to unfold from, so the icon rail never folds.
             const folded = !collapsed && !!group.label && foldedGroups.has(group.key);
             const rows = folded ? [] : capped ? group.chats.slice(0, GROUP_ROW_CAP) : group.chats;
+            const isProjectGroup = view.groupBy === "project" && group.key !== NO_PROJECT_GROUP_KEY;
             const projectIcon = view.groupBy === "project"
               ? (group.key === NO_PROJECT_GROUP_KEY ? Home : Folder)
               : undefined;
@@ -560,6 +572,17 @@ export function BridgeSidebar({
                     count={group.chats.length}
                     folded={folded}
                     active={group.chats.some(chat => chat.id === activeSessionId)}
+                    action={isProjectGroup && onNewChatInProject && (
+                      <button
+                        type="button"
+                        onClick={() => onNewChatInProject(group.key)}
+                        title={`New chat in ${group.label}`}
+                        aria-label={`New chat in ${group.label}`}
+                        className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+                      >
+                        <Plus size={12} strokeWidth={1.7} aria-hidden="true" />
+                      </button>
+                    )}
                     icon={projectIcon}
                     onToggle={() => toggleFold(group.key)}
                   />
