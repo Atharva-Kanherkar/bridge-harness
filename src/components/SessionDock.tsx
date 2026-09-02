@@ -146,7 +146,11 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
                     title={`${pane.label}  ⌥⌘${index + 1}${pane.available ? "" : ` — ${pane.unavailableReason ?? "unavailable"}`}`}
                     onClick={() => onAction({ type: "open-pane", pane: pane.id })}
                     className={cn(
-                      "relative flex h-6 shrink-0 items-center gap-1.5 rounded-md px-1.5 text-[11px] font-medium transition-colors",
+                      "relative flex h-6 shrink-0 items-center gap-1.5 rounded-md text-[11px] font-medium transition-colors",
+                      // Icon-only mode is the narrow one, and the badges still
+                      // ride along, so the tabs give up a little padding there
+                      // to keep the last one inside the strip at the minimum width.
+                      showActiveLabel ? "px-1.5" : "px-1",
                       active ? "bg-card text-foreground" : "text-muted-foreground hover:text-foreground",
                       !pane.available && !active && "opacity-40",
                     )}
