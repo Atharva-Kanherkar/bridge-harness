@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { attachmentUris, compactionReasonLabel, delegationChildSessionId, undeliveredPending, delegationFacet, foldWorkerDelegations, isInternalCompactionEnvelope, projectSessionConversation, reduceConversation, selectActiveBranch, toolCallDisplay, type ConversationItem } from "./conversation";
+import { attachmentUris, compactionReasonLabel, delegationChildSessionId, undeliveredPending, delegationFacet, foldWorkerDelegations, isInternalCompactionEnvelope, itemIdentity, projectSessionConversation, reasoningDisplayText, reduceConversation, selectActiveBranch, toolCallDisplay, workerResultSummary, type ConversationItem } from "./conversation";
 import type { AgentEvent, SessionEntry } from "./types";
 
 const event = (id:number,kind:string,overrides:Partial<AgentEvent>={}):AgentEvent => ({ id,sessionId:"s",sequence:id,protocolVersion:1,kind,itemId:null,role:null,status:null,title:null,text:null,data:{},providerMeta:{},createdAt:"now",...overrides });
@@ -39,6 +39,37 @@ describe("normalized conversation reducer",()=>{
     expect(items[0].text).toBe("Finished the work.\nReview the summary.");
     expect(items[0].text).not.toContain("bridge-worker-result");
     expect(source.text).toBe(raw);
+  });
+  it("strips any bridge fence on both live and durable paths",()=>{
+    const raw = "Delegating now.\n```bridge-delegate\n{\"role\":\"implementation\"}\n```\nWatch the panel.";
+    const live = reduceConversation([event(1,"message.completed",{itemId:"m",role:"assistant",text:raw,status:"completed"})]);
+    const durable = projectSessionConversation([entry("e1",null,"assistant.message",{text:raw,role:"assistant"},1)],"e1");
+    expect(live[0].text).toBe("Delegating now.\nWatch the panel.");
+    expect(durable[0].text).toBe("Delegating now.\nWatch the panel.");
+  });
+  it("coalesces Codex summary-only reasoning into the same card",()=>{
+    const items = reduceConversation([
+      event(1,"reasoning.started",{itemId:"r",text:"",status:"inProgress"}),
+      event(2,"reasoning.completed",{itemId:"r",text:"",status:"completed",data:{summary:"the rest of the thought"}}),
+    ]);
+    expect(items[0].text).toBe("the rest of the thought");
+  });
+  it("shares a stable identity across live and durable twins",()=>{
+    const live = reduceConversation([event(9,"command.started",{itemId:"tool-1",status:"inProgress",data:{itemId:"tool-1"}})])[0];
+    const durable = projectSessionConversation([entry("e1",null,"command.started",{itemId:"tool-1",status:"inProgress",data:{itemId:"tool-1"}},1)],"e1")[0];
+    expect(itemIdentity(live)).toBe("tool-1");
+    expect(itemIdentity(durable)).toBe("tool-1");
+    expect(live.identity).toBe(durable.identity);
+    expect(live.eventId).not.toBe(durable.eventId);
+  });
+  it("keeps the spawn objective when a result is stamped [worker result]",()=>{
+    expect(workerResultSummary("[worker result] shipped")).toBe("shipped");
+    expect(reasoningDisplayText(undefined, { summary: "Codex summary" })).toBe("Codex summary");
+    const spawn = reduceConversation([event(1,"delegation.spawned",{itemId:"spawn-x",role:"system",text:"add rotation",data:{childSessionId:"x"}})])[0];
+    const result = reduceConversation([event(2,"delegation.result",{itemId:"result-x",role:"system",text:"[worker result] done",data:{childSessionId:"x",delivered:true}})])[0];
+    const folded = foldWorkerDelegations([spawn, result]);
+    expect(folded[0].text).toBe("add rotation");
+    expect(folded[0].data.delivered).toBe(true);
   });
   it("reduces Codex reasoning deltas and transitions to completed upon item/completed", () => {
     const items = reduceConversation([
@@ -123,7 +154,7 @@ describe("session forest conversation projection",()=>{
     const previous=entry("previous",null,"assistant.message",{text:"stable"},1,{semanticSchemaVersion:1});
     const currentItem=projectSessionConversation([current],"current")[0];
     const previousItem=projectSessionConversation([previous],"previous")[0];
-    expect({...currentItem,key:"entry",entryId:"entry"}).toEqual({...previousItem,key:"entry",entryId:"entry"});
+    expect({...currentItem,key:"entry",entryId:"entry",identity:"id"}).toEqual({...previousItem,key:"entry",entryId:"entry",identity:"id"});
   });
 
   it("fails closed on an unsupported future semantic event schema",()=>{

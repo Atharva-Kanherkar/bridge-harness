@@ -61,22 +61,16 @@ describe("ComposerContextStrip", () => {
     const text = container.textContent ?? "";
     expect(text).toContain("bridge-harness");
     expect(text).toContain("feat/cursor-sidebar-dev");
-    expect(text).toContain("On branch");
+    expect(text).toContain("Work on branch");
     expect(text).toContain("This Mac");
     expect(container.querySelector('[aria-label="Chat context"]')).toBeTruthy();
   });
 
-  it("keeps Cloud and SSH visible but disabled", () => {
+  it("renders the host as a static label while only This Mac exists", () => {
     mount();
-    act(() => {
-      [...container.querySelectorAll("button")].find(button => button.textContent?.includes("This Mac"))!.click();
-    });
-    const menu = document.querySelector('[role="menu"][aria-label="Agent host"]')!;
-    const cloud = [...menu.querySelectorAll("button")].find(button => button.textContent?.includes("Cloud"))!;
-    const ssh = [...menu.querySelectorAll("button")].find(button => button.textContent?.includes("SSH"))!;
-    expect(cloud.disabled).toBe(true);
-    expect(ssh.disabled).toBe(true);
-    expect(menu.textContent).toContain("Not wired up yet");
+    const host = [...container.querySelectorAll("span, button")].find(node => node.textContent?.trim() === "This Mac" || node.textContent?.includes("This Mac"));
+    expect(host?.tagName).not.toBe("BUTTON");
+    expect(document.querySelector('[role="menu"][aria-label="Agent host"]')).toBeNull();
   });
 
   it("locks the repo menu and worktree chip after the first turn", () => {
@@ -93,7 +87,7 @@ describe("ComposerContextStrip", () => {
   it("toggles worktree while unlocked and a repo can isolate", () => {
     const { onToggleWorktree } = mount();
     act(() => {
-      [...container.querySelectorAll("button")].find(button => button.textContent?.includes("On branch"))!.click();
+      [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Work on branch"))!.click();
     });
     expect(onToggleWorktree).toHaveBeenCalledOnce();
   });

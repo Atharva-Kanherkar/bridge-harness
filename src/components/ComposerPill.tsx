@@ -26,6 +26,8 @@ export type ComposerPillProps = {
   /// during a turn, for surfaces that genuinely cannot be steered.
   activeAction?: "steer" | "queue";
   onStop?: () => void;
+  /// Immediate feedback after Stop until the turn actually clears.
+  stopping?: boolean;
   onPlusClick?: () => void;
   /// What the `+` control does on this surface, as the user reads it. A control
   /// whose label and behaviour disagree is worse than no control, so the label
@@ -72,6 +74,7 @@ export function ComposerPill({
   working,
   activeAction,
   onStop,
+  stopping = false,
   onPlusClick,
   plusLabel = "Attach a file",
   plusUnavailableReason,
@@ -251,12 +254,13 @@ export function ComposerPill({
               {/* Stop and submit are separate actions, and while a turn is running
                   both are present: sending guidance must never read as cancelling
                   the work. */}
-              {working && onStop && (
+              {(working || stopping) && onStop && (
                 <button
                   type="button"
                   onClick={onStop}
-                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-input bg-card text-foreground transition-colors duration-150 active:scale-95 hover:bg-accent"
-                  aria-label="Stop"
+                  disabled={stopping}
+                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-input bg-card text-foreground transition-colors duration-150 active:scale-95 hover:bg-accent disabled:opacity-70"
+                  aria-label={stopping ? "Stopping…" : "Stop"}
                 >
                   <Square className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
                 </button>

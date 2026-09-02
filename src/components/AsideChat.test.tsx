@@ -190,9 +190,14 @@ describe("AsideChat", () => {
     expect(onSend).toHaveBeenCalledTimes(1);
     expect(dialog().textContent).toContain("Sending…");
     await act(async () => {
+      setter.call(box, "queued follow-up");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
       box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     });
     expect(onSend).toHaveBeenCalledTimes(1);
+    expect(dialog().textContent).toContain("1 follow-up queued");
 
     await act(async () => { rejectSend?.(new Error("provider refused the send")); });
     expect(box.value).toBe("keep this retry");
@@ -239,6 +244,53 @@ describe("AsideChat", () => {
     expect(attachments![0].mediaType).toBe("image/png");
     // The chip clears once the send that carried it has gone out.
     expect(container.querySelectorAll("img")).toHaveLength(0);
+  });
+
+  it("offers the same @ mention typeahead as the main composer", async () => {
+    await mount({ workspaceFiles: ["src/App.tsx", "src/api.ts"] });
+    const box = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(box, "@App");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(dialog().textContent).toContain("Reference a file");
+    expect(dialog().textContent).toContain("src/App.tsx");
+    await act(async () => {
+      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    expect(box.value).toBe("@src/App.tsx ");
+  });
+
+  it("completes slash and $harness tokens without sending", async () => {
+    const onSend = vi.fn(async () => undefined);
+    await mount({
+      onSend,
+      slashCommands: [{ name: "review", description: "Review the current change", harness: "claude", kind: "prompt" }],
+    });
+    const box = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(box, "/rev");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(dialog().textContent).toContain("Commands & skills");
+    await act(async () => {
+      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true }));
+    });
+    expect(box.value).toBe("/review ");
+    expect(onSend).not.toHaveBeenCalled();
+
+    await act(async () => {
+      setter.call(box, "$cl");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    expect(dialog().textContent).toContain("Talk to a harness directly");
+    await act(async () => {
+      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    expect(box.value).toBe("$claude ");
+    expect(onSend).not.toHaveBeenCalled();
   });
 
   it("polls the forest by digest instead of refetching the full snapshot on every streamed event", async () => {

@@ -56,7 +56,7 @@ const byLabel = (label: string) => [...container.querySelectorAll<HTMLButtonElem
 const composerField = () => [...container.querySelectorAll<HTMLTextAreaElement>("textarea")]
   .find(field => field.placeholder.startsWith("Ask Bridge"));
 const worktreeToggle = () => [...container.querySelectorAll<HTMLButtonElement>("button")]
-  .find(button => /On branch|Isolated worktree/.test(button.textContent ?? ""));
+  .find(button => /Work on branch|Isolated worktree/.test(button.textContent ?? ""));
 
 async function type(field: HTMLTextAreaElement, text: string) {
   const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;

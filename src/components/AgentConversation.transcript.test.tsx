@@ -95,7 +95,7 @@ describe("inline diffs", () => {
     mount([event(1, "file_change.completed", { title: "lib.rs", data: { path: "src-tauri/src/lib.rs", additions: 1, deletions: 0 } })]);
     // Nothing to show inline, so the group stays folded the way it always did.
     expect(host.textContent).not.toContain("src-tauri/src/lib.rs");
-    expect(buttonWith("Edited files")).toBeDefined();
+    expect(buttonWith("Edited 1 file")).toBeDefined();
   });
 });
 
@@ -109,7 +109,7 @@ describe("command rows", () => {
 
   async function openGroup(events: AgentEvent[]) {
     mount(events);
-    act(() => buttonWith("Ran commands")!.click());
+    act(() => buttonWith("Ran 1 command")!.click());
   }
 
   it("renders a zero exit code as a success chip", async () => {
@@ -175,15 +175,16 @@ describe("three layers", () => {
     expect(text.split("Explored")).toHaveLength(3);
   });
 
-  it("coalesces tool calls across interleaved plan updates into a single ActivityGroup", () => {
+  it("keeps plans in stream order instead of lifting them ahead of earlier activity", () => {
     mount([
       event(1, "command.completed", { title: "bun test", data: { type: "commandExecution", command: "bun test" } }),
       event(2, "plan.updated", { title: "Next step", data: { steps: [{ step: "Run tests", status: "completed" }] } }),
       event(3, "command.completed", { title: "bun run check", data: { type: "commandExecution", command: "bun run check" } }),
     ]);
-    const buttons = [...host.querySelectorAll("button")].filter(btn => btn.textContent?.includes("Ran commands"));
-    expect(buttons).toHaveLength(1);
-    expect(host.textContent).toContain("Next step");
+    const text = host.textContent ?? "";
+    expect(text.indexOf("Ran 1 command")).toBeLessThan(text.indexOf("Next step"));
+    expect(text.indexOf("Next step")).toBeLessThan(text.lastIndexOf("Ran 1 command"));
+    expect([...host.querySelectorAll("button")].filter(btn => btn.textContent?.includes("Ran 1 command"))).toHaveLength(2);
   });
 
   it("preserves multiple distinct plan items without dropping", () => {
@@ -203,7 +204,7 @@ describe("three layers", () => {
       event(2, "reasoning.completed", { itemId: "r-after", text: "Post-execution thought reflection", status: "completed" }),
     ]);
     const fullText = host.textContent ?? "";
-    const commandIndex = fullText.indexOf("Ran commands");
+    const commandIndex = fullText.indexOf("Ran 1 command");
     const reasoningIndex = fullText.indexOf("Thought for a moment");
     expect(commandIndex).toBeGreaterThan(-1);
     expect(reasoningIndex).toBeGreaterThan(commandIndex);
@@ -215,8 +216,8 @@ describe("three layers", () => {
       event(1, "command.completed", { title: "cat src/auth.rs", data: { type: "commandExecution", command: "cat src/auth.rs" } }),
       event(2, "command.completed", { title: "git status", data: { type: "commandExecution", command: "git status" } }),
     ]);
-    expect(host.textContent).toContain("Read files");
-    act(() => buttonWith("Read files")!.click());
+    expect(host.textContent).toContain("Read 2 files");
+    act(() => buttonWith("Read 2 files")!.click());
     expect(host.textContent).toContain("Explored");
     expect(host.textContent).toContain("Read auth.rs");
     expect(host.textContent).toContain("Checked git status");

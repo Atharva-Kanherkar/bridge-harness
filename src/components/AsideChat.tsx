@@ -1,21 +1,23 @@
-import type { ClipboardEvent } from "react";
-import { useEffect, useRef, useState } from "react";
+import type { ClipboardEvent, KeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { ArrowUpRight, X } from "lucide-react";
+import { ArrowUpRight, FileText, X } from "lucide-react";
 import { AgentConversation } from "./AgentConversation";
 import { ComposerPill } from "./ComposerPill";
 import { ChatModelControl } from "./ChatModelControl";
 import { HarnessMark, harnessTintClass } from "./harnessMarks";
-import { harnessLabel } from "../utils";
+import { harnessLabel, slashOwnershipBadge } from "../utils";
 import { bridgeApi } from "../api";
 import { mergeForestSnapshot } from "../forest";
 import { startSerialPoll } from "../polling";
-import { appendFileMention } from "../fileMentions";
+import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "../fileMentions";
+import { harnessShortcutQuery } from "../harnessShortcut";
+import { scheduleSuggestion } from "../suggestionTypeahead";
 import { activeTurnAction } from "../sessionInput";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "../pasteAttachments";
 import { cn } from "@/lib/utils";
-import type { AdapterDescriptor, AgentEvent, ApprovalDecision, Harness, Session, SessionForestSnapshot } from "../types";
-import type { InteractionResolutionResult, QuestionAction } from "../protocol/generated/protocol";
+import type { AdapterDescriptor, AgentEvent, ApprovalDecision, Harness, Session, SessionForestSnapshot, SlashCommand } from "../types";
+import type { InteractionResolutionResult, QuestionAction, SuggestCompletionResult, SuggestionSettingsSnapshot } from "../protocol/generated/protocol";
 
 // An aside: a standalone chat the user delegated to another agent from inside
 // a conversation, shown as a panel floating over that conversation instead of
@@ -25,7 +27,7 @@ import type { InteractionResolutionResult, QuestionAction } from "../protocol/ge
 // real chat in the sidebar after the panel closes. The panel is the delegation
 // surface, not the session's home; reopening later is ordinary navigation.
 
-export function AsideChat({ session, adapters, events, pendingMessages, working, modelSwitch = null, lifecycle, initialDraft, onSend, onChangeModel, onResolve, onAnswerQuestion = async () => undefined, onRetryCompaction, onPromote, onClose }: {
+export function AsideChat({ session, adapters, events, pendingMessages, working, modelSwitch = null, lifecycle, initialDraft, workspaceFiles = [], slashCommands = [], onSend, onChangeModel, onResolve, onAnswerQuestion = async () => undefined, onRetryCompaction, onPromote, onClose }: {
   session: Session;
   /** The chat adapters, for the header model picker. */
   adapters: AdapterDescriptor[];
@@ -33,6 +35,10 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   events: AgentEvent[];
   pendingMessages: string[];
   working: boolean;
+  /** Workspace paths for the same `@` mention typeahead the main composer uses. */
+  workspaceFiles?: string[];
+  /** Slash commands already loaded by the host; the aside does not refetch them. */
+  slashCommands?: SlashCommand[];
   /** This aside's model switch in flight, for the same "Switching to …"
    *  narration the main conversation shows. */
   modelSwitch?: { harness: string; label: string } | null;
@@ -56,13 +62,121 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [composerError, setComposerError] = useState<string>();
   const [sending, setSending] = useState(false);
+  const [queuedFollowUps, setQueuedFollowUps] = useState<string[]>([]);
+  const queuedFollowUpsRef = useRef<string[]>([]);
+  const [slashIndex, setSlashIndex] = useState(0);
+  const [slashDismissed, setSlashDismissed] = useState(false);
+  const [mentionIndex, setMentionIndex] = useState(0);
+  const [mentionDismissed, setMentionDismissed] = useState(false);
+  const [harnessShortcutIndex, setHarnessShortcutIndex] = useState(0);
+  const [harnessShortcutDismissed, setHarnessShortcutDismissed] = useState(false);
+  const [suggestionSettings, setSuggestionSettings] = useState<SuggestionSettingsSnapshot>();
+  const [draftSuggestion, setDraftSuggestion] = useState<SuggestCompletionResult>();
+  const suggestionGeneration = useRef(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const slashListRef = useRef<HTMLDivElement>(null);
+  const mentionListRef = useRef<HTMLDivElement>(null);
+  const harnessShortcutListRef = useRef<HTMLDivElement>(null);
   const forestKeyRef = useRef("");
+  const typeaheadOpenRef = useRef(false);
   const ownEvents = events.filter(event => event.sessionId === session.id);
+
+  const slashQuery = /^\/([^\s]*)$/.exec(draft)?.[1];
+  const slashMatches = useMemo(() => {
+    if (slashQuery == null) return [];
+    const query = slashQuery.toLowerCase();
+    return slashCommands
+      .filter(command => !query || command.name.toLowerCase().includes(query) || command.description.toLowerCase().includes(query))
+      .sort((a, b) => {
+        const aName = a.name.toLowerCase();
+        const bName = b.name.toLowerCase();
+        const aPrefix = query ? Number(aName.startsWith(query)) : 0;
+        const bPrefix = query ? Number(bName.startsWith(query)) : 0;
+        if (aPrefix !== bPrefix) return bPrefix - aPrefix;
+        const aHarness = Number(a.harness === session.harness);
+        const bHarness = Number(b.harness === session.harness);
+        if (aHarness !== bHarness) return bHarness - aHarness;
+        return aName.localeCompare(bName);
+      });
+  }, [slashQuery, slashCommands, session.harness]);
+  const slashOpen = slashQuery != null && slashMatches.length > 0 && !slashDismissed;
+
+  const mentionQuery = fileMentionQuery(draft);
+  const workspaceFileOptions = useMemo(() => workspaceFiles.map(path => {
+    const lowerPath = path.toLowerCase();
+    return { path, lowerPath, lowerBase: lowerPath.split("/").pop() ?? lowerPath };
+  }), [workspaceFiles]);
+  const fileMatches = useMemo(() => {
+    if (mentionQuery == null) return [];
+    const query = mentionQuery.toLowerCase();
+    return workspaceFileOptions
+      .filter(file => !query || file.lowerPath.includes(query))
+      .sort((a, b) => {
+        const aPrefix = query ? Number(a.lowerBase.startsWith(query) || a.lowerPath.startsWith(query)) : 0;
+        const bPrefix = query ? Number(b.lowerBase.startsWith(query) || b.lowerPath.startsWith(query)) : 0;
+        if (aPrefix !== bPrefix) return bPrefix - aPrefix;
+        return a.path.length - b.path.length || a.path.localeCompare(b.path);
+      })
+      .slice(0, 50)
+      .map(file => file.path);
+  }, [mentionQuery, workspaceFileOptions]);
+  const mentionOpen = mentionQuery != null && fileMatches.length > 0 && !mentionDismissed;
+
+  const harnessShortcutQueryValue = harnessShortcutQuery(draft);
+  const harnessShortcutMatches = useMemo(() => {
+    if (harnessShortcutQueryValue == null) return [];
+    const query = harnessShortcutQueryValue.toLowerCase();
+    return adapters
+      .filter(adapter => adapter.available && adapter.id.toLowerCase().includes(query))
+      .sort((a, b) => {
+        const aPrefix = Number(a.id.toLowerCase().startsWith(query));
+        const bPrefix = Number(b.id.toLowerCase().startsWith(query));
+        if (aPrefix !== bPrefix) return bPrefix - aPrefix;
+        return a.id.localeCompare(b.id);
+      });
+  }, [harnessShortcutQueryValue, adapters]);
+  const harnessShortcutOpen = harnessShortcutQueryValue != null && harnessShortcutMatches.length > 0 && !harnessShortcutDismissed;
+  typeaheadOpenRef.current = mentionOpen || slashOpen || harnessShortcutOpen;
 
   useEffect(() => {
     if (initialDraft) setDraft(current => current || initialDraft);
   }, [initialDraft]);
+
+  useEffect(() => { void bridgeApi.getSuggestionSettings().then(setSuggestionSettings).catch(() => undefined); }, []);
+
+  useEffect(() => scheduleSuggestion({
+    text: draft,
+    enabled: !!suggestionSettings?.settings.enabled,
+    request: bridgeApi.suggestCompletion,
+    onResult: setDraftSuggestion,
+    generation: suggestionGeneration,
+  }), [draft, suggestionSettings?.settings.enabled, suggestionSettings?.settings.provider, suggestionSettings?.settings.model]);
+
+  useEffect(() => {
+    if (!mentionOpen) return;
+    setMentionIndex(index => Math.min(index, Math.max(0, fileMatches.length - 1)));
+  }, [mentionOpen, fileMatches.length]);
+
+  useEffect(() => {
+    if (!mentionOpen) return;
+    const root = mentionListRef.current;
+    if (!root) return;
+    root.querySelector<HTMLElement>(`[data-mention-index="${mentionIndex}"]`)?.scrollIntoView?.({ block: "nearest" });
+  }, [mentionOpen, mentionIndex]);
+
+  useEffect(() => {
+    if (!slashOpen) return;
+    const root = slashListRef.current;
+    if (!root) return;
+    root.querySelector<HTMLElement>(`[data-slash-index="${slashIndex}"]`)?.scrollIntoView?.({ block: "nearest" });
+  }, [slashOpen, slashIndex]);
+
+  useEffect(() => {
+    if (!harnessShortcutOpen) return;
+    const root = harnessShortcutListRef.current;
+    if (!root) return;
+    root.querySelector<HTMLElement>(`[data-harness-shortcut-index="${harnessShortcutIndex}"]`)?.scrollIntoView?.({ block: "nearest" });
+  }, [harnessShortcutOpen, harnessShortcutIndex]);
 
   // The durable side of the transcript: without it the handoff brief the aside
   // was created around is invisible, because the brief is a forest entry and
@@ -96,8 +210,11 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   }, [session.id]);
 
   useEffect(() => {
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { event.preventDefault(); onClose(); }
+    const onKeyDown = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      if (typeaheadOpenRef.current) return;
+      event.preventDefault();
+      onClose();
     };
     window.addEventListener("keydown", onKeyDown);
     inputRef.current?.focus();
@@ -105,16 +222,25 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   }, [onClose]);
 
   async function send() {
-    if (sending) return;
     const text = draft.trim();
     const sentAttachments = attachments;
     if (!text && sentAttachments.length === 0) return;
+    if (sending) {
+      queuedFollowUpsRef.current = [...queuedFollowUpsRef.current, text];
+      setQueuedFollowUps(queuedFollowUpsRef.current);
+      setDraft("");
+      return;
+    }
     setSending(true);
     setComposerError(undefined);
     setDraft("");
     setAttachments([]);
     try {
       await onSend(text, sentAttachments);
+      const queued = queuedFollowUpsRef.current;
+      queuedFollowUpsRef.current = [];
+      setQueuedFollowUps([]);
+      for (const followUp of queued) await onSend(followUp, []);
     } catch (error) {
       setDraft(text);
       setAttachments(sentAttachments);
@@ -154,6 +280,46 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   // file dialog inside the desktop shell, turning picks into `@path`
   // mentions. Outside Tauri there is no dialog and the aside has no mention
   // picker of its own, so it drops a bare `@` for the user to keep typing.
+  function applySlash(command: SlashCommand) {
+    setDraft(`/${command.name} `);
+    setSlashIndex(0);
+    setSlashDismissed(true);
+  }
+
+  function applyMention(path: string) {
+    setDraft(current => insertFileMention(current, path));
+    setMentionIndex(0);
+    setMentionDismissed(true);
+  }
+
+  function applyHarnessShortcut(adapter: AdapterDescriptor) {
+    setDraft(`$${adapter.id} `);
+    setHarnessShortcutIndex(0);
+    setHarnessShortcutDismissed(true);
+  }
+
+  function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.nativeEvent.isComposing) return;
+    if (mentionOpen) {
+      if (event.key === "ArrowDown") { event.preventDefault(); setMentionIndex(index => Math.min(index + 1, fileMatches.length - 1)); return; }
+      if (event.key === "ArrowUp") { event.preventDefault(); setMentionIndex(index => Math.max(index - 1, 0)); return; }
+      if (event.key === "Escape") { event.preventDefault(); setMentionDismissed(true); return; }
+      if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") { event.preventDefault(); applyMention(fileMatches[Math.min(mentionIndex, fileMatches.length - 1)]); return; }
+    }
+    if (harnessShortcutOpen) {
+      if (event.key === "ArrowDown") { event.preventDefault(); setHarnessShortcutIndex(index => Math.min(index + 1, harnessShortcutMatches.length - 1)); return; }
+      if (event.key === "ArrowUp") { event.preventDefault(); setHarnessShortcutIndex(index => Math.max(index - 1, 0)); return; }
+      if (event.key === "Escape") { event.preventDefault(); setHarnessShortcutDismissed(true); return; }
+      if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") { event.preventDefault(); applyHarnessShortcut(harnessShortcutMatches[Math.min(harnessShortcutIndex, harnessShortcutMatches.length - 1)]); return; }
+    }
+    if (slashOpen) {
+      if (event.key === "ArrowDown") { event.preventDefault(); setSlashIndex(index => Math.min(index + 1, slashMatches.length - 1)); return; }
+      if (event.key === "ArrowUp") { event.preventDefault(); setSlashIndex(index => Math.max(index - 1, 0)); return; }
+      if (event.key === "Escape") { event.preventDefault(); setSlashDismissed(true); return; }
+      if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") { event.preventDefault(); applySlash(slashMatches[Math.min(slashIndex, slashMatches.length - 1)]); return; }
+    }
+  }
+
   async function attachFile() {
     if (!("__TAURI_INTERNALS__" in window)) {
       setDraft(current => (current.length === 0 || /\s$/.test(current) ? `${current}@` : `${current} @`));
@@ -250,24 +416,84 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
           </p>}
           {lifecycle?.phase === "switching" && <p className="mb-2 px-1 text-[11px] text-muted-foreground">Preparing a handoff and switching models. This can take up to 30 seconds…</p>}
           {sending && <p className="mb-2 px-1 text-[11px] text-muted-foreground">Sending…</p>}
+          {queuedFollowUps.length > 0 && <p className="mb-2 px-1 text-[11px] text-muted-foreground" role="status">{queuedFollowUps.length} follow-up{queuedFollowUps.length === 1 ? "" : "s"} queued — sent when this send finishes</p>}
           {lifecycle?.error && !composerError && <p className="mb-2 px-1 text-[11px] text-destructive">{lifecycle.error} You can retry below.</p>}
           {composerError && <p className="mb-2 px-1 text-[11px] text-destructive">{composerError}</p>}
-          <ComposerPill
-            layout="dock"
-            className="mx-0 max-w-none px-0 pb-0 pt-0 sm:px-0 sm:pb-0"
-            value={draft}
-            onChange={setDraft}
-            onSubmit={() => void send()}
-            onPaste={handlePaste}
-            attachments={attachments}
-            onRemoveAttachment={id => setAttachments(current => current.filter(attachment => attachment.id !== id))}
-            placeholder={`Ask ${harnessLabel(session.harness)}…`}
-            disabled={sending}
-            working={working}
-            activeAction={activeTurnAction(adapters.find(adapter => adapter.id === session.harness)?.capabilities)}
-            onPlusClick={() => void attachFile()}
-            inputRef={inputRef}
-          />
+          <div className="relative">
+            {mentionOpen && <div id="aside-file-mention-listbox" role="listbox" className="u-glass-popover absolute inset-x-0 bottom-full z-20 mb-2 flex max-h-[min(320px,45vh)] flex-col overflow-hidden rounded-2xl">
+              <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">
+                <span>Reference a file</span>
+                <span className="normal-case tracking-normal text-muted-foreground/50">{fileMatches.length}</span>
+              </div>
+              <div ref={mentionListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+                {fileMatches.map((file, index) => {
+                  const dir = file.includes("/") ? file.slice(0, file.lastIndexOf("/") + 1) : "";
+                  const base = file.slice(dir.length);
+                  return <button id={`aside-file-mention-option-${index}`} role="option" aria-selected={index === mentionIndex} key={file} type="button" data-mention-index={index} onMouseEnter={() => setMentionIndex(index)} onMouseDown={e => { e.preventDefault(); applyMention(file); }} className={`flex min-h-11 w-full items-center gap-2 px-3 py-2 text-left transition-colors ${index === mentionIndex ? "bg-accent" : "hover:bg-accent"}`}>
+                    <FileText size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+                    <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[12px]"><span className="text-muted-foreground">{dir}</span><span className="text-foreground">{base}</span></span>
+                  </button>;
+                })}
+              </div>
+            </div>}
+            {slashOpen && <div id="aside-slash-listbox" role="listbox" className="u-glass-popover absolute inset-x-0 bottom-full z-20 mb-2 flex max-h-[min(320px,45vh)] flex-col overflow-hidden rounded-2xl">
+              <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">
+                <span>Commands & skills</span>
+                <span className="normal-case tracking-normal text-muted-foreground/50">{slashMatches.length}</span>
+              </div>
+              <div ref={slashListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+                {slashMatches.map((command, index) => <button id={`aside-slash-option-${index}`} key={`${command.harness}:${command.kind}:${command.name}`} type="button" role="option" aria-selected={index === slashIndex} data-slash-index={index} onMouseEnter={() => setSlashIndex(index)} onMouseDown={e => { e.preventDefault(); applySlash(command); }} className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors ${index === slashIndex ? "bg-accent" : "hover:bg-accent"}`}>
+                  <span className="whitespace-nowrap font-mono text-[12px] text-foreground">/{command.name}</span>
+                  <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-muted-foreground">{command.description}</span>
+                  <span className="shrink-0 rounded border border-border px-1 py-[1px] text-[8.5px] uppercase tracking-[0.06em] text-muted-foreground">{slashOwnershipBadge(command.harness)}</span>
+                </button>)}
+              </div>
+            </div>}
+            {harnessShortcutOpen && <div id="aside-harness-shortcut-listbox" role="listbox" className="u-glass-popover absolute inset-x-0 bottom-full z-20 mb-2 flex max-h-[min(320px,45vh)] flex-col overflow-hidden rounded-2xl">
+              <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">
+                <span>Talk to a harness directly</span>
+                <span className="normal-case tracking-normal text-muted-foreground/50">{harnessShortcutMatches.length}</span>
+              </div>
+              <div ref={harnessShortcutListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
+                {harnessShortcutMatches.map((adapter, index) => <button id={`aside-harness-shortcut-option-${index}`} key={adapter.id} type="button" role="option" aria-selected={index === harnessShortcutIndex} data-harness-shortcut-index={index} onMouseEnter={() => setHarnessShortcutIndex(index)} onMouseDown={e => { e.preventDefault(); applyHarnessShortcut(adapter); }} className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors ${index === harnessShortcutIndex ? "bg-accent" : "hover:bg-accent"}`}>
+                  <span className="whitespace-nowrap font-mono text-[12px] text-foreground">${adapter.id}</span>
+                  <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-muted-foreground">Starts a new {adapter.label} chat with what follows</span>
+                </button>)}
+              </div>
+            </div>}
+            <ComposerPill
+              layout="dock"
+              className="mx-0 max-w-none px-0 pb-0 pt-0 sm:px-0 sm:pb-0"
+              value={draft}
+              onChange={value => { setDraft(value); setSlashDismissed(false); setSlashIndex(0); setMentionDismissed(false); setMentionIndex(0); setHarnessShortcutDismissed(false); setHarnessShortcutIndex(0); }}
+              onSubmit={() => void send()}
+              onKeyDown={onComposerKeyDown}
+              onPaste={handlePaste}
+              attachments={attachments}
+              onRemoveAttachment={id => setAttachments(current => current.filter(attachment => attachment.id !== id))}
+              autocomplete={mentionOpen ? {
+                controls: "aside-file-mention-listbox",
+                activeDescendant: `aside-file-mention-option-${mentionIndex}`,
+              } : slashOpen ? {
+                controls: "aside-slash-listbox",
+                activeDescendant: `aside-slash-option-${slashIndex}`,
+              } : harnessShortcutOpen ? {
+                controls: "aside-harness-shortcut-listbox",
+                activeDescendant: `aside-harness-shortcut-option-${harnessShortcutIndex}`,
+              } : undefined}
+              suggestion={draftSuggestion?.suggestion}
+              onAcceptSuggestion={() => {
+                if (!draftSuggestion?.suggestion) return;
+                setDraft(current => `${current}${draftSuggestion.suggestion}`);
+                setDraftSuggestion(undefined);
+              }}
+              placeholder={`Ask ${harnessLabel(session.harness)}…`}
+              working={working}
+              activeAction={activeTurnAction(adapters.find(adapter => adapter.id === session.harness)?.capabilities)}
+              onPlusClick={() => void attachFile()}
+              inputRef={inputRef}
+            />
+          </div>
         </footer>
       </div>
     </div>
