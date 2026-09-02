@@ -22,6 +22,10 @@ export type SessionToolbarProps = {
    * header was the noise this strip exists to remove. Direct chats pass nothing
    * here — the composer already owns model choice for them. */
   modelControl?: ReactNode;
+  /** Persistent tier + effort + runtime label for the active session. Shown as a
+   *  muted secondary line next to the model picker for repo sessions, or as the
+   *  sole context indicator for direct chats that omit `modelControl`. */
+  tierLabel?: string | null;
   /** The standing bypass-approvals warning. Sits immediately before the
    * dock/recall/menu cluster, same spot AppTitleBar gave it. */
   bypassBadge?: ReactNode;
@@ -76,6 +80,7 @@ function toolButtonClass(active: boolean) {
 export function SessionToolbar({
   title,
   modelControl,
+  tierLabel,
   bypassBadge,
   actions,
   leading,
@@ -131,8 +136,19 @@ export function SessionToolbar({
         {title}
       </h1>
 
-      {modelControl && (
-        <div className="hidden shrink-0 lg:block">{modelControl}</div>
+      {(modelControl || tierLabel) && (
+        <div className="hidden shrink-0 items-center gap-2 lg:flex">
+          {modelControl}
+          {tierLabel && (
+            <span
+              className="max-w-[260px] truncate text-[10px] uppercase tracking-[0.06em] text-muted-foreground/55"
+              title={tierLabel}
+              data-testid="tier-label"
+            >
+              {tierLabel}
+            </span>
+          )}
+        </div>
       )}
 
       {bypassBadge}

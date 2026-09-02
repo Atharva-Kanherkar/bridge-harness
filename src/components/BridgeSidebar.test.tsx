@@ -193,7 +193,7 @@ describe("BridgeSidebar theming", () => {
       activeSessionId: "chat-1",
       chats: [session("chat-1", { workspaceId: "workspace-1" })],
     });
-    const repository = html.split("<button").find(chunk => chunk.includes('title="Hide harness"')) ?? "";
+    const repository = html.split("<div").find(chunk => chunk.includes('title="Hide harness"')) ?? "";
     expect(repository).toContain("bg-accent");
     expect(repository).not.toContain("bg-sidebar ");
   });
@@ -209,9 +209,11 @@ describe("BridgeSidebar theming", () => {
         session("chat-2", { title: "Deck polish", workspaceId: "workspace-2" }),
       ],
     });
-    const buttons = html.split("<button");
-    const active = buttons.find(chunk => chunk.includes('title="Hide harness"')) ?? "";
-    const idle = buttons.find(chunk => chunk.includes('title="Hide deck-shell"')) ?? "";
+    // The group header is a row wrapping a fold button and a per-project "+",
+    // so the fill lives on that row rather than on the button carrying the title.
+    const rows = html.split("<div");
+    const active = rows.find(chunk => chunk.includes('title="Hide harness"')) ?? "";
+    const idle = rows.find(chunk => chunk.includes('title="Hide deck-shell"')) ?? "";
     expect(active).toContain("bg-accent font-medium");
     expect(idle).not.toContain("bg-accent font-medium");
     expect(idle).toContain("hover:bg-accent/70");
@@ -224,7 +226,7 @@ describe("BridgeSidebar theming", () => {
       activeSessionId: "chat-1",
       chats: [session("chat-1", { workspaceId: "workspace-1" })],
     });
-    const repository = html.split("<button").find(chunk => chunk.includes('title="Hide harness"')) ?? "";
+    const repository = html.split("<div").find(chunk => chunk.includes('title="Hide harness"')) ?? "";
     expect(repository).not.toContain("sticky");
     expect(repository).not.toContain("top-0");
   });
@@ -327,6 +329,29 @@ describe("BridgeSidebar history", () => {
   it("never renders a cloud/sync badge", () => {
     expect(render()).not.toContain("Synced");
     expect(render()).not.toContain("aria-label=\"Synced\"");
+  });
+
+  it("offers a per-project new-chat action on a real project group", () => {
+    const html = render({
+      chats: [session("in-project", { title: "Inside harness", workspaceId: "workspace-1" })],
+      onNewChatInProject: noop,
+    });
+    expect(html).toContain('aria-label="New chat in harness"');
+  });
+
+  it("omits the per-project new-chat action without a handler, on No project, and off project grouping", () => {
+    const chats = [
+      session("plain", { title: "Japan relocation planning" }),
+      session("in-project", { title: "Inside harness", workspaceId: "workspace-1" }),
+    ];
+    expect(render({ chats })).not.toContain("New chat in");
+
+    localStorage.setItem(CHAT_VIEW_KEY, JSON.stringify({ status: "all", agent: "all", groupBy: "project", sortBy: "recency" }));
+    const noProjectHtml = render({ chats, onNewChatInProject: noop });
+    expect(noProjectHtml).not.toContain('aria-label="New chat in No project"');
+
+    localStorage.setItem(CHAT_VIEW_KEY, DATE_VIEW);
+    expect(render({ chats, onNewChatInProject: noop })).not.toContain("New chat in");
   });
 });
 

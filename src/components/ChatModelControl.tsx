@@ -44,9 +44,12 @@ export type ChatModelControlProps = {
    *  top row of a container that clips its overflow) must pass `"down"`, or
    *  the panel lands above the viewport and never becomes visible. */
   placement?: "up" | "down";
+  /** Active reasoning effort for the session. Shown alongside each model's
+   *  tier badge so the user can see effort at a glance while picking. */
+  effort?: string | null;
 };
 
-export function ChatModelControl({ adapters, harness, model, disabled, disabledReason, onChange, compact, roleLabel = "Chat", maxWidthClassName = "max-w-[220px]", placement = "up" }: ChatModelControlProps) {
+export function ChatModelControl({ adapters, harness, model, disabled, disabledReason, onChange, compact, roleLabel = "Chat", maxWidthClassName = "max-w-[220px]", placement = "up", effort }: ChatModelControlProps) {
   const [open, setOpen] = useState(false);
   // Escape closes the picker and nothing else. Captured on window so it wins
   // against modal hosts with their own window-level Escape (the aside panel
@@ -99,7 +102,10 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
             const selected = adapter.id === harness && (option.id ? option.id === model : !model);
             return <button key={`${adapter.id}:${option.id || "default"}`} type="button" disabled={!adapter.available} onClick={() => { onChange(adapter.id as Harness, option.id || null); setOpen(false); }} className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors disabled:opacity-40 ${selected ? "bg-foreground/[0.08]" : "hover:bg-foreground/[0.05]"}`}>
               <span className="flex-1 min-w-0 text-[12.5px] text-foreground whitespace-nowrap overflow-hidden text-ellipsis">{cleanModelLabel(option.label)}</span>
-              <span className="text-[9.5px] uppercase tracking-[0.06em] text-muted-foreground/45">{option.tier}</span>
+              <span className="flex shrink-0 items-center gap-1.5">
+                <span className="text-[9.5px] uppercase tracking-[0.06em] text-muted-foreground/45">{option.tier}</span>
+                {effort && selected && <span className="text-[9px] tracking-[0.04em] text-muted-foreground/40" data-testid="effort-badge">{effort}</span>}
+              </span>
               {selected && <Check size={13} className="text-foreground/80" aria-hidden="true" />}
             </button>;
           })}

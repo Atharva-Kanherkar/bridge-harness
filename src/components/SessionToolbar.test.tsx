@@ -86,6 +86,18 @@ describe("SessionToolbar", () => {
     expect(container.textContent).not.toMatch(/codex\/|feat\//);
   });
 
+  it("renders the tier label when provided", () => {
+    mount({ tierLabel: "STRONG TIER · high · runtime Fable" });
+    const label = container.querySelector('[data-testid="tier-label"]');
+    expect(label).not.toBeNull();
+    expect(label!.textContent).toBe("STRONG TIER · high · runtime Fable");
+  });
+
+  it("omits the tier label when not provided", () => {
+    mount({ tierLabel: null });
+    expect(container.querySelector('[data-testid="tier-label"]')).toBeNull();
+  });
+
   it("offers search for this chat when the callback exists", () => {
     mount();
     expect(container.querySelector('button[aria-label="Search this chat"]')).toBeNull();

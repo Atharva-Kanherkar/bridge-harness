@@ -27,6 +27,18 @@ const adapters: AdapterDescriptor[] = [
   },
 ];
 
+const claudeAdapters: AdapterDescriptor[] = [
+  {
+    id: "claude", label: "Claude", available: true, authState: "signed_in", version: "test", capabilities: ["messages"], unavailableReason: null,
+    models: [
+      { id: "haiku", label: "Claude Haiku", tier: "fast", defaultForTier: true },
+      { id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForTier: true },
+      { id: "fable", label: "Claude Fable", tier: "strong", defaultForTier: true },
+    ],
+    defaultModel: "sonnet",
+  },
+];
+
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   container = document.createElement("div");
@@ -41,9 +53,6 @@ afterEach(() => {
 });
 
 const trigger = () => container.querySelector<HTMLButtonElement>("button")!;
-// The session toolbar is the top row of an overflow-hidden container: a panel
-// anchored to the trigger's top edge there lands above the viewport and is
-// clipped away entirely, which makes the pill look inert.
 const panel = () => container.querySelector<HTMLElement>(".u-glass-popover")!;
 
 describe("ChatModelControl", () => {
@@ -126,8 +135,6 @@ describe("ChatModelControl", () => {
     expect(panel().className).not.toContain("bottom-full");
   });
 
-  // Some catalogs bake the provider into the model label; prefixing the
-  // harness again stuttered: "OpenCode · OpenCode Go · MiMo V2.5".
   it("drops the harness prefix when the model label already opens with it", async () => {
     const stuttering: AdapterDescriptor[] = [{
       id: "opencode", label: "OpenCode", available: true, authState: "signed_in", version: "test", capabilities: [], unavailableReason: null,
@@ -170,8 +177,6 @@ describe("ChatModelControl", () => {
   });
 
   it("closes an open picker on Escape without letting the key reach modal hosts", async () => {
-    // The aside panel closes itself on a window-level Escape; the picker must
-    // swallow the key while it is open or dismissing it tears down the aside.
     const hostEscape = vi.fn();
     window.addEventListener("keydown", hostEscape);
     try {
@@ -180,18 +185,52 @@ describe("ChatModelControl", () => {
       ));
       await act(async () => trigger().click());
       expect(panel()).toBeTruthy();
-      // Dispatched from inside the control, the way a real keypress lands on
-      // the focused element: the picker's capture listener beats the host's
-      // bubble listener.
       await act(async () => { trigger().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
       expect(container.querySelector(".u-glass-popover")).toBeNull();
       expect(hostEscape).not.toHaveBeenCalled();
-      // With the picker closed, Escape flows to the host again.
       await act(async () => { trigger().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
       expect(hostEscape).toHaveBeenCalledTimes(1);
     } finally {
       window.removeEventListener("keydown", hostEscape);
     }
+  });
+
+  it("renders the tier badge for each model row in the open picker", async () => {
+    await act(async () => root.render(
+      <ChatModelControl adapters={claudeAdapters} harness="claude" model="sonnet" onChange={vi.fn()} />,
+    ));
+    await act(async () => trigger().click());
+    const tierBadges = panel().querySelectorAll('[class*="uppercase"][class*="tracking"]');
+    const tiers = [...tierBadges].map(el => el.textContent);
+    expect(tiers).toContain("fast");
+    expect(tiers).toContain("standard");
+    expect(tiers).toContain("strong");
+  });
+
+  it("shows effort badge on the selected row when effort is provided", async () => {
+    await act(async () => root.render(
+      <ChatModelControl adapters={claudeAdapters} harness="claude" model="sonnet" onChange={vi.fn()} effort="high" />,
+    ));
+    await act(async () => trigger().click());
+    const badge = panel().querySelector('[data-testid="effort-badge"]');
+    expect(badge).not.toBeNull();
+    expect(badge!.textContent).toBe("high");
+  });
+
+  it("omits effort badge when effort is null", async () => {
+    await act(async () => root.render(
+      <ChatModelControl adapters={claudeAdapters} harness="claude" model="sonnet" onChange={vi.fn()} effort={null} />,
+    ));
+    await act(async () => trigger().click());
+    expect(panel().querySelector('[data-testid="effort-badge"]')).toBeNull();
+  });
+
+  it("shows effort badge only on the selected row, not all rows", async () => {
+    await act(async () => root.render(
+      <ChatModelControl adapters={claudeAdapters} harness="claude" model="sonnet" onChange={vi.fn()} effort="high" />,
+    ));
+    await act(async () => trigger().click());
+    expect(panel().querySelectorAll('[data-testid="effort-badge"]')).toHaveLength(1);
   });
 });
 
