@@ -205,6 +205,50 @@ describe("AsideChat", () => {
     expect(dialog().textContent).toContain("provider refused the send");
   });
 
+  it("delivers attachments pasted onto a queued follow-up", async () => {
+    let resolveSend: (() => void) | undefined;
+    const onSend = vi.fn(() => new Promise<void>(resolve => { resolveSend = resolve; }));
+    await mount({ working: false, onSend });
+    const box = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+
+    await act(async () => {
+      setter.call(box, "first send");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => {
+      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    expect(onSend).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      setter.call(box, "queued with image");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const file = new File(["queued-image-bytes"], "queued.png", { type: "image/png" });
+    const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, "clipboardData", {
+      value: { items: [{ kind: "file", type: "image/png", getAsFile: () => file }] },
+    });
+    await act(async () => { box.dispatchEvent(pasteEvent); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+    expect(container.querySelectorAll("img")).toHaveLength(1);
+
+    await act(async () => {
+      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    });
+    expect(onSend).toHaveBeenCalledTimes(1);
+    expect(dialog().textContent).toContain("1 follow-up queued");
+    expect(container.querySelectorAll("img")).toHaveLength(0);
+
+    await act(async () => { resolveSend?.(); });
+    expect(onSend).toHaveBeenCalledTimes(2);
+    const [, queuedAttachments] = onSend.mock.calls[1];
+    expect(onSend.mock.calls[1][0]).toBe("queued with image");
+    expect(queuedAttachments).toHaveLength(1);
+    expect(queuedAttachments![0].mediaType).toBe("image/png");
+  });
+
   it("routes an approval inside the panel through the aside's resolver", async () => {
     const onResolve = vi.fn();
     await mount({

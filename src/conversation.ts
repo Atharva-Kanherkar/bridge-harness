@@ -6,6 +6,11 @@ export interface ConversationItem {
   key: string; type: ConversationItemType; eventId: number; role?: string; status?: string;
   title?: string; text: string; data: Record<string, unknown>; sequence: number; entryId?: string;
   /**
+   * Provider item id from the live event (`AgentEvent.itemId`) or the durable
+   * payload. Live events do not copy this into `data`; durable ones do.
+   */
+  itemId?: string;
+  /**
    * The identity this item shares with its counterpart on the other
    * projection (live vs durable), when it has one. `eventId` is not it: on
    * the live side it is the session-event table's own autoincrement id, and
@@ -37,7 +42,8 @@ const IDENTITY_KEYS = ["itemId", "approvalId", "requestId", "questionId"] as con
  * `item.identity` with this before returning, so a caller merging live and
  * durable lists never has to reach for `eventId`.
  */
-export function itemIdentity(item: Pick<ConversationItem, "data" | "entryId" | "eventId" | "type">): string {
+export function itemIdentity(item: Pick<ConversationItem, "data" | "entryId" | "eventId" | "type" | "itemId">): string {
+  if (typeof item.itemId === "string" && item.itemId) return item.itemId;
   for (const key of IDENTITY_KEYS) {
     const value = item.data[key];
     if (typeof value === "string" && value) return value;
@@ -424,7 +430,15 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
     .filter(item => item.type !== "reasoning" || item.text.trim().length > 0)
     .filter(item => item.type !== "message" || item.text.trim().length > 0)
     .sort((a,b)=>a.sequence-b.sequence)
-    .map(withIdentity);
+    .map(item => withIdentity(stampLiveItemId(item)));
+}
+
+/** Live events keep `itemId` on the event, not in `data`. The reducer uses
+ *  that value as `item.key` when the provider sent one; synthetic keys always
+ *  contain a colon (`approval:7`, `command.started:9`, `reasoning:live:0`). */
+function stampLiveItemId(item: ConversationItem): ConversationItem {
+  if (item.itemId || item.key.includes(":")) return item;
+  return { ...item, itemId: item.key };
 }
 
 /** Defense in depth for a backend-tagged maintenance frame. Content shape is
@@ -497,7 +511,9 @@ export function stripWorkerResultBlocks(text: string): string {
 function stringList(value:unknown){return Array.isArray(value)?value.join("\n"):"";}
 
 function withIdentity(item: ConversationItem): ConversationItem {
-  return { ...item, identity: itemIdentity(item) };
+  const itemId = item.itemId ?? stringValue(item.data.itemId);
+  const next = itemId && item.itemId !== itemId ? { ...item, itemId } : item;
+  return { ...next, identity: itemIdentity(next) };
 }
 
 /** Resolved reasoning text: the streamed `text`, or Codex's summary-only payload. */

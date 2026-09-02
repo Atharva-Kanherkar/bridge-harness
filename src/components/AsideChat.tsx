@@ -62,8 +62,8 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [composerError, setComposerError] = useState<string>();
   const [sending, setSending] = useState(false);
-  const [queuedFollowUps, setQueuedFollowUps] = useState<string[]>([]);
-  const queuedFollowUpsRef = useRef<string[]>([]);
+  const [queuedFollowUps, setQueuedFollowUps] = useState<{ text: string; attachments: ComposerAttachment[] }[]>([]);
+  const queuedFollowUpsRef = useRef<{ text: string; attachments: ComposerAttachment[] }[]>([]);
   const [slashIndex, setSlashIndex] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [mentionIndex, setMentionIndex] = useState(0);
@@ -226,9 +226,10 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
     const sentAttachments = attachments;
     if (!text && sentAttachments.length === 0) return;
     if (sending) {
-      queuedFollowUpsRef.current = [...queuedFollowUpsRef.current, text];
+      queuedFollowUpsRef.current = [...queuedFollowUpsRef.current, { text, attachments: sentAttachments }];
       setQueuedFollowUps(queuedFollowUpsRef.current);
       setDraft("");
+      setAttachments([]);
       return;
     }
     setSending(true);
@@ -240,7 +241,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
       const queued = queuedFollowUpsRef.current;
       queuedFollowUpsRef.current = [];
       setQueuedFollowUps([]);
-      for (const followUp of queued) await onSend(followUp, []);
+      for (const followUp of queued) await onSend(followUp.text, followUp.attachments);
     } catch (error) {
       setDraft(text);
       setAttachments(sentAttachments);

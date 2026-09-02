@@ -55,8 +55,9 @@ describe("normalized conversation reducer",()=>{
     expect(items[0].text).toBe("the rest of the thought");
   });
   it("shares a stable identity across live and durable twins",()=>{
-    const live = reduceConversation([event(9,"command.started",{itemId:"tool-1",status:"inProgress",data:{itemId:"tool-1"}})])[0];
-    const durable = projectSessionConversation([entry("e1",null,"command.started",{itemId:"tool-1",status:"inProgress",data:{itemId:"tool-1"}},1)],"e1")[0];
+    const live = reduceConversation([event(9,"command.started",{itemId:"tool-1",status:"inProgress",data:{}})])[0];
+    const durable = projectSessionConversation([entry("e1",null,"command.started",{itemId:"tool-1",status:"inProgress"},1)],"e1")[0];
+    expect(live.data.itemId).toBeUndefined();
     expect(itemIdentity(live)).toBe("tool-1");
     expect(itemIdentity(durable)).toBe("tool-1");
     expect(live.identity).toBe(durable.identity);
