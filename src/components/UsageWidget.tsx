@@ -1,8 +1,10 @@
 import { memo, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { AnimatePresence, motion } from "framer-motion";
 import { AlertTriangle, ChevronDown, Gauge, Layers, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
+import { MOTION_DURATION, useMotionTransition } from "../motion";
 import { clampPercent, contextPressure, formatReset, projectUsageExhaustion, type CacheDiagnostic, type MetricSource, type UsageHistoryEntry, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "../usage";
 import type { AdapterDescriptor } from "../types";
 import { useContextBreakdown } from "../contextBreakdown";
@@ -11,9 +13,6 @@ import { ContextBreakdownPanel } from "./ContextBreakdown";
 /** Details panel padding; inner cards use panel radius minus this so the arcs share a center. */
 const PANEL_PAD = "p-2.5";
 const PANEL_NESTED = "rounded-[calc(var(--radius-2xl)-0.625rem)]";
-/** Floor for the compact panel's dragged height — below this the provider grid stops being readable. */
-const MIN_COMPACT_HEIGHT = 180;
-const COMPACT_RESIZE_STEP = 16;
 
 const PROVIDERS: Array<{ id: UsageProvider; label: string }> = [
   { id: "codex", label: "Codex" },
@@ -134,14 +133,11 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
   const [open, setOpen] = useState(false);
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [showMore, setShowMore] = useState(false);
-  const [panelHeight, setPanelHeight] = useState<number | null>(null);
-  const [detailsMax, setDetailsMax] = useState(0);
   const [activeLogin, setActiveLogin] = useState<UsageProvider | null>(null);
   const [frame, setFrame] = useState<HTMLElement | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
-  const panelInnerRef = useRef<HTMLDivElement>(null);
-  const detailsInnerRef = useRef<HTMLDivElement>(null);
+  const detailsTransition = useMotionTransition(MOTION_DURATION.reveal);
   const pressure = contextPressure(contextPercent);
   const breakdownState = useContextBreakdown(focusedSessionId, open && showBreakdown);
   const projections = PROVIDERS.map(provider => {
@@ -178,54 +174,12 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
     };
   }, [open]);
 
-  // Measured only while expanded: `max-height` is 0 when collapsed, so reading
-  // scrollHeight then would report 0 and the panel would never open. The last
-  // measurement is kept across a collapse so Show less has a height to
-  // interpolate from rather than snapping shut.
-  useEffect(() => {
-    if (!showMore) return;
-    const node = detailsInnerRef.current;
-    if (!node) return;
-    const next = node.scrollHeight;
-    if (next > 0) setDetailsMax(next);
-  }, [showMore, cacheDiagnostics.length, history.length]);
-
   const overall = overallUsedPercent(usage, adapters);
   const tier = usageTier(overall);
   // Not just the percent: the tier word carries the same meaning the ring's
   // color does, so the accessible name doesn't depend on color alone.
   const usageStateLabel = overall == null ? "no reported usage yet" : `${TIER_LABEL[tier]}, ${Math.round(overall)}% used`;
   const indicatorTitle = `Usage health — ${usageStateLabel}`;
-
-  const startResize = (event: React.PointerEvent<HTMLDivElement>) => {
-    event.preventDefault();
-    event.stopPropagation();
-    const originY = event.clientY;
-    const originHeight = panelInnerRef.current?.getBoundingClientRect().height ?? MIN_COMPACT_HEIGHT;
-    const maxHeight = () => Math.max(MIN_COMPACT_HEIGHT, Math.round(window.innerHeight * 0.8));
-    event.currentTarget.setPointerCapture(event.pointerId);
-    const move = (pointer: PointerEvent) => {
-      const next = originHeight + (originY - pointer.clientY);
-      setPanelHeight(Math.min(maxHeight(), Math.max(MIN_COMPACT_HEIGHT, next)));
-    };
-    const release = () => {
-      window.removeEventListener("pointermove", move);
-      window.removeEventListener("pointerup", release);
-    };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", release);
-  };
-
-  const onResizeKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== "ArrowUp" && event.key !== "ArrowDown") return;
-    event.preventDefault();
-    const delta = event.key === "ArrowUp" ? COMPACT_RESIZE_STEP : -COMPACT_RESIZE_STEP;
-    const maxHeight = Math.max(MIN_COMPACT_HEIGHT, Math.round(window.innerHeight * 0.8));
-    setPanelHeight(current => {
-      const base = current ?? panelInnerRef.current?.getBoundingClientRect().height ?? MIN_COMPACT_HEIGHT;
-      return Math.min(maxHeight, Math.max(MIN_COMPACT_HEIGHT, base + delta));
-    });
-  };
 
   const panel = (
     <div
@@ -235,39 +189,27 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
       aria-label="Usage health details"
       className={cn(
         "absolute z-50 transition-opacity duration-150",
+        // Compact belongs to the composer: flush against the frame's top edge,
+        // with no gap, so it reads as the composer growing upwards rather than
+        // as a card hovering over it.
         compact
           ? frame
-            ? "inset-x-0 bottom-full mb-2"
-            : "bottom-full left-0 w-[min(100vw-1.5rem,42rem)] pb-2"
+            ? "inset-x-0 bottom-full"
+            : "bottom-full left-0 w-[min(100vw-1.5rem,42rem)]"
           : "right-0 top-full pt-2",
         open ? "visible pointer-events-auto opacity-100" : "invisible pointer-events-none opacity-0",
       )}
     >
+      {/* Flat, not floating: a plain popover surface with a border and no
+          shadow. It is sized by its content, stops at 80dvh, and scrolls
+          inside instead of cutting the provider cards in half. */}
       <div
-        ref={panelInnerRef}
         className={cn(
-          "u-overlay-strong flex flex-col rounded-2xl",
-          PANEL_PAD,
-          compact ? "w-full max-h-[80dvh] overflow-hidden" : "max-h-[80dvh] w-[390px] max-w-[calc(100vw-1.5rem)] overflow-y-auto",
+          "flex max-h-[80dvh] flex-col overflow-hidden border border-border bg-popover",
+          compact ? "w-full rounded-t-2xl" : "w-[390px] max-w-[calc(100vw-1.5rem)] rounded-2xl",
         )}
-        style={compact && panelHeight != null ? { height: panelHeight } : undefined}
       >
-        {compact && (
-          <div
-            role="separator"
-            aria-orientation="horizontal"
-            aria-label="Resize usage panel"
-            tabIndex={0}
-            onPointerDown={startResize}
-            onKeyDown={onResizeKeyDown}
-            onDoubleClick={() => setPanelHeight(null)}
-            title="Drag to resize · double-click to reset"
-            className="group relative z-10 -mt-0.5 mb-1 flex h-3 shrink-0 cursor-ns-resize items-center justify-center"
-          >
-            <span className="h-1 w-8 rounded-full bg-border transition-colors group-hover:bg-ring/60 group-focus-visible:bg-ring" />
-          </div>
-        )}
-        <div className={cn(compact ? cn("min-h-0", (panelHeight != null || showMore) && "overflow-y-auto") : "contents")}>
+        <div className={cn("min-h-0 flex-1 overflow-y-auto", PANEL_PAD)}>
           {showBreakdown && focusedSessionId ? <ContextBreakdownPanel
             state={breakdownState}
             sessionId={focusedSessionId}
@@ -301,26 +243,25 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
             type="button"
             aria-expanded={showMore}
             aria-controls="usage-health-details"
-            onClick={() => {
-              setPanelHeight(null);
-              setShowMore(value => !value);
-            }}
+            onClick={() => setShowMore(value => !value)}
             className="mt-2 flex w-full items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
             {showMore ? "Show less" : "Show more"}
             <ChevronDown size={12} aria-hidden="true" className={cn("transition-transform duration-300 ease-in-out motion-reduce:transition-none", showMore && "rotate-180")} />
           </button>
 
-          <div
-            id="usage-health-details"
-            className={cn(
-              "overflow-hidden transition-[max-height] duration-300 ease-in-out motion-reduce:transition-none",
-              showMore ? "grid-rows-[1fr]" : "grid-rows-[0fr]",
-            )}
-            style={{ maxHeight: showMore ? (detailsMax || undefined) : 0 }}
-            aria-hidden={!showMore}
-          >
-            <div ref={detailsInnerRef}>
+          {/* `height: auto` is the one transition CSS cannot express, so the
+              disclosure body opens and closes through Framer instead of a
+              measured max-height that was stale on the first expand. */}
+          <AnimatePresence initial={false}>
+            {showMore && <motion.div
+              id="usage-health-details"
+              className="overflow-hidden"
+              initial={{ height: 0, opacity: 0 }}
+              animate={{ height: "auto", opacity: 1 }}
+              exit={{ height: 0, opacity: 0 }}
+              transition={detailsTransition}
+            >
               <section className="mt-3" aria-label="Prompt cache diagnostics">
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-0.5">
                   <h3 className="text-[9px] font-semibold uppercase tracking-[0.13em] text-muted-foreground">Prompt cache</h3>
@@ -339,8 +280,8 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
                 </div>
                 {history.length ? <div className="grid gap-1.5">{history.slice(0, 6).map(entry => <HistoryRow key={entry.id} entry={entry} />)}</div> : <p className={cn("border border-dashed border-border px-3 py-4 text-center text-[10px] text-muted-foreground/70", PANEL_NESTED)}>No measured work-unit history yet.</p>}
               </section>
-            </div>
-          </div>
+            </motion.div>}
+          </AnimatePresence>
           </>}
         </div>
       </div>

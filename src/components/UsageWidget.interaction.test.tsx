@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { MotionGlobalConfig } from "framer-motion";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
 import type { AdapterDescriptor } from "../types";
+import type { CacheDiagnostic, UsageHistoryEntry } from "../usage";
 import { UsageWidget } from "./UsageWidget";
 
 const adapters: AdapterDescriptor[] = [
@@ -139,12 +141,27 @@ describe("UsageWidget sign-in control", () => {
   });
 });
 
-describe("UsageWidget compact panel", () => {
+describe("UsageWidget panel shell", () => {
   let container: HTMLDivElement;
   let root: Root;
 
+  const cacheFixture = (index: number, overrides: Partial<CacheDiagnostic> = {}): CacheDiagnostic => ({
+    key: `cache-${index}`, harness: "codex", model: `gpt-${index}`, role: "worker:implementation",
+    taskFamily: "implementation", restorationMode: "checkpoint_restored",
+    cacheReadTokens: 1, cacheWriteTokens: 0, uncachedInputTokens: 1,
+    observations: 1, crossHarnessReuse: [], costSources: [], costCoverage: "unknown", ...overrides,
+  });
+
+  const details = () => container.querySelector<HTMLElement>("#usage-health-details");
+  const toggle = () => [...container.querySelectorAll("button")].find(button => /Show (more|less)/.test(button.textContent ?? ""))!;
+  /** Let Framer's frame loop run so a finished exit actually unmounts. */
+  const settle = async () => { await act(async () => { await new Promise(resolve => setTimeout(resolve, 40)); }); };
+
   beforeEach(() => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    // The disclosure body animates its height through Framer; `skipAnimations`
+    // collapses the frames so the assertions are about structure, not timing.
+    MotionGlobalConfig.skipAnimations = true;
     container = document.createElement("div");
     document.body.append(container);
     root = createRoot(container);
@@ -153,33 +170,106 @@ describe("UsageWidget compact panel", () => {
   afterEach(async () => {
     await act(async () => root.unmount());
     container.remove();
+    MotionGlobalConfig.skipAnimations = false;
   });
 
-  it("keeps cache and history collapsed until Show more is pressed", async () => {
+  it("is a flat surface that scrolls its own content rather than clipping it", async () => {
     await act(async () => {
       root.render(<UsageWidget compact usage={{}} />);
     });
-    const details = container.querySelector("#usage-health-details") as HTMLElement | null;
-    expect(details?.getAttribute("aria-hidden")).toBe("true");
-    const toggle = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Show more"));
-    expect(toggle).toBeDefined();
-    await act(async () => { toggle!.click(); });
-    expect(details?.getAttribute("aria-hidden")).toBe("false");
-    expect(toggle?.textContent).toContain("Show less");
-    expect(details?.className).toContain("grid-rows-[1fr]");
-    const card = container.querySelector("#usage-health-panel > div");
-    expect(card?.className).toContain("max-h-[80dvh]");
-    expect(card?.className).not.toContain("max-h-[min(28rem,55vh)]");
-    expect(card?.className).not.toContain("flex-1 overflow-y-auto");
-    await act(async () => { toggle!.click(); });
-    expect(toggle?.textContent).toContain("Show more");
-    expect(details?.className).toContain("grid-rows-[0fr]");
-    expect(details?.getAttribute("aria-hidden")).toBe("true");
-    expect(card?.className).toContain("max-h-[80dvh]");
-    expect(card?.className).not.toContain("max-h-[min(28rem,55vh)]");
+    const card = container.querySelector<HTMLElement>("#usage-health-panel > div")!;
+    expect(card.className).toContain("bg-popover");
+    expect(card.className).toContain("border-border");
+    // No elevation: nothing here carries a drop shadow.
+    expect(card.className).not.toContain("u-overlay");
+    expect(card.className).not.toContain("u-glass");
+    expect(card.className).not.toContain("shadow");
+    // Content-sized, capped at the viewport, scrolling inside the cap.
+    expect(card.className).toContain("max-h-[80dvh]");
+    const scroller = card.firstElementChild as HTMLElement;
+    expect(scroller.className).toContain("overflow-y-auto");
+    expect(scroller.className).toContain("min-h-0");
+    // The drag-to-resize grip is gone in both modes.
+    expect(container.querySelector('[aria-label="Resize usage panel"]')).toBeNull();
+    expect(container.querySelector('[role="separator"]')).toBeNull();
   });
 
-  it("portals the compact panel onto the composer frame at full width", async () => {
+  it("caps and scrolls the non-compact panel the same way", async () => {
+    await act(async () => {
+      root.render(<UsageWidget usage={{}} />);
+    });
+    const card = container.querySelector<HTMLElement>("#usage-health-panel > div")!;
+    expect(card.className).toContain("max-h-[80dvh]");
+    expect(card.className).toContain("w-[390px]");
+    expect(card.className).not.toContain("shadow");
+    expect((card.firstElementChild as HTMLElement).className).toContain("overflow-y-auto");
+  });
+
+  it("mounts the cache and history sections only while Show more is on", async () => {
+    await act(async () => {
+      root.render(<UsageWidget compact usage={{}} />);
+    });
+    expect(details()).toBeNull();
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+    expect(toggle().getAttribute("aria-controls")).toBe("usage-health-details");
+
+    await act(async () => { toggle().click(); });
+    expect(toggle().textContent).toContain("Show less");
+    expect(toggle().getAttribute("aria-expanded")).toBe("true");
+    const body = details();
+    expect(body).not.toBeNull();
+    // The wrapper Framer animates has to hide the overflow while it grows.
+    expect(body?.className).toContain("overflow-hidden");
+    expect(body?.textContent).toContain("Prompt cache");
+    expect(body?.textContent).toContain("Recent work units");
+
+    await act(async () => { toggle().click(); });
+    await settle();
+    expect(details()).toBeNull();
+    expect(toggle().textContent).toContain("Show more");
+    expect(toggle().getAttribute("aria-expanded")).toBe("false");
+  });
+
+  it("renders cache ratios, prefix provenance, and unknown provider cost without fake savings", async () => {
+    const cache = cacheFixture(0, {
+      key: "codex-cache", model: "gpt-5", restorationMode: "fresh",
+      stablePrefixId: "bridge-prompt-v1-deadbeef", stablePrefixHash: "deadbeef",
+      promptSchemaVersion: 1, prefixTokenEstimate: 100,
+      cacheReadTokens: 120, cacheWriteTokens: 20, uncachedInputTokens: 160,
+      cacheHitRatio: 0.4, writeAmortization: 6, observations: 2,
+      crossHarnessReuse: ["same_harness"],
+    });
+    await act(async () => {
+      root.render(<UsageWidget usage={{}} cacheDiagnostics={[cache]} />);
+    });
+    await act(async () => { toggle().click(); });
+    const body = details()!;
+    expect(body.textContent).toContain("Prompt cache");
+    expect(body.textContent).toContain("Hit 40%");
+    expect(body.textContent).toContain("write amortization 6.0×");
+    expect(body.textContent).toContain("bridge-prompt-v1-deadbeef");
+    expect(body.textContent).toContain("schema v1");
+    expect(body.textContent).toContain("Role: Worker · implementation");
+    expect(body.textContent).toContain("Restore: Fresh");
+    expect(body.textContent).toContain("Reuse: Same harness");
+    expect(body.textContent).toContain("Cost unknown — provider did not report it");
+    expect(container.innerHTML.toLowerCase()).not.toContain("savings");
+  });
+
+  it("discloses when additional prompt groups are hidden, and renders work-unit history", async () => {
+    const history: UsageHistoryEntry[] = [{ id: 1, workUnit: "turn-51", harness: "codex", model: "gpt-5", outcome: "completed", source: "reported", totalTokens: 150, contextPercent: 45, createdAt: "2026-07-16T10:00:00Z" }];
+    await act(async () => {
+      root.render(<UsageWidget usage={{}} history={history} cacheDiagnostics={Array.from({ length: 7 }, (_, index) => cacheFixture(index))} />);
+    });
+    await act(async () => { toggle().click(); });
+    const body = details()!;
+    expect(body.textContent).toContain("Showing 6 of 7 recent prompt groups.");
+    expect(body.textContent).toContain("Restore: Checkpoint restored");
+    expect(body.textContent).toContain("turn-51");
+    expect(body.textContent).toContain("completed");
+  });
+
+  it("portals the compact panel onto the composer frame, flush with its top edge", async () => {
     await act(async () => {
       root.render(
         <div data-composer-frame className="relative">
@@ -187,10 +277,15 @@ describe("UsageWidget compact panel", () => {
         </div>,
       );
     });
-    const panel = container.querySelector("#usage-health-panel");
-    expect(panel?.parentElement?.hasAttribute("data-composer-frame")).toBe(true);
-    expect(panel?.className).toContain("inset-x-0");
-    expect(panel?.className).toContain("bottom-full");
-    expect(container.querySelector('[aria-label="Resize usage panel"]')).not.toBeNull();
+    const panel = container.querySelector<HTMLElement>("#usage-health-panel")!;
+    expect(panel.parentElement?.hasAttribute("data-composer-frame")).toBe(true);
+    expect(panel.className).toContain("inset-x-0");
+    expect(panel.className).toContain("bottom-full");
+    // Flush: nothing lifts the popup off the composer's top edge.
+    expect(panel.className).not.toContain("mb-2");
+    expect(panel.className).not.toContain("pb-2");
+    // It still sits above the transcript.
+    expect(panel.className).toContain("z-50");
+    expect(container.querySelector('[aria-label="Resize usage panel"]')).toBeNull();
   });
 });

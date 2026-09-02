@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { UsageWidget } from "./UsageWidget";
-import type { CacheDiagnostic, UsageHistoryEntry, UsageSnapshot } from "../usage";
+import type { UsageHistoryEntry, UsageSnapshot } from "../usage";
 import type { AdapterDescriptor, AuthState } from "../types";
 
 function adapterFixture(id: string, overrides: Partial<AdapterDescriptor> = {}): AdapterDescriptor {
@@ -25,6 +25,23 @@ describe("UsageWidget", () => {
     expect(html).not.toContain("Resize usage panel");
   });
 
+  it("renders a flat popup that scrolls its own content instead of clipping it", () => {
+    const html = renderToStaticMarkup(<UsageWidget usage={{}} />);
+    // Flat surface: the popup carries no shadow-bearing surface class, only a
+    // border on the popover token.
+    expect(html).not.toContain("u-overlay");
+    expect(html).not.toContain("u-glass");
+    expect(html).not.toContain("shadow");
+    expect(html).toContain("bg-popover");
+    // Sized by its content, capped at the viewport, scrolling inside.
+    expect(html).toContain("max-h-[80dvh]");
+    expect(html).toContain("min-h-0 flex-1 overflow-y-auto");
+    // No drag-to-resize affordance survives.
+    expect(html).not.toContain("Resize usage panel");
+    expect(html).not.toContain('role="separator"');
+    expect(html).not.toContain("cursor-ns-resize");
+  });
+
   it("labels reported meters and explains context pressure", () => {
     const snapshot: UsageSnapshot = {
       windows: [{ id: "weekly", label: "Weekly", usedPercent: 82, resetsLabel: "resets Friday", source: "reported" }],
@@ -41,7 +58,7 @@ describe("UsageWidget", () => {
     expect(html).toContain("Measured");
   });
 
-  it("renders work-unit traceability and estimated projections", () => {
+  it("states estimated projections up front and keeps work-unit history behind Show more", () => {
     const history: UsageHistoryEntry[] = [{ id: 1, workUnit: "turn-51", harness: "codex", model: "gpt-5", outcome: "completed", source: "reported", totalTokens: 150, contextPercent: 45, createdAt: "2026-07-16T10:00:00Z" }];
     const snapshot: UsageSnapshot = { windows: [{ id: "weekly", label: "Weekly", usedPercent: 80, source: "reported" }], source: "reported", capturedAt: "2026-07-16T10:10:00Z" };
     const html = renderToStaticMarkup(<UsageWidget usage={{ codex: snapshot }} history={history} samples={{ codex: [
@@ -49,44 +66,12 @@ describe("UsageWidget", () => {
       { usedPercent: 75, capturedAt: "2026-07-16T10:05:00Z" },
       { usedPercent: 80, capturedAt: "2026-07-16T10:10:00Z" },
     ] }} />);
-    expect(html).toContain("turn-51");
-    expect(html).toContain("gpt-5");
-    expect(html).toContain("completed");
     expect(html).toContain("Estimated from 3 samples");
-  });
-
-  it("renders cache ratios, prefix provenance, and unknown provider cost without fake savings", () => {
-    const cache: CacheDiagnostic = {
-      key: "codex-cache", harness: "codex", model: "gpt-5", role: "worker:implementation",
-      taskFamily: "implementation", restorationMode: "fresh", stablePrefixId: "bridge-prompt-v1-deadbeef",
-      stablePrefixHash: "deadbeef", promptSchemaVersion: 1, prefixTokenEstimate: 100,
-      cacheReadTokens: 120, cacheWriteTokens: 20, uncachedInputTokens: 160,
-      cacheHitRatio: 0.4, writeAmortization: 6, observations: 2,
-      crossHarnessReuse: ["same_harness"], costSources: [], costCoverage: "unknown",
-    };
-    const html = renderToStaticMarkup(<UsageWidget usage={{}} cacheDiagnostics={[cache]} />);
-    expect(html).toContain("Prompt cache");
-    expect(html).toContain("Hit 40%");
-    expect(html).toContain("write amortization 6.0×");
-    expect(html).toContain("bridge-prompt-v1-deadbeef");
-    expect(html).toContain("schema v1");
-    expect(html).toContain("Role: Worker · implementation");
-    expect(html).toContain("Restore: Fresh");
-    expect(html).toContain("Reuse: Same harness");
-    expect(html).toContain("Cost unknown — provider did not report it");
-    expect(html.toLowerCase()).not.toContain("savings");
-  });
-
-  it("discloses when additional prompt groups are hidden", () => {
-    const cache = (index: number): CacheDiagnostic => ({
-      key: `cache-${index}`, harness: "codex", model: `gpt-${index}`, role: "worker:implementation",
-      taskFamily: "implementation", restorationMode: "checkpoint_restored",
-      cacheReadTokens: 1, cacheWriteTokens: 0, uncachedInputTokens: 1,
-      observations: 1, crossHarnessReuse: [], costSources: [], costCoverage: "unknown",
-    });
-    const html = renderToStaticMarkup(<UsageWidget usage={{}} cacheDiagnostics={Array.from({ length: 7 }, (_, index) => cache(index))} />);
-    expect(html).toContain("Showing 6 of 7 recent prompt groups.");
-    expect(html).toContain("Restore: Checkpoint restored");
+    // The disclosure body is mounted by Show more, so nothing of it is in the
+    // collapsed markup. Its contents are covered in UsageWidget.interaction.
+    expect(html).toContain("Show more");
+    expect(html).not.toContain("turn-51");
+    expect(html).not.toContain("Recent work units");
   });
 
   it("offers the breakdown entry only with a focused session, and keeps the panel unmounted by default", () => {
@@ -188,14 +173,14 @@ describe("UsageWidget", () => {
     expect(html).toContain("Open usage health details");
     expect(html).toContain("bottom-full");
     expect(html).toContain("Show more");
-    expect(html).toContain("grid-rows-[0fr]");
-    expect(html).toContain("Resize usage panel");
+    expect(html).not.toContain("Resize usage panel");
     expect(html).toContain("Codex");
     expect(html).toContain("Claude");
     expect(html).toContain("Cursor");
     expect(html).toContain("OpenCode");
     expect(html).toContain("Limit unknown");
-    expect(html).toContain("Prompt cache");
-    expect(html).toContain("Recent work units");
+    // Cache and history are the disclosure body: mounted only once expanded.
+    expect(html).not.toContain("Prompt cache");
+    expect(html).not.toContain("Recent work units");
   });
 });
