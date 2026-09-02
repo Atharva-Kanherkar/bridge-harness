@@ -2019,6 +2019,7 @@ function AppContent() {
             placement="down"
             roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"}
           />}
+          tierLabel={tierRuntimeLabel(session.requestedTier, session.model, session.effort)}
           bypassBadge={bypassBadge}
           navOpen={navOpen}
           onOpenNav={() => setNavOpen(true)}
