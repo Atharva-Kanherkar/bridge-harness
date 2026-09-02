@@ -600,10 +600,11 @@ export function toolCallDisplay(item: ConversationItem): ToolCallDisplay {
     status: readStatus(item.status),
   };
   const named = namedToolFacet(item, data);
-  const command = named.verb === "run" ? named.command ?? text(data.command) : undefined;
+  const command = named.command ?? (named.verb === "run" ? text(data.command) : undefined);
   return {
     ...common,
     ...named,
+    path: named.path ?? path,
     command,
     // Only edits show a diff inline; a read whose body happens to be a diff is
     // still just output.
@@ -611,10 +612,210 @@ export function toolCallDisplay(item: ConversationItem): ToolCallDisplay {
   };
 }
 
+export function parseCommandTokens(command: string): string[] {
+  const trimmed = command.trim();
+  const stripped = trimmed.replace(/^([A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)+/, "");
+  const tokens: string[] = [];
+  const regex = /[^\s"']+|"([^"]*)"|'([^']*)'/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(stripped)) !== null) {
+    tokens.push(match[1] ?? match[2] ?? match[0]);
+  }
+  return tokens;
+}
+
+function matchesAny(bin: string, names: string[]): boolean {
+  const base = bin.split("/").pop() || bin;
+  return names.includes(base);
+}
+
+function classifySingleCommand(cmd: string): {
+  verb: ToolVerb;
+  glyph: ToolGlyph;
+  doing: string;
+  done: string;
+  target?: string;
+  path?: string;
+} | null {
+  let clean = cmd.trim().replace(/^([A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)+/, "");
+  clean = clean.replace(/^(?:builtin|command|sudo)\s+/, "");
+  const tokens = parseCommandTokens(clean);
+  if (!tokens.length) return null;
+
+  const bin = tokens[0].toLowerCase();
+  const args = tokens.slice(1);
+
+  if (matchesAny(bin, ["cat", "head", "tail", "less", "more", "bat"])) {
+    let idx = 0;
+    while (idx < args.length) {
+      if (args[idx] === "-n" || args[idx] === "-c") {
+        idx += 2;
+      } else if (args[idx].startsWith("-")) {
+        idx += 1;
+      } else {
+        break;
+      }
+    }
+    const filePath = args[idx];
+    const target = filePath ? (filePath.split("/").pop() || filePath) : undefined;
+    return {
+      verb: "read",
+      glyph: "file",
+      doing: "Reading",
+      done: "Read",
+      target: target ?? filePath,
+      path: filePath,
+    };
+  }
+
+  if (matchesAny(bin, ["ls", "dir", "tree"])) {
+    const nonFlags = args.filter(arg => !arg.startsWith("-"));
+    const dirPath = nonFlags[0];
+    return {
+      verb: "read",
+      glyph: "file",
+      doing: "Listing",
+      done: "Listed",
+      target: dirPath ? (dirPath.split("/").pop() || dirPath) : "directory",
+      path: dirPath,
+    };
+  }
+
+  if (matchesAny(bin, ["grep", "egrep", "fgrep", "rg", "ag", "ack"])) {
+    const nonFlags = args.filter(arg => !arg.startsWith("-"));
+    const pattern = nonFlags[0];
+    const filePath = nonFlags[1];
+    return {
+      verb: "search",
+      glyph: "search",
+      doing: "Searching",
+      done: "Searched",
+      target: pattern ? `“${pattern}”` : "files",
+      path: filePath,
+    };
+  }
+
+  if (matchesAny(bin, ["find", "fd", "locate", "which", "whereis", "wc", "stat", "file"])) {
+    const nonFlags = args.filter(arg => !arg.startsWith("-"));
+    const target = nonFlags[0];
+    return {
+      verb: "search",
+      glyph: "search",
+      doing: "Searching",
+      done: "Searched",
+      target: target ? `“${target}”` : "files",
+      path: target,
+    };
+  }
+
+  if (bin === "git") {
+    let subIdx = 0;
+    while (subIdx < args.length && args[subIdx].startsWith("-")) {
+      if (args[subIdx] === "-C" || args[subIdx] === "-c") subIdx += 2;
+      else subIdx += 1;
+    }
+    const sub = args[subIdx]?.toLowerCase();
+    if (!sub) return null;
+
+    if (sub === "status") {
+      return {
+        verb: "read",
+        glyph: "file",
+        doing: "Checking",
+        done: "Checked",
+        target: "git status",
+      };
+    }
+    if (sub === "diff") {
+      return {
+        verb: "read",
+        glyph: "file",
+        doing: "Inspecting",
+        done: "Inspected",
+        target: "git diff",
+      };
+    }
+    if (sub === "log") {
+      return {
+        verb: "read",
+        glyph: "file",
+        doing: "Viewing",
+        done: "Viewed",
+        target: "git log",
+      };
+    }
+    if (sub === "show") {
+      return {
+        verb: "read",
+        glyph: "file",
+        doing: "Inspecting",
+        done: "Inspected",
+        target: "git show",
+      };
+    }
+    if (sub === "branch" || sub === "tag" || sub === "remote" || sub === "describe") {
+      return {
+        verb: "read",
+        glyph: "file",
+        doing: "Checking",
+        done: "Checked",
+        target: `git ${sub}`,
+      };
+    }
+    return null;
+  }
+
+  return null;
+}
+
+export function classifyExploratoryCommand(rawCommand: string): {
+  verb: ToolVerb;
+  glyph: ToolGlyph;
+  doing: string;
+  done: string;
+  target?: string;
+  path?: string;
+} | null {
+  const trimmed = rawCommand.trim();
+  if (!trimmed) return null;
+  if (trimmed.includes(">") || trimmed.includes(">>")) return null;
+
+  const parts = trimmed.split(/\s*(?:&&|;|\|\|)\s*/).filter(Boolean);
+  if (parts.length > 1) {
+    const classifiedParts = parts.map(classifySingleCommand);
+    if (classifiedParts.some(c => c === null)) return null;
+    const first = classifiedParts[0]!;
+    return {
+      verb: first.verb,
+      glyph: first.glyph,
+      doing: "Exploring",
+      done: "Explored",
+      target: trimmed,
+    };
+  }
+
+  if (trimmed.includes("|")) {
+    const pipeParts = trimmed.split(/\s*\|\s*/).filter(Boolean);
+    const classifiedPipe = pipeParts.map(classifySingleCommand);
+    if (classifiedPipe.some(c => c === null)) return null;
+    const first = classifiedPipe[0]!;
+    return {
+      verb: first.verb,
+      glyph: first.glyph,
+      doing: first.doing,
+      done: first.done,
+      target: first.target ?? trimmed,
+      path: first.path,
+    };
+  }
+
+  return classifySingleCommand(trimmed);
+}
+
 /** Verb, glyph, wording and target — the half of the shape that depends on
  *  *which* tool ran rather than on how it went. */
 function namedToolFacet(item: ConversationItem, data: Record<string, unknown>): {
-  verb: ToolVerb; glyph: ToolGlyph; doing: string; done: string; target?: string; command?: string;
+  verb: ToolVerb; glyph: ToolGlyph; doing: string; done: string; target?: string; command?: string; path?: string;
 } {
   const input = objectValue(data.input);
   const name = text(data.name);
@@ -627,6 +828,10 @@ function namedToolFacet(item: ConversationItem, data: Record<string, unknown>): 
     const key = name.toLowerCase();
     if (key === "bash" || key === "shell") {
       const command = text(input.command) ?? text(data.command);
+      const exploratory = command ? classifyExploratoryCommand(command) : null;
+      if (exploratory) {
+        return { ...exploratory, command };
+      }
       return { verb: "run", glyph: "terminal", doing: "Running", done: "Ran", target: command ?? (title || "command"), command };
     }
     if (key === "read") return { verb: "read", glyph: "file", doing: "Reading", done: "Read", target: file ?? "file" };
@@ -659,6 +864,10 @@ function namedToolFacet(item: ConversationItem, data: Record<string, unknown>): 
   }
   if (dataType === "commandExecution" || data.command) {
     const command = text(data.command) ?? (title || undefined);
+    const exploratory = command ? classifyExploratoryCommand(command) : null;
+    if (exploratory) {
+      return { ...exploratory, command };
+    }
     return { verb: "run", glyph: "terminal", doing: "Running", done: "Ran", target: command ?? "command", command };
   }
   if (dataType === "webSearch") {

@@ -295,6 +295,59 @@ describe("toolCallDisplay", () => {
     expect(display.command).toBe("bun test");
   });
 
+  it("classifies read-only exploratory commands into read/search verbs", () => {
+    const catDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "cat src/components/BridgeSidebar.tsx" } }));
+    expect(catDisplay.verb).toBe("read");
+    expect(catDisplay.doing).toBe("Reading");
+    expect(catDisplay.done).toBe("Read");
+    expect(catDisplay.target).toBe("BridgeSidebar.tsx");
+    expect(catDisplay.path).toBe("src/components/BridgeSidebar.tsx");
+
+    const headDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "head -n 20 package.json" } }));
+    expect(headDisplay.verb).toBe("read");
+    expect(headDisplay.target).toBe("package.json");
+
+    const lsDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "ls -la src/auth" } }));
+    expect(lsDisplay.verb).toBe("read");
+    expect(lsDisplay.doing).toBe("Listing");
+    expect(lsDisplay.done).toBe("Listed");
+    expect(lsDisplay.target).toBe("auth");
+
+    const grepDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "grep -rn \"TODO\" src" } }));
+    expect(grepDisplay.verb).toBe("search");
+    expect(grepDisplay.target).toBe("“TODO”");
+
+    const rgDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "rg \"pattern\"" } }));
+    expect(rgDisplay.verb).toBe("search");
+    expect(rgDisplay.target).toBe("“pattern”");
+
+    const findDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "find . -name \"*.rs\"" } }));
+    expect(findDisplay.verb).toBe("search");
+
+    const gitStatusDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "git status" } }));
+    expect(gitStatusDisplay.verb).toBe("read");
+    expect(gitStatusDisplay.doing).toBe("Checking");
+    expect(gitStatusDisplay.target).toBe("git status");
+
+    const gitDiffDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "git diff --stat" } }));
+    expect(gitDiffDisplay.verb).toBe("read");
+    expect(gitDiffDisplay.doing).toBe("Inspecting");
+    expect(gitDiffDisplay.target).toBe("git diff");
+
+    const gitLogDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "git log -5" } }));
+    expect(gitLogDisplay.verb).toBe("read");
+    expect(gitLogDisplay.doing).toBe("Viewing");
+    expect(gitLogDisplay.target).toBe("git log");
+  });
+
+  it("keeps mutating commands as verb run", () => {
+    expect(toolCallDisplay(call({ data: { type: "commandExecution", command: "git commit -m \"fix\"" } })).verb).toBe("run");
+    expect(toolCallDisplay(call({ data: { type: "commandExecution", command: "git push origin main" } })).verb).toBe("run");
+    expect(toolCallDisplay(call({ data: { type: "commandExecution", command: "rm -rf /tmp/foo" } })).verb).toBe("run");
+    expect(toolCallDisplay(call({ data: { type: "commandExecution", command: "echo 'hello' > file.txt" } })).verb).toBe("run");
+    expect(toolCallDisplay(call({ data: { type: "commandExecution", command: "bun run check" } })).verb).toBe("run");
+  });
+
   describe("exit codes", () => {
     it("reads camelCase", () => {
       expect(toolCallDisplay(call({ data: { type: "commandExecution", command: "x", exitCode: 0 } })).exitCode).toBe(0);
