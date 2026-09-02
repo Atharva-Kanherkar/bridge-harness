@@ -1114,7 +1114,7 @@ impl HarnessAdapter for ClaudeAdapter {
                 ("opus", "Claude Opus", CapabilityTier::Strong, false),
                 ("fable", "Claude Fable", CapabilityTier::Strong, true),
             ]),
-            default_model: Some("sonnet".into()),
+            default_model: Some(claude_adapter::DEFAULT_MODEL.into()),
         }
     }
     fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {

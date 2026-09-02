@@ -33,6 +33,10 @@ pub fn register_node_compile_cache_root(root: impl Into<PathBuf>) {
         .expect("the node compile cache root lock is never poisoned") = Some(root.into());
 }
 
+/// Single source of truth for the Claude adapter's default model id.
+/// Referenced by the catalog in `adapters.rs` and by the runtime fallback below.
+pub const DEFAULT_MODEL: &str = "sonnet";
+
 pub struct ClaudeRuntime {
     pub writer: Arc<Mutex<ChildStdin>>,
     pub child: Child,
@@ -102,7 +106,7 @@ fn launch(
     let chosen_model = model
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .unwrap_or("sonnet");
+        .unwrap_or(DEFAULT_MODEL);
     // A briefing run's authority, if this is one. The boundary refuses rather than
     // ignoring: an adapter that dropped this on the floor would run a briefing
     // with a coding agent's full toolset, which is the one outcome the policy
