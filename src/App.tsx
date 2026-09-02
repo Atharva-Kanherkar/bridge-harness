@@ -2020,7 +2020,9 @@ function AppContent() {
             roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"}
             effort={session.effort}
           />}
-          tierLabel={tierRuntimeLabel(session.requestedTier, session.model, session.effort)}
+          tierLabel={session.requestedTier || session.model || session.effort
+            ? tierRuntimeLabel(session.requestedTier, session.model, session.effort)
+            : null}
           bypassBadge={bypassBadge}
           navOpen={navOpen}
           onOpenNav={() => setNavOpen(true)}
