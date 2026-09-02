@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ChatModelControl, modelDisplayName } from "./ChatModelControl";
+import { ChatModelControl, cleanModelLabel, modelDisplayName } from "./ChatModelControl";
 import type { AdapterDescriptor } from "../types";
 
 let container: HTMLDivElement;
@@ -19,7 +19,11 @@ const adapters: AdapterDescriptor[] = [
   },
   {
     id: "cursor", label: "Cursor", available: true, authState: "signed_in", version: "test", capabilities: ["messages"], unavailableReason: null,
-    models: [{ id: "cursor/claude-opus-4.1", label: "Claude Opus 4.1", tier: "standard", defaultForTier: true }], defaultModel: "cursor/claude-opus-4.1",
+    models: [
+      { id: "cursor/claude-opus-4.1", label: "Claude Opus 4.1", tier: "standard", defaultForTier: true },
+      // Cursor reports its fallback entry with the variant brackets left empty.
+      { id: "cursor/default", label: "default[]", tier: "fast", defaultForTier: false },
+    ], defaultModel: "cursor/claude-opus-4.1",
   },
 ];
 
@@ -67,6 +71,41 @@ describe("ChatModelControl", () => {
     expect(trigger().textContent).toContain("Ox Alpha Free");
     expect(trigger().textContent).not.toContain("Unlimited");
     expect(trigger().title).not.toContain("Unlimited");
+  });
+
+  // Cursor's catalog reported "default[]" and the pill rendered it verbatim:
+  // "Cursor · default[]", which reads as a rendering bug rather than a name.
+  it("strips a trailing empty bracket pair from the displayed label", async () => {
+    await act(async () => root.render(
+      <ChatModelControl adapters={adapters} harness="cursor" model="cursor/default" compact onChange={vi.fn()} />,
+    ));
+    expect(trigger().textContent).toContain("Cursor · default");
+    expect(trigger().textContent).not.toContain("[");
+    expect(trigger().title).toBe("Cursor · default");
+    expect(trigger().getAttribute("aria-label")).toBe("Chat model: Cursor default");
+  });
+
+  it("cleans the label in the picker rows too", async () => {
+    await act(async () => root.render(
+      <ChatModelControl adapters={adapters} harness="cursor" model="cursor/default" compact onChange={vi.fn()} />,
+    ));
+    await act(async () => trigger().click());
+    const rows = [...panel().querySelectorAll("button")];
+    expect(rows.some(row => row.textContent?.includes("default["))).toBe(false);
+    const row = rows.find(button => button.textContent?.includes("default"))!;
+    expect(row.textContent).toContain("default");
+  });
+
+  // The id is the wire value; only the rendered text is cleaned.
+  it("emits the untouched model id for a cleaned label", async () => {
+    const onChange = vi.fn();
+    await act(async () => root.render(
+      <ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" compact onChange={onChange} />,
+    ));
+    await act(async () => trigger().click());
+    const row = [...panel().querySelectorAll("button")].find(button => button.textContent?.startsWith("default"))!;
+    await act(async () => row.click());
+    expect(onChange).toHaveBeenCalledWith("cursor", "cursor/default");
   });
 
   it("opens the panel upward by default, where the composer sits at the bottom of the view", async () => {
@@ -161,7 +200,32 @@ describe("modelDisplayName", () => {
     expect(modelDisplayName(adapters, "opencode", "ox-alpha-free")).toBe("Ox Alpha Free");
   });
 
+  it("strips a trailing empty bracket pair", () => {
+    expect(modelDisplayName(adapters, "cursor", "cursor/default")).toBe("default");
+  });
+
   it("falls back to Automatic when no model is configured", () => {
     expect(modelDisplayName(adapters, "codex", null)).toBe("Automatic");
+  });
+});
+
+describe("cleanModelLabel", () => {
+  it("strips an empty bracket pair however the vendor spaced it", () => {
+    expect(cleanModelLabel("default[]")).toBe("default");
+    expect(cleanModelLabel("default []")).toBe("default");
+    expect(cleanModelLabel("default[ ]")).toBe("default");
+    expect(cleanModelLabel("default [ ] ")).toBe("default");
+  });
+
+  it("strips the (Unlimited) plan marker, alone or beside empty brackets", () => {
+    expect(cleanModelLabel("Ox Alpha Free (Unlimited)")).toBe("Ox Alpha Free");
+    expect(cleanModelLabel("Ox Alpha Free (unlimited) []")).toBe("Ox Alpha Free");
+  });
+
+  it("leaves every other label exactly as the catalog reported it", () => {
+    expect(cleanModelLabel("Claude Opus 4.1")).toBe("Claude Opus 4.1");
+    expect(cleanModelLabel("OpenCode Go · MiMo V2.5")).toBe("OpenCode Go · MiMo V2.5");
+    // Only an empty pair is noise; a bracket that names something stays.
+    expect(cleanModelLabel("Sonnet [thinking]")).toBe("Sonnet [thinking]");
   });
 });

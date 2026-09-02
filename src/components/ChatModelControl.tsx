@@ -3,17 +3,28 @@ import { Check, ChevronDown } from "lucide-react";
 import type { AdapterDescriptor, Harness } from "../types";
 import { harnessLabel } from "../utils";
 
-// OpenCode Zen's free tier suffixes its catalog labels with "(Unlimited)".
-// It names the plan, not the model, so it is noise wherever Bridge shows the
-// label as a name — the pill and the picker rows alike.
-const UNLIMITED_SUFFIX = /\s*\(unlimited\)\s*$/i;
+// Vendor noise at the tail of a catalog label. OpenCode Zen's free tier
+// suffixes "(Unlimited)": it names the plan, not the model. Cursor reports a
+// model whose variant brackets came through empty ("default[]"), which read as
+// a rendering bug in the pill. Both are noise wherever Bridge shows the label
+// as a name — the pill, the picker rows, and modelDisplayName alike. Repeated
+// so a label carrying both, in either order, comes out clean.
+const LABEL_NOISE_SUFFIX = /(?:\s*(?:\(unlimited\)|\[\s*\]))+\s*$/i;
+
+/** Display-only cleanup of a catalog label. Ids and what `onChange` emits are
+ *  never touched — only the text Bridge renders. */
+export function cleanModelLabel(label: string): string {
+  const cleaned = label.replace(LABEL_NOISE_SUFFIX, "").trim();
+  // A label that is nothing but noise still has to name something.
+  return cleaned || label.trim();
+}
 
 /** Exact-match lookup of a session's configured model, for display outside
  *  the control itself (e.g. a tooltip or a plain-text mention). */
 export function modelDisplayName(adapters: AdapterDescriptor[], harness: Harness, model?: string | null): string {
   const adapter = adapters.find(item => item.id === harness);
   const label = adapter?.models.find(option => option.id === model)?.label ?? model ?? "Automatic";
-  return label.replace(UNLIMITED_SUFFIX, "");
+  return cleanModelLabel(label);
 }
 
 export type ChatModelControlProps = {
@@ -58,7 +69,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   const chatAdapters = adapters.filter(adapter => adapter.capabilities.includes("messages") || adapter.models.length > 0);
   const current = chatAdapters.find(adapter => adapter.id === harness);
   const currentModel = current?.models.find(option => option.id === model) ?? current?.models.find(option => option.defaultForTier) ?? current?.models[0];
-  const modelLabel = (currentModel?.label ?? model ?? "Default").replace(UNLIMITED_SUFFIX, "");
+  const modelLabel = cleanModelLabel(currentModel?.label ?? model ?? "Default");
   // Some catalogs bake the provider into the model label ("OpenCode Go ·
   // MiMo V2.5"), and prefixing the harness again read as a stutter:
   // "OpenCode · OpenCode Go · MiMo V2.5". When the model label already opens
@@ -87,7 +98,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
           {(adapter.models.length ? adapter.models : [{ id: "", label: "Default", tier: "fast" as const, defaultForTier: true }]).map(option => {
             const selected = adapter.id === harness && (option.id ? option.id === model : !model);
             return <button key={`${adapter.id}:${option.id || "default"}`} type="button" disabled={!adapter.available} onClick={() => { onChange(adapter.id as Harness, option.id || null); setOpen(false); }} className={`w-full flex items-center gap-2 px-3 py-2 text-left transition-colors disabled:opacity-40 ${selected ? "bg-foreground/[0.08]" : "hover:bg-foreground/[0.05]"}`}>
-              <span className="flex-1 min-w-0 text-[12.5px] text-foreground whitespace-nowrap overflow-hidden text-ellipsis">{option.label.replace(UNLIMITED_SUFFIX, "")}</span>
+              <span className="flex-1 min-w-0 text-[12.5px] text-foreground whitespace-nowrap overflow-hidden text-ellipsis">{cleanModelLabel(option.label)}</span>
               <span className="text-[9.5px] uppercase tracking-[0.06em] text-muted-foreground/45">{option.tier}</span>
               {selected && <Check size={13} className="text-foreground/80" aria-hidden="true" />}
             </button>;
