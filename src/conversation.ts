@@ -1,9 +1,57 @@
+import { stripBridgeFences } from "./humanize";
 import type { AgentEvent, SessionEntry } from "./types";
 
 export type ConversationItemType = "message" | "reasoning" | "activity" | "plan" | "approval" | "permission" | "question" | "error" | "diff" | "artifact" | "delegation" | "checkpoint" | "compaction" | "branch-summary" | "raw";
 export interface ConversationItem {
   key: string; type: ConversationItemType; eventId: number; role?: string; status?: string;
   title?: string; text: string; data: Record<string, unknown>; sequence: number; entryId?: string;
+  /**
+   * Provider item id from the live event (`AgentEvent.itemId`) or the durable
+   * payload. Live events do not copy this into `data`; durable ones do.
+   */
+  itemId?: string;
+  /**
+   * The identity this item shares with its counterpart on the other
+   * projection (live vs durable), when it has one. `eventId` is not it: on
+   * the live side it is the session-event table's own autoincrement id, and
+   * on the durable side it is the forest entry's sequence — two unrelated
+   * numbering spaces that happen to collide by coincidence, not by design.
+   * Prefer this field over `eventId` for any merge that needs to recognize a
+   * streamed item and its persisted twin as the same logical thing. See
+   * `itemIdentity`.
+   */
+  identity?: string;
+}
+
+/**
+ * Domain id keys, tried in priority order, that identify one logical item —
+ * a tool call, an approval, a permission, a question — the same way whether
+ * it is read off the live event stream or off a persisted forest entry. Both
+ * sides carry these inside their own `data`/`payload` bag (the backend
+ * writes the same JSON body to both the session-event row and, once it goes
+ * durable, the forest entry's payload); the autoincrement ids each store
+ * assigns around that body do not agree, and were never meant to.
+ */
+const IDENTITY_KEYS = ["itemId", "approvalId", "requestId", "questionId"] as const;
+
+/**
+ * The identity a conversation item shares with its counterpart on the other
+ * projection, falling back to something still unique — but not
+ * cross-projection-stable — when the item carries none of the known domain
+ * ids. Both `reduceConversation` and `projectSessionConversation` populate
+ * `item.identity` with this before returning, so a caller merging live and
+ * durable lists never has to reach for `eventId`.
+ */
+export function itemIdentity(item: Pick<ConversationItem, "data" | "entryId" | "eventId" | "type" | "itemId">): string {
+  if (typeof item.itemId === "string" && item.itemId) return item.itemId;
+  for (const key of IDENTITY_KEYS) {
+    const value = item.data[key];
+    if (typeof value === "string" && value) return value;
+  }
+  // A durable-only card (checkpoint, compaction, branch summary) has no live
+  // twin to line up with, so the entry id is unique enough. A live-only item
+  // with none of the above falls back to its own event id.
+  return item.entryId ? `entry:${item.entryId}` : `${item.type}:${item.eventId}`;
 }
 
 /** Select one root-to-leaf path without relying on input array order. */
@@ -109,7 +157,9 @@ export function projectSessionConversation(entries: SessionEntry[], activeLeafId
       interactionsBySequence.set(`${interactionKind}:${entry.sequence}`, item);
     }
   }
-  return items.filter(item => item.type !== "reasoning" || item.text.trim().length > 0);
+  return items
+    .filter(item => item.type !== "reasoning" || item.text.trim().length > 0)
+    .map(withIdentity);
 }
 
 function projectSessionEntry(entry: SessionEntry): ConversationItem {
@@ -138,7 +188,9 @@ function projectSessionEntry(entry: SessionEntry): ConversationItem {
         ...base,
         type: "message",
         role: entry.kind === "user.message" ? "user" : stringValue(payload.role) ?? "assistant",
-        text: stringValue(payload.text) ?? "",
+        text: entry.kind === "assistant.message"
+          ? stripBridgeFences(stringValue(payload.text) ?? "")
+          : stringValue(payload.text) ?? "",
       };
     case "checkpoint":
       return { ...base, type: "checkpoint", title: "Checkpoint", text: stringValue(payload.summary) ?? "" };
@@ -169,7 +221,7 @@ function projectSessionEntry(entry: SessionEntry): ConversationItem {
         type: "reasoning",
         status: stringValue(payload.status) ?? "completed",
         title: stringValue(payload.title) ?? "Thought for a moment",
-        text: stringValue(payload.text) ?? stringValue(payload.summary) ?? "",
+        text: reasoningDisplayText(stringValue(payload.text), payload),
       };
     default:
       return {
@@ -349,7 +401,10 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
       if (target) {
         target.status = event.status ?? "completed";
         if (event.text) target.text = event.text;
-        else if (stringList(event.data?.summary)) target.text = stringList(event.data.summary);
+        else if (!target.text) {
+          const display = reasoningDisplayText(null, event.data);
+          if (display) target.text = display;
+        }
         target.data = { ...target.data, ...event.data };
         target.eventId = event.id;
         if (event.itemId && target.key !== event.itemId) {
@@ -359,20 +414,31 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
         }
         continue;
       }
-      if (!(event.text || stringList(event.data?.summary))) continue;
+      if (!reasoningDisplayText(event.text, event.data)) continue;
     }
     if (type === "message" && !event.text && !items.has(itemKey)) continue;
     const existing = items.get(itemKey);
     const next: ConversationItem = existing ?? { key:itemKey, type, eventId:event.id, role:event.role ?? undefined, status:event.status ?? undefined, title:event.title ?? undefined, text:"", data:{}, sequence:event.sequence };
     next.eventId = event.id; next.status = event.status ?? next.status; next.title = event.title ?? next.title; next.role = event.role ?? next.role;
-    if (event.text) next.text = event.text; next.data = { ...next.data, ...event.data }; items.set(itemKey,next);
+    if (event.text) next.text = event.text;
+    else if (type === "reasoning" && !next.text) next.text = reasoningDisplayText(null, event.data);
+    next.data = { ...next.data, ...event.data }; items.set(itemKey,next);
   }
   return [...items.values()]
-    .map(item => item.type === "message" ? { ...item, text: stripWorkerResultBlocks(item.text) } : item)
+    .map(item => item.type === "message" ? { ...item, text: stripBridgeFences(stripWorkerResultBlocks(item.text)) } : item)
     .filter(item => item.type !== "message" || !internalCompactionMessageKeys.has(item.key))
     .filter(item => item.type !== "reasoning" || item.text.trim().length > 0)
     .filter(item => item.type !== "message" || item.text.trim().length > 0)
-    .sort((a,b)=>a.sequence-b.sequence);
+    .sort((a,b)=>a.sequence-b.sequence)
+    .map(item => withIdentity(stampLiveItemId(item)));
+}
+
+/** Live events keep `itemId` on the event, not in `data`. The reducer uses
+ *  that value as `item.key` when the provider sent one; synthetic keys always
+ *  contain a colon (`approval:7`, `command.started:9`, `reasoning:live:0`). */
+function stampLiveItemId(item: ConversationItem): ConversationItem {
+  if (item.itemId || item.key.includes(":")) return item;
+  return { ...item, itemId: item.key };
 }
 
 /** Defense in depth for a backend-tagged maintenance frame. Content shape is
@@ -443,6 +509,28 @@ export function stripWorkerResultBlocks(text: string): string {
 }
 
 function stringList(value:unknown){return Array.isArray(value)?value.join("\n"):"";}
+
+function withIdentity(item: ConversationItem): ConversationItem {
+  const itemId = item.itemId ?? stringValue(item.data.itemId);
+  const next = itemId && item.itemId !== itemId ? { ...item, itemId } : item;
+  return { ...next, identity: itemIdentity(next) };
+}
+
+/** Resolved reasoning text: the streamed `text`, or Codex's summary-only payload. */
+export function reasoningDisplayText(text?: string | null, data: Record<string, unknown> = {}): string {
+  if (text) return text;
+  const summary = data.summary;
+  if (typeof summary === "string") return summary;
+  return stringList(summary);
+}
+
+/** A worker-result payload stamped onto assistant prose, if that is all the text is. */
+export function workerResultSummary(text: string): string | undefined {
+  const prefix = "[worker result]";
+  if (!text.startsWith(prefix)) return undefined;
+  const rest = text.slice(prefix.length).trim();
+  return rest || undefined;
+}
 
 /* ── Tool-call display data ──────────────────────────────────────────────
    One tool call arrives in as many shapes as there are providers: a Claude
@@ -965,7 +1053,9 @@ export function foldWorkerDelegations(items: ConversationItem[]): ConversationIt
     panel.data = { ...panel.data, ...item.data };
     panel.status = item.status ?? panel.status;
     panel.title = item.title ?? panel.title;
-    if (item.text) panel.text = item.text;
+    // A `[worker result] …` stamp is routing metadata for the panel, not a
+    // replacement for the human objective the spawn already showed.
+    if (item.text && !workerResultSummary(item.text)) panel.text = item.text;
     // The panel keeps its own key and eventId: the key is what React reconciles
     // on, and the eventId is what the durable/live dedupe upstream matches.
   }

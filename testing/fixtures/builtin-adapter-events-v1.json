@@ -20,9 +20,9 @@
         { "kind": "session.started", "status": "ready" },
         { "kind": "message.delta", "itemId": "msg-1", "role": "assistant", "status": "streaming", "text": "hello" },
         { "kind": "reasoning.delta", "itemId": "reasoning-msg-1", "status": "streaming", "text": "considering" },
-        { "kind": "tool.started", "itemId": "tool-1", "status": "inProgress", "title": "Bash" },
+        { "kind": "command.started", "itemId": "tool-1", "status": "inProgress", "title": "Bash" },
         { "kind": "permission.requested", "itemId": "tool-1", "status": "pending", "title": "Approve Bash", "text": "pwd", "requestId": "permission-1" },
-        { "kind": "tool.completed", "itemId": "tool-1", "status": "completed", "text": "/tmp" },
+        { "kind": "command.completed", "itemId": "tool-1", "status": "completed", "text": "/tmp" },
         { "kind": "tool.completed", "itemId": "tool-2", "status": "failed", "text": "failed", "isError": true },
         { "kind": "message.completed", "itemId": "msg-1", "role": "assistant", "status": "completed", "text": "hello" },
         { "kind": "reasoning.completed", "itemId": "reasoning-msg-1", "status": "completed", "text": "considered" },
@@ -55,7 +55,7 @@
         { "kind": "session.started" },
         { "kind": "turn.started", "status": "working", "turnId": "turn-1" },
         { "kind": "message.delta", "role": "assistant", "text": "hello" },
-        { "kind": "reasoning.delta", "text": "considering" },
+        { "kind": "reasoning.delta", "itemId": "reasoning-1", "text": "considering" },
         { "kind": "plan.updated", "title": "Run the tests" },
         { "kind": "file_change.started", "itemId": "file-1", "status": "inProgress" },
         { "kind": "file_change.completed", "itemId": "file-1", "status": "completed" },
@@ -98,7 +98,7 @@
         { "kind": "file_change.completed", "itemId": "file-1", "status": "completed", "title": "Edit file", "text": "done" },
         { "kind": "permission.requested", "itemId": "tool-1", "status": "pending", "title": "Approve bash", "text": "cargo test", "requestId": "permission-1" },
         { "kind": "provider.unknown", "title": "future.event" },
-        { "kind": "error", "status": "failed", "text": "boom" },
+        { "kind": "error", "status": "failed", "title": "OpenCode error", "text": "boom" },
         { "kind": "turn.completed", "status": "completed" }
       ]
     }

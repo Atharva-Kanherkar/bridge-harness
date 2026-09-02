@@ -1,7 +1,8 @@
 import { memo, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Maximize2, Navigation, Pencil, Pin, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
-import { attachmentUris, delegationChildSessionId, delegationFacet, foldWorkerDelegations, projectSessionConversation, reduceConversation, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
+import { attachmentUris, delegationChildSessionId, delegationFacet, foldWorkerDelegations, itemIdentity, projectSessionConversation, reduceConversation, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
+import { humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeResolution } from "../humanize";
 import { pickGreeting } from "../greetings";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, SessionStartupPhase, WorkerRepositoryBinding, WorkerRuntimeRecord } from "../types";
 import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
@@ -51,22 +52,17 @@ function groupItems(items: ConversationItem[]): Rendered[] {
   }
 
   let currentGroup: ConversationItem[] | null = null;
-  let currentPlans: ConversationItem[] = [];
-  let currentReasoning: ConversationItem | null = null;
 
   function flushGroup() {
-    if (currentReasoning) {
-      out.push({ kind: "item", item: currentReasoning });
-      currentReasoning = null;
-    }
-    for (const plan of currentPlans) {
-      out.push({ kind: "item", item: plan });
-    }
-    currentPlans = [];
     if (currentGroup && currentGroup.length > 0) {
       out.push({ kind: "group", key: `group-${currentGroup[0].key}`, items: currentGroup });
       currentGroup = null;
     }
+  }
+
+  function lastReasoning(): ConversationItem | undefined {
+    const last = out[out.length - 1];
+    return last?.kind === "item" && last.item.type === "reasoning" ? last.item : undefined;
   }
 
   for (const item of nonRaw) {
@@ -77,36 +73,21 @@ function groupItems(items: ConversationItem[]): Rendered[] {
     }
 
     if (item.type === "reasoning") {
-      if (currentGroup && currentGroup.length > 0) {
-        flushGroup();
-      }
-      if (currentReasoning) {
-        const combinedText: string = currentReasoning.text
-          ? `${currentReasoning.text}\n${item.text}`
-          : item.text;
-        currentReasoning = {
-          ...item,
-          key: currentReasoning.key,
-          text: combinedText,
-          status: item.status === "streaming" || currentReasoning.status === "streaming" ? "streaming" : "completed",
-        };
+      flushGroup();
+      const prior = lastReasoning();
+      if (prior) {
+        prior.text = prior.text ? `${prior.text}\n${item.text}` : item.text;
+        prior.status = item.status === "streaming" || prior.status === "streaming" ? "streaming" : "completed";
+        prior.data = { ...prior.data, ...item.data };
       } else {
-        currentReasoning = item;
+        out.push({ kind: "item", item });
       }
-      continue;
-    }
-
-    if (item.type === "plan") {
-      currentPlans.push(item);
       continue;
     }
 
     if (GROUPABLE.has(item.type)) {
-      if (!currentGroup) {
-        currentGroup = [item];
-      } else {
-        currentGroup.push(item);
-      }
+      if (!currentGroup) currentGroup = [item];
+      else currentGroup.push(item);
       continue;
     }
 
@@ -252,27 +233,52 @@ const TOOL_ICON: Record<ToolGlyph, React.ReactNode> = {
   wrench: <Wrench size={12}/>,
 };
 
-const VERB_DONE: Record<ToolVerb, string> = {
-  edit: "edited files", read: "read files", run: "ran commands", search: "searched the web", tool: "used tools",
-};
-const VERB_DOING: Record<ToolVerb, string> = {
-  edit: "editing files", read: "reading files", run: "running commands", search: "searching the web", tool: "using tools",
-};
-
 /// Reads and searches earn less ink than writes: they stay flat rows under a
 /// group label, while an edit or a command becomes a card with a body.
 const FLAT_VERBS = new Set<ToolVerb>(["read", "search"]);
 
 function summarize(items: ConversationItem[], live: boolean): string {
-  const seen: ToolVerb[] = [];
-  for (const item of items) {
-    const verb = toolCallDisplay(item).verb;
-    if (!seen.includes(verb)) seen.push(verb);
-  }
-  const table = live ? VERB_DOING : VERB_DONE;
-  const text = seen.map(verb => table[verb]).join(", ");
-  const sentence = text.charAt(0).toUpperCase() + text.slice(1);
-  return live ? `${sentence}…` : sentence;
+  const counts: Record<ToolVerb, number> = { edit: 0, read: 0, run: 0, search: 0, tool: 0 };
+  for (const item of items) counts[toolCallDisplay(item).verb] += 1;
+  const noun = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+  const parts: string[] = [];
+  if (counts.read) parts.push(live ? `Reading ${noun(counts.read, "file", "files")}` : `Read ${noun(counts.read, "file", "files")}`);
+  if (counts.edit) parts.push(live ? `editing ${noun(counts.edit, "file", "files")}` : `edited ${noun(counts.edit, "file", "files")}`);
+  if (counts.run) parts.push(live ? `running ${noun(counts.run, "command", "commands")}` : `ran ${noun(counts.run, "command", "commands")}`);
+  if (counts.search) parts.push(live ? `searching the web` : `searched the web`);
+  if (counts.tool) parts.push(live ? `using ${noun(counts.tool, "tool", "tools")}` : `used ${noun(counts.tool, "tool", "tools")}`);
+  if (!parts.length) return live ? "Working…" : "Done";
+  const text = parts.join(" · ");
+  return live ? `${text.charAt(0).toUpperCase() + text.slice(1)}…` : text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+const OUTPUT_DISPLAY_CAP = 6000;
+
+function CappedOutput({ text, className }: { text: string; className?: string }) {
+  const [all, setAll] = useState(false);
+  const clipped = !all && text.length > OUTPUT_DISPLAY_CAP;
+  return (
+    <div>
+      <pre className={className}>{clipped ? text.slice(-OUTPUT_DISPLAY_CAP) : text}</pre>
+      {clipped && (
+        <button
+          type="button"
+          className="px-3.5 pb-2.5 text-left text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline"
+          onClick={() => setAll(true)}
+        >
+          earlier output hidden — show all
+        </button>
+      )}
+    </div>
+  );
+}
+
+function formatThoughtDuration(ms: number): string {
+  const total = Math.max(1, Math.round(ms / 1000));
+  const minutes = Math.floor(total / 60);
+  const seconds = total % 60;
+  if (minutes === 0) return `${seconds}s`;
+  return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
 }
 
 /// `exit 0` / `exit 2`, wherever the provider actually reports one — so a
@@ -290,7 +296,7 @@ function TerminalBlock({ command, output }: { command?: string; output?: string 
       <span className="shrink-0 select-none font-semibold text-success" aria-hidden="true">❯</span>
       <span className="min-w-0 whitespace-pre-wrap break-words text-foreground">{command}</span>
     </div>}
-    {output && <pre className="max-h-[260px] overflow-auto whitespace-pre-wrap break-words px-3.5 pb-2.5 pl-[30px] text-muted-foreground">{output.slice(-6000)}</pre>}
+    {output && <CappedOutput text={output} className="max-h-[260px] overflow-auto whitespace-pre-wrap break-words px-3.5 pb-2.5 pl-[30px] text-muted-foreground"/>}
   </div>;
 }
 
@@ -382,7 +388,7 @@ function ActionRow({ item }: { item: ConversationItem }) {
           {body === "terminal" && <TerminalBlock command={call.command} output={call.output}/>}
           {body === "output" && (looksLikeDiff(call.output ?? "")
             ? <PatchView patch={call.output ?? ""} path={call.path ?? ""} className="max-h-[320px] px-1" foldAfterHunks={2}/>
-            : <pre className="max-h-[320px] overflow-auto whitespace-pre-wrap break-words bg-code p-3 font-mono text-[11.5px] leading-relaxed text-muted-foreground">{(call.output ?? "").slice(-6000)}</pre>)}
+            : <CappedOutput text={call.output ?? ""} className="max-h-[320px] overflow-auto whitespace-pre-wrap break-words bg-code p-3 font-mono text-[11.5px] leading-relaxed text-muted-foreground"/>)}
         </Disclosure>
       </div>
     </motion.div>
@@ -416,7 +422,11 @@ function ActivityGroup({ items }: { items: ConversationItem[] }) {
   // for is not an inline patch.
   const carriesPatch = items.some(item => !!toolCallDisplay(item).patch);
   const [toggled, setToggled] = useState<boolean | null>(null);
-  const expanded = toggled !== null ? toggled : (live || carriesPatch);
+  const [heldOpen, setHeldOpen] = useState(live);
+  useEffect(() => { if (live) setHeldOpen(true); }, [live]);
+  // Once the reader watched this group live, finishing the turn must not slam
+  // it shut. A later click is the only thing that overrides that.
+  const expanded = toggled !== null ? toggled : (live || carriesPatch || heldOpen);
   // Rows revealed together arrive one after another at the same 40ms cadence the
   // CSS entrance used, so an expanding group unfolds instead of appearing whole.
   const stagger = useMotionStagger();
@@ -563,16 +573,30 @@ function StartupStatusRow({ view, harness }: { view: NarrationView; harness?: st
   );
 }
 
+function StallNotice({ onStop }: { onStop?: () => void }) {
+  const [keepWaiting, setKeepWaiting] = useState(false);
+  if (keepWaiting) return null;
+  return (
+    <div role="status" className={`${NOTICE} border-l-warning`}>
+      <p>This turn has gone quiet. Stop it, or keep waiting.</p>
+      <div className="mt-2 flex flex-wrap gap-2">
+        <button type="button" className={BTN_SECONDARY} onClick={() => onStop?.()}>Stop</button>
+        <button type="button" className={BTN_SECONDARY} onClick={() => setKeepWaiting(true)}>Keep waiting</button>
+      </div>
+    </div>
+  );
+}
+
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onExpandWorker, onWaiveCompletion, onRefreshBase, onRetryWorker, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, modelSwitch }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onExpandWorker, onWaiveCompletion, onRefreshBase, onRetryWorker, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, modelSwitch, onInterrupt, stopping }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean }) {
   const visibleItems = useMemo(() => {
     const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
     const nextLiveItems = reduceConversation(events);
     const items = [...durableItems];
-    const durableIds = new Set(durableItems.map(item => item.eventId));
+    const durableIds = new Set(durableItems.map(item => item.identity ?? itemIdentity(item)));
     for (const live of nextLiveItems) {
-      if (!durableIds.has(live.eventId)) items.push(live);
+      if (!durableIds.has(live.identity ?? itemIdentity(live))) items.push(live);
     }
     // Folded after the merge, not inside either projection: mid-run the spawn is
     // already durable while the result is still only live.
@@ -616,9 +640,21 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     seenPending.set(text, occurrence + 1);
     return { key: `pending-${text}:${occurrence}`, text };
   });
-  // An attachment is a message on its own, so pasted images render as their
-  // own optimistic row — with or without accompanying text.
+  // Text and images of one send share a single bubble, matching the persisted
+  // user row. Image-only sends still get that same bubble with no prose.
   const pendingAttachmentRows = pendingAttachments.map((dataUri, index) => ({ key: `pending-attachment-${index}`, dataUri }));
+  const optimisticBubbles = pendingRows.length
+    ? pendingRows.map((row, index) => ({
+        key: row.key,
+        text: row.text,
+        attachments: index === pendingRows.length - 1 ? pendingAttachmentRows.map(row => row.dataUri) : [],
+      }))
+    : pendingAttachmentRows.length
+      ? [{ key: pendingAttachmentRows[0].key, text: "", attachments: pendingAttachmentRows.map(row => row.dataUri) }]
+      : [];
+  const lastEventAt = events.length ? new Date(events[events.length - 1]?.createdAt ?? 0).getTime() : 0;
+  const clock = now ?? Date.now();
+  const stalled = !!working && !stopping && !streaming && lastEventAt > 0 && clock - lastEventAt > 45_000;
   const tailLength = visibleItems.length ? visibleItems[visibleItems.length - 1].text.length : 0;
   const scrollSignature = `${visibleItems.length}:${tailLength}:${optimistic.length}:${working ? 1 : 0}`;
   return <FileLinkContext.Provider value={fileLinks}><ScrollFollow signature={scrollSignature} className="absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth px-3 py-8 pb-24 sm:px-6 sm:py-10">
@@ -652,9 +688,15 @@ export const AgentConversation = memo(function AgentConversation({ session, even
             >
               <ItemView item={entry.item} workers={workers} now={now} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRefreshBase={onRefreshBase} onRetryWorker={onRetryWorker} onRetryCompaction={onRetryCompaction} onRemember={onRemember} errorContext={errorContext}/>
             </TranscriptRow>)}
-        {pendingRows.map(row => <TranscriptRow key={row.key}><div className={BUBBLE}><MentionText text={row.text}/></div></TranscriptRow>)}
-        {pendingAttachmentRows.map(row => <TranscriptRow key={row.key}><div className={`${BUBBLE} p-1.5`}><img src={row.dataUri} alt="Image you attached, still sending" className="max-h-40 rounded-xl"/></div></TranscriptRow>)}
+        {optimisticBubbles.map(bubble => <TranscriptRow key={bubble.key}><div className={BUBBLE}>
+          {bubble.text ? <MentionText text={bubble.text}/> : null}
+          {bubble.attachments.length > 0 && <div className="flex flex-wrap justify-end gap-1.5 pt-1.5">
+            {bubble.attachments.map((dataUri, index) => <img key={index} src={dataUri} alt={`Image you attached, still sending ${index + 1}`} className="max-h-40 rounded-xl"/>)}
+          </div>}
+        </div></TranscriptRow>)}
         {startupNarration.mounted && <TranscriptRow key="working"><div className="flex justify-start"><StartupStatusRow view={startupNarration} harness={modelSwitch?.harness ?? session?.harness}/></div></TranscriptRow>}
+        {stopping && <TranscriptRow key="stopping"><p role="status" className={`${NOTICE} border-l-info`}>Stopping…</p></TranscriptRow>}
+        {stalled && <TranscriptRow key="stalled"><StallNotice onStop={onInterrupt}/></TranscriptRow>}
       </AnimatePresence>
     </div>
   </ScrollFollow></FileLinkContext.Provider>;
@@ -717,7 +759,7 @@ function VerificationCard({ summary, onWaive }: { summary: CompletionSummary; on
     <details className="border-t border-border">
       <summary className="cursor-pointer px-3.5 py-2 text-xs text-foreground marker:text-muted-foreground sm:px-4">Proof and checks</summary>
       <div className="space-y-1 border-t border-border px-3.5 py-3 sm:px-4">
-        {summary.checks.map(check => <div key={check.checkId} className="flex items-start gap-2 text-xs text-muted-foreground">{statusIcon(check.status)}<div className="min-w-0 flex-1"><div className="flex flex-wrap gap-x-2"><span className="text-foreground">{check.command || check.checkId}</span><span>{check.kind.replace("_", " ")}</span>{check.verifierFamily && <span>· {check.verifierFamily}</span>}</div>{check.detail && <p className="mt-0.5 truncate font-mono text-[10.5px]">{check.detail}</p>}</div><span className="shrink-0 text-[10px] uppercase tracking-wide">{check.status}</span></div>)}
+        {summary.checks.map(check => <div key={check.checkId} className="flex items-start gap-2 text-xs text-muted-foreground">{statusIcon(check.status)}<div className="min-w-0 flex-1"><div className="flex flex-wrap gap-x-2"><span className="text-foreground">{check.command || check.checkId}</span><span>{humanizeCheckKind(check.kind)}</span>{check.verifierFamily && <span>· {check.verifierFamily}</span>}</div>{check.detail && <p className="mt-0.5 truncate font-mono text-[10.5px]">{check.detail}</p>}</div><span className="shrink-0 text-[10px] tracking-wide">{humanizeCheckStatus(check.status)}</span></div>)}
         {summary.waiverReason && <p className="mt-2 rounded-md border border-border border-l-2 border-l-warning bg-background px-2 py-1.5 text-xs text-warning">Waiver: {summary.waiverReason}</p>}
         {onWaive && unresolved.length > 0 && !["verified", "waived", "superseded"].includes(summary.verdict) && <div className="pt-2">
           {!waiverOpen ? <button type="button" onClick={() => setWaiverOpen(true)} className="rounded-full border border-input px-2.5 py-1.5 text-xs font-medium text-warning transition-colors hover:bg-accent">Waive unresolved checks</button> : <form onSubmit={event => { event.preventDefault(); const reason = waiverReason.trim(); if (!reason) { setWaiverError("Explain why these checks can be waived."); return; } setWaiving(true); setWaiverError(undefined); void onWaive(summary.attemptId, unresolved.map(check => check.checkId), reason).then(() => { setWaiverOpen(false); setWaiverReason(""); }).catch(error => setWaiverError(error instanceof Error ? error.message : String(error))).finally(() => setWaiving(false)); }} className="space-y-2 rounded-lg border border-border border-l-2 border-l-warning bg-background p-2.5">
@@ -898,16 +940,18 @@ function RawEventGroup({ items }: { items: ConversationItem[] }) {
 function Reasoning({ item }: { item: ConversationItem }) {
   const streaming = item.status === "streaming";
   const text = item.text || stringList(item.data.summary);
+  const durationMs = typeof item.data.durationMs === "number" ? item.data.durationMs : undefined;
+  const lastLine = text.split("\n").map(line => line.trim()).filter(Boolean).at(-1);
+  const label = durationMs !== undefined ? `Thought for ${formatThoughtDuration(durationMs)}` : "Thought for a moment";
   if (streaming) {
     const lines = text.split("\n").map(line => line.trim()).filter(Boolean);
-    const recent = lines.slice(-3);
     return (
       <div className="my-3 flex min-w-0 items-start gap-3 rounded-xl border border-border bg-card px-3.5 py-3 sm:px-4">
         <Brain size={14} className="mt-0.5 shrink-0 text-muted-foreground animate-[thinking-pulse_1.6s_ease-in-out_infinite]" aria-hidden="true"/>
         <div className="min-w-0 flex-1">
           <span className="text-shimmer text-[12px] font-medium">Thinking…</span>
-          {recent.length > 0 && <div className="mt-1.5 space-y-0.5">
-            {recent.map((line, index) => <p key={index} className={`truncate text-[12px] leading-relaxed ${index === recent.length - 1 ? "text-muted-foreground" : "text-muted-foreground/70"}`}>{line}</p>)}
+          {lines.length > 0 && <div className="mt-1.5 space-y-0.5">
+            {lines.map((line, index) => <p key={index} className={`whitespace-pre-wrap break-words text-[12px] leading-relaxed ${index === lines.length - 1 ? "text-muted-foreground" : "text-muted-foreground/70"}`}>{line}</p>)}
           </div>}
         </div>
       </div>
@@ -917,7 +961,10 @@ function Reasoning({ item }: { item: ConversationItem }) {
     <details className="group my-3 min-w-0 rounded-xl border border-border bg-card [&_summary::-webkit-details-marker]:hidden">
       <summary className="flex cursor-pointer items-center gap-2.5 px-3.5 py-2.5 text-[12px] text-muted-foreground transition-colors hover:text-foreground sm:px-4">
         <Brain size={13} className="shrink-0 text-muted-foreground/70" aria-hidden="true"/>
-        <span className="font-medium">Thought for a moment</span>
+        <span className="min-w-0 flex-1 truncate">
+          <span className="font-medium">{label}</span>
+          {lastLine && <span className="ml-2 font-normal text-muted-foreground/70">{lastLine}</span>}
+        </span>
         <ChevronRight size={12} className="ml-auto shrink-0 text-muted-foreground/70 transition-transform group-open:rotate-90" aria-hidden="true"/>
       </summary>
       <div className="border-t border-border px-3.5 py-3 text-muted-foreground sm:px-4">
@@ -1103,8 +1150,10 @@ function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: 
   // user can actually make.
   const reason = typeof item.data.reason === "string" ? item.data.reason : "";
   const remediation = typeof item.data.remediation === "string" ? item.data.remediation : "";
+  const human = reason ? humanizeApprovalReason(reason) : { title: item.title || "Approval needed", detail: undefined };
   return <div className={`${PANEL} border-l-warning`}>
-    <header className="flex flex-wrap items-baseline gap-x-2 gap-y-1 pt-3 px-3.5 sm:px-4"><b className="text-[13px] font-semibold text-foreground">{item.title || "Approval needed"}</b>{pending && <small className="text-warning text-[10.5px] tracking-[0.03em]">waiting for you</small>}</header>
+    <header className="flex flex-wrap items-baseline gap-x-2 gap-y-1 pt-3 px-3.5 sm:px-4"><b className="text-[13px] font-semibold text-foreground">{human.title}</b>{pending && <small className="text-warning text-[10.5px] tracking-[0.03em]">waiting for you</small>}</header>
+    {human.detail ? <p className="mt-1.5 px-3.5 text-muted-foreground text-[12.5px] leading-relaxed sm:px-4">{human.detail}</p> : null}
     {item.data.objective ? <p className="mt-1.5 px-3.5 text-muted-foreground text-[12.5px] leading-relaxed sm:px-4">{String(item.data.objective)}</p> : null}
     {scope.length > 0 && <div className="mt-2 px-3.5 sm:px-4">
       <small className="block text-muted-foreground/70 text-[10.5px] tracking-[0.03em] uppercase">Write scope</small>
@@ -1139,8 +1188,12 @@ function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: 
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
             transition={transition}
-          >{accepted ? <Check size={12} aria-hidden="true" /> : <X size={12} aria-hidden="true" />} {item.status}</motion.div>}
+          >{accepted ? <Check size={12} aria-hidden="true" /> : <X size={12} aria-hidden="true" />} {humanizeResolution(item.status ?? "resolved")}</motion.div>}
     </AnimatePresence>
+    {reason && <details className="border-t border-border px-3.5 py-2 text-[11px] text-muted-foreground sm:px-4">
+      <summary className="cursor-pointer">Policy</summary>
+      <p className="mt-1 font-mono break-all">{reason}</p>
+    </details>}
     {error && <p role="alert" className="px-3.5 pb-3 text-[11.5px] text-destructive sm:px-4">{error}</p>}
   </div>;
 }

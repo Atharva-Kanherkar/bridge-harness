@@ -198,15 +198,15 @@ describe("AgentConversation", () => {
     expect(html).toContain("private contract");
     expect(html).toContain("abcdef123456");
     expect(html).toContain("Browser unavailable");
-    expect(html).toContain("skipped");
+    expect(html).toContain("Skipped");
   });
 
   it.each([
-    ["verifying", "Verifying", "pending"],
-    ["changes_requested", "Changes requested", "failed"],
-    ["verified", "Verified", "passed"],
-    ["superseded", "Evidence superseded", "stale"],
-    ["waived", "Verified with waiver", "skipped"],
+    ["verifying", "Verifying", "Pending"],
+    ["changes_requested", "Changes requested", "Failed"],
+    ["verified", "Verified", "Passed"],
+    ["superseded", "Evidence superseded", "Stale"],
+    ["waived", "Verified with waiver", "Skipped"],
   ] as const)("renders %s as a distinct proof state", (verdict, title, checkStatus) => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} completion={completion(verdict)}/>);
     expect(html).toContain(title);

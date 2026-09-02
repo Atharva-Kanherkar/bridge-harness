@@ -34,6 +34,7 @@ function Chip({
   expanded,
   disabled,
   onClick,
+  ariaLabel,
 }: {
   icon: LucideIcon;
   label: string;
@@ -41,6 +42,7 @@ function Chip({
   expanded?: boolean;
   disabled?: boolean;
   onClick?: () => void;
+  ariaLabel?: string;
 }) {
   const className = cn(
     "inline-flex h-7 max-w-[16rem] items-center gap-1.5 rounded-md px-2 text-[12.5px] tracking-[-0.01em]",
@@ -57,7 +59,7 @@ function Chip({
     );
   }
   return (
-    <button type="button" aria-pressed={pressed} aria-expanded={expanded} disabled={disabled} onClick={onClick} className={className}>
+    <button type="button" aria-label={ariaLabel} aria-pressed={pressed} aria-expanded={expanded} disabled={disabled} onClick={onClick} className={className}>
       <Icon size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
       <span className="min-w-0 truncate">{label}</span>
     </button>
@@ -159,43 +161,50 @@ export function ComposerContextStrip({
 
       <Chip
         icon={GitFork}
-        label={worktree ? "Isolated worktree" : "On branch"}
+        label={worktree ? "Isolated worktree" : "Work on branch"}
+        ariaLabel={worktree ? "Using an isolated worktree. Click to work on the branch." : "Working on the branch. Click to isolate in a worktree."}
         pressed={worktree}
         disabled={locked || !worktreeAvailable}
         onClick={locked || !worktreeAvailable ? undefined : onToggleWorktree}
       />
 
-      <button
-        type="button"
-        ref={hostMenu.triggerRef}
-        aria-haspopup="menu"
-        aria-expanded={hostMenu.open}
-        onClick={hostMenu.toggle}
-        className={cn(
-          "inline-flex h-7 max-w-[16rem] items-center gap-1.5 rounded-md px-2 text-[12.5px] tracking-[-0.01em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
-          hostMenu.open && "bg-accent text-foreground",
-        )}
-      >
-        <Laptop size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
-        <span className="min-w-0 truncate">This Mac</span>
-      </button>
-      <MenuPanel controller={hostMenu} label="Agent host">
-        {HOSTS.map(item => {
-          const Icon = item.icon;
-          return (
-            <MenuItem
-              key={item.id}
-              label={item.label}
-              disabled={item.disabled}
-              checked={item.id === "local"}
-              role="menuitemradio"
-              leading={<Icon size={13} aria-hidden="true" />}
-              trailing={<span className="text-[11px] text-muted-foreground">{item.hint}</span>}
-              onClick={() => hostMenu.close()}
-            />
-          );
-        })}
-      </MenuPanel>
+      {HOSTS.filter(host => !host.disabled).length === 1 ? (
+        <Chip icon={Laptop} label="This Mac" />
+      ) : (
+        <>
+          <button
+            type="button"
+            ref={hostMenu.triggerRef}
+            aria-haspopup="menu"
+            aria-expanded={hostMenu.open}
+            onClick={hostMenu.toggle}
+            className={cn(
+              "inline-flex h-7 max-w-[16rem] items-center gap-1.5 rounded-md px-2 text-[12.5px] tracking-[-0.01em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+              hostMenu.open && "bg-accent text-foreground",
+            )}
+          >
+            <Laptop size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
+            <span className="min-w-0 truncate">This Mac</span>
+          </button>
+          <MenuPanel controller={hostMenu} label="Agent host">
+            {HOSTS.map(item => {
+              const Icon = item.icon;
+              return (
+                <MenuItem
+                  key={item.id}
+                  label={item.label}
+                  disabled={item.disabled}
+                  checked={item.id === "local"}
+                  role="menuitemradio"
+                  leading={<Icon size={13} aria-hidden="true" />}
+                  trailing={<span className="text-[11px] text-muted-foreground">{item.hint}</span>}
+                  onClick={() => hostMenu.close()}
+                />
+              );
+            })}
+          </MenuPanel>
+        </>
+      )}
     </div>
   );
 }

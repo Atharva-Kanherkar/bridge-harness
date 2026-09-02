@@ -203,6 +203,7 @@ function AppContent() {
   const [configuredAgents, setConfiguredAgents] = useState<AgentDefinition[]>([]);
   const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
   const [busy, setBusy] = useState(false);
+  const [stopping, setStopping] = useState(false);
   const [browserSupervision, setBrowserSupervision] = useState<BrowserSupervision>();
   const [terminalActivity, setTerminalActivity] = useState<TerminalActivity>();
   const [acknowledgedTasks, setAcknowledgedTasks] = useState<Set<string>>(() => new Set());
@@ -243,6 +244,10 @@ function AppContent() {
   // became active while the create awaited (#350).
   const pendingWelcomeMessageRef = useRef<{ sessionId: string; text: string; attachments: ComposerAttachment[] } | null>(null);
   const forestKeyRef = useRef("");
+  // One entry per session, so switching back to a chat that already loaded its
+  // forest shows it immediately instead of flashing to empty while the poll
+  // refetches. Never read across sessions.
+  const forestCacheRef = useRef(new Map<string, SessionForestSnapshot>());
   const agentEventQueueRef = useRef<AgentEvent[]>([]);
   const agentEventTimerRef = useRef<number | undefined>(undefined);
   const browserSessionRef = useRef<string>();
@@ -806,10 +811,19 @@ function AppContent() {
   }, [mentionOpen, mentionIndex]);
 
   useEffect(() => {
+    if (!session?.activeTurnId) setStopping(false);
+  }, [session?.activeTurnId]);
+
+  useEffect(() => {
+    const sessionId = session?.id;
     forestKeyRef.current = "";
-    setForest(undefined);
     setPendingAdoptions([]);
-    if (!session?.id) return;
+    if (!sessionId) { setForest(undefined); return; }
+    // Seed from this session's own cache rather than clearing to empty: a
+    // durable card (including a pending approval) must never vanish and pop
+    // back just because the poll for the freshly-selected session hasn't
+    // resolved yet.
+    setForest(forestCacheRef.current.get(sessionId));
     let active = true;
     let pollsSinceFullFetch = 0;
     const refresh = async () => {
@@ -817,7 +831,7 @@ function AppContent() {
       // fetch the snapshot when the digest moves, with a periodic forced
       // fetch as the safety net for state the store cannot see (repository
       // divergence above all).
-      const digest = await bridgeApi.sessionForestDigest(session.id).catch(() => undefined);
+      const digest = await bridgeApi.sessionForestDigest(sessionId).catch(() => undefined);
       const force = pollsSinceFullFetch >= 9 || digest === undefined;
       if (!active) return;
       if (!force && digest === forestKeyRef.current) {
@@ -825,14 +839,15 @@ function AppContent() {
         return;
       }
       const [value, adoptions] = await Promise.all([
-        bridgeApi.sessionForest(session.id).catch(() => undefined),
-        bridgeApi.pendingWorkerAdoptions(session.id).catch(() => []),
+        bridgeApi.sessionForest(sessionId).catch(() => undefined),
+        bridgeApi.pendingWorkerAdoptions(sessionId).catch(() => []),
       ]);
       if (!active) return;
       pollsSinceFullFetch = 0;
       setPendingAdoptions(adoptions);
       if (!value) return;
       forestKeyRef.current = digest ?? "";
+      forestCacheRef.current.set(sessionId, value);
       setForest(current => mergeForestSnapshot(current, value));
     };
     const stop = startSerialPoll(refresh, 3000);
@@ -1615,15 +1630,19 @@ function AppContent() {
     }
     catch (e) { setComposer(retryText); setAttachments(sentAttachments); setPending(current => current.filter(item => item.key !== key)); setError(errorMessage(e)); }
   }
+  // Rethrow without also raising the global corner alert: the approval/question
+  // card renders the failure itself.
   const resolveApproval = useCallback(async (eventId: number, decision: ApprovalDecision, optionId?: string) => {
     if (!session?.id) return;
-    try { const result = await bridgeApi.resolveApproval(session.id, eventId, decision, optionId); await reload(); return result; }
-    catch (e) { setError(errorMessage(e)); throw e; }
+    const result = await bridgeApi.resolveApproval(session.id, eventId, decision, optionId);
+    await reload();
+    return result;
   }, [reload, session?.id]);
   const resolveQuestion = useCallback(async (eventId: number, action: QuestionAction, answers: Record<string, string[]>) => {
     if (!session?.id) return;
-    try { const result = await bridgeApi.resolveQuestion(session.id, eventId, action, answers); await reload(); return result; }
-    catch (e) { setError(errorMessage(e)); throw e; }
+    const result = await bridgeApi.resolveQuestion(session.id, eventId, action, answers);
+    await reload();
+    return result;
   }, [reload, session?.id]);
   // The "Memory used" chip is audit-backed: what this session's prompt actually
   // received, re-read on every memory change.
@@ -1679,13 +1698,20 @@ function AppContent() {
     await bridgeApi.compactSession(sessionId);
     if (selectedSessionId === sessionId) {
       forestKeyRef.current = "";
-      setForest(await bridgeApi.sessionForest(sessionId));
+      const next = await bridgeApi.sessionForest(sessionId);
+      forestCacheRef.current.set(sessionId, next);
+      setForest(next);
     }
   }, [selectedSessionId, state.sessions]);
   const waiveCompletion = useCallback(async (attemptId: string, checkIds: string[], reason: string) => {
     const completion = await bridgeApi.waiveCompletion(attemptId, checkIds, reason);
-    setForest(current => current ? { ...current, completion } : current);
-  }, []);
+    setForest(current => {
+      if (!current) return current;
+      const next = { ...current, completion };
+      if (session?.id) forestCacheRef.current.set(session.id, next);
+      return next;
+    });
+  }, [session?.id]);
   const resolveAdoption = useCallback(async (childSessionId: string, decision: "adopt" | "discard") => {
     if (decision === "adopt") await bridgeApi.adoptWorkerWorktree(childSessionId);
     else await bridgeApi.discardWorkerWorktree(childSessionId, "Discarded from the workspace panel");
@@ -1696,6 +1722,7 @@ function AppContent() {
     ]);
     // Out-of-band fetch: reset the digest so the next poll reconciles.
     forestKeyRef.current = "";
+    forestCacheRef.current.set(session.id, next);
     setForest(next);
     setPendingAdoptions(adoptions);
   }, [session]);
@@ -1704,7 +1731,9 @@ function AppContent() {
   const refreshWorkspaceBase = useCallback(async () => {
     if (!session) throw new Error("Open a session before refreshing its workspace");
     await bridgeApi.refreshWorkspaceBase(session.id);
-    setForest(await bridgeApi.sessionForest(session.id));
+    const next = await bridgeApi.sessionForest(session.id);
+    forestCacheRef.current.set(session.id, next);
+    setForest(next);
   }, [session]);
   async function applySlash(command: import("./types").SlashCommand) {
     if (session?.kind === "direct" && command.harness !== session.harness) {
@@ -2107,6 +2136,8 @@ function AppContent() {
             events={agentEvents}
             pendingMessages={asidePending}
             working={!!asideSession.activeTurnId || asideSession.status === "working"}
+            workspaceFiles={hasRepo ? workspaceFiles : []}
+            slashCommands={slashCommands}
             modelSwitch={modelSwitch?.sessionId === asideSession.id ? modelSwitch : null}
             lifecycle={asideLifecycle}
             initialDraft={asideLifecycle?.recoveryDraft}
@@ -2137,12 +2168,14 @@ function AppContent() {
               finally { setModelSwitch(null); }
             }}
             onResolve={async (eventId, decision, optionId) => {
-              try { const result = await bridgeApi.resolveApproval(asideSession.id, eventId, decision, optionId); await reload(); return result; }
-              catch (e) { setError(errorMessage(e)); throw e; }
+              const result = await bridgeApi.resolveApproval(asideSession.id, eventId, decision, optionId);
+              await reload();
+              return result;
             }}
             onAnswerQuestion={async (eventId, action, answers) => {
-              try { const result = await bridgeApi.resolveQuestion(asideSession.id, eventId, action, answers); await reload(); return result; }
-              catch (e) { setError(errorMessage(e)); throw e; }
+              const result = await bridgeApi.resolveQuestion(asideSession.id, eventId, action, answers);
+              await reload();
+              return result;
             }}
             onRetryCompaction={() => retryCompaction(asideSession.id)}
             onPromote={() => { setAsideLifecycle(undefined); openSession(asideSession.id); }}
@@ -2191,6 +2224,8 @@ function AppContent() {
                   onOpenFile={hasRepo && workspace ? openFileInDock : undefined}
                   highlightEntryId={highlightEntryId}
                   onRemember={rememberMessage}
+                  stopping={stopping}
+                  onInterrupt={session ? () => { setStopping(true); void bridgeApi.interruptTurn(session.id); } : undefined}
                 />
               </div>
               <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-background to-transparent sm:h-20" />
@@ -2324,7 +2359,8 @@ function AppContent() {
                     disabled={!session}
                     working={!!session?.activeTurnId}
                     activeAction={activeAction}
-                    onStop={session ? () => void bridgeApi.interruptTurn(session.id) : undefined}
+                    stopping={stopping}
+                    onStop={session ? () => { setStopping(true); void bridgeApi.interruptTurn(session.id); } : undefined}
                     inputRef={composerRef}
                     onPlusClick={() => void attachFile()}
                     leading={usageRing}

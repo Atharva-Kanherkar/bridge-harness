@@ -1,5 +1,6 @@
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::time::Instant;
 
 /// The `requestMethod` marker for an OpenCode `question.asked` request.
 pub const OPENCODE_QUESTION_REQUEST_METHOD: &str = "opencode.question";
@@ -171,7 +172,7 @@ pub fn normalize_opencode_message_with_state(
                 .or_else(|| properties.get("permission"))
                 .and_then(Value::as_str)
                 .unwrap_or("tool action");
-            event.title = Some(format!("Approve {action}"));
+            event.title = Some(approval_title(ApprovalSubject::Tool(action)));
             event.text = properties
                 .get("resources")
                 .or_else(|| properties.get("patterns"))
@@ -731,15 +732,12 @@ pub fn normalize_codex_request(message: &Value) -> Option<NormalizedEvent> {
         .get("itemId")
         .and_then(Value::as_str)
         .map(str::to_owned);
-    event.title = Some(
-        match method {
-            "item/fileChange/requestApproval" => "Approve file changes",
-            "item/tool/requestUserInput" => "Input required",
-            "mcpServer/elicitation/request" => "Tool input required",
-            _ => "Approve command",
-        }
-        .into(),
-    );
+    event.title = Some(match method {
+        "item/fileChange/requestApproval" => approval_title(ApprovalSubject::FileChange),
+        "item/tool/requestUserInput" => "Input required".into(),
+        "mcpServer/elicitation/request" => "Tool input required".into(),
+        _ => approval_title(ApprovalSubject::Command),
+    });
     event.text = params
         .get("reason")
         .and_then(Value::as_str)
@@ -823,6 +821,204 @@ pub fn normalize_claude_message(message: &Value) -> Vec<NormalizedEvent> {
 pub struct ClaudeStreamState {
     pub active_message_id: Option<String>,
     pub active_reasoning_id: Option<String>,
+    /// Open tool calls by `tool_use` id, so the eventual `tool_result` completes
+    /// under the same normalized kind and carries a host-measured duration.
+    tool_calls: HashMap<String, ClaudeToolCall>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ClaudeToolCall {
+    family: ClaudeToolFamily,
+    started_at: Instant,
+}
+
+/// The normalized item family a Claude tool name belongs to. Mirrors the
+/// Codex item-type split and the OpenCode tool-name split so all three
+/// providers render through the same conversation cards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClaudeToolFamily {
+    Command,
+    FileChange,
+    Tool,
+}
+
+impl ClaudeToolFamily {
+    fn kind(self, suffix: &str) -> String {
+        match self {
+            Self::Command => format!("command.{suffix}"),
+            Self::FileChange => format!("file_change.{suffix}"),
+            Self::Tool => format!("tool.{suffix}"),
+        }
+    }
+}
+
+fn claude_tool_family(name: &str) -> ClaudeToolFamily {
+    match name {
+        "Bash" => ClaudeToolFamily::Command,
+        "Edit" | "Write" | "MultiEdit" | "NotebookEdit" => ClaudeToolFamily::FileChange,
+        _ => ClaudeToolFamily::Tool,
+    }
+}
+
+/// One started event for a Claude `tool_use` block, from either the streaming
+/// `content_block_start` (input may still be empty) or the assistant snapshot
+/// (full input). Both go out under the same item id, so the snapshot refines
+/// the streamed card instead of duplicating it.
+fn claude_tool_started(
+    message: &Value,
+    block: &Value,
+    state: &mut ClaudeStreamState,
+) -> NormalizedEvent {
+    let tool_id = block
+        .get("id")
+        .and_then(Value::as_str)
+        .unwrap_or("tool")
+        .to_owned();
+    let name = block.get("name").and_then(Value::as_str).unwrap_or("tool");
+    let family = claude_tool_family(name);
+    // Keep the first start time when the snapshot repeats the streamed block.
+    state
+        .tool_calls
+        .entry(tool_id.clone())
+        .or_insert(ClaudeToolCall {
+            family,
+            started_at: Instant::now(),
+        });
+    let mut event = with_data(&family.kind("started"), message, block.clone());
+    event.item_id = Some(tool_id);
+    event.title = Some(name.to_owned());
+    event.status = Some("inProgress".into());
+    let input = block.get("input").cloned().unwrap_or(Value::Null);
+    match family {
+        ClaudeToolFamily::Command => {
+            if let Some(command) = input.get("command").and_then(Value::as_str) {
+                // The command string is what the conversation card shows,
+                // matching the Codex commandExecution title.
+                event.data["command"] = Value::String(command.to_owned());
+                event.title = Some(command.to_owned());
+            }
+        }
+        ClaudeToolFamily::FileChange => {
+            if let Some(patch) = synthesize_claude_patch(name, &input) {
+                event.data["patch"] = Value::String(patch);
+            }
+        }
+        ClaudeToolFamily::Tool => {}
+    }
+    event
+}
+
+/// A unified diff synthesized from a Claude file tool input. Claude never
+/// ships a patch, so hunk positions are approximate (both sides anchor at
+/// line 1); the `-`/`+` content is exact, which is what the inline patch and
+/// diffstat render.
+fn synthesize_claude_patch(name: &str, input: &Value) -> Option<String> {
+    let path = input
+        .get("file_path")
+        .or_else(|| input.get("notebook_path"))
+        .and_then(Value::as_str)?;
+    let string_field = |value: &Value, field: &str| -> String {
+        value
+            .get(field)
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_owned()
+    };
+    let hunks: Vec<String> = match name {
+        "Edit" => claude_diff_hunk(&string_field(input, "old_string"), &string_field(input, "new_string"))
+            .into_iter()
+            .collect(),
+        "MultiEdit" => input
+            .get("edits")?
+            .as_array()?
+            .iter()
+            .filter_map(|edit| {
+                claude_diff_hunk(
+                    &string_field(edit, "old_string"),
+                    &string_field(edit, "new_string"),
+                )
+            })
+            .collect(),
+        "Write" => claude_diff_hunk("", &string_field(input, "content"))
+            .into_iter()
+            .collect(),
+        "NotebookEdit" => claude_diff_hunk("", &string_field(input, "new_source"))
+            .into_iter()
+            .collect(),
+        _ => return None,
+    };
+    if hunks.is_empty() {
+        return None;
+    }
+    // A Write replaces or creates the whole file, so it reads as an addition.
+    let old_file = if name == "Write" {
+        "/dev/null".to_owned()
+    } else {
+        format!("a/{path}")
+    };
+    Some(format!("--- {old_file}\n+++ b/{path}\n{}", hunks.join("\n")))
+}
+
+/// One `@@` hunk turning `old` into `new`. The tool input carries no line
+/// numbers, so an empty side ranges `-0,0`/`+0,0` and a present side `1,N`.
+fn claude_diff_hunk(old: &str, new: &str) -> Option<String> {
+    if old.is_empty() && new.is_empty() {
+        return None;
+    }
+    let old_lines: Vec<&str> = if old.is_empty() {
+        Vec::new()
+    } else {
+        old.lines().collect()
+    };
+    let new_lines: Vec<&str> = if new.is_empty() {
+        Vec::new()
+    } else {
+        new.lines().collect()
+    };
+    let range = |lines: &[&str]| {
+        if lines.is_empty() {
+            "0,0".to_owned()
+        } else {
+            format!("1,{}", lines.len())
+        }
+    };
+    let mut hunk = format!("@@ -{} +{} @@", range(&old_lines), range(&new_lines));
+    for line in &old_lines {
+        hunk.push_str(&format!("\n-{line}"));
+    }
+    for line in &new_lines {
+        hunk.push_str(&format!("\n+{line}"));
+    }
+    Some(hunk)
+}
+
+/// The subject a provider asks approval for; one vocabulary so the same
+/// action carries identical wording in every session, whichever provider
+/// raised it.
+enum ApprovalSubject<'a> {
+    Command,
+    FileChange,
+    Tool(&'a str),
+}
+
+/// The shared approval-card title used by both the Claude and Codex paths.
+fn approval_title(subject: ApprovalSubject) -> String {
+    match subject {
+        ApprovalSubject::Command => "Run this command?".into(),
+        ApprovalSubject::FileChange => "Edit these files?".into(),
+        ApprovalSubject::Tool(name) => {
+            if let Some(rest) = name.strip_prefix("mcp__") {
+                if let Some((server, tool)) = rest.split_once("__") {
+                    return format!("Use {server} · {tool}?");
+                }
+            }
+            match claude_tool_family(name) {
+                ClaudeToolFamily::Command => approval_title(ApprovalSubject::Command),
+                ClaudeToolFamily::FileChange => approval_title(ApprovalSubject::FileChange),
+                ClaudeToolFamily::Tool => format!("Use {name}?"),
+            }
+        }
+    }
 }
 
 pub fn normalize_claude_message_with_state(
@@ -836,7 +1032,7 @@ pub fn normalize_claude_message_with_state(
         "system" => normalize_claude_system(message),
         "stream_event" => normalize_claude_stream(message, state),
         "assistant" => normalize_claude_assistant(message, state),
-        "user" => normalize_claude_user(message),
+        "user" => normalize_claude_user(message, state),
         "result" => {
             *state = ClaudeStreamState::default();
             normalize_claude_result(message)
@@ -950,18 +1146,7 @@ fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Ve
                 .cloned()
                 .unwrap_or_else(|| json!({}));
             match block.get("type").and_then(Value::as_str).unwrap_or("") {
-                "tool_use" => {
-                    let tool_id = block
-                        .get("id")
-                        .and_then(Value::as_str)
-                        .unwrap_or("tool")
-                        .to_owned();
-                    let mut normalized = with_data("tool.started", message, block.clone());
-                    normalized.item_id = Some(tool_id);
-                    normalized.title = block.get("name").and_then(Value::as_str).map(str::to_owned);
-                    normalized.status = Some("inProgress".into());
-                    vec![normalized]
-                }
+                "tool_use" => vec![claude_tool_started(message, &block, state)],
                 "thinking" => {
                     let message_id = state
                         .active_message_id
@@ -1026,16 +1211,7 @@ fn normalize_claude_assistant(
         let part_type = part.get("type").and_then(Value::as_str).unwrap_or("");
         match part_type {
             "tool_use" => {
-                let tool_id = part
-                    .get("id")
-                    .and_then(Value::as_str)
-                    .unwrap_or("tool")
-                    .to_owned();
-                let mut event = with_data("tool.started", message, part.clone());
-                event.item_id = Some(tool_id);
-                event.title = part.get("name").and_then(Value::as_str).map(str::to_owned);
-                event.status = Some("inProgress".into());
-                events.push(event);
+                events.push(claude_tool_started(message, &part, state));
             }
             "thinking" => {
                 if let Some(thinking) = part.get("thinking").and_then(Value::as_str) {
@@ -1054,7 +1230,7 @@ fn normalize_claude_assistant(
     events
 }
 
-fn normalize_claude_user(message: &Value) -> Vec<NormalizedEvent> {
+fn normalize_claude_user(message: &Value, state: &mut ClaudeStreamState) -> Vec<NormalizedEvent> {
     let payload = message.get("message").cloned().unwrap_or_else(|| json!({}));
     let content = payload
         .get("content")
@@ -1070,8 +1246,17 @@ fn normalize_claude_user(message: &Value) -> Vec<NormalizedEvent> {
                     .and_then(Value::as_str)
                     .unwrap_or("tool")
                     .to_owned();
-                let mut event = with_data("tool.completed", message, part.clone());
+                let call = state.tool_calls.remove(&tool_id);
+                let family = call
+                    .map(|call| call.family)
+                    .unwrap_or(ClaudeToolFamily::Tool);
+                let mut event = with_data(&family.kind("completed"), message, part.clone());
                 event.item_id = Some(tool_id);
+                if let Some(call) = call {
+                    // Host-side wall time between tool_use and tool_result.
+                    event.data["durationMs"] =
+                        json!(u64::try_from(call.started_at.elapsed().as_millis()).unwrap_or(0));
+                }
                 event.status = Some(
                     if part
                         .get("is_error")
@@ -1174,8 +1359,9 @@ fn normalize_claude_control_request(message: &Value) -> Option<NormalizedEvent> 
         request
             .get("tool_name")
             .and_then(Value::as_str)
-            .map(|name| format!("Approve {name}"))
-            .unwrap_or_else(|| "Approve tool".into()),
+            .map(ApprovalSubject::Tool)
+            .map(approval_title)
+            .unwrap_or_else(|| "Use tool?".into()),
     );
     event.text = request
         .pointer("/tool_input/command")
@@ -1373,6 +1559,7 @@ mod tests {
             .any(|action| action["decision"] == "acceptForSession"));
         assert_eq!(event.data["requestId"], 42);
         assert_eq!(event.status.as_deref(), Some("pending"));
+        assert_eq!(event.title.as_deref(), Some("Run this command?"));
     }
     #[test]
     fn rejects_invalid_normalized_roles() {
@@ -1447,7 +1634,7 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_claude_tool_and_result() {
+    fn normalizes_claude_bash_as_command_with_duration() {
         let mut state = ClaudeStreamState::default();
         let started = normalize_claude_message_with_state(
             &json!({
@@ -1456,14 +1643,148 @@ mod tests {
             }),
             &mut state,
         );
-        assert_eq!(started[0].kind, "tool.started");
-        assert_eq!(started[0].title.as_deref(), Some("Bash"));
+        assert_eq!(started[0].kind, "command.started");
+        assert_eq!(started[0].title.as_deref(), Some("pwd"));
+        assert_eq!(started[0].data["command"], "pwd");
+        assert_eq!(started[0].status.as_deref(), Some("inProgress"));
+        let completed = normalize_claude_message_with_state(
+            &json!({
+                "type":"user",
+                "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"/tmp","is_error":false}]}
+            }),
+            &mut state,
+        );
+        assert_eq!(completed[0].kind, "command.completed");
+        assert_eq!(completed[0].text.as_deref(), Some("/tmp"));
+        assert_eq!(completed[0].data["aggregatedOutput"], "/tmp");
+        assert!(completed[0].data["durationMs"].is_u64());
+    }
+
+    #[test]
+    fn normalizes_claude_edit_as_file_change_and_unknown_tool_stays_tool() {
+        let mut state = ClaudeStreamState::default();
+        let started = normalize_claude_message_with_state(
+            &json!({
+                "type":"assistant",
+                "message":{"id":"m1","content":[
+                    {"type":"tool_use","id":"t1","name":"Edit","input":{"file_path":"src/lib.rs","old_string":"a","new_string":"b"}},
+                    {"type":"tool_use","id":"t2","name":"WebFetch","input":{"url":"https://example.com"}}
+                ]}
+            }),
+            &mut state,
+        );
+        assert_eq!(started[0].kind, "file_change.started");
+        assert_eq!(started[1].kind, "tool.started");
+        assert_eq!(started[1].title.as_deref(), Some("WebFetch"));
+        let completed = normalize_claude_message_with_state(
+            &json!({
+                "type":"user",
+                "message":{"content":[
+                    {"type":"tool_result","tool_use_id":"t1","content":"ok"},
+                    {"type":"tool_result","tool_use_id":"t2","content":"page"}
+                ]}
+            }),
+            &mut state,
+        );
+        assert_eq!(completed[0].kind, "file_change.completed");
+        assert_eq!(completed[1].kind, "tool.completed");
+    }
+
+    #[test]
+    fn claude_stream_start_and_snapshot_keep_one_tool_item() {
+        let mut state = ClaudeStreamState::default();
+        // Streaming start arrives before the input has been assembled.
+        let streamed = normalize_claude_message_with_state(
+            &json!({
+                "type":"stream_event",
+                "event":{"type":"content_block_start","content_block":{"type":"tool_use","id":"t1","name":"Bash"}}
+            }),
+            &mut state,
+        );
+        assert_eq!(streamed[0].kind, "command.started");
+        assert_eq!(streamed[0].title.as_deref(), Some("Bash"));
+        // The snapshot repeats the block with full input under the same id.
+        let snapshot = normalize_claude_message_with_state(
+            &json!({
+                "type":"assistant",
+                "message":{"id":"m1","content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"cargo test"}}]}
+            }),
+            &mut state,
+        );
+        assert_eq!(snapshot[0].kind, "command.started");
+        assert_eq!(snapshot[0].item_id, streamed[0].item_id);
+        assert_eq!(snapshot[0].title.as_deref(), Some("cargo test"));
+    }
+
+    #[test]
+    fn claude_tool_result_without_started_falls_back_to_tool_completed() {
         let completed = normalize_claude_message(&json!({
             "type":"user",
-            "message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"/tmp","is_error":false}]}
+            "message":{"content":[{"type":"tool_result","tool_use_id":"unseen","content":"late"}]}
         }));
         assert_eq!(completed[0].kind, "tool.completed");
-        assert_eq!(completed[0].text.as_deref(), Some("/tmp"));
+        assert!(completed[0].data.get("durationMs").is_none());
+    }
+
+    #[test]
+    fn claude_edit_synthesizes_unified_diff() {
+        let started = normalize_claude_message(&json!({
+            "type":"assistant",
+            "message":{"id":"m1","content":[{
+                "type":"tool_use","id":"t1","name":"Edit",
+                "input":{"file_path":"src/lib.rs","old_string":"fn a() {}","new_string":"fn a() { 1 }"}
+            }]}
+        }));
+        let patch = started[0].data["patch"].as_str().expect("synthesized patch");
+        assert!(patch.contains("--- a/src/lib.rs"));
+        assert!(patch.contains("+++ b/src/lib.rs"));
+        assert!(patch.contains("-fn a() {}"));
+        assert!(patch.contains("+fn a() { 1 }"));
+    }
+
+    #[test]
+    fn claude_write_synthesizes_full_file_addition() {
+        let started = normalize_claude_message(&json!({
+            "type":"assistant",
+            "message":{"id":"m1","content":[{
+                "type":"tool_use","id":"t1","name":"Write",
+                "input":{"file_path":"src/new.rs","content":"pub fn n() {}"}
+            }]}
+        }));
+        let patch = started[0].data["patch"].as_str().expect("synthesized patch");
+        assert!(patch.contains("--- /dev/null"));
+        assert!(patch.contains("+++ b/src/new.rs"));
+        assert!(patch.contains("+pub fn n() {}"));
+        assert!(!patch.contains("-pub fn n() {}"));
+    }
+
+    #[test]
+    fn claude_and_codex_approval_titles_share_wording() {
+        let claude = normalize_claude_control_request(&json!({
+            "type":"control_request",
+            "request":{"subtype":"can_use_tool","tool_name":"Bash","tool_input":{"command":"ls"}}
+        }))
+        .unwrap();
+        assert_eq!(claude.title.as_deref(), Some("Run this command?"));
+        let edit = normalize_claude_control_request(&json!({
+            "type":"control_request",
+            "request":{"subtype":"permission","tool_name":"Edit"}
+        }))
+        .unwrap();
+        assert_eq!(edit.title.as_deref(), Some("Edit these files?"));
+        let mcp = normalize_claude_control_request(&json!({
+            "type":"control_request",
+            "request":{"subtype":"permission","tool_name":"mcp__github__create_issue"}
+        }))
+        .unwrap();
+        assert_eq!(mcp.title.as_deref(), Some("Use github · create_issue?"));
+        let file = normalize_codex_request(&json!({
+            "id":1,
+            "method":"item/fileChange/requestApproval",
+            "params":{"itemId":"f1"}
+        }))
+        .unwrap();
+        assert_eq!(file.title.as_deref(), Some("Edit these files?"));
     }
 
     #[test]

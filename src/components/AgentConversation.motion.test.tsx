@@ -89,7 +89,7 @@ describe("transcript entrances", () => {
 describe("tool row disclosure", () => {
   async function openGroup() {
     mount([command()]);
-    const summary = buttonWith("Ran commands");
+    const summary = buttonWith("Ran 1 command");
     expect(summary).toBeDefined();
     act(() => summary!.click());
     await settle();
@@ -114,7 +114,7 @@ describe("tool row disclosure", () => {
     await openGroup();
     expect(host.textContent).toContain("bun run test");
 
-    const summary = buttonWith("Ran commands");
+    const summary = buttonWith("Ran 1 command");
     act(() => summary!.click());
     expect(host.textContent).toContain("bun run test");
     await settle();
@@ -129,9 +129,8 @@ describe("tool row disclosure", () => {
     expect(glyphs().length).toBeGreaterThan(0);
     expect(host.querySelectorAll(".animate-spin")).toHaveLength(1);
 
-    // The finished group folds itself away, so reopen it to read the row's tick.
+    // A group that was open while live stays open when the turn finishes.
     mount([command({ status: "completed" })]);
-    act(() => buttonWith("Ran commands")!.click());
     await settle();
     expect(host.querySelectorAll(".animate-spin")).toHaveLength(0);
     expect(host.querySelectorAll(".text-success").length).toBeGreaterThan(0);
@@ -198,7 +197,7 @@ describe("alerts and approvals", () => {  it("gives an error item the alert role
     mount([request, event(2, "approval.resolved", { data: { requestEventId: 1, decision: "accept" } })]);
     await settle();
     expect(buttonWith("Allow once")).toBeUndefined();
-    expect(host.textContent).toContain("accept");
+    expect(host.textContent).toContain("Allowed once");
   });
 
   it("still resolves through the callback it is given", () => {
