@@ -73,15 +73,39 @@ export function humanizeForestBadge(status: string): string | undefined {
 /**
  * Remove every `bridge-*` control fence (bridge-delegate, bridge-peek,
  * bridge-steer, bridge-worker-result, …) from assistant prose. Applied on
- * both the live and durable projection paths.
+ * both the live and durable projection paths, so an envelope stripped while
+ * streaming does not regrow after a reload.
+ *
+ * Line-based rather than one regex: a fence still streaming in has no
+ * closing ``` yet, and a single non-multiline pass either fails to match an
+ * unclosed fence (leaking the raw envelope) or, with a greedy `[\s\S]*`,
+ * swallows real prose past it. Scanning line by line lets an open-but-not-yet-
+ * closed fence drop straight through to the end of the text instead.
  */
 export function stripBridgeFences(text: string): string {
-  // Refined by the projection work; conservative fallback keeps text intact
-  // when no fence is present.
-  return text.replace(
-    /```[ \t]*bridge-[A-Za-z0-9_-]*[^\n]*\n[\s\S]*?```[ \t]*\n?/g,
-    "",
-  );
+  const lines = text.split(/\r\n|\r|\n/);
+  const kept: string[] = [];
+  let index = 0;
+  while (index < lines.length) {
+    const trimmed = lines[index].trim();
+    const opensFence = /^`{3,}[ \t]*bridge-[A-Za-z0-9_-]*/i.test(trimmed);
+    if (opensFence) {
+      let closing = -1;
+      for (let cursor = index + 1; cursor < lines.length; cursor++) {
+        if (lines[cursor].trim().startsWith("```")) {
+          closing = cursor;
+          break;
+        }
+      }
+      // No closing fence yet: the rest of the streamed text is still inside
+      // the envelope, so drop it all rather than let raw JSON leak through.
+      index = closing >= 0 ? closing + 1 : lines.length;
+      continue;
+    }
+    kept.push(lines[index]);
+    index += 1;
+  }
+  return kept.join("\n").trim();
 }
 
 /** Lowercase snake_case / camelCase / SCREAMING tokens → sentence words. */
