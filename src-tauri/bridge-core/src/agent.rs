@@ -119,8 +119,18 @@ pub fn normalize_opencode_message_with_state(
                 .get("messageID")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            if state.message_roles.get(message_id).map(String::as_str) != Some("assistant") {
+            let role = state
+                .message_roles
+                .get(message_id)
+                .map(String::as_str)
+                .unwrap_or("assistant");
+            if role != "assistant" {
                 return vec![];
+            }
+            if !message_id.is_empty() && !state.message_roles.contains_key(message_id) {
+                state
+                    .message_roles
+                    .insert(message_id.to_string(), "assistant".to_string());
             }
             let field = properties
                 .get("field")
@@ -272,7 +282,12 @@ fn normalize_opencode_part(
         .get("messageID")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let is_assistant = state.message_roles.get(message_id).map(String::as_str) == Some("assistant");
+    let is_assistant = state
+        .message_roles
+        .get(message_id)
+        .map(String::as_str)
+        .unwrap_or("assistant")
+        == "assistant";
     let item_id = part.get("id").and_then(Value::as_str).map(str::to_owned);
     match part_type {
         "text" if is_assistant && part.pointer("/time/end").is_some() => {
@@ -283,11 +298,28 @@ fn normalize_opencode_part(
             event.text = part.get("text").and_then(Value::as_str).map(str::to_owned);
             vec![event]
         }
-        "reasoning" if is_assistant && part.pointer("/time/end").is_some() => {
-            let mut event = with_data("reasoning.completed", &part, part.clone());
+        "reasoning" if is_assistant => {
+            let status = part
+                .pointer("/state/status")
+                .and_then(Value::as_str)
+                .unwrap_or("completed");
+            let is_running = status == "running" || status == "inProgress";
+            let finished = part.pointer("/time/end").is_some()
+                || !is_running
+                || part.get("completed").and_then(Value::as_bool).unwrap_or(false);
+            let kind = if finished {
+                "reasoning.completed"
+            } else {
+                "reasoning.delta"
+            };
+            let mut event = with_data(kind, &part, part.clone());
             event.item_id = item_id;
-            event.status = Some("completed".into());
-            event.text = part.get("text").and_then(Value::as_str).map(str::to_owned);
+            event.status = Some(if finished { "completed" } else { "inProgress" }.into());
+            event.text = part
+                .get("reasoning")
+                .or_else(|| part.get("text"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
             vec![event]
         }
         "tool" if is_assistant => {
@@ -1423,6 +1455,67 @@ mod tests {
         assert_eq!(delta[0].kind, "message.delta");
         assert_eq!(delta[0].item_id.as_deref(), Some("prt_1"));
         assert_eq!(delta[0].text.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn normalizes_opencode_reasoning_deltas_before_message_updated() {
+        let mut state = OpenCodeStreamState::default();
+        let delta = normalize_opencode_message_with_state(
+            &json!({
+                "type":"message.part.delta",
+                "properties":{"sessionID":"ses_1","messageID":"msg_early","partID":"prt_r1","field":"reasoning","delta":"Reasoning thought..."}
+            }),
+            &mut state,
+        );
+        assert_eq!(delta.len(), 1);
+        assert_eq!(delta[0].kind, "reasoning.delta");
+        assert_eq!(delta[0].role.as_deref(), Some("assistant"));
+        assert_eq!(delta[0].text.as_deref(), Some("Reasoning thought..."));
+    }
+
+    #[test]
+    fn normalizes_opencode_reasoning_field_variants_and_completion() {
+        let mut state = OpenCodeStreamState::default();
+        let part_completed = normalize_opencode_message_with_state(
+            &json!({
+                "type":"message.part.updated",
+                "properties":{
+                    "sessionID":"ses_1",
+                    "part":{
+                        "id":"prt_r2",
+                        "messageID":"msg_early",
+                        "type":"reasoning",
+                        "reasoning":"Concluded reasoning",
+                        "time":{"start":100,"end":200}
+                    }
+                }
+            }),
+            &mut state,
+        );
+        assert_eq!(part_completed.len(), 1);
+        assert_eq!(part_completed[0].kind, "reasoning.completed");
+        assert_eq!(part_completed[0].text.as_deref(), Some("Concluded reasoning"));
+        assert_eq!(part_completed[0].status.as_deref(), Some("completed"));
+
+        let status_completed = normalize_opencode_message_with_state(
+            &json!({
+                "type":"message.part.updated",
+                "properties":{
+                    "sessionID":"ses_1",
+                    "part":{
+                        "id":"prt_r3",
+                        "messageID":"msg_early",
+                        "type":"reasoning",
+                        "text":"Finished thinking",
+                        "state":{"status":"completed"}
+                    }
+                }
+            }),
+            &mut state,
+        );
+        assert_eq!(status_completed.len(), 1);
+        assert_eq!(status_completed[0].kind, "reasoning.completed");
+        assert_eq!(status_completed[0].text.as_deref(), Some("Finished thinking"));
     }
 
     #[test]
