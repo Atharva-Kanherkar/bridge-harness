@@ -40,23 +40,83 @@ const GROUPABLE = new Set(["activity", "diff", "artifact"]);
 function groupItems(items: ConversationItem[]): Rendered[] {
   const out: Rendered[] = [];
   const rawItems: ConversationItem[] = [];
+
+  const nonRaw: ConversationItem[] = [];
   for (const item of items) {
     if (item.type === "raw") {
       rawItems.push(item);
+    } else {
+      nonRaw.push(item);
+    }
+  }
+
+  let currentGroup: ConversationItem[] | null = null;
+  let currentPlan: ConversationItem | null = null;
+  let currentReasoning: ConversationItem | null = null;
+
+  function flushGroup() {
+    if (currentReasoning) {
+      out.push({ kind: "item", item: currentReasoning });
+      currentReasoning = null;
+    }
+    if (currentPlan) {
+      out.push({ kind: "item", item: currentPlan });
+      currentPlan = null;
+    }
+    if (currentGroup && currentGroup.length > 0) {
+      out.push({ kind: "group", key: `group-${currentGroup[0].key}`, items: currentGroup });
+      currentGroup = null;
+    }
+  }
+
+  for (const item of nonRaw) {
+    if (item.data.staleBase === true || item.data.freshProviderSession === true) {
+      flushGroup();
+      out.push({ kind: "item", item });
       continue;
     }
-    // A model change is a milestone in the transcript, not tool activity — a
-    // group of one labeled "Used tools" is how a reload made it read as a
-    // glitch. It renders as its own quiet divider row instead.
-    if (GROUPABLE.has(item.type) && item.data.staleBase !== true && item.data.freshProviderSession !== true) {
-      const last = out[out.length - 1];
-      if (last?.kind === "group") { last.items.push(item); continue; }
-      out.push({ kind: "group", key: `group-${item.key}`, items: [item] });
+
+    if (item.type === "reasoning") {
+      if (currentReasoning) {
+        const combinedText: string = currentReasoning.text
+          ? `${currentReasoning.text}\n${item.text}`
+          : item.text;
+        currentReasoning = {
+          ...item,
+          key: currentReasoning.key,
+          text: combinedText,
+          status: item.status === "streaming" || currentReasoning.status === "streaming" ? "streaming" : "completed",
+        };
+      } else {
+        currentReasoning = item;
+      }
       continue;
     }
+
+    if (item.type === "plan") {
+      currentPlan = item;
+      continue;
+    }
+
+    if (GROUPABLE.has(item.type)) {
+      if (!currentGroup) {
+        currentGroup = [item];
+      } else {
+        currentGroup.push(item);
+      }
+      continue;
+    }
+
+    flushGroup();
     out.push({ kind: "item", item });
   }
-  if (rawItems.length) out.push({ kind: "raw-group", key: "raw-provider-events", items: rawItems });
+
+  flushGroup();
+
+  if (rawItems.length) {
+    out.push({ kind: "raw-group", key: "raw-provider-events", items: rawItems });
+  }
+
   return out;
 }
 
@@ -353,7 +413,7 @@ function ActivityGroup({ items }: { items: ConversationItem[] }) {
   // for is not an inline patch.
   const carriesPatch = items.some(item => !!toolCallDisplay(item).patch);
   const [toggled, setToggled] = useState<boolean | null>(null);
-  const expanded = live || (toggled ?? carriesPatch);
+  const expanded = toggled !== null ? toggled : (live || carriesPatch);
   // Rows revealed together arrive one after another at the same 40ms cadence the
   // CSS entrance used, so an expanding group unfolds instead of appearing whole.
   const stagger = useMotionStagger();
