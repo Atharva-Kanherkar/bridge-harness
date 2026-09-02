@@ -4,7 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MotionGlobalConfig } from "framer-motion";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { AgentConversation } from "./AgentConversation";
-import type { AgentEvent, Session } from "../types";
+import type { AgentEvent, Session, SessionEntry } from "../types";
 
 // The three-layer tool card: what a row shows at a glance, what it opens into,
 // and what it folds away. Motion is skipped so these are assertions about the
@@ -173,5 +173,77 @@ describe("three layers", () => {
     const text = host.textContent ?? "";
     // Two separate "Explored" runs, because the edit sits between them.
     expect(text.split("Explored")).toHaveLength(3);
+  });
+
+  it("coalesces tool calls across interleaved plan updates into a single ActivityGroup", () => {
+    mount([
+      event(1, "command.completed", { title: "bun test", data: { type: "commandExecution", command: "bun test" } }),
+      event(2, "plan.updated", { title: "Next step", data: { steps: [{ step: "Run tests", status: "completed" }] } }),
+      event(3, "command.completed", { title: "bun run check", data: { type: "commandExecution", command: "bun run check" } }),
+    ]);
+    const buttons = [...host.querySelectorAll("button")].filter(btn => btn.textContent?.includes("Ran commands"));
+    expect(buttons).toHaveLength(1);
+    expect(host.textContent).toContain("Next step");
+  });
+
+  it("preserves multiple distinct plan items without dropping", () => {
+    mount([
+      event(1, "command.completed", { title: "bun test", data: { type: "commandExecution", command: "bun test" } }),
+      event(2, "plan.updated", { itemId: "plan-1", title: "Plan Phase 1", data: { steps: [{ step: "Phase 1", status: "completed" }] } }),
+      event(3, "plan.updated", { itemId: "plan-2", title: "Plan Phase 2", data: { steps: [{ step: "Phase 2", status: "inProgress" }] } }),
+      event(4, "command.completed", { title: "bun run check", data: { type: "commandExecution", command: "bun run check" } }),
+    ]);
+    expect(host.textContent).toContain("Plan Phase 1");
+    expect(host.textContent).toContain("Plan Phase 2");
+  });
+
+  it("preserves reasoning order when a thought occurs after commands", () => {
+    mount([
+      event(1, "command.completed", { title: "bun test", data: { type: "commandExecution", command: "bun test" } }),
+      event(2, "reasoning.completed", { itemId: "r-after", text: "Post-execution thought reflection", status: "completed" }),
+    ]);
+    const fullText = host.textContent ?? "";
+    const commandIndex = fullText.indexOf("Ran commands");
+    const reasoningIndex = fullText.indexOf("Thought for a moment");
+    expect(commandIndex).toBeGreaterThan(-1);
+    expect(reasoningIndex).toBeGreaterThan(commandIndex);
+    expect(fullText).toContain("Post-execution thought reflection");
+  });
+
+  it("folds exploratory CLI commands into Explored hairline section", () => {
+    mount([
+      event(1, "command.completed", { title: "cat src/auth.rs", data: { type: "commandExecution", command: "cat src/auth.rs" } }),
+      event(2, "command.completed", { title: "git status", data: { type: "commandExecution", command: "git status" } }),
+    ]);
+    expect(host.textContent).toContain("Read files");
+    act(() => buttonWith("Read files")!.click());
+    expect(host.textContent).toContain("Explored");
+    expect(host.textContent).toContain("Read auth.rs");
+    expect(host.textContent).toContain("Checked git status");
+    const carded = (label: string) => !!buttonWith(label)?.closest(".bg-card");
+    expect(carded("Read auth.rs")).toBe(false);
+    expect(carded("Checked git status")).toBe(false);
+  });
+
+  it("renders replayed forest reasoning as collapsible Thought for a moment", () => {
+    const reasoningEntry: SessionEntry = {
+      id: "r1",
+      sessionId: "s",
+      parentEntryId: null,
+      sequence: 1,
+      semanticSchemaVersion: 2,
+      kind: "reasoning.completed",
+      payload: { text: "Thinking deeply about architecture", status: "completed" },
+      providerEventId: null,
+      contextVisibility: "eligible" as const,
+      tokenEstimate: null,
+      createdAt: "now",
+    };
+    act(() => {
+      root.render(<AgentConversation session={session} events={[]} forestEntries={[reasoningEntry]} activeLeafId="r1" onResolve={() => {}} />);
+    });
+    expect(host.textContent).toContain("Thought for a moment");
+    expect(host.textContent).toContain("Thinking deeply about architecture");
+    expect(host.textContent).not.toContain("Reasoning completed");
   });
 });

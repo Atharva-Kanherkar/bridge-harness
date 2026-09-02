@@ -578,7 +578,7 @@ impl AdapterRegistry {
         let mut registry = Self {
             adapters: HashMap::new(),
         };
-        registry.register(Box::new(CodexAdapter))?;
+        registry.register(Box::new(CodexAdapter::new()))?;
         registry.register(Box::new(ClaudeAdapter {
             streams: Mutex::new(HashMap::new()),
         }))?;
@@ -997,7 +997,18 @@ impl HarnessAdapter for OpenCodeAdapter {
     }
 }
 
-struct CodexAdapter;
+struct CodexAdapter {
+    streams: Mutex<HashMap<String, agent::CodexStreamState>>,
+}
+
+impl CodexAdapter {
+    fn new() -> Self {
+        Self {
+            streams: Mutex::new(HashMap::new()),
+        }
+    }
+}
+
 impl HarnessAdapter for CodexAdapter {
     fn as_any(&self) -> &dyn Any {
         self
@@ -1068,7 +1079,26 @@ impl HarnessAdapter for CodexAdapter {
         if value.get("id").is_some() && value.get("method").is_some() {
             agent::normalize_codex_request(value).into_iter().collect()
         } else {
-            agent::normalize_codex_message(value)
+            // Standard Codex app-server stdio notifications carry threadId on
+            // thread/turn boundaries, but omit session identity on mid-turn deltas.
+            // Stream state therefore resolves the session key when present and
+            // safely defaults to "default", with per-turn counter resets in
+            // CodexStreamState preventing cross-turn reasoning collision.
+            let session_key = value
+                .pointer("/params/conversationId")
+                .or_else(|| value.pointer("/params/threadId"))
+                .or_else(|| value.pointer("/params/sessionID"))
+                .and_then(Value::as_str)
+                .unwrap_or("default")
+                .to_owned();
+            let mut streams = self.streams.lock().unwrap();
+            let state = streams.entry(session_key).or_default();
+            agent::normalize_codex_message_with_state(value, state)
+        }
+    }
+    fn forget_session(&self, provider_session_id: &str) {
+        if provider_session_id != "default" {
+            self.streams.lock().unwrap().remove(provider_session_id);
         }
     }
 }

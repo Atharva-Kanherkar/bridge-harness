@@ -209,11 +209,9 @@ describe("BridgeSidebar theming", () => {
         session("chat-2", { title: "Deck polish", workspaceId: "workspace-2" }),
       ],
     });
-    // The group header is a row wrapping a fold button and a per-project "+",
-    // so the fill lives on that row rather than on the button carrying the title.
-    const rows = html.split("<div");
-    const active = rows.find(chunk => chunk.includes('title="Hide harness"')) ?? "";
-    const idle = rows.find(chunk => chunk.includes('title="Hide deck-shell"')) ?? "";
+    const groups = html.split("<div");
+    const active = groups.find(chunk => chunk.includes('title="Hide harness"')) ?? "";
+    const idle = groups.find(chunk => chunk.includes('title="Hide deck-shell"')) ?? "";
     expect(active).toContain("bg-accent font-medium");
     expect(idle).not.toContain("bg-accent font-medium");
     expect(idle).toContain("hover:bg-accent/70");

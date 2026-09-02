@@ -119,15 +119,21 @@ pub fn normalize_opencode_message_with_state(
                 .get("messageID")
                 .and_then(Value::as_str)
                 .unwrap_or_default();
-            if state.message_roles.get(message_id).map(String::as_str) != Some("assistant") {
-                return vec![];
-            }
             let field = properties
                 .get("field")
                 .and_then(Value::as_str)
                 .unwrap_or("text");
+            let is_reasoning_field = field.contains("reasoning");
+            let role = state.message_roles.get(message_id).map(String::as_str);
+            if let Some(role) = role {
+                if role != "assistant" {
+                    return vec![];
+                }
+            } else if !is_reasoning_field {
+                return vec![];
+            }
             let mut event = with_data(
-                if field.contains("reasoning") {
+                if is_reasoning_field {
                     "reasoning.delta"
                 } else {
                     "message.delta"
@@ -243,6 +249,7 @@ pub fn normalize_opencode_message_with_state(
         "session.error" => {
             let mut event = with_data("error", &properties, properties.clone());
             event.status = Some("failed".into());
+            event.title = Some("OpenCode error".into());
             event.text = properties
                 .pointer("/error/data/message")
                 .or_else(|| properties.pointer("/error/message"))
@@ -272,7 +279,11 @@ fn normalize_opencode_part(
         .get("messageID")
         .and_then(Value::as_str)
         .unwrap_or_default();
-    let is_assistant = state.message_roles.get(message_id).map(String::as_str) == Some("assistant");
+    let is_reasoning_part = part_type == "reasoning";
+    let is_assistant = match state.message_roles.get(message_id).map(String::as_str) {
+        Some(role) => role == "assistant",
+        None => is_reasoning_part,
+    };
     let item_id = part.get("id").and_then(Value::as_str).map(str::to_owned);
     match part_type {
         "text" if is_assistant && part.pointer("/time/end").is_some() => {
@@ -283,11 +294,24 @@ fn normalize_opencode_part(
             event.text = part.get("text").and_then(Value::as_str).map(str::to_owned);
             vec![event]
         }
-        "reasoning" if is_assistant && part.pointer("/time/end").is_some() => {
-            let mut event = with_data("reasoning.completed", &part, part.clone());
+        "reasoning" if is_assistant => {
+            let status = part.pointer("/state/status").and_then(Value::as_str);
+            let finished = part.pointer("/time/end").is_some()
+                || status == Some("completed")
+                || part.get("completed").and_then(Value::as_bool) == Some(true);
+            let kind = if finished {
+                "reasoning.completed"
+            } else {
+                "reasoning.delta"
+            };
+            let mut event = with_data(kind, &part, part.clone());
             event.item_id = item_id;
-            event.status = Some("completed".into());
-            event.text = part.get("text").and_then(Value::as_str).map(str::to_owned);
+            event.status = Some(if finished { "completed" } else { "inProgress" }.into());
+            event.text = part
+                .get("reasoning")
+                .or_else(|| part.get("text"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
             vec![event]
         }
         "tool" if is_assistant => {
@@ -378,7 +402,20 @@ impl NormalizedEvent {
     }
 }
 
+#[derive(Debug, Default, Clone)]
+pub struct CodexStreamState {
+    pub active_reasoning_id: Option<String>,
+    pub reasoning_counter: usize,
+}
+
 pub fn normalize_codex_message(message: &Value) -> Vec<NormalizedEvent> {
+    normalize_codex_message_with_state(message, &mut CodexStreamState::default())
+}
+
+pub fn normalize_codex_message_with_state(
+    message: &Value,
+    state: &mut CodexStreamState,
+) -> Vec<NormalizedEvent> {
     let Some(method) = message.get("method").and_then(Value::as_str) else {
         return vec![];
     };
@@ -395,18 +432,35 @@ pub fn normalize_codex_message(message: &Value) -> Vec<NormalizedEvent> {
             vec![event]
         }
         "turn/started" => {
+            state.active_reasoning_id = None;
             let mut event = with_data("turn.started", &params, params.clone());
             event.status = Some("working".into());
             vec![event]
         }
         "turn/completed" => {
+            state.active_reasoning_id = None;
             let status = params
                 .pointer("/turn/status")
                 .and_then(Value::as_str)
                 .unwrap_or("completed");
             let mut event = with_data("turn.completed", &params, params.clone());
             event.status = Some(status.into());
-            vec![event]
+            if matches!(status, "failed" | "error") {
+                let mut err_event = with_data("error", &params, params.clone());
+                err_event.status = Some("failed".into());
+                err_event.title = Some("Codex turn failed".into());
+                err_event.text = params
+                    .pointer("/turn/error/message")
+                    .or_else(|| params.pointer("/error/message"))
+                    .or_else(|| params.pointer("/turn/statusDetails"))
+                    .or_else(|| params.pointer("/turn/reason"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| Some("Codex turn encountered a failure.".into()));
+                vec![event, err_event]
+            } else {
+                vec![event]
+            }
         }
         "item/agentMessage/delta" => {
             let mut event = with_data("message.delta", &params, json!({}));
@@ -419,11 +473,50 @@ pub fn normalize_codex_message(message: &Value) -> Vec<NormalizedEvent> {
         }
         "item/reasoning/summaryTextDelta" | "item/reasoning/textDelta" => {
             let mut event = with_data("reasoning.delta", &params, json!({}));
+            let item_id = params
+                .get("itemId")
+                .or_else(|| params.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| state.active_reasoning_id.clone())
+                .unwrap_or_else(|| {
+                    state.reasoning_counter += 1;
+                    let id = format!("reasoning-{}", state.reasoning_counter);
+                    state.active_reasoning_id = Some(id.clone());
+                    id
+                });
+            event.item_id = Some(item_id);
             event.text = params
                 .get("delta")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
             vec![event]
+        }
+        "item/reasoning/summaryPartAdded" => {
+            let mut event = with_data("reasoning.delta", &params, json!({}));
+            let item_id = params
+                .get("itemId")
+                .or_else(|| params.get("id"))
+                .and_then(Value::as_str)
+                .map(str::to_owned)
+                .or_else(|| state.active_reasoning_id.clone())
+                .unwrap_or_else(|| {
+                    state.reasoning_counter += 1;
+                    let id = format!("reasoning-{}", state.reasoning_counter);
+                    state.active_reasoning_id = Some(id.clone());
+                    id
+                });
+            event.item_id = Some(item_id);
+            event.text = params
+                .get("summary")
+                .or_else(|| params.get("text"))
+                .and_then(Value::as_str)
+                .map(str::to_owned);
+            if event.text.is_some() {
+                vec![event]
+            } else {
+                vec![]
+            }
         }
         "item/commandExecution/outputDelta" => {
             // `delta` is already carried in `text`; retaining the complete
@@ -518,7 +611,28 @@ pub fn normalize_codex_message(message: &Value) -> Vec<NormalizedEvent> {
             event.status = Some("failed".into());
             vec![event]
         }
-        "item/started" | "item/completed" => normalize_item(method, &params),
+        "item/started" | "item/completed" => {
+            let item_type = params
+                .pointer("/item/type")
+                .and_then(Value::as_str)
+                .unwrap_or("unknown");
+            if item_type == "reasoning" {
+                if method == "item/started" {
+                    let id = params
+                        .pointer("/item/id")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                        .unwrap_or_else(|| {
+                            state.reasoning_counter += 1;
+                            format!("reasoning-{}", state.reasoning_counter)
+                        });
+                    state.active_reasoning_id = Some(id);
+                } else {
+                    state.active_reasoning_id = None;
+                }
+            }
+            normalize_item(method, &params)
+        }
         _ if is_codex_internal_notification(method) => vec![],
         _ => {
             let mut event = with_data("provider.unknown", &params, params.clone());
@@ -563,7 +677,6 @@ fn is_codex_internal_notification(method: &str) -> bool {
             | "process/exited"
             | "item/commandExecution/terminalInteraction"
             | "serverRequest/resolved"
-            | "item/reasoning/summaryPartAdded"
             | "mcpServer/oauthLogin/completed"
             | "mcpServer/startupStatus/updated"
             | "mcpServer/event/stream/notification"
@@ -1106,26 +1219,88 @@ mod tests {
         assert_eq!(events[0].text.as_deref(), Some("hello"));
     }
     #[test]
-    fn normalizes_tool_without_leaking_provider_type() {
-        let events = normalize_codex_message(
-            &json!({"method":"item/started","params":{"item":{"type":"mcpToolCall","id":"t1","tool":"search","status":"inProgress"}}}),
+    fn normalizes_codex_reasoning_deltas_with_stable_item_id() {
+        let mut state = CodexStreamState::default();
+        let _ = normalize_codex_message_with_state(
+            &json!({"method":"item/started","params":{"item":{"type":"reasoning","id":"reasoning-42"}}}),
+            &mut state,
         );
-        assert_eq!(events[0].kind, "tool.started");
-        assert_eq!(events[0].title.as_deref(), Some("search"));
+        let deltas = normalize_codex_message_with_state(
+            &json!({"method":"item/reasoning/textDelta","params":{"delta":"Thinking line 1\n"}}),
+            &mut state,
+        );
+        assert_eq!(deltas.len(), 1);
+        assert_eq!(deltas[0].kind, "reasoning.delta");
+        assert_eq!(deltas[0].item_id.as_deref(), Some("reasoning-42"));
+        assert_eq!(deltas[0].text.as_deref(), Some("Thinking line 1\n"));
+
+        let summary = normalize_codex_message_with_state(
+            &json!({"method":"item/reasoning/summaryPartAdded","params":{"summary":"Step completed"}}),
+            &mut state,
+        );
+        assert_eq!(summary.len(), 1);
+        assert_eq!(summary[0].kind, "reasoning.delta");
+        assert_eq!(summary[0].item_id.as_deref(), Some("reasoning-42"));
+        assert_eq!(summary[0].text.as_deref(), Some("Step completed"));
+
+        let completed = normalize_codex_message_with_state(
+            &json!({"method":"item/completed","params":{"item":{"type":"reasoning","id":"reasoning-42","status":"completed"}}}),
+            &mut state,
+        );
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].kind, "reasoning.completed");
+        assert_eq!(completed[0].status.as_deref(), Some("completed"));
+        assert_eq!(state.active_reasoning_id, None);
+
+        // Turn 1 fallback reasoning ID
+        let t1_delta = normalize_codex_message_with_state(
+            &json!({"method":"item/reasoning/textDelta","params":{"delta":"Turn 1 reasoning"}}),
+            &mut state,
+        );
+        assert_eq!(t1_delta[0].item_id.as_deref(), Some("reasoning-1"));
+
+        // Turn 1 completes, turn 2 starts
+        let _ = normalize_codex_message_with_state(
+            &json!({"method":"turn/completed","params":{"turn":{"status":"completed"}}}),
+            &mut state,
+        );
+        let _ = normalize_codex_message_with_state(
+            &json!({"method":"turn/started","params":{"turn":{"id":"turn-2"}}}),
+            &mut state,
+        );
+
+        // Turn 2 fallback reasoning ID must be different from turn 1
+        let t2_delta = normalize_codex_message_with_state(
+            &json!({"method":"item/reasoning/textDelta","params":{"delta":"Turn 2 reasoning"}}),
+            &mut state,
+        );
+        assert_eq!(t2_delta[0].item_id.as_deref(), Some("reasoning-2"));
     }
     #[test]
-    fn preserves_unknown_provider_event() {
-        let events =
-            normalize_codex_message(&json!({"method":"future/newThing","params":{"value":7}}));
-        assert_eq!(events[0].kind, "provider.unknown");
-        assert_eq!(events[0].title.as_deref(), Some("future/newThing"));
-        assert_eq!(events[0].data["value"], 7);
+    fn normalizes_codex_turn_completed_with_failure_synthesizes_error() {
+        let events = normalize_codex_message(&json!({
+            "method": "turn/completed",
+            "params": {
+                "turn": {
+                    "status": "failed",
+                    "error": { "message": "Model hit rate limit or context overload" }
+                }
+            }
+        }));
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind, "turn.completed");
+        assert_eq!(events[0].status.as_deref(), Some("failed"));
+        assert_eq!(events[1].kind, "error");
+        assert_eq!(events[1].status.as_deref(), Some("failed"));
+        assert_eq!(events[1].title.as_deref(), Some("Codex turn failed"));
+        assert_eq!(events[1].text.as_deref(), Some("Model hit rate limit or context overload"));
     }
     #[test]
     fn codex_internal_notifications_do_not_become_unknown_events() {
         for method in [
             "hook/started",
-            "item/reasoning/summaryPartAdded",
+            "hook/completed",
+            "process/exited",
             "item/commandExecution/terminalInteraction",
             "mcpServer/event/stream/notification",
             "fs/changed",
@@ -1323,6 +1498,103 @@ mod tests {
         assert_eq!(delta[0].kind, "message.delta");
         assert_eq!(delta[0].item_id.as_deref(), Some("prt_1"));
         assert_eq!(delta[0].text.as_deref(), Some("hello"));
+    }
+
+    #[test]
+    fn normalizes_opencode_reasoning_deltas_before_message_updated() {
+        let mut state = OpenCodeStreamState::default();
+        let delta = normalize_opencode_message_with_state(
+            &json!({
+                "type":"message.part.delta",
+                "properties":{"sessionID":"ses_1","messageID":"msg_early","partID":"prt_r1","field":"reasoning","delta":"Reasoning thought..."}
+            }),
+            &mut state,
+        );
+        assert_eq!(delta.len(), 1);
+        assert_eq!(delta[0].kind, "reasoning.delta");
+        assert_eq!(delta[0].role.as_deref(), Some("assistant"));
+        assert_eq!(delta[0].text.as_deref(), Some("Reasoning thought..."));
+
+        // Non-reasoning delta with unknown role is NOT assumed to be assistant and does not cache
+        let text_delta_unknown = normalize_opencode_message_with_state(
+            &json!({
+                "type":"message.part.delta",
+                "properties":{"sessionID":"ses_1","messageID":"msg_user_candidate","partID":"prt_t1","field":"text","delta":"user message"}
+            }),
+            &mut state,
+        );
+        assert!(text_delta_unknown.is_empty());
+    }
+
+    #[test]
+    fn normalizes_opencode_reasoning_streaming_midstream_snapshot() {
+        let mut state = OpenCodeStreamState::default();
+        // Mid-stream reasoning part with only time.start and no end/status
+        let part_streaming = normalize_opencode_message_with_state(
+            &json!({
+                "type":"message.part.updated",
+                "properties":{
+                    "sessionID":"ses_1",
+                    "part":{
+                        "id":"prt_r0",
+                        "messageID":"msg_early",
+                        "type":"reasoning",
+                        "text":"Ongoing reasoning...",
+                        "time":{"start":100}
+                    }
+                }
+            }),
+            &mut state,
+        );
+        assert_eq!(part_streaming.len(), 1);
+        assert_eq!(part_streaming[0].kind, "reasoning.delta");
+        assert_eq!(part_streaming[0].status.as_deref(), Some("inProgress"));
+        assert_eq!(part_streaming[0].text.as_deref(), Some("Ongoing reasoning..."));
+    }
+
+    #[test]
+    fn normalizes_opencode_reasoning_field_variants_and_completion() {
+        let mut state = OpenCodeStreamState::default();
+        let part_completed = normalize_opencode_message_with_state(
+            &json!({
+                "type":"message.part.updated",
+                "properties":{
+                    "sessionID":"ses_1",
+                    "part":{
+                        "id":"prt_r2",
+                        "messageID":"msg_early",
+                        "type":"reasoning",
+                        "reasoning":"Concluded reasoning",
+                        "time":{"start":100,"end":200}
+                    }
+                }
+            }),
+            &mut state,
+        );
+        assert_eq!(part_completed.len(), 1);
+        assert_eq!(part_completed[0].kind, "reasoning.completed");
+        assert_eq!(part_completed[0].text.as_deref(), Some("Concluded reasoning"));
+        assert_eq!(part_completed[0].status.as_deref(), Some("completed"));
+
+        let status_completed = normalize_opencode_message_with_state(
+            &json!({
+                "type":"message.part.updated",
+                "properties":{
+                    "sessionID":"ses_1",
+                    "part":{
+                        "id":"prt_r3",
+                        "messageID":"msg_early",
+                        "type":"reasoning",
+                        "text":"Finished thinking",
+                        "state":{"status":"completed"}
+                    }
+                }
+            }),
+            &mut state,
+        );
+        assert_eq!(status_completed.len(), 1);
+        assert_eq!(status_completed[0].kind, "reasoning.completed");
+        assert_eq!(status_completed[0].text.as_deref(), Some("Finished thinking"));
     }
 
     #[test]

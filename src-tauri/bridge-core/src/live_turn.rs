@@ -2409,38 +2409,48 @@ fn handle_agent_value(
                         }
                     }
                 }
-                "error" if event.status.as_deref() == Some("failed") => {
-                    void_orphaned_questions(&db, session_id, "provider_error");
-                    if own_depth > 0 {
-                        let lifecycle = store::worker_runtime(&db, session_id)
-                            .ok()
-                            .flatten()
-                            .map(|runtime| runtime.lifecycle_state);
-                        if lifecycle.as_deref() == Some("waiting") {
+                "error" => {
+                    let status = event.status.as_deref().unwrap_or("failed");
+                    if status == "failed" {
+                        turn_completed = true;
+                        *current_turn.lock().unwrap() = None;
+                        void_orphaned_questions(&db, session_id, "provider_error");
+                        if own_depth > 0 {
+                            let lifecycle = store::worker_runtime(&db, session_id)
+                                .ok()
+                                .flatten()
+                                .map(|runtime| runtime.lifecycle_state);
+                            if lifecycle.as_deref() == Some("waiting") {
+                                let _ = session_supervisor::SessionSupervisor::transition(
+                                    &db,
+                                    session_id,
+                                    worker_lifecycle::WorkerLifecycleState::Working,
+                                    Some("approval_aborted_by_error"),
+                                );
+                                child_left_waiting = Some("aborted");
+                            }
                             let _ = session_supervisor::SessionSupervisor::transition(
                                 &db,
                                 session_id,
-                                worker_lifecycle::WorkerLifecycleState::Working,
-                                Some("approval_aborted_by_error"),
+                                worker_lifecycle::WorkerLifecycleState::Failed,
+                                Some("provider_error"),
                             );
-                            child_left_waiting = Some("aborted");
+                        } else {
+                            let _ = db.execute(
+                                "UPDATE sessions SET status='failed',active_turn_id=NULL WHERE id=?1",
+                                params![session_id],
+                            );
                         }
-                        let _ = session_supervisor::SessionSupervisor::transition(
-                            &db,
-                            session_id,
-                            worker_lifecycle::WorkerLifecycleState::Failed,
-                            Some("provider_error"),
-                        );
-                    } else {
+                        if let Some(workspace_id) = &workspace_id {
+                            let _ = db.execute(
+                                "UPDATE workspaces SET status='failed' WHERE id=?1",
+                                params![workspace_id],
+                            );
+                        }
+                    } else if status == "retrying" {
                         let _ = db.execute(
-                            "UPDATE sessions SET status='failed' WHERE id=?1",
+                            "UPDATE sessions SET status='working' WHERE id=?1",
                             params![session_id],
-                        );
-                    }
-                    if let Some(workspace_id) = &workspace_id {
-                        let _ = db.execute(
-                            "UPDATE workspaces SET status='failed' WHERE id=?1",
-                            params![workspace_id],
                         );
                     }
                 }

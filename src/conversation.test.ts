@@ -40,6 +40,43 @@ describe("normalized conversation reducer",()=>{
     expect(items[0].text).not.toContain("bridge-worker-result");
     expect(source.text).toBe(raw);
   });
+  it("reduces Codex reasoning deltas and transitions to completed upon item/completed", () => {
+    const items = reduceConversation([
+      event(1, "reasoning.delta", { itemId: null, text: "Thinking step 1\n" }),
+      event(2, "reasoning.delta", { itemId: null, text: "Thinking step 2\n" }),
+      event(3, "reasoning.completed", { itemId: "reasoning-1", text: "", status: "completed" }),
+    ]);
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe("reasoning");
+    expect(items[0].status).toBe("completed");
+    expect(items[0].text).toBe("Thinking step 1\nThinking step 2\n");
+  });
+  it("settles streaming reasoning to completed on turn.completed", () => {
+    const items = reduceConversation([
+      event(1, "reasoning.delta", { itemId: null, text: "Thinking deeply..." }),
+      event(2, "turn.completed", { status: "completed" }),
+    ]);
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe("reasoning");
+    expect(items[0].status).toBe("completed");
+    expect(items[0].text).toBe("Thinking deeply...");
+  });
+  it("keeps separate reasoning cards across turns when itemId is null", () => {
+    const items = reduceConversation([
+      event(1, "turn.started", { status: "working" }),
+      event(2, "reasoning.delta", { itemId: null, text: "Turn 1 thoughts" }),
+      event(3, "turn.completed", { status: "completed" }),
+      event(4, "turn.started", { status: "working" }),
+      event(5, "reasoning.delta", { itemId: null, text: "Turn 2 thoughts" }),
+      event(6, "turn.completed", { status: "completed" }),
+    ]);
+    const reasoningItems = items.filter(i => i.type === "reasoning");
+    expect(reasoningItems).toHaveLength(2);
+    expect(reasoningItems[0].text).toBe("Turn 1 thoughts");
+    expect(reasoningItems[0].status).toBe("completed");
+    expect(reasoningItems[1].text).toBe("Turn 2 thoughts");
+    expect(reasoningItems[1].status).toBe("completed");
+  });
 });
 
 describe("session forest conversation projection",()=>{
@@ -60,6 +97,25 @@ describe("session forest conversation projection",()=>{
     const rightKeys=projectSessionConversation(forest,"e5").map(({key})=>key);
     expect(leftKeys.slice(0,2)).toEqual(["entry:e1","entry:e2"]);
     expect(rightKeys.slice(0,2)).toEqual(leftKeys.slice(0,2));
+  });
+
+  it("projects forest reasoning entries to type: reasoning with completed status", () => {
+    const reasoningEntry = entry("r1", null, "reasoning.completed", {
+      text: "Thought through the problem architecture thoroughly.",
+      status: "completed",
+    }, 1);
+    const items = projectSessionConversation([reasoningEntry], "r1");
+    expect(items).toHaveLength(1);
+    expect(items[0].type).toBe("reasoning");
+    expect(items[0].status).toBe("completed");
+    expect(items[0].title).toBe("Thought for a moment");
+    expect(items[0].text).toBe("Thought through the problem architecture thoroughly.");
+  });
+
+  it("filters out empty historical reasoning entries", () => {
+    const emptyReasoning = entry("r2", null, "reasoning.completed", { text: "" }, 1);
+    const items = projectSessionConversation([emptyReasoning], "r2");
+    expect(items).toHaveLength(0);
   });
 
   it("projects current and N-1 semantic event schemas equivalently",()=>{
@@ -253,6 +309,88 @@ describe("toolCallDisplay", () => {
     const display = toolCallDisplay(call({ title: "bun test", data: { type: "commandExecution", command: "bun test" } }));
     expect(display.verb).toBe("run");
     expect(display.command).toBe("bun test");
+  });
+
+  it("classifies read-only exploratory commands into read/search verbs", () => {
+    const catDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "cat src/components/BridgeSidebar.tsx" } }));
+    expect(catDisplay.verb).toBe("read");
+    expect(catDisplay.doing).toBe("Reading");
+    expect(catDisplay.done).toBe("Read");
+    expect(catDisplay.target).toBe("BridgeSidebar.tsx");
+    expect(catDisplay.path).toBe("src/components/BridgeSidebar.tsx");
+
+    const headDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "head -n 20 package.json" } }));
+    expect(headDisplay.verb).toBe("read");
+    expect(headDisplay.target).toBe("package.json");
+
+    const lsDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "ls -la src/auth" } }));
+    expect(lsDisplay.verb).toBe("read");
+    expect(lsDisplay.doing).toBe("Listing");
+    expect(lsDisplay.done).toBe("Listed");
+    expect(lsDisplay.target).toBe("auth");
+
+    const grepDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "grep -rn \"TODO\" src" } }));
+    expect(grepDisplay.verb).toBe("search");
+    expect(grepDisplay.target).toBe("“TODO”");
+
+    const rgDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "rg \"pattern\"" } }));
+    expect(rgDisplay.verb).toBe("search");
+    expect(rgDisplay.target).toBe("“pattern”");
+
+    const findDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "find . -name \"*.rs\"" } }));
+    expect(findDisplay.verb).toBe("search");
+
+    const gitStatusDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "git status" } }));
+    expect(gitStatusDisplay.verb).toBe("read");
+    expect(gitStatusDisplay.doing).toBe("Checking");
+    expect(gitStatusDisplay.target).toBe("git status");
+
+    const gitDiffDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "git diff --stat" } }));
+    expect(gitDiffDisplay.verb).toBe("read");
+    expect(gitDiffDisplay.doing).toBe("Inspecting");
+    expect(gitDiffDisplay.target).toBe("git diff");
+
+    const gitLogDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "git log -5" } }));
+    expect(gitLogDisplay.verb).toBe("read");
+    expect(gitLogDisplay.doing).toBe("Viewing");
+    expect(gitLogDisplay.target).toBe("git log");
+  });
+
+  it("keeps mutating commands as verb run", () => {
+    expect(toolCallDisplay(call({ data: { type: "commandExecution", command: "git commit -m \"fix\"" } })).verb).toBe("run");
+    expect(toolCallDisplay(call({ data: { type: "commandExecution", command: "git push origin main" } })).verb).toBe("run");
+    expect(toolCallDisplay(call({ data: { type: "commandExecution", command: "rm -rf /tmp/foo" } })).verb).toBe("run");
+    expect(toolCallDisplay(call({ data: { type: "commandExecution", command: "echo 'hello' > file.txt" } })).verb).toBe("run");
+    expect(toolCallDisplay(call({ data: { type: "commandExecution", command: "cat file.txt >> out.txt" } })).verb).toBe("run");
+    expect(toolCallDisplay(call({ data: { type: "commandExecution", command: "bun run check" } })).verb).toBe("run");
+  });
+
+  it("handles pipe and && chains in exploratory commands", () => {
+    const pipeDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "cat src/auth.rs | grep \"token\"" } }));
+    expect(pipeDisplay.verb).toBe("read");
+    expect(pipeDisplay.target).toBe("cat src/auth.rs | grep \"token\"");
+
+    const chainDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "git status && git diff" } }));
+    expect(chainDisplay.verb).toBe("read");
+    expect(chainDisplay.done).toBe("Explored");
+    expect(chainDisplay.target).toBe("git status && git diff");
+
+    // If any part of chain is mutating, whole chain is treated as run
+    const mixedChain = toolCallDisplay(call({ data: { type: "commandExecution", command: "git status && rm -rf file.txt" } }));
+    expect(mixedChain.verb).toBe("run");
+  });
+
+  it("handles quoted arguments with spaces and harmless arrow patterns", () => {
+    const quotedDisplay = toolCallDisplay(call({ data: { type: "commandExecution", command: "cat \"my docs/notes.txt\"" } }));
+    expect(quotedDisplay.verb).toBe("read");
+    expect(quotedDisplay.target).toBe("notes.txt");
+    expect(quotedDisplay.path).toBe("my docs/notes.txt");
+
+    // grep "->" contains > inside quotes so it is not rejected as a shell redirect
+    const arrowGrep = toolCallDisplay(call({ data: { type: "commandExecution", command: "grep \"->\" src/types.ts" } }));
+    expect(arrowGrep.verb).toBe("search");
+    expect(arrowGrep.target).toBe("“->”");
+    expect(arrowGrep.path).toBe("src/types.ts");
   });
 
   describe("exit codes", () => {
