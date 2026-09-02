@@ -32,6 +32,7 @@ const LIFECYCLE_KINDS = new Set([
   "tool.started", "tool.completed",
   "command.started", "command.completed",
   "file_change.started", "file_change.completed",
+  "reasoning.started", "reasoning.completed",
   "item.started", "item.completed",
   // A mirrored child approval is blocked-then-resolved under one item id; folding
   // keeps the durable projection from showing both halves as separate alerts.
@@ -108,7 +109,7 @@ export function projectSessionConversation(entries: SessionEntry[], activeLeafId
       interactionsBySequence.set(`${interactionKind}:${entry.sequence}`, item);
     }
   }
-  return items;
+  return items.filter(item => item.type !== "reasoning" || item.text.trim().length > 0);
 }
 
 function projectSessionEntry(entry: SessionEntry): ConversationItem {
@@ -159,6 +160,17 @@ function projectSessionEntry(entry: SessionEntry): ConversationItem {
       return { ...base, type: "branch-summary", title: "Branch summary", text: stringValue(payload.summary) ?? "" };
     case "error":
       return { ...base, type: "error", status: stringValue(payload.status) ?? "failed", title: stringValue(payload.title) ?? "Agent error", text: errorTextFromPayload(payload) };
+    case "reasoning":
+    case "reasoning.completed":
+    case "reasoning.started":
+    case "reasoning.delta":
+      return {
+        ...base,
+        type: "reasoning",
+        status: stringValue(payload.status) ?? "completed",
+        title: stringValue(payload.title) ?? "Thought for a moment",
+        text: stringValue(payload.text) ?? stringValue(payload.summary) ?? "",
+      };
     default:
       return {
         ...base,
@@ -166,7 +178,7 @@ function projectSessionEntry(entry: SessionEntry): ConversationItem {
         // has always typed it that way; the durable projection called it plain
         // activity, so a patch replayed from history lost the one label that
         // says "render me as a diff" and came back as a generic tool row.
-        type: interactionType(entry.kind) ?? (entry.kind === "approval.requested" || entry.kind === "approval.resolved" ? "approval" : entry.kind === "artifact.created" ? "artifact" : entry.kind.startsWith("delegation.") || entry.kind === "worker.result" ? "delegation" : entry.kind.startsWith("file_change.") || entry.kind.startsWith("diff.") ? "diff" : "activity"),
+        type: interactionType(entry.kind) ?? (entry.kind === "approval.requested" || entry.kind === "approval.resolved" ? "approval" : entry.kind === "artifact.created" ? "artifact" : entry.kind.startsWith("delegation.") || entry.kind === "worker.result" ? "delegation" : entry.kind.startsWith("file_change.") || entry.kind.startsWith("diff.") ? "diff" : entry.kind.startsWith("reasoning.") ? "reasoning" : "activity"),
         role: stringValue(payload.role),
         title: stringValue(payload.title) ?? humanizeKind(entry.kind),
         text: stringValue(payload.text) ?? stringValue(payload.summary) ?? stringValue(payload.reason) ?? "",
@@ -246,9 +258,24 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
   const items = new Map<string, ConversationItem>();
   const internalCompactionMessageKeys = new Set<string>();
   let compactionMaintenanceActive = false;
+  let turnIndex = 0;
   for (const event of [...events].sort((a, b) => a.sequence - b.sequence)) {
-    if (event.kind === "provider.unknown" || event.kind.startsWith("session.") || event.kind.startsWith("turn.") || event.kind === "usage.updated") continue;
-    const itemKey = event.itemId ?? `${event.kind}:${event.id}`;
+    if (event.kind === "provider.unknown" || event.kind === "usage.updated") continue;
+    if (event.kind.startsWith("turn.") || event.kind.startsWith("session.")) {
+      if (event.kind === "turn.started") {
+        turnIndex += 1;
+      }
+      if (event.kind === "turn.completed" || event.kind === "turn.failed" || event.kind === "session.idle") {
+        for (const item of items.values()) {
+          if (item.type === "reasoning" && item.status === "streaming") {
+            item.status = "completed";
+          }
+        }
+      }
+      continue;
+    }
+    const fallbackReasoningKey = `reasoning:live:${turnIndex}`;
+    const itemKey = event.itemId ?? (event.kind.startsWith("reasoning.") ? fallbackReasoningKey : `${event.kind}:${event.id}`);
     if (event.kind === "compaction.requested") compactionMaintenanceActive = true;
     if (event.kind.startsWith("message.")
       && (compactionMaintenanceActive || isInternalCompactionEnvelope(event.text ?? "", event.data))) {
@@ -260,8 +287,9 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
     if (event.kind === "message.delta" || event.kind === "reasoning.delta") {
       if (!event.text) continue;
       const type = event.kind.startsWith("message") ? "message" : "reasoning";
-      const existing = items.get(itemKey) ?? { key:itemKey, type, eventId:event.id, role:event.role ?? undefined, status:"streaming", text:"", data:{}, sequence:event.sequence };
-      existing.text += event.text ?? ""; existing.status = "streaming"; existing.eventId = event.id; items.set(itemKey, existing); continue;
+      const key = type === "reasoning" ? (event.itemId ?? fallbackReasoningKey) : itemKey;
+      const existing = items.get(key) ?? { key, type, eventId:event.id, role:event.role ?? undefined, status:"streaming", text:"", data:{}, sequence:event.sequence };
+      existing.text += event.text ?? ""; existing.status = "streaming"; existing.eventId = event.id; items.set(key, existing); continue;
     }
     if (event.kind.endsWith(".output_delta") || event.kind === "diff.delta" || event.kind === "tool.progress") {
       const type: ConversationItemType = event.kind.startsWith("diff") ? "diff" : "activity";
@@ -269,7 +297,8 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
       existing.text += event.text ?? ""; existing.status = event.status ?? existing.status; existing.eventId = event.id; existing.data = { ...existing.data, ...event.data }; items.set(itemKey, existing); continue;
     }
     if (event.kind === "plan.updated" || event.kind.startsWith("plan.")) {
-      items.set("current-plan", { key:"current-plan", type:"plan", eventId:event.id, status:event.status ?? undefined, title:event.title ?? "Plan", text:event.text ?? "", data:event.data, sequence:event.sequence }); continue;
+      const planKey = event.itemId ?? "current-plan";
+      items.set(planKey, { key: planKey, type:"plan", eventId:event.id, status:event.status ?? undefined, title:event.title ?? "Plan", text:event.text ?? "", data:event.data, sequence:event.sequence }); continue;
     }
     // Every `delegation.*` frame is a delegation row. Listing them by name meant
     // a new one (a resumed warm worker, a steer) silently rendered as generic
@@ -307,7 +336,31 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
       continue;
     }
     const type: ConversationItemType = event.kind.startsWith("message.") ? "message" : event.kind.startsWith("reasoning.") ? "reasoning" : event.kind.startsWith("diff.") || event.kind.startsWith("file_change.") ? "diff" : event.kind.startsWith("artifact.") ? "artifact" : event.kind === "error" ? "error" : "activity";
-    if (type === "reasoning" && !(event.text || stringList(event.data.summary))) continue;
+    if (type === "reasoning") {
+      let target = items.get(itemKey);
+      if (!target) {
+        for (const candidate of [...items.values()].reverse()) {
+          if (candidate.type === "reasoning" && candidate.status === "streaming") {
+            target = candidate;
+            break;
+          }
+        }
+      }
+      if (target) {
+        target.status = event.status ?? "completed";
+        if (event.text) target.text = event.text;
+        else if (stringList(event.data?.summary)) target.text = stringList(event.data.summary);
+        target.data = { ...target.data, ...event.data };
+        target.eventId = event.id;
+        if (event.itemId && target.key !== event.itemId) {
+          items.delete(target.key);
+          target.key = event.itemId;
+          items.set(target.key, target);
+        }
+        continue;
+      }
+      if (!(event.text || stringList(event.data?.summary))) continue;
+    }
     if (type === "message" && !event.text && !items.has(itemKey)) continue;
     const existing = items.get(itemKey);
     const next: ConversationItem = existing ?? { key:itemKey, type, eventId:event.id, role:event.role ?? undefined, status:event.status ?? undefined, title:event.title ?? undefined, text:"", data:{}, sequence:event.sequence };
@@ -553,10 +606,11 @@ export function toolCallDisplay(item: ConversationItem): ToolCallDisplay {
     status: readStatus(item.status),
   };
   const named = namedToolFacet(item, data);
-  const command = named.verb === "run" ? named.command ?? text(data.command) : undefined;
+  const command = named.command ?? (named.verb === "run" ? text(data.command) : undefined);
   return {
     ...common,
     ...named,
+    path: named.path ?? path,
     command,
     // Only edits show a diff inline; a read whose body happens to be a diff is
     // still just output.
@@ -564,10 +618,238 @@ export function toolCallDisplay(item: ConversationItem): ToolCallDisplay {
   };
 }
 
+export function parseCommandTokens(command: string): string[] {
+  const trimmed = command.trim();
+  const stripped = trimmed.replace(/^([A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)+/, "");
+  const tokens: string[] = [];
+  const regex = /[^\s"']+|"([^"]*)"|'([^']*)'/g;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(stripped)) !== null) {
+    tokens.push(match[1] ?? match[2] ?? match[0]);
+  }
+  return tokens;
+}
+
+function matchesAny(bin: string, names: string[]): boolean {
+  const base = bin.split("/").pop() || bin;
+  return names.includes(base);
+}
+
+function isFlag(arg: string): boolean {
+  return /^--?[a-zA-Z0-9]/.test(arg);
+}
+
+function classifySingleCommand(cmd: string): {
+  verb: ToolVerb;
+  glyph: ToolGlyph;
+  doing: string;
+  done: string;
+  target?: string;
+  path?: string;
+} | null {
+  let clean = cmd.trim().replace(/^([A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)+/, "");
+  clean = clean.replace(/^(?:builtin|command|sudo)\s+/, "");
+  const tokens = parseCommandTokens(clean);
+  if (!tokens.length) return null;
+
+  const bin = tokens[0].toLowerCase();
+  const args = tokens.slice(1);
+
+  if (matchesAny(bin, ["cat", "head", "tail", "less", "more", "bat"])) {
+    let idx = 0;
+    while (idx < args.length) {
+      if (args[idx] === "-n" || args[idx] === "-c") {
+        idx += 2;
+      } else if (isFlag(args[idx])) {
+        idx += 1;
+      } else {
+        break;
+      }
+    }
+    const filePath = args[idx];
+    const target = filePath ? (filePath.split("/").pop() || filePath) : undefined;
+    return {
+      verb: "read",
+      glyph: "file",
+      doing: "Reading",
+      done: "Read",
+      target: target ?? filePath,
+      path: filePath,
+    };
+  }
+
+  if (matchesAny(bin, ["ls", "dir", "tree"])) {
+    const nonFlags = args.filter(arg => !isFlag(arg));
+    const dirPath = nonFlags[0];
+    return {
+      verb: "read",
+      glyph: "file",
+      doing: "Listing",
+      done: "Listed",
+      target: dirPath ? (dirPath.split("/").pop() || dirPath) : "directory",
+      path: dirPath,
+    };
+  }
+
+  if (matchesAny(bin, ["grep", "egrep", "fgrep", "rg", "ag", "ack"])) {
+    const nonFlags = args.filter(arg => !isFlag(arg));
+    const pattern = nonFlags[0];
+    const filePath = nonFlags[1];
+    return {
+      verb: "search",
+      glyph: "search",
+      doing: "Searching",
+      done: "Searched",
+      target: pattern ? `“${pattern}”` : "files",
+      path: filePath,
+    };
+  }
+
+  if (matchesAny(bin, ["find", "fd", "locate", "which", "whereis", "wc", "stat", "file"])) {
+    const nonFlags = args.filter(arg => !isFlag(arg));
+    const target = nonFlags[0];
+    return {
+      verb: "search",
+      glyph: "search",
+      doing: "Searching",
+      done: "Searched",
+      target: target ? `“${target}”` : "files",
+      path: target,
+    };
+  }
+
+  if (bin === "git") {
+    let subIdx = 0;
+    while (subIdx < args.length && isFlag(args[subIdx])) {
+      if (args[subIdx] === "-C" || args[subIdx] === "-c") subIdx += 2;
+      else subIdx += 1;
+    }
+    const sub = args[subIdx]?.toLowerCase();
+    if (!sub) return null;
+
+    if (sub === "status") {
+      return {
+        verb: "read",
+        glyph: "file",
+        doing: "Checking",
+        done: "Checked",
+        target: "git status",
+      };
+    }
+    if (sub === "diff") {
+      return {
+        verb: "read",
+        glyph: "file",
+        doing: "Inspecting",
+        done: "Inspected",
+        target: "git diff",
+      };
+    }
+    if (sub === "log") {
+      return {
+        verb: "read",
+        glyph: "file",
+        doing: "Viewing",
+        done: "Viewed",
+        target: "git log",
+      };
+    }
+    if (sub === "show") {
+      return {
+        verb: "read",
+        glyph: "file",
+        doing: "Inspecting",
+        done: "Inspected",
+        target: "git show",
+      };
+    }
+    if (sub === "branch" || sub === "tag" || sub === "remote" || sub === "describe") {
+      return {
+        verb: "read",
+        glyph: "file",
+        doing: "Checking",
+        done: "Checked",
+        target: `git ${sub}`,
+      };
+    }
+    return null;
+  }
+
+  return null;
+}
+
+export function hasUnquotedRedirect(command: string): boolean {
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (ch === "\\" && !inSingle) {
+      i++;
+      continue;
+    }
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      continue;
+    }
+    if (!inSingle && !inDouble && ch === ">") {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function classifyExploratoryCommand(rawCommand: string): {
+  verb: ToolVerb;
+  glyph: ToolGlyph;
+  doing: string;
+  done: string;
+  target?: string;
+  path?: string;
+} | null {
+  const trimmed = rawCommand.trim();
+  if (!trimmed) return null;
+  if (hasUnquotedRedirect(trimmed)) return null;
+
+  const parts = trimmed.split(/\s*(?:&&|;|\|\|)\s*/).filter(Boolean);
+  if (parts.length > 1) {
+    const classifiedParts = parts.map(classifySingleCommand);
+    if (classifiedParts.some(c => c === null)) return null;
+    const first = classifiedParts[0]!;
+    return {
+      verb: first.verb,
+      glyph: first.glyph,
+      doing: "Exploring",
+      done: "Explored",
+      target: trimmed,
+    };
+  }
+
+  if (trimmed.includes("|")) {
+    const pipeParts = trimmed.split(/\s*\|\s*/).filter(Boolean);
+    const classifiedPipe = pipeParts.map(classifySingleCommand);
+    if (classifiedPipe.some(c => c === null)) return null;
+    const first = classifiedPipe[0]!;
+    return {
+      verb: first.verb,
+      glyph: first.glyph,
+      doing: first.doing,
+      done: first.done,
+      target: trimmed,
+      path: first.path,
+    };
+  }
+
+  return classifySingleCommand(trimmed);
+}
+
 /** Verb, glyph, wording and target — the half of the shape that depends on
  *  *which* tool ran rather than on how it went. */
 function namedToolFacet(item: ConversationItem, data: Record<string, unknown>): {
-  verb: ToolVerb; glyph: ToolGlyph; doing: string; done: string; target?: string; command?: string;
+  verb: ToolVerb; glyph: ToolGlyph; doing: string; done: string; target?: string; command?: string; path?: string;
 } {
   const input = objectValue(data.input);
   const name = text(data.name);
@@ -580,6 +862,10 @@ function namedToolFacet(item: ConversationItem, data: Record<string, unknown>): 
     const key = name.toLowerCase();
     if (key === "bash" || key === "shell") {
       const command = text(input.command) ?? text(data.command);
+      const exploratory = command ? classifyExploratoryCommand(command) : null;
+      if (exploratory) {
+        return { ...exploratory, command };
+      }
       return { verb: "run", glyph: "terminal", doing: "Running", done: "Ran", target: command ?? (title || "command"), command };
     }
     if (key === "read") return { verb: "read", glyph: "file", doing: "Reading", done: "Read", target: file ?? "file" };
@@ -612,6 +898,10 @@ function namedToolFacet(item: ConversationItem, data: Record<string, unknown>): 
   }
   if (dataType === "commandExecution" || data.command) {
     const command = text(data.command) ?? (title || undefined);
+    const exploratory = command ? classifyExploratoryCommand(command) : null;
+    if (exploratory) {
+      return { ...exploratory, command };
+    }
     return { verb: "run", glyph: "terminal", doing: "Running", done: "Ran", target: command ?? "command", command };
   }
   if (dataType === "webSearch") {

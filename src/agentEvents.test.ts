@@ -119,4 +119,23 @@ describe("appendAgentEventBatch", () => {
     expect(result[result.length - 1].id).toBe(12);
     expect(result[0].id).toBeGreaterThan(1);
   });
+
+  it("coalesces reasoning.delta even when itemId is absent by using fallback key", () => {
+    const d1: AgentEvent = { ...event(0, "reasoning.delta", "Thinking chunk 1\n"), itemId: null };
+    const d2: AgentEvent = { ...event(0, "reasoning.delta", "Thinking chunk 2\n"), itemId: null };
+    const result = appendAgentEventBatch([], [d1, d2]);
+    expect(result).toHaveLength(1);
+    expect(result[0].text).toBe("Thinking chunk 1\nThinking chunk 2\n");
+  });
+
+  it("clears reasoning merge indexes on turn completion", () => {
+    const d1: AgentEvent = { ...event(0, "reasoning.delta", "Part 1"), itemId: null };
+    const turnCompleted: AgentEvent = { ...event(1, "turn.completed", ""), itemId: null };
+    const d2: AgentEvent = { ...event(0, "reasoning.delta", "Part 2"), itemId: null };
+    const result = appendAgentEventBatch([], [d1, turnCompleted, d2]);
+    expect(result).toHaveLength(3);
+    expect(result[0].text).toBe("Part 1");
+    expect(result[1].kind).toBe("turn.completed");
+    expect(result[2].text).toBe("Part 2");
+  });
 });

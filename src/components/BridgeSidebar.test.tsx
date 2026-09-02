@@ -169,9 +169,9 @@ describe("BridgeSidebar theming", () => {
         session("chat-2", { title: "Deck polish", workspaceId: "workspace-2" }),
       ],
     });
-    const buttons = html.split("<button");
-    const active = buttons.find(chunk => chunk.includes('title="Hide harness"')) ?? "";
-    const idle = buttons.find(chunk => chunk.includes('title="Hide deck-shell"')) ?? "";
+    const groups = html.split("<div");
+    const active = groups.find(chunk => chunk.includes('title="Hide harness"')) ?? "";
+    const idle = groups.find(chunk => chunk.includes('title="Hide deck-shell"')) ?? "";
     expect(active).toContain("bg-accent font-medium");
     expect(idle).not.toContain("bg-accent font-medium");
     expect(idle).toContain("hover:bg-accent/70");
