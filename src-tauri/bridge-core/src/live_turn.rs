@@ -7737,15 +7737,32 @@ pub fn start_learning_maintenance(core: Arc<BridgeCore>) {
 
 pub const HISTORY_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(15 * 60);
 
+/// One history-snapshot export, skipped when the newest snapshot is younger
+/// than `max_age`. This is also the boot export: it runs on the maintenance
+/// thread rather than inside `BridgeCore::boot` because `VACUUM INTO` plus a
+/// full-file hash is O(total history), and a large history used to hold the
+/// daemon's socket bind past the desktop shell's start deadline. The copy
+/// reads through its own read-only connection so the primary's mutex is never
+/// held for its duration.
+pub fn run_history_snapshot_pass(
+    core: &BridgeCore,
+    max_age: Duration,
+) -> Result<Option<(std::path::PathBuf, std::path::PathBuf)>, crate::BridgeError> {
+    let db = Connection::open_with_flags(
+        &core.database_path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    store::export_history_snapshot_if_stale(&db, &core.snapshot_dir, max_age)
+}
+
 pub fn start_history_snapshot_maintenance(core: Arc<BridgeCore>) {
-    thread::spawn(move || loop {
-        thread::sleep(HISTORY_SNAPSHOT_INTERVAL);
-        let state = core.clone();
-        if let Ok(db) = Connection::open_with_flags(
-            &state.database_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        ) {
-            let _ = store::export_history_snapshot(&db, &state.snapshot_dir);
+    thread::spawn(move || {
+        // The boot export, gated on staleness so a development restart loop
+        // still does not export once per restart; then one export per tick.
+        let _ = run_history_snapshot_pass(&core, HISTORY_SNAPSHOT_INTERVAL);
+        loop {
+            thread::sleep(HISTORY_SNAPSHOT_INTERVAL);
+            let _ = run_history_snapshot_pass(&core, Duration::ZERO);
         }
     });
 }
@@ -13454,5 +13471,42 @@ mod direct_agent_shortcut_tests {
             )
             .unwrap();
         assert!(!notified);
+    }
+}
+
+#[cfg(test)]
+mod history_snapshot_maintenance_tests {
+    use super::{run_history_snapshot_pass, HISTORY_SNAPSHOT_INTERVAL};
+    use crate::runtime::BridgeCore;
+    use std::time::Duration;
+
+    #[test]
+    fn first_pass_exports_and_a_fresh_snapshot_suppresses_the_next() {
+        let _managed_root = super::managed_root_guard();
+        let fixture = tempfile::tempdir().unwrap();
+        let core = BridgeCore::boot(crate::BootConfig {
+            data_dir: fixture.path().to_path_buf(),
+            browser_extension_path: fixture.path().join("no-extension"),
+            events: None,
+        })
+        .unwrap();
+        assert!(!core.snapshot_dir.exists(), "boot itself must not export");
+
+        let (database, manifest) = run_history_snapshot_pass(&core, HISTORY_SNAPSHOT_INTERVAL)
+            .unwrap()
+            .expect("an empty directory exports");
+        assert!(crate::store::verify_history_snapshot(&database, &manifest).unwrap());
+
+        let second = run_history_snapshot_pass(&core, HISTORY_SNAPSHOT_INTERVAL).unwrap();
+        assert!(second.is_none(), "a fresh snapshot suppresses the boot export");
+
+        let periodic = run_history_snapshot_pass(&core, Duration::ZERO).unwrap();
+        assert!(periodic.is_some(), "the periodic tick always exports");
+        let databases = std::fs::read_dir(&core.snapshot_dir)
+            .unwrap()
+            .flatten()
+            .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "sqlite"))
+            .count();
+        assert_eq!(databases, 2);
     }
 }
