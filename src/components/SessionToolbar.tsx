@@ -27,6 +27,13 @@ export type SessionToolbarProps = {
   bypassBadge?: ReactNode;
   /** Right-edge cluster beyond the window controls. */
   actions?: ReactNode;
+  /** Leading cluster, before the title: the panel toggle and history chevrons
+   * the sidebar header owns while it is on screen. Desktop only — below `sm`
+   * the drawer's own "Open navigation" button is the way in. */
+  leading?: ReactNode;
+  /** The rail is away, so this row is the window's leading edge and has to keep
+   * clear of the traffic lights the way the rail's own header did. */
+  sidebarHidden?: boolean;
   /** Mobile-only sidebar toggle, carried over from AppTitleBar now that it no
    * longer renders alongside this row. */
   navOpen?: boolean;
@@ -71,6 +78,8 @@ export function SessionToolbar({
   modelControl,
   bypassBadge,
   actions,
+  leading,
+  sidebarHidden = false,
   navOpen = false,
   onOpenNav,
   dockOpen,
@@ -96,11 +105,16 @@ export function SessionToolbar({
 
   return (
     <div
-      className="flex h-11 shrink-0 select-none items-center gap-2 border-b border-border px-4 sm:px-6"
+      className={cn(
+        "flex h-11 shrink-0 select-none items-center gap-2 border-b border-border pr-4 sm:pr-6",
+        sidebarHidden ? "u-traffic-inset pl-24" : "pl-4 sm:pl-6",
+      )}
       // The window has no native titlebar, so this strip is the grab handle:
       // "deep" makes the whole row draggable while buttons keep their clicks.
       data-tauri-drag-region="deep"
     >
+      {leading && <div className="hidden shrink-0 items-center gap-0.5 sm:flex">{leading}</div>}
+
       {onOpenNav && (
         <button
           type="button"

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { ChevronRight, ClipboardList, Folder, FolderGit2, FolderPlus, GitBranch, Home, LayoutGrid, Pin, Search, Settings2, SquarePen, Store, type LucideIcon } from "lucide-react";
-import { WindowNavButtons, WindowPanelButton } from "./WindowNavButtons";
+import { WindowNavButtons } from "./WindowNavButtons";
 import type { Session, SessionStatus, Workspace } from "../types";
 import { chordLabel, type CommandId } from "../keymap";
 import { cn } from "@/lib/utils";
@@ -25,7 +25,6 @@ import {
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 400;
 const DEFAULT_WIDTH = 248;
-const COLLAPSED_WIDTH = 68;
 const WIDTH_KEY = "bridge.sidebar.width";
 const COLLAPSED_KEY = "bridge.sidebar.collapsed";
 
@@ -51,7 +50,6 @@ function StatusDot({ status }: { status: SessionStatus }) {
 function ChatRow({
   chat,
   active,
-  collapsed,
   indented,
   branch,
   time,
@@ -59,7 +57,6 @@ function ChatRow({
 }: {
   chat: Session;
   active: boolean;
-  collapsed: boolean;
   indented: boolean;
   branch: string | null | undefined;
   time: string | null;
@@ -74,19 +71,15 @@ function ChatRow({
       onClick={onClick}
       title={detail}
       className={cn(
-        "flex w-full items-center text-left font-sans transition-colors active:scale-[0.99]",
-        collapsed ? "h-9 justify-center rounded-md px-0" : cn("h-[26px] gap-1.5 rounded-md pr-2 text-[13px] tracking-[-0.008em]", indented ? "pl-7" : "pl-2"),
+        "flex h-[26px] w-full items-center gap-1.5 rounded-md pr-2 text-left font-sans text-[13px] tracking-[-0.008em] transition-colors active:scale-[0.99]",
+        indented ? "pl-7" : "pl-2",
         active ? "bg-accent font-medium text-foreground" : "text-foreground/80 hover:bg-accent/70 hover:text-foreground",
       )}
     >
       <StatusDot status={chat.status} />
-      {!collapsed && (
-        <>
-          <span className="min-w-0 flex-1 truncate">{name}</span>
-          {onBranch && <GitBranch size={11} strokeWidth={1.7} className="shrink-0 text-ring" aria-label="On a git branch" />}
-          {time && <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground/65">{time}</span>}
-        </>
-      )}
+      <span className="min-w-0 flex-1 truncate">{name}</span>
+      {onBranch && <GitBranch size={11} strokeWidth={1.7} className="shrink-0 text-ring" aria-label="On a git branch" />}
+      {time && <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground/65">{time}</span>}
     </button>
   );
 }
@@ -157,7 +150,6 @@ function ActionRow({
   icon: Icon,
   label,
   onClick,
-  collapsed,
   active = false,
   disabled = false,
   chord,
@@ -165,7 +157,6 @@ function ActionRow({
   icon: LucideIcon;
   label: string;
   onClick: () => void;
-  collapsed: boolean;
   active?: boolean;
   disabled?: boolean;
   /** Advertise the row's binding in its tooltip, read from the keymap so the
@@ -181,26 +172,23 @@ function ActionRow({
       aria-label={label}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "flex items-center rounded-md text-[13px] tracking-[-0.008em] transition-colors",
-        collapsed ? "mx-auto size-9 justify-center" : "h-7 w-full gap-2.5 px-2",
+        "flex h-7 w-full items-center gap-2.5 rounded-md px-2 text-[13px] tracking-[-0.008em] transition-colors",
         active ? "bg-accent font-medium text-foreground" : "text-foreground/85 hover:bg-accent hover:text-foreground",
         disabled && "cursor-default opacity-50 hover:bg-transparent hover:text-foreground/85",
       )}
     >
       <Icon size={15} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-      {!collapsed && label}
+      {label}
     </button>
   );
 }
 
 function AccountRow({
   name,
-  collapsed,
   active,
   onOpenSettings,
 }: {
   name: string;
-  collapsed: boolean;
   active: boolean;
   onOpenSettings: () => void;
 }) {
@@ -213,20 +201,15 @@ function AccountRow({
       aria-label={`Open settings for ${name}`}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "flex items-center rounded-lg transition-colors",
-        collapsed ? "mx-auto size-10 justify-center" : "h-11 w-full gap-2.5 px-2",
+        "flex h-11 w-full items-center gap-2.5 rounded-lg px-2 transition-colors",
         active ? "bg-accent text-foreground" : "text-foreground/85 hover:bg-accent hover:text-foreground",
       )}
     >
       <span className="grid size-7 shrink-0 place-items-center rounded-full bg-foreground text-[11px] font-semibold text-background">
         {initial}
       </span>
-      {!collapsed && (
-        <>
-          <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium tracking-[-0.008em]">{name}</span>
-          <Settings2 size={16} strokeWidth={1.6} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-        </>
-      )}
+      <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium tracking-[-0.008em]">{name}</span>
+      <Settings2 size={16} strokeWidth={1.6} className="shrink-0 text-muted-foreground" aria-hidden="true" />
     </button>
   );
 }
@@ -260,7 +243,9 @@ export type BridgeSidebarProps = {
   onOpenMemory: () => void;
   onOpenSettings: () => void;
   onOpenSession: (id: string) => void;
-  /** When set, the rail uses this collapse state instead of its own. */
+  /** Hidden, not shrunk: from `sm` up a collapsed rail gives back every pixel
+   * and leaves nothing on screen. When set, the rail uses this state instead of
+   * its own. */
   collapsed?: boolean;
   onCollapsedChange?: (collapsed: boolean) => void;
   /** Panel + history chevrons. Hidden when those controls live on the title bar. */
@@ -310,7 +295,6 @@ export function BridgeSidebar({
     else setInternalCollapsed(resolved);
   }, [collapsed, onCollapsedChange]);
   const [resizing, setResizing] = useState(false);
-  const [skipWidthTransition, setSkipWidthTransition] = useState(false);
   const [view, setView] = useState<ChatView>(readChatView);
   const [searchOpen, setSearchOpen] = useState(false);
   const [query, setQuery] = useState("");
@@ -321,6 +305,8 @@ export function BridgeSidebar({
   const resizeHandleRef = useRef<HTMLDivElement>(null);
   widthRef.current = width;
 
+  // A hidden rail keeps the width it was last dragged to, so reopening lands
+  // where the user left it rather than back at the default.
   useEffect(() => {
     if (!collapsed) localStorage.setItem(WIDTH_KEY, String(width));
   }, [width, collapsed]);
@@ -345,13 +331,7 @@ export function BridgeSidebar({
     setFoldedGroups(new Set());
   }, []);
 
-  const toggleCollapsed = useCallback(() => {
-    setSkipWidthTransition(true);
-    setCollapsed(value => !value);
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => setSkipWidthTransition(false));
-    });
-  }, [setCollapsed]);
+  const toggleCollapsed = useCallback(() => setCollapsed(value => !value), [setCollapsed]);
 
   const closeSearch = useCallback(() => {
     setSearchOpen(false);
@@ -363,9 +343,8 @@ export function BridgeSidebar({
       closeSearch();
       return;
     }
-    if (collapsed) setCollapsed(false);
     setSearchOpen(true);
-  }, [searchOpen, closeSearch, collapsed, setCollapsed]);
+  }, [searchOpen, closeSearch]);
 
   const stopResize = useCallback((pointerId?: number) => {
     setResizing(false);
@@ -444,8 +423,12 @@ export function BridgeSidebar({
     [visible, view.groupBy, view.sortBy, workspaces, now],
   );
 
-  const sidebarWidth = collapsed ? COLLAPSED_WIDTH : width;
-  const animateWidth = !resizing && !skipWidthTransition;
+  // Collapsing takes the rail off the screen entirely; the panel controls move
+  // to the canvas' chrome row, which is the only way back in besides ⌘B. The
+  // drawer below `sm` is a second, independent axis, so an open drawer still
+  // shows the whole rail even while the desktop side is put away.
+  const hidden = collapsed && !mobileOpen;
+  const animateWidth = !resizing;
   const scrimTransition = useMotionTransition(MOTION_DURATION.overlay);
 
   return (
@@ -471,48 +454,60 @@ export function BridgeSidebar({
         )}
       </AnimatePresence>
       <aside
+        // `inert` is what makes "hidden" true rather than merely invisible:
+        // nothing inside can be clicked, focused, or read out while the rail is
+        // mid-wipe or fully away. React 18 has no typing for it, so it is
+        // spread in as the plain attribute it is.
+        {...(hidden ? { inert: "" } : {})}
+        aria-hidden={hidden || undefined}
         className={cn(
           "z-40 flex shrink-0 flex-col font-sans antialiased",
           "fixed inset-y-0 left-0 w-[min(84vw,20rem)] transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
           mobileOpen ? "translate-x-0" : "-translate-x-full",
           "sm:relative sm:z-20 sm:w-(--sidebar-w) sm:translate-x-0",
-          "u-vibrancy-sidebar border-r border-sidebar-border bg-sidebar",
+          "u-vibrancy-sidebar bg-sidebar",
+          // Hidden means hidden: no rail, no icons, not even the seam.
+          hidden ? "overflow-hidden" : "border-r border-sidebar-border",
           animateWidth ? "sm:transition-[width] sm:duration-300 sm:ease-[cubic-bezier(0.22,1,0.36,1)]" : "sm:transition-none",
         )}
-        style={{ "--sidebar-w": `${sidebarWidth}px` } as React.CSSProperties}
+        style={{
+          "--sidebar-w": `${collapsed ? 0 : width}px`,
+          "--sidebar-panel-w": `${width}px`,
+        } as React.CSSProperties}
       >
-
+      {/* The panel keeps its open width while the aside animates to zero, so the
+          rail wipes off the edge instead of reflowing every row on the way out. */}
+      {/* The contents fade as the width goes, so the outgoing header does not
+          sit beside the chrome row's incoming panel button for the whole wipe. */}
+      <div className={cn(
+        "flex w-full min-h-0 flex-1 flex-col sm:w-(--sidebar-panel-w) sm:transition-opacity sm:duration-200",
+        hidden && "sm:opacity-0",
+      )}>
       {showWindowNav && (
-        collapsed ? (
-          <div className="flex h-11 shrink-0 items-center u-traffic-inset pl-24 pr-1.5" data-tauri-drag-region="deep">
-            <WindowPanelButton collapsed={collapsed} onToggleCollapsed={toggleCollapsed} />
-          </div>
-        ) : (
-          <div className="flex h-11 shrink-0 items-center gap-0.5 u-traffic-inset pl-24 pr-1.5" data-tauri-drag-region="deep">
-            <WindowNavButtons
-              spread
-              collapsed={collapsed}
-              onToggleCollapsed={toggleCollapsed}
-              canBack={canBack}
-              canForward={canForward}
-              onBack={onBack ?? (() => {})}
-              onForward={onForward ?? (() => {})}
-            />
-          </div>
-        )
+        <div className="flex h-11 shrink-0 items-center gap-0.5 u-traffic-inset pl-24 pr-1.5" data-tauri-drag-region="deep">
+          <WindowNavButtons
+            spread
+            collapsed={collapsed}
+            onToggleCollapsed={toggleCollapsed}
+            canBack={canBack}
+            canForward={canForward}
+            onBack={onBack ?? (() => {})}
+            onForward={onForward ?? (() => {})}
+          />
+        </div>
       )}
       <div className={cn("flex min-h-0 flex-1 flex-col overflow-hidden px-2 pb-3", showWindowNav ? "pt-1" : "pt-3")}>
-        <div className={cn("mb-2 shrink-0", collapsed && "flex flex-col items-center")}>
-          <ActionRow icon={SquarePen} label="New Chat" chord="new-chat" collapsed={collapsed} disabled={newChatBusy} onClick={onOpenNewChat} />
-          <ActionRow icon={Search} label="Search" collapsed={collapsed} onClick={toggleSearch} />
-          <ActionRow icon={Store} label="Marketplace" collapsed={collapsed} onClick={onOpenMarketplace} active={marketplaceActive} />
-          <ActionRow icon={LayoutGrid} label="Mission Control" collapsed={collapsed} onClick={onOpenMissionControl} active={missionControlActive} />
-          <ActionRow icon={FolderGit2} label="Projects" chord="open-projects" collapsed={collapsed} onClick={onOpenProjects} active={projectsActive} />
-          <ActionRow icon={Pin} label="Memory" collapsed={collapsed} onClick={onOpenMemory} active={memoryActive} />
-          <ActionRow icon={ClipboardList} label="Work board" collapsed={collapsed} onClick={onOpenWorkBoard} active={workActive} />
+        <div className="mb-2 shrink-0">
+          <ActionRow icon={SquarePen} label="New Chat" chord="new-chat" disabled={newChatBusy} onClick={onOpenNewChat} />
+          <ActionRow icon={Search} label="Search" onClick={toggleSearch} />
+          <ActionRow icon={Store} label="Marketplace" onClick={onOpenMarketplace} active={marketplaceActive} />
+          <ActionRow icon={LayoutGrid} label="Mission Control" onClick={onOpenMissionControl} active={missionControlActive} />
+          <ActionRow icon={FolderGit2} label="Projects" chord="open-projects" onClick={onOpenProjects} active={projectsActive} />
+          <ActionRow icon={Pin} label="Memory" onClick={onOpenMemory} active={memoryActive} />
+          <ActionRow icon={ClipboardList} label="Work board" onClick={onOpenWorkBoard} active={workActive} />
         </div>
 
-        {!collapsed && searchOpen && (
+        {searchOpen && (
           <div className="relative mb-2 shrink-0">
             <Search size={13} strokeWidth={1.7} aria-hidden="true" className="pointer-events-none absolute left-2 top-2 text-muted-foreground" />
             <input
@@ -529,32 +524,30 @@ export function BridgeSidebar({
         )}
 
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
-          {!collapsed && (
-            <SectionLabel action={
-              <span className="flex items-center gap-0.5">
-                <SidebarFilterMenu view={view} agents={agents} allowProjectGrouping onChange={changeView} />
-                <RailIconButton label="New folder" onClick={onOpenProjects}>
-                  <FolderPlus size={13} strokeWidth={1.5} aria-hidden="true" />
-                </RailIconButton>
-              </span>
-            }>
-              Repositories
-            </SectionLabel>
-          )}
+          <SectionLabel action={
+            <span className="flex items-center gap-0.5">
+              <SidebarFilterMenu view={view} agents={agents} allowProjectGrouping onChange={changeView} />
+              <RailIconButton label="New folder" onClick={onOpenProjects}>
+                <FolderPlus size={13} strokeWidth={1.5} aria-hidden="true" />
+              </RailIconButton>
+            </span>
+          }>
+            Repositories
+          </SectionLabel>
 
           {groups.map(group => {
-            // The icon rail has nowhere to put the reveal control, so it must not
-            // cap either — a cap without its control puts chats out of reach.
-            const capped = !collapsed && !searching && !shownInFull.has(group.key) && group.chats.length > GROUP_ROW_CAP;
-            // Folding needs a header to unfold from, so the icon rail never folds.
-            const folded = !collapsed && !!group.label && foldedGroups.has(group.key);
+            // A search is already the short list, so capping it would hide the
+            // very rows the query asked for.
+            const capped = !searching && !shownInFull.has(group.key) && group.chats.length > GROUP_ROW_CAP;
+            // Folding needs a header to unfold from.
+            const folded = !!group.label && foldedGroups.has(group.key);
             const rows = folded ? [] : capped ? group.chats.slice(0, GROUP_ROW_CAP) : group.chats;
             const projectIcon = view.groupBy === "project"
               ? (group.key === NO_PROJECT_GROUP_KEY ? Home : Folder)
               : undefined;
             return (
-              <div key={group.key} className={cn("flex flex-col", !collapsed && "mb-0.5 gap-0.5")}>
-                {!collapsed && group.label && (
+              <div key={group.key} className="flex flex-col mb-0.5 gap-0.5">
+                {group.label && (
                   <GroupLabel
                     label={group.label}
                     count={group.chats.length}
@@ -569,7 +562,6 @@ export function BridgeSidebar({
                     key={chat.id}
                     chat={chat}
                     active={chat.id === activeSessionId}
-                    collapsed={collapsed}
                     indented={!!group.label}
                     branch={chat.workspaceId ? workspaceById.get(chat.workspaceId)?.branch : undefined}
                     time={chatListTime(chatTimestamp(chat), now)}
@@ -591,7 +583,7 @@ export function BridgeSidebar({
               </div>
             );
           })}
-          {!visible.length && !collapsed && (
+          {!visible.length && (
             <p className="px-2 py-1 text-[11px] leading-relaxed text-muted-foreground/70">
               {chats.length ? "No chat matches this filter." : "No chats yet. New Chat opens in the repo you were last in."}
             </p>
@@ -599,8 +591,9 @@ export function BridgeSidebar({
         </div>
 
         <div className="mt-1 shrink-0 border-t border-sidebar-border pt-1.5">
-          <AccountRow name={accountName} collapsed={collapsed} active={settingsActive} onOpenSettings={onOpenSettings} />
+          <AccountRow name={accountName} active={settingsActive} onOpenSettings={onOpenSettings} />
         </div>
+      </div>
       </div>
 
       {!collapsed && (

@@ -204,6 +204,44 @@ describe("BridgeSidebar action rows", () => {
   });
 });
 
+describe("BridgeSidebar collapse", () => {
+  it("reports the change when its own header hides it", () => {
+    const onCollapsedChange = vi.fn();
+    mount({ collapsed: false, onCollapsedChange });
+    click(container.querySelector('button[aria-label="Hide sidebar"]')!);
+    expect(onCollapsedChange).toHaveBeenCalledWith(true);
+  });
+
+  it("takes the rail off the layout entirely, with nothing inside reachable", () => {
+    mount({ collapsed: true, onCollapsedChange: noop });
+    const aside = container.querySelector("aside")!;
+    expect(aside.style.getPropertyValue("--sidebar-w")).toBe("0px");
+    // `inert` is what makes it unreachable: no click, no focus, no screen reader.
+    expect(aside.hasAttribute("inert")).toBe(true);
+    expect(aside.getAttribute("aria-hidden")).toBe("true");
+    expect(aside.className).not.toContain("border-r");
+  });
+
+  it("comes back at the width it was hidden at", () => {
+    localStorage.setItem("bridge.sidebar.width", "288");
+    mount({ collapsed: true, onCollapsedChange: noop });
+    expect(container.querySelector("aside")!.style.getPropertyValue("--sidebar-w")).toBe("0px");
+
+    mount({ collapsed: false, onCollapsedChange: noop });
+    const aside = container.querySelector("aside")!;
+    expect(aside.style.getPropertyValue("--sidebar-w")).toBe("288px");
+    expect(aside.hasAttribute("inert")).toBe(false);
+    expect(container.querySelector('button[aria-label="Hide sidebar"]')).not.toBeNull();
+  });
+
+  it("leaves the drawer usable below sm even while the desktop rail is hidden", () => {
+    mount({ collapsed: true, mobileOpen: true, onCollapsedChange: noop });
+    const aside = container.querySelector("aside")!;
+    expect(aside.hasAttribute("inert")).toBe(false);
+    expect(text()).toContain("Japan relocation");
+  });
+});
+
 describe("mobile drawer scrim", () => {
   const scrim = () => container.querySelector<HTMLElement>('button[aria-label="Close navigation"]');
 

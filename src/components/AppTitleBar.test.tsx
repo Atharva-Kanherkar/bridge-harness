@@ -83,6 +83,30 @@ describe("AppTitleBar", () => {
     expect(onOpenNav).toHaveBeenCalledTimes(1);
   });
 
+  it("carries the sidebar's own controls, and its traffic-light corner, while the rail is hidden", () => {
+    mount({
+      flush: true,
+      hideBrand: true,
+      sidebarHidden: true,
+      leading: <button type="button">Show sidebar</button>,
+    });
+    expect(header().className).toContain("u-traffic-inset");
+    expect(header().className).toContain("pl-24");
+    // First in the row, and desktop-only — the drawer keeps its own toggle below sm.
+    const cluster = header().firstElementChild as HTMLElement;
+    expect(cluster.textContent).toBe("Show sidebar");
+    expect(cluster.className).toContain("hidden");
+    expect(cluster.className).toContain("sm:flex");
+    // Still the window's grab handle with a control sitting on it.
+    expect(header().getAttribute("data-tauri-drag-region")).toBe("deep");
+  });
+
+  it("renders no leading cluster while the rail owns the leading edge", () => {
+    mount({ flush: true, hideBrand: true });
+    expect(header().querySelector("button[type='button']:not([aria-label])")).toBeNull();
+    expect(header().className).not.toContain("pl-24");
+  });
+
   it("docks the actions cluster at the right edge", () => {
     mount({ actions: <button type="button">Mission Control</button> });
     expect(header().textContent).toContain("Mission Control");

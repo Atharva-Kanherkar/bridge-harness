@@ -55,6 +55,13 @@ const props = (overrides: Partial<BridgeSidebarProps> = {}): BridgeSidebarProps 
 const render = (overrides: Partial<BridgeSidebarProps> = {}) =>
   renderToStaticMarkup(<BridgeSidebar {...props(overrides)} />);
 
+/** The aside's own opening tag — its classes and style, without the markup of
+ *  everything it contains. */
+const asideTag = (html: string) => {
+  const start = html.indexOf("<aside");
+  return html.slice(start, html.indexOf(">", start) + 1);
+};
+
 /** Chats stamped relative to now, so day headers are stable whenever this runs. */
 const daysAgo = (days: number, hour = 12) => {
   const date = new Date();
@@ -123,13 +130,46 @@ describe("BridgeSidebar responsive rail", () => {
     expect(html).not.toContain("Hide sidebar");
     expect(html).not.toContain("aria-label=\"Back\"");
   });
+});
 
-  it("keeps the collapsed panel clear of the traffic lights", () => {
+// Collapsing used to leave a 68px column of icons and status dots. It now takes
+// the rail off the screen; the panel and history controls move to the canvas'
+// chrome row, which App owns.
+describe("BridgeSidebar hidden", () => {
+  it("gives every pixel back instead of leaving an icon rail", () => {
     localStorage.setItem("bridge.sidebar.collapsed", "1");
-    const html = render();
-    expect(html).toContain("Show sidebar");
-    expect(html).toContain("u-traffic-inset pl-24");
-    expect(html).not.toContain("aria-label=\"Back\"");
+    const aside = asideTag(render());
+    expect(aside).toContain("--sidebar-w:0px");
+    // Not even the seam survives, and nothing spills out of a zero-width box.
+    expect(aside).not.toContain("border-r");
+    expect(aside).toContain("overflow-hidden");
+    expect(aside).not.toContain("68px");
+  });
+
+  it("puts the whole rail out of reach of the pointer and the screen reader", () => {
+    localStorage.setItem("bridge.sidebar.collapsed", "1");
+    const aside = asideTag(render());
+    expect(aside).toContain("inert=\"\"");
+    expect(aside).toContain("aria-hidden=\"true\"");
+  });
+
+  it("keeps the width it was left at, so reopening lands where the user had it", () => {
+    localStorage.setItem("bridge.sidebar.width", "320");
+    localStorage.setItem("bridge.sidebar.collapsed", "1");
+    // The panel behind the clip stays full width, which is what makes the wipe
+    // a wipe rather than a reflow — and what the rail reopens to.
+    expect(asideTag(render())).toContain("--sidebar-panel-w:320px");
+
+    localStorage.setItem("bridge.sidebar.collapsed", "0");
+    expect(asideTag(render())).toContain("--sidebar-w:320px");
+  });
+
+  it("still fills the drawer below sm, which is a separate axis", () => {
+    localStorage.setItem("bridge.sidebar.collapsed", "1");
+    const html = render({ mobileOpen: true });
+    expect(asideTag(html)).not.toContain("inert");
+    expect(html).toContain("Policy engine budget");
+    expect(html).toContain("Repositories");
   });
 });
 
@@ -249,17 +289,6 @@ describe("BridgeSidebar history", () => {
     const html = render({ chats });
     expect(html).toContain("Show 3 more");
     expect(html).not.toContain("Chat 0");
-  });
-
-  it("does not cap the collapsed rail, which has nowhere to put the reveal control", () => {
-    localStorage.setItem("bridge.sidebar.collapsed", "1");
-    localStorage.setItem(CHAT_VIEW_KEY, JSON.stringify({ status: "all", agent: "all", groupBy: "none", sortBy: "recency" }));
-    const chats = Array.from({ length: 15 }, (_, index) =>
-      session(`c${index}`, { title: `Chat ${index}`, startedAt: daysAgo(0, 1 + index) }));
-    const html = render({ chats });
-    expect(html).not.toContain("Show 3 more");
-    // Every chat keeps a row; a cap with no control would strand the last three.
-    expect(html.match(/rounded-md px-0/g) ?? []).toHaveLength(15);
   });
 
   it("honours a persisted grouping choice", () => {
@@ -387,13 +416,15 @@ describe("BridgeSidebar action rows", () => {
     expect(render()).not.toContain("bg-primary text-primary-foreground");
   });
 
-  it("keeps those rows reachable as icon-only controls when collapsed", () => {
-    localStorage.setItem("bridge.sidebar.collapsed", "1");
+  it("labels every row rather than reducing any of them to a bare icon", () => {
     const html = render();
     for (const label of ["New Chat", "Search", "Marketplace", "Mission Control", "Projects", "Memory", "Work board"]) {
       expect(html).toContain(`aria-label="${label}"`);
+      expect(html).toContain(`>${label}</button>`);
     }
-    expect(html).not.toContain(">New Chat<");
+    // The icon-rail squares are gone with the rail itself.
+    expect(html).not.toContain("mx-auto size-9");
+    expect(html).not.toContain("mx-auto size-10");
   });
 
   it("marks Marketplace, Mission Control, Work board, and account settings current", () => {
@@ -416,12 +447,6 @@ describe("BridgeSidebar without the worker panel", () => {
     expect(html).not.toContain("NEEDS DELEGATION");
   });
 
-  it("shows no worker tile in the collapsed rail", () => {
-    localStorage.setItem("bridge.sidebar.collapsed", "1");
-    const html = render({ chats: [session("a", { status: "working" })] });
-    expect(html).not.toContain("Live workers");
-    expect(html).not.toMatch(/workers?: /);
-  });
   it("offers account Memory with no workspace at all", () => {
     // Account memory is not workspace memory; a plain chat reaches it too.
     expect(render({ workspaces: [] })).toContain("Memory");

@@ -38,6 +38,7 @@ import type { HunkRange } from "./components/DiffView";
 import { DOCK_PANES, DOCK_SHEET_THRESHOLD, useDockLayout } from "./dockLayout";
 import { SessionRecallSearch } from "./components/SessionRecallSearch";
 import { AppTitleBar } from "./components/AppTitleBar";
+import { WindowHistoryChevrons, WindowPanelButton } from "./components/WindowNavButtons";
 import { MissionControl } from "./components/MissionControl";
 import { BypassBadge } from "./components/BypassBadge";
 import type { Section as SettingsSection } from "./components/SettingsScreen";
@@ -1907,6 +1908,15 @@ function AppContent() {
   const usageWidget = <UsageWidget {...usageProps} />;
   const usageRing = <UsageWidget compact {...usageProps} />;
   const titleBarActions = <>{usageWidget}{bypassBadge}</>;
+  // With the rail hidden there is no sidebar header to hold them, so the panel
+  // toggle and the history chevrons move onto whichever chrome row is mounted.
+  // They are the only pointer route back to the sidebar; the keymap keeps ⌘B.
+  const sidebarNav = sidebarCollapsed ? (
+    <>
+      <WindowPanelButton collapsed onToggleCollapsed={() => setSidebarCollapsed(value => !value)} />
+      <WindowHistoryChevrons canBack={canBack} canForward={canForward} onBack={goBack} onForward={goForward} />
+    </>
+  ) : undefined;
   const sidebar = (
     <BridgeSidebar
       mobileOpen={navOpen}
@@ -1957,6 +1967,8 @@ function AppContent() {
       title={chromeTitle}
       navOpen={navOpen}
       onOpenNav={() => setNavOpen(true)}
+      leading={sidebarNav}
+      sidebarHidden={sidebarCollapsed}
       actions={titleBarActions}
     />}
     <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
@@ -2020,6 +2032,8 @@ function AppContent() {
             roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"}
           />}
           bypassBadge={bypassBadge}
+          leading={sidebarNav}
+          sidebarHidden={sidebarCollapsed}
           navOpen={navOpen}
           onOpenNav={() => setNavOpen(true)}
           dockOpen={dock.open}

@@ -134,6 +134,27 @@ describe("SessionToolbar", () => {
     expect(row.getAttribute("data-tauri-drag-region")).toBe("deep");
   });
 
+  it("takes the traffic-light corner, and the sidebar's controls, while the rail is hidden", () => {
+    mount({ sidebarHidden: true, leading: <button type="button">Show sidebar</button> });
+    const row = container.firstElementChild as HTMLElement;
+    expect(row.className).toContain("u-traffic-inset");
+    expect(row.className).toContain("pl-24");
+    expect(row.className).not.toContain("pl-4");
+    // Leading edge of the row, ahead of the title, and desktop-only.
+    const cluster = row.firstElementChild as HTMLElement;
+    expect(cluster.textContent).toBe("Show sidebar");
+    expect(cluster.className).toContain("sm:flex");
+    expect(row.getAttribute("data-tauri-drag-region")).toBe("deep");
+  });
+
+  it("keeps its ordinary gutter while the sidebar is on screen", () => {
+    mount();
+    const row = container.firstElementChild as HTMLElement;
+    expect(row.className).toContain("pl-4");
+    expect(row.className).toContain("sm:pl-6");
+    expect(row.className).not.toContain("u-traffic-inset");
+  });
+
   it("stays a whole-row window drag handle when windowed", () => {
     mount();
     const row = container.firstElementChild as HTMLElement;
