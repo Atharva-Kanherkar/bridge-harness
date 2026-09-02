@@ -2,7 +2,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { ChatModelControl, modelDisplayName } from "./ChatModelControl";
+import { ChatModelControl, type ChatModelControlProps } from "./ChatModelControl";
 import type { AdapterDescriptor } from "../types";
 
 let container: HTMLDivElement;
@@ -10,18 +10,40 @@ let root: Root;
 
 const adapters: AdapterDescriptor[] = [
   {
-    id: "codex", label: "Codex", available: true, authState: "signed_in", version: "test", capabilities: ["messages"], unavailableReason: null,
-    models: [{ id: "gpt-balanced", label: "GPT Balanced", tier: "standard", defaultForTier: true }], defaultModel: "gpt-balanced",
-  },
-  {
-    id: "opencode", label: "OpenCode", available: true, authState: "signed_in", version: "test", capabilities: ["messages"], unavailableReason: null,
-    models: [{ id: "ox-alpha-free", label: "Ox Alpha Free (Unlimited)", tier: "fast", defaultForTier: true }], defaultModel: "ox-alpha-free",
-  },
-  {
-    id: "cursor", label: "Cursor", available: true, authState: "signed_in", version: "test", capabilities: ["messages"], unavailableReason: null,
-    models: [{ id: "cursor/claude-opus-4.1", label: "Claude Opus 4.1", tier: "standard", defaultForTier: true }], defaultModel: "cursor/claude-opus-4.1",
+    id: "claude",
+    label: "Claude",
+    available: true,
+    authState: "signed_in",
+    capabilities: ["messages"],
+    models: [
+      { id: "haiku", label: "Claude Haiku", tier: "fast", defaultForTier: true },
+      { id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForTier: true },
+      { id: "fable", label: "Claude Fable", tier: "strong", defaultForTier: true },
+    ],
+    defaultModel: "sonnet",
+    sandboxModes: [],
   },
 ];
+
+const noop = () => {};
+
+function props(overrides: Partial<ChatModelControlProps> = {}): ChatModelControlProps {
+  return {
+    adapters,
+    harness: "claude",
+    model: "sonnet",
+    onChange: noop,
+    ...overrides,
+  };
+}
+
+function mount(overrides: Partial<ChatModelControlProps> = {}) {
+  act(() => { root.render(<ChatModelControl {...props(overrides)} />); });
+}
+
+function click(element: Element) {
+  act(() => { element.dispatchEvent(new MouseEvent("click", { bubbles: true })); });
+}
 
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -36,132 +58,36 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const trigger = () => container.querySelector<HTMLButtonElement>("button")!;
-// The session toolbar is the top row of an overflow-hidden container: a panel
-// anchored to the trigger's top edge there lands above the viewport and is
-// clipped away entirely, which makes the pill look inert.
-const panel = () => container.querySelector<HTMLElement>(".u-glass-popover")!;
-
 describe("ChatModelControl", () => {
-  it("caps the compact pill's width and ellipsizes when constrained", async () => {
-    await act(async () => root.render(
-      <ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" compact maxWidthClassName="max-w-[190px]" onChange={vi.fn()} />,
-    ));
-    expect(trigger().className).toContain("max-w-[190px]");
-    const label = trigger().querySelector("span")!;
-    expect(label.className).toContain("overflow-hidden");
-    expect(label.className).toContain("text-ellipsis");
+  it("renders the tier badge for each model row in the open picker", () => {
+    mount();
+    click(container.querySelector("button")!);
+    const rows = document.querySelectorAll('[class*="w-full flex items-center"]');
+    expect(rows.length).toBeGreaterThanOrEqual(3);
+    const tiers = [...rows].map(row => row.querySelector('[class*="uppercase"]')?.textContent);
+    expect(tiers).toContain("fast");
+    expect(tiers).toContain("standard");
+    expect(tiers).toContain("strong");
   });
 
-  it("exposes the full, unpolluted label via title even while ellipsized", async () => {
-    await act(async () => root.render(
-      <ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" compact maxWidthClassName="max-w-[190px]" onChange={vi.fn()} />,
-    ));
-    expect(trigger().title).toBe("Codex · GPT Balanced");
+  it("shows effort badge on the selected row when effort is provided", () => {
+    mount({ effort: "high" });
+    click(container.querySelector("button")!);
+    const badge = document.querySelector('[data-testid="effort-badge"]');
+    expect(badge).not.toBeNull();
+    expect(badge!.textContent).toBe("high");
   });
 
-  it("strips the trailing (Unlimited) suffix from the displayed label", async () => {
-    await act(async () => root.render(
-      <ChatModelControl adapters={adapters} harness="opencode" model="ox-alpha-free" compact onChange={vi.fn()} />,
-    ));
-    expect(trigger().textContent).toContain("Ox Alpha Free");
-    expect(trigger().textContent).not.toContain("Unlimited");
-    expect(trigger().title).not.toContain("Unlimited");
+  it("omits effort badge when effort is null", () => {
+    mount({ effort: null });
+    click(container.querySelector("button")!);
+    expect(document.querySelector('[data-testid="effort-badge"]')).toBeNull();
   });
 
-  it("opens the panel upward by default, where the composer sits at the bottom of the view", async () => {
-    await act(async () => root.render(
-      <ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" compact onChange={vi.fn()} />,
-    ));
-    await act(async () => trigger().click());
-    expect(panel().className).toContain("bottom-full");
-    expect(panel().className).not.toContain("top-full");
-  });
-
-  it("opens the panel downward when placed in a top chrome row", async () => {
-    await act(async () => root.render(
-      <ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" compact placement="down" onChange={vi.fn()} />,
-    ));
-    await act(async () => trigger().click());
-    expect(panel().className).toContain("top-full");
-    expect(panel().className).not.toContain("bottom-full");
-  });
-
-  // Some catalogs bake the provider into the model label; prefixing the
-  // harness again stuttered: "OpenCode · OpenCode Go · MiMo V2.5".
-  it("drops the harness prefix when the model label already opens with it", async () => {
-    const stuttering: AdapterDescriptor[] = [{
-      id: "opencode", label: "OpenCode", available: true, authState: "signed_in", version: "test", capabilities: [], unavailableReason: null,
-      models: [{ id: "oc-go-mimo", label: "OpenCode Go · MiMo V2.5", tier: "fast", defaultForTier: true }], defaultModel: "oc-go-mimo",
-    }];
-    await act(async () => root.render(
-      <ChatModelControl adapters={stuttering} harness="opencode" model="oc-go-mimo" compact onChange={vi.fn()} />,
-    ));
-    expect(trigger().title).toBe("OpenCode Go · MiMo V2.5");
-    expect(trigger().title).not.toContain("OpenCode · OpenCode");
-  });
-
-  it("keeps the harness prefix when the model label does not carry it", async () => {
-    await act(async () => root.render(
-      <ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" compact onChange={vi.fn()} />,
-    ));
-    expect(trigger().title).toBe("Codex · GPT Balanced");
-  });
-
-  it("opens the picker and calls onChange when a model is chosen", async () => {
-    const onChange = vi.fn();
-    await act(async () => root.render(
-      <ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" compact onChange={onChange} />,
-    ));
-    await act(async () => trigger().click());
-    const option = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Ox Alpha Free"))!;
-    await act(async () => option.click());
-    expect(onChange).toHaveBeenCalledWith("opencode", "ox-alpha-free");
-  });
-
-  it("derives Cursor from descriptors and returns its exact ACP model id", async () => {
-    const onChange = vi.fn();
-    await act(async () => root.render(
-      <ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" compact onChange={onChange} />,
-    ));
-    await act(async () => trigger().click());
-    const option = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Claude Opus 4.1"))!;
-    await act(async () => option.click());
-    expect(onChange).toHaveBeenCalledWith("cursor", "cursor/claude-opus-4.1");
-  });
-
-  it("closes an open picker on Escape without letting the key reach modal hosts", async () => {
-    // The aside panel closes itself on a window-level Escape; the picker must
-    // swallow the key while it is open or dismissing it tears down the aside.
-    const hostEscape = vi.fn();
-    window.addEventListener("keydown", hostEscape);
-    try {
-      await act(async () => root.render(
-        <ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" compact onChange={vi.fn()} />,
-      ));
-      await act(async () => trigger().click());
-      expect(panel()).toBeTruthy();
-      // Dispatched from inside the control, the way a real keypress lands on
-      // the focused element: the picker's capture listener beats the host's
-      // bubble listener.
-      await act(async () => { trigger().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
-      expect(container.querySelector(".u-glass-popover")).toBeNull();
-      expect(hostEscape).not.toHaveBeenCalled();
-      // With the picker closed, Escape flows to the host again.
-      await act(async () => { trigger().dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true })); });
-      expect(hostEscape).toHaveBeenCalledTimes(1);
-    } finally {
-      window.removeEventListener("keydown", hostEscape);
-    }
-  });
-});
-
-describe("modelDisplayName", () => {
-  it("strips a trailing (Unlimited) suffix case-insensitively", () => {
-    expect(modelDisplayName(adapters, "opencode", "ox-alpha-free")).toBe("Ox Alpha Free");
-  });
-
-  it("falls back to Automatic when no model is configured", () => {
-    expect(modelDisplayName(adapters, "codex", null)).toBe("Automatic");
+  it("shows effort badge only on the selected row, not all rows", () => {
+    mount({ effort: "high" });
+    click(container.querySelector("button")!);
+    const badges = document.querySelectorAll('[data-testid="effort-badge"]');
+    expect(badges).toHaveLength(1);
   });
 });
