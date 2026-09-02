@@ -47,8 +47,26 @@ export type SessionDockProps = {
 
 const RESIZE_STEP = 16;
 
+/**
+ * Narrowest dock that still fits the active tab's inline label.
+ *
+ * Room arithmetic for the header row: each icon-only tab is a 13px icon plus
+ * 2×6px of padding ≈ 25px, so seven of them with six 2px gaps and the
+ * tablist's own 2×2px padding and 2×1px border come to ≈ 190px. Beside it the
+ * header keeps two 28px buttons, the 8px gaps between them and 2×8px of
+ * `px-2` ≈ 90px. The active label adds its 6px gap plus roughly 6px per
+ * character of the longest label ("Transcript") ≈ 66px, which only clears at
+ * ≈ 346px — so this sits above that with margin: at the 440px default width
+ * the label sits comfortably inside the strip, and at the 320px minimum the
+ * strip stays icon-only rather than spilling past its own border.
+ */
+export const DOCK_TAB_LABEL_MIN_WIDTH = 400;
+
 export function SessionDock({ state, panes, availableWidth, sheet, concealed = false, onAction, onConnectFolder, children }: SessionDockProps) {
   const dragging = useRef(false);
+  // Expanded means the dock is `flex-1` — the whole split, always wider than
+  // the threshold — so the label rides along with it.
+  const showActiveLabel = state.expanded || state.width >= DOCK_TAB_LABEL_MIN_WIDTH;
 
   const startResize = (event: React.PointerEvent<HTMLDivElement>) => {
     event.preventDefault();
@@ -114,7 +132,7 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
       >
         {state.open && !concealed && (
           <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-2">
-            <div role="tablist" aria-label="Dock panes" className="flex h-7 min-w-0 items-center gap-0.5 rounded-lg border border-border bg-muted p-0.5">
+            <div role="tablist" aria-label="Dock panes" className="flex h-7 min-w-0 items-center gap-0.5 overflow-hidden rounded-lg border border-border bg-muted p-0.5">
               {panes.map((pane, index) => {
                 const active = pane.id === state.pane;
                 const Icon = pane.icon;
@@ -134,7 +152,7 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
                     )}
                   >
                     <Icon size={13} strokeWidth={1.7} aria-hidden="true" />
-                    {active && <span className="pr-0.5">{pane.label}</span>}
+                    {active && showActiveLabel && <span className="min-w-0 truncate pr-0.5">{pane.label}</span>}
                     {!!pane.badge && pane.available && (
                       <span className="rounded-full bg-accent px-1 font-mono text-[10px] leading-4 text-muted-foreground">{pane.badge}</span>
                     )}
