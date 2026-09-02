@@ -253,6 +253,7 @@ pub fn normalize_opencode_message_with_state(
         "session.error" => {
             let mut event = with_data("error", &properties, properties.clone());
             event.status = Some("failed".into());
+            event.title = Some("OpenCode error".into());
             event.text = properties
                 .pointer("/error/data/message")
                 .or_else(|| properties.pointer("/error/message"))
@@ -451,7 +452,22 @@ pub fn normalize_codex_message_with_state(
                 .unwrap_or("completed");
             let mut event = with_data("turn.completed", &params, params.clone());
             event.status = Some(status.into());
-            vec![event]
+            if matches!(status, "failed" | "error") {
+                let mut err_event = with_data("error", &params, params.clone());
+                err_event.status = Some("failed".into());
+                err_event.title = Some("Codex turn failed".into());
+                err_event.text = params
+                    .pointer("/turn/error/message")
+                    .or_else(|| params.pointer("/error/message"))
+                    .or_else(|| params.pointer("/turn/statusDetails"))
+                    .or_else(|| params.pointer("/turn/reason"))
+                    .and_then(Value::as_str)
+                    .map(str::to_owned)
+                    .or_else(|| Some("Codex turn encountered a failure.".into()));
+                vec![event, err_event]
+            } else {
+                vec![event]
+            }
         }
         "item/agentMessage/delta" => {
             let mut event = with_data("message.delta", &params, json!({}));
@@ -589,6 +605,22 @@ pub fn normalize_codex_message_with_state(
             event.status = Some("completed".into());
             vec![event]
         }
+        "process/exited" => {
+            let exit_code = params
+                .get("exitCode")
+                .or_else(|| params.get("exit_code"))
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            if exit_code != 0 {
+                let mut event = with_data("error", &params, params.clone());
+                event.title = Some("Process exited with error".into());
+                event.text = Some(format!("Codex process exited with code {exit_code}."));
+                event.status = Some("failed".into());
+                vec![event]
+            } else {
+                vec![]
+            }
+        }
         "thread/realtime/error" => {
             let mut event = with_data("error", &params, params.clone());
             event.title = Some("Realtime connection error".into());
@@ -659,7 +691,6 @@ fn is_codex_internal_notification(method: &str) -> bool {
             | "item/plan/delta"
             | "command/exec/outputDelta"
             | "process/outputDelta"
-            | "process/exited"
             | "item/commandExecution/terminalInteraction"
             | "serverRequest/resolved"
             | "mcpServer/oauthLogin/completed"
@@ -1236,6 +1267,46 @@ mod tests {
         assert_eq!(completed[0].kind, "reasoning.completed");
         assert_eq!(completed[0].status.as_deref(), Some("completed"));
         assert_eq!(state.active_reasoning_id, None);
+    }
+    #[test]
+    fn normalizes_codex_turn_completed_with_failure_synthesizes_error() {
+        let events = normalize_codex_message(&json!({
+            "method": "turn/completed",
+            "params": {
+                "turn": {
+                    "status": "failed",
+                    "error": { "message": "Model hit rate limit or context overload" }
+                }
+            }
+        }));
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].kind, "turn.completed");
+        assert_eq!(events[0].status.as_deref(), Some("failed"));
+        assert_eq!(events[1].kind, "error");
+        assert_eq!(events[1].status.as_deref(), Some("failed"));
+        assert_eq!(events[1].title.as_deref(), Some("Codex turn failed"));
+        assert_eq!(events[1].text.as_deref(), Some("Model hit rate limit or context overload"));
+    }
+    #[test]
+    fn normalizes_codex_process_exited_with_error() {
+        let events = normalize_codex_message(&json!({
+            "method": "process/exited",
+            "params": {
+                "exitCode": 137
+            }
+        }));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "error");
+        assert_eq!(events[0].status.as_deref(), Some("failed"));
+        assert!(events[0].text.as_deref().unwrap().contains("137"));
+
+        let ok_exit = normalize_codex_message(&json!({
+            "method": "process/exited",
+            "params": {
+                "exitCode": 0
+            }
+        }));
+        assert!(ok_exit.is_empty());
     }
     #[test]
     fn normalizes_tool_without_leaking_provider_type() {
