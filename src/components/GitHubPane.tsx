@@ -180,20 +180,29 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
       setStatus(next);
       setSurfaceError(undefined);
       if (next.availability.status === "available") {
-        const [pullsResult, issuesResult, repositoryResult] = await Promise.allSettled([
-          bridgeApi.githubPullRequests(workspaceId),
-          bridgeApi.githubIssues(workspaceId),
-          bridgeApi.githubRepository(workspaceId),
+        const settle = async <T,>(tab: SurfaceTab, read: Promise<T>, apply: (value: T) => void) => {
+          try {
+            const value = await read;
+            if (!alive.current) return;
+            apply(value);
+            setTabErrors(current => {
+              const nextErrors = { ...current };
+              delete nextErrors[tab];
+              return nextErrors;
+            });
+          } catch (error) {
+            if (!alive.current) return;
+            setTabErrors(current => ({
+              ...current,
+              [tab]: error instanceof Error ? error.message : String(error),
+            }));
+          }
+        };
+        await Promise.all([
+          settle("pulls", bridgeApi.githubPullRequests(workspaceId), value => setPrs(value.pullRequests)),
+          settle("issues", bridgeApi.githubIssues(workspaceId), value => setIssues(value.issues)),
+          settle("repository", bridgeApi.githubRepository(workspaceId), setRepositoryOverview),
         ]);
-        if (!alive.current) return;
-        const errors: Partial<Record<SurfaceTab, string>> = {};
-        if (pullsResult.status === "fulfilled") setPrs(pullsResult.value.pullRequests);
-        else errors.pulls = pullsResult.reason instanceof Error ? pullsResult.reason.message : String(pullsResult.reason);
-        if (issuesResult.status === "fulfilled") setIssues(issuesResult.value.issues);
-        else errors.issues = issuesResult.reason instanceof Error ? issuesResult.reason.message : String(issuesResult.reason);
-        if (repositoryResult.status === "fulfilled") setRepositoryOverview(repositoryResult.value);
-        else errors.repository = repositoryResult.reason instanceof Error ? repositoryResult.reason.message : String(repositoryResult.reason);
-        setTabErrors(errors);
       }
     } catch (error) {
       if (alive.current) setSurfaceError(error instanceof Error ? error.message : String(error));

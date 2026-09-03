@@ -119,19 +119,21 @@ pub fn github_status(core: &Arc<BridgeCore>, workspace_id: &str, refresh: bool) 
 pub fn github_prs(core: &Arc<BridgeCore>, workspace_id: &str) -> Result<wire::GithubPullRequestsResult, BridgeError> {
     let path = locked_workspace_path(core, workspace_id)?;
     let summaries = core.github_surface.list_prs(Path::new(&path)).map_err(github_error)?;
-    core.github_poller.watch(workspace_id, Path::new(&path).to_path_buf(), &summaries);
-    let polling_core = Arc::clone(core);
-    let polling_workspace_id = workspace_id.to_owned();
-    let polling_path = PathBuf::from(path);
-    thread::spawn(move || {
-        if let Ok(summaries) = polling_core.github_surface.list_prs_for_polling(&polling_path) {
-            polling_core.github_poller.watch(
-                &polling_workspace_id,
-                polling_path,
-                &summaries,
-            );
-        }
-    });
+    if core.github_poller.begin_refresh(workspace_id) {
+        let polling_core = Arc::clone(core);
+        let polling_workspace_id = workspace_id.to_owned();
+        let polling_path = PathBuf::from(path);
+        thread::spawn(move || {
+            if let Ok(summaries) = polling_core.github_surface.list_prs_for_polling(&polling_path) {
+                polling_core.github_poller.watch(
+                    &polling_workspace_id,
+                    polling_path,
+                    &summaries,
+                );
+            }
+            polling_core.github_poller.finish_refresh(&polling_workspace_id);
+        });
+    }
     let pull_requests = github_wire(summaries)?;
     Ok(wire::GithubPullRequestsResult { pull_requests })
 }

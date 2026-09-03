@@ -186,6 +186,19 @@ describe("GitHubPane", () => {
     expect(host!.querySelector('[role="status"][aria-label="Loading pull requests"]')).not.toBeNull();
   });
 
+  it("renders pull requests without waiting for other tabs", async () => {
+    vi.spyOn(bridgeApi, "githubStatus").mockResolvedValue(status);
+    vi.spyOn(bridgeApi, "githubPullRequests").mockResolvedValue({ pullRequests: [summary] });
+    const never = new Promise<never>(() => {});
+    vi.spyOn(bridgeApi, "githubIssues").mockReturnValue(never);
+    vi.spyOn(bridgeApi, "githubRepository").mockReturnValue(never);
+
+    await mount();
+
+    expect(host!.textContent).toContain("Safe GitHub surface");
+    expect(host!.querySelector('[role="status"][aria-label="Loading pull requests"]')).toBeNull();
+  });
+
   it("shows a detail skeleton while a pull request opens", async () => {
     mockReads();
     vi.spyOn(bridgeApi, "githubPullRequest").mockReturnValue(new Promise(() => {}));

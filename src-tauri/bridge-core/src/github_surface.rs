@@ -2828,6 +2828,27 @@ mod tests {
     }
 
     #[test]
+    fn interactive_and_polling_pr_lists_have_independent_caches() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+
+        surface.list_prs(repository.path()).unwrap();
+        surface.list_prs_for_polling(repository.path()).unwrap();
+        surface.list_prs(repository.path()).unwrap();
+        surface.list_prs_for_polling(repository.path()).unwrap();
+
+        let log = invocations(&fake);
+        assert!(log.contains(&format!("--limit 5 --json {PR_LIST_FIELDS}")));
+        assert!(log.contains(&format!("--limit 25 --json {PR_LIST_FIELDS}")));
+        assert_eq!(
+            invocation_count(&fake, "pr list"),
+            3,
+            "base, interactive-rich, and polling-rich reads cache independently"
+        );
+    }
+
+    #[test]
     fn explicit_repository_refresh_bypasses_the_ttl_cache() {
         let repository = repository_with_origin();
         let fake = fake_gh(true, None);
@@ -3033,6 +3054,7 @@ mod tests {
         let fake = fake_gh(true, None);
         let surface = GithubSurface::discover_on_path(fake.path());
         surface.list_prs(repository.path()).unwrap();
+        surface.list_prs_for_polling(repository.path()).unwrap();
         surface.pr_detail(repository.path(), 103).unwrap();
         surface.pr_checks(repository.path(), 103).unwrap();
         surface.pr_review_threads(repository.path(), 103).unwrap();
@@ -3049,10 +3071,11 @@ mod tests {
             .unwrap();
 
         surface.list_prs(repository.path()).unwrap();
+        surface.list_prs_for_polling(repository.path()).unwrap();
         surface.pr_detail(repository.path(), 103).unwrap();
         surface.pr_checks(repository.path(), 103).unwrap();
         surface.pr_review_threads(repository.path(), 103).unwrap();
-        assert_eq!(invocation_count(&fake, "pr list"), 4);
+        assert_eq!(invocation_count(&fake, "pr list"), 6);
         assert_eq!(invocation_count(&fake, "pr view"), 2);
         assert_eq!(invocation_count(&fake, "pr checks"), 2);
         assert_eq!(invocation_count(&fake, "api graphql"), 2);
