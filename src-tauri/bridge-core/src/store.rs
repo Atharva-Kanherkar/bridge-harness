@@ -9,7 +9,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 44;
+const LATEST_SCHEMA_VERSION: i64 = 45;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -654,6 +654,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             42 => migration_42_memory_consolidation(&transaction)?,
             43 => migration_43_interaction_resolutions(&transaction)?,
             44 => migration_44_agent_usage_analytics(&transaction)?,
+            45 => crate::external_import::install_import_foundation(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"

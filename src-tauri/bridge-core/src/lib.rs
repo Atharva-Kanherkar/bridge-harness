@@ -36,6 +36,7 @@ pub mod cursor_adapter;
 pub mod grok_adapter;
 pub mod delegation;
 pub mod events;
+pub mod external_import;
 pub mod frame_queue;
 pub mod git;
 pub mod github_surface;
