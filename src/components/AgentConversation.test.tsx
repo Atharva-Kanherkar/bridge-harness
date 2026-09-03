@@ -359,6 +359,16 @@ describe("AgentConversation", () => {
     expect(html).toContain("src/**");
     expect(html).toContain("docs/**");
     expect(html).toContain("owned_path_provenance_required");
+    // The raw policy code must live inside the collapsed "Policy" disclosure and
+    // nowhere else — counting occurrences would also pass if the disclosure
+    // vanished and the sole code moved back into the remediation body, so assert
+    // the structure: the code is within the <details> and absent once it is gone.
+    const doc = new DOMParser().parseFromString(html, "text/html");
+    const policy = Array.from(doc.querySelectorAll("details")).find(node => node.querySelector("summary")?.textContent === "Policy");
+    expect(policy).toBeTruthy();
+    expect(policy?.textContent).toContain("owned_path_provenance_required");
+    policy?.remove();
+    expect(doc.body.textContent).not.toContain("owned_path_provenance_required");
     expect(html).toContain("were not explicitly authorized");
     expect(html).toContain("Render Mermaid inline");
   });

@@ -1174,7 +1174,7 @@ function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: 
       <code className={`mt-1 ${WELL}`}>{scope.join("\n")}</code>
     </div>}
     {remediation
-      ? <p className="mt-2 px-3.5 text-muted-foreground text-[12.5px] leading-relaxed sm:px-4">{reason ? <em className="not-italic font-mono text-[11px] break-all text-warning">{reason}</em> : null}{reason ? " — " : ""}{remediation}</p>
+      ? <p className="mt-2 px-3.5 text-muted-foreground text-[12.5px] leading-relaxed sm:px-4">{remediation}</p>
       : item.text && <p className="mt-1.5 px-3.5 text-muted-foreground text-[12.5px] leading-relaxed sm:px-4">{item.text}</p>}
     {item.data.command ? <code className={`mt-2.5 mx-3.5 sm:mx-4 ${WELL}`}>{String(item.data.command)}</code> : null}
     {item.data.cwd ? <small className="block pt-1.5 px-3.5 text-muted-foreground/70 font-mono text-[10.5px] break-all sm:px-4">{String(item.data.cwd)}</small> : null}
