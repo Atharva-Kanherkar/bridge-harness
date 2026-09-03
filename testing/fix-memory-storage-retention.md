@@ -12,6 +12,7 @@
 - Database open prunes older valid backups before migration, then protects the rollback copy created by the current migration regardless of clock-skewed filenames.
 - Migration backups are consistent SQLite snapshots staged under a temporary name and atomically published only after completion.
 - Backup cleanup never removes the live database, the newest rollback backup, or unrelated files in the data directory.
+- When multiple rollback candidates exist, cleanup keeps a structurally readable SQLite backup instead of trusting a newer header-only or truncated file.
 - Crash-leftover backup staging files with exact Bridge-generated names are reclaimed on the next open.
 - Memory packet selection, citation bodies, exclusions, and disabled-injection behavior remain unchanged.
 
@@ -25,6 +26,7 @@
 - `migration_backup_retention_keeps_only_the_newest_bridge_backup` — old timestamped backups are removed and the newest survives.
 - `migration_backup_retention_preserves_unrelated_files` — narrowly named cleanup reclaims exact crash-leftover staging files without touching malformed names, foreign files, or the primary database.
 - `migration_backup_retention_prefers_the_just_created_rollback` — clock-skewed filenames cannot displace the backup made for the current migration.
+- `migration_backup_retention_rejects_a_truncated_newer_backup` — structural validation prevents a corrupt newer candidate from displacing an older recoverable rollback.
 
 ## Integration / Functional Tests
 

@@ -1203,6 +1203,18 @@ fn is_sqlite_backup(path: &Path) -> bool {
     file.read_exact(&mut header).is_ok() && header == *b"SQLite format 3\0"
 }
 
+fn is_structurally_valid_sqlite_backup(path: &Path) -> bool {
+    let Ok(connection) = Connection::open_with_flags(
+        path,
+        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    ) else {
+        return false;
+    };
+    connection
+        .query_row("PRAGMA quick_check(1)", [], |row| row.get::<_, String>(0))
+        .is_ok_and(|result| result == "ok")
+}
+
 /// Keep one verified-by-name rollback point for the primary database. Schema
 /// upgrades used to append a complete copy forever, so each release multiplied
 /// the user's whole chat history. Names that are not exactly Bridge's timestamp
@@ -1256,7 +1268,21 @@ fn prune_migration_backups(
     let keep = protected_backup
         .filter(|protected| backups.iter().any(|candidate| candidate == *protected))
         .map(Path::to_path_buf)
-        .or_else(|| backups.first().cloned());
+        .or_else(|| match backups.as_slice() {
+            [] => None,
+            [only] => Some(only.clone()),
+            competing => competing
+                .iter()
+                .find(|candidate| is_structurally_valid_sqlite_backup(candidate))
+                .cloned(),
+        });
+
+    // If no competing candidate is structurally readable, preserve them all.
+    // Failing to reclaim space is safer than deleting the last possible rollback.
+    if keep.is_none() && !backups.is_empty() {
+        outcome.skipped_files = outcome.skipped_files.saturating_add(backups.len());
+        return Ok(outcome);
+    }
 
     for backup in backups {
         if keep.as_ref() == Some(&backup) {
@@ -4756,6 +4782,27 @@ mod tests {
         assert_eq!(outcome.removed_files, 1);
         assert!(current.exists(), "the rollback from this migration is protected by identity");
         assert!(!clock_skewed.exists(), "a future-dated older backup cannot displace it");
+    }
+
+    #[test]
+    fn migration_backup_retention_rejects_a_truncated_newer_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        drop(open(&path).unwrap());
+        let recoverable = dir
+            .path()
+            .join("bridge.db.backup-20260101T000000000000000Z");
+        let truncated = dir
+            .path()
+            .join("bridge.db.backup-20260102T000000000000000Z");
+        std::fs::copy(&path, &recoverable).unwrap();
+        std::fs::write(&truncated, b"SQLite format 3\0").unwrap();
+
+        let outcome = prune_migration_backups(&path, None).unwrap();
+
+        assert_eq!(outcome.removed_files, 1);
+        assert!(recoverable.exists(), "the structurally readable rollback survives");
+        assert!(!truncated.exists(), "a header-only newer file cannot displace it");
     }
 
     #[test]
