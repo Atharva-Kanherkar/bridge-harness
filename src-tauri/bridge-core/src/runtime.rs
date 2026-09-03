@@ -344,12 +344,15 @@ impl BridgeCore {
         // OpenCode discovery finishes after boot returns; publish the refetch
         // hint so subscribed hosts re-read adapter availability.
         let discovery_events = events.clone();
-        let adapter_registry = Arc::new(adapters::AdapterRegistry::built_in_with_opencode_notify(
-            opencode_settings,
-            Some(Box::new(move || {
-                discovery_events.publish(CoreEvent::AdaptersChanged)
-            })),
-        )?);
+        let adapter_registry = Arc::new(
+            adapters::AdapterRegistry::built_in_with_opencode_notify_and_cache(
+                opencode_settings,
+                Some(Box::new(move || {
+                    discovery_events.publish(CoreEvent::AdaptersChanged)
+                })),
+                Some(config.data_dir.join("model-catalogs/opencode.json")),
+            )?,
+        );
         let credential_broker = Arc::new(credential_broker::CredentialBroker::openai()?);
 
         // The catalog, and what it contributes to resolution. `load` never

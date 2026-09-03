@@ -1786,9 +1786,14 @@ mod tests {
                     id: model.into(),
                     label: model.into(),
                     tier: CapabilityTier::Standard,
+                    available: true,
+                    compatible: true,
+                    lifecycle: crate::model::ModelLifecycle::Stable,
+                    source: crate::model::ModelCatalogSource::CuratedFallback,
                     default_for_tier: true,
                 }],
                 default_model: Some(model.into()),
+                model_catalog: crate::model::ModelCatalogDiagnostics::curated(),
             })
             .collect()
     }

@@ -323,7 +323,82 @@ pub struct ModelOption {
     pub id: String,
     pub label: String,
     pub tier: CapabilityTier,
+    /// Selectability is independent from promotion. Discovery can retain an
+    /// inaccessible entry for diagnostics without ever routing work to it.
+    #[serde(default = "model_option_default_true")]
+    pub available: bool,
+    /// A runtime may advertise a model whose protocol/tool contract Bridge
+    /// cannot satisfy. It remains visible but cannot be selected or promoted.
+    #[serde(default = "model_option_default_true")]
+    pub compatible: bool,
+    #[serde(default)]
+    pub lifecycle: ModelLifecycle,
+    #[serde(default)]
+    pub source: ModelCatalogSource,
+    /// Bridge's promoted model for this tier, not merely the provider's
+    /// advertised default. Exactly one eligible entry per populated tier wins.
     pub default_for_tier: bool,
+}
+
+fn model_option_default_true() -> bool {
+    true
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelLifecycle {
+    Stable,
+    Preview,
+    Deprecated,
+    Unknown,
+}
+
+impl Default for ModelLifecycle {
+    fn default() -> Self {
+        Self::Unknown
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ModelCatalogSource {
+    RuntimeApi,
+    LastKnownGood,
+    CuratedFallback,
+}
+
+impl Default for ModelCatalogSource {
+    fn default() -> Self {
+        Self::CuratedFallback
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelCatalogDiagnostics {
+    pub source: ModelCatalogSource,
+    pub fetched_at: Option<String>,
+    pub expires_at: Option<String>,
+    pub stale: bool,
+    pub last_error: Option<String>,
+}
+
+impl Default for ModelCatalogDiagnostics {
+    fn default() -> Self {
+        Self::curated()
+    }
+}
+
+impl ModelCatalogDiagnostics {
+    pub fn curated() -> Self {
+        Self {
+            source: ModelCatalogSource::CuratedFallback,
+            fetched_at: None,
+            expires_at: None,
+            stale: false,
+            last_error: None,
+        }
+    }
 }
 
 /// Isolation level a worker runs under. The wire values match the sandbox names
@@ -385,6 +460,8 @@ pub struct AdapterDescriptor {
     pub unavailable_reason: Option<String>,
     pub models: Vec<ModelOption>,
     pub default_model: Option<String>,
+    #[serde(default)]
+    pub model_catalog: ModelCatalogDiagnostics,
 }
 
 impl AdapterDescriptor {

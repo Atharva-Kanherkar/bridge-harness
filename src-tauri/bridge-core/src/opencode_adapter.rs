@@ -1285,6 +1285,10 @@ pub fn model_options(catalog: &OpenCodeCatalog, visible_models: &[String]) -> Ve
             } else {
                 CapabilityTier::Standard
             },
+            available: true,
+            compatible: model.tool_call,
+            lifecycle: crate::model::ModelLifecycle::Unknown,
+            source: crate::model::ModelCatalogSource::RuntimeApi,
             default_for_tier: false,
         })
         .collect::<Vec<_>>();
@@ -1293,6 +1297,11 @@ pub fn model_options(catalog: &OpenCodeCatalog, visible_models: &[String]) -> Ve
         .iter()
         .filter_map(|provider| provider.default_model.as_deref())
         .collect::<HashSet<_>>();
+    for option in &mut options {
+        if provider_defaults.contains(option.id.as_str()) {
+            option.lifecycle = crate::model::ModelLifecycle::Stable;
+        }
+    }
     for tier in [
         CapabilityTier::Fast,
         CapabilityTier::Standard,

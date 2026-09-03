@@ -31,7 +31,11 @@ use crate::{
         ContextSegmentObservation,
     },
     delegation::WriteMode,
-    model::{AdapterDescriptor, AuthState, CapabilityTier, ModelOption},
+    model::{
+        AdapterDescriptor, AuthState, CapabilityTier, ModelCatalogDiagnostics,
+        ModelCatalogSource, ModelLifecycle, ModelOption,
+    },
+    model_catalog::{self, CatalogCandidate},
     BridgeError,
 };
 use agent_client_protocol::schema::v1::{
@@ -377,23 +381,34 @@ fn model_options(options: &[SessionConfigOption]) -> Vec<ModelOption> {
     };
     let values = flatten_options(&select.options);
     let current = select.current_value.0.to_string();
-    let mut models: Vec<ModelOption> = values
+    let models: Vec<ModelOption> = values
         .into_iter()
         .map(|(id, label)| ModelOption {
             id,
             label,
             tier: CapabilityTier::Standard,
+            available: true,
+            compatible: true,
+            lifecycle: ModelLifecycle::Unknown,
+            source: ModelCatalogSource::RuntimeApi,
             default_for_tier: false,
         })
         .collect();
-    if let Some(index) = models
-        .iter()
-        .position(|model| model.id == current)
-        .or_else(|| (!models.is_empty()).then_some(0))
-    {
-        models[index].default_for_tier = true;
-    }
-    models
+    model_catalog::normalize(
+        ModelCatalogSource::RuntimeApi,
+        models.into_iter().map(|model| {
+            let provider_default = model.id == current;
+            CatalogCandidate {
+                id: model.id,
+                label: model.label,
+                tier: model.tier,
+                available: model.available,
+                compatible: model.compatible,
+                lifecycle: if provider_default { ModelLifecycle::Stable } else { model.lifecycle },
+                promotion_priority: i64::from(provider_default),
+            }
+        }),
+    )
 }
 
 fn model_selector(options: &[SessionConfigOption]) -> Option<&SessionConfigSelect> {
@@ -1082,6 +1097,13 @@ impl crate::adapters::HarnessAdapter for GrokAdapter {
                 .map(|profile| profile.models.clone())
                 .unwrap_or_default(),
             default_model: profile.and_then(|profile| profile.default_model.clone()),
+            model_catalog: ModelCatalogDiagnostics {
+                source: ModelCatalogSource::RuntimeApi,
+                fetched_at: None,
+                expires_at: None,
+                stale: false,
+                last_error: unavailable.map(|reason| reason.reason()),
+            },
         }
     }
 
@@ -1572,6 +1594,10 @@ mod tests {
                 id: "grok-code".into(),
                 label: "Grok Code".into(),
                 tier: CapabilityTier::Standard,
+                available: true,
+                compatible: true,
+                lifecycle: ModelLifecycle::Stable,
+                source: ModelCatalogSource::RuntimeApi,
                 default_for_tier: true,
             }],
             default_model: Some("grok-code".into()),

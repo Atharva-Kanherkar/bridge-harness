@@ -3,7 +3,11 @@ use crate::{
     agent, claude_adapter, codex_adapter, cursor_adapter,
     delegation::WriteMode,
     grok_adapter,
-    model::{AdapterDescriptor, CapabilityTier, ModelOption, SandboxMode},
+    model::{
+        AdapterDescriptor, CapabilityTier, ModelCatalogDiagnostics, ModelCatalogSource,
+        ModelOption, SandboxMode,
+    },
+    model_catalog::{self, CatalogCandidate},
     opencode_adapter,
     worker_sandbox::ReadOnlySandbox,
     BridgeError,
@@ -13,7 +17,7 @@ use std::{
     any::Any,
     collections::HashMap,
     io::BufRead,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::{Arc, Mutex, RwLock},
     thread,
@@ -529,15 +533,17 @@ fn validate_start_compatibility(descriptor: &AdapterDescriptor, request: &StartR
 }
 
 fn model_options(items: &[(&str, &str, CapabilityTier, bool)]) -> Vec<ModelOption> {
-    items
-        .iter()
-        .map(|(id, label, tier, default_for_tier)| ModelOption {
-            id: (*id).into(),
-            label: (*label).into(),
-            tier: *tier,
-            default_for_tier: *default_for_tier,
-        })
-        .collect()
+    model_catalog::normalize(
+        ModelCatalogSource::CuratedFallback,
+        items.iter().map(|(id, label, tier, default_for_tier)| {
+            CatalogCandidate::stable(
+                *id,
+                *label,
+                *tier,
+                i64::from(*default_for_tier),
+            )
+        }),
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -575,6 +581,18 @@ impl AdapterRegistry {
         opencode_settings: opencode_adapter::OpenCodeSettings,
         on_discovered: Option<Box<dyn Fn() + Send + Sync>>,
     ) -> Result<Self, BridgeError> {
+        Self::built_in_with_opencode_notify_and_cache(
+            opencode_settings,
+            on_discovered,
+            None,
+        )
+    }
+
+    pub fn built_in_with_opencode_notify_and_cache(
+        opencode_settings: opencode_adapter::OpenCodeSettings,
+        on_discovered: Option<Box<dyn Fn() + Send + Sync>>,
+        opencode_cache_path: Option<PathBuf>,
+    ) -> Result<Self, BridgeError> {
         let mut registry = Self {
             adapters: HashMap::new(),
         };
@@ -591,6 +609,7 @@ impl AdapterRegistry {
         registry.register(Box::new(OpenCodeAdapter::new(
             opencode_settings,
             notify(&on_discovered),
+            opencode_cache_path,
         )))?;
         // Cursor discovers itself the same way, and for a stronger reason: its
         // protocol support cannot be read off the filesystem and has to be
@@ -757,14 +776,21 @@ impl AdapterRegistry {
                 BridgeError::Invalid(format!("No structured adapter is registered for {id}"))
             })?
             .descriptor();
-        let unranked = descriptor.models.first().is_some_and(|first| descriptor.models.iter().all(|model| model.tier == first.tier));
-        let tier_default = descriptor
+        let selectable = descriptor
             .models
             .iter()
+            .filter(|model| model.available && model.compatible)
+            .collect::<Vec<_>>();
+        let unranked = selectable
+            .first()
+            .is_some_and(|first| selectable.iter().all(|model| model.tier == first.tier));
+        let tier_default = selectable
+            .iter()
+            .copied()
             .find(|model| model.tier == tier && model.default_for_tier)
-            .or_else(|| descriptor.models.iter().find(|model| model.tier == tier))
-            .or_else(|| unranked.then(|| descriptor.models.iter().find(|model| model.default_for_tier)).flatten())
-            .or_else(|| unranked.then(|| descriptor.models.first()).flatten())
+            .or_else(|| selectable.iter().copied().find(|model| model.tier == tier))
+            .or_else(|| unranked.then(|| selectable.iter().copied().find(|model| model.default_for_tier)).flatten())
+            .or_else(|| unranked.then(|| selectable.first().copied()).flatten())
             .ok_or_else(|| {
                 BridgeError::Invalid(format!(
                     "Adapter {id} does not advertise a {} capability model",
@@ -772,9 +798,9 @@ impl AdapterRegistry {
                 ))
             })?;
         let hinted = model_hint.and_then(|hint| {
-            descriptor
-                .models
+            selectable
                 .iter()
+                .copied()
                 .find(|model| model.id.eq_ignore_ascii_case(hint.trim()))
         });
         let selected = hinted.filter(|model| unranked || model.tier == tier).unwrap_or(tier_default);
@@ -800,22 +826,35 @@ struct OpenCodeAdapter {
     settings: RwLock<opencode_adapter::OpenCodeSettings>,
     catalog: Arc<RwLock<Option<opencode_adapter::OpenCodeCatalog>>>,
     catalog_error: Arc<RwLock<Option<String>>>,
+    model_catalog: Arc<RwLock<model_catalog::ResolvedCatalog>>,
+    cache_path: Option<PathBuf>,
 }
 impl OpenCodeAdapter {
     fn new(
         settings: opencode_adapter::OpenCodeSettings,
         on_discovered: Option<Box<dyn FnOnce() + Send>>,
+        cache_path: Option<PathBuf>,
     ) -> Self {
+        let initial_models = model_catalog::resolve(
+            "opencode",
+            Err("OpenCode discovery has not completed".into()),
+            &[],
+            cache_path.as_deref(),
+            chrono::Utc::now(),
+        );
         let adapter = Self {
             streams: Mutex::new(HashMap::new()),
             settings: RwLock::new(settings.clone()),
             catalog: Arc::new(RwLock::new(None)),
             catalog_error: Arc::new(RwLock::new(None)),
+            model_catalog: Arc::new(RwLock::new(initial_models)),
+            cache_path: cache_path.clone(),
         };
         // Discovery spawns an OpenCode server and can take tens of seconds, and
         // new() runs during app setup — do the initial catalog load off-thread.
         let catalog = adapter.catalog.clone();
         let catalog_error = adapter.catalog_error.clone();
+        let model_catalog = adapter.model_catalog.clone();
         let directory = std::env::current_dir()
             .ok()
             .and_then(|path| path.to_str().map(str::to_owned))
@@ -825,11 +864,46 @@ impl OpenCodeAdapter {
             .spawn(move || {
                 match opencode_adapter::discover(&settings, &directory) {
                     Ok(result) => {
+                        let raw_options = opencode_adapter::model_options(
+                            &result,
+                            &settings.visible_models,
+                        );
+                        let candidates = raw_options.into_iter().map(|model| CatalogCandidate {
+                            id: model.id,
+                            label: model.label,
+                            tier: model.tier,
+                            available: model.available,
+                            compatible: model.compatible,
+                            lifecycle: model.lifecycle,
+                            promotion_priority: i64::from(model.default_for_tier),
+                        }).collect();
+                        *model_catalog.write().unwrap() = model_catalog::resolve(
+                            "opencode",
+                            Ok(candidates),
+                            &[],
+                            cache_path.as_deref(),
+                            chrono::Utc::now(),
+                        );
                         *catalog.write().unwrap() = Some(result);
                         *catalog_error.write().unwrap() = None;
                     }
                     Err(error) => {
-                        *catalog_error.write().unwrap() = Some(error.to_string());
+                        let message = error.to_string();
+                        let failed = model_catalog::resolve(
+                            "opencode",
+                            Err(message.clone()),
+                            &[],
+                            cache_path.as_deref(),
+                            chrono::Utc::now(),
+                        );
+                        if !failed.models.is_empty() {
+                            *model_catalog.write().unwrap() = failed;
+                        } else {
+                            let mut current = model_catalog.write().unwrap();
+                            current.diagnostics.stale = true;
+                            current.diagnostics.last_error = Some(message.clone());
+                        }
+                        *catalog_error.write().unwrap() = Some(message);
                     }
                 }
                 if let Some(notify) = on_discovered {
@@ -847,6 +921,26 @@ impl OpenCodeAdapter {
         *self.settings.write().unwrap() = settings.clone();
         match opencode_adapter::discover(&settings, directory) {
             Ok(catalog) => {
+                let raw_options = opencode_adapter::model_options(
+                    &catalog,
+                    &settings.visible_models,
+                );
+                let candidates = raw_options.into_iter().map(|model| CatalogCandidate {
+                    id: model.id,
+                    label: model.label,
+                    tier: model.tier,
+                    available: model.available,
+                    compatible: model.compatible,
+                    lifecycle: model.lifecycle,
+                    promotion_priority: i64::from(model.default_for_tier),
+                }).collect();
+                *self.model_catalog.write().unwrap() = model_catalog::resolve(
+                    "opencode",
+                    Ok(candidates),
+                    &[],
+                    self.cache_path.as_deref(),
+                    chrono::Utc::now(),
+                );
                 *self.catalog.write().unwrap() = Some(catalog.clone());
                 *self.catalog_error.write().unwrap() = None;
                 Ok(catalog)
@@ -855,7 +949,22 @@ impl OpenCodeAdapter {
                 // Keep the last known-good catalog so a transient discovery
                 // failure does not degrade a working setup; the error is
                 // surfaced alongside it.
-                *self.catalog_error.write().unwrap() = Some(error.to_string());
+                let message = error.to_string();
+                let failed = model_catalog::resolve(
+                    "opencode",
+                    Err(message.clone()),
+                    &[],
+                    self.cache_path.as_deref(),
+                    chrono::Utc::now(),
+                );
+                if !failed.models.is_empty() {
+                    *self.model_catalog.write().unwrap() = failed;
+                } else {
+                    let mut current = self.model_catalog.write().unwrap();
+                    current.diagnostics.stale = true;
+                    current.diagnostics.last_error = Some(message.clone());
+                }
+                *self.catalog_error.write().unwrap() = Some(message);
                 Err(error)
             }
         }
@@ -873,7 +982,7 @@ impl OpenCodeAdapter {
             .descriptor()
             .models
             .into_iter()
-            .any(|option| option.id == model);
+            .any(|option| option.id == model && option.available && option.compatible);
         selectable.then_some(()).ok_or_else(|| {
             BridgeError::Invalid(format!(
                 "OpenCode model {model:?} is not exposed by a connected provider or is hidden"
@@ -882,6 +991,26 @@ impl OpenCodeAdapter {
     }
 
     fn replace_catalog(&self, catalog: opencode_adapter::OpenCodeCatalog) {
+        let raw_options = opencode_adapter::model_options(
+            &catalog,
+            &self.settings.read().unwrap().visible_models,
+        );
+        let candidates = raw_options.into_iter().map(|model| CatalogCandidate {
+            id: model.id,
+            label: model.label,
+            tier: model.tier,
+            available: model.available,
+            compatible: model.compatible,
+            lifecycle: model.lifecycle,
+            promotion_priority: i64::from(model.default_for_tier),
+        }).collect();
+        *self.model_catalog.write().unwrap() = model_catalog::resolve(
+            "opencode",
+            Ok(candidates),
+            &[],
+            self.cache_path.as_deref(),
+            chrono::Utc::now(),
+        );
         *self.catalog.write().unwrap() = Some(catalog);
         *self.catalog_error.write().unwrap() = None;
     }
@@ -892,21 +1021,17 @@ impl HarnessAdapter for OpenCodeAdapter {
     }
     fn descriptor(&self) -> AdapterDescriptor {
         let catalog = self.catalog.read().unwrap().clone();
-        let models = catalog
-            .as_ref()
-            .map(|catalog| {
-                opencode_adapter::model_options(
-                    catalog,
-                    &self.settings.read().unwrap().visible_models,
-                )
-            })
-            .unwrap_or_default();
+        let resolved_catalog = self.model_catalog.read().unwrap().clone();
+        let models = resolved_catalog.models;
         let default_model = models
             .iter()
             .find(|model| model.tier == CapabilityTier::Standard && model.default_for_tier)
             .or_else(|| models.iter().find(|model| model.default_for_tier))
             .map(|model| model.id.clone());
-        let available = catalog.is_some() && !models.is_empty();
+        let runtime_available = crate::managed_runtime::managed_entrypoint("opencode").is_some()
+            || crate::binary::resolve("opencode").is_some();
+        let available = runtime_available
+            && models.iter().any(|model| model.available && model.compatible);
         // Every unavailable state names a reason: install status must be
         // distinguishable from auth status, and "unavailable" with no reason
         // reads as a signed-out problem to the usage widget.
@@ -952,6 +1077,7 @@ impl HarnessAdapter for OpenCodeAdapter {
             unavailable_reason,
             models,
             default_model,
+            model_catalog: resolved_catalog.diagnostics,
         }
     }
     fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
@@ -1054,6 +1180,7 @@ impl HarnessAdapter for CodexAdapter {
                 ),
             ]),
             default_model: Some("gpt-5.6-luna".into()),
+            model_catalog: ModelCatalogDiagnostics::curated(),
         }
     }
     fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
@@ -1149,6 +1276,7 @@ impl HarnessAdapter for ClaudeAdapter {
                 ("fable", "Claude Fable", CapabilityTier::Strong, true),
             ]),
             default_model: Some(claude_adapter::DEFAULT_MODEL.into()),
+            model_catalog: ModelCatalogDiagnostics::curated(),
         }
     }
     fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
@@ -1208,6 +1336,7 @@ mod tests {
                 unavailable_reason: None,
                 models: vec![],
                 default_model: None,
+                model_catalog: ModelCatalogDiagnostics::curated(),
             }
         }
         fn start(&self, _request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
@@ -1244,6 +1373,7 @@ mod tests {
                     unavailable_reason: None,
                     models: vec![],
                     default_model: None,
+                    model_catalog: ModelCatalogDiagnostics::curated(),
                 }
             }
             fn start(&self, _request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
@@ -1379,6 +1509,7 @@ mod tests {
             unavailable_reason: Some("Codex binary is not installed".into()),
             models: vec![],
             default_model: None,
+            model_catalog: ModelCatalogDiagnostics::curated(),
         };
         assert!(!unavailable_but_signed_in.available);
         assert_eq!(unavailable_but_signed_in.auth_state, crate::model::AuthState::SignedIn);
@@ -1522,6 +1653,14 @@ mod tests {
             settings: RwLock::new(Default::default()),
             catalog: Arc::new(RwLock::new(None)),
             catalog_error: Arc::new(RwLock::new(None)),
+            model_catalog: Arc::new(RwLock::new(model_catalog::resolve(
+                "opencode",
+                Err("not discovered".into()),
+                &[],
+                None,
+                chrono::Utc::now(),
+            ))),
+            cache_path: None,
         };
         let with_session = serde_json::json!({
             "type": "message.updated",

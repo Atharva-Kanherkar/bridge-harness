@@ -1300,16 +1300,25 @@ mod tests {
                         id: "stub-standard".into(),
                         label: "Stub Standard".into(),
                         tier: CapabilityTier::Standard,
+                        available: true,
+                        compatible: true,
+                        lifecycle: crate::model::ModelLifecycle::Stable,
+                        source: crate::model::ModelCatalogSource::CuratedFallback,
                         default_for_tier: true,
                     },
                     ModelOption {
                         id: "stub-fast".into(),
                         label: "Stub Fast".into(),
                         tier: CapabilityTier::Fast,
+                        available: true,
+                        compatible: true,
+                        lifecycle: crate::model::ModelLifecycle::Stable,
+                        source: crate::model::ModelCatalogSource::CuratedFallback,
                         default_for_tier: true,
                     },
                 ],
                 default_model: None,
+                model_catalog: crate::model::ModelCatalogDiagnostics::curated(),
             }
         }
         fn start(
