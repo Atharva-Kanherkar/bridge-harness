@@ -23,6 +23,27 @@
       "resultSchema": "bridge-state.json"
     },
     {
+      "command": "discover_external_import",
+      "domain": "imports",
+      "method": "imports/discover_external_import",
+      "paramsSchema": "discover-external-import-params.json",
+      "resultSchema": "external-import-discovery.json"
+    },
+    {
+      "command": "preview_external_import",
+      "domain": "imports",
+      "method": "imports/preview_external_import",
+      "paramsSchema": "preview-external-import-params.json",
+      "resultSchema": "external-import-preview.json"
+    },
+    {
+      "command": "commit_external_import",
+      "domain": "imports",
+      "method": "imports/commit_external_import",
+      "paramsSchema": "commit-external-import-params.json",
+      "resultSchema": "external-import-commit.json"
+    },
+    {
       "command": "github_status",
       "domain": "github",
       "method": "github/github_status",

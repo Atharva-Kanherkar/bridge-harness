@@ -17,6 +17,8 @@ import type { DockPaneDescriptor } from "./SessionDock";
 
 export type SessionToolbarProps = {
   title: string;
+  /** Immutable provenance marker for imported historical sessions. */
+  sourceBadge?: string;
   /** Quiet context at the right edge. The branch and dirty count are deliberately
    * absent: the count rides on the dock's Changes tab, and the branch name in a
    * header was the noise this strip exists to remove. Direct chats pass nothing
@@ -79,6 +81,7 @@ function toolButtonClass(active: boolean) {
 
 export function SessionToolbar({
   title,
+  sourceBadge,
   modelControl,
   tierLabel,
   bypassBadge,
@@ -135,6 +138,8 @@ export function SessionToolbar({
       <h1 className="m-0 min-w-0 flex-1 truncate font-display text-[14px] font-semibold leading-none tracking-[-0.014em] text-foreground">
         {title}
       </h1>
+
+      {sourceBadge && <span data-testid="import-source-badge" className="hidden shrink-0 rounded-full border border-border px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.06em] text-muted-foreground sm:inline">{sourceBadge}</span>}
 
       {(modelControl || tierLabel) && (
         <div className="hidden shrink-0 items-center gap-2 lg:flex">

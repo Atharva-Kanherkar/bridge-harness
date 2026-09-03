@@ -85,6 +85,19 @@ pub fn dispatch(
             reply(api::add_project(core, &p.path))
         }
 
+        MethodName::DiscoverExternalImport => {
+            let p: wire::DiscoverExternalImportParams = decode(method, params)?;
+            reply(api::discover_external_import(&p))
+        }
+        MethodName::PreviewExternalImport => {
+            let p: wire::PreviewExternalImportParams = decode(method, params)?;
+            reply(api::preview_external_import(&p))
+        }
+        MethodName::CommitExternalImport => {
+            let p: wire::CommitExternalImportParams = decode(method, params)?;
+            reply(api::commit_external_import(core, &p))
+        }
+
         MethodName::CreateWorkspace => {
             let p: wire::CreateWorkspaceParams = decode(method, params)?;
             reply(api::create_workspace(core, &p.title))

@@ -29,6 +29,7 @@ mod completion;
 mod config;
 mod forest;
 mod github;
+mod imports;
 mod learning;
 mod marketplace;
 mod memory;
@@ -53,6 +54,7 @@ pub use completion::*;
 pub use config::*;
 pub use forest::*;
 pub use github::*;
+pub use imports::*;
 pub use learning::*;
 pub use marketplace::*;
 pub use memory::*;
@@ -148,6 +150,10 @@ typed_methods![
     (GetState, _, BridgeState),
     // projects
     (AddProject, AddProjectParams, BridgeState),
+    // external harness import — explicit local discovery, preview, and commit
+    (DiscoverExternalImport, DiscoverExternalImportParams, ExternalImportDiscovery),
+    (PreviewExternalImport, PreviewExternalImportParams, ExternalImportPreview),
+    (CommitExternalImport, CommitExternalImportParams, ExternalImportCommit),
     // github
     (GithubStatus, GithubStatusParams, GithubStatusResult),
     (GithubPullRequests, GithubPrsParams, GithubPullRequestsResult),

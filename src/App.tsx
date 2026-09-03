@@ -2066,7 +2066,8 @@ function AppContent() {
       /> : session ? <>
         <SessionToolbar
           title={session.title || session.label}
-          modelControl={isDirectChat ? undefined : <ChatModelControl
+          sourceBadge={session.kind === "imported" ? "Imported · Claude Code" : undefined}
+          modelControl={isDirectChat || session.kind === "imported" ? undefined : <ChatModelControl
             adapters={adapters}
             harness={session.harness}
             model={session.model ?? null}

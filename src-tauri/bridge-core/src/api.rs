@@ -16,8 +16,8 @@ use crate::model::{
 };
 use crate::{
     adapters, agent, agent_config, agent_integration, automations, binary, browser_bridge,
-    compaction_controller, completion, delegation, git, handoff, learning_job, learning_router,
-    live_turn, marketplace, memory_ledger,
+    claude_import, compaction_controller, completion, delegation, external_import, git, handoff,
+    learning_job, learning_router, live_turn, marketplace, memory_ledger,
     model_profiles, opencode_adapter, prompt_studio, prompts, routing_evaluation,
     secret_interception,
     session_recall, session_supervisor,
@@ -85,6 +85,83 @@ pub fn health(core: &Arc<BridgeCore>) -> Result<Health, BridgeError> {
 
 pub fn get_state(core: &Arc<BridgeCore>) -> Result<BridgeState, BridgeError> {
     core.state_snapshot()
+}
+
+pub fn discover_external_import(
+    params: &wire::DiscoverExternalImportParams,
+) -> Result<wire::ExternalImportDiscovery, BridgeError> {
+    use external_import::ExternalHarnessImporter;
+    let request: external_import::DiscoveryRequest = protocol_wire(params.clone())?;
+    let discovery = match request.provider.as_str() {
+        claude_import::PROVIDER => claude_import::ClaudeCodeImporter.discover(&request)?,
+        provider => {
+            return Err(BridgeError::Invalid(format!(
+                "External import provider '{provider}' is not available in this build"
+            )))
+        }
+    };
+    protocol_wire(discovery)
+}
+
+pub fn preview_external_import(
+    params: &wire::PreviewExternalImportParams,
+) -> Result<wire::ExternalImportPreview, BridgeError> {
+    use external_import::ExternalHarnessImporter;
+    let discovery: external_import::DiscoveryResult =
+        protocol_wire(params.discovery.clone())?;
+    let selection = external_import::DiscoverySelection {
+        artifact_ids: params.artifact_ids.clone(),
+    };
+    let candidates = match discovery.provider.as_str() {
+        claude_import::PROVIDER => {
+            claude_import::ClaudeCodeImporter.preview(&discovery, &selection)?
+        }
+        provider => {
+            return Err(BridgeError::Invalid(format!(
+                "External import provider '{provider}' is not available in this build"
+            )))
+        }
+    };
+    Ok(wire::ExternalImportPreview {
+        candidates: protocol_wire(candidates)?,
+    })
+}
+
+pub fn commit_external_import(
+    core: &Arc<BridgeCore>,
+    params: &wire::CommitExternalImportParams,
+) -> Result<wire::ExternalImportCommit, BridgeError> {
+    use external_import::ExternalHarnessImporter;
+    let candidates = params
+        .candidates
+        .iter()
+        .cloned()
+        .map(protocol_wire::<external_import::ImportCandidate, _>)
+        .map(|candidate| {
+            let candidate = candidate?;
+            match candidate.source.provider.as_str() {
+                claude_import::PROVIDER => claude_import::ClaudeCodeImporter.normalize(candidate),
+                provider => Err(BridgeError::Invalid(format!(
+                    "External import provider '{provider}' is not available in this build"
+                ))),
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let plan: external_import::ImportPlan = protocol_wire(params.plan.clone())?;
+    let commit = {
+        let db = core.db.lock().unwrap();
+        external_import::commit_import(&db, &candidates, &plan)?
+    };
+    if commit.imported > 0
+        && candidates
+            .iter()
+            .any(|candidate| candidate.candidate.kind == external_import::CandidateKind::Memory)
+    {
+        if let Some(scope_key) = plan.memory_scope {
+            core.events.publish(CoreEvent::MemoryChanged { scope_key });
+        }
+    }
+    protocol_wire(commit)
 }
 
 // --- github ----------------------------------------------------------------
