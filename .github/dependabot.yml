@@ -1,0 +1,33 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /runtimes/claude
+    schedule:
+      interval: weekly
+    groups:
+      managed-claude-runtime:
+        patterns: ["@anthropic-ai/claude-agent-sdk"]
+
+  - package-ecosystem: npm
+    directory: /sidecar/claude-agent
+    schedule:
+      interval: weekly
+    groups:
+      claude-sidecar-runtime:
+        patterns: ["@anthropic-ai/claude-agent-sdk"]
+
+  - package-ecosystem: npm
+    directory: /runtimes/codex
+    schedule:
+      interval: weekly
+    groups:
+      managed-codex-runtime:
+        patterns: ["@openai/codex"]
+
+  - package-ecosystem: npm
+    directory: /runtimes/opencode
+    schedule:
+      interval: weekly
+    groups:
+      managed-opencode-runtime:
+        patterns: ["opencode-ai"]

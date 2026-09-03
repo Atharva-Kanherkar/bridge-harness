@@ -1,0 +1,39 @@
+name: Managed runtime compatibility
+
+on:
+  pull_request:
+    paths:
+      - ".github/dependabot.yml"
+      - ".github/workflows/managed-runtime-compatibility.yml"
+      - "runtimes/**"
+      - "sidecar/claude-agent/**"
+      - "src-tauri/bridge-core/src/managed_runtime.rs"
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: managed-runtime-compatibility-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compatibility:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.13
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install locked dependencies
+        run: bun install --frozen-lockfile
+      - name: Verify managed runtime pins and closures
+        run: |
+          cargo test --manifest-path src-tauri/Cargo.toml -p bridge-core --lib managed_runtime::tests::managed_runtime_pins_match_update_manifests -- --exact
+          cargo test --manifest-path src-tauri/Cargo.toml -p bridge-core --lib managed_runtime::tests::each_agent_recipe_pins_an_exact_version_and_entrypoint -- --exact
+      - name: Verify Claude sidecar compatibility
+        working-directory: sidecar/claude-agent
+        run: npm test
