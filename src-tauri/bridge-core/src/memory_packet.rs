@@ -73,8 +73,14 @@ pub(crate) fn install_bounded_audit_retention(
                     OR (newer.created_at = memory_retrieval_audits.created_at
                         AND newer.id > memory_retrieval_audits.id))
          );
-         CREATE TRIGGER IF NOT EXISTS memory_retrieval_audits_compact_previous
-         BEFORE INSERT ON memory_retrieval_audits
+         DELETE FROM memory_retrieval_audits
+         WHERE NOT EXISTS (
+             SELECT 1 FROM sessions
+             WHERE sessions.id = memory_retrieval_audits.recipient_session_id
+         );
+         DROP TRIGGER IF EXISTS memory_retrieval_audits_compact_previous;
+         CREATE TRIGGER memory_retrieval_audits_compact_previous
+         AFTER INSERT ON memory_retrieval_audits
          BEGIN
              UPDATE memory_retrieval_audits
              SET selected_ids = (
@@ -84,11 +90,19 @@ pub(crate) fn install_bounded_audit_retention(
                  ), '[]')
                  FROM json_each(memory_retrieval_audits.selected_ids) AS item
              )
-             WHERE id = (
-                   SELECT id FROM memory_retrieval_audits
-                   WHERE recipient_session_id = NEW.recipient_session_id
-                   ORDER BY created_at DESC, id DESC LIMIT 1
-               )
+             WHERE id = CASE
+                   WHEN NEW.id = (
+                       SELECT id FROM memory_retrieval_audits
+                       WHERE recipient_session_id = NEW.recipient_session_id
+                       ORDER BY created_at DESC, id DESC LIMIT 1
+                   ) THEN (
+                       SELECT id FROM memory_retrieval_audits
+                       WHERE recipient_session_id = NEW.recipient_session_id
+                         AND id != NEW.id
+                       ORDER BY created_at DESC, id DESC LIMIT 1
+                   )
+                   ELSE NEW.id
+               END
                AND EXISTS (
                    SELECT 1 FROM json_each(memory_retrieval_audits.selected_ids) AS prior_item
                    WHERE prior_item.type = 'object'

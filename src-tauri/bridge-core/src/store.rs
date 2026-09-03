@@ -613,7 +613,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
                 "database WAL is busy; refusing to create an incomplete migration backup".into(),
             ));
         }
-        migration_backup = Some(backup_database(path)?);
+        migration_backup = Some(backup_database(connection, path)?);
     }
 
     for version in (current + 1)..=LATEST_SCHEMA_VERSION {
@@ -1169,7 +1169,7 @@ fn has_user_schema(connection: &Connection) -> Result<bool, BridgeError> {
     )?)
 }
 
-fn backup_database(path: &Path) -> Result<PathBuf, BridgeError> {
+fn backup_database(connection: &Connection, path: &Path) -> Result<PathBuf, BridgeError> {
     let file_name = path
         .file_name()
         .and_then(|name| name.to_str())
@@ -1177,7 +1177,7 @@ fn backup_database(path: &Path) -> Result<PathBuf, BridgeError> {
     let suffix = Utc::now().format(MIGRATION_BACKUP_TIMESTAMP_FORMAT);
     let backup = path.with_file_name(format!("{file_name}.backup-{suffix}"));
     let pending = path.with_file_name(format!("{file_name}.backup-{suffix}.pending"));
-    if let Err(error) = std::fs::copy(path, &pending) {
+    if let Err(error) = connection.execute("VACUUM INTO ?1", params![pending.to_string_lossy()]) {
         let _ = std::fs::remove_file(&pending);
         return Err(error.into());
     }
@@ -1218,30 +1218,46 @@ fn prune_migration_backups(
         return Ok(MigrationBackupPruneOutcome::default());
     };
     let prefix = format!("{file_name}.backup-");
-    let mut backups: Vec<PathBuf> = std::fs::read_dir(parent)?
-        .flatten()
-        .filter_map(|entry| {
-            let candidate = entry.path();
-            if !entry.file_type().ok()?.is_file() {
-                return None;
+    let mut outcome = MigrationBackupPruneOutcome::default();
+    let mut backups = Vec::new();
+    for entry in std::fs::read_dir(parent)?.flatten() {
+        if !entry.file_type().is_ok_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let candidate = entry.path();
+        let Some(name) = candidate.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some(suffix) = name.strip_prefix(&prefix) else {
+            continue;
+        };
+        if let Some(timestamp) = suffix.strip_suffix(".pending") {
+            if chrono::NaiveDateTime::parse_from_str(timestamp, MIGRATION_BACKUP_TIMESTAMP_FORMAT)
+                .is_ok()
+            {
+                let bytes = entry.metadata().map(|metadata| metadata.len()).unwrap_or_default();
+                if std::fs::remove_file(&candidate).is_err() {
+                    outcome.skipped_files += 1;
+                } else {
+                    outcome.removed_files += 1;
+                    outcome.removed_bytes = outcome.removed_bytes.saturating_add(bytes);
+                }
             }
-            let name = candidate.file_name()?.to_str()?;
-            let timestamp = name.strip_prefix(&prefix)?;
-            chrono::NaiveDateTime::parse_from_str(timestamp, MIGRATION_BACKUP_TIMESTAMP_FORMAT)
-                .ok()?;
-            if !is_sqlite_backup(&candidate) {
-                return None;
-            }
-            Some(candidate)
-        })
-        .collect();
+            continue;
+        }
+        if chrono::NaiveDateTime::parse_from_str(suffix, MIGRATION_BACKUP_TIMESTAMP_FORMAT).is_err()
+            || !is_sqlite_backup(&candidate)
+        {
+            continue;
+        }
+        backups.push(candidate);
+    }
     backups.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
     let keep = protected_backup
         .filter(|protected| backups.iter().any(|candidate| candidate == *protected))
         .map(Path::to_path_buf)
         .or_else(|| backups.first().cloned());
 
-    let mut outcome = MigrationBackupPruneOutcome::default();
     for backup in backups {
         if keep.as_ref() == Some(&backup) {
             continue;
@@ -4572,12 +4588,15 @@ mod tests {
             "DROP TRIGGER memory_retrieval_audits_compact_previous;
              DROP TRIGGER memory_retrieval_audits_delete_with_session;
              DELETE FROM schema_version WHERE version=45;
+             INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,kind)
+             VALUES('session-1',NULL,'codex','Chat','ready','now','estimated','direct');
              INSERT INTO memory_retrieval_audits(
                  id,scope_key,recipient_session_id,objective_hash,candidate_count,
                  selected_ids,exclusions,token_estimate,created_at
              ) VALUES
                  ('a-old','account:local','session-1','old',1,'[{\"id\":\"old\",\"body\":\"old body\"}]','[]',1,'2026-01-01T00:00:00Z'),
-                 ('z-new','account:local','session-1','new',1,'[{\"id\":\"new\",\"body\":\"new body\"}]','[]',1,'2026-01-01T00:00:00Z');",
+                 ('z-new','account:local','session-1','new',1,'[{\"id\":\"new\",\"body\":\"new body\"}]','[]',1,'2026-01-01T00:00:00Z'),
+                 ('orphan','account:local','deleted-session','orphan',1,'[{\"id\":\"orphan\",\"body\":\"orphan body\"}]','[]',1,'2026-01-02T00:00:00Z');",
         )
         .unwrap();
         drop(db);
@@ -4607,6 +4626,14 @@ mod tests {
         assert_eq!(rows, 2, "the delivery history remains append-only");
         assert_eq!(historical, "[\"old\"]", "equal timestamps use id as the tie-break");
         assert!(newest.contains("new body"), "the newest frozen packet survives intact");
+        let orphan_rows: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM memory_retrieval_audits WHERE id='orphan'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(orphan_rows, 0, "upgrade purges audits for sessions already deleted");
 
         db.execute(
             "INSERT INTO memory_retrieval_audits(
@@ -4634,6 +4661,32 @@ mod tests {
             .unwrap();
         assert_eq!(rows_after_old_writer, 3, "a v44-style plain insert remains valid");
         assert_eq!(prior_body_copies, 0, "the trigger compacts prior full bodies");
+
+        db.execute(
+            "INSERT INTO memory_retrieval_audits(
+                 id,scope_key,recipient_session_id,objective_hash,candidate_count,
+                 selected_ids,exclusions,token_estimate,created_at
+             ) VALUES('backdated','account:local','session-1','backdated',1,
+                 '[{\"id\":\"backdated\",\"body\":\"backdated body\"}]','[]',1,'2025-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let full_body_rows: Vec<String> = db
+            .prepare(
+                "SELECT id FROM memory_retrieval_audits
+                 WHERE recipient_session_id='session-1' AND selected_ids LIKE '%body%'
+                 ORDER BY created_at DESC, id DESC",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert_eq!(
+            full_body_rows,
+            vec!["third"],
+            "an out-of-order insert is compacted instead of displacing the newest payload"
+        );
     }
 
     #[test]
@@ -4715,9 +4768,15 @@ mod tests {
         let other_database = dir
             .path()
             .join("other.db.backup-20260101T000000000000000Z");
+        let interrupted = dir
+            .path()
+            .join("bridge.db.backup-20260101T000000000000000Z.pending");
+        let malformed_pending = dir.path().join("bridge.db.backup-not-a-timestamp.pending");
         std::fs::write(&foreign, b"keep").unwrap();
         std::fs::write(&malformed, b"keep").unwrap();
         std::fs::write(&other_database, b"keep").unwrap();
+        std::fs::write(&interrupted, b"partial database copy").unwrap();
+        std::fs::write(&malformed_pending, b"keep").unwrap();
 
         drop(open(&path).unwrap());
 
@@ -4725,6 +4784,8 @@ mod tests {
         assert!(foreign.exists());
         assert!(malformed.exists());
         assert!(other_database.exists());
+        assert!(!interrupted.exists(), "crash-leftover backup staging files are reclaimed");
+        assert!(malformed_pending.exists(), "only exact Bridge staging names are reclaimed");
     }
 
     #[test]
