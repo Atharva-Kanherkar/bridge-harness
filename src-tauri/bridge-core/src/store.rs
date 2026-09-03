@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 46;
+const LATEST_SCHEMA_VERSION: i64 = 47;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -665,6 +665,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             44 => migration_44_agent_usage_analytics(&transaction)?,
             45 => migration_45_latest_memory_packet_audit(&transaction)?,
             46 => crate::external_import::install_import_foundation(&transaction)?,
+            47 => migration_47_model_profile_selection_mode(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -678,6 +679,23 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
         transaction.commit()?;
     }
     Ok(migration_backup)
+}
+
+fn migration_47_model_profile_selection_mode(
+    transaction: &Transaction<'_>,
+) -> Result<(), BridgeError> {
+    add_column_if_missing(
+        transaction,
+        "model_profiles",
+        "selection_mode",
+        "TEXT NOT NULL DEFAULT 'track_standard'",
+    )?;
+    transaction.execute(
+        "UPDATE model_profiles
+         SET selection_mode=CASE WHEN pinned=1 THEN 'pinned' ELSE 'track_standard' END",
+        [],
+    )?;
+    Ok(())
 }
 
 fn migration_44_agent_usage_analytics(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
@@ -4713,6 +4731,40 @@ mod tests {
             full_body_rows,
             vec!["third"],
             "an out-of-order insert is compacted instead of displacing the newest payload"
+        );
+    }
+
+    #[test]
+    fn migration_47_maps_legacy_profile_pins_to_selection_modes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        let db = open(&path).unwrap();
+        db.execute_batch(
+            "INSERT INTO model_profiles(
+                 version,profile_id,purpose,canonical_role,provider,model,effort,
+                 pinned,selection_mode,learning_enabled,created_at
+             ) VALUES
+                 (1,'planner','planner','planning','codex','strong','high',1,'track_standard',0,'now'),
+                 (1,'research','research','research','codex','standard','medium',0,'pinned',1,'now');
+             DELETE FROM schema_version WHERE version=46;",
+        )
+        .unwrap();
+        drop(db);
+
+        let db = open(&path).unwrap();
+        let modes = db
+            .prepare("SELECT purpose,selection_mode FROM model_profiles ORDER BY purpose")
+            .unwrap()
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            modes,
+            vec![
+                ("planner".into(), "pinned".into()),
+                ("research".into(), "track_standard".into()),
+            ]
         );
     }
 

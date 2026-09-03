@@ -626,6 +626,7 @@ fn routing_and_profile_payloads_mirror_core() {
         model: "gpt-5".into(),
         effort: delegation::Effort::High,
         fallback_purpose: Some(model_profiles::ProfilePurpose::PremiumOrchestrator),
+        selection_mode: Some(model_profiles::ProfileSelectionMode::Pinned),
         pinned: true,
         learning_enabled: false,
         budget_preference: Some("balanced".into()),

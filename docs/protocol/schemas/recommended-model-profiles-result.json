@@ -60,6 +60,18 @@
         },
         "purpose": {
           "$ref": "#/definitions/ProfilePurpose"
+        },
+        "selectionMode": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/ProfileSelectionMode"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Optional for compatibility with clients that predate explicit tracking."
         }
       },
       "required": [
@@ -84,6 +96,13 @@
         "research",
         "documentation",
         "evaluator"
+      ],
+      "type": "string"
+    },
+    "ProfileSelectionMode": {
+      "enum": [
+        "track_standard",
+        "pinned"
       ],
       "type": "string"
     }
