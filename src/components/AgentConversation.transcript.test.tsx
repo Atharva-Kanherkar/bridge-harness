@@ -253,6 +253,24 @@ describe("three layers", () => {
     expect(text.indexOf("Found it in the session store.")).toBeGreaterThan(text.indexOf("Ran 1 command"));
   });
 
+  it("renders an unnamed first reply once when the forest and live stream both carry it", () => {
+    const reply = "Hi — what would you like to work on in Bridge?";
+    const entries: SessionEntry[] = [
+      forestEntry("e1", null, 1, "user.message", { itemId: "u1", text: "hi", role: "user" }),
+      forestEntry("e2", "e1", 2, "assistant.message", { itemId: "acp-message-1", text: reply, role: "assistant", status: "completed" }),
+    ];
+    const live = [
+      event(1, "message.completed", { itemId: "u1", role: "user", status: "completed", text: "hi" }),
+      event(0, "message.delta", { sequence: 0, itemId: null, role: "assistant", status: "streaming", text: reply }),
+      event(2, "message.completed", { itemId: "acp-message-1", role: "assistant", status: "completed", text: reply }),
+    ];
+    act(() => {
+      root.render(<AgentConversation session={session} events={live} forestEntries={entries} activeLeafId="e2" onResolve={() => {}} />);
+    });
+    const occurrences = host.textContent?.split(reply).length ?? 0;
+    expect(occurrences).toBe(2);
+  });
+
   it("keeps a reply that streamed before its tools above their cards after it persists", () => {
     // The forest sequences an assistant message at completion time — after
     // tool entries it causally preceded. The live window watched the text
