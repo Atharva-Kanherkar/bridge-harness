@@ -48,7 +48,11 @@ export function appendAgentEventBatch(current: AgentEvent[], incoming: AgentEven
   const ids = new Set(current.map(durableKey).filter((key): key is string => key !== undefined));
   const next = [...current];
   const mergeIndexes = new Map<string, number>();
+  // Durable events are only pushed, never spliced, so this recovers the most
+  // recently arrived durable sequence even when transient merges move to tail.
+  let lastDurableSeq: number | undefined;
   next.forEach((event, index) => {
+    if (event.sequence > 0) lastDurableSeq = event.sequence;
     const key = mergeKey(event);
     if (key) mergeIndexes.set(key, index);
     else clearItemMergeIndexes(mergeIndexes, event);
@@ -57,6 +61,7 @@ export function appendAgentEventBatch(current: AgentEvent[], incoming: AgentEven
     const id = durableKey(event);
     if (id && ids.has(id)) continue;
     if (id) ids.add(id);
+    if (event.sequence > 0) lastDurableSeq = event.sequence;
     const key = mergeKey(event);
     const mergeIndex = key === undefined ? undefined : mergeIndexes.get(key);
     if (key !== undefined && mergeIndex !== undefined) {
@@ -68,6 +73,7 @@ export function appendAgentEventBatch(current: AgentEvent[], incoming: AgentEven
         ...event,
         text: clampText(text),
         data: { ...previous.data, ...event.data },
+        causalAnchor: previous.causalAnchor,
       };
       // A merge is new activity. Move it to the tail so positional eviction
       // removes the least-recently-touched item, not an actively updating one.
@@ -81,7 +87,10 @@ export function appendAgentEventBatch(current: AgentEvent[], incoming: AgentEven
       if (!key) clearItemMergeIndexes(mergeIndexes, event);
       // Terminal/durable items keep their complete text. Only transient text
       // that can accumulate between terminals needs the per-item live cap.
-      next.push(key && event.text ? { ...event, text: clampText(event.text) } : event);
+      const stamped = key && event.sequence <= 0 && lastDurableSeq !== undefined
+        ? { ...event, causalAnchor: lastDurableSeq }
+        : event;
+      next.push(key && stamped.text ? { ...stamped, text: clampText(stamped.text) } : stamped);
       if (key) mergeIndexes.set(key, next.length - 1);
     }
   }

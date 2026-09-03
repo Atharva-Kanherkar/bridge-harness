@@ -128,6 +128,15 @@ describe("appendAgentEventBatch", () => {
     expect(result[0].text).toBe("Thinking chunk 1\nThinking chunk 2\n");
   });
 
+  it("preserves a coalesced delta's first-arrival anchor across a merge that lands after a later durable frame", () => {
+    let buffer = appendAgentEventBatch([event(41, "tool.completed", "")], [itemEvent("m1", "message.delta", "Let me check.")]);
+    buffer = appendAgentEventBatch(buffer, [event(42, "tool.completed", "")]);
+    buffer = appendAgentEventBatch(buffer, [itemEvent("m1", "message.delta", " Found it.")]);
+    const merged = buffer.find(item => item.itemId === "m1");
+    expect(merged?.text).toBe("Let me check. Found it.");
+    expect(merged?.causalAnchor).toBe(41);
+  });
+
   it("clears reasoning merge indexes on turn completion", () => {
     const d1: AgentEvent = { ...event(0, "reasoning.delta", "Part 1"), itemId: null };
     const turnCompleted: AgentEvent = { ...event(1, "turn.completed", ""), itemId: null };

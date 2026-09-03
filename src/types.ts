@@ -134,6 +134,12 @@ export type {
 export type AgentEvent = Omit<ReplaySessionEvent, "data" | "providerMeta"> & {
   data: Record<string, unknown>;
   providerMeta: Record<string, unknown>;
+  /**
+   * The durable `sequence` this transient (sequence-0) event trailed the
+   * first time it was buffered. `appendAgentEventBatch` preserves it through
+   * coalesced deltas, whose eviction order can differ from causal order.
+   */
+  causalAnchor?: number;
 };
 
 /** Structured-JSON fields the contract leaves open (`unknown`) but every
