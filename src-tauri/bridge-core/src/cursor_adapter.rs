@@ -1803,8 +1803,8 @@ mod tests {
                 .iter()
                 .map(|model| model.id.as_str())
                 .collect::<Vec<_>>(),
-            ["cheetah", "composer-1", "claude-4.5-sonnet"],
-            "identifiers arrive in the agent's order and its spelling"
+            ["cheetah", "claude-4.5-sonnet", "composer-1"],
+            "identifiers retain agent spelling in normalized capability order"
         );
         assert_eq!(profile.default_model.as_deref(), Some("composer-1"));
     }
