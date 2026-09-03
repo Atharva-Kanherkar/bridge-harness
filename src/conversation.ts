@@ -306,12 +306,38 @@ export function isLifecycleNoise(kind: string): boolean {
   );
 }
 
+/**
+ * Transient frames — deltas, turn markers, progress — are published with
+ * sequence 0: only frames the forest persisted carry a real sequence.
+ * Sorting on that zero pulled every streamed bubble above every durably
+ * sequenced card, so a turn read as "all prose, then all tools" instead of
+ * the order it happened. Arrival order is commit order — the backend
+ * publishes under the database lock — so a transient frame's causal position
+ * is "just after the last persisted frame before it": anchor it there, and
+ * keep the sort stable so same-anchor frames stay in arrival order.
+ */
+function inCausalOrder(events: AgentEvent[]): AgentEvent[] {
+  // The live window opens wherever the subscription started, not at the
+  // forest root: frames ahead of the first persisted one still belong just
+  // before it, never before history that was durable when they streamed. With
+  // nothing persisted yet there is no anchor at all, so the window sorts
+  // after everything until the first durable frame arrives and re-anchors it.
+  const firstDurable = events.find(event => event.sequence > 0)?.sequence;
+  let lastDurable = (firstDurable ?? Number.MAX_SAFE_INTEGER) - 1;
+  return events
+    .map(event => {
+      if (event.sequence > 0) { lastDurable = event.sequence; return event; }
+      return { ...event, sequence: lastDurable + 0.5 };
+    })
+    .sort((a, b) => a.sequence - b.sequence);
+}
+
 export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
   const items = new Map<string, ConversationItem>();
   const internalCompactionMessageKeys = new Set<string>();
   let compactionMaintenanceActive = false;
   let turnIndex = 0;
-  for (const event of [...events].sort((a, b) => a.sequence - b.sequence)) {
+  for (const event of inCausalOrder(events)) {
     if (event.kind === "provider.unknown" || event.kind === "usage.updated") continue;
     if (event.kind.startsWith("turn.") || event.kind.startsWith("session.")) {
       if (event.kind === "turn.started") {

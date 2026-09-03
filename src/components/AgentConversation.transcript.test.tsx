@@ -23,6 +23,11 @@ const event = (id: number, kind: string, overrides: Partial<AgentEvent> = {}): A
   createdAt: "now", ...overrides,
 });
 
+const forestEntry = (id: string, parentEntryId: string | null, sequence: number, kind: string, payload: Record<string, unknown>): SessionEntry => ({
+  id, sessionId: "s", parentEntryId, sequence, semanticSchemaVersion: 2, kind, payload,
+  providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: "now",
+});
+
 const TWO_HUNKS = [
   "@@ -118,3 +118,3 @@ impl Runtime {",
   "-    let state = self.store.lock().session_state(id)?;",
@@ -224,6 +229,53 @@ describe("three layers", () => {
     const carded = (label: string) => !!buttonWith(label)?.closest(".bg-card");
     expect(carded("Read auth.rs")).toBe(false);
     expect(carded("Checked git status")).toBe(false);
+  });
+
+  it("interleaves live-only rows into durable history by causal anchor", () => {
+    // Streamed frames carry sequence 0 until persisted. The reply that
+    // followed a durably sequenced tool card must render below it — not
+    // hoisted above the turn, and not pinned under later durable rows.
+    const entries: SessionEntry[] = [
+      forestEntry("e1", null, 1, "user.message", { text: "where does it live?", role: "user" }),
+      forestEntry("e2", "e1", 2, "command.started", { itemId: "t1", title: "bun test", status: "inProgress", data: { type: "commandExecution", command: "bun test" } }),
+      forestEntry("e3", "e2", 3, "command.completed", { itemId: "t1", title: "bun test", status: "completed", data: { type: "commandExecution", command: "bun test" } }),
+    ];
+    const live = [
+      event(2, "command.started", { itemId: "t1", title: "bun test", status: "inProgress", data: { type: "commandExecution", command: "bun test" } }),
+      event(3, "command.completed", { itemId: "t1", title: "bun test", status: "completed", data: { type: "commandExecution", command: "bun test" } }),
+      event(0, "message.delta", { sequence: 0, itemId: "m1", role: "assistant", status: "streaming", text: "Found it in the session store." }),
+    ];
+    act(() => {
+      root.render(<AgentConversation session={session} events={live} forestEntries={entries} activeLeafId="e3" onResolve={() => {}} />);
+    });
+    const text = host.textContent ?? "";
+    expect(text.indexOf("Ran 1 command")).toBeGreaterThan(text.indexOf("where does it live?"));
+    expect(text.indexOf("Found it in the session store.")).toBeGreaterThan(text.indexOf("Ran 1 command"));
+  });
+
+  it("keeps a reply that streamed before its tools above their cards after it persists", () => {
+    // The forest sequences an assistant message at completion time — after
+    // tool entries it causally preceded. The live window watched the text
+    // stream first, so the merged row takes that earlier anchor.
+    const entries: SessionEntry[] = [
+      forestEntry("e1", null, 1, "user.message", { itemId: "u1", text: "where does it live?", role: "user" }),
+      forestEntry("e2", "e1", 2, "command.started", { itemId: "t1", title: "bun test", status: "inProgress", data: { type: "commandExecution", command: "bun test" } }),
+      forestEntry("e3", "e2", 3, "command.completed", { itemId: "t1", title: "bun test", status: "completed", data: { type: "commandExecution", command: "bun test" } }),
+      forestEntry("e4", "e3", 4, "assistant.message", { itemId: "m1", text: "Let me look at the store first.", role: "assistant", status: "completed" }),
+    ];
+    const live = [
+      event(1, "message.completed", { itemId: "u1", role: "user", status: "completed", text: "where does it live?" }),
+      event(0, "message.delta", { sequence: 0, itemId: "m1", role: "assistant", status: "streaming", text: "Let me look at the store first." }),
+      event(2, "command.started", { itemId: "t1", title: "bun test", status: "inProgress", data: { type: "commandExecution", command: "bun test" } }),
+      event(3, "command.completed", { itemId: "t1", title: "bun test", status: "completed", data: { type: "commandExecution", command: "bun test" } }),
+      event(4, "message.completed", { itemId: "m1", role: "assistant", status: "completed", text: "Let me look at the store first." }),
+    ];
+    act(() => {
+      root.render(<AgentConversation session={session} events={live} forestEntries={entries} activeLeafId="e4" onResolve={() => {}} />);
+    });
+    const text = host.textContent ?? "";
+    expect(text.indexOf("Let me look at the store first.")).toBeGreaterThan(text.indexOf("where does it live?"));
+    expect(text.indexOf("Ran 1 command")).toBeGreaterThan(text.indexOf("Let me look at the store first."));
   });
 
   it("renders replayed forest reasoning as collapsible Thought for a moment", () => {

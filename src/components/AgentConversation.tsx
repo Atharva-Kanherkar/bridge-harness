@@ -593,11 +593,25 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const visibleItems = useMemo(() => {
     const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
     const nextLiveItems = reduceConversation(events);
-    const items = [...durableItems];
     const durableIds = new Set(durableItems.map(item => item.identity ?? itemIdentity(item)));
+    // The forest sequences a message at completion time, after tool entries it
+    // causally preceded; the stream knows where the message actually began. A
+    // durable row keeps its persisted content but takes its live twin's anchor
+    // when that anchor is earlier.
+    const liveAnchors = new Map(nextLiveItems.map(item => [item.identity ?? itemIdentity(item), item.sequence]));
+    const items = durableItems.map(item => {
+      const anchor = liveAnchors.get(item.identity ?? itemIdentity(item));
+      return anchor !== undefined && anchor < item.sequence ? { ...item, sequence: anchor } : item;
+    });
     for (const live of nextLiveItems) {
       if (!durableIds.has(live.identity ?? itemIdentity(live))) items.push(live);
     }
+    // Interleaved, not appended: a still-streaming reply carries no forest
+    // sequence of its own, so tacking every live-only row below every durable
+    // row pushed it under tool cards persisted after it. The reducer anchors
+    // live rows into the forest's numbering, so one stable sort restores the
+    // order things actually happened in.
+    items.sort((a, b) => a.sequence - b.sequence);
     // Folded after the merge, not inside either projection: mid-run the spawn is
     // already durable while the result is still only live.
     return foldWorkerDelegations(items.filter(item => item.type !== "raw"));

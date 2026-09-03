@@ -31,6 +31,38 @@ describe("normalized conversation reducer",()=>{
     expect(items).toHaveLength(1);
     expect(items[0].text).toBe("Hi there");
   });
+  it("anchors sequence-0 transient frames where they streamed, not above the turn",()=>{
+    // Only persisted frames carry a forest sequence; deltas arrive with 0.
+    // Sorting on that zero used to pull every streamed bubble above every
+    // durably sequenced tool card, burying the reply at the top of the turn.
+    const items=reduceConversation([
+      event(0,"message.delta",{sequence:0,itemId:"m1",role:"assistant",status:"streaming",text:"Let me check the store."}),
+      event(41,"tool.started",{itemId:"t1",title:"sqlite3 query",status:"inProgress"}),
+      event(42,"tool.completed",{itemId:"t1",title:"sqlite3 query",status:"completed"}),
+      event(0,"message.delta",{sequence:0,itemId:"m2",role:"assistant",status:"streaming",text:"Found it."}),
+      event(43,"message.completed",{itemId:"m2",role:"assistant",status:"completed",text:"Found it."}),
+    ]);
+    expect(items.map(item=>[item.type,item.text||item.title])).toEqual([
+      ["message","Let me check the store."],
+      ["activity","sqlite3 query"],
+      ["message","Found it."],
+    ]);
+  });
+  it("keeps an unanchored live window after history until a durable frame arrives",()=>{
+    // A reload mid-turn reopens the subscription with nothing persisted yet in
+    // the window. Those frames must not claim sequence 0 — the merge with the
+    // durable projection would hoist them above the whole transcript.
+    const streaming=reduceConversation([
+      event(0,"message.delta",{sequence:0,itemId:"m",role:"assistant",status:"streaming",text:"Still going."}),
+    ]);
+    expect(streaming[0].sequence).toBeGreaterThan(1_000_000);
+    const anchored=reduceConversation([
+      event(0,"message.delta",{sequence:0,itemId:"m",role:"assistant",status:"streaming",text:"Still going."}),
+      event(90,"tool.started",{itemId:"t9",title:"bun test",status:"inProgress"}),
+    ]);
+    expect(anchored.map(item=>item.type)).toEqual(["message","activity"]);
+    expect(anchored[0].sequence).toBeLessThan(90);
+  });
   it("hides worker result blocks without mutating raw events",()=>{
     const raw = "Finished the work.\n```bridge-worker-result\n{\"schemaVersion\":1,\"status\":\"completed\"}\n```\nReview the summary.";
     const source = event(1,"message.completed",{itemId:"worker-result",role:"assistant",text:raw,status:"completed"});
