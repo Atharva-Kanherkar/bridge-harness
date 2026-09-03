@@ -841,6 +841,22 @@ pub fn start_session(
 /// harness/model with no briefing; an `orchestrator` session runs codex with
 /// the routing briefing + delegation protocol.
 pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeState, BridgeError> {
+    let kind: Option<String> = core
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT kind FROM sessions WHERE id=?1",
+            [&session_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if kind.as_deref() == Some("imported") {
+        return Err(BridgeError::Invalid(
+            "Imported history cannot resume a foreign provider session. Start a fresh Bridge conversation explicitly instead."
+                .into(),
+        ));
+    }
     live_turn::start_chat(core, session_id)
 }
 

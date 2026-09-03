@@ -677,7 +677,6 @@ fn preview_transcript(
     let mut seen_ids = HashSet::new();
     let mut messages = Vec::new();
     let mut project_hint = None;
-    let mut title = None;
     for (index, line) in content.lines().enumerate() {
         if line.trim().is_empty() {
             continue;
@@ -740,16 +739,6 @@ fn preview_transcript(
             ));
         }
         let (text, tool_metadata) = parse_message_content(message.get("content"), record_type)?;
-        if title.is_none() && role == "user" && !text.trim().is_empty() {
-            title = Some(
-                text.lines()
-                    .next()
-                    .unwrap_or("Imported Claude conversation")
-                    .chars()
-                    .take(80)
-                    .collect::<String>(),
-            );
-        }
         messages.push(json!({
             "sourceId": source_id,
             "role": role,
@@ -796,10 +785,25 @@ fn preview_transcript(
         payload,
         source_native_id.as_deref(),
     )?;
-    result.title = title.unwrap_or_else(|| "Imported Claude conversation".into());
+    result.title = result.normalized_payload["messages"]
+        .as_array()
+        .and_then(|messages| messages.iter().find(|message| message["role"] == "user"))
+        .and_then(|message| message["text"].as_str())
+        .filter(|text| !text.trim().is_empty())
+        .map(|text| {
+            text.lines()
+                .next()
+                .unwrap_or("Imported Claude conversation")
+                .chars()
+                .take(80)
+                .collect::<String>()
+        })
+        .unwrap_or_else(|| "Imported Claude conversation".into());
     result.created_at = started_at;
     result.updated_at = ended_at;
-    result.project_hint = project_hint;
+    result.project_hint = result.normalized_payload["projectHint"]
+        .as_str()
+        .map(str::to_owned);
     Ok(result)
 }
 
@@ -1222,5 +1226,49 @@ mod tests {
         let discovery = ClaudeCodeImporter.discover(&request).unwrap();
         assert_eq!(discovery.artifacts.len(), 1);
         assert_eq!(discovery.artifacts[0].kind, CandidateKind::Conversation);
+    }
+
+    #[test]
+    fn transcript_title_and_project_hint_use_only_redacted_values() {
+        let root = tempfile::tempdir().unwrap();
+        let claude = root.path().join(".claude");
+        let secret = ["sk", "ant", "title-project-secret-with-enough-entropy"].join("-");
+        write(
+            &claude.join("projects/demo/session.jsonl"),
+            &json!({
+                "type": "user",
+                "uuid": "message-1",
+                "timestamp": "2026-08-01T10:00:00Z",
+                "cwd": format!("/project/{secret}"),
+                "message": {"role": "user", "content": format!("Use {secret}")}
+            })
+            .to_string(),
+        );
+        let discovery = ClaudeCodeImporter.discover(&request(&claude)).unwrap();
+        let transcript = discovery
+            .artifacts
+            .iter()
+            .find(|item| item.kind == CandidateKind::Conversation)
+            .unwrap();
+        let preview = ClaudeCodeImporter
+            .preview(
+                &discovery,
+                &DiscoverySelection {
+                    artifact_ids: vec![transcript.artifact_id.clone()],
+                },
+            )
+            .unwrap();
+        assert!(!preview[0].title.contains(&secret));
+        assert!(!preview[0]
+            .project_hint
+            .as_deref()
+            .unwrap()
+            .contains(&secret));
+        assert!(preview[0].title.contains("[redacted:anthropic]"));
+        assert!(preview[0]
+            .project_hint
+            .as_deref()
+            .unwrap()
+            .contains("[redacted:anthropic]"));
     }
 }
