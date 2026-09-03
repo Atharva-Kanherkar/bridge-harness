@@ -39,6 +39,9 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     // recreate parent tables) don't trip referential checks; re-enabled after.
     connection.execute_batch("PRAGMA foreign_keys=OFF;")?;
     run_migrations(&mut connection, path)?;
+    if path != Path::new(":memory:") {
+        prune_migration_backups_and_report(path);
+    }
     connection.execute_batch(
         "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
     )?;
@@ -1169,6 +1172,66 @@ fn backup_database(path: &Path) -> Result<PathBuf, BridgeError> {
     let backup = path.with_file_name(format!("{file_name}.backup-{suffix}"));
     std::fs::copy(path, &backup)?;
     Ok(backup)
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+struct MigrationBackupPruneOutcome {
+    removed_files: usize,
+    removed_bytes: u64,
+    skipped_files: usize,
+}
+
+/// Keep one verified-by-name rollback point for the primary database. Schema
+/// upgrades used to append a complete copy forever, so each release multiplied
+/// the user's whole chat history. Names that are not exactly Bridge's timestamp
+/// format are left alone rather than guessed to be disposable.
+fn prune_migration_backups(path: &Path) -> Result<MigrationBackupPruneOutcome, BridgeError> {
+    let Some(parent) = path.parent() else {
+        return Ok(MigrationBackupPruneOutcome::default());
+    };
+    let Some(file_name) = path.file_name().and_then(|name| name.to_str()) else {
+        return Ok(MigrationBackupPruneOutcome::default());
+    };
+    let prefix = format!("{file_name}.backup-");
+    let mut backups: Vec<PathBuf> = std::fs::read_dir(parent)?
+        .flatten()
+        .filter_map(|entry| {
+            let candidate = entry.path();
+            if !entry.file_type().ok()?.is_file() {
+                return None;
+            }
+            let name = candidate.file_name()?.to_str()?;
+            let timestamp = name.strip_prefix(&prefix)?;
+            chrono::NaiveDateTime::parse_from_str(timestamp, "%Y%m%dT%H%M%S%fZ").ok()?;
+            Some(candidate)
+        })
+        .collect();
+    backups.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
+
+    let mut outcome = MigrationBackupPruneOutcome::default();
+    for backup in backups.into_iter().skip(1) {
+        let bytes = std::fs::metadata(&backup)
+            .map(|metadata| metadata.len())
+            .unwrap_or_default();
+        if std::fs::remove_file(&backup).is_err() {
+            outcome.skipped_files += 1;
+            continue;
+        }
+        outcome.removed_files += 1;
+        outcome.removed_bytes = outcome.removed_bytes.saturating_add(bytes);
+    }
+    Ok(outcome)
+}
+
+fn prune_migration_backups_and_report(path: &Path) {
+    match prune_migration_backups(path) {
+        Ok(outcome) if outcome == MigrationBackupPruneOutcome::default() => {}
+        Ok(outcome) => eprintln!(
+            "bridge: migration backup retention removed_files={} removed_bytes={} skipped_files={}",
+            outcome.removed_files, outcome.removed_bytes, outcome.skipped_files,
+        ),
+        Err(error) => eprintln!("bridge: migration backup retention failed: {error}"),
+    }
 }
 
 /// The Work board's storage. Five tables, no changes to existing ones: a
@@ -4507,6 +4570,48 @@ mod tests {
             [],
         );
         assert!(duplicate.is_err(), "the schema prevents append-only growth from returning");
+    }
+
+    #[test]
+    fn migration_backup_retention_keeps_only_the_newest_bridge_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        drop(open(&path).unwrap());
+        let old = dir
+            .path()
+            .join("bridge.db.backup-20260101T000000000000000Z");
+        let newest = dir
+            .path()
+            .join("bridge.db.backup-20260102T000000000000000Z");
+        std::fs::write(&old, b"old rollback").unwrap();
+        std::fs::write(&newest, b"new rollback").unwrap();
+
+        drop(open(&path).unwrap());
+
+        assert!(!old.exists(), "superseded full database copies are reclaimed");
+        assert!(newest.exists(), "the newest rollback point survives");
+    }
+
+    #[test]
+    fn migration_backup_retention_preserves_unrelated_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        drop(open(&path).unwrap());
+        let foreign = dir.path().join("notes.txt");
+        let malformed = dir.path().join("bridge.db.backup-not-a-timestamp");
+        let other_database = dir
+            .path()
+            .join("other.db.backup-20260101T000000000000000Z");
+        std::fs::write(&foreign, b"keep").unwrap();
+        std::fs::write(&malformed, b"keep").unwrap();
+        std::fs::write(&other_database, b"keep").unwrap();
+
+        drop(open(&path).unwrap());
+
+        assert!(path.exists(), "the live database is never a retention candidate");
+        assert!(foreign.exists());
+        assert!(malformed.exists());
+        assert!(other_database.exists());
     }
 
     #[test]
