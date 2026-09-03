@@ -139,7 +139,7 @@ export function SessionToolbar({
         {title}
       </h1>
 
-      {sourceBadge && <span data-testid="import-source-badge" className="hidden shrink-0 rounded-full border border-border px-2 py-0.5 text-[9px] font-medium uppercase tracking-[0.06em] text-muted-foreground sm:inline">{sourceBadge}</span>}
+      {sourceBadge && <span data-testid="import-source-badge" title={sourceBadge} className="hidden max-w-[260px] shrink-0 truncate rounded-full border border-border px-2 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.04em] text-muted-foreground sm:inline">{sourceBadge}</span>}
 
       {(modelControl || tierLabel) && (
         <div className="hidden shrink-0 items-center gap-2 lg:flex">
