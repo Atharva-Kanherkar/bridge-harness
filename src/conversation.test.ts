@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { appendAgentEventBatch } from "./agentEvents";
 import { attachmentUris, compactionReasonLabel, delegationChildSessionId, undeliveredPending, delegationFacet, foldWorkerDelegations, isInternalCompactionEnvelope, itemIdentity, projectSessionConversation, reasoningDisplayText, reduceConversation, selectActiveBranch, toolCallDisplay, workerResultSummary, type ConversationItem } from "./conversation";
 import type { AgentEvent, SessionEntry } from "./types";
 
@@ -46,6 +47,21 @@ describe("normalized conversation reducer",()=>{
       ["message","Let me check the store."],
       ["activity","sqlite3 query"],
       ["message","Found it."],
+    ]);
+  });
+  it("anchors a straddling assistant reply before persisted frames that interleaved while a later chunk merged in",()=>{
+    let buffer: AgentEvent[] = [];
+    buffer = appendAgentEventBatch(buffer, [event(1,"user.message",{sequence:1,role:"user",status:"completed",text:"check the store"})]);
+    buffer = appendAgentEventBatch(buffer, [event(0,"message.delta",{sequence:0,itemId:"m1",role:"assistant",status:"streaming",text:"Let me check the store."})]);
+    buffer = appendAgentEventBatch(buffer, [event(41,"tool.started",{sequence:41,itemId:"t1",title:"sqlite3 query",status:"inProgress"})]);
+    buffer = appendAgentEventBatch(buffer, [event(42,"tool.completed",{sequence:42,itemId:"t1",title:"sqlite3 query",status:"completed"})]);
+    buffer = appendAgentEventBatch(buffer, [event(0,"message.delta",{sequence:0,itemId:"m1",role:"assistant",status:"streaming",text:" Found it."})]);
+    buffer = appendAgentEventBatch(buffer, [event(43,"message.completed",{sequence:43,itemId:"m1",role:"assistant",status:"completed",text:"Let me check the store. Found it."})]);
+    const items = reduceConversation(buffer);
+    expect(items.map(item=>[item.type,item.text||item.title])).toEqual([
+      ["activity","check the store"],
+      ["message","Let me check the store. Found it."],
+      ["activity","sqlite3 query"],
     ]);
   });
   it("keeps an unanchored live window after history until a durable frame arrives",()=>{

@@ -315,6 +315,8 @@ export function isLifecycleNoise(kind: string): boolean {
  * publishes under the database lock — so a transient frame's causal position
  * is "just after the last persisted frame before it": anchor it there, and
  * keep the sort stable so same-anchor frames stay in arrival order.
+ * Coalescing moves a merged delta to the tail for eviction purposes, so a
+ * first-arrival anchor is preserved separately from its mutable array index.
  */
 function inCausalOrder(events: AgentEvent[]): AgentEvent[] {
   // The live window opens wherever the subscription started, not at the
@@ -327,7 +329,8 @@ function inCausalOrder(events: AgentEvent[]): AgentEvent[] {
   return events
     .map(event => {
       if (event.sequence > 0) { lastDurable = event.sequence; return event; }
-      return { ...event, sequence: lastDurable + 0.5 };
+      const anchor = event.causalAnchor ?? lastDurable;
+      return { ...event, sequence: anchor + 0.5 };
     })
     .sort((a, b) => a.sequence - b.sequence);
 }
