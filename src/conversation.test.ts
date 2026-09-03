@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { appendAgentEventBatch } from "./agentEvents";
-import { attachmentUris, compactionReasonLabel, delegationChildSessionId, undeliveredPending, delegationFacet, foldWorkerDelegations, isInternalCompactionEnvelope, itemIdentity, projectSessionConversation, reasoningDisplayText, reduceConversation, selectActiveBranch, toolCallDisplay, workerResultSummary, type ConversationItem } from "./conversation";
+import { attachmentUris, compactionReasonLabel, delegationChildSessionId, undeliveredPending, delegationFacet, foldWorkerDelegations, isInternalCompactionEnvelope, itemIdentity, mergeConversationProjections, projectSessionConversation, reasoningDisplayText, reduceConversation, selectActiveBranch, toolCallDisplay, workerResultSummary, type ConversationItem } from "./conversation";
 import type { AgentEvent, SessionEntry } from "./types";
 
 const event = (id:number,kind:string,overrides:Partial<AgentEvent>={}):AgentEvent => ({ id,sessionId:"s",sequence:id,protocolVersion:1,kind,itemId:null,role:null,status:null,title:null,text:null,data:{},providerMeta:{},createdAt:"now",...overrides });
@@ -110,6 +110,38 @@ describe("normalized conversation reducer",()=>{
     expect(itemIdentity(durable)).toBe("tool-1");
     expect(live.identity).toBe(durable.identity);
     expect(live.eventId).not.toBe(durable.eventId);
+  });
+  it("folds unnamed streaming assistant chunks into the identified completion",()=>{
+    const items = reduceConversation([
+      event(0,"message.delta",{sequence:0,itemId:null,role:"assistant",status:"streaming",text:"Hi — "}),
+      event(0,"message.delta",{sequence:0,itemId:null,role:"assistant",status:"streaming",text:"what would you like to work on in Bridge?"}),
+      event(4,"message.completed",{itemId:"acp-message-1",role:"assistant",status:"completed",text:"Hi — what would you like to work on in Bridge?"}),
+    ]);
+    const assistant = items.filter(item => item.type === "message" && item.role === "assistant");
+    expect(assistant).toHaveLength(1);
+    expect(assistant[0].text).toBe("Hi — what would you like to work on in Bridge?");
+    expect(assistant[0].status).toBe("completed");
+    expect(itemIdentity(assistant[0])).toBe("acp-message-1");
+  });
+  it("does not show the live unnamed stream beside its durable twin",()=>{
+    const live = reduceConversation([
+      event(0,"message.delta",{sequence:0,itemId:null,role:"assistant",status:"streaming",text:"Hi — what would you like to work on in Bridge?"}),
+    ]);
+    const durable = projectSessionConversation([
+      entry("e2",null,"assistant.message",{itemId:"acp-message-1",text:"Hi — what would you like to work on in Bridge?",role:"assistant",status:"completed"},2),
+    ], "e2");
+    const merged = mergeConversationProjections(durable, live);
+    const assistant = merged.filter(item => item.type === "message" && item.role !== "user");
+    expect(assistant).toHaveLength(1);
+    expect(assistant[0].text).toBe("Hi — what would you like to work on in Bridge?");
+    expect(assistant[0].entryId).toBe("e2");
+  });
+  it("keeps two completed assistant replies that happen to share wording",()=>{
+    const live = reduceConversation([
+      event(1,"message.completed",{itemId:"m1",role:"assistant",status:"completed",text:"Done."}),
+      event(2,"message.completed",{itemId:"m2",role:"assistant",status:"completed",text:"Done."}),
+    ]);
+    expect(live.filter(item => item.type === "message")).toHaveLength(2);
   });
   it("keeps the spawn objective when a result is stamped [worker result]",()=>{
     expect(workerResultSummary("[worker result] shipped")).toBe("shipped");

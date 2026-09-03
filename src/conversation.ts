@@ -356,7 +356,8 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
       continue;
     }
     const fallbackReasoningKey = `reasoning:live:${turnIndex}`;
-    const itemKey = event.itemId ?? (event.kind.startsWith("reasoning.") ? fallbackReasoningKey : `${event.kind}:${event.id}`);
+    const fallbackMessageKey = `message:live:${turnIndex}`;
+    const itemKey = event.itemId ?? (event.kind.startsWith("reasoning.") ? fallbackReasoningKey : event.kind.startsWith("message.") ? fallbackMessageKey : `${event.kind}:${event.id}`);
     if (event.kind === "compaction.requested") compactionMaintenanceActive = true;
     if (event.kind.startsWith("message.")
       && (compactionMaintenanceActive || isInternalCompactionEnvelope(event.text ?? "", event.data))) {
@@ -368,7 +369,7 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
     if (event.kind === "message.delta" || event.kind === "reasoning.delta") {
       if (!event.text) continue;
       const type = event.kind.startsWith("message") ? "message" : "reasoning";
-      const key = type === "reasoning" ? (event.itemId ?? fallbackReasoningKey) : itemKey;
+      const key = type === "reasoning" ? (event.itemId ?? fallbackReasoningKey) : (event.itemId ?? fallbackMessageKey);
       const existing = items.get(key) ?? { key, type, eventId:event.id, role:event.role ?? undefined, status:"streaming", text:"", data:{}, sequence:event.sequence };
       existing.text += event.text ?? ""; existing.status = "streaming"; existing.eventId = event.id; items.set(key, existing); continue;
     }
@@ -445,7 +446,21 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
       }
       if (!reasoningDisplayText(event.text, event.data)) continue;
     }
-    if (type === "message" && !event.text && !items.has(itemKey)) continue;
+    if (type === "message") {
+      const existing = items.get(itemKey) ?? adoptStreamingAssistant(items, event);
+      if (!event.text && !existing) continue;
+      const next: ConversationItem = existing ?? { key:itemKey, type, eventId:event.id, role:event.role ?? undefined, status:event.status ?? undefined, title:event.title ?? undefined, text:"", data:{}, sequence:event.sequence };
+      next.eventId = event.id; next.status = event.status ?? next.status; next.title = event.title ?? next.title; next.role = event.role ?? next.role;
+      if (event.text) next.text = event.text;
+      next.data = { ...next.data, ...event.data };
+      if (event.itemId && next.key !== event.itemId) {
+        items.delete(next.key);
+        next.key = event.itemId;
+        next.itemId = event.itemId;
+      }
+      items.set(next.key, next);
+      continue;
+    }
     const existing = items.get(itemKey);
     const next: ConversationItem = existing ?? { key:itemKey, type, eventId:event.id, role:event.role ?? undefined, status:event.status ?? undefined, title:event.title ?? undefined, text:"", data:{}, sequence:event.sequence };
     next.eventId = event.id; next.status = event.status ?? next.status; next.title = event.title ?? next.title; next.role = event.role ?? next.role;
@@ -543,6 +558,48 @@ function withIdentity(item: ConversationItem): ConversationItem {
   const itemId = item.itemId ?? stringValue(item.data.itemId);
   const next = itemId && item.itemId !== itemId ? { ...item, itemId } : item;
   return { ...next, identity: itemIdentity(next) };
+}
+
+function adoptStreamingAssistant(items: Map<string, ConversationItem>, event: AgentEvent): ConversationItem | undefined {
+  if (event.role === "user") return undefined;
+  const completed = (event.text ?? "").trim();
+  if (!completed) return undefined;
+  for (const candidate of [...items.values()].reverse()) {
+    if (candidate.type !== "message" || candidate.role === "user" || candidate.status !== "streaming") continue;
+    const streamed = candidate.text.trim();
+    if (streamed && (completed === streamed || completed.startsWith(streamed))) return candidate;
+  }
+  return undefined;
+}
+
+function isUnidentifiedAssistantShadow(live: ConversationItem, durable: ConversationItem): boolean {
+  if (live.type !== "message" || durable.type !== "message") return false;
+  if ((live.role ?? "assistant") === "user" || (durable.role ?? "assistant") === "user") return false;
+  const text = live.text.trim();
+  if (!text || text !== durable.text.trim()) return false;
+  return live.status === "streaming" || !live.itemId;
+}
+
+export function mergeConversationProjections(durableItems: ConversationItem[], liveItems: ConversationItem[]): ConversationItem[] {
+  const durableIds = new Set(durableItems.map(item => item.identity ?? itemIdentity(item)));
+  const liveAnchors = new Map(liveItems.map(item => [item.identity ?? itemIdentity(item), item.sequence]));
+  const items = durableItems.map(item => {
+    const identity = item.identity ?? itemIdentity(item);
+    let anchor = liveAnchors.get(identity);
+    if (anchor === undefined) {
+      const twin = liveItems.find(live => isUnidentifiedAssistantShadow(live, item));
+      if (twin) anchor = twin.sequence;
+    }
+    return anchor !== undefined && anchor < item.sequence ? { ...item, sequence: anchor } : item;
+  });
+  for (const live of liveItems) {
+    const identity = live.identity ?? itemIdentity(live);
+    if (durableIds.has(identity)) continue;
+    if (durableItems.some(durable => isUnidentifiedAssistantShadow(live, durable))) continue;
+    items.push(live);
+  }
+  items.sort((a, b) => a.sequence - b.sequence);
+  return items;
 }
 
 /** Resolved reasoning text: the streamed `text`, or Codex's summary-only payload. */
