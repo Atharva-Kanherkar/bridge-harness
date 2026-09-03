@@ -84,7 +84,11 @@ pub(crate) fn install_bounded_audit_retention(
                  ), '[]')
                  FROM json_each(memory_retrieval_audits.selected_ids) AS item
              )
-             WHERE recipient_session_id = NEW.recipient_session_id
+             WHERE id = (
+                   SELECT id FROM memory_retrieval_audits
+                   WHERE recipient_session_id = NEW.recipient_session_id
+                   ORDER BY created_at DESC, id DESC LIMIT 1
+               )
                AND EXISTS (
                    SELECT 1 FROM json_each(memory_retrieval_audits.selected_ids) AS prior_item
                    WHERE prior_item.type = 'object'

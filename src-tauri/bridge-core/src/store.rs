@@ -11,6 +11,7 @@ use std::{
 use uuid::Uuid;
 
 const LATEST_SCHEMA_VERSION: i64 = 45;
+const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -1173,7 +1174,7 @@ fn backup_database(path: &Path) -> Result<PathBuf, BridgeError> {
         .file_name()
         .and_then(|name| name.to_str())
         .unwrap_or("bridge.db");
-    let suffix = Utc::now().format("%Y%m%dT%H%M%S%fZ");
+    let suffix = Utc::now().format(MIGRATION_BACKUP_TIMESTAMP_FORMAT);
     let backup = path.with_file_name(format!("{file_name}.backup-{suffix}"));
     let pending = path.with_file_name(format!("{file_name}.backup-{suffix}.pending"));
     if let Err(error) = std::fs::copy(path, &pending) {
@@ -1226,7 +1227,8 @@ fn prune_migration_backups(
             }
             let name = candidate.file_name()?.to_str()?;
             let timestamp = name.strip_prefix(&prefix)?;
-            chrono::NaiveDateTime::parse_from_str(timestamp, "%Y%m%dT%H%M%S%fZ").ok()?;
+            chrono::NaiveDateTime::parse_from_str(timestamp, MIGRATION_BACKUP_TIMESTAMP_FORMAT)
+                .ok()?;
             if !is_sqlite_backup(&candidate) {
                 return None;
             }
