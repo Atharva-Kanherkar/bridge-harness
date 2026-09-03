@@ -359,6 +359,9 @@ describe("AgentConversation", () => {
     expect(html).toContain("src/**");
     expect(html).toContain("docs/**");
     expect(html).toContain("owned_path_provenance_required");
+    // The raw policy code lives only inside the "Policy" disclosure, never in
+    // the remediation body — so it appears exactly once in the card.
+    expect(html.split("owned_path_provenance_required").length - 1).toBe(1);
     expect(html).toContain("were not explicitly authorized");
     expect(html).toContain("Render Mermaid inline");
   });
