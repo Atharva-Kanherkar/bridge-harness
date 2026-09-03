@@ -411,7 +411,8 @@ pub struct GithubActResult {
 pub struct GithubReviewParams {
     pub workspace_id: String,
     pub number: u64,
-    /// The harness that runs the review worker (`claude` | `codex` | `opencode`).
+    /// The harness that runs the review worker (`claude` | `codex` | `opencode`),
+    /// or `bugbot` to post `cursor review` and summon Cursor Bugbot on GitHub.
     pub harness: String,
     /// The parent orchestrator session to attach the worker to. When absent (or
     /// unknown to this workspace) the backend creates a fresh orchestrator.

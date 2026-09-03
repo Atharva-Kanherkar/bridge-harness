@@ -554,11 +554,13 @@ function RepositoryOverview({ overview }: { overview: GithubRepositoryResult }) 
 type PendingAction = { statement: string; requiresBody: boolean; build: (body: string) => GithubAction };
 
 /** The harnesses a subagent review can run under. The model comes from the
- * Reviewer profile in settings, so the user only picks the agent. */
+ * Reviewer profile in settings, so the user only picks the agent. Cursor
+ * Bugbot is not a local worker: it posts `cursor review` on the PR. */
 const REVIEW_HARNESSES: ReadonlyArray<{ id: string; label: string }> = [
   { id: "claude", label: "Claude" },
   { id: "codex", label: "Codex" },
   { id: "opencode", label: "OpenCode" },
+  { id: "bugbot", label: "Cursor Bugbot" },
 ];
 
 type PullRequestDetailProps = {
@@ -603,6 +605,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
       const result = await bridgeApi.githubReview(workspaceId, number, harness, sessionId);
       setReviewOpen(false);
       setReviewNotice({ tone: result.status === "failed" ? "error" : "success", text: result.message });
+      if (harness === "bugbot" && result.status !== "failed") onActed();
     } catch (value) {
       setReviewNotice({ tone: "error", text: value instanceof Error ? value.message : String(value) });
     } finally { setReviewBusy(false); }

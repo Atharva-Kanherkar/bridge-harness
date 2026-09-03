@@ -965,6 +965,33 @@ impl GithubSurface {
         })
     }
 
+    pub fn comment_on_pull_request(
+        &self,
+        workspace: &Path,
+        number: u64,
+        body: &str,
+    ) -> Result<String, GithubSurfaceError> {
+        self.require_binary()?;
+        let repository = self.resolve_repository(workspace)?;
+        let selector = repository.selector();
+        self.run_gh(
+            workspace,
+            "pr comment",
+            &[
+                "pr".into(),
+                "comment".into(),
+                number.to_string(),
+                "--repo".into(),
+                selector,
+                "--body".into(),
+                body.into(),
+            ],
+            false,
+        )?;
+        self.invalidate_action_resources(&repository, number);
+        Ok(format!("Commented on PR #{number}."))
+    }
+
     /// Execute one mutating action through `gh`. Every invocation is an argv
     /// array; a `gh` refusal (branch protection, required reviews, conflicts)
     /// propagates verbatim and is never retried.
@@ -2180,7 +2207,7 @@ mod tests {
                 "if [ \"$1 $2\" = \"pr checks\" ]; then if [ -f \"$root/pr-checks-empty\" ]; then echo \"no checks reported on the 'fixture' branch\" >&2; exit 1; fi; cat '{fixtures}/checks.json'; exit 1; fi\n",
                 "if [ \"$1 $2\" = \"api graphql\" ]; then cat '{fixtures}/review-threads.json'; exit 0; fi\n",
                 "if [ \"$1 $2\" = \"pr merge\" ]; then if [ -f \"$root/pr-merge-blocked\" ]; then echo 'GraphQL: Branch protections: at least 1 approving review is required (mergePullRequest)' >&2; exit 1; fi; exit 0; fi\n",
-                "if [ \"$1 $2\" = \"pr review\" ] || [ \"$1 $2\" = \"pr edit\" ] || [ \"$1 $2\" = \"issue edit\" ]; then exit 0; fi\n",
+                "if [ \"$1 $2\" = \"pr review\" ] || [ \"$1 $2\" = \"pr comment\" ] || [ \"$1 $2\" = \"pr edit\" ] || [ \"$1 $2\" = \"issue edit\" ]; then exit 0; fi\n",
                 "if [ \"$1 $2\" = \"run list\" ]; then fixture=runs.json; if [ -f \"$root/run-list-clean\" ]; then fixture=runs-clean.json; fi; cat '{fixtures}/'$fixture; exit 0; fi\n",
                 "if [ \"$1 $2\" = \"run rerun\" ]; then exit 0; fi\n",
                 "if [ \"$1\" = \"api\" ] && [ \"$2\" = \"--method\" ]; then exit 0; fi\n",
@@ -2810,6 +2837,22 @@ mod tests {
         }
         // The refusal is never retried: exactly one merge attempt was spawned.
         assert_eq!(invocation_count(&fake, "pr merge"), 1);
+    }
+
+    #[test]
+    fn a_conversation_comment_uses_pr_comment_argv_and_invalidates_the_pr() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        surface.pr_detail(repository.path(), 103).unwrap();
+        surface
+            .comment_on_pull_request(repository.path(), 103, "cursor review")
+            .unwrap();
+        surface.pr_detail(repository.path(), 103).unwrap();
+        assert!(invocations(&fake).contains(
+            "pr comment 103 --repo fixture/project --body cursor review"
+        ));
+        assert_eq!(invocation_count(&fake, "pr view"), 2);
     }
 
     #[test]
