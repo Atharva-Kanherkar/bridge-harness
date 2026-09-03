@@ -1124,6 +1124,10 @@ impl HarnessAdapter for ClaudeAdapter {
                 "reasoning",
                 "tools",
                 "commands",
+                // Edit/Write/MultiEdit/NotebookEdit normalize to file_change.*
+                // events with a synthesized diff, so Claude advertises the same
+                // file_changes surface as Codex/OpenCode.
+                "file_changes",
                 "approvals",
                 "usage",
                 "interrupt",

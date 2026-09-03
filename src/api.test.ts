@@ -163,6 +163,23 @@ describe("SQLite-shaped mock observability", () => {
   });
 });
 
+describe("mock adapter capability honesty", () => {
+  it("advertises Claude file_changes in browser mode, matching the production descriptor", async () => {
+    // Claude's adapter normalizes Edit/Write/MultiEdit/NotebookEdit into
+    // file_change.* events, so production advertises file_changes. If the mock
+    // omits it, capability-driven UI and component tests keep reporting Claude
+    // dishonestly in browser mode — the exact drift this test guards.
+    const health = await bridgeApi.health();
+    const claude = health.adapters.find(adapter => adapter.id === "claude")!;
+    expect(claude.capabilities).toContain("file_changes");
+    // Every built-in file-editing adapter advertises it; none should silently drop it.
+    for (const id of ["claude", "codex", "cursor", "opencode"]) {
+      const adapter = health.adapters.find(item => item.id === id);
+      if (adapter) expect(adapter.capabilities, `${id} file_changes`).toContain("file_changes");
+    }
+  });
+});
+
 describe("the Work board", () => {
   it("returns a board the screen can actually render without the desktop app", async () => {
     // vitest and a `bun run dev` preview both take this path, so a fallback that

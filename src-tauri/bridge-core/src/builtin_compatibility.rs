@@ -86,6 +86,10 @@ const CLAUDE_CAPABILITIES: &[&str] = &[
     "reasoning",
     "tools",
     "commands",
+    // Claude's adapter normalizes Edit/Write/MultiEdit/NotebookEdit into
+    // file_change.* events (synthesizing a unified diff), so it advertises the
+    // same file_changes surface as Codex/OpenCode rather than flat tool rows.
+    "file_changes",
     "approvals",
     "usage",
     "interrupt",
