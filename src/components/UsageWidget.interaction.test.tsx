@@ -269,7 +269,7 @@ describe("UsageWidget panel shell", () => {
     expect(body.textContent).toContain("completed");
   });
 
-  it("portals the compact panel onto the composer frame, flush with its top edge", async () => {
+  it("portals the compact panel onto the composer frame, a whole rounded shape clear of it", async () => {
     await act(async () => {
       root.render(
         <div data-composer-frame className="relative">
@@ -281,9 +281,12 @@ describe("UsageWidget panel shell", () => {
     expect(panel.parentElement?.hasAttribute("data-composer-frame")).toBe(true);
     expect(panel.className).toContain("inset-x-0");
     expect(panel.className).toContain("bottom-full");
-    // Flush: nothing lifts the popup off the composer's top edge.
-    expect(panel.className).not.toContain("mb-2");
-    expect(panel.className).not.toContain("pb-2");
+    // Clear of the composer, and rounded on every corner: the composer is
+    // rounded all round, so a panel butted onto it reads as a seam, not a join.
+    expect(panel.className).toContain("mb-1.5");
+    const surface = panel.firstElementChild as HTMLElement;
+    expect(surface.className).toContain("rounded-2xl");
+    expect(surface.className).not.toContain("rounded-t-2xl");
     // It still sits above the transcript.
     expect(panel.className).toContain("z-50");
     expect(container.querySelector('[aria-label="Resize usage panel"]')).toBeNull();

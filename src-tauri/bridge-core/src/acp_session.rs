@@ -573,6 +573,7 @@ struct Shared {
 struct TurnMessage {
     text: String,
     item_id: Option<String>,
+    live_id: Option<String>,
     truncated: bool,
 }
 
@@ -597,8 +598,27 @@ impl TurnMessage {
     /// Whether a delta belongs to the message being assembled. ACP states that a
     /// change of `messageId` starts a new message, so a chunk carrying a
     /// different one ends this one instead of being concatenated onto it.
+    ///
+    /// Agent-provided ids are the only ones that participate: a live identity
+    /// stamped onto unnamed chunks must not look like a `messageId` change, or
+    /// the next unnamed chunk would close the message it belongs to.
     fn continues(&self, item_id: Option<&str>) -> bool {
         self.text.is_empty() || self.item_id.as_deref() == item_id
+    }
+
+    /// Identity the live stream and the assembled completion share. Unnamed
+    /// ACP chunks have no `messageId`; without a stable one here the completed
+    /// event gets a fresh uuid the deltas never carried, and the transcript
+    /// renders the same reply twice.
+    fn live_identity(&mut self, event_item_id: Option<&str>) -> String {
+        if let Some(id) = &self.live_id {
+            return id.clone();
+        }
+        let id = event_item_id
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("acp-message-{}", Uuid::new_v4()));
+        self.live_id = Some(id.clone());
+        id
     }
 
     /// The assembled event, or `None` when nothing streamed. Taking it resets
@@ -609,7 +629,7 @@ impl TurnMessage {
             return None;
         }
         let mut event = NormalizedEvent::new("message.completed");
-        event.item_id = taken.item_id;
+        event.item_id = taken.item_id.or(taken.live_id);
         event.role = Some("assistant".into());
         event.status = Some(status.to_owned());
         event.text = Some(if taken.truncated {
@@ -641,14 +661,14 @@ impl Shared {
     /// Route one event: into the replay buffer while a reload is in flight,
     /// into the live queue otherwise. The buffer is armed before the reload
     /// request is published, so no replayed update can miss it.
-    fn publish_event(&self, event: NormalizedEvent) {
+    fn publish_event(&self, mut event: NormalizedEvent) {
         let mut replay = self.replay.lock().expect("acp replay buffer poisoned");
         if let Some(buffer) = replay.as_mut() {
             buffer.push(event);
             return;
         }
         drop(replay);
-        let ended = self.accumulate(&event);
+        let ended = self.accumulate(&mut event);
         let mut events = self.events.lock().expect("acp event queue poisoned");
         if let Some(ended) = ended {
             events.push(ended);
@@ -666,7 +686,7 @@ impl Shared {
     /// agent breaking off to act, so the prose before it is emitted before the
     /// call rather than after the whole turn, which is the order every surface
     /// renders.
-    fn accumulate(&self, event: &NormalizedEvent) -> Option<NormalizedEvent> {
+    fn accumulate(&self, event: &mut NormalizedEvent) -> Option<NormalizedEvent> {
         let delta = event.kind == "message.delta" && event.role.as_deref() == Some("assistant");
         if !delta && event.kind != "tool.started" {
             return None;
@@ -675,11 +695,16 @@ impl Shared {
         if !delta {
             return message.take("completed").map(identified);
         }
-        let ended = (!message.continues(event.item_id.as_deref()))
+        let incoming_id = event.item_id.clone();
+        let ended = (!message.continues(incoming_id.as_deref()))
             .then(|| message.take("completed").map(identified))
             .flatten();
         if message.text.is_empty() {
-            message.item_id.clone_from(&event.item_id);
+            message.item_id.clone_from(&incoming_id);
+        }
+        let live_id = message.live_identity(incoming_id.as_deref());
+        if event.item_id.is_none() {
+            event.item_id = Some(live_id);
         }
         if let Some(text) = event.text.as_deref() {
             message.push(text);
@@ -2325,6 +2350,11 @@ mod tests {
             completed.item_id.is_some(),
             "an assembled message the agent left unnamed still needs an identity"
         );
+        assert_eq!(
+            events[1].item_id.as_deref(),
+            completed.item_id.as_deref(),
+            "the streamed chunks and the assembled reply must share one identity"
+        );
         assert_eq!(events[3].item_id.as_deref(), Some("t1"));
         assert_eq!(events[3].status.as_deref(), Some("inProgress"));
         assert_eq!(events[4].status.as_deref(), Some("completed"));
@@ -2417,6 +2447,39 @@ mod tests {
             identities[0], identities[1],
             "a shared identity collapses the delegation dedupe key for every later turn"
         );
+    }
+
+    #[test]
+    fn unnamed_chunks_keep_the_identity_the_assembled_reply_will_use() {
+        let shared = Arc::new(Shared::default());
+        let mut first = NormalizedEvent::new("message.delta");
+        first.role = Some("assistant".into());
+        first.text = Some("Hi — ".into());
+        shared.publish_event(first);
+        let mut second = NormalizedEvent::new("message.delta");
+        second.role = Some("assistant".into());
+        second.text = Some("what would you like to work on in Bridge?".into());
+        shared.publish_event(second);
+
+        let streamed: Vec<NormalizedEvent> = {
+            let mut events = shared.events.lock().expect("acp event queue poisoned");
+            events.drain()
+        };
+        assert_eq!(streamed.len(), 2);
+        assert_eq!(streamed[0].item_id, streamed[1].item_id);
+        let streamed_id = streamed[0]
+            .item_id
+            .clone()
+            .expect("an unnamed live chunk is identified before it is published");
+
+        let assembled = shared
+            .take_turn_message("completed")
+            .expect("the unnamed chunks assembled");
+        assert_eq!(
+            assembled.text.as_deref(),
+            Some("Hi — what would you like to work on in Bridge?")
+        );
+        assert_eq!(assembled.item_id.as_deref(), Some(streamed_id.as_str()));
     }
 
     #[test]

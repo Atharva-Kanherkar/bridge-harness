@@ -1,7 +1,7 @@
 //! Live check polling for pull requests the GitHub surface has already exposed.
 
 use crate::{events::CoreEvent, github_surface::{CheckStatus, PullRequestCheck, PullRequestSummary}, BridgeCore};
-use std::{collections::HashMap, path::PathBuf, sync::{Arc, Mutex}, time::Duration};
+use std::{collections::{HashMap, HashSet}, path::PathBuf, sync::{Arc, Mutex}, time::Duration};
 
 pub const FOCUSED_CADENCE: Duration = Duration::from_secs(15);
 pub const UNFOCUSED_CADENCE: Duration = Duration::from_secs(120);
@@ -9,6 +9,7 @@ pub const UNFOCUSED_CADENCE: Duration = Duration::from_secs(120);
 #[derive(Default)]
 pub struct GithubPoller {
     watched: Mutex<HashMap<(String, u64), WatchedPullRequest>>,
+    refreshing: Mutex<HashSet<String>>,
     /// The last terminal check set announced per PR. The list refetch that
     /// follows every checks-changed event re-`watch()`es from a rollup that can
     /// still read "in progress" after the checks completed; without this
@@ -27,6 +28,14 @@ struct WatchedPullRequest {
 }
 
 impl GithubPoller {
+    pub(crate) fn begin_refresh(&self, workspace_id: &str) -> bool {
+        self.refreshing.lock().unwrap().insert(workspace_id.into())
+    }
+
+    pub(crate) fn finish_refresh(&self, workspace_id: &str) {
+        self.refreshing.lock().unwrap().remove(workspace_id);
+    }
+
     pub fn watch(&self, workspace_id: &str, path: PathBuf, pull_requests: &[PullRequestSummary]) {
         let mut watched = self.watched.lock().unwrap();
         // Carry each surviving PR's last-seen checks across the re-list. A list
@@ -324,5 +333,15 @@ mod tests {
             watched.get(&("ws".into(), 7)).unwrap().checks,
             Some(vec![check(CheckStatus::InProgress)]),
         );
+    }
+
+    #[test]
+    fn one_background_refresh_runs_per_workspace() {
+        let poller = GithubPoller::default();
+        assert!(poller.begin_refresh("ws"));
+        assert!(!poller.begin_refresh("ws"), "duplicate refresh is suppressed");
+        assert!(poller.begin_refresh("other"), "workspaces refresh independently");
+        poller.finish_refresh("ws");
+        assert!(poller.begin_refresh("ws"), "completion releases the refresh slot");
     }
 }

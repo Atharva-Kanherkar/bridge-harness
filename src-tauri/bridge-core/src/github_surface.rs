@@ -25,10 +25,17 @@ pub const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(15);
 pub const GH_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How many of the newest pull requests get the expensive computed fields.
-/// GitHub prices `statusCheckRollup`/`mergeable`/`reviewDecision` per PR in
-/// its GraphQL budget and answers 502/504 once the query grows past roughly
-/// 30 check-heavy pull requests, so the rich read stays well under that.
-const PR_ENRICH_LIMIT: &str = "25";
+/// GitHub prices `statusCheckRollup`/`mergeable`/`reviewDecision` per PR. Even
+/// successful queries become visibly slow on check-heavy repositories: 25 PRs
+/// took six seconds in the reported case, while five kept the read interactive.
+/// The cheap list still returns 100 PRs, and opening one loads its full detail.
+const PR_ENRICH_LIMIT: &str = "5";
+const PR_ENRICH_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// CI completion notifications previously covered the newest 25 pull requests.
+/// Keep that wider query off the interactive pane path so reducing UI latency
+/// cannot silently reduce the poller's coverage.
+const PR_POLL_LIMIT: &str = "25";
 
 /// Cheap identity fields only — reliable at `--limit 100` on any repository.
 const PR_LIST_BASE_FIELDS: &str = "number,title,state,isDraft,author,headRefName,url";
@@ -376,6 +383,7 @@ impl GithubAction {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 enum Resource {
     PullRequests,
+    PollingPullRequests,
     PullRequest(u64),
     PullRequestFiles(u64),
     Checks(u64),
@@ -593,6 +601,39 @@ impl GithubSurface {
         Ok(pull_requests)
     }
 
+    /// Load the wider rich slice used to arm background CI notifications.
+    /// This stays separate from [`Self::list_prs`] so the interactive GitHub
+    /// pane never waits for the notification poller's larger GraphQL query.
+    pub fn list_prs_for_polling(
+        &self,
+        workspace: &Path,
+    ) -> Result<Vec<PullRequestSummary>, GithubSurfaceError> {
+        self.require_binary()?;
+        let repository = self.resolve_repository(workspace)?;
+        let key = CacheKey {
+            repository: repository.selector(),
+            resource: Resource::PollingPullRequests,
+        };
+        if let Some(CachedResource::PullRequests(pull_requests)) = self.cached(&key) {
+            return Ok(pull_requests);
+        }
+        let bytes = self.run_gh(
+            workspace,
+            "pr list",
+            &pr_list_args(&repository, PR_LIST_FIELDS, PR_POLL_LIMIT),
+            false,
+        )?;
+        let pull_requests = parse_json::<Vec<RawPullRequestSummary>>(
+            "pull-request polling list",
+            &bytes,
+        )?
+        .into_iter()
+        .map(PullRequestSummary::try_from)
+        .collect::<Result<Vec<_>, _>>()?;
+        self.store(key, CachedResource::PullRequests(pull_requests.clone()));
+        Ok(pull_requests)
+    }
+
     /// Overlay the expensive computed fields (review decision, mergeability,
     /// merge-state, check rollup) onto the newest [`PR_ENRICH_LIMIT`] pull
     /// requests. GitHub prices these per PR in its GraphQL budget and answers
@@ -607,11 +648,12 @@ impl GithubSurface {
         if pull_requests.is_empty() {
             return;
         }
-        let Ok(bytes) = self.run_gh(
+        let Ok(bytes) = self.run_gh_with_timeout(
             workspace,
             "pr list",
             &pr_list_args(repository, PR_LIST_FIELDS, PR_ENRICH_LIMIT),
             false,
+            self.command_timeout.min(PR_ENRICH_TIMEOUT),
         ) else {
             return;
         };
@@ -1169,14 +1211,31 @@ impl GithubSurface {
         args: &[String],
         accept_nonzero_json: bool,
     ) -> Result<Vec<u8>, GithubSurfaceError> {
+        self.run_gh_with_timeout(
+            workspace,
+            operation,
+            args,
+            accept_nonzero_json,
+            self.command_timeout,
+        )
+    }
+
+    fn run_gh_with_timeout(
+        &self,
+        workspace: &Path,
+        operation: &'static str,
+        args: &[String],
+        accept_nonzero_json: bool,
+        timeout: Duration,
+    ) -> Result<Vec<u8>, GithubSurfaceError> {
         let mut command = Command::new(self.require_binary()?);
         command.current_dir(workspace).args(args);
-        let Some(output) = run_with_timeout(command, self.command_timeout)? else {
+        let Some(output) = run_with_timeout(command, timeout)? else {
             return Err(GithubSurfaceError::CommandFailed {
                 operation,
                 stderr: format!(
                     "timed out after {}s and was killed",
-                    self.command_timeout.as_secs_f64()
+                    timeout.as_secs_f64()
                 ),
             });
         };
@@ -1229,6 +1288,7 @@ impl GithubSurface {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         for resource in [
             Resource::PullRequests,
+            Resource::PollingPullRequests,
             Resource::PullRequest(number),
             Resource::PullRequestFiles(number),
             Resource::Checks(number),
@@ -2171,7 +2231,7 @@ mod tests {
                 "printf '%s\\n' \"$*\" >> \"$root/invocations.log\"\n",
                 "if [ \"$1 $2\" = \"auth status\" ]; then exit {auth_exit}; fi\n",
                 "if [ \"$1 $2 $3\" = \"repo set-default --view\" ]; then if [ -n \"{default}\" ]; then printf '%s\\n' '{default}'; exit 0; fi; exit 1; fi\n",
-                "if [ \"$1 $2\" = \"pr list\" ]; then case \"$*\" in *statusCheckRollup*) if [ -f \"$root/pr-list-rich-fail\" ]; then echo 'HTTP 502: 502 Bad Gateway (https://api.github.com/graphql)' >&2; exit 1; fi; fixture=prs.json;; *) fixture=prs-base.json;; esac; if [ -f \"$root/pr-list-fixture\" ]; then fixture=$(cat \"$root/pr-list-fixture\"); fi; cat '{fixtures}/'$fixture; exit 0; fi\n",
+                "if [ \"$1 $2\" = \"pr list\" ]; then case \"$*\" in *statusCheckRollup*) if [ -f \"$root/pr-list-rich-slow\" ]; then sleep 6; fi; if [ -f \"$root/pr-list-rich-fail\" ]; then echo 'HTTP 502: 502 Bad Gateway (https://api.github.com/graphql)' >&2; exit 1; fi; fixture=prs.json;; *) fixture=prs-base.json;; esac; if [ -f \"$root/pr-list-fixture\" ]; then fixture=$(cat \"$root/pr-list-fixture\"); fi; cat '{fixtures}/'$fixture; exit 0; fi\n",
                 "if [ \"$1 $2\" = \"pr view\" ]; then cat '{fixtures}/pr-detail.json'; exit 0; fi\n",
                 "if [ \"$1 $2\" = \"issue list\" ]; then cat '{fixtures}/issues.json'; exit 0; fi\n",
                 "if [ \"$1 $2\" = \"issue view\" ]; then cat '{fixtures}/issue-detail.json'; exit 0; fi\n",
@@ -2711,6 +2771,84 @@ mod tests {
     }
 
     #[test]
+    fn list_prs_enrichment_is_bounded_for_interactive_loading() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+
+        surface.list_prs(repository.path()).unwrap();
+
+        let log = invocations(&fake);
+        assert!(
+            log.contains(&format!("--limit 100 --json {PR_LIST_BASE_FIELDS}")),
+            "the complete cheap list must remain available"
+        );
+        assert!(
+            log.contains(&format!("--limit 5 --json {PR_LIST_FIELDS}")),
+            "rich CI and review fields must stay within the interactive budget"
+        );
+    }
+
+    #[test]
+    fn slow_interactive_enrichment_returns_the_base_list_at_its_deadline() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        fs::write(fake.path().join("pr-list-rich-slow"), "").unwrap();
+        let surface = GithubSurface::discover_on_path(fake.path());
+
+        let started = Instant::now();
+        let pull_requests = surface.list_prs(repository.path()).unwrap();
+
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "slow enrichment must not make the pane look frozen"
+        );
+        assert_eq!(pull_requests.len(), 5, "the complete base fixture still loads");
+        assert!(
+            pull_requests
+                .iter()
+                .all(|pull_request| pull_request.checks == CheckRollup::default()),
+            "timed-out enrichment degrades to honest not-fetched rollups"
+        );
+    }
+
+    #[test]
+    fn polling_prs_keep_the_previous_notification_coverage() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+
+        surface.list_prs_for_polling(repository.path()).unwrap();
+
+        let log = invocations(&fake);
+        assert!(
+            log.contains(&format!("--limit 25 --json {PR_LIST_FIELDS}")),
+            "background CI polling must keep its previous 25-PR coverage"
+        );
+    }
+
+    #[test]
+    fn interactive_and_polling_pr_lists_have_independent_caches() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+
+        surface.list_prs(repository.path()).unwrap();
+        surface.list_prs_for_polling(repository.path()).unwrap();
+        surface.list_prs(repository.path()).unwrap();
+        surface.list_prs_for_polling(repository.path()).unwrap();
+
+        let log = invocations(&fake);
+        assert!(log.contains(&format!("--limit 5 --json {PR_LIST_FIELDS}")));
+        assert!(log.contains(&format!("--limit 25 --json {PR_LIST_FIELDS}")));
+        assert_eq!(
+            invocation_count(&fake, "pr list"),
+            3,
+            "base, interactive-rich, and polling-rich reads cache independently"
+        );
+    }
+
+    #[test]
     fn explicit_repository_refresh_bypasses_the_ttl_cache() {
         let repository = repository_with_origin();
         let fake = fake_gh(true, None);
@@ -2916,6 +3054,7 @@ mod tests {
         let fake = fake_gh(true, None);
         let surface = GithubSurface::discover_on_path(fake.path());
         surface.list_prs(repository.path()).unwrap();
+        surface.list_prs_for_polling(repository.path()).unwrap();
         surface.pr_detail(repository.path(), 103).unwrap();
         surface.pr_checks(repository.path(), 103).unwrap();
         surface.pr_review_threads(repository.path(), 103).unwrap();
@@ -2932,10 +3071,11 @@ mod tests {
             .unwrap();
 
         surface.list_prs(repository.path()).unwrap();
+        surface.list_prs_for_polling(repository.path()).unwrap();
         surface.pr_detail(repository.path(), 103).unwrap();
         surface.pr_checks(repository.path(), 103).unwrap();
         surface.pr_review_threads(repository.path(), 103).unwrap();
-        assert_eq!(invocation_count(&fake, "pr list"), 4);
+        assert_eq!(invocation_count(&fake, "pr list"), 6);
         assert_eq!(invocation_count(&fake, "pr view"), 2);
         assert_eq!(invocation_count(&fake, "pr checks"), 2);
         assert_eq!(invocation_count(&fake, "api graphql"), 2);
