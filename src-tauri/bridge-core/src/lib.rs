@@ -25,6 +25,7 @@ pub mod browser_bridge;
 pub mod builtin_compatibility;
 pub mod check_runner;
 pub mod claude_adapter;
+pub mod claude_import;
 pub mod codex_adapter;
 pub mod compaction_controller;
 pub mod completion;

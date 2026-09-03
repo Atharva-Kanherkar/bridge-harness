@@ -11,6 +11,7 @@ use rusqlite::Transaction;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub const IMPORTER_NAMESPACE: &str = "bridge.external-import/v1";
@@ -159,6 +160,7 @@ pub struct DiscoveredArtifact {
     pub stability: Stability,
     pub estimated_bytes: u64,
     pub modified_at: Option<String>,
+    pub required_schema_gate: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -169,6 +171,8 @@ pub struct DiscoveryRequest {
     pub selected_export: Option<String>,
     pub source_version: Option<String>,
     pub schema_version: Option<String>,
+    #[serde(default)]
+    pub format_versions: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -177,6 +181,9 @@ pub struct DiscoveryResult {
     pub discovery_id: String,
     pub provider: String,
     pub approved_roots: Vec<String>,
+    pub source_version: Option<String>,
+    #[serde(default)]
+    pub format_versions: BTreeMap<String, String>,
     pub artifacts: Vec<DiscoveredArtifact>,
     #[serde(default)]
     pub diagnostics: Vec<ImportDiagnostic>,
