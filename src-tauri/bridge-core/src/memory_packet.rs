@@ -48,6 +48,29 @@ pub(crate) fn install(transaction: &Transaction<'_>) -> Result<(), BridgeError> 
     Ok(())
 }
 
+/// Collapse the historical append-only audit into the contract every reader
+/// already exposes: the latest packet delivered to each recipient session.
+/// Keeping full pin bodies for every recompilation multiplied storage without
+/// making an older row observable anywhere in the product.
+pub(crate) fn install_latest_audit_retention(
+    transaction: &Transaction<'_>,
+) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "DELETE FROM memory_retrieval_audits
+         WHERE EXISTS (
+             SELECT 1 FROM memory_retrieval_audits AS newer
+             WHERE newer.recipient_session_id = memory_retrieval_audits.recipient_session_id
+               AND (newer.created_at > memory_retrieval_audits.created_at
+                    OR (newer.created_at = memory_retrieval_audits.created_at
+                        AND newer.id > memory_retrieval_audits.id))
+         );
+         DROP INDEX IF EXISTS idx_memory_retrieval_audits_recipient;
+         CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_retrieval_audits_one_per_recipient
+             ON memory_retrieval_audits(recipient_session_id);",
+    )?;
+    Ok(())
+}
+
 pub fn injection_enabled(db: &Connection, scope_key: &str) -> Result<bool, BridgeError> {
     let scope_key = memory_ledger::parse_scope_key(scope_key)?;
     let enabled: Option<i64> = db
@@ -273,7 +296,16 @@ pub fn for_session(
         "INSERT INTO memory_retrieval_audits(
             id, scope_key, recipient_session_id, objective_hash, candidate_count,
             selected_ids, exclusions, token_estimate, created_at
-         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)
+         ON CONFLICT(recipient_session_id) DO UPDATE SET
+             id=excluded.id,
+             scope_key=excluded.scope_key,
+             objective_hash=excluded.objective_hash,
+             candidate_count=excluded.candidate_count,
+             selected_ids=excluded.selected_ids,
+             exclusions=excluded.exclusions,
+             token_estimate=excluded.token_estimate,
+             created_at=excluded.created_at",
         params![
             Uuid::new_v4().to_string(),
             scope_key,
@@ -571,6 +603,49 @@ mod tests {
         let bodies: Vec<&str> = audit.selected.iter().map(|item| item.body.as_str()).collect();
         assert!(bodies.contains(&"Prefers tabs"), "the frozen body, not the edited one");
         assert!(bodies.contains(&"Deploys on Tuesday"));
+    }
+
+    #[test]
+    fn recompiling_a_session_replaces_its_audit_instead_of_growing_storage() {
+        let (_dir, db) = packet_db();
+        insert(&db, "a1", "Prefers tabs", "user_explicit", "active", None);
+        for_session(&db, "account:local", "session-1").unwrap();
+
+        db.execute("UPDATE memory_records SET body='Prefers spaces now' WHERE id='a1'", [])
+            .unwrap();
+        for_session(&db, "account:local", "session-1").unwrap();
+
+        let audits: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM memory_retrieval_audits WHERE recipient_session_id='session-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(audits, 1, "one chat retains only its latest frozen packet");
+        let audit = latest_audit(&db, "session-1").unwrap().unwrap();
+        assert_eq!(audit.selected[0].body, "Prefers spaces now");
+    }
+
+    #[test]
+    fn packet_audits_remain_independent_between_sessions() {
+        let (_dir, db) = packet_db();
+        insert(&db, "a1", "Prefers tabs", "user_explicit", "active", None);
+        for_session(&db, "account:local", "session-1").unwrap();
+        for_session(&db, "account:local", "session-2").unwrap();
+
+        let audits: i64 = db
+            .query_row("SELECT COUNT(*) FROM memory_retrieval_audits", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(audits, 2, "each chat keeps its own latest packet");
+        assert_eq!(
+            latest_audit(&db, "session-1").unwrap().unwrap().selected[0].body,
+            "Prefers tabs"
+        );
+        assert_eq!(
+            latest_audit(&db, "session-2").unwrap().unwrap().selected[0].body,
+            "Prefers tabs"
+        );
     }
 
     #[test]

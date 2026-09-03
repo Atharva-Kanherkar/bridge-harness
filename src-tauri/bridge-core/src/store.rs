@@ -9,7 +9,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 44;
+const LATEST_SCHEMA_VERSION: i64 = 45;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TelemetrySpan {
@@ -654,6 +654,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
             42 => migration_42_memory_consolidation(&transaction)?,
             43 => migration_43_interaction_resolutions(&transaction)?,
             44 => migration_44_agent_usage_analytics(&transaction)?,
+            45 => migration_45_latest_memory_packet_audit(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -1486,6 +1487,12 @@ fn migration_41_routing_evaluation_runs(
 fn migration_42_memory_consolidation(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     crate::memory_ledger::install_validity_intervals(transaction)?;
     crate::memory_consolidation::install(transaction)
+}
+
+fn migration_45_latest_memory_packet_audit(
+    transaction: &Transaction<'_>,
+) -> Result<(), BridgeError> {
+    crate::memory_packet::install_latest_audit_retention(transaction)
 }
 
 /// Single-owner durable claims for provider permissions and questions.
@@ -4455,6 +4462,51 @@ mod tests {
             "a legacy fixture must land on the current schema"
         );
         assert_eq!(backup_paths(dir.path()).len(), 1);
+    }
+
+    #[test]
+    fn migration_45_collapses_duplicate_memory_audits() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        let db = open(&path).unwrap();
+        db.execute_batch(
+            "DROP INDEX idx_memory_retrieval_audits_one_per_recipient;
+             DELETE FROM schema_version WHERE version=45;
+             INSERT INTO memory_retrieval_audits(
+                 id,scope_key,recipient_session_id,objective_hash,candidate_count,
+                 selected_ids,exclusions,token_estimate,created_at
+             ) VALUES
+                 ('old','account:local','session-1','old',1,'[\"old\"]','[]',1,'2026-01-01T00:00:00Z'),
+                 ('new','account:local','session-1','new',1,'[\"new\"]','[]',1,'2026-01-02T00:00:00Z');",
+        )
+        .unwrap();
+        drop(db);
+
+        let db = open(&path).unwrap();
+        let rows: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM memory_retrieval_audits WHERE recipient_session_id='session-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let selected: String = db
+            .query_row(
+                "SELECT selected_ids FROM memory_retrieval_audits WHERE recipient_session_id='session-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 1);
+        assert_eq!(selected, "[\"new\"]", "the newest frozen packet survives");
+        let duplicate = db.execute(
+            "INSERT INTO memory_retrieval_audits(
+                 id,scope_key,recipient_session_id,objective_hash,candidate_count,
+                 selected_ids,exclusions,token_estimate,created_at
+             ) VALUES('third','account:local','session-1','third',0,'[]','[]',0,'2026-01-03T00:00:00Z')",
+            [],
+        );
+        assert!(duplicate.is_err(), "the schema prevents append-only growth from returning");
     }
 
     #[test]
