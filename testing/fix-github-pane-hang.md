@@ -7,6 +7,8 @@
 - Opening a pull request still loads its complete detail and checks; the list optimization must not reduce detail accuracy.
 - Background CI polling keeps its previous 25-pull-request coverage; the five-row UI enrichment budget must not reduce completion notifications.
 - Interactive enrichment has its own short deadline and falls back to the complete basic list if GitHub is still slow.
+- Pull requests, issues, and repository overview render independently as each request finishes; one slow tab cannot withhold another tab's ready content.
+- Repeated pane refreshes share one background poller refresh per workspace, and existing CI watches remain active until a replacement query succeeds.
 - GitHub command failures and timeouts keep their existing typed error behavior.
 
 ## Unit Tests
@@ -14,6 +16,8 @@
 - `list_prs_enrichment_is_bounded_for_interactive_loading` — the basic query requests 100 pull requests while the rich query requests exactly five.
 - `polling_prs_keep_the_previous_notification_coverage` — the background polling query keeps rich CI state for 25 pull requests independently of the interactive list.
 - `slow_interactive_enrichment_returns_the_base_list_at_its_deadline` — a slow rich query is killed at the interactive deadline and does not withhold the base pull-request list.
+- `renders_pull_requests_without_waiting_for_other_tabs` — pull requests become interactive even while issue and repository reads remain pending.
+- `one_background_refresh_runs_per_workspace` — duplicate background polling queries are suppressed until the first refresh finishes.
 - Existing `github_surface` tests continue to cover rich-field parsing, graceful degradation, caching, and command timeout behavior.
 
 ## Integration / Functional Tests
