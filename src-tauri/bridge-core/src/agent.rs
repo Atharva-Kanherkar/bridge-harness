@@ -1759,6 +1759,45 @@ mod tests {
     }
 
     #[test]
+    fn claude_multiedit_synthesizes_one_hunk_per_edit() {
+        let started = normalize_claude_message(&json!({
+            "type":"assistant",
+            "message":{"id":"m1","content":[{
+                "type":"tool_use","id":"t1","name":"MultiEdit",
+                "input":{"file_path":"src/lib.rs","edits":[
+                    {"old_string":"fn a() {}","new_string":"fn a() { 1 }"},
+                    {"old_string":"fn b() {}","new_string":"fn b() { 2 }"}
+                ]}
+            }]}
+        }));
+        assert_eq!(started[0].kind, "file_change.started");
+        let patch = started[0].data["patch"].as_str().expect("synthesized patch");
+        assert!(patch.contains("--- a/src/lib.rs"));
+        assert!(patch.contains("+++ b/src/lib.rs"));
+        assert!(patch.contains("-fn a() {}"));
+        assert!(patch.contains("+fn a() { 1 }"));
+        assert!(patch.contains("-fn b() {}"));
+        assert!(patch.contains("+fn b() { 2 }"));
+    }
+
+    #[test]
+    fn claude_notebookedit_synthesizes_diff_from_notebook_path() {
+        let started = normalize_claude_message(&json!({
+            "type":"assistant",
+            "message":{"id":"m1","content":[{
+                "type":"tool_use","id":"t1","name":"NotebookEdit",
+                "input":{"notebook_path":"analysis.ipynb","new_source":"print(1)"}
+            }]}
+        }));
+        assert_eq!(started[0].kind, "file_change.started");
+        let patch = started[0].data["patch"].as_str().expect("synthesized patch");
+        assert!(patch.contains("--- a/analysis.ipynb"));
+        assert!(patch.contains("+++ b/analysis.ipynb"));
+        assert!(patch.contains("+print(1)"));
+        assert!(!patch.contains("-print(1)"));
+    }
+
+    #[test]
     fn claude_and_codex_approval_titles_share_wording() {
         let claude = normalize_claude_control_request(&json!({
             "type":"control_request",
