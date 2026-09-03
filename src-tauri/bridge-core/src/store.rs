@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
+    io::Read,
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
@@ -38,9 +39,12 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
     // Migrations run with foreign keys disabled so table rebuilds (which drop and
     // recreate parent tables) don't trip referential checks; re-enabled after.
     connection.execute_batch("PRAGMA foreign_keys=OFF;")?;
-    run_migrations(&mut connection, path)?;
     if path != Path::new(":memory:") {
-        prune_migration_backups_and_report(path);
+        prune_migration_backups_and_report(path, None);
+    }
+    let migration_backup = run_migrations(&mut connection, path)?;
+    if path != Path::new(":memory:") {
+        prune_migration_backups_and_report(path, migration_backup.as_deref());
     }
     connection.execute_batch(
         "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;",
@@ -591,12 +595,13 @@ pub fn history_snapshot_stats(snapshot_dir: &Path) -> (u64, u64) {
     })
 }
 
-fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), BridgeError> {
+fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<PathBuf>, BridgeError> {
     let current = current_schema_version(connection)?;
     if current >= LATEST_SCHEMA_VERSION {
-        return Ok(());
+        return Ok(None);
     }
 
+    let mut migration_backup = None;
     if has_user_schema(connection)? && path != Path::new(":memory:") {
         let (busy, _, _): (i64, i64, i64) =
             connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |row| {
@@ -607,7 +612,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
                 "database WAL is busy; refusing to create an incomplete migration backup".into(),
             ));
         }
-        backup_database(path)?;
+        migration_backup = Some(backup_database(path)?);
     }
 
     for version in (current + 1)..=LATEST_SCHEMA_VERSION {
@@ -670,7 +675,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<(), Bridge
         )?;
         transaction.commit()?;
     }
-    Ok(())
+    Ok(migration_backup)
 }
 
 fn migration_44_agent_usage_analytics(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
@@ -1170,7 +1175,15 @@ fn backup_database(path: &Path) -> Result<PathBuf, BridgeError> {
         .unwrap_or("bridge.db");
     let suffix = Utc::now().format("%Y%m%dT%H%M%S%fZ");
     let backup = path.with_file_name(format!("{file_name}.backup-{suffix}"));
-    std::fs::copy(path, &backup)?;
+    let pending = path.with_file_name(format!("{file_name}.backup-{suffix}.pending"));
+    if let Err(error) = std::fs::copy(path, &pending) {
+        let _ = std::fs::remove_file(&pending);
+        return Err(error.into());
+    }
+    if let Err(error) = std::fs::rename(&pending, &backup) {
+        let _ = std::fs::remove_file(&pending);
+        return Err(error.into());
+    }
     Ok(backup)
 }
 
@@ -1181,11 +1194,22 @@ struct MigrationBackupPruneOutcome {
     skipped_files: usize,
 }
 
+fn is_sqlite_backup(path: &Path) -> bool {
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut header = [0_u8; 16];
+    file.read_exact(&mut header).is_ok() && header == *b"SQLite format 3\0"
+}
+
 /// Keep one verified-by-name rollback point for the primary database. Schema
 /// upgrades used to append a complete copy forever, so each release multiplied
 /// the user's whole chat history. Names that are not exactly Bridge's timestamp
 /// format are left alone rather than guessed to be disposable.
-fn prune_migration_backups(path: &Path) -> Result<MigrationBackupPruneOutcome, BridgeError> {
+fn prune_migration_backups(
+    path: &Path,
+    protected_backup: Option<&Path>,
+) -> Result<MigrationBackupPruneOutcome, BridgeError> {
     let Some(parent) = path.parent() else {
         return Ok(MigrationBackupPruneOutcome::default());
     };
@@ -1203,13 +1227,23 @@ fn prune_migration_backups(path: &Path) -> Result<MigrationBackupPruneOutcome, B
             let name = candidate.file_name()?.to_str()?;
             let timestamp = name.strip_prefix(&prefix)?;
             chrono::NaiveDateTime::parse_from_str(timestamp, "%Y%m%dT%H%M%S%fZ").ok()?;
+            if !is_sqlite_backup(&candidate) {
+                return None;
+            }
             Some(candidate)
         })
         .collect();
     backups.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
+    let keep = protected_backup
+        .filter(|protected| backups.iter().any(|candidate| candidate == *protected))
+        .map(Path::to_path_buf)
+        .or_else(|| backups.first().cloned());
 
     let mut outcome = MigrationBackupPruneOutcome::default();
-    for backup in backups.into_iter().skip(1) {
+    for backup in backups {
+        if keep.as_ref() == Some(&backup) {
+            continue;
+        }
         let bytes = std::fs::metadata(&backup)
             .map(|metadata| metadata.len())
             .unwrap_or_default();
@@ -1223,8 +1257,8 @@ fn prune_migration_backups(path: &Path) -> Result<MigrationBackupPruneOutcome, B
     Ok(outcome)
 }
 
-fn prune_migration_backups_and_report(path: &Path) {
-    match prune_migration_backups(path) {
+fn prune_migration_backups_and_report(path: &Path, protected_backup: Option<&Path>) {
+    match prune_migration_backups(path, protected_backup) {
         Ok(outcome) if outcome == MigrationBackupPruneOutcome::default() => {}
         Ok(outcome) => eprintln!(
             "bridge: migration backup retention removed_files={} removed_bytes={} skipped_files={}",
@@ -1555,7 +1589,7 @@ fn migration_42_memory_consolidation(transaction: &Transaction<'_>) -> Result<()
 fn migration_45_latest_memory_packet_audit(
     transaction: &Transaction<'_>,
 ) -> Result<(), BridgeError> {
-    crate::memory_packet::install_latest_audit_retention(transaction)
+    crate::memory_packet::install_bounded_audit_retention(transaction)
 }
 
 /// Single-owner durable claims for provider permissions and questions.
@@ -4528,19 +4562,20 @@ mod tests {
     }
 
     #[test]
-    fn migration_45_collapses_duplicate_memory_audits() {
+    fn migration_45_compacts_historical_bodies_and_keeps_old_writers_compatible() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bridge.db");
         let db = open(&path).unwrap();
         db.execute_batch(
-            "DROP INDEX idx_memory_retrieval_audits_one_per_recipient;
+            "DROP TRIGGER memory_retrieval_audits_compact_previous;
+             DROP TRIGGER memory_retrieval_audits_delete_with_session;
              DELETE FROM schema_version WHERE version=45;
              INSERT INTO memory_retrieval_audits(
                  id,scope_key,recipient_session_id,objective_hash,candidate_count,
                  selected_ids,exclusions,token_estimate,created_at
              ) VALUES
-                 ('old','account:local','session-1','old',1,'[\"old\"]','[]',1,'2026-01-01T00:00:00Z'),
-                 ('new','account:local','session-1','new',1,'[\"new\"]','[]',1,'2026-01-02T00:00:00Z');",
+                 ('a-old','account:local','session-1','old',1,'[{\"id\":\"old\",\"body\":\"old body\"}]','[]',1,'2026-01-01T00:00:00Z'),
+                 ('z-new','account:local','session-1','new',1,'[{\"id\":\"new\",\"body\":\"new body\"}]','[]',1,'2026-01-01T00:00:00Z');",
         )
         .unwrap();
         drop(db);
@@ -4553,23 +4588,78 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        let selected: String = db
+        let historical: String = db
             .query_row(
-                "SELECT selected_ids FROM memory_retrieval_audits WHERE recipient_session_id='session-1'",
+                "SELECT selected_ids FROM memory_retrieval_audits WHERE id='a-old'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(rows, 1);
-        assert_eq!(selected, "[\"new\"]", "the newest frozen packet survives");
-        let duplicate = db.execute(
+        let newest: String = db
+            .query_row(
+                "SELECT selected_ids FROM memory_retrieval_audits WHERE id='z-new'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows, 2, "the delivery history remains append-only");
+        assert_eq!(historical, "[\"old\"]", "equal timestamps use id as the tie-break");
+        assert!(newest.contains("new body"), "the newest frozen packet survives intact");
+
+        db.execute(
             "INSERT INTO memory_retrieval_audits(
                  id,scope_key,recipient_session_id,objective_hash,candidate_count,
                  selected_ids,exclusions,token_estimate,created_at
-             ) VALUES('third','account:local','session-1','third',0,'[]','[]',0,'2026-01-03T00:00:00Z')",
+             ) VALUES('third','account:local','session-1','third',1,
+                 '[{\"id\":\"third\",\"body\":\"third body\"}]','[]',1,'2026-01-03T00:00:00Z')",
             [],
-        );
-        assert!(duplicate.is_err(), "the schema prevents append-only growth from returning");
+        )
+        .unwrap();
+        let rows_after_old_writer: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM memory_retrieval_audits WHERE recipient_session_id='session-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let prior_body_copies: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM memory_retrieval_audits
+                 WHERE recipient_session_id='session-1' AND selected_ids LIKE '%body%' AND id != 'third'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(rows_after_old_writer, 3, "a v44-style plain insert remains valid");
+        assert_eq!(prior_body_copies, 0, "the trigger compacts prior full bodies");
+    }
+
+    #[test]
+    fn deleting_a_session_purges_its_memory_packet_audits() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,kind)
+             VALUES('session-1',NULL,'codex','Chat','ready','now','estimated','direct')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO memory_retrieval_audits(
+                 id,scope_key,recipient_session_id,objective_hash,candidate_count,
+                 selected_ids,exclusions,token_estimate,created_at
+             ) VALUES('audit','account:local','session-1','objective',0,'[]','[]',0,'now')",
+            [],
+        )
+        .unwrap();
+
+        db.execute("DELETE FROM sessions WHERE id='session-1'", [])
+            .unwrap();
+
+        let rows: i64 = db
+            .query_row("SELECT COUNT(*) FROM memory_retrieval_audits", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(rows, 0);
     }
 
     #[test]
@@ -4583,13 +4673,34 @@ mod tests {
         let newest = dir
             .path()
             .join("bridge.db.backup-20260102T000000000000000Z");
-        std::fs::write(&old, b"old rollback").unwrap();
-        std::fs::write(&newest, b"new rollback").unwrap();
+        std::fs::copy(&path, &old).unwrap();
+        std::fs::copy(&path, &newest).unwrap();
 
         drop(open(&path).unwrap());
 
         assert!(!old.exists(), "superseded full database copies are reclaimed");
         assert!(newest.exists(), "the newest rollback point survives");
+    }
+
+    #[test]
+    fn migration_backup_retention_prefers_the_just_created_rollback() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        drop(open(&path).unwrap());
+        let current = dir
+            .path()
+            .join("bridge.db.backup-20260101T000000000000000Z");
+        let clock_skewed = dir
+            .path()
+            .join("bridge.db.backup-20990101T000000000000000Z");
+        std::fs::copy(&path, &current).unwrap();
+        std::fs::copy(&path, &clock_skewed).unwrap();
+
+        let outcome = prune_migration_backups(&path, Some(&current)).unwrap();
+
+        assert_eq!(outcome.removed_files, 1);
+        assert!(current.exists(), "the rollback from this migration is protected by identity");
+        assert!(!clock_skewed.exists(), "a future-dated older backup cannot displace it");
     }
 
     #[test]

@@ -48,15 +48,24 @@ pub(crate) fn install(transaction: &Transaction<'_>) -> Result<(), BridgeError> 
     Ok(())
 }
 
-/// Collapse the historical append-only audit into the contract every reader
-/// already exposes: the latest packet delivered to each recipient session.
-/// Keeping full pin bodies for every recompilation multiplied storage without
-/// making an older row observable anywhere in the product.
-pub(crate) fn install_latest_audit_retention(
+/// Keep the append-only delivery ledger while bounding its sensitive payload.
+/// The newest packet for a recipient remains a frozen, disclosable snapshot;
+/// older rows retain only selected ids, which is the historical audit contract.
+pub(crate) fn install_bounded_audit_retention(
     transaction: &Transaction<'_>,
 ) -> Result<(), BridgeError> {
     transaction.execute_batch(
-        "DELETE FROM memory_retrieval_audits
+        "DROP INDEX IF EXISTS idx_memory_retrieval_audits_one_per_recipient;
+         CREATE INDEX IF NOT EXISTS idx_memory_retrieval_audits_recipient
+             ON memory_retrieval_audits(recipient_session_id, created_at);
+         UPDATE memory_retrieval_audits
+         SET selected_ids = (
+             SELECT COALESCE(json_group_array(
+                 CASE WHEN item.type = 'text' THEN item.value
+                      ELSE json_extract(item.value, '$.id') END
+             ), '[]')
+             FROM json_each(memory_retrieval_audits.selected_ids) AS item
+         )
          WHERE EXISTS (
              SELECT 1 FROM memory_retrieval_audits AS newer
              WHERE newer.recipient_session_id = memory_retrieval_audits.recipient_session_id
@@ -64,9 +73,29 @@ pub(crate) fn install_latest_audit_retention(
                     OR (newer.created_at = memory_retrieval_audits.created_at
                         AND newer.id > memory_retrieval_audits.id))
          );
-         DROP INDEX IF EXISTS idx_memory_retrieval_audits_recipient;
-         CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_retrieval_audits_one_per_recipient
-             ON memory_retrieval_audits(recipient_session_id);",
+         CREATE TRIGGER IF NOT EXISTS memory_retrieval_audits_compact_previous
+         BEFORE INSERT ON memory_retrieval_audits
+         BEGIN
+             UPDATE memory_retrieval_audits
+             SET selected_ids = (
+                 SELECT COALESCE(json_group_array(
+                     CASE WHEN item.type = 'text' THEN item.value
+                          ELSE json_extract(item.value, '$.id') END
+                 ), '[]')
+                 FROM json_each(memory_retrieval_audits.selected_ids) AS item
+             )
+             WHERE recipient_session_id = NEW.recipient_session_id
+               AND EXISTS (
+                   SELECT 1 FROM json_each(memory_retrieval_audits.selected_ids) AS prior_item
+                   WHERE prior_item.type = 'object'
+               );
+         END;
+         CREATE TRIGGER IF NOT EXISTS memory_retrieval_audits_delete_with_session
+         AFTER DELETE ON sessions
+         BEGIN
+             DELETE FROM memory_retrieval_audits
+             WHERE recipient_session_id = OLD.id;
+         END;",
     )?;
     Ok(())
 }
@@ -296,16 +325,7 @@ pub fn for_session(
         "INSERT INTO memory_retrieval_audits(
             id, scope_key, recipient_session_id, objective_hash, candidate_count,
             selected_ids, exclusions, token_estimate, created_at
-         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)
-         ON CONFLICT(recipient_session_id) DO UPDATE SET
-             id=excluded.id,
-             scope_key=excluded.scope_key,
-             objective_hash=excluded.objective_hash,
-             candidate_count=excluded.candidate_count,
-             selected_ids=excluded.selected_ids,
-             exclusions=excluded.exclusions,
-             token_estimate=excluded.token_estimate,
-             created_at=excluded.created_at",
+         ) VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9)",
         params![
             Uuid::new_v4().to_string(),
             scope_key,
@@ -606,7 +626,7 @@ mod tests {
     }
 
     #[test]
-    fn recompiling_a_session_replaces_its_audit_instead_of_growing_storage() {
+    fn recompiling_a_session_compacts_the_prior_payload_instead_of_duplicating_it() {
         let (_dir, db) = packet_db();
         insert(&db, "a1", "Prefers tabs", "user_explicit", "active", None);
         for_session(&db, "account:local", "session-1").unwrap();
@@ -622,9 +642,40 @@ mod tests {
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(audits, 1, "one chat retains only its latest frozen packet");
+        assert_eq!(audits, 2, "the delivery audit remains append-only");
+        let historical: String = db
+            .query_row(
+                "SELECT selected_ids FROM memory_retrieval_audits
+                 WHERE recipient_session_id='session-1' ORDER BY created_at, id LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(historical, "[\"a1\"]", "older rows retain ids without full bodies");
         let audit = latest_audit(&db, "session-1").unwrap().unwrap();
         assert_eq!(audit.selected[0].body, "Prefers spaces now");
+    }
+
+    #[test]
+    fn recompiling_to_an_empty_packet_still_compacts_the_prior_payload() {
+        let (_dir, db) = packet_db();
+        insert(&db, "a1", "Prefers tabs", "user_explicit", "active", None);
+        for_session(&db, "account:local", "session-1").unwrap();
+        db.execute("UPDATE memory_records SET status='deleted' WHERE id='a1'", [])
+            .unwrap();
+        assert!(for_session(&db, "account:local", "session-1").unwrap().is_none());
+
+        let audit = latest_audit(&db, "session-1").unwrap().unwrap();
+        assert!(audit.selected.is_empty());
+        let historical: String = db
+            .query_row(
+                "SELECT selected_ids FROM memory_retrieval_audits
+                 WHERE recipient_session_id='session-1' ORDER BY created_at, id LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(historical, "[\"a1\"]");
     }
 
     #[test]

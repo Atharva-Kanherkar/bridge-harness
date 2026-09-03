@@ -2,20 +2,25 @@
 
 ## Functional Behavior
 
-- Recompiling a memory packet for the same chat replaces that chat's prior audit instead of appending another full copy of the selected pin bodies.
+- Recompiling a memory packet for the same chat keeps the append-only delivery audit but compacts prior rows to selected ids, so full pin bodies are not duplicated indefinitely.
 - Different chats retain independent latest packet audits, so the disclosure for one chat cannot overwrite another.
-- Upgrading an existing database collapses historical duplicate packet audits before enforcing one audit per recipient chat.
-- A successful database open retains only the newest Bridge migration backup and removes older `bridge.db.backup-*` copies.
+- Upgrading an existing database compacts historical full-body packet copies while preserving every delivery row and the latest frozen disclosure.
+- Old Bridge writers remain compatible with the upgraded schema; their plain inserts trigger the same bounded-body compaction.
+- Deleted sessions purge their packet audits so full memory bodies do not become orphaned.
+- Database open prunes older valid backups before migration, then protects the rollback copy created by the current migration regardless of clock-skewed filenames.
 - Backup cleanup never removes the live database, the newest rollback backup, or unrelated files in the data directory.
 - Memory packet selection, citation bodies, exclusions, and disabled-injection behavior remain unchanged.
 
 ## Unit Tests
 
-- `recompiling_a_session_replaces_its_audit_instead_of_growing_storage` — two packet builds for one session leave one row containing the newest frozen payload.
+- `recompiling_a_session_compacts_the_prior_payload_instead_of_duplicating_it` — two packet builds retain both audit rows, compact the prior row to ids, and keep the newest frozen payload.
+- `recompiling_to_an_empty_packet_still_compacts_the_prior_payload` — a later empty selection does not leave the previous full-body copy behind.
 - `packet_audits_remain_independent_between_sessions` — compiling two sessions leaves one readable audit for each.
-- `migration_45_collapses_duplicate_memory_audits` — an upgraded schema keeps the newest row per recipient and rejects future duplicates at the database constraint.
+- `migration_45_compacts_historical_bodies_and_keeps_old_writers_compatible` — equal-timestamp history uses the id tie-break, preserves every delivery, and lets a pre-upgrade plain writer continue safely.
+- `deleting_a_session_purges_its_memory_packet_audits` — session cleanup removes its stored packet bodies.
 - `migration_backup_retention_keeps_only_the_newest_bridge_backup` — old timestamped backups are removed and the newest survives.
 - `migration_backup_retention_preserves_unrelated_files` — narrowly named cleanup does not touch foreign files or the primary database.
+- `migration_backup_retention_prefers_the_just_created_rollback` — clock-skewed filenames cannot displace the backup made for the current migration.
 
 ## Integration / Functional Tests
 
@@ -28,7 +33,7 @@
 ## Smoke Tests
 
 - Open a copy of a current-schema database with several timestamped migration backups; verify only the newest backup remains after a successful open.
-- Build a memory packet repeatedly for one recipient session; verify `memory_retrieval_audits` stays at one row for that session.
+- Build a memory packet repeatedly for one recipient session; verify only the newest row retains full selected-item bodies.
 
 ## E2E Tests
 
