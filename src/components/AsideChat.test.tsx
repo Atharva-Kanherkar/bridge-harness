@@ -207,7 +207,7 @@ describe("AsideChat", () => {
 
   it("delivers attachments pasted onto a queued follow-up", async () => {
     let resolveSend: (() => void) | undefined;
-    const onSend = vi.fn(() => new Promise<void>(resolve => { resolveSend = resolve; }));
+    const onSend = vi.fn((_text: string, _attachments?: ComposerAttachment[]) => new Promise<void>(resolve => { resolveSend = resolve; }));
     await mount({ working: false, onSend });
     const box = container.querySelector<HTMLTextAreaElement>("textarea")!;
     const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
