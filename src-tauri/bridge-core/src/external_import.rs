@@ -1321,7 +1321,7 @@ fn summarize_commit(
 
 pub(crate) fn install_import_foundation(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     transaction.execute_batch(
-        "CREATE TABLE import_commits (
+        "CREATE TABLE IF NOT EXISTS import_commits (
             id TEXT PRIMARY KEY,
             importer_namespace TEXT NOT NULL,
             provider TEXT NOT NULL,
@@ -1330,7 +1330,7 @@ pub(crate) fn install_import_foundation(transaction: &Transaction<'_>) -> Result
             rollback_state TEXT NOT NULL,
             created_at TEXT NOT NULL
         );
-        CREATE TABLE import_ledger (
+        CREATE TABLE IF NOT EXISTS import_ledger (
             importer_namespace TEXT NOT NULL,
             provider TEXT NOT NULL,
             source_path_fingerprint TEXT NOT NULL,
@@ -1343,9 +1343,9 @@ pub(crate) fn install_import_foundation(transaction: &Transaction<'_>) -> Result
             created_at TEXT NOT NULL,
             PRIMARY KEY(importer_namespace,provider,source_path_fingerprint,source_native_key,source_content_hash,candidate_kind)
         );
-        CREATE INDEX idx_import_ledger_source_revision
+        CREATE INDEX IF NOT EXISTS idx_import_ledger_source_revision
             ON import_ledger(importer_namespace,provider,source_path_fingerprint,source_native_key,candidate_kind,created_at);
-        CREATE TABLE imported_record_provenance (
+        CREATE TABLE IF NOT EXISTS imported_record_provenance (
             bridge_id TEXT PRIMARY KEY,
             destination_kind TEXT NOT NULL,
             provider TEXT NOT NULL,
@@ -1362,7 +1362,7 @@ pub(crate) fn install_import_foundation(transaction: &Transaction<'_>) -> Result
             confidence_bps INTEGER NOT NULL CHECK(confidence_bps BETWEEN 0 AND 10000),
             import_id TEXT NOT NULL REFERENCES import_commits(id)
         );
-        CREATE TABLE import_setup_candidates (
+        CREATE TABLE IF NOT EXISTS import_setup_candidates (
             id TEXT PRIMARY KEY,
             candidate_kind TEXT NOT NULL,
             title TEXT NOT NULL,
@@ -1371,14 +1371,14 @@ pub(crate) fn install_import_foundation(transaction: &Transaction<'_>) -> Result
             conflict_group TEXT,
             created_at TEXT NOT NULL
         );
-        CREATE TABLE import_project_hints (
+        CREATE TABLE IF NOT EXISTS import_project_hints (
             id TEXT PRIMARY KEY,
             source_hint TEXT NOT NULL,
             matched_workspace_id TEXT REFERENCES workspaces(id),
             match_state TEXT NOT NULL DEFAULT 'unconfirmed' CHECK(match_state IN ('unconfirmed','confirmed','declined')),
             created_at TEXT NOT NULL
         );
-        CREATE TABLE import_diagnostics (
+        CREATE TABLE IF NOT EXISTS import_diagnostics (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             import_id TEXT NOT NULL REFERENCES import_commits(id),
             candidate_id TEXT,
@@ -1389,15 +1389,15 @@ pub(crate) fn install_import_foundation(transaction: &Transaction<'_>) -> Result
             recovery TEXT,
             created_at TEXT NOT NULL
         );
-        CREATE TRIGGER imported_provenance_immutable_update
+        CREATE TRIGGER IF NOT EXISTS imported_provenance_immutable_update
         BEFORE UPDATE ON imported_record_provenance BEGIN
             SELECT RAISE(ABORT, 'import provenance is immutable');
         END;
-        CREATE TRIGGER imported_provenance_immutable_delete
+        CREATE TRIGGER IF NOT EXISTS imported_provenance_immutable_delete
         BEFORE DELETE ON imported_record_provenance BEGIN
             SELECT RAISE(ABORT, 'import provenance is immutable');
         END;
-        CREATE TRIGGER imported_session_entries_immutable_update
+        CREATE TRIGGER IF NOT EXISTS imported_session_entries_immutable_update
         BEFORE UPDATE ON session_entries
         WHEN EXISTS (
             SELECT 1 FROM imported_record_provenance p
@@ -1405,7 +1405,7 @@ pub(crate) fn install_import_foundation(transaction: &Transaction<'_>) -> Result
         ) BEGIN
             SELECT RAISE(ABORT, 'imported session history is immutable');
         END;
-        CREATE TRIGGER imported_session_entries_immutable_delete
+        CREATE TRIGGER IF NOT EXISTS imported_session_entries_immutable_delete
         BEFORE DELETE ON session_entries
         WHEN EXISTS (
             SELECT 1 FROM imported_record_provenance p
