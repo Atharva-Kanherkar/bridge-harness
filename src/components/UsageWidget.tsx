@@ -189,13 +189,14 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
       aria-label="Usage health details"
       className={cn(
         "absolute z-50 transition-opacity duration-150",
-        // Compact belongs to the composer: flush against the frame's top edge,
-        // with no gap, so it reads as the composer growing upwards rather than
-        // as a card hovering over it.
+        // Compact takes the composer's width, and sits just clear of it. Butted
+        // straight onto the frame it read as one shape with a seam through it:
+        // the composer is rounded on all four corners, so a panel resting on it
+        // can never continue that outline. It is its own popover instead.
         compact
           ? frame
-            ? "inset-x-0 bottom-full"
-            : "bottom-full left-0 w-[min(100vw-1.5rem,42rem)]"
+            ? "inset-x-0 bottom-full mb-1.5"
+            : "bottom-full left-0 mb-1.5 w-[min(100vw-1.5rem,42rem)]"
           : "right-0 top-full pt-2",
         open ? "visible pointer-events-auto opacity-100" : "invisible pointer-events-none opacity-0",
       )}
@@ -206,7 +207,9 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
       <div
         className={cn(
           "flex max-h-[80dvh] flex-col overflow-hidden border border-border bg-popover",
-          compact ? "w-full rounded-t-2xl" : "w-[390px] max-w-[calc(100vw-1.5rem)] rounded-2xl",
+          // Every corner, both modes: a popover is a whole shape, and half-round
+          // corners read as a rendering fault rather than as a join.
+          compact ? "w-full rounded-2xl" : "w-[390px] max-w-[calc(100vw-1.5rem)] rounded-2xl",
         )}
       >
         <div className={cn("min-h-0 flex-1 overflow-y-auto", PANEL_PAD)}>
