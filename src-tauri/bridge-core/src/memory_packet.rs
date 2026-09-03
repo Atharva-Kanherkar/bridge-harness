@@ -48,6 +48,76 @@ pub(crate) fn install(transaction: &Transaction<'_>) -> Result<(), BridgeError> 
     Ok(())
 }
 
+/// Keep the append-only delivery ledger while bounding its sensitive payload.
+/// The newest packet for a recipient remains a frozen, disclosable snapshot;
+/// older rows retain only selected ids, which is the historical audit contract.
+pub(crate) fn install_bounded_audit_retention(
+    transaction: &Transaction<'_>,
+) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "DROP INDEX IF EXISTS idx_memory_retrieval_audits_one_per_recipient;
+         CREATE INDEX IF NOT EXISTS idx_memory_retrieval_audits_recipient
+             ON memory_retrieval_audits(recipient_session_id, created_at);
+         UPDATE memory_retrieval_audits
+         SET selected_ids = (
+             SELECT COALESCE(json_group_array(
+                 CASE WHEN item.type = 'text' THEN item.value
+                      ELSE json_extract(item.value, '$.id') END
+             ), '[]')
+             FROM json_each(memory_retrieval_audits.selected_ids) AS item
+         )
+         WHERE EXISTS (
+             SELECT 1 FROM memory_retrieval_audits AS newer
+             WHERE newer.recipient_session_id = memory_retrieval_audits.recipient_session_id
+               AND (newer.created_at > memory_retrieval_audits.created_at
+                    OR (newer.created_at = memory_retrieval_audits.created_at
+                        AND newer.id > memory_retrieval_audits.id))
+         );
+         DELETE FROM memory_retrieval_audits
+         WHERE NOT EXISTS (
+             SELECT 1 FROM sessions
+             WHERE sessions.id = memory_retrieval_audits.recipient_session_id
+         );
+         DROP TRIGGER IF EXISTS memory_retrieval_audits_compact_previous;
+         CREATE TRIGGER memory_retrieval_audits_compact_previous
+         AFTER INSERT ON memory_retrieval_audits
+         BEGIN
+             UPDATE memory_retrieval_audits
+             SET selected_ids = (
+                 SELECT COALESCE(json_group_array(
+                     CASE WHEN item.type = 'text' THEN item.value
+                          ELSE json_extract(item.value, '$.id') END
+                 ), '[]')
+                 FROM json_each(memory_retrieval_audits.selected_ids) AS item
+             )
+             WHERE id = CASE
+                   WHEN NEW.id = (
+                       SELECT id FROM memory_retrieval_audits
+                       WHERE recipient_session_id = NEW.recipient_session_id
+                       ORDER BY created_at DESC, id DESC LIMIT 1
+                   ) THEN (
+                       SELECT id FROM memory_retrieval_audits
+                       WHERE recipient_session_id = NEW.recipient_session_id
+                         AND id != NEW.id
+                       ORDER BY created_at DESC, id DESC LIMIT 1
+                   )
+                   ELSE NEW.id
+               END
+               AND EXISTS (
+                   SELECT 1 FROM json_each(memory_retrieval_audits.selected_ids) AS prior_item
+                   WHERE prior_item.type = 'object'
+               );
+         END;
+         CREATE TRIGGER IF NOT EXISTS memory_retrieval_audits_delete_with_session
+         AFTER DELETE ON sessions
+         BEGIN
+             DELETE FROM memory_retrieval_audits
+             WHERE recipient_session_id = OLD.id;
+         END;",
+    )?;
+    Ok(())
+}
+
 pub fn injection_enabled(db: &Connection, scope_key: &str) -> Result<bool, BridgeError> {
     let scope_key = memory_ledger::parse_scope_key(scope_key)?;
     let enabled: Option<i64> = db
@@ -571,6 +641,80 @@ mod tests {
         let bodies: Vec<&str> = audit.selected.iter().map(|item| item.body.as_str()).collect();
         assert!(bodies.contains(&"Prefers tabs"), "the frozen body, not the edited one");
         assert!(bodies.contains(&"Deploys on Tuesday"));
+    }
+
+    #[test]
+    fn recompiling_a_session_compacts_the_prior_payload_instead_of_duplicating_it() {
+        let (_dir, db) = packet_db();
+        insert(&db, "a1", "Prefers tabs", "user_explicit", "active", None);
+        for_session(&db, "account:local", "session-1").unwrap();
+
+        db.execute("UPDATE memory_records SET body='Prefers spaces now' WHERE id='a1'", [])
+            .unwrap();
+        for_session(&db, "account:local", "session-1").unwrap();
+
+        let audits: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM memory_retrieval_audits WHERE recipient_session_id='session-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(audits, 2, "the delivery audit remains append-only");
+        let historical: String = db
+            .query_row(
+                "SELECT selected_ids FROM memory_retrieval_audits
+                 WHERE recipient_session_id='session-1' ORDER BY created_at, id LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(historical, "[\"a1\"]", "older rows retain ids without full bodies");
+        let audit = latest_audit(&db, "session-1").unwrap().unwrap();
+        assert_eq!(audit.selected[0].body, "Prefers spaces now");
+    }
+
+    #[test]
+    fn recompiling_to_an_empty_packet_still_compacts_the_prior_payload() {
+        let (_dir, db) = packet_db();
+        insert(&db, "a1", "Prefers tabs", "user_explicit", "active", None);
+        for_session(&db, "account:local", "session-1").unwrap();
+        db.execute("UPDATE memory_records SET status='deleted' WHERE id='a1'", [])
+            .unwrap();
+        assert!(for_session(&db, "account:local", "session-1").unwrap().is_none());
+
+        let audit = latest_audit(&db, "session-1").unwrap().unwrap();
+        assert!(audit.selected.is_empty());
+        let historical: String = db
+            .query_row(
+                "SELECT selected_ids FROM memory_retrieval_audits
+                 WHERE recipient_session_id='session-1' ORDER BY created_at, id LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(historical, "[\"a1\"]");
+    }
+
+    #[test]
+    fn packet_audits_remain_independent_between_sessions() {
+        let (_dir, db) = packet_db();
+        insert(&db, "a1", "Prefers tabs", "user_explicit", "active", None);
+        for_session(&db, "account:local", "session-1").unwrap();
+        for_session(&db, "account:local", "session-2").unwrap();
+
+        let audits: i64 = db
+            .query_row("SELECT COUNT(*) FROM memory_retrieval_audits", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(audits, 2, "each chat keeps its own latest packet");
+        assert_eq!(
+            latest_audit(&db, "session-1").unwrap().unwrap().selected[0].body,
+            "Prefers tabs"
+        );
+        assert_eq!(
+            latest_audit(&db, "session-2").unwrap().unwrap().selected[0].body,
+            "Prefers tabs"
+        );
     }
 
     #[test]
