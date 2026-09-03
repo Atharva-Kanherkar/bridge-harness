@@ -25,10 +25,11 @@ pub const DEFAULT_CACHE_TTL: Duration = Duration::from_secs(15);
 pub const GH_COMMAND_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How many of the newest pull requests get the expensive computed fields.
-/// GitHub prices `statusCheckRollup`/`mergeable`/`reviewDecision` per PR in
-/// its GraphQL budget and answers 502/504 once the query grows past roughly
-/// 30 check-heavy pull requests, so the rich read stays well under that.
-const PR_ENRICH_LIMIT: &str = "25";
+/// GitHub prices `statusCheckRollup`/`mergeable`/`reviewDecision` per PR. Even
+/// successful queries become visibly slow on check-heavy repositories: 25 PRs
+/// took six seconds in the reported case, while five kept the read interactive.
+/// The cheap list still returns 100 PRs, and opening one loads its full detail.
+const PR_ENRICH_LIMIT: &str = "5";
 
 /// Cheap identity fields only — reliable at `--limit 100` on any repository.
 const PR_LIST_BASE_FIELDS: &str = "number,title,state,isDraft,author,headRefName,url";
@@ -2708,6 +2709,25 @@ mod tests {
         assert!(log.contains(&format!("--limit 100 --json {PR_LIST_BASE_FIELDS}")));
         assert!(log.contains(&format!("--limit {PR_ENRICH_LIMIT} --json {PR_LIST_FIELDS}")));
         assert!(log.contains(&format!("--json {PR_DETAIL_FIELDS}")));
+    }
+
+    #[test]
+    fn list_prs_enrichment_is_bounded_for_interactive_loading() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+
+        surface.list_prs(repository.path()).unwrap();
+
+        let log = invocations(&fake);
+        assert!(
+            log.contains(&format!("--limit 100 --json {PR_LIST_BASE_FIELDS}")),
+            "the complete cheap list must remain available"
+        );
+        assert!(
+            log.contains(&format!("--limit 5 --json {PR_LIST_FIELDS}")),
+            "rich CI and review fields must stay within the interactive budget"
+        );
     }
 
     #[test]
