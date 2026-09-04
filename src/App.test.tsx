@@ -19,7 +19,16 @@ vi.mock("@xterm/xterm", () => ({
 }));
 vi.mock("@xterm/addon-fit", () => ({ FitAddon: class { fit() {} } }));
 
+// Spy on the greeting picker without changing its behaviour, so a test can
+// assert what the welcome hero feeds it (the owning project name, not the
+// workspace title) regardless of which line the picker lands on.
+vi.mock("./greetings", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./greetings")>();
+  return { ...actual, pickGreeting: vi.fn(actual.pickGreeting) };
+});
+
 import { App, ChatModelControl } from "./App";
+import { pickGreeting } from "./greetings";
 // Pre-resolve the lazy pane chunks so Suspense settles inside act().
 import "./components/TerminalPane";
 import "./components/CodePanel";
@@ -199,6 +208,22 @@ describe("the dock in the session view", () => {
     container?.remove();
     resizeObservers.clear();
   });
+  // The mock state's workspace ("Build session supervisor") sits under a project
+  // named "Bridge"; the hero must name the project, not the workspace's own title.
+  it("feeds the welcome hero its owning project name, not the workspace title", async () => {
+    vi.mocked(pickGreeting).mockClear();
+    // Select the mock workspace ("Build session supervisor", project "Bridge")
+    // as the welcome target, the way returning to a repo would.
+    localStorage.setItem("bridge.chat.lastWorkspaceId", "demo-1");
+    await mountApp();
+    const welcomeCalls = vi.mocked(pickGreeting).mock.calls.filter(args => args[0] === "welcome");
+    expect(welcomeCalls.length).toBeGreaterThan(0);
+    // Once the workspace resolves, the hero is fed the owning project ("Bridge").
+    expect(welcomeCalls.at(-1)?.[1]).toBe("Bridge");
+    // And it is never fed the workspace's own title, on any render.
+    expect(welcomeCalls.some(args => args[1] === "Build session supervisor")).toBe(false);
+  });
+
   it("keeps the conversation and an open pane on screen together, with the composer usable", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");

@@ -2446,6 +2446,7 @@ function AppContent() {
         busy={busy}
         workspaces={state.workspaces}
         workspace={welcomeWorkspace}
+        projectName={welcomeWorkspace?.projectId ? state.projects.find(project => project.id === welcomeWorkspace.projectId)?.name : undefined}
         worktree={newChatDraft?.createWorktree ?? false}
         branches={branchWorkspaceId === welcomeWorkspace?.id ? workspaceBranches : []}
         currentBranch={branchWorkspaceId === welcomeWorkspace?.id ? workspaceBranchCurrent : welcomeWorkspace?.branch ?? null}
@@ -2534,7 +2535,7 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
   </aside>;
 }
 
-function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, onStartChat, onNewWorkspace, workspaces, workspace, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree }: {
+function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, onStartChat, onNewWorkspace, workspaces, workspace, projectName, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree }: {
   adapters: import("./types").AdapterDescriptor[];
   harness: Harness;
   model: string | null;
@@ -2545,6 +2546,9 @@ function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, 
   onNewWorkspace: () => void;
   workspaces: Workspace[];
   workspace: Workspace | null;
+  /** Owning project name for the hero — resolved from `workspace.projectId`,
+   *  which can differ from the workspace's own title. */
+  projectName?: string;
   worktree: boolean;
   branches: string[];
   currentBranch: string | null;
@@ -2555,8 +2559,10 @@ function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, 
   onSelectBranch: (branch: string) => void;
   onToggleWorktree: (draft?: string) => void;
 }) {
-  // Names the current project in the hero when one is selected, dotted-underlined.
-  const greeting = useMemo(() => pickGreeting("welcome", workspace?.title), [workspace?.title]);
+  // Names the owning project in the hero when one is selected, dotted-underlined.
+  // Falls back to the workspace title only when it has no distinct project.
+  const heroProject = projectName ?? workspace?.title;
+  const greeting = useMemo(() => pickGreeting("welcome", heroProject), [heroProject]);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [composerError, setComposerError] = useState<string>();

@@ -435,7 +435,18 @@ function ActivityGroup({ items }: { items: ConversationItem[] }) {
   // the right. The count is the number of tool calls folded away, faint because
   // it is a measure of the work rather than the work itself.
   const stepCount = items.length;
-  const workedMs = items.reduce((total, item) => total + (toolCallDisplay(item).durationMs ?? 0), 0);
+  // Wall-clock the run occupied, not the sum of call durations: overlapping
+  // tool calls would otherwise be counted twice. Each item contributes the
+  // window [start, start+duration]; the trailer reports the union's span, which
+  // also folds in the reasoning gaps between calls. Falls back to nothing when
+  // the projection carries no timestamps, rather than showing a wrong number.
+  const spans = items
+    .map(item => {
+      const start = item.createdAt ? Date.parse(item.createdAt) : NaN;
+      return { start, end: start + (toolCallDisplay(item).durationMs ?? 0) };
+    })
+    .filter(span => Number.isFinite(span.start));
+  const workedMs = spans.length ? Math.max(...spans.map(s => s.end)) - Math.min(...spans.map(s => s.start)) : 0;
   return (
     <div className="my-2.5 min-w-0">
       <button
