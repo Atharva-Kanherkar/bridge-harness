@@ -112,6 +112,11 @@ should not bleed into unrelated cases. jsdom has no layout, so
   chat's id with the departing chat's entries, the commit App actually produces
   on a switch, and asserts nothing moves until the matching history lands
   (behavior 7).
+- `arms live follow when a reopened chat has nothing to scroll through` —
+  scrolls a chat to a mid position, switches away, reopens it with a viewport
+  that already fits the whole transcript (`scrollable === 0`); asserts it lands
+  pinned at the top rather than stalling unlanded, then asserts a later growth
+  of the same chat still follows to the bottom (behavior 3).
 - Every existing case in `AgentConversation.test.tsx` stays green, including the
   `renderToStaticMarkup` cases that render the transcript on the server.
 

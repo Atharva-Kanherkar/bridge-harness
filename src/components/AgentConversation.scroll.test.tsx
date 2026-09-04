@@ -162,6 +162,28 @@ describe("AgentConversation scroll placement", () => {
     expect(el.scrollTop).toBe(900);
   });
 
+  // A remembered mid-position with nothing left to scroll through (the window
+  // grew, or the entries were compacted) used to return from `land` without
+  // landing, so `landed.current` stayed false and every later signature change
+  // just retried the same no-op restore instead of arming live follow.
+  it("arms live follow when a reopened chat has nothing to scroll through", async () => {
+    const session = chat("shrunk");
+    const entries = history("shrunk", 40);
+    const el = await show({ session, forestEntries: entries, activeLeafId: entries[entries.length - 1].id }, 40);
+    await scrollTo(el, 900);
+
+    const other = chat("elsewhere2");
+    const otherEntries = history("elsewhere2", 10);
+    await show({ session: other, forestEntries: otherEntries, activeLeafId: otherEntries[otherEntries.length - 1].id }, 10);
+
+    await show({ session, forestEntries: entries, activeLeafId: entries[entries.length - 1].id }, 0);
+    expect(el.scrollTop).toBe(0);
+
+    const grown = history("shrunk", 60);
+    await show({ session, forestEntries: grown, activeLeafId: grown[grown.length - 1].id }, 60);
+    expect(el.scrollTop).toBe(bottom());
+  });
+
   // Selecting a chat swaps `session` one commit before its forest snapshot
   // follows. Placing against that in-between render measures the chat you just
   // left, and counts the new one as already opened.

@@ -862,15 +862,19 @@ function ScrollFollow({ sessionKey, populated, signature, className, children }:
   const land = useCallback((el: HTMLDivElement) => {
     const scrollable = Math.max(0, el.scrollHeight - el.clientHeight);
     const remembered = readPositions.get(sessionKey);
-    if (remembered && !remembered.pinned) {
-      // Nothing to scroll through yet: this chat's rows have not laid out.
-      // Landing now would strand the reader at the top and count the chat as
-      // opened, so leave it unlanded and try again on the next commit.
-      if (scrollable === 0) return;
+    if (remembered && !remembered.pinned && scrollable > 0) {
       landed.current = true;
       place(el, Math.min(remembered.top, scrollable), false);
       return;
     }
+    // No remembered position, a remembered position that was pinned, or
+    // nothing to scroll through yet: land pinned. When there is nothing to
+    // scroll through, the top and the bottom are the same offset, so landing
+    // pinned here also arms live follow right away, instead of leaving
+    // `landed.current` false and stalling the follow effect forever waiting
+    // for a commit that already happened. This is a programmatic placement,
+    // so it never touches `readPositions` — the remembered offset survives,
+    // and a later reopen can still restore it once the chat has grown.
     landed.current = true;
     place(el, scrollable, true);
   }, [place, sessionKey]);
