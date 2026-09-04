@@ -23,6 +23,17 @@ export interface ConversationItem {
   text: string;
   data: Record<string, unknown>;
   sequence: number;
+  /**
+   * Which turn produced this row: 1 for the first, 0 for anything the reducer
+   * saw before a boundary. Stamped at creation, so a tool call belongs to the
+   * turn it started in whatever arrives afterwards.
+   *
+   * Derived from what *both* projections can see. A turn-marker frame is
+   * transient — it carries sequence zero and the durable writer refuses to
+   * store it — so a replay would count a different number of turns than the
+   * live window if the index came from those alone. See `reduceTranscript`.
+   */
+  turn: number;
   entryId?: string;
   /**
    * When the item was first seen — the timestamp of the event that created it,

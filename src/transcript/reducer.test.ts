@@ -112,6 +112,58 @@ describe("reduceTranscript", () => {
     vi.restoreAllMocks();
   });
 
+  /* ── Turn stamping ─────────────────────────────────────────────────────
+     The index has to come from something the forest also stores. A turn
+     marker is transient — sequence 0, never persisted — so counting those
+     alone would give a reload a different set of turns than the live window
+     the reader just watched. */
+
+  it("stamps every row with the turn its user message opened", () => {
+    const items = reduce([
+      live(1, "message.completed", { itemId: "u1", role: "user", text: "first", status: "completed" }),
+      live(2, "command.started", { itemId: "c1", title: "ls", status: "inProgress" }),
+      live(3, "message.completed", { itemId: "a1", role: "assistant", text: "done", status: "completed" }),
+      live(4, "message.completed", { itemId: "u2", role: "user", text: "second", status: "completed" }),
+      live(5, "command.started", { itemId: "c2", title: "pwd", status: "inProgress" }),
+    ]);
+    expect(items.map(item => [item.itemId, item.turn])).toEqual([
+      ["u1", 1], ["c1", 1], ["a1", 1], ["u2", 2], ["c2", 2],
+    ]);
+  });
+
+  it("does not count the same boundary twice when a turn marker follows the user", () => {
+    const items = reduce([
+      live(1, "message.completed", { itemId: "u1", role: "user", text: "go", status: "completed" }),
+      live(0, "turn.started", { sequence: 0 }),
+      live(2, "command.started", { itemId: "c1", title: "ls", status: "inProgress" }),
+    ]);
+    expect(items.map(item => item.turn)).toEqual([1, 1]);
+  });
+
+  it("lets a turn marker open a turn the user did not ask for", () => {
+    // A continuation the model started on its own still separates its work
+    // from the turn before it.
+    const items = reduce([
+      live(1, "message.completed", { itemId: "u1", role: "user", text: "go", status: "completed" }),
+      live(0, "turn.started", { sequence: 0 }),
+      live(2, "command.started", { itemId: "c1", title: "ls", status: "inProgress" }),
+      live(0, "turn.started", { sequence: 0 }),
+      live(3, "command.started", { itemId: "c2", title: "pwd", status: "inProgress" }),
+    ]);
+    expect(items.map(item => item.turn)).toEqual([1, 1, 2]);
+  });
+
+  it("agrees with the durable projection about which turn a row belongs to", () => {
+    const persisted = [
+      entry("e1", null, "user.message", { itemId: "u1", role: "user", text: "go", status: "completed" }, 1),
+      entry("e2", "e1", "command.started", { itemId: "c1", status: "inProgress", data: { command: "ls" } }, 2),
+      entry("e3", "e2", "user.message", { itemId: "u2", role: "user", text: "again", status: "completed" }, 3),
+      entry("e4", "e3", "command.started", { itemId: "c2", status: "inProgress", data: { command: "pwd" } }, 4),
+    ];
+    const items = reduceTranscript(persisted.map(value => normalizeSessionEntry(value)!));
+    expect(items.map(item => item.turn)).toEqual([1, 1, 2, 2]);
+  });
+
   it("is a pure function of its input", () => {
     const events = [
       live(1, "message.completed", { itemId: "m", role: "assistant", text: "hi", status: "completed" }),

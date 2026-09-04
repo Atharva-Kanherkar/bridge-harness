@@ -156,6 +156,10 @@ describe("golden streams", () => {
       type: item.type,
       ...(item.role ? { role: item.role } : {}),
       status: item.status,
+      // The turn is part of what a reader sees now that a run folds into one
+      // group per turn. Live counts turn markers the forest never stored, so
+      // this is the assertion that the two still arrive at the same index.
+      turn: item.turn,
       verb: item.tool?.verb,
       target: item.tool?.target,
       path: item.tool?.path,
