@@ -3,9 +3,28 @@
 // doesn't flicker on re-render, while the pool is tinted by the time of day.
 
 export interface Greeting {
+  /** Fully-substituted plain text — used for the accessible name and tests. */
   headline: string;
   hint: string;
+  /** Rich segments for rendering; the project segment gets the dotted underline. */
+  parts: GreetingPart[];
 }
+
+export type GreetingPart = { text: string; kind: "text" | "project" };
+
+/** Lines that name the current project. Rendered with a dotted underline under
+ *  the `{project}` slot, matching the near-black new-thread mockup. Only used
+ *  when a project name is known; otherwise the general/time pools stand in. */
+const PROJECT: string[] = [
+  "What should we build in {project}?",
+  "Where are we headed in {project}?",
+  "What's next for {project}?",
+  "What are we shipping in {project}?",
+  "What are we building in {project}?",
+  "What should we improve in {project}?",
+  "Where should we start in {project}?",
+  "What's the next move on {project}?",
+];
 
 const GENERAL: string[] = [
   "What should we build?",
@@ -175,11 +194,31 @@ function hash(value: string): number {
   return h >>> 0;
 }
 
-/** Pick a time-appropriate greeting, stable for a given seed (e.g. session id). */
-export function pickGreeting(seed: string | undefined, now: Date = new Date()): Greeting {
-  const pool = [...GENERAL, ...BY_BUCKET[timeBucket(now.getHours())]];
+/** Split a template around its single `{project}` token into rich segments. */
+function toParts(template: string, project: string): GreetingPart[] {
+  const [before, after = ""] = template.split("{project}");
+  const parts: GreetingPart[] = [
+    { text: before, kind: "text" },
+    { text: project, kind: "project" },
+    { text: after, kind: "text" },
+  ];
+  return parts.filter(part => part.text.length || part.kind === "project");
+}
+
+/**
+ * Pick a time-appropriate greeting, stable for a given seed (e.g. session id).
+ * When a project name is known, project-titled lines ("What should we build in
+ * harness?") join the pool so the hero can name — and dotted-underline — it.
+ */
+export function pickGreeting(seed: string | undefined, project?: string | null, now: Date = new Date()): Greeting {
+  const named = project?.trim();
+  const pool = named
+    ? [...GENERAL, ...BY_BUCKET[timeBucket(now.getHours())], ...PROJECT]
+    : [...GENERAL, ...BY_BUCKET[timeBucket(now.getHours())]];
   const key = seed && seed.length ? seed : `${now.getTime()}-${Math.random()}`;
-  const headline = pool[hash(key) % pool.length];
+  const template = pool[hash(key) % pool.length];
+  const headline = named ? template.replace("{project}", named) : template;
+  const parts = named && template.includes("{project}") ? toParts(template, named) : [{ text: headline, kind: "text" as const }];
   const hint = HINTS[hash(`${key}:hint`) % HINTS.length];
-  return { headline, hint };
+  return { headline, hint, parts };
 }

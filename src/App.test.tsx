@@ -49,7 +49,7 @@ describe("ChatModelControl", () => {
     const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Orchestrator model: Codex GPT Balanced"]')!;
     expect(trigger.textContent).toContain("Codex · GPT Balanced");
     await act(async () => trigger.click());
-    expect(container.textContent).toContain("Switching starts a fresh provider session");
+    expect(container.textContent).toContain("Switching restarts the provider session. History stays.");
 
     const opus = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Claude Opus"))!;
     await act(async () => opus.click());
@@ -661,7 +661,7 @@ describe("the dock in the session view", () => {
 
   it("keeps AppTitleBar unchanged on every other view", async () => {
     await mountApp();
-    await click(container.querySelector<HTMLButtonElement>('button[title^="Settings"]')!);
+    await click(container.querySelector<HTMLButtonElement>('button[title^="Open settings"]')!);
     expect(appTitleBar()).not.toBeNull();
     expect(container.querySelector('button[aria-label="Toggle dock"]')).toBeNull();
   });

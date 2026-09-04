@@ -41,6 +41,10 @@
     --color-card-foreground: var(--card-foreground);
     --color-card: var(--card);
     --color-border: var(--border);
+    --color-border-card: var(--border-card, var(--border));
+    --color-body: var(--body, var(--foreground));
+    --color-faint: var(--faint, var(--muted-foreground));
+    --color-faint-2: var(--faint-2, var(--muted-foreground));
     --color-background: var(--background);
     --color-accent-foreground: var(--accent-foreground);
     --color-accent: var(--accent);
@@ -156,26 +160,35 @@
 .dark {
     color-scheme: dark;
 
-    --sidebar: #121211;
-    --background: #171716;
-    --card: #1f1f1e;
-    --popover: #262624;
+    /* Near-black shell — tighter, darker, denser. Color lives only in harness
+       marks and status ink; the chrome is achromatic. */
+    --sidebar: #0d0d0d;
+    --background: #111111;
+    --card: #161616;
+    --popover: #1a1a1a;
 
-    --foreground: #ececea;
-    --card-foreground: #ececea;
-    --popover-foreground: #ececea;
-    --muted-foreground: #a8a8a3;
+    --foreground: #e4e4e4;
+    --card-foreground: #e4e4e4;
+    --popover-foreground: #e4e4e4;
+    /* Body copy sits a step under --foreground; muted is the row subtitle ink. */
+    --body: #c9c9c9;
+    --muted-foreground: #8b8b8b;
+    /* Faint ink for times, counts and paths. */
+    --faint: #6b6b6b;
+    --faint-2: #4a4a4a;
 
-    --border: #232321;
-    --input: #30302e;
-    --muted: #212120;
-    --secondary: #1f1f1e;
-    --secondary-foreground: #ececea;
-    --accent: color-mix(in srgb, #ececea 6%, transparent);
-    --accent-foreground: #ececea;
+    --border: #1e1e1e;
+    /* Hairline lifts to #242424 on cards/inputs where it needs to read. */
+    --border-card: #242424;
+    --input: #242424;
+    --muted: #1c1c1c;
+    --secondary: #161616;
+    --secondary-foreground: #e4e4e4;
+    --accent: color-mix(in srgb, #e4e4e4 6%, transparent);
+    --accent-foreground: #e4e4e4;
 
-    --primary: #ececea;
-    --primary-foreground: #171716;
+    --primary: #e4e4e4;
+    --primary-foreground: #111111;
 
     --ring: #6a9bcc;
     --scrim: rgb(0 0 0 / 0.62);
@@ -207,12 +220,12 @@
     --syn-tag: #8fbfd8;
     --syn-punct: #9a9a94;
 
-    --sidebar-foreground: #a8a8a3;
-    --sidebar-accent: color-mix(in srgb, #ececea 6%, transparent);
-    --sidebar-accent-foreground: #ececea;
-    --sidebar-border: #1e1e1c;
-    --sidebar-primary: #ececea;
-    --sidebar-primary-foreground: #171716;
+    --sidebar-foreground: #8b8b8b;
+    --sidebar-accent: color-mix(in srgb, #e4e4e4 6%, transparent);
+    --sidebar-accent-foreground: #e4e4e4;
+    --sidebar-border: #171717;
+    --sidebar-primary: #e4e4e4;
+    --sidebar-primary-foreground: #111111;
     --sidebar-ring: #6a9bcc;
 }
 

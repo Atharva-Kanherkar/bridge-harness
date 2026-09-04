@@ -53,7 +53,7 @@ import { MemoryDialog, rememberAction } from "./components/MemoryDialog";
 import { MemoryUsedChip } from "./components/MemoryUsedChip";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
-import { formatElapsed, harnessLabel, slashOwnershipBadge, tierRuntimeLabel } from "./utils";
+import { formatElapsed, harnessLabel, slashOwnershipBadge } from "./utils";
 import { scheduleSuggestion } from "./suggestionTypeahead";
 import { projectSessionConversation, reduceConversation, undeliveredPending } from "./conversation";
 import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
@@ -389,6 +389,8 @@ function AppContent() {
   // conversation — and the approval card that lives on it — is reachable.
   const session = state.sessions.find(s => s.id === selectedSessionId && s.harness !== "shell" && !isHiddenSession(s));
   const workspace = session?.workspaceId ? state.workspaces.find(w => w.id === session.workspaceId) : undefined;
+  // The new-thread hero names the project when it can, dotted-underlined.
+  const projectName = (workspace?.projectId ? state.projects.find(p => p.id === workspace.projectId)?.name : undefined) ?? workspace?.title ?? undefined;
   const hasRepo = !!workspace?.path;
   const isDirectChat = session?.kind === "direct";
   const importedSourceFingerprint = useMemo(() => {
@@ -2087,10 +2089,6 @@ function AppContent() {
             roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"}
             effort={session.effort}
           />}
-          tierLabel={session.requestedTier || session.model || session.effort
-            ? tierRuntimeLabel(session.requestedTier, session.model, session.effort)
-            : null}
-          bypassBadge={bypassBadge}
           leading={sidebarNav}
           sidebarHidden={sidebarCollapsed}
           navOpen={navOpen}
@@ -2204,6 +2202,7 @@ function AppContent() {
               <div className="flex-1 min-h-0 relative">
                 <AgentConversation
                   session={session}
+                  projectName={projectName}
                   onOpenSession={openSession}
                   workers={workerPanelSource}
                   onExpandWorker={setExpandedWorkerId}
@@ -2317,20 +2316,6 @@ function AppContent() {
                       </button>)}
                     </div>
                   </div>}
-                  <ComposerContextStrip
-                    workspaces={state.workspaces}
-                    workspace={workspace ?? null}
-                    worktree={worktreeOn}
-                    locked={conversationStarted || forest === undefined}
-                    branches={branchWorkspaceId === workspace?.id ? workspaceBranches : []}
-                    currentBranch={branchWorkspaceId === workspace?.id ? workspaceBranchCurrent : workspace?.branch ?? null}
-                    branchBusy={branchWorkspaceId === workspace?.id && branchBusy}
-                    branchError={branchWorkspaceId === workspace?.id ? branchError : null}
-                    onSelectWorkspace={id => { if (id === workspace?.id) return; void retargetWorkspace(id, worktreeOn); }}
-                    onRequestBranches={() => { if (workspace) void requestWorkspaceBranches(workspace.id); }}
-                    onSelectBranch={branch => { if (workspace) void switchWorkspaceBranch(workspace.id, branch); }}
-                    onToggleWorktree={() => { if (!workspace) return; void retargetWorkspace(workspace.id, !worktreeOn); }}
-                  />
                   {harnessShortcutOpen && <div className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
                     <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70 border-b border-border flex items-center gap-2">
                       <span>Talk to a harness directly</span>
@@ -2369,10 +2354,25 @@ function AppContent() {
                     onStop={session ? () => { setStopping(true); void bridgeApi.interruptTurn(session.id); } : undefined}
                     inputRef={composerRef}
                     onPlusClick={() => void attachFile()}
+                    plusIcon="paperclip"
                     leading={usageRing}
-                    trailing={session.kind === "direct" || session.kind === "orchestrator"
+                    modelControl={session.kind === "direct" || session.kind === "orchestrator"
                       ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
+                    footer={<ComposerContextStrip
+                      workspaces={state.workspaces}
+                      workspace={workspace ?? null}
+                      worktree={worktreeOn}
+                      locked={conversationStarted || forest === undefined}
+                      branches={branchWorkspaceId === workspace?.id ? workspaceBranches : []}
+                      currentBranch={branchWorkspaceId === workspace?.id ? workspaceBranchCurrent : workspace?.branch ?? null}
+                      branchBusy={branchWorkspaceId === workspace?.id && branchBusy}
+                      branchError={branchWorkspaceId === workspace?.id ? branchError : null}
+                      onSelectWorkspace={id => { if (id === workspace?.id) return; void retargetWorkspace(id, worktreeOn); }}
+                      onRequestBranches={() => { if (workspace) void requestWorkspaceBranches(workspace.id); }}
+                      onSelectBranch={branch => { if (workspace) void switchWorkspaceBranch(workspace.id, branch); }}
+                      onToggleWorktree={() => { if (!workspace) return; void retargetWorkspace(workspace.id, !worktreeOn); }}
+                    />}
                   />
                 </div>}
               </div>
@@ -2555,7 +2555,8 @@ function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, 
   onSelectBranch: (branch: string) => void;
   onToggleWorktree: (draft?: string) => void;
 }) {
-  const greeting = useMemo(() => pickGreeting("welcome"), []);
+  // Names the current project in the hero when one is selected, dotted-underlined.
+  const greeting = useMemo(() => pickGreeting("welcome", workspace?.title), [workspace?.title]);
   const [draft, setDraft] = useState("");
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [composerError, setComposerError] = useState<string>();
@@ -2584,21 +2585,13 @@ function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, 
       .catch(error => setComposerError(errorMessage(error)));
   };
   return <div className="flex flex-1 flex-col items-center justify-center px-4 text-center animate-page-enter">
-    <h1 className="mb-8 max-w-xl font-display text-[1.9rem] font-medium leading-[1.15] tracking-[-0.025em] text-foreground sm:mb-10 sm:text-[2.4rem]">{greeting.headline}</h1>
-    {workspaces.length > 0 && <ComposerContextStrip
-      workspaces={workspaces}
-      workspace={workspace}
-      worktree={worktree}
-      locked={busy}
-      branches={branches}
-      currentBranch={currentBranch}
-      branchBusy={branchBusy}
-      branchError={branchError}
-      onSelectWorkspace={onSelectWorkspace}
-      onRequestBranches={onRequestBranches}
-      onSelectBranch={onSelectBranch}
-      onToggleWorktree={() => onToggleWorktree(draft.trim() || undefined)}
-    />}
+    <h1 className="mb-8 max-w-xl font-display text-[1.9rem] font-medium leading-[1.15] tracking-[-0.025em] text-foreground sm:mb-10 sm:text-[2.4rem]">
+      {greeting.parts.length > 1
+        ? greeting.parts.map((part, index) => part.kind === "project"
+          ? <span key={index} className="underline decoration-dotted decoration-muted-foreground/60 underline-offset-[8px]">{part.text}</span>
+          : <span key={index}>{part.text}</span>)
+        : greeting.headline}
+    </h1>
     <ComposerPill
       layout="hero"
       value={draft}
@@ -2622,7 +2615,21 @@ function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, 
       onPlusClick={onNewWorkspace}
       // The unstarted draft is a real chat-in-waiting: let the model be chosen
       // before the first message, the same picker the session composer uses.
-      trailing={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} compact roleLabel="Chat" />}
+      modelControl={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} compact roleLabel="Chat" />}
+      footer={workspaces.length > 0 ? <ComposerContextStrip
+        workspaces={workspaces}
+        workspace={workspace}
+        worktree={worktree}
+        locked={busy}
+        branches={branches}
+        currentBranch={currentBranch}
+        branchBusy={branchBusy}
+        branchError={branchError}
+        onSelectWorkspace={onSelectWorkspace}
+        onRequestBranches={onRequestBranches}
+        onSelectBranch={onSelectBranch}
+        onToggleWorktree={() => onToggleWorktree(draft.trim() || undefined)}
+      /> : undefined}
     />
     {composerError && <p className="mt-2 max-w-2xl text-left text-[11px] text-destructive">{composerError}</p>}
     <p className="mt-6 max-w-md text-[13px] leading-relaxed text-muted-foreground">{greeting.hint}</p>

@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Check, Maximize2, Minimize2, Monitor, MoreHorizontal, PanelLeft, PanelRight, Search, Settings2, Square } from "lucide-react";
+import { Check, Folder, Maximize2, Minimize2, Monitor, MoreHorizontal, PanelLeft, PanelRight, Search, Settings2, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MenuItem, MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
 import type { DockPaneId } from "../dockLayout";
@@ -17,6 +17,10 @@ import type { DockPaneDescriptor } from "./SessionDock";
 
 export type SessionToolbarProps = {
   title: string;
+  /** The workspace/project this session belongs to. Renders as the muted first
+   * crumb of the breadcrumb (`project / title`). Optional: a session without a
+   * known project just shows the folder mark and its title. */
+  projectName?: string;
   /** Immutable provenance marker for imported historical sessions. */
   sourceBadge?: string;
   /** Quiet context at the right edge. The branch and dirty count are deliberately
@@ -81,6 +85,7 @@ function toolButtonClass(active: boolean) {
 
 export function SessionToolbar({
   title,
+  projectName,
   sourceBadge,
   modelControl,
   tierLabel,
@@ -114,7 +119,7 @@ export function SessionToolbar({
   return (
     <div
       className={cn(
-        "flex h-11 shrink-0 select-none items-center gap-2 border-b border-border pr-4 sm:pr-6",
+        "flex h-10 shrink-0 select-none items-center gap-2 border-b border-border pr-4 sm:pr-6",
         sidebarHidden ? "u-traffic-inset pl-24" : "pl-4 sm:pl-6",
       )}
       // The window has no native titlebar, so this strip is the grab handle:
@@ -135,9 +140,21 @@ export function SessionToolbar({
         </button>
       )}
 
-      <h1 className="m-0 min-w-0 flex-1 truncate font-display text-[14px] font-semibold leading-none tracking-[-0.014em] text-foreground">
-        {title}
-      </h1>
+      {/* Breadcrumb, not a bare title: a folder mark, the muted project crumb,
+          then the session in the foreground — `folder  project / title`. The
+          `h1` stays the title alone so it remains the one document heading. */}
+      <div className="flex min-w-0 flex-1 items-center gap-1.5">
+        <Folder size={14} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+        {projectName && (
+          <>
+            <span className="hidden shrink-0 truncate text-[13px] leading-none text-muted-foreground sm:inline" title={projectName}>{projectName}</span>
+            <span className="hidden shrink-0 text-faint-2 sm:inline" aria-hidden="true">/</span>
+          </>
+        )}
+        <h1 className="m-0 min-w-0 truncate font-display text-[14px] font-semibold leading-none tracking-[-0.014em] text-foreground">
+          {title}
+        </h1>
+      </div>
 
       {sourceBadge && <span data-testid="import-source-badge" title={sourceBadge} className="hidden max-w-[260px] shrink-0 truncate rounded-full border border-border px-2 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.04em] text-muted-foreground sm:inline">{sourceBadge}</span>}
 
@@ -160,7 +177,7 @@ export function SessionToolbar({
 
       <span className="mx-0.5 h-4 w-px shrink-0 bg-border" aria-hidden="true" />
 
-      <div className="flex shrink-0 items-center gap-0.5 rounded-md bg-foreground/[0.035] p-0.5">
+      <div className="flex shrink-0 items-center gap-0.5 rounded-[7px] border border-border-card p-0.5">
         <button
           type="button"
           onClick={onToggleDock}
