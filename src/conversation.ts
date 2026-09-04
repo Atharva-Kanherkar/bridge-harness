@@ -11,7 +11,7 @@
 import { normalizeAgentEvent, normalizeSessionEntry } from "./transcript/codec";
 import { reduceTranscript } from "./transcript/reducer";
 import type { TranscriptEvent } from "./transcript/events";
-import { readToolCall, type ToolCallSource } from "./transcript/toolCall";
+import { readToolCall, type ToolCallDisplay, type ToolCallSource } from "./transcript/toolCall";
 import { itemIdentity, type ConversationItem } from "./transcript/item";
 import type { AgentEvent, SessionEntry } from "./types";
 
@@ -147,7 +147,7 @@ export function workerResultSummary(text: string): string | undefined {
  * derives one only for items assembled by hand (tests, previews) so no caller
  * has to know which is which.
  */
-export function toolCallDisplay(item: ConversationItem) {
+export function toolCallDisplay(item: ConversationItem): ToolCallDisplay {
   if (item.tool) return item.tool;
   const source: ToolCallSource = {
     title: item.title,
