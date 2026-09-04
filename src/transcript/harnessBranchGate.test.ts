@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "../types";
@@ -49,8 +49,8 @@ const TRANSCRIPT_COMPONENTS = [
  * `harnessMarks.tsx` draws each agent's figure and `harnessLabel` in
  * `utils.ts` spells its name; both are identity, which the transcript is
  * supposed to show. Neither decides how a row behaves, so neither is listed
- * above. `MissionControl.tsx` skips shell sessions in a worker roster, which is
- * a session-kind rule rather than a transcript one, and it draws no items.
+ * above. Sites that do compare a harness id, for reasons that are not
+ * transcript behavior, are in `HARNESS_BRANCH_ALLOWLIST` with their reasons.
  */
 const IDENTITY_SITES = ["../components/harnessMarks.tsx", "../utils.ts"];
 
@@ -64,14 +64,72 @@ const RAW_STREAM_SITES = ["../components/TranscriptPane.tsx", "../components/Wor
 
 const HARNESS_BRANCH = /harness\s*[!=]==\s*["']/;
 
+/**
+ * Everything that draws, over the whole UI rather than a list someone
+ * remembered to extend.
+ *
+ * Rule 1 used to be checked against five named transcript files, which meant a
+ * per-harness branch could walk back in through any component nobody had
+ * thought of. It is checked here against every component plus `App.tsx`, and
+ * the exceptions are a table with a reason each rather than an omission.
+ */
+function everyComponent(): string[] {
+  const dir = fileURLToPath(new URL("../components/", import.meta.url));
+  const files = readdirSync(dir, { recursive: true, encoding: "utf8" })
+    .filter(name => name.endsWith(".tsx") && !name.includes(".test."))
+    .map(name => `../components/${name}`)
+    .sort();
+  return [...files, "../App.tsx"];
+}
+
+/**
+ * Where naming a harness is not a transcript behavior, with the reason it is
+ * not. Anything on a rendering path that changes how a conversation item draws
+ * belongs on the normalized item instead, and is never listed here.
+ */
+const HARNESS_BRANCH_ALLOWLIST: Record<string, string> = {
+  "../components/MissionControl.tsx":
+    "skips `shell` sessions in the worker roster: a session-kind rule, and the roster draws no conversation items",
+  "../components/GitHubPane.tsx":
+    "`bugbot` names a code-review provider on a pull request, not a harness that produces a transcript",
+  "../components/SettingsScreen.tsx":
+    "`bridge` is the agent-draft sentinel for 'Bridge chooses the runtime', in a form that picks one",
+  "../App.tsx":
+    "filters `shell` sessions out of the chat roster and labels a `bridge`-owned agent or slash command; neither reaches a transcript row",
+};
+
 describe("harness branch gate", () => {
-  it.each(TRANSCRIPT_COMPONENTS)("%s does not branch on harness identity", path => {
+  it.each(everyComponent())("%s does not branch on harness identity", path => {
+    if (path in HARNESS_BRANCH_ALLOWLIST) return;
     const offending = read(path)
       .split("\n")
       .map((line, index) => [index + 1, line] as const)
       .filter(([, line]) => HARNESS_BRANCH.test(line));
-    expect(offending, `add the behavior to the normalized item instead:\n${offending.map(([n, l]) => `${n}: ${l.trim()}`).join("\n")}`)
+    expect(offending, `add the behavior to the normalized item instead, or allowlist it with a reason:\n${offending.map(([n, l]) => `${n}: ${l.trim()}`).join("\n")}`)
       .toEqual([]);
+  });
+
+  it("keeps the allowlist honest", () => {
+    // An entry that no longer branches is an entry that should be deleted: an
+    // exemption nobody re-reads is how the next one gets waved through.
+    for (const [path, reason] of Object.entries(HARNESS_BRANCH_ALLOWLIST)) {
+      expect(read(path), `${path} no longer branches on a harness; drop it from the allowlist`)
+        .toMatch(HARNESS_BRANCH);
+      expect(reason.length, `${path} needs a reason`).toBeGreaterThan(20);
+    }
+    // And the transcript itself is never exempt.
+    for (const path of TRANSCRIPT_COMPONENTS) {
+      expect(HARNESS_BRANCH_ALLOWLIST[path], `${path} draws items and cannot be allowlisted`).toBeUndefined();
+    }
+  });
+
+  it("watches the components the transcript is actually made of", () => {
+    // The glob is the gate; this is the check that the glob found them.
+    const watched = new Set(everyComponent());
+    for (const path of TRANSCRIPT_COMPONENTS.filter(path => path.endsWith(".tsx"))) {
+      expect(watched, `${path} fell out of the sweep`).toContain(path);
+    }
+    expect(watched.size).toBeGreaterThan(20);
   });
 
   it.each(TRANSCRIPT_COMPONENTS.filter(path => !RAW_STREAM_SITES.includes(path)))(
@@ -115,6 +173,18 @@ describe("harness branch gate", () => {
     }
     expect(read("../components/harnessMarks.tsx")).toMatch(/harness/i);
     expect(read("../utils.ts")).toContain("harnessLabel");
+  });
+
+  it("keeps one component in charge of the thinking presentation", () => {
+    const source = read("../components/AgentConversation.tsx");
+    // One mark, one call site for the class that animates it. Everything that
+    // means "there is more of this coming" goes through `ThinkingMark`.
+    const marks = source.split("\n").filter(line => line.includes("thinking-shimmer"));
+    expect(marks, "the thinking sweep belongs to ThinkingMark and to nothing else").toHaveLength(1);
+    expect(marks[0]).toContain("cn(");
+    // And it is not decided by anything but the item's own status.
+    expect(source).toContain("function Reasoning({ item }: { item: ConversationItem })");
+    expect(source).toContain("const streaming = isStreamingText(item.status)");
   });
 
   it("makes a wire-kind comparison a compile error, not a convention", () => {
