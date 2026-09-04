@@ -35,6 +35,18 @@ if [ -z "$dmg" ]; then
   exit 1
 fi
 
+app="$project_root/src-tauri/target/release/bundle/macos/Bridge.app"
+sdk="$app/Contents/Resources/sidecar/claude-agent/node_modules/@anthropic-ai/claude-agent-sdk/package.json"
+if [ ! -f "$sdk" ]; then
+  echo "release-dmg: bundled app is missing the Claude Agent SDK at $sdk" >&2
+  exit 1
+fi
+if ! codesign -dv --verbose=2 "$app" 2>&1 | grep -q 'Authority=Developer ID Application'; then
+  echo "release-dmg: $app is not Developer ID-signed" >&2
+  codesign -dv --verbose=2 "$app" >&2 || true
+  exit 1
+fi
+
 echo "DMG: $dmg"
 xcrun stapler validate "$dmg"
 shasum -a 256 "$dmg"

@@ -33,9 +33,20 @@ fn claude_sidecar_is_bundled_under_resources() {
     let resources = parsed["bundle"]["resources"]
         .as_object()
         .expect("bundle.resources is an object");
+    let dest = resources
+        .values()
+        .filter_map(Value::as_str)
+        .find(|path| *path == "sidecar/claude-agent/");
     assert_eq!(
-        resources.get("../sidecar/claude-agent/").and_then(Value::as_str),
+        dest,
         Some("sidecar/claude-agent/"),
-        "adapter sidecar_entry looks at Contents/Resources/sidecar/claude-agent/index.mjs"
+        "adapter sidecar_entry looks at Contents/Resources/sidecar/claude-agent/index.mjs; resources={resources:?}"
+    );
+    assert_eq!(
+        resources
+            .get("resources/sidecar/claude-agent/")
+            .and_then(Value::as_str),
+        Some("sidecar/claude-agent/"),
+        "prepare:claude-sidecar stages a real npm tree here because bun workspace hoists are symlinks"
     );
 }
