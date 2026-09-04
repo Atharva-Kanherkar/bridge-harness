@@ -53,6 +53,19 @@ issue's own acceptance criteria:
    two terminal tests panic with a Pty spawn error — and real Linux users
    without zsh could not open terminals at all. Fix: `login_shell()` picks
    zsh where present, else `$SHELL`, else bash (behavior unchanged on macOS).
+3. The parent-death watchdog script (`adapters::PARENT_WATCHDOG_SCRIPT`)
+   called bare `kill -TERM -- -$$` to signal its own process group.
+   `/bin/sh` on Debian/Ubuntu is dash, and dash's *builtin* `kill` rejects
+   the `--` separator before a negative PID ("Illegal number: -"), failing
+   silently behind `2>/dev/null` — the group was never actually signaled on
+   Linux. Fix: invoke `/bin/kill` by full path. Separately,
+   `watchdog_reaps_child_and_group_mates_after_supervisor_sigkill` used
+   `set -m` to give the simulated watchdog its own process group; shell job
+   control silently no-ops without a controlling TTY, which a CI runner
+   never has, so the watchdog stayed in the supervisor's group with no
+   group of its own to reap. Fix: prefer `setsid` (Linux) and fall back to
+   `set -m` for interactive local development (macOS has no `setsid`).
+   Reproduced deterministically in an ubuntu:24.04 container before fixing.
 
 ## Static Validation (in place of unit tests — no runtime code is added)
 
