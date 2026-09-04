@@ -35,6 +35,25 @@ PR opens.
   those as a follow-up strictness step; adding them now would gate the
   pipeline on pre-existing warnings it never signed up for.
 
+### Scope addition (recorded after the first CI runs)
+
+The gate's acceptance — "cargo test green on the runner" — exposed two
+product-code portability bugs that macOS never exercises. Fixing them is in
+scope for this branch, because a strict gate that is red on day one fails the
+issue's own acceptance criteria:
+
+1. `adapters::terminate_process_group` shelled `kill -TERM -<pgid>`; procps-ng
+   (Linux) silently no-ops that form (rc=0, no signal delivered), while macOS
+   tolerates it. Proven empirically in an ubuntu:24.04 container: bare form
+   leaves the process alive, `kill -TERM -- -<pgid>` works. Fix: emit `--`
+   before the target. Eight lifecycle tests across acp_session, adapters,
+   process_ledger, runtime, and session_supervisor failed on CI through this
+   single root cause.
+2. `api::open_terminal` hardcoded `zsh -l`; ubuntu-latest has no zsh, so the
+   two terminal tests panic with a Pty spawn error — and real Linux users
+   without zsh could not open terminals at all. Fix: `login_shell()` picks
+   zsh where present, else `$SHELL`, else bash (behavior unchanged on macOS).
+
 ## Static Validation (in place of unit tests — no runtime code is added)
 
 - `ci.yml` parses as valid YAML (`python3 -c "import yaml; yaml.safe_load(...)"`).
