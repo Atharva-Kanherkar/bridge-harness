@@ -63,6 +63,8 @@ interface Fold {
   turn: number;
   /** Whether the current turn was opened by a user message. */
   userOpenedTurn: boolean;
+  /** Whether any row has been created since the current turn opened. */
+  turnHasContent: boolean;
 }
 
 /**
@@ -77,6 +79,13 @@ interface Fold {
  * already opened it, which is what keeps a live boundary from being counted
  * twice.
  *
+ * The two frames arrive in either order — one runtime announces the turn and
+ * then echoes the prompt inside the turn it just opened, another sends the
+ * prompt first — so the pairing is decided by whether the open turn has
+ * produced anything yet, not by which frame came first. A user message that lands in a
+ * turn no row has been created in yet joins that turn instead of opening
+ * another, and `turn.completed` releases the pairing so the next marker counts.
+ *
  * The one case the two cannot agree on is a turn nothing durable records — an
  * auto-continuation with no user message of its own. The replay keeps the
  * previous index there rather than inventing a boundary the forest never saw.
@@ -90,6 +99,7 @@ export function reduceTranscript(events: TranscriptEvent[]): ConversationItem[] 
     compacting: false,
     turn: 0,
     userOpenedTurn: false,
+    turnHasContent: false,
   };
 
   for (const event of orderTranscript(events)) {
@@ -114,7 +124,10 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
   // Ahead of everything else, including this event's own key: the user's
   // message belongs to the turn it opens, not to the one it ended.
   if (event.type === "message.completed" && event.role === "user") {
-    fold.turn += 1;
+    // Unless a turn marker has already opened a turn nothing has landed in:
+    // that turn is this message's, and counting it again would number one real
+    // turn twice wherever the marker precedes the echoed prompt.
+    if (fold.turn === 0 || fold.turnHasContent || fold.userOpenedTurn) openTurn(fold);
     fold.userOpenedTurn = true;
   }
 
@@ -135,10 +148,13 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
       // Only when the user's message has not already opened this turn —
       // otherwise the live window counts one boundary twice and stops
       // agreeing with the replay.
-      if (!fold.userOpenedTurn) fold.turn += 1;
+      if (!fold.userOpenedTurn) openTurn(fold);
       fold.userOpenedTurn = false;
       return;
     case "turn.completed":
+      // The pairing above is spent: whatever opened this turn, the next marker
+      // opens a turn of its own.
+      fold.userOpenedTurn = false;
       settleThinking(fold);
       return;
 
@@ -377,7 +393,15 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
 function place(fold: Fold, seed: Omit<ConversationItem, "turn">): ConversationItem {
   const item: ConversationItem = { ...seed, turn: fold.turn };
   fold.items.set(item.key, item);
+  // What tells a turn marker's empty turn apart from a turn that has run.
+  fold.turnHasContent = true;
   return item;
+}
+
+/** Advance to the next turn. The content flag is per turn, so it resets here. */
+function openTurn(fold: Fold): void {
+  fold.turn += 1;
+  fold.turnHasContent = false;
 }
 
 /**

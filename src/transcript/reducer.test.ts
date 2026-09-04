@@ -153,6 +153,47 @@ describe("reduceTranscript", () => {
     expect(items.map(item => item.turn)).toEqual([1, 1, 2]);
   });
 
+  it("counts one turn once when the marker opens it before the user's message", () => {
+    // Codex announces the turn and then echoes the prompt inside it. Counting
+    // both frames numbered one real turn twice, so a run split in half.
+    const items = reduce([
+      live(0, "turn.started", { sequence: 0 }),
+      live(1, "message.completed", { itemId: "u1", role: "user", text: "go", status: "completed" }),
+      live(2, "command.started", { itemId: "c1", title: "ls", status: "inProgress" }),
+      live(0, "turn.completed", { sequence: 0 }),
+      live(0, "turn.started", { sequence: 0 }),
+      live(3, "message.completed", { itemId: "u2", role: "user", text: "again", status: "completed" }),
+      live(4, "command.started", { itemId: "c2", title: "pwd", status: "inProgress" }),
+    ]);
+    expect(items.map(item => item.turn)).toEqual([1, 1, 2, 2]);
+  });
+
+  it("counts one turn once when the user's message opens it before the marker", () => {
+    const items = reduce([
+      live(1, "message.completed", { itemId: "u1", role: "user", text: "go", status: "completed" }),
+      live(0, "turn.started", { sequence: 0 }),
+      live(2, "command.started", { itemId: "c1", title: "ls", status: "inProgress" }),
+      live(0, "turn.completed", { sequence: 0 }),
+      live(3, "message.completed", { itemId: "u2", role: "user", text: "again", status: "completed" }),
+      live(0, "turn.started", { sequence: 0 }),
+      live(4, "command.started", { itemId: "c2", title: "pwd", status: "inProgress" }),
+    ]);
+    expect(items.map(item => item.turn)).toEqual([1, 1, 2, 2]);
+  });
+
+  it("counts markers alone when no user message accompanies them", () => {
+    const items = reduce([
+      live(0, "turn.started", { sequence: 0 }),
+      live(1, "command.started", { itemId: "c1", title: "ls", status: "inProgress" }),
+      live(0, "turn.completed", { sequence: 0 }),
+      live(0, "turn.started", { sequence: 0 }),
+      live(2, "command.started", { itemId: "c2", title: "pwd", status: "inProgress" }),
+    ]);
+    expect(items.map(item => item.turn)).toEqual([1, 2]);
+  });
+
+  // The fourth shape — a durable branch of user messages with no markers at
+  // all — is the case below: the forest never stores a turn marker.
   it("agrees with the durable projection about which turn a row belongs to", () => {
     const persisted = [
       entry("e1", null, "user.message", { itemId: "u1", role: "user", text: "go", status: "completed" }, 1),

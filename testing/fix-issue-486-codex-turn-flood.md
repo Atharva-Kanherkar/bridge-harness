@@ -38,7 +38,12 @@ Four faults compound, and only the first is visible:
      user's own row belongs to the turn it opens;
    - a `turn.started` opens a new turn **only** when no user message has
      opened one since the last boundary, so live and durable never differ by
-     the boundary the live stream can see twice.
+     the boundary the live stream can see twice;
+   - the pairing is order-free, because the two frames arrive in either order:
+     a user message that lands in a turn no row has been created in yet joins
+     that turn instead of opening another, and `turn.completed` releases the
+     pairing so the next marker counts. Whichever frame opens a turn, it is
+     counted once.
 
    *Documented divergence:* a turn started with no user message and no
    persisted frame of its own (an auto-continuation) is invisible to the
@@ -47,7 +52,10 @@ Four faults compound, and only the first is visible:
 
    **Locked by:** `src/transcript/reducer.test.ts` — a two-turn live stream
    stamps 1 and 2; a `turn.started` after a user message does not double-count;
-   a `turn.started` with no user message before it does count.
+   a `turn.started` with no user message before it does count; and the four
+   orders of a two-turn stream — marker before the prompt, prompt before the
+   marker, a durable branch of prompts with no markers, and markers with no
+   prompt at all — each stamp 1 and 2.
    `src/transcript/golden.test.ts` — the existing live-versus-durable parity
    assertion gains `turn` in its projected row, for all four harnesses.
 
