@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "./api";
+import { asWireKind } from "./transcript/wire";
+import { readWireKind } from "./transcript/wire";
 
 describe("SQLite-shaped mock observability", () => {
   it("keeps completion contracts private by default and preserves waiver evidence", async () => {
@@ -332,7 +334,7 @@ describe("Context breakdown (issue #245)", () => {
 describe("browser-mode live agent-event fan-out", () => {
   it("delivers mock turn events to onAgentEvent subscribers until unsubscribed", async () => {
     const seen: string[] = [];
-    const off = await bridgeApi.onAgentEvent(event => seen.push(event.kind));
+    const off = await bridgeApi.onAgentEvent(event => seen.push(readWireKind(event.kind)));
 
     const created = await bridgeApi.createChat("claude", "sonnet", "fan-out probe");
     const chat = [...created.sessions].reverse().find(item => item.title === "fan-out probe")!;
@@ -367,7 +369,7 @@ describe("browser-mode live agent-event fan-out", () => {
     expect(event.sequence).toBeGreaterThan(0);
     // Mutating one subscriber's copy must not corrupt another's — the same
     // isolation a wire round-trip gives.
-    event.kind = "tampered";
+    event.kind = asWireKind("tampered");
     const twin = second.find(item => item.sessionId === chat.id)!;
     expect(twin.kind).toBe("session.started");
   });

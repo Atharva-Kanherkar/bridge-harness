@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { WORKER_PANEL_FEED_LINES, workerFeedLines, workerPanelModel } from "./workerPanel";
 import type { AgentEvent, Session, WorkerRuntimeRecord } from "../types";
+import { asWireKind } from "../transcript/wire";
 
 const session = (id: string, overrides: Partial<Session> = {}): Session => ({
   id, workspaceId: "w", harness: "claude", label: "Implementation · strong", title: null, status: "working",
@@ -18,7 +19,7 @@ const runtime = (overrides: Partial<WorkerRuntimeRecord> = {}): WorkerRuntimeRec
 });
 
 const event = (id: number, overrides: Partial<AgentEvent> = {}): AgentEvent => ({
-  id, sessionId: "child", sequence: id, protocolVersion: 1, kind: "tool.started", itemId: null, role: null,
+  id, sessionId: "child", sequence: id, protocolVersion: 1, kind: asWireKind("tool.started"), itemId: null, role: null,
   status: null, title: null, text: null, data: {}, providerMeta: {}, createdAt: "now", ...overrides,
 });
 
@@ -103,8 +104,8 @@ describe("worker feed lines", () => {
 
   it("skips frames with nothing legible in them", () => {
     const lines = workerFeedLines([
-      event(1, { kind: "message.delta", text: "" }),
-      event(2, { kind: "turn.started" }),
+      event(1, { kind: asWireKind("message.delta"), text: "" }),
+      event(2, { kind: asWireKind("turn.started") }),
       event(3, { text: "  reading the store  " }),
     ], "child");
     expect(lines.map(line => line.text)).toEqual(["reading the store"]);

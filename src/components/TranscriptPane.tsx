@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Check, ChevronRight, Copy, Eye } from "lucide-react";
 import type { AgentEvent, SessionEntry } from "../types";
+import { readWireKind } from "../transcript/wire";
 import type { SessionHead } from "../protocol/generated/protocol";
 import { cn } from "@/lib/utils";
 // The live view merges delta frames for readability; this pane must not —
@@ -87,7 +88,7 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
     const needle = filter.trim().toLowerCase();
     if (!needle) return stream;
     return stream.filter(event =>
-      event.kind.toLowerCase().includes(needle)
+      readWireKind(event.kind).toLowerCase().includes(needle)
       || (event.text ?? "").toLowerCase().includes(needle)
       || (event.title ?? "").toLowerCase().includes(needle));
   }, [stream, filter]);
@@ -158,7 +159,7 @@ export function TranscriptPane({ sessionId, events, entries = [], head, leaves =
           className={cn("flex w-full items-baseline gap-2 px-2.5 text-left transition-colors hover:bg-accent", selectedId === event.id && "bg-code")}
         >
           <span className="w-10 shrink-0 text-right text-muted-foreground/50">{event.sequence}</span>
-          <span className="w-[42%] min-w-0 shrink-0 truncate text-foreground">{event.kind}</span>
+          <span className="w-[42%] min-w-0 shrink-0 truncate text-foreground">{readWireKind(event.kind)}</span>
           <span className="min-w-0 flex-1 truncate text-muted-foreground/70">{event.status ?? event.title ?? event.text ?? ""}</span>
           <span className="shrink-0 text-muted-foreground/50">{eventTime(event.createdAt)}</span>
         </button>

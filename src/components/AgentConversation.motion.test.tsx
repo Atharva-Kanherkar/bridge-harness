@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { MotionGlobalConfig } from "framer-motion";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentConversation } from "./AgentConversation";
+import { asWireKind } from "../transcript/wire";
 import type { AgentEvent, Session } from "../types";
 
 // The static suite covers what the transcript renders. This one covers how it
@@ -19,7 +20,7 @@ const session: Session = {
 } as Session;
 
 const event = (id: number, kind: string, overrides: Partial<AgentEvent> = {}): AgentEvent => ({
-  id, sessionId: "s", sequence: id, protocolVersion: 1, kind, itemId: `i-${id}`,
+  id, sessionId: "s", sequence: id, protocolVersion: 1, kind: asWireKind(kind), itemId: `i-${id}`,
   role: null, status: "completed", title: null, text: null, data: {}, providerMeta: {},
   createdAt: "now", ...overrides,
 });

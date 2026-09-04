@@ -1,4 +1,5 @@
 import type { AgentEvent } from "./types";
+import { asWireKind } from "./transcript/wire";
 
 // Static event stream used purely as a design preview while a session has no
 // real events yet — lets the conversation UI be reviewed without a live agent.
@@ -7,7 +8,7 @@ let seq = 0;
 const ev = (kind: string, overrides: Partial<AgentEvent> = {}): AgentEvent => {
   seq += 1;
   return {
-    id: seq, sessionId: "preview", sequence: seq, protocolVersion: 1, kind,
+    id: seq, sessionId: "preview", sequence: seq, protocolVersion: 1, kind: asWireKind(kind),
     itemId: `mock-${seq}`, role: null, status: "completed", title: null, text: null,
     data: {}, providerMeta: {}, createdAt: "now", ...overrides,
   };

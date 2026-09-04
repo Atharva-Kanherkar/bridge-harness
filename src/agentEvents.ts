@@ -1,4 +1,5 @@
 import type { AgentEvent } from "./types";
+import { readWireKind } from "./transcript/wire";
 
 const ADDITIVE_DELTAS = new Set([
   "message.delta",
@@ -18,10 +19,11 @@ export const MAX_TOTAL_EVENT_TEXT = 2_000_000;
 export const MAX_PENDING_AGENT_EVENTS = 256;
 
 function mergeKey(event: AgentEvent): string | undefined {
-  if (!ADDITIVE_DELTAS.has(event.kind) && !REPLACEABLE_SNAPSHOTS.has(event.kind)) return undefined;
-  const itemId = event.itemId || (event.kind === "reasoning.delta" ? "reasoning:live" : undefined);
+  const kind = readWireKind(event.kind);
+  if (!ADDITIVE_DELTAS.has(kind) && !REPLACEABLE_SNAPSHOTS.has(kind)) return undefined;
+  const itemId = event.itemId || (kind === "reasoning.delta" ? "reasoning:live" : undefined);
   if (!itemId) return undefined;
-  return `${event.sessionId}\u0000${event.kind}\u0000${itemId}`;
+  return `${event.sessionId}\u0000${kind}\u0000${itemId}`;
 }
 
 function durableKey(event: AgentEvent): string | undefined {
@@ -33,7 +35,8 @@ function clampText(text: string): string {
 }
 
 function clearItemMergeIndexes(indexes: Map<string, number>, event: AgentEvent): void {
-  const itemId = event.itemId ?? (event.kind.startsWith("reasoning.") || event.kind.startsWith("turn.") ? "reasoning:live" : undefined);
+  const kind = readWireKind(event.kind);
+  const itemId = event.itemId ?? (kind.startsWith("reasoning.") || kind.startsWith("turn.") ? "reasoning:live" : undefined);
   if (!itemId) return;
   for (const kind of [...ADDITIVE_DELTAS, ...REPLACEABLE_SNAPSHOTS]) {
     indexes.delete(`${event.sessionId}\u0000${kind}\u0000${itemId}`);
@@ -66,7 +69,7 @@ export function appendAgentEventBatch(current: AgentEvent[], incoming: AgentEven
     const mergeIndex = key === undefined ? undefined : mergeIndexes.get(key);
     if (key !== undefined && mergeIndex !== undefined) {
       const previous = next[mergeIndex];
-      const text = ADDITIVE_DELTAS.has(event.kind)
+      const text = ADDITIVE_DELTAS.has(readWireKind(event.kind))
         ? `${previous.text ?? ""}${event.text ?? ""}`
         : event.text ?? previous.text ?? "";
       const merged = {

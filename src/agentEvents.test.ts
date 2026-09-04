@@ -7,6 +7,7 @@ import {
   queueAgentEvent,
 } from "./agentEvents";
 import type { AgentEvent } from "./types";
+import { asWireKind } from "./transcript/wire";
 
 function event(id: number, kind = "message.delta", text = "x"): AgentEvent {
   return {
@@ -14,7 +15,7 @@ function event(id: number, kind = "message.delta", text = "x"): AgentEvent {
     sessionId: "session-1",
     sequence: id,
     protocolVersion: 1,
-    kind,
+    kind: asWireKind(kind),
     itemId: "message-1",
     role: "assistant",
     status: "streaming",
