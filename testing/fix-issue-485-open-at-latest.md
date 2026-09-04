@@ -32,14 +32,18 @@ it renders. No backend, no protocol, no reducer or grouping changes.
 ## Functional Behavior
 
 1. **Open at the latest message, in the first painted frame.** Placement runs in
-   a layout effect (before paint), and every programmatic scroll is instant
-   (`scrollTo({ behavior: "instant" })`, with a `scrollTop` assignment as the
-   fallback when `scrollTo` is unavailable). Opening a chat never shows a frame
-   of the top and never glides down from it.
+   the commit phase, before the browser paints: React attaches the container's
+   ref callback after the transcript's DOM exists and before paint, which is the
+   same timing as a layout effect without the warning `react-dom/server` emits
+   for one (this component is server-rendered by several existing tests). Every
+   programmatic scroll is instant (`scrollTo({ behavior: "instant" })`, with a
+   `scrollTop` assignment as the fallback when `scrollTo` is unavailable), so
+   opening a chat never shows a frame of the top and never glides down from it.
 2. **Late history still lands.** Placement is keyed to the *first population* of
-   a session, not to mount. If `ScrollFollow` mounts with an empty transcript
-   (a working shimmer, a notice) and the forest snapshot arrives seconds later,
-   the landing happens on that first populated commit.
+   a session, not to mount: the ref callback is re-keyed on the session and on
+   whether the transcript has anything in it. If `ScrollFollow` mounts with an
+   empty transcript (a working shimmer, a notice) and the forest snapshot
+   arrives seconds later, the landing happens on that first populated commit.
 3. **Session switch resets, and switching back restores.** The placement,
    `pinned`, and last-read state are keyed by session id. Switching to another
    chat and back restores that chat's last-read `scrollTop`; a chat that was
@@ -53,49 +57,73 @@ it renders. No backend, no protocol, no reducer or grouping changes.
    the existing 80px threshold.
 5. **Live follow still sticks.** While `pinned`, each signature change (new
    item, streaming text growth, an optimistic bubble, the working flag) re-pins
-   to the bottom. Content that changes height after commit (async syntax
-   highlighting, images) re-pins through a `ResizeObserver` while pinned, guarded
-   for environments that lack one.
+   to the bottom. Content that changes height after commit (an image decoding, a
+   code block being highlighted) re-pins through a `ResizeObserver` while pinned,
+   guarded for environments that lack one and bounded to a short settle window
+   after the last scroll of ours, so height the reader added themselves by
+   expanding a group is left where they put it.
 6. **User intent wins.** A reader who scrolls up mid-stream stays where they
    are; their position is recorded for that session as they scroll.
-7. No em dashes in any user-visible string; no user-visible copy changes at all.
+7. **Only this chat's history is placed against.** Selecting a chat swaps
+   `session` one commit before its forest snapshot follows, so the render in
+   between carries the previous chat's transcript under the new chat's id.
+   Placement waits for the two to agree, and a restore additionally waits until
+   there is something to scroll through, so a chat is never counted as opened on
+   the strength of rows that belong to another one.
+8. No em dashes in any user-visible string; no user-visible copy changes at all.
 
 ## Unit Tests
 
-`src/components/AgentConversation.test.tsx` (extended, jsdom — `act` +
-`react-dom/client`, per the file's existing helpers). jsdom has no layout, so
+`src/components/AgentConversation.scroll.test.tsx` (new, jsdom — `act` +
+`react-dom/client`, following the existing file's mounting style). Its own file
+rather than an extension of `AgentConversation.test.tsx`: the prototype stubs
+below are global to a test file, and the last-read record is module state that
+should not bleed into unrelated cases. jsdom has no layout, so
 `scrollHeight`/`clientHeight` are stubbed on `HTMLElement.prototype` and
-`scrollTo` is installed on the prototype (jsdom leaves it undefined), recording
+`scrollTo` is installed there (jsdom leaves it undefined), recording
 `{ top, behavior }` and assigning `scrollTop`.
 
-- `lands on the latest message when history arrives after mount` — mount with
-  no forest entries, then supply a long transcript through `act`; asserts
-  `scrollTop === scrollHeight - clientHeight` (behavior 1 and 2).
+- `lands on the latest message when history arrives after mount` — mounts with
+  no forest entries, then supplies a 40-entry transcript through `act`; asserts
+  the container did not move before the history landed and sits at
+  `scrollHeight - clientHeight` after (behaviors 1 and 2).
+- `lands on the latest message when the whole transcript mounts at once` — the
+  cold-open path, where the greeting is replaced by a fully populated
+  transcript in one commit (behavior 1).
 - `lands instantly, never gliding down from the top` — asserts every recorded
-  programmatic scroll used `behavior: "instant"` and that no scroll landed at
-  the top (behavior 1).
+  programmatic scroll used `behavior: "instant"` and landed at the bottom, never
+  at or near the top (behavior 1).
 - `does not treat its own scroll as the reader leaving the bottom` — after the
-  landing, dispatches the `scroll` event the programmatic scroll would produce,
-  then grows the transcript; asserts it still follows to the bottom, i.e.
-  `pinned` was not flipped (behavior 4).
+  landing, grows the transcript and only then delivers the `scroll` event the
+  programmatic scroll produced, which now reads as far from the bottom; asserts
+  the next commit still follows to the bottom, i.e. `pinned` was not flipped
+  (behavior 4).
 - `treats a real scroll away from the bottom as intent and stops following` —
-  sets `scrollTop` to the top, dispatches `scroll`, grows the transcript;
-  asserts the viewport stays put (behaviors 4 and 6).
-- `restores the last-read position when a chat is reopened` — scrolls a session
-  to a mid position, switches the `session` prop to another chat, switches back;
-  asserts `scrollTop` returns to the recorded position rather than the bottom
-  (behavior 3).
-- `opens a chat with no recorded position at the bottom` — switching to a
-  session never opened lands at the bottom (behavior 3).
-- Every existing case in the file stays green, including the
+  scrolls to the top, dispatches `scroll`, grows the transcript; asserts the
+  viewport stays put (behaviors 4 and 6).
+- `restores the last-read position when a chat is reopened` — scrolls a chat to
+  a mid position, switches the `session` prop to a chat never opened (which
+  lands at its own bottom), switches back; asserts `scrollTop` returns to the
+  recorded position (behavior 3).
+- `reopens a chat that was left at the bottom at its new bottom` — a chat read
+  to the end reopens at the bottom of what has arrived since, not at a stale
+  offset (behavior 3).
+- `waits for the chat's own history before placing` — renders the arriving
+  chat's id with the departing chat's entries, the commit App actually produces
+  on a switch, and asserts nothing moves until the matching history lands
+  (behavior 7).
+- Every existing case in `AgentConversation.test.tsx` stays green, including the
   `renderToStaticMarkup` cases that render the transcript on the server.
 
 ## Integration / Smoke
 
 - `bun run build` and `bunx vitest run` green.
-- Mock mode (`bun run dev`): open a chat with a long transcript, confirm it
-  opens at the last message with no visible top frame; scroll up, switch chats,
-  switch back, confirm the position is where it was left.
+- Mock mode (`bun run dev`), measured on the transcript container itself: a chat
+  opens with `scrollHeight - scrollTop - clientHeight === 0`; scrolling to a mid
+  offset, switching chats and switching back returns to that exact offset; a
+  chat left at the bottom reopens at the bottom; sending a message keeps the
+  view at the bottom while the turn runs; a scroll away from the bottom holds
+  across several poll cycles.
 
 ## E2E
 
