@@ -230,6 +230,8 @@ describe("BridgeSidebar theming", () => {
   });
 
   it("carries session status on semantic tokens", () => {
+    // A row's second line names the actionable state in that state's own ink,
+    // so the check moved from a status dot's fill to the status word's colour.
     const html = render({
       chats: [
         session("a", { status: "working" }),
@@ -237,14 +239,18 @@ describe("BridgeSidebar theming", () => {
         session("c", { status: "failed" }),
       ],
     });
-    expect(html).toContain("bg-success");
-    expect(html).toContain("bg-warning");
-    expect(html).toContain("bg-destructive");
+    expect(html).toContain("text-success");
+    expect(html).toContain("text-warning");
+    expect(html).toContain("text-destructive");
     expect(html).not.toMatch(/emerald-|amber-|sky-|red-4/);
   });
 
-  it("leaves an idle chat without a full-strength dot", () => {
-    expect(render({ chats: [session("idle", { status: "completed" })] })).toContain("bg-muted-foreground/25");
+  it("leaves an idle chat without a status word", () => {
+    // An idle chat falls back to a muted time and never wears an active-status ink.
+    const html = render({ chats: [session("idle", { status: "completed" })] });
+    expect(html).not.toContain("text-success");
+    expect(html).not.toContain("text-warning");
+    expect(html).not.toContain("text-destructive");
   });
 });
 
@@ -311,8 +317,10 @@ describe("BridgeSidebar history", () => {
 
   it("indents rows under a group and shows a compact time", () => {
     localStorage.setItem(CHAT_VIEW_KEY, DATE_VIEW);
+    // An at-rest chat shows its age on the second line; an active one would show
+    // its status word there instead, so the time check uses a settled session.
     const html = render({
-      chats: [session("now", { title: "Today chat", startedAt: new Date(Date.now() - 2_000).toISOString() })],
+      chats: [session("now", { title: "Today chat", status: "completed", startedAt: new Date(Date.now() - 2_000).toISOString() })],
     });
     expect(html).toContain("pl-7");
     expect(html).toMatch(/>now</);
@@ -443,10 +451,14 @@ describe("BridgeSidebar action rows", () => {
     expect(render()).not.toContain("bg-primary text-primary-foreground");
   });
 
-  it("labels every row rather than reducing any of them to a bare icon", () => {
+  it("gives every action an accessible name rather than a bare unlabeled icon", () => {
     const html = render();
+    // Every control is named, including the icon-only compose and search controls.
     for (const label of ["New Chat", "Search", "Marketplace", "Projects", "Memory"]) {
       expect(html).toContain(`aria-label="${label}"`);
+    }
+    // The nav rows still carry their visible text; compose is now an icon button.
+    for (const label of ["Marketplace", "Projects", "Memory"]) {
       expect(html).toContain(`>${label}</button>`);
     }
     // The icon-rail squares are gone with the rail itself.

@@ -6,6 +6,12 @@ export interface ConversationItem {
   key: string; type: ConversationItemType; eventId: number; role?: string; status?: string;
   title?: string; text: string; data: Record<string, unknown>; sequence: number; entryId?: string;
   /**
+   * When the item was first seen — the timestamp of the event that created it,
+   * i.e. a tool call's start. Held so a run's trailer can report a wall-clock
+   * span (union of call windows) rather than a sum of overlapping durations.
+   */
+  createdAt?: string;
+  /**
    * Provider item id from the live event (`AgentEvent.itemId`) or the durable
    * payload. Live events do not copy this into `data`; durable ones do.
    */
@@ -462,7 +468,7 @@ export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
       continue;
     }
     const existing = items.get(itemKey);
-    const next: ConversationItem = existing ?? { key:itemKey, type, eventId:event.id, role:event.role ?? undefined, status:event.status ?? undefined, title:event.title ?? undefined, text:"", data:{}, sequence:event.sequence };
+    const next: ConversationItem = existing ?? { key:itemKey, type, eventId:event.id, role:event.role ?? undefined, status:event.status ?? undefined, title:event.title ?? undefined, text:"", data:{}, sequence:event.sequence, createdAt:event.createdAt };
     next.eventId = event.id; next.status = event.status ?? next.status; next.title = event.title ?? next.title; next.role = event.role ?? next.role;
     if (event.text) next.text = event.text;
     else if (type === "reasoning" && !next.text) next.text = reasoningDisplayText(null, event.data);

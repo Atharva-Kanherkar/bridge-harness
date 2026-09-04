@@ -3,7 +3,7 @@ import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Maximize2, Navigation, Pencil, Pin, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
 import { attachmentUris, delegationChildSessionId, delegationFacet, foldWorkerDelegations, mergeConversationProjections, projectSessionConversation, reduceConversation, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
 import { humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeResolution } from "../humanize";
-import { pickGreeting } from "../greetings";
+import { pickGreeting, type GreetingPart } from "../greetings";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, SessionStartupPhase, WorkerRepositoryBinding, WorkerRuntimeRecord } from "../types";
 import { latestUsageSnapshot, type UsageSnapshot } from "../usage";
 import { describeError } from "../errors";
@@ -116,7 +116,7 @@ function groupItems(items: ConversationItem[]): Rendered[] {
 /// `TranscriptRow` wrapper: a CSS animation replays on every remount and cannot
 /// be told "only the row that just arrived", which is exactly what a transcript
 /// needs.
-const BUBBLE = "ml-auto w-fit max-w-[85%] whitespace-pre-wrap break-words rounded-2xl border border-border bg-card px-3.5 py-2 text-[15px] leading-[1.7] tracking-[-0.006em] text-foreground";
+const BUBBLE = "ml-auto w-fit max-w-[85%] whitespace-pre-wrap break-words rounded-2xl border border-border bg-card px-3.5 py-2 text-[14px] leading-[1.7] tracking-[-0.006em] text-foreground";
 /// Transcript-level notice: a quiet card that reads as a margin note.
 const NOTICE = "mb-4 rounded-lg border border-border border-l-2 bg-card px-3 py-2 text-xs text-muted-foreground";
 /// A decision the user has to make — approvals, adoptions, stale bases.
@@ -248,7 +248,7 @@ function summarize(items: ConversationItem[], live: boolean): string {
   if (counts.search) parts.push(live ? `searching the web` : `searched the web`);
   if (counts.tool) parts.push(live ? `using ${noun(counts.tool, "tool", "tools")}` : `used ${noun(counts.tool, "tool", "tools")}`);
   if (!parts.length) return live ? "Working…" : "Done";
-  const text = parts.join(" · ");
+  const text = parts.join(", ");
   return live ? `${text.charAt(0).toUpperCase() + text.slice(1)}…` : text.charAt(0).toUpperCase() + text.slice(1);
 }
 
@@ -364,9 +364,9 @@ function ActionRow({ item }: { item: ConversationItem }) {
                 onClick={() => links!.open(fileRef.path, fileRef.line)}
                 aria-label={`Open ${fileRef.path} in the Code pane`}
                 title={`Open ${fileRef.path} in the Code pane`}
-                className="hidden min-w-0 flex-1 truncate text-left text-muted-foreground/70 decoration-dotted underline-offset-2 hover:text-foreground hover:underline sm:block"
+                className="hidden min-w-0 flex-1 truncate text-left text-faint decoration-dotted underline-offset-2 hover:text-foreground hover:underline sm:block"
               >{path}</button>
-            : <span className="hidden min-w-0 flex-1 truncate text-muted-foreground/70 sm:block">{path}</span>)}
+            : <span className="hidden min-w-0 flex-1 truncate text-faint sm:block">{path}</span>)}
           <button
             type="button"
             className="ml-auto flex shrink-0 items-center gap-2 disabled:cursor-default"
@@ -378,7 +378,7 @@ function ActionRow({ item }: { item: ConversationItem }) {
               <span><b className="font-medium text-success">+{call.additions}</b> <b className="font-medium text-destructive">−{call.deletions ?? 0}</b></span>
             )}
             {call.exitCode !== undefined && <ExitChip code={call.exitCode}/>}
-            {call.durationMs !== undefined && !live && <span className="text-muted-foreground/70">{Math.max(1, Math.round(call.durationMs / 1000))}s</span>}
+            {call.durationMs !== undefined && !live && <span className="text-faint">{Math.max(1, Math.round(call.durationMs / 1000))}s</span>}
             <StatusGlyph live={live} failed={failed} succeeded={succeeded}/>
             {body && <ChevronRight size={12} className={cn("text-muted-foreground/70 transition-transform", open && "rotate-90")} aria-hidden="true"/>}
           </button>
@@ -431,16 +431,33 @@ function ActivityGroup({ items }: { items: ConversationItem[] }) {
   // CSS entrance used, so an expanding group unfolds instead of appearing whole.
   const stagger = useMotionStagger();
   const chunks = useMemo(() => chunkActions(items), [items]);
+  // One collapsed line for the whole run: the summary, then a mono step count on
+  // the right. The count is the number of tool calls folded away, faint because
+  // it is a measure of the work rather than the work itself.
+  const stepCount = items.length;
+  // Wall-clock the run occupied, not the sum of call durations: overlapping
+  // tool calls would otherwise be counted twice. Each item contributes the
+  // window [start, start+duration]; the trailer reports the union's span, which
+  // also folds in the reasoning gaps between calls. Falls back to nothing when
+  // the projection carries no timestamps, rather than showing a wrong number.
+  const spans = items
+    .map(item => {
+      const start = item.createdAt ? Date.parse(item.createdAt) : NaN;
+      return { start, end: start + (toolCallDisplay(item).durationMs ?? 0) };
+    })
+    .filter(span => Number.isFinite(span.start));
+  const workedMs = spans.length ? Math.max(...spans.map(s => s.end)) - Math.min(...spans.map(s => s.start)) : 0;
   return (
     <div className="my-2.5 min-w-0">
       <button
         type="button"
-        className="group inline-flex max-w-full items-center gap-2 rounded-lg px-1 py-1 text-left text-[12px] text-muted-foreground transition-colors hover:text-foreground"
+        className="group flex w-full items-center gap-2 rounded-[7px] px-1 py-1 text-left text-[12px] text-muted-foreground transition-colors hover:text-foreground"
         onClick={() => setToggled(!expanded)}
       >
-        {live ? <PulseDot size={7}/> : <Check size={12} className="shrink-0 text-muted-foreground/70" aria-hidden="true"/>}
-        <span className={cn("truncate", live && "text-foreground")}>{summarize(items, live)}</span>
-        <ChevronDown size={13} className={cn("shrink-0 text-muted-foreground/70 transition-transform", expanded && "rotate-180")} aria-hidden="true"/>
+        {live ? <PulseDot size={7}/> : <Check size={12} className="shrink-0 text-faint" aria-hidden="true"/>}
+        <span className={cn("min-w-0 truncate", live && "text-foreground")}>{summarize(items, live)}</span>
+        <span className="ml-auto shrink-0 font-mono text-[11px] tabular-nums text-faint">{stepCount} step{stepCount === 1 ? "" : "s"}</span>
+        <ChevronDown size={13} className={cn("shrink-0 text-faint transition-transform", expanded && "rotate-180")} aria-hidden="true"/>
       </button>
       <Disclosure open={expanded}>
         <motion.div
@@ -460,6 +477,14 @@ function ActivityGroup({ items }: { items: ConversationItem[] }) {
               </div>)}
         </motion.div>
       </Disclosure>
+      {/* The trailer a finished run leaves behind: how long the work took, stated
+          the way the transcript states everything quiet — faint, mono, at rest. */}
+      {!live && workedMs > 0 && (
+        <div className="mt-1 flex items-center gap-1 pl-1 font-mono text-[11px] text-faint">
+          <span>Worked for {formatThoughtDuration(workedMs)}</span>
+          <ChevronRight size={12} className="text-faint" aria-hidden="true"/>
+        </div>
+      )}
     </div>
   );
 }
@@ -589,7 +614,7 @@ function StallNotice({ onStop }: { onStop?: () => void }) {
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onExpandWorker, onWaiveCompletion, onRefreshBase, onRetryWorker, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, modelSwitch, onInterrupt, stopping }: { session?: Session; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onExpandWorker, onWaiveCompletion, onRefreshBase, onRetryWorker, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean }) {
   const visibleItems = useMemo(() => {
     const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
     const nextLiveItems = reduceConversation(events);
@@ -621,7 +646,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     streaming,
   });
   if (!session && !preview) return <Empty title="No chat yet" copy="Start a chat from the sidebar, or open a workspace agent."/>;
-  if (!visibleItems.length && !working && !modelSwitch && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} />;
+  if (!visibleItems.length && !working && !modelSwitch && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} projectName={projectName} />;
   const existingUserTexts = new Set(visibleItems.filter(item => item.type === "message" && item.role === "user").map(item => item.text.trim()));
   // An image-only send has no words yet — its optimistic row is the image, so
   // an empty-text row would render as a blank bubble.
@@ -787,16 +812,23 @@ function PulseDot({ size = 8 }: { size?: number }) {
   return <span className="inline-block flex-none rounded-full bg-muted-foreground/60 animate-[thinking-pulse_1.6s_ease-in-out_infinite]" style={{ width: size, height: size }} aria-hidden="true" />;
 }
 
-function GreetingEmpty({ seed }: { seed?: string }) {
-  // Stable per session so it doesn't reshuffle on every re-render, tinted by time of day.
-  const greeting = useMemo(() => pickGreeting(seed), [seed]);
-  return <Empty title={greeting.headline} copy={greeting.hint} />;
+function GreetingEmpty({ seed, projectName }: { seed?: string; projectName?: string }) {
+  // Stable per session so it doesn't reshuffle on every re-render, tinted by
+  // time of day. A known project name lets the hero name it, dotted-underlined.
+  const greeting = useMemo(() => pickGreeting(seed, projectName), [seed, projectName]);
+  return <Empty title={greeting.headline} copy={greeting.hint} parts={greeting.parts} />;
 }
 
-function Empty({ title, copy }: { title: string; copy: string }) {
+function Empty({ title, copy, parts }: { title: string; copy: string; parts?: GreetingPart[] }) {
   return <div className="absolute inset-0 flex flex-col items-center justify-center px-4 text-center animate-page-enter sm:px-6">
     <div className="flex w-full max-w-[440px] flex-col items-center">
-      <h2 className="font-display text-[22px] font-medium tracking-[-0.02em] text-foreground">{title}</h2>
+      <h2 className="font-display text-[26px] font-medium leading-[1.15] tracking-[-0.02em] text-foreground">
+        {parts && parts.length > 1
+          ? parts.map((part, index) => part.kind === "project"
+            ? <span key={index} className="underline decoration-dotted decoration-muted-foreground/60 underline-offset-[6px]">{part.text}</span>
+            : <span key={index}>{part.text}</span>)
+          : title}
+      </h2>
       <p className="mt-2.5 max-w-[380px] text-[13.5px] leading-relaxed tracking-[-0.004em] text-muted-foreground">{copy}</p>
     </div>
   </div>;
@@ -813,8 +845,9 @@ function ItemView({ item, workers, now, onResolve, onAnswerQuestion, onOpenSessi
         </div>}
       </div>;
     }
-    // No bubble, no card: the agent writes straight onto the canvas.
-    return <div className="group w-full min-w-0 text-foreground">
+    // No bubble, no card: the agent writes straight onto the canvas, in body
+    // ink a step under `foreground` so prose reads as text rather than chrome.
+    return <div className="group w-full min-w-0 text-[14px] text-body">
       {item.status === "streaming" && !item.text.trim() ? <div className="thinking-shimmer h-[2px] w-16 rounded-full" /> : <Markdown text={item.text} dim={item.status === "streaming"} />}
       {onRemember && item.status !== "streaming" && item.text.trim() !== "" && (
         <button

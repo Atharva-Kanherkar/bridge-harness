@@ -139,7 +139,7 @@ describe("theme tokens", () => {
 
   it("locks the graphite and paper grounds", () => {
     expect(tokenValue(":root {", "background")).toBe("#fafaf9");
-    expect(tokenValue(".dark {", "background")).toBe("#171716");
+    expect(tokenValue(".dark {", "background")).toBe("#111111");
   });
 
   it("keeps the ladder rungs distinct within each mode", () => {

@@ -207,30 +207,38 @@ describe("ChatModelControl", () => {
     expect(tiers).toContain("strong");
   });
 
-  it("shows effort badge on the selected row when effort is provided", async () => {
+  it("highlights the current effort in the footer segmented control", async () => {
     await act(async () => root.render(
       <ChatModelControl adapters={claudeAdapters} harness="claude" model="sonnet" onChange={vi.fn()} effort="high" />,
     ));
     await act(async () => trigger().click());
-    const badge = panel().querySelector('[data-testid="effort-badge"]');
-    expect(badge).not.toBeNull();
-    expect(badge!.textContent).toBe("high");
+    const control = panel().querySelector('[data-testid="effort-control"]');
+    expect(control).not.toBeNull();
+    const active = control!.querySelectorAll('[aria-pressed="true"]');
+    // Exactly one segment reads as the active effort, and it is the one passed in.
+    expect(active).toHaveLength(1);
+    expect(active[0].textContent).toBe("High");
   });
 
-  it("omits effort badge when effort is null", async () => {
+  it("omits the effort footer when effort is null and no setter is wired", async () => {
     await act(async () => root.render(
       <ChatModelControl adapters={claudeAdapters} harness="claude" model="sonnet" onChange={vi.fn()} effort={null} />,
     ));
     await act(async () => trigger().click());
-    expect(panel().querySelector('[data-testid="effort-badge"]')).toBeNull();
+    expect(panel().querySelector('[data-testid="effort-control"]')).toBeNull();
   });
 
-  it("shows effort badge only on the selected row, not all rows", async () => {
+  it("moves effort selection off the rows into the footer control", async () => {
+    const onEffortChange = vi.fn();
     await act(async () => root.render(
-      <ChatModelControl adapters={claudeAdapters} harness="claude" model="sonnet" onChange={vi.fn()} effort="high" />,
+      <ChatModelControl adapters={claudeAdapters} harness="claude" model="sonnet" onChange={vi.fn()} effort="high" onEffortChange={onEffortChange} />,
     ));
     await act(async () => trigger().click());
-    expect(panel().querySelectorAll('[data-testid="effort-badge"]')).toHaveLength(1);
+    // The model rows no longer carry an effort badge — effort lives in one place.
+    expect(panel().querySelector('[data-testid="effort-badge"]')).toBeNull();
+    const low = [...panel().querySelectorAll('[data-testid="effort-control"] button')].find(button => button.textContent === "Low")!;
+    await act(async () => (low as HTMLButtonElement).click());
+    expect(onEffortChange).toHaveBeenCalledWith("low");
   });
 });
 

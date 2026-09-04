@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, Home, Pin, Plus, Search, Settings2, SquarePen, Store, type LucideIcon } from "lucide-react";
+import { BarChart3, ChevronDown, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, Home, Pin, Plus, RotateCw, Search, Settings2, SquarePen, Store, type LucideIcon } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
+import { HarnessMark } from "./harnessMarks";
 import type { Session, SessionStatus, Workspace } from "../types";
 import { chordLabel, type CommandId } from "../keymap";
 import { cn } from "@/lib/utils";
@@ -18,6 +19,7 @@ import {
   filterChats,
   groupChats,
   readChatView,
+  statusBucket,
   writeChatView,
   type ChatView,
 } from "./sidebarChats";
@@ -35,16 +37,15 @@ function readWidth(): number {
   return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, value));
 }
 
-// Every row carried a full-strength dot before, so a list of forty read as forty
-// signals. Only a state worth acting on keeps its hue; the rest is a placeholder
-// that holds the title's left edge.
-function StatusDot({ status }: { status: SessionStatus }) {
-  const color = status === "working" ? "bg-success"
-    : status === "waiting" ? "bg-warning"
-    : status === "failed" ? "bg-destructive"
-    : status === "ready" ? "bg-info"
-    : "bg-muted-foreground/25";
-  return <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", color)} />;
+// A row's second line names the one state worth acting on, in that state's own
+// ink. Everything at rest resolves to null, so the subtitle falls back to the
+// chat's age rather than repeating "idle" down the whole list.
+function rowStatus(status: SessionStatus): { word: string; ink: string } | null {
+  const bucket = statusBucket(status);
+  if (bucket === "active") return { word: "working", ink: "text-success" };
+  if (bucket === "waiting") return { word: "needs you", ink: "text-warning" };
+  if (bucket === "failed") return { word: "failed", ink: "text-destructive" };
+  return null;
 }
 
 function ChatRow({
@@ -64,30 +65,44 @@ function ChatRow({
 }) {
   const name = chatName(chat);
   const detail = `${name} — ${harnessLabel(chat.harness)}${chat.model ? ` · ${chat.model}` : ""}`;
-  const onBranch = !!branch;
+  const status = rowStatus(chat.status);
   return (
     <button
       type="button"
       onClick={onClick}
       title={detail}
       className={cn(
-        "flex h-[26px] w-full items-center gap-1.5 rounded-md pr-2 text-left font-sans text-[13px] tracking-[-0.008em] transition-colors active:scale-[0.99]",
+        "flex h-11 w-full items-center gap-2 rounded-[7px] pr-2 text-left font-sans transition-colors active:scale-[0.99]",
         indented ? "pl-7" : "pl-2",
-        active ? "bg-accent font-medium text-foreground" : "text-foreground/80 hover:bg-accent/70 hover:text-foreground",
+        active ? "bg-card" : "hover:bg-card/60",
       )}
     >
-      <StatusDot status={chat.status} />
-      <span className="min-w-0 flex-1 truncate">{name}</span>
-      {onBranch && <GitBranch size={11} strokeWidth={1.7} className="shrink-0 text-ring" aria-label="On a git branch" />}
-      {time && <span className="shrink-0 text-[11px] tabular-nums text-muted-foreground/65">{time}</span>}
+      <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
+        <span className="truncate text-[13px] tracking-[-0.008em] text-foreground">{name}</span>
+        <span className="flex min-w-0 items-center gap-1 truncate text-[11px] tracking-[-0.004em] text-muted-foreground">
+          {branch && (
+            <span className="inline-flex min-w-0 items-center gap-0.5 truncate text-faint">
+              <GitBranch size={10} strokeWidth={1.7} className="shrink-0" aria-label="On a git branch" />
+              <span className="truncate">{branch}</span>
+            </span>
+          )}
+          {branch && (status || time) && <span aria-hidden="true" className="shrink-0 text-faint-2">·</span>}
+          {status
+            ? <span className={cn("shrink-0", status.ink)}>{status.word}</span>
+            : time && <span className="shrink-0 tabular-nums text-faint">{time}</span>}
+        </span>
+      </span>
+      <HarnessMark harness={chat.harness} size={13} className="shrink-0" />
     </button>
   );
 }
 
 function SectionLabel({ children, action }: { children: React.ReactNode; action?: React.ReactNode }) {
   return (
-    <div className="flex h-7 items-center gap-1 px-2">
-      <span className="text-[11px] font-semibold tracking-[-0.004em] text-muted-foreground">{children}</span>
+    <div className="flex h-7 items-center gap-1.5 px-2">
+      <Folder size={13} strokeWidth={1.6} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+      <span className="text-[12px] tracking-[-0.004em] text-muted-foreground">{children}</span>
+      <ChevronDown size={12} strokeWidth={1.8} className="shrink-0 text-faint" aria-hidden="true" />
       {action && <span className="ml-auto flex items-center gap-0.5">{action}</span>}
     </div>
   );
@@ -130,8 +145,8 @@ function GroupLabel({
           aria-hidden="true"
           className={cn("shrink-0 text-muted-foreground/60 transition-transform", !folded && "rotate-90")}
         />
-        {Icon && <Icon size={14} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />}
-        <span className="min-w-0 truncate">{label}</span>
+        {Icon && <Icon size={13} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />}
+        <span className="min-w-0 truncate text-[12px] text-muted-foreground">{label}</span>
       </button>
       <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground/60">{count}</span>
       {action}
@@ -147,6 +162,37 @@ function RailIconButton({ label, onClick, children }: { label: string; onClick: 
       title={label}
       aria-label={label}
       className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+    >
+      {children}
+    </button>
+  );
+}
+
+// The bottom rail is achromatic on purpose: settings, source control, usage,
+// and refresh sit at rest in muted ink and only warm to the foreground on hover
+// or when their screen is the current one.
+function RailBottomButton({
+  label,
+  onClick,
+  active = false,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  active?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "inline-flex h-8 w-8 items-center justify-center rounded-[7px] transition-colors",
+        active ? "bg-card text-foreground" : "text-muted-foreground hover:bg-card hover:text-foreground",
+      )}
     >
       {children}
     </button>
@@ -186,37 +232,6 @@ function ActionRow({
     >
       <Icon size={15} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />
       {label}
-    </button>
-  );
-}
-
-function AccountRow({
-  name,
-  active,
-  onOpenSettings,
-}: {
-  name: string;
-  active: boolean;
-  onOpenSettings: () => void;
-}) {
-  const initial = name.trim().charAt(0).toUpperCase() || "U";
-  return (
-    <button
-      type="button"
-      onClick={onOpenSettings}
-      title={`Settings · ${name}  ${chordLabel("open-settings")}`}
-      aria-label={`Open settings for ${name}`}
-      aria-current={active ? "page" : undefined}
-      className={cn(
-        "flex h-11 w-full items-center gap-2.5 rounded-lg px-2 transition-colors",
-        active ? "bg-accent text-foreground" : "text-foreground/85 hover:bg-accent hover:text-foreground",
-      )}
-    >
-      <span className="grid size-7 shrink-0 place-items-center rounded-full bg-foreground text-[11px] font-semibold text-background">
-        {initial}
-      </span>
-      <span className="min-w-0 flex-1 truncate text-left text-[13px] font-medium tracking-[-0.008em]">{name}</span>
-      <Settings2 size={16} strokeWidth={1.6} className="shrink-0 text-muted-foreground" aria-hidden="true" />
     </button>
   );
 }
@@ -273,6 +288,7 @@ export function BridgeSidebar({
   projectsActive,
   memoryActive = false,
   marketplaceActive,
+  missionControlActive,
   settingsActive,
   accountName,
   newChatBusy = false,
@@ -282,6 +298,7 @@ export function BridgeSidebar({
   onNewChatInProject,
   onOpenProjects,
   onOpenMarketplace,
+  onOpenMissionControl,
   onOpenMemory,
   onOpenSettings,
   onOpenSession,
@@ -504,13 +521,41 @@ export function BridgeSidebar({
         </div>
       )}
       <div className={cn("flex min-h-0 flex-1 flex-col overflow-hidden px-2 pb-3", showWindowNav ? "pt-1" : "pt-3")}>
+        {/* Search and compose share one row: the ⌘K field carries the label,
+            the pencil is a bare icon button that replaces the old filled pill. */}
+        <div className="mb-1.5 flex shrink-0 items-center gap-1.5">
+          <button
+            type="button"
+            onClick={toggleSearch}
+            aria-label="Search"
+            title="Search"
+            aria-expanded={searchOpen}
+            className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-[7px] border border-border bg-background px-2.5 text-left text-[13px] text-muted-foreground transition-colors hover:border-border-card hover:text-foreground"
+          >
+            <Search size={14} strokeWidth={1.6} className="shrink-0" aria-hidden="true" />
+            <span className="min-w-0 flex-1 truncate">Search</span>
+            <span className="shrink-0 font-mono text-[10px] text-faint">⌘K</span>
+          </button>
+          <button
+            type="button"
+            onClick={onOpenNewChat}
+            disabled={newChatBusy}
+            aria-label="New Chat"
+            title={`New Chat  ${chordLabel("new-chat")}`}
+            className={cn(
+              "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[7px] border border-border text-muted-foreground transition-colors hover:bg-card hover:text-foreground",
+              newChatBusy && "cursor-default opacity-50 hover:bg-transparent hover:text-muted-foreground",
+            )}
+          >
+            <SquarePen size={15} strokeWidth={1.6} aria-hidden="true" />
+          </button>
+        </div>
+
         <div className="mb-2 shrink-0">
-          <ActionRow icon={SquarePen} label="New Chat" chord="new-chat" disabled={newChatBusy} onClick={onOpenNewChat} />
-          <ActionRow icon={Search} label="Search" onClick={toggleSearch} />
           <ActionRow icon={Store} label="Marketplace" onClick={onOpenMarketplace} active={marketplaceActive} />
-          {/* Mission Control and the work-board stay off the nav for now.
-           * Routing props remain on the type (and wired in App) so the screens
-           * and their data plumbing are untouched. */}
+          {/* The work-board stays off the nav for now. Routing props remain on the
+           * type (and wired in App) so the screens and their data plumbing are
+           * untouched. */}
           <ActionRow icon={FolderGit2} label="Projects" chord="open-projects" onClick={onOpenProjects} active={projectsActive} />
           <ActionRow icon={Pin} label="Memory" onClick={onOpenMemory} active={memoryActive} />
         </div>
@@ -610,8 +655,21 @@ export function BridgeSidebar({
           )}
         </div>
 
-        <div className="mt-1 shrink-0 border-t border-sidebar-border pt-1.5">
-          <AccountRow name={accountName} active={settingsActive} onOpenSettings={onOpenSettings} />
+        {/* A rail of achromatic icon buttons pinned to the bottom: settings
+            (the account's settings entry), source control, usage, and refresh. */}
+        <div className="mt-1 flex shrink-0 items-center gap-0.5 border-t border-sidebar-border pt-1.5">
+          <RailBottomButton label={`Open settings for ${accountName}`} active={settingsActive} onClick={onOpenSettings}>
+            <Settings2 size={16} strokeWidth={1.6} aria-hidden="true" />
+          </RailBottomButton>
+          <RailBottomButton label="Source control" onClick={onOpenProjects}>
+            <GitBranch size={16} strokeWidth={1.6} aria-hidden="true" />
+          </RailBottomButton>
+          <RailBottomButton label="Usage" active={missionControlActive} onClick={onOpenMissionControl}>
+            <BarChart3 size={16} strokeWidth={1.6} aria-hidden="true" />
+          </RailBottomButton>
+          <RailBottomButton label="Refresh" onClick={() => window.location.reload()}>
+            <RotateCw size={15} strokeWidth={1.6} aria-hidden="true" />
+          </RailBottomButton>
         </div>
       </div>
       </div>

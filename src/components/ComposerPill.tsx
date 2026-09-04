@@ -1,6 +1,6 @@
 import type { ClipboardEvent, KeyboardEvent, MutableRefObject, ReactNode } from "react";
 import { useEffect, useRef, useState } from "react";
-import { ArrowUp, Plus, Square, X } from "lucide-react";
+import { ArrowUp, Paperclip, Plus, Square, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import type { ComposerAttachment } from "@/pasteAttachments";
 
@@ -46,6 +46,21 @@ export type ComposerPillProps = {
   /// spends it, rather than a title-bar corner the session view no longer has.
   leading?: ReactNode;
   trailing?: ReactNode;
+  /// The model chip (ChatModelControl) that leads the controls row, below the
+  /// input. Restyle target 2a: the chip sits at the composer's leading edge with
+  /// the access control beside it, rather than riding the far-right `trailing`
+  /// slot. Optional so surfaces that keep the model picker on the right still work.
+  modelControl?: ReactNode;
+  /// The access / permission control ("Full access ▾"), shown after `modelControl`
+  /// behind a hairline divider in the controls row.
+  accessControl?: ReactNode;
+  /// The context strip, rendered as an attached footer inside the composer frame:
+  /// input → controls row → footer. When present it gets a top hairline and the
+  /// recessed `bg-background` surface, so the frame visually contains it.
+  footer?: ReactNode;
+  /// Which glyph the attach/plus button wears. Chat surfaces attach files, so they
+  /// pass "paperclip"; a surface whose `+` starts a new thing keeps the default plus.
+  plusIcon?: "plus" | "paperclip";
   className?: string;
   layout?: "hero" | "dock";
   autocomplete?: { controls: string; activeDescendant?: string };
@@ -81,6 +96,10 @@ export function ComposerPill({
   inputRef,
   leading,
   trailing,
+  modelControl,
+  accessControl,
+  footer,
+  plusIcon = "plus",
   className,
   layout = "dock",
   autocomplete,
@@ -132,18 +151,21 @@ export function ComposerPill({
       <div data-composer-frame className="relative">
         <form
           className={cn(
-            "relative flex flex-col gap-1.5 rounded-[1.4rem]",
-            // Resting surface: one ladder step above the canvas, no blur.
-            "border border-input bg-card",
+            "relative flex flex-col rounded-2xl",
+            // Resting surface: one ladder step above the canvas, no blur. The
+            // hairline is the composer/input tone, a touch above the plain border.
+            "border border-border-card bg-card",
             "transition-colors duration-200",
             "focus-within:border-ring",
-            isHero ? "px-4 py-3.5 sm:px-5 sm:py-4" : "px-3.5 py-2.5 sm:px-4 sm:py-3",
           )}
           onSubmit={event => {
             event.preventDefault();
             if (canSend) onSubmit();
           }}
         >
+          {/* Input + controls live in the padded region; the footer is full-bleed
+              inside the same frame so the composer reads as one box. */}
+          <div className={cn("flex flex-col gap-1.5", isHero ? "px-4 py-3.5 sm:px-5 sm:py-4" : "px-3.5 py-2.5 sm:px-4 sm:py-3")}>
           {hasAttachments && (
             <div className="flex flex-wrap items-center gap-2 px-1 pt-0.5">
               {attachments!.map(attachment => (
@@ -234,8 +256,17 @@ export function ComposerPill({
             />
           </div>
 
-          <div className="flex items-center justify-between gap-2 px-1">
-            <div className="flex items-center gap-0.5">
+          <div className="flex min-h-[30px] items-center justify-between gap-2">
+            {/* Leading edge of the controls row: the model chip, then the access
+                control behind a hairline divider. */}
+            <div className="flex min-w-0 items-center gap-1.5">
+              {modelControl}
+              {modelControl && accessControl ? <span aria-hidden="true" className="h-4 w-px shrink-0 bg-border" /> : null}
+              {accessControl}
+            </div>
+
+            <div className="flex items-center gap-1">
+              {trailing}
               <button
                 type="button"
                 className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-95 disabled:opacity-40"
@@ -244,13 +275,11 @@ export function ComposerPill({
                 aria-label={plusLabel}
                 title={plusUnavailableReason ?? plusLabel}
               >
-                <Plus className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
+                {plusIcon === "paperclip"
+                  ? <Paperclip className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />
+                  : <Plus className="h-4 w-4" strokeWidth={1.75} aria-hidden="true" />}
               </button>
               {leading}
-            </div>
-
-            <div className="flex items-center gap-2">
-              {trailing}
               {/* Stop and submit are separate actions, and while a turn is running
                   both are present: sending guidance must never read as cancelling
                   the work. */}
@@ -259,7 +288,7 @@ export function ComposerPill({
                   type="button"
                   onClick={onStop}
                   disabled={stopping}
-                  className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-input bg-card text-foreground transition-colors duration-150 active:scale-95 hover:bg-accent disabled:opacity-70"
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border-card bg-card text-foreground transition-colors duration-150 active:scale-95 hover:bg-accent disabled:opacity-70"
                   aria-label={stopping ? "Stopping…" : "Stop"}
                 >
                   <Square className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
@@ -270,8 +299,8 @@ export function ComposerPill({
                   type="submit"
                   disabled={!canSend}
                   className={cn(
-                    "inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full transition-opacity duration-150 active:scale-95",
-                    steerable ? "px-3 text-[13px] font-medium" : "w-9",
+                    "inline-flex h-8 shrink-0 items-center justify-center gap-1.5 rounded-full transition-opacity duration-150 active:scale-95",
+                    steerable ? "px-3 text-[13px] font-medium" : "w-8",
                     canSend
                       ? "bg-primary text-primary-foreground hover:opacity-90"
                       : "bg-accent text-muted-foreground/70",
@@ -285,6 +314,12 @@ export function ComposerPill({
               )}
             </div>
           </div>
+          </div>
+          {footer && (
+            <div className="overflow-hidden rounded-b-2xl bg-background">
+              {footer}
+            </div>
+          )}
         </form>
       </div>
     </div>

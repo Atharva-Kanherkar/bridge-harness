@@ -318,3 +318,20 @@ describe("three layers", () => {
     expect(host.textContent).not.toContain("Reasoning completed");
   });
 });
+
+describe("run trailer", () => {
+  const parallelCommand = (id: number, at: string) =>
+    event(id, "command.completed", {
+      title: `cargo test ${id}`,
+      createdAt: at,
+      data: { type: "commandExecution", command: `cargo test ${id}`, durationMs: 10000, aggregatedOutput: "ok", exitCode: 0 },
+    });
+
+  it("reports the run's wall-clock span, not the summed duration of overlapping calls", () => {
+    // Two calls run in parallel: same start, 10s each. The trailer must read the
+    // union of their windows (~10s), never the doubled sum (20s).
+    mount([parallelCommand(1, "2026-01-01T00:00:00.000Z"), parallelCommand(2, "2026-01-01T00:00:00.000Z")]);
+    expect(host.textContent).toContain("Worked for 10s");
+    expect(host.textContent).not.toContain("20s");
+  });
+});

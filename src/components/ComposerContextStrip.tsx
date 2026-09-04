@@ -88,7 +88,7 @@ export function ComposerContextStrip({
   const displayedBranch = currentBranch || workspace?.branch || "No branch";
 
   return (
-    <div className="mb-2 flex flex-nowrap items-center justify-center gap-0.5 overflow-x-auto px-3" aria-label="Chat context">
+    <div className="flex h-[34px] flex-nowrap items-center justify-start gap-0.5 overflow-x-auto border-t border-border px-3 text-muted-foreground" aria-label="Chat context">
       <button
         type="button"
         ref={repoMenu.triggerRef}
@@ -169,7 +169,9 @@ export function ComposerContextStrip({
       />
 
       {HOSTS.filter(host => !host.disabled).length === 1 ? (
-        <Chip icon={Laptop} label="This Mac" />
+        <span className="ml-auto inline-flex">
+          <Chip icon={Laptop} label="This Mac" />
+        </span>
       ) : (
         <>
           <button
@@ -179,7 +181,7 @@ export function ComposerContextStrip({
             aria-expanded={hostMenu.open}
             onClick={hostMenu.toggle}
             className={cn(
-              "inline-flex h-7 max-w-[16rem] items-center gap-1.5 rounded-md px-2 text-[12.5px] tracking-[-0.01em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+              "ml-auto inline-flex h-7 max-w-[16rem] items-center gap-1.5 rounded-md px-2 text-[12.5px] tracking-[-0.01em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
               hostMenu.open && "bg-accent text-foreground",
             )}
           >
