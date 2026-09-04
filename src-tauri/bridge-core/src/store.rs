@@ -4746,7 +4746,7 @@ mod tests {
              ) VALUES
                  (1,'planner','planner','planning','codex','strong','high',1,'track_standard',0,'now'),
                  (1,'research','research','research','codex','standard','medium',0,'pinned',1,'now');
-             DELETE FROM schema_version WHERE version=46;",
+             DELETE FROM schema_version WHERE version=47;",
         )
         .unwrap();
         drop(db);
