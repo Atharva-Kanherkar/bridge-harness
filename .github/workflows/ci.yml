@@ -70,3 +70,33 @@ jobs:
       - name: cargo test (workspace)
         run: cargo test --manifest-path src-tauri/Cargo.toml --workspace
 
+  sidecar:
+    name: Sidecar
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Node runs the tests (node --test). Bun installs the root workspace so
+      # the Claude Agent SDK resolves from the bun.lock pin instead of a
+      # freshly floated npm resolve — the sidecar is a bun workspace member.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Cache bun install
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
+      - name: Install root workspace (pinned SDK)
+        run: bun install --frozen-lockfile
+
+      - name: Sidecar tests (node --test)
+        run: npm test --prefix sidecar/claude-agent
+
+
