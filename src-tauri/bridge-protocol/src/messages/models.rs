@@ -22,6 +22,13 @@ pub enum ProfilePurpose {
     Evaluator,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileSelectionMode {
+    TrackStandard,
+    Pinned,
+}
+
 /// A profile as the operator edits it, before the server stamps a version.
 /// Mirrors `bridge_core::model_profiles::ModelProfileDraft`, including its
 /// refusal of unknown fields.
@@ -35,6 +42,9 @@ pub struct ModelProfileDraft {
     /// Purpose to fall back to when this one cannot run.
     #[serde(default)]
     pub fallback_purpose: Option<ProfilePurpose>,
+    /// Optional for compatibility with clients that predate explicit tracking.
+    #[serde(default)]
+    pub selection_mode: Option<ProfileSelectionMode>,
     /// Pinned profiles are exempt from learned routing.
     pub pinned: bool,
     pub learning_enabled: bool,
@@ -131,6 +141,7 @@ mod tests {
             model: "gpt-5".into(),
             effort: Effort::High,
             fallback_purpose: Some(ProfilePurpose::PremiumOrchestrator),
+            selection_mode: Some(ProfileSelectionMode::TrackStandard),
             pinned: false,
             learning_enabled: true,
             budget_preference: None,
@@ -145,6 +156,7 @@ mod tests {
         assert_eq!(wire["profiles"][0]["purpose"], json!("standard_orchestrator"));
         assert_eq!(wire["profiles"][0]["fallbackPurpose"], json!("premium_orchestrator"));
         assert_eq!(wire["profiles"][0]["effort"], json!("high"));
+        assert_eq!(wire["profiles"][0]["selectionMode"], json!("track_standard"));
         assert_eq!(wire["profiles"][0]["learningEnabled"], json!(true));
         assert_eq!(round_trip(&save), save);
     }

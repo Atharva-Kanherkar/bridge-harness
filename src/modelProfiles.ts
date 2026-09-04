@@ -56,7 +56,9 @@ const purposeFallback: Record<ProfilePurpose, ProfilePurpose | null> = {
 export function availableModelOptions(adapters: AdapterDescriptor[]) {
   return adapters
     .filter(adapter => adapter.available)
-    .flatMap(adapter => adapter.models.map(model => ({ adapter, model, value: `${adapter.id}:${model.id}` })));
+    .flatMap(adapter => adapter.models
+      .filter(model => model.available !== false && model.compatible !== false)
+      .map(model => ({ adapter, model, value: `${adapter.id}:${model.id}` })));
 }
 
 export function recommendedProfileDrafts(adapters: AdapterDescriptor[]): ModelProfileDraft[] {
@@ -72,6 +74,7 @@ export function recommendedProfileDrafts(adapters: AdapterDescriptor[]): ModelPr
       model: selected.model.id,
       effort: purposeEffort[purpose],
       fallbackPurpose: purposeFallback[purpose],
+      selectionMode: "track_standard",
       pinned: false,
       learningEnabled: true,
       budgetPreference: null,
@@ -93,6 +96,15 @@ export function resolveProfileOption(
     seen.add(current);
     const profile = profiles.get(current);
     if (!profile) break;
+    const selectionMode = profile.selectionMode ?? (profile.pinned ? "pinned" : "track_standard");
+    if (selectionMode === "track_standard") {
+      const tier = purposeTier[current];
+      const promoted = options.find(option => option.adapter.id === profile.provider && option.model.tier === tier && option.model.defaultForTier)
+        ?? options.find(option => option.model.tier === tier && option.model.defaultForTier);
+      if (promoted) return promoted;
+      current = profile.fallbackPurpose ?? null;
+      continue;
+    }
     const selected = options.find(option => option.adapter.id === profile.provider && option.model.id === profile.model);
     if (selected) return selected;
     current = profile.fallbackPurpose ?? null;
@@ -103,8 +115,10 @@ export function resolveProfileOption(
 }
 
 export function profileDraftsFromSetup(setup: ModelSetupState): ModelProfileDraft[] {
-  return setup.profiles.map(({ purpose, provider, model, effort, fallbackPurpose, pinned, learningEnabled, budgetPreference, latencyPreference }) => ({
-    purpose, provider, model, effort, fallbackPurpose, pinned, learningEnabled, budgetPreference, latencyPreference,
+  return setup.profiles.map(({ purpose, provider, model, effort, fallbackPurpose, selectionMode, pinned, learningEnabled, budgetPreference, latencyPreference }) => ({
+    purpose, provider, model, effort, fallbackPurpose,
+    selectionMode: selectionMode ?? (pinned ? "pinned" : "track_standard"),
+    pinned, learningEnabled, budgetPreference, latencyPreference,
   }));
 }
 

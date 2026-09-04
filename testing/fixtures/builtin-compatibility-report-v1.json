@@ -30,8 +30,8 @@
       "modelIds": [
         "haiku",
         "sonnet",
-        "opus",
-        "fable"
+        "fable",
+        "opus"
       ],
       "defaultModelId": "sonnet"
     },
@@ -65,8 +65,8 @@
       "modelIds": [
         "gpt-5.6-luna",
         "gpt-5.6-terra",
-        "gpt-5.6-sol",
-        "gpt-5.3-codex"
+        "gpt-5.3-codex",
+        "gpt-5.6-sol"
       ],
       "defaultModelId": "gpt-5.6-luna"
     },

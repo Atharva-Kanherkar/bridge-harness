@@ -732,6 +732,7 @@ export interface AdapterDescriptor {
   defaultModel?: string | null;
   id: string;
   label: string;
+  modelCatalog?: ModelCatalogDiagnostics;
   models: ModelOption[];
   sandboxModes?: SandboxMode[];
   unavailableReason?: string | null;
@@ -1207,10 +1208,26 @@ export type MergeStrategy = "merge" | "squash" | "rebase";
 
 export type Mergeability = "mergeable" | "conflicting" | "unknown";
 
+export interface ModelCatalogDiagnostics {
+  expiresAt?: string | null;
+  fetchedAt?: string | null;
+  lastError?: string | null;
+  source: ModelCatalogSource;
+  stale: boolean;
+}
+
+export type ModelCatalogSource = "runtime_api" | "last_known_good" | "curated_fallback";
+
+export type ModelLifecycle = "stable" | "preview" | "deprecated" | "unknown";
+
 export interface ModelOption {
+  available?: boolean;
+  compatible?: boolean;
   defaultForTier: boolean;
   id: string;
   label: string;
+  lifecycle?: ModelLifecycle;
+  source?: ModelCatalogSource;
   tier: CapabilityTier;
 }
 
@@ -1224,6 +1241,7 @@ export interface ModelProfileDraft {
   pinned: boolean;
   provider: string;
   purpose: ProfilePurpose;
+  selectionMode?: ProfileSelectionMode | null;
 }
 
 export type Params = Record<string, unknown> | unknown[];
@@ -1240,6 +1258,8 @@ export interface PolicyLimits {
 }
 
 export type ProfilePurpose = "standard_orchestrator" | "premium_orchestrator" | "planner" | "implementer" | "verifier" | "reviewer" | "research" | "documentation" | "evaluator";
+
+export type ProfileSelectionMode = "track_standard" | "pinned";
 
 export interface Project {
   createdAt: string;

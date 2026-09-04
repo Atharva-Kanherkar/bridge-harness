@@ -874,6 +874,12 @@ const CODEX_MANIFEST: &str = include_str!("../../../runtimes/codex/package.json"
 const CODEX_LOCKFILE: &str = include_str!("../../../runtimes/codex/package-lock.json");
 const OPENCODE_MANIFEST: &str = include_str!("../../../runtimes/opencode/package.json");
 const OPENCODE_LOCKFILE: &str = include_str!("../../../runtimes/opencode/package-lock.json");
+#[cfg(test)]
+const CLAUDE_SIDECAR_MANIFEST: &str =
+    include_str!("../../../sidecar/claude-agent/package.json");
+#[cfg(test)]
+const CLAUDE_SIDECAR_LOCKFILE: &str =
+    include_str!("../../../sidecar/claude-agent/package-lock.json");
 
 /// The Claude Agent SDK closure.
 ///
@@ -2090,6 +2096,72 @@ mod tests {
             unpinned.validate().is_err(),
             "a lockfile with no integrity hashes pins nothing, owned or not"
         );
+    }
+
+    fn assert_npm_pin(
+        label: &str,
+        package: &str,
+        expected_version: &str,
+        manifest_json: &str,
+        lockfile_json: &str,
+    ) {
+        let manifest: serde_json::Value = serde_json::from_str(manifest_json)
+            .unwrap_or_else(|error| panic!("{label} manifest is invalid: {error}"));
+        assert_eq!(
+            manifest["dependencies"][package].as_str(),
+            Some(expected_version),
+            "{label} manifest must use the compiled-in exact pin"
+        );
+
+        let lockfile: serde_json::Value = serde_json::from_str(lockfile_json)
+            .unwrap_or_else(|error| panic!("{label} lockfile is invalid: {error}"));
+        assert_eq!(
+            lockfile["packages"][""]["dependencies"][package].as_str(),
+            Some(expected_version),
+            "{label} lockfile root must preserve the exact manifest pin"
+        );
+        let package_path = format!("node_modules/{package}");
+        assert_eq!(
+            lockfile["packages"][&package_path]["version"].as_str(),
+            Some(expected_version),
+            "{label} lockfile must resolve the compiled-in version"
+        );
+    }
+
+    #[test]
+    fn managed_runtime_pins_match_update_manifests() {
+        for (label, package, version, manifest, lockfile) in [
+            (
+                "Claude managed runtime",
+                "@anthropic-ai/claude-agent-sdk",
+                CLAUDE_SDK_VERSION,
+                CLAUDE_MANIFEST,
+                CLAUDE_LOCKFILE,
+            ),
+            (
+                "Claude sidecar",
+                "@anthropic-ai/claude-agent-sdk",
+                CLAUDE_SDK_VERSION,
+                CLAUDE_SIDECAR_MANIFEST,
+                CLAUDE_SIDECAR_LOCKFILE,
+            ),
+            (
+                "Codex managed runtime",
+                "@openai/codex",
+                CODEX_VERSION,
+                CODEX_MANIFEST,
+                CODEX_LOCKFILE,
+            ),
+            (
+                "OpenCode managed runtime",
+                "opencode-ai",
+                OPENCODE_VERSION,
+                OPENCODE_MANIFEST,
+                OPENCODE_LOCKFILE,
+            ),
+        ] {
+            assert_npm_pin(label, package, version, manifest, lockfile);
+        }
     }
 
     #[test]

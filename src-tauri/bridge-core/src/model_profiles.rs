@@ -10,6 +10,31 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub const PROFILE_SCHEMA_VERSION: u32 = 1;
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileSelectionMode {
+    TrackStandard,
+    Pinned,
+}
+
+impl ProfileSelectionMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::TrackStandard => "track_standard",
+            Self::Pinned => "pinned",
+        }
+    }
+}
+
+fn selection_mode_from_str(value: &str, pinned: bool) -> ProfileSelectionMode {
+    match value {
+        "pinned" => ProfileSelectionMode::Pinned,
+        "track_standard" => ProfileSelectionMode::TrackStandard,
+        _ if pinned => ProfileSelectionMode::Pinned,
+        _ => ProfileSelectionMode::TrackStandard,
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "snake_case")]
 pub enum ProfilePurpose {
@@ -122,12 +147,26 @@ pub struct ModelProfileDraft {
     pub effort: Effort,
     #[serde(default)]
     pub fallback_purpose: Option<ProfilePurpose>,
+    /// Optional only for compatibility with pre-selection-mode clients. When
+    /// absent, the legacy `pinned` boolean maps deterministically.
+    #[serde(default)]
+    pub selection_mode: Option<ProfileSelectionMode>,
     pub pinned: bool,
     pub learning_enabled: bool,
     #[serde(default)]
     pub budget_preference: Option<String>,
     #[serde(default)]
     pub latency_preference: Option<String>,
+}
+
+impl ModelProfileDraft {
+    pub fn effective_selection_mode(&self) -> ProfileSelectionMode {
+        self.selection_mode.unwrap_or(if self.pinned {
+            ProfileSelectionMode::Pinned
+        } else {
+            ProfileSelectionMode::TrackStandard
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -142,6 +181,7 @@ pub struct ModelProfile {
     pub model: String,
     pub effort: Effort,
     pub fallback_purpose: Option<ProfilePurpose>,
+    pub selection_mode: ProfileSelectionMode,
     pub pinned: bool,
     pub learning_enabled: bool,
     pub budget_preference: Option<String>,
@@ -166,6 +206,7 @@ pub struct ResolvedProfile {
     pub model: String,
     pub tier: CapabilityTier,
     pub effort: Effort,
+    pub selection_mode: ProfileSelectionMode,
     pub pinned: bool,
     pub learning_enabled: bool,
     pub budget_preference: Option<String>,
@@ -184,7 +225,12 @@ fn catalog_default(
             descriptor
                 .models
                 .iter()
-                .filter(move |model| model.tier == tier && model.default_for_tier)
+                .filter(move |model| {
+                    model.tier == tier
+                        && model.default_for_tier
+                        && model.available
+                        && model.compatible
+                })
                 .map(move |model| (descriptor, model))
         })
         .next()
@@ -196,7 +242,12 @@ fn catalog_default(
                     descriptor
                         .models
                         .iter()
-                        .filter(move |model| model.tier == tier)
+                        .filter(move |model| {
+                            model.tier == tier
+                                && model.available
+                                && model.compatible
+                                && model.lifecycle == crate::model::ModelLifecycle::Stable
+                        })
                         .map(move |model| (descriptor, model))
                 })
                 .next()
@@ -223,6 +274,7 @@ pub fn recommended_profiles(
                 model: model.id.clone(),
                 effort: purpose.effort(),
                 fallback_purpose: purpose.fallback(),
+                selection_mode: Some(ProfileSelectionMode::TrackStandard),
                 pinned: false,
                 learning_enabled: true,
                 budget_preference: None,
@@ -261,7 +313,7 @@ fn validate_profiles(
                 && descriptor
                     .models
                     .iter()
-                    .any(|model| model.id == profile.model)
+                    .any(|model| model.id == profile.model && model.available && model.compatible)
         });
         if !supported {
             return Err(BridgeError::Invalid(format!(
@@ -336,7 +388,7 @@ pub fn setup_state(db: &Connection) -> Result<ModelSetupState, BridgeError> {
 
 fn profiles_at_version(db: &Connection, version: i64) -> Result<Vec<ModelProfile>, BridgeError> {
     let mut statement = db.prepare(
-        "SELECT version,purpose,canonical_role,provider,model,effort,fallback_purpose,pinned,learning_enabled,budget_preference,latency_preference,created_at
+        "SELECT version,purpose,canonical_role,provider,model,effort,fallback_purpose,pinned,selection_mode,learning_enabled,budget_preference,latency_preference,created_at
          FROM model_profiles WHERE version=?1 ORDER BY purpose",
     )?;
     let profiles = statement.query_map(params![version], |row| {
@@ -376,6 +428,8 @@ fn profiles_at_version(db: &Connection, version: i64) -> Result<Vec<ModelProfile
                     Box::new(error),
                 )
             })?;
+        let pinned: bool = row.get(7)?;
+        let selection_mode = selection_mode_from_str(&row.get::<_, String>(8)?, pinned);
         Ok(ModelProfile {
             schema_version: PROFILE_SCHEMA_VERSION,
             version: row.get(0)?,
@@ -386,11 +440,12 @@ fn profiles_at_version(db: &Connection, version: i64) -> Result<Vec<ModelProfile
             model: row.get(4)?,
             effort,
             fallback_purpose: fallback,
-            pinned: row.get(7)?,
-            learning_enabled: row.get(8)?,
-            budget_preference: row.get(9)?,
-            latency_preference: row.get(10)?,
-            created_at: row.get(11)?,
+            selection_mode,
+            pinned: selection_mode == ProfileSelectionMode::Pinned,
+            learning_enabled: row.get(9)?,
+            budget_preference: row.get(10)?,
+            latency_preference: row.get(11)?,
+            created_at: row.get(12)?,
         })
     })?;
     profiles
@@ -412,9 +467,10 @@ pub fn save_profiles(
     )?;
     let now = Utc::now().to_rfc3339();
     for profile in profiles {
+        let selection_mode = profile.effective_selection_mode();
         transaction.execute(
-            "INSERT INTO model_profiles(version,profile_id,purpose,canonical_role,provider,model,effort,fallback_purpose,pinned,learning_enabled,budget_preference,latency_preference,created_at)
-             VALUES(?1,?2,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12)",
+            "INSERT INTO model_profiles(version,profile_id,purpose,canonical_role,provider,model,effort,fallback_purpose,pinned,selection_mode,learning_enabled,budget_preference,latency_preference,created_at)
+             VALUES(?1,?2,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
             params![
                 version,
                 profile.purpose.as_str(),
@@ -426,7 +482,8 @@ pub fn save_profiles(
                 profile.model,
                 profile.effort.as_str(),
                 profile.fallback_purpose.map(ProfilePurpose::as_str),
-                profile.pinned,
+                selection_mode == ProfileSelectionMode::Pinned,
+                selection_mode.as_str(),
                 profile.learning_enabled,
                 profile.budget_preference,
                 profile.latency_preference,
@@ -482,12 +539,52 @@ pub fn resolve_profile(
         let Some(profile) = by_purpose.get(&current) else {
             break;
         };
+        let selection_mode = profile.selection_mode;
+        if selection_mode == ProfileSelectionMode::TrackStandard {
+            let target_tier = current.tier();
+            let provider_default = descriptors.iter().find_map(|descriptor| {
+                (descriptor.available && descriptor.id == profile.provider).then(|| {
+                    descriptor
+                        .models
+                        .iter()
+                        .find(|model| {
+                            model.tier == target_tier
+                                && model.default_for_tier
+                                && model.available
+                                && model.compatible
+                        })
+                        .map(|model| (descriptor, model))
+                })?
+            });
+            if let Some((descriptor, model)) =
+                provider_default.or_else(|| catalog_default(descriptors, target_tier))
+            {
+                return Ok(Some(ResolvedProfile {
+                    purpose,
+                    profile_version: version,
+                    provider: descriptor.id.clone(),
+                    model: model.id.clone(),
+                    tier: model.tier,
+                    effort: profile.effort,
+                    selection_mode,
+                    pinned: false,
+                    learning_enabled: profile.learning_enabled,
+                    budget_preference: profile.budget_preference.clone(),
+                    latency_preference: profile.latency_preference.clone(),
+                    used_fallback: current != purpose
+                        || descriptor.id != profile.provider
+                        || model.id != profile.model,
+                }));
+            }
+            cursor = profile.fallback_purpose;
+            continue;
+        }
         if let Some((descriptor, model)) = descriptors.iter().find_map(|descriptor| {
             (descriptor.available && descriptor.id == profile.provider).then(|| {
                 descriptor
                     .models
                     .iter()
-                    .find(|model| model.id == profile.model)
+                    .find(|model| model.id == profile.model && model.available && model.compatible)
                     .map(|model| (descriptor, model))
             })?
         }) {
@@ -498,7 +595,8 @@ pub fn resolve_profile(
                 model: model.id.clone(),
                 tier: model.tier,
                 effort: profile.effort,
-                pinned: profile.pinned,
+                selection_mode,
+                pinned: selection_mode == ProfileSelectionMode::Pinned,
                 learning_enabled: profile.learning_enabled,
                 budget_preference: profile.budget_preference.clone(),
                 latency_preference: profile.latency_preference.clone(),
@@ -515,6 +613,7 @@ pub fn resolve_profile(
             model: model.id.clone(),
             tier: model.tier,
             effort: purpose.effort(),
+            selection_mode: ProfileSelectionMode::TrackStandard,
             pinned: false,
             learning_enabled: true,
             budget_preference: None,
@@ -544,22 +643,35 @@ mod tests {
                     id: "fast-default".into(),
                     label: "Fast".into(),
                     tier: CapabilityTier::Fast,
+                    available: true,
+                    compatible: true,
+                    lifecycle: crate::model::ModelLifecycle::Stable,
+                    source: crate::model::ModelCatalogSource::CuratedFallback,
                     default_for_tier: true,
                 },
                 ModelOption {
                     id: "standard-default".into(),
                     label: "Standard".into(),
                     tier: CapabilityTier::Standard,
+                    available: true,
+                    compatible: true,
+                    lifecycle: crate::model::ModelLifecycle::Stable,
+                    source: crate::model::ModelCatalogSource::CuratedFallback,
                     default_for_tier: true,
                 },
                 ModelOption {
                     id: "strong-default".into(),
                     label: "Strong".into(),
                     tier: CapabilityTier::Strong,
+                    available: true,
+                    compatible: true,
+                    lifecycle: crate::model::ModelLifecycle::Stable,
+                    source: crate::model::ModelCatalogSource::CuratedFallback,
                     default_for_tier: true,
                 },
             ],
             default_model: Some("standard-default".into()),
+            model_catalog: crate::model::ModelCatalogDiagnostics::curated(),
         }]
     }
 
@@ -618,18 +730,30 @@ mod tests {
                     id: "fast-v2".into(),
                     label: "Fast v2".into(),
                     tier: CapabilityTier::Fast,
+                    available: true,
+                    compatible: true,
+                    lifecycle: crate::model::ModelLifecycle::Stable,
+                    source: crate::model::ModelCatalogSource::RuntimeApi,
                     default_for_tier: true,
                 },
                 ModelOption {
                     id: "standard-v2".into(),
                     label: "Standard v2".into(),
                     tier: CapabilityTier::Standard,
+                    available: true,
+                    compatible: true,
+                    lifecycle: crate::model::ModelLifecycle::Stable,
+                    source: crate::model::ModelCatalogSource::RuntimeApi,
                     default_for_tier: true,
                 },
                 ModelOption {
                     id: "strong-v2".into(),
                     label: "Strong v2".into(),
                     tier: CapabilityTier::Strong,
+                    available: true,
+                    compatible: true,
+                    lifecycle: crate::model::ModelLifecycle::Stable,
+                    source: crate::model::ModelCatalogSource::RuntimeApi,
                     default_for_tier: true,
                 },
             ],
@@ -640,6 +764,101 @@ mod tests {
             .unwrap();
         assert_eq!(resolved.model, "standard-v2");
         assert!(resolved.used_fallback);
+    }
+
+    #[test]
+    fn tracking_profile_follows_new_standard_without_persisted_rewrite() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        let original = reset_profiles(&db, &catalog()).unwrap();
+        let original_profile = original
+            .profiles
+            .iter()
+            .find(|profile| profile.purpose == ProfilePurpose::Implementer)
+            .unwrap()
+            .clone();
+        let mut refreshed = catalog();
+        refreshed[0]
+            .models
+            .iter_mut()
+            .filter(|model| model.tier == CapabilityTier::Standard)
+            .for_each(|model| model.default_for_tier = false);
+        refreshed[0].models.push(ModelOption {
+            id: "standard-v2".into(),
+            label: "Standard v2".into(),
+            tier: CapabilityTier::Standard,
+            available: true,
+            compatible: true,
+            lifecycle: crate::model::ModelLifecycle::Stable,
+            source: crate::model::ModelCatalogSource::RuntimeApi,
+            default_for_tier: true,
+        });
+
+        let resolved = resolve_profile(&db, &refreshed, ProfilePurpose::Implementer)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.model, "standard-v2");
+        assert_eq!(resolved.profile_version, original_profile.version);
+        let persisted = setup_state(&db).unwrap();
+        let persisted = persisted
+            .profiles
+            .iter()
+            .find(|profile| profile.purpose == ProfilePurpose::Implementer)
+            .unwrap();
+        assert_eq!(persisted.model, original_profile.model);
+        assert_eq!(persisted.version, original_profile.version);
+        assert_eq!(
+            persisted.selection_mode,
+            ProfileSelectionMode::TrackStandard
+        );
+    }
+
+    #[test]
+    fn pinned_profile_survives_standard_promotion() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        let mut profiles = recommended_profiles(&catalog()).unwrap();
+        let implementer = profiles
+            .iter_mut()
+            .find(|profile| profile.purpose == ProfilePurpose::Implementer)
+            .unwrap();
+        implementer.selection_mode = Some(ProfileSelectionMode::Pinned);
+        implementer.pinned = true;
+        implementer.learning_enabled = false;
+        save_profiles(&db, &catalog(), &profiles).unwrap();
+
+        let mut refreshed = catalog();
+        refreshed[0]
+            .models
+            .iter_mut()
+            .filter(|model| model.tier == CapabilityTier::Standard)
+            .for_each(|model| model.default_for_tier = false);
+        refreshed[0].models.push(ModelOption {
+            id: "standard-v2".into(),
+            label: "Standard v2".into(),
+            tier: CapabilityTier::Standard,
+            available: true,
+            compatible: true,
+            lifecycle: crate::model::ModelLifecycle::Stable,
+            source: crate::model::ModelCatalogSource::RuntimeApi,
+            default_for_tier: true,
+        });
+        let resolved = resolve_profile(&db, &refreshed, ProfilePurpose::Implementer)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolved.model, "standard-default");
+        assert!(resolved.pinned);
+        assert_eq!(resolved.selection_mode, ProfileSelectionMode::Pinned);
+    }
+
+    #[test]
+    fn legacy_pinned_boolean_migrates_to_explicit_selection_mode() {
+        assert_eq!(
+            selection_mode_from_str("legacy", true),
+            ProfileSelectionMode::Pinned
+        );
+        assert_eq!(
+            selection_mode_from_str("legacy", false),
+            ProfileSelectionMode::TrackStandard
+        );
     }
 
     #[test]

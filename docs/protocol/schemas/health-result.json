@@ -29,6 +29,20 @@
         "label": {
           "type": "string"
         },
+        "modelCatalog": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelCatalogDiagnostics"
+            }
+          ],
+          "default": {
+            "expiresAt": null,
+            "fetchedAt": null,
+            "lastError": null,
+            "source": "curated_fallback",
+            "stale": false
+          }
+        },
         "models": {
           "items": {
             "$ref": "#/definitions/ModelOption"
@@ -113,9 +127,67 @@
       ],
       "type": "object"
     },
+    "ModelCatalogDiagnostics": {
+      "properties": {
+        "expiresAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "fetchedAt": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lastError": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "source": {
+          "$ref": "#/definitions/ModelCatalogSource"
+        },
+        "stale": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "source",
+        "stale"
+      ],
+      "type": "object"
+    },
+    "ModelCatalogSource": {
+      "enum": [
+        "runtime_api",
+        "last_known_good",
+        "curated_fallback"
+      ],
+      "type": "string"
+    },
+    "ModelLifecycle": {
+      "enum": [
+        "stable",
+        "preview",
+        "deprecated",
+        "unknown"
+      ],
+      "type": "string"
+    },
     "ModelOption": {
       "description": "Mirrors `bridge_core::model::ModelOption`.",
       "properties": {
+        "available": {
+          "default": true,
+          "type": "boolean"
+        },
+        "compatible": {
+          "default": true,
+          "type": "boolean"
+        },
         "defaultForTier": {
           "type": "boolean"
         },
@@ -124,6 +196,22 @@
         },
         "label": {
           "type": "string"
+        },
+        "lifecycle": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelLifecycle"
+            }
+          ],
+          "default": "unknown"
+        },
+        "source": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/ModelCatalogSource"
+            }
+          ],
+          "default": "curated_fallback"
         },
         "tier": {
           "$ref": "#/definitions/CapabilityTier"
