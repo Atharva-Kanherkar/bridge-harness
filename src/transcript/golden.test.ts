@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { normalizeAgentEvent } from "./codec";
-import { reduceTranscript } from "./reducer";
-import { HARNESSES, harnessStream, reduceHarness, type GoldenHarness } from "./golden";
+import { projectSessionConversation } from "../conversation";
+import type { ConversationItem } from "./item";
+import { durableEntries, HARNESSES, harnessStream, reduceHarness, type GoldenHarness } from "./golden";
 
 /**
  * One logical turn, four harnesses, one transcript.
@@ -149,13 +150,36 @@ describe("golden streams", () => {
     }
   });
 
-  it("keeps live and durable reductions of the same stream in step", () => {
-    // Reducing a normalized stream twice must be a pure function of its input:
-    // the reducer holds no state between calls, which is what lets the live
-    // window and the forest projection share it.
-    for (const harness of HARNESSES) {
-      const events = harnessStream(harness).map(normalizeAgentEvent);
-      expect(reduceTranscript(events)).toEqual(reduceTranscript(events));
+  /** What a reader sees, independent of which projection produced the row. */
+  function projectRow(item: ConversationItem) {
+    return {
+      type: item.type,
+      ...(item.role ? { role: item.role } : {}),
+      status: item.status,
+      verb: item.tool?.verb,
+      target: item.tool?.target,
+      path: item.tool?.path,
+      hasPatch: !!item.tool?.patch,
+    };
+  }
+
+  it.each(HARNESSES)("agrees between the live and durable projections of the %s turn", harness => {
+    // The live window and the forest projection share one reducer; this is
+    // the assertion that they actually agree on one real turn, not just that
+    // reducing the same events twice is deterministic.
+    const liveRows = reduceHarness(harness).map(projectRow);
+    const entries = durableEntries(harness);
+    const lastEntryId = entries.at(-1)?.id ?? null;
+    const durableRows = projectSessionConversation(entries, lastEntryId).map(projectRow);
+    if (harness === "cursor") {
+      // Documented divergence 11: ACP (acp_events.rs) emits a thought only as
+      // `reasoning.delta`, never a `reasoning.completed`, so the live window's
+      // two thought cards are built from deltas alone. The durable writer
+      // never persists a kind ending in `.delta` (store.rs), so a Cursor
+      // turn replayed from the forest has no thought cards at all.
+      expect(durableRows).toEqual(liveRows.filter(row => row.type !== "reasoning"));
+      return;
     }
+    expect(durableRows).toEqual(liveRows);
   });
 });

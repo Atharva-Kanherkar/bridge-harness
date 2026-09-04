@@ -14,7 +14,7 @@ import { asWireKind } from "./wire";
 import { normalizeAgentEvent } from "./codec";
 import { reduceTranscript } from "./reducer";
 import type { ConversationItem } from "./item";
-import type { AgentEvent } from "../types";
+import type { AgentEvent, SessionEntry } from "../types";
 
 export const HARNESSES = ["claude", "codex", "cursor", "opencode"] as const;
 export type GoldenHarness = (typeof HARNESSES)[number];
@@ -54,4 +54,49 @@ export function harnessStream(harness: GoldenHarness): AgentEvent[] {
 
 export function reduceHarness(harness: GoldenHarness): ConversationItem[] {
   return reduceTranscript(harnessStream(harness).map(normalizeAgentEvent));
+}
+
+/**
+ * The same turn, as the durable writer would have stored it.
+ *
+ * Mirrors `store::session_event_in_transaction`: only frames with
+ * `sequence > 0` are persisted (transient deltas, progress and turn markers
+ * carry `sequence: 0` and are never written to the forest); a
+ * `message.completed` is rewritten to `user.message`/`assistant.message` by
+ * role; every other kind is stored unchanged. The payload carries the raw
+ * event's `itemId`, `role`, `status`, `title`, `text` and `data`, exactly the
+ * fields `normalizeSessionEntry` reads back out.
+ */
+export function durableEntries(harness: GoldenHarness): SessionEntry[] {
+  const persisted = (STREAMS[harness] as RawFixtureEvent[]).filter(event => event.sequence > 0);
+  const entries: SessionEntry[] = [];
+  let parentEntryId: string | null = null;
+  for (const event of persisted) {
+    const id = `${harness}-e${event.sequence}`;
+    const kind = event.kind === "message.completed"
+      ? (event.role === "user" ? "user.message" : "assistant.message")
+      : event.kind;
+    entries.push({
+      id,
+      sessionId: harness,
+      parentEntryId,
+      sequence: event.sequence,
+      semanticSchemaVersion: 2,
+      kind,
+      payload: {
+        itemId: event.itemId ?? null,
+        role: event.role ?? null,
+        status: event.status ?? null,
+        title: event.title ?? null,
+        text: event.text ?? null,
+        data: event.data ?? {},
+      },
+      providerEventId: null,
+      contextVisibility: "eligible",
+      tokenEstimate: null,
+      createdAt: "2026-09-05T10:00:00Z",
+    });
+    parentEntryId = id;
+  }
+  return entries;
 }

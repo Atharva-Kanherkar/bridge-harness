@@ -248,3 +248,12 @@ Recorded here rather than skipped, per the issue:
 Divergences 8 to 10 are behavior changes on the Cursor and OpenCode transcripts
 specifically. They are what the golden test needs in order to assert real
 parity rather than assert documented brokenness.
+
+11. **ACP's thought stream, replayed.** Cursor's reasoning frames are
+    `reasoning.delta` only (`acp_events.rs` never emits a `reasoning.completed`
+    for a thought chunk), so the live window's two thought cards are built
+    from deltas alone. The durable writer never persists a kind ending in
+    `.delta` (`store::session_event_in_transaction`), so a Cursor turn
+    replayed from the forest has no thought cards at all. The golden parity
+    test (`golden.test.ts`) asserts this explicitly rather than asserting
+    reasoning parity for cursor.
