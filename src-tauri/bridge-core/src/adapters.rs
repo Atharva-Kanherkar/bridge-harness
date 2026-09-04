@@ -225,18 +225,23 @@ pub const PARENT_WATCHDOG_DISABLE_ENV: &str = "BRIDGE_DISABLE_PARENT_WATCHDOG";
 // Killing only `$child` would leave forked helpers as the very PID-1 orphans
 // this monitor exists to prevent. TERM is ignored first so the group signal
 // does not interrupt the wrapper's own escalation.
+//
+// `/bin/kill` is invoked by full path rather than as a bare `kill`: dash's
+// builtin (the `/bin/sh` on Debian/Ubuntu, unlike bash on macOS) rejects
+// `-- -$$` with "Illegal number: -" and silently no-ops behind the
+// `2>/dev/null` redirect, so the group was never actually signaled on Linux.
 #[cfg(unix)]
 const PARENT_WATCHDOG_SCRIPT: &str = r#"cmd="$1"; shift
 "$cmd" "$@" &
 child=$!
-trap 'trap "" TERM INT; kill -TERM -- -$$ 2>/dev/null' TERM INT
+trap 'trap "" TERM INT; /bin/kill -TERM -- -$$ 2>/dev/null' TERM INT
 while kill -0 "$child" 2>/dev/null; do
   ppid=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')
   if [ -z "$ppid" ] || [ "$ppid" -le 1 ]; then
     trap '' TERM
-    kill -TERM -- -$$ 2>/dev/null
+    /bin/kill -TERM -- -$$ 2>/dev/null
     sleep 2
-    kill -KILL -- -$$ 2>/dev/null
+    /bin/kill -KILL -- -$$ 2>/dev/null
     exit 143
   fi
   sleep 2 &
@@ -1710,8 +1715,13 @@ mod tests {
         };
         // The wrapped command forks a group-mate, then execs into the pid the
         // watchdog tracks — killing only that pid would leave the mate as a
-        // PID-1 orphan. `set -m` gives the watchdog its own process group, as
-        // configure_process_group does in production.
+        // PID-1 orphan. `setsid` (Linux, always present via util-linux)
+        // gives the watchdog its own process group, as configure_process_group
+        // does in production. `set -m` (shell job control) does the same on
+        // an interactive shell, but silently no-ops without a controlling
+        // TTY — which a CI runner never has and macOS's setsid-less coreutils
+        // never provide either — so prefer setsid where it exists and fall
+        // back to job control for local development.
         let mut intermediate = Command::new("/bin/sh");
         intermediate
             .env("BRIDGE_WATCHDOG_UNDER_TEST", PARENT_WATCHDOG_SCRIPT)
@@ -1721,7 +1731,7 @@ mod tests {
             )
             .args([
                 "-c",
-                "set -m; /bin/sh -c 'eval \"$BRIDGE_WATCHDOG_UNDER_TEST\"' bridge-watchdog /bin/sh -c \"$BRIDGE_WATCHDOG_INNER\" & sleep 600",
+                "if command -v setsid >/dev/null 2>&1; then pfx=setsid; else set -m; pfx=; fi; $pfx /bin/sh -c 'eval \"$BRIDGE_WATCHDOG_UNDER_TEST\"' bridge-watchdog /bin/sh -c \"$BRIDGE_WATCHDOG_INNER\" & sleep 600",
             ])
             .stdin(Stdio::null())
             .stdout(Stdio::null())
