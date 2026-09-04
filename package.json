@@ -1,7 +1,7 @@
 {
   "name": "bridge-deck",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.5.0",
   "type": "module",
   "workspaces": [
     "sidecar/claude-agent"
@@ -15,7 +15,9 @@
     "prepare:browser-host:dev": "sh scripts/prepare-browser-host.sh debug",
     "prepare:daemon": "sh scripts/prepare-daemon.sh release",
     "prepare:daemon:dev": "sh scripts/prepare-daemon.sh debug",
+    "prepare:claude-sidecar": "sh scripts/prepare-claude-sidecar.sh",
     "prepare:safari-extension": "sh scripts/prepare-safari-extension.sh",
+    "release:dmg": "sh scripts/release-dmg.sh",
     "check": "tsc -b --pretty false && cargo check --manifest-path src-tauri/Cargo.toml --workspace",
     "check:builtin-adapters": "sh scripts/check-builtin-adapters.sh",
     "smoke:builtin-adapters": "sh scripts/smoke-builtin-adapters.sh",

@@ -8,6 +8,16 @@ Bridge is built for developers who want the speed of coding agents with explicit
 
 > Early-stage software: Bridge is currently packaged for macOS 12 or later and is under active development.
 
+## Download
+
+macOS 12 or later (Apple Silicon). Open the `.dmg`, drag **Bridge** into Applications, then launch it.
+
+- **Release:** [GitHub Releases](https://github.com/Atharva-Kanherkar/bridge-harness/releases) — look for `Bridge_0.5.0_*.dmg`
+- Claude models need **Node.js 18+** on your `PATH`. Codex, Claude Code, and OpenCode stay optional: a missing CLI shows that adapter as unavailable instead of blocking startup.
+- A notarized build should open without Gatekeeper blocking it. If you built from source yourself, the binary is ad-hoc signed and macOS will ask you to open it anyway.
+
+The application is all rights reserved unless the maintainers publish a license.
+
 ## Highlights
 
 - **Structured agent sessions** — Connect Codex through its `app-server` JSON-RPC protocol, Claude Code through the Agent SDK sidecar, and OpenCode through its headless server API. Bridge renders normalized messages, reasoning, plans, tool calls, approvals, file changes, errors, and artifacts in the desktop UI instead of embedding provider TUIs.
@@ -171,7 +181,20 @@ bun run tauri build --debug
 open src-tauri/target/debug/bundle/macos/Bridge.app
 ```
 
-The Tauri configuration targets a macOS `.app` bundle and uses `http://localhost:1420` for development.
+A production `.app` and `.dmg` (unsigned unless you set a Developer ID and notary credentials):
+
+```sh
+bun run tauri build
+open src-tauri/target/release/bundle/macos/Bridge.app
+```
+
+Signed, notarized disk image for GitHub Releases (Developer ID Application certificate + App Store Connect API key or Apple ID app-specific password):
+
+```sh
+bun run release:dmg
+```
+
+The Tauri configuration targets a macOS `.app` and `.dmg` and uses `http://localhost:1420` for development.
 
 ## Repository layout
 
@@ -187,6 +210,7 @@ The Tauri configuration targets a macOS `.app` bundle and uses `http://localhost
 
 Useful design references:
 
+- [`CHANGELOG.md`](CHANGELOG.md) — release notes for the downloadable app
 - [`docs/protocol/README.md`](docs/protocol/README.md) — the versioned RPC contract, handshake, error codes, and generated client types
 - [`docs/session-forest.md`](docs/session-forest.md) — immutable history, active branches, and divergence evidence
 - [`docs/delegation-policy.md`](docs/delegation-policy.md) — routing, budgets, write isolation, approvals, and worker lifecycle
