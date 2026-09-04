@@ -47,6 +47,9 @@ fn agent_event_name() -> &'static str {
 /// One message to send: an event name and its payload.
 pub type Emission = (String, Value);
 
+/// What the shell does with a message once the batcher has decided on it.
+type Sink = Box<dyn Fn(&str, Value) + Send + Sync>;
+
 /// The decision half, with no threads in it.
 #[derive(Default)]
 struct Pending {
@@ -116,7 +119,7 @@ pub struct AgentEventBatcher {
     woken: Condvar,
     window: Duration,
     cap: usize,
-    emit: Box<dyn Fn(&str, Value) + Send + Sync>,
+    emit: Sink,
 }
 
 impl AgentEventBatcher {

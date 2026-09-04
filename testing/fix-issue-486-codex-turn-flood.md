@@ -69,12 +69,19 @@ Four faults compound, and only the first is visible:
    the number of steps.
 
    **Locked by:** `src/components/AgentConversation.flood.test.tsx` (jsdom) —
-   the 100-step fixture draws a bounded number of top-level rows (user bubble,
+   the 100-step fixture draws exactly five top-level rows (user bubble,
    opening thought, one group, closing thought, reply) and the group's summary
    reads `Ran 62 commands, read 30 files, edited 8 files`.
-   `src/transcript/groupItems.test.ts` — the walk itself, case by case:
+   `src/transcript/grouping.test.ts` — the walk itself, case by case:
    thought inside a run folds in, thought after the run does not, a plan update
    does not split a run, prose does, a new turn does.
+
+   *The fixture is a recipe, not a file.* The issue asks for
+   `fixtures/codex-flood.json`; four hundred hand-written frames would be
+   unreviewable and what is under test is a shape, so
+   `src/transcript/fixtures/codexFlood.ts` generates the same stream — the
+   frame-for-frame shape of `codex.json`, at any step count — and
+   `fixtures/README.md` documents it beside the four golden streams.
 
 3. **Collapsed by default.** The `heldOpen` latch is gone. A group is
    collapsed unless the reader expanded it; a live group shows the step
@@ -84,9 +91,13 @@ Four faults compound, and only the first is visible:
    across the live-to-complete transition, so a group the reader opened stays
    open and a group they closed stays closed.
 
-   *Deliberate removal:* a group carrying a patch no longer opens itself. With
-   one group per run, that rule would have opened the whole flood. A patch
-   still opens its own `ActionRow` once the group is expanded.
+   *Bounded exception, kept deliberately:* a run of at most three tool calls
+   that carries a patch still opens itself. The repo's inline-diff doctrine —
+   "what the model wrote is the most important thing on the screen", locked by
+   four cases in `AgentConversation.transcript.test.tsx` — is not worth losing
+   to fix a flood, and the bound is what makes it safe: past three calls the
+   run is exactly the thing that must not open itself. `SELF_OPENING_STEPS`
+   names it.
 
    Summary copy names what ran, commands first, no em dashes:
    `Ran 62 commands, read 30 files, edited 8 files` when complete,
@@ -131,11 +142,17 @@ Four faults compound, and only the first is visible:
    and `reduceTranscript` followed by `groupItems` completes well inside a
    generous budget on the test runner.
 
-   **Locked by:** `src/transcript/flood.perf.test.ts` — asserts the structural
-   bound (top-level rows ≤ 8 for 100 steps) and that the median of five
-   reduce-plus-group passes is under 50 ms. The threshold is generous on
-   purpose: this is a guard against a return to O(steps²) work, not a
-   benchmark, and a CI runner under load must not fail it.
+   **Locked by:** `src/transcript/flood.perf.test.ts` — five top-level rows at
+   10, 100, 400 and 1000 steps; every call accounted for in the one group; the
+   median of five reduce-plus-group passes under 50 ms; and 400 steps costing
+   under ten times what 100 did. The thresholds are generous on purpose: this
+   is a guard against a return to per-step structure, not a benchmark, and a
+   CI runner under load must not fail it. Measured on this machine: 0.77 ms
+   for 100 steps (468 frames), 1.57 ms for 400, 3.70 ms for 1000 — linear.
+
+   `src/agentEventBatch.test.ts` closes the other half of the flush path: one
+   batched IPC message is delivered to subscribers one frame at a time, in
+   order.
 
 7. **Windowing of collapsed history** for 1000+ top-level rows is **out of
    scope** for this branch and is not implemented. With behaviors 2 and 3 in
@@ -159,6 +176,13 @@ Four faults compound, and only the first is visible:
   Behavior 2 makes that turn draw `user-bubble, thought, activity-group,
   assistant-prose`. Only the expected array and its explanatory comment
   change; the file's structure, helpers and other cases are left alone.
+- Three other existing test files move with the behavior they describe:
+  `AgentConversation.transcript.test.tsx` (the two plan cases now assert one
+  run with the plan inside it, per behavior 2),
+  `AgentConversation.motion.test.tsx` (the glyph case opens the finished run
+  by hand rather than relying on the removed latch), and
+  `api.boundary.test.ts` (the batched stream joins the menu channel on the
+  named list of shell-owned Tauri events).
 
 ## Non-goals
 
