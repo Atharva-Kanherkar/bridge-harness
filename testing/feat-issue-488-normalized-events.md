@@ -112,12 +112,16 @@ Anything outside those families is **unknown** and is handled by rule 12.
     (`import.meta.env.DEV`) reports itself through `console.error` with the raw
     kind. It never silently becomes `activity`.
 
-13. **Type-level boundary.** `AgentEvent.kind` is a branded `WireKind`, so no
-    module can compare it to a string literal by accident. Reading it as a
-    string requires the single documented escape hatch
-    `readWireKind(event)`; `asWireKind(kind)` is the one way to mint one, used
-    by `src/api.ts`, the mock layer, and test fixtures. `AgentConversation.tsx`
-    imports no raw-event type at all for its transcript path.
+13. **Type-level boundary.** `AgentEvent.kind` is an opaque `WireKind`.
+    Deliberately **not** a branded string (`string & {…}`): TypeScript's
+    comparability rule still lets a branded string equal a literal, so
+    `event.kind === "tool.started"` would have kept compiling. Declared as a
+    handle instead, so comparison, `switch`, `startsWith` and template
+    interpolation are all type errors. `readWireKind(kind)` is the one way to
+    open one and `asWireKind(kind)` the one way to mint one (the `api.ts`
+    decode boundary, the mock layer, test fixtures). The type error itself is
+    locked by a `@ts-expect-error` assertion in the gate test, so relaxing the
+    brand fails `tsc`.
 
 14. **Lint gate.** A test fails the build if a transcript rendering component
     branches on harness identity or reads wire kinds. Identity display sites
@@ -152,16 +156,27 @@ Anything outside those families is **unknown** and is handled by rule 12.
 - `orders sequence-0 frames where they streamed`.
 - `surfaces an unknown event as a raw item, never activity`.
 
-### `src/transcript/golden.test.ts`
-- `normalizes the same logical turn identically across harnesses` — reads
-  `src/transcript/fixtures/{codex,claude,cursor,opencode}.json`, normalizes
-  each and asserts the four normalized sequences are structurally equal
-  (variant `type` plus item semantics, ignoring ids and timestamps).
-- `reduces the same logical turn to the same conversation structure` — asserts
-  identical `type`/`status`/tool-verb structure for all four.
-- `renders the four reduced transcripts to the same row structure` — jsdom,
-  `react-dom/client` + `act`, mounts `AgentConversation` on each harness's
-  reduced live events and compares the rendered row types and count.
+### `src/transcript/golden.test.ts` (fixtures loaded by `golden.ts`)
+- `normalizes every <harness> frame into the union, never into unknown` — reads
+  `src/transcript/fixtures/{claude,codex,cursor,opencode}.json` and asserts the
+  exact normalized `type` sequence per harness. The four sequences are **not**
+  identical, and the table in the test says why: Claude streams no tool output,
+  OpenCode re-sends a whole running part instead of a delta, and ACP has no
+  "thought completed" frame at all.
+- `puts <harness>'s three calls on the same three surfaces` — activity,
+  activity, diff, by item id rather than by frame.
+- `reduces the <harness> turn to the same rows` — the seven-row structure
+  (`type`, `role`, `status`, tool verb) is identical for all four.
+- `says the same thing about <harness>'s tool calls` — command, output, target,
+  path and patch agree across all four.
+- `reports <harness>'s exit code only where the protocol has one` — Codex and
+  OpenCode carry one; Claude's `tool_result` and ACP have no field for it.
+- `reads the same prose out of all four`.
+
+### `src/transcript/golden.render.test.tsx`
+- `draws the same transcript for every harness` — jsdom, `react-dom/client` +
+  `act`, mounts `AgentConversation` on each harness's raw stream and compares
+  the ordered row shapes and count.
 
 ### `src/transcript/harnessBranchGate.test.ts`
 - `no transcript rendering component branches on harness identity` — reads
@@ -209,4 +224,27 @@ Recorded here rather than skipped, per the issue:
    reducer renders it only when it came from the forest, because a live raw
    frame has no stable identity to reconcile against its durable twin.
 5. **Unknown kinds** now render as a collapsed raw card instead of a generic
-   activity row. This is the one deliberate behavior change (rule 12).
+   activity row (rule 12).
+6. **`checkpoint`, `compaction*` and `branch.summary` arriving live** reduced to
+   generic activity rows; only the forest projection gave them their own cards.
+   Unified to the card on both paths.
+7. **An orphan resolution** — an `approval.resolved` or `permission.resolved`
+   whose request is not on the branch, or has scrolled out of the live window —
+   is dropped on both paths. Live already dropped it; the forest projection
+   grew a bare "Approval resolved" row saying nothing.
+8. **ACP tool categories.** Cursor sends every call as `tool.*` with the
+   category on `data.kind`, so an ACP read used to render as an anonymous
+   "Using a tool" and an ACP edit as a plain tool row. The codec now reads
+   `data.kind` for the verb and puts an `edit` on the diff surface.
+9. **ACP output, paths and diffs.** ACP hangs a call's output on the update's
+   content blocks, its files in `locations`, and its edit as a `diff` block
+   rather than a patch. All three are now read, and the diff block is
+   synthesized into a unified patch the same way the Rust side already does for
+   Claude.
+10. **OpenCode tool names and arguments.** OpenCode names the tool `tool`, not
+    `name`, and nests its arguments under `state.input`. Both are now read, so
+    an OpenCode read is a read rather than an anonymous tool call.
+
+Divergences 8 to 10 are behavior changes on the Cursor and OpenCode transcripts
+specifically. They are what the golden test needs in order to assert real
+parity rather than assert documented brokenness.

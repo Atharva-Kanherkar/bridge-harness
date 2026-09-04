@@ -133,6 +133,8 @@ function readPatch(source: ToolCallSource, data: Record<string, unknown>, output
       .join("\n");
     if (joined) return joined;
   }
+  const acp = acpDiffPatch(data);
+  if (acp) return acp;
   // Some providers only ever put the diff in the body. Taken last, and only
   // when it is unmistakably a diff.
   if (carriesPatch(source.text)) return source.text;
@@ -140,13 +142,55 @@ function readPatch(source: ToolCallSource, data: Record<string, unknown>, output
   return undefined;
 }
 
+/**
+ * A unified diff synthesized from ACP's `diff` content blocks.
+ *
+ * ACP describes an edit as before/after text rather than as a patch, so a
+ * Cursor edit reached the diff card with nothing to render. Hunk positions are
+ * approximate — both sides anchor at line 1, the same compromise the Rust side
+ * makes for Claude — while the `-`/`+` content is exact, which is what the
+ * inline patch and the diffstat actually read.
+ */
+function acpDiffPatch(data: Record<string, unknown>): string | undefined {
+  const blocks = objectValue(data.update).content ?? data.content;
+  if (!Array.isArray(blocks)) return undefined;
+  const patches = blocks
+    .map(block => {
+      const entry = objectValue(block);
+      if (entry.type !== "diff") return undefined;
+      const path = text(entry.path) ?? "file";
+      const before = typeof entry.oldText === "string" ? entry.oldText : "";
+      const after = typeof entry.newText === "string" ? entry.newText : "";
+      if (!before && !after) return undefined;
+      const removed = before ? before.split("\n").map(line => `-${line}`) : [];
+      const added = after ? after.split("\n").map(line => `+${line}`) : [];
+      return [
+        `--- a/${path}`,
+        `+++ b/${path}`,
+        `@@ -1,${removed.length} +1,${added.length} @@`,
+        ...removed,
+        ...added,
+      ].join("\n");
+    })
+    .filter((value): value is string => !!value);
+  return patches.length ? patches.join("\n") : undefined;
+}
+
 function readPath(data: Record<string, unknown>): string | undefined {
   const input = objectValue(data.input);
   const state = objectValue(data.state);
   const stateInput = objectValue(state.input);
+  const update = objectValue(data.update);
+  const locations = Array.isArray(update.locations) ? update.locations : data.locations;
   const direct = text(input.file_path) ?? text(input.notebook_path) ?? text(input.path)
     ?? text(data.path) ?? text(stateInput.filePath) ?? text(stateInput.file_path) ?? text(stateInput.path);
   if (direct) return direct;
+  // ACP names the files a call touched in `locations`.
+  if (Array.isArray(locations) && locations.length) {
+    const first = objectValue(locations[0]);
+    const located = text(first.path);
+    if (located) return located;
+  }
   if (Array.isArray(data.changes)) {
     const first = objectValue(data.changes[0]);
     return text(first.path);
@@ -161,10 +205,30 @@ function readStatus(status: string | undefined): ToolStatus {
   return "idle";
 }
 
+/**
+ * ACP hangs a tool call's output on the update's content blocks rather than on
+ * a field named for it, so a Cursor tool row used to render with nothing under
+ * it while the same call under Codex showed its terminal output.
+ */
+function acpContentText(data: Record<string, unknown>): string | undefined {
+  const blocks = objectValue(data.update).content ?? data.content;
+  if (!Array.isArray(blocks)) return undefined;
+  const joined = blocks
+    .map(block => {
+      const entry = objectValue(block);
+      const inner = objectValue(entry.content);
+      return text(inner.text) ?? text(entry.text);
+    })
+    .filter((value): value is string => !!value)
+    .join("\n");
+  return joined || undefined;
+}
+
 /** The output behind a tool row: explicit output, else the item's own body. */
 function readOutput(source: ToolCallSource, data: Record<string, unknown>): string | undefined {
   const state = objectValue(data.state);
-  const direct = text(data.aggregatedOutput) ?? text(data.output) ?? text(state.output);
+  const direct = text(data.aggregatedOutput) ?? text(data.output) ?? text(state.output)
+    ?? acpContentText(data);
   if (direct) return direct;
   const body = source.text ?? "";
   if (!body.trim()) return undefined;
@@ -430,11 +494,31 @@ export function classifyExploratoryCommand(rawCommand: string): {
 
 /** Verb, glyph, wording and target — the half of the shape that depends on
  *  *which* tool ran rather than on how it went. */
+/**
+ * The verbs ACP names its tool categories with. Cursor and every other ACP
+ * agent send one of these on `data.kind`; without them the transcript could
+ * only guess from the title, which is how a Cursor read used to render as an
+ * anonymous "Using a tool".
+ */
+const ACP_TOOL_KINDS: Record<string, { verb: ToolVerb; glyph: ToolGlyph; doing: string; done: string }> = {
+  read: { verb: "read", glyph: "file", doing: "Reading", done: "Read" },
+  edit: { verb: "edit", glyph: "pencil", doing: "Editing", done: "Edited" },
+  delete: { verb: "edit", glyph: "pencil", doing: "Deleting", done: "Deleted" },
+  move: { verb: "edit", glyph: "pencil", doing: "Moving", done: "Moved" },
+  search: { verb: "search", glyph: "search", doing: "Searching", done: "Searched" },
+  execute: { verb: "run", glyph: "terminal", doing: "Running", done: "Ran" },
+  fetch: { verb: "search", glyph: "globe", doing: "Fetching", done: "Fetched" },
+};
+
 function namedToolFacet(source: ToolCallSource, data: Record<string, unknown>): {
   verb: ToolVerb; glyph: ToolGlyph; doing: string; done: string; target?: string; command?: string; path?: string;
 } {
-  const input = objectValue(data.input);
-  const name = text(data.name);
+  // Claude puts the arguments on `input`; OpenCode nests them under the part's
+  // `state`. Merged so the branches below can read one bag.
+  const state = objectValue(data.state);
+  const input = { ...objectValue(data.input), ...objectValue(state.input) };
+  // Claude names the tool `name`, OpenCode names it `tool`. Same question.
+  const name = text(data.name) ?? text(data.tool);
   const dataType = String(data.type ?? "");
   const title = source.title ?? "";
   const path = readPath(data);
@@ -488,6 +572,14 @@ function namedToolFacet(source: ToolCallSource, data: Record<string, unknown>): 
   }
   if (dataType === "webSearch") {
     return { verb: "search", glyph: "globe", doing: "Searching the web", done: "Searched the web", target: title || undefined };
+  }
+  // ACP-shaped items, identified by the category the protocol itself names.
+  const acp = ACP_TOOL_KINDS[String(data.kind ?? "")];
+  if (acp) {
+    const command = acp.verb === "run" ? text(data.command) ?? (title || undefined) : undefined;
+    const exploratory = command ? classifyExploratoryCommand(command) : null;
+    if (exploratory) return { ...exploratory, command };
+    return { ...acp, target: acp.verb === "run" ? command ?? "command" : file ?? (title || undefined), command };
   }
   return { verb: "tool", glyph: "wrench", doing: "Using a tool", done: "Used a tool", target: title || undefined };
 }

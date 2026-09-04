@@ -131,9 +131,17 @@ function isToolKind(kind: string): boolean {
   return TOOL_PREFIXES.some(prefix => kind.startsWith(prefix));
 }
 
-/** Which surface a tool-shaped kind draws on. */
-function surfaceFor(kind: string): ToolSurface {
-  return kind.startsWith("file_change.") || kind.startsWith("diff.") ? "diff" : "activity";
+/**
+ * Which surface a tool-shaped kind draws on.
+ *
+ * Codex, Claude and OpenCode all get their edits normalized to `file_change.*`
+ * upstream, so the kind alone says "diff". ACP does not: Cursor sends every
+ * call as `tool.*` and names the category on the payload, which is why an ACP
+ * patch used to render as a plain tool row with the diff hidden inside it.
+ */
+function surfaceFor(kind: string, data: Record<string, unknown>): ToolSurface {
+  if (kind.startsWith("file_change.") || kind.startsWith("diff.")) return "diff";
+  return data.kind === "edit" ? "diff" : "activity";
 }
 
 /**
@@ -178,9 +186,7 @@ export function normalizeAgentEvent(raw: AgentEvent): TranscriptEvent {
     itemId,
     createdAt: raw.createdAt,
     origin: "live",
-    // The synthetic key keeps the wire kind so two lifecycle halves that carry
-    // no item id stay two rows, exactly as they always have.
-    key: itemId ?? liveFallbackKey(kind, raw.id),
+    key: liveKey(kind, itemId, raw.id),
     causalAnchor: raw.causalAnchor,
     providerData: data,
   };
@@ -203,7 +209,7 @@ export function normalizeAgentEvent(raw: AgentEvent): TranscriptEvent {
     return { type: "message.completed", envelope, role: raw.role ? messageRole(raw.role) : undefined, text, title, status };
   }
   if (kind === "tool.progress" || kind.endsWith(".output_delta") || kind === "diff.delta") {
-    const surface = surfaceFor(kind);
+    const surface = surfaceFor(kind, data);
     return { type: "tool.progress", envelope, surface, title, outputDelta: text, status, tool: tool(surface) };
   }
   if (kind.startsWith("plan.")) {
@@ -275,7 +281,7 @@ export function normalizeAgentEvent(raw: AgentEvent): TranscriptEvent {
     return { type: "raw", envelope, title: title ?? "Raw provider event", text, inspectable: false };
   }
   if (isToolKind(kind)) {
-    const surface = surfaceFor(kind);
+    const surface = surfaceFor(kind, data);
     const started = kind.endsWith(".started");
     return started
       ? { type: "tool.started", envelope, surface, title, text, status, role: raw.role ? messageRole(raw.role) : undefined, tool: tool(surface) }
@@ -292,10 +298,24 @@ export function normalizeAgentEvent(raw: AgentEvent): TranscriptEvent {
   return { type: "unknown", envelope, wireKind: kind, raw: { ...data } };
 }
 
-function liveFallbackKey(kind: string, eventId: number): string | undefined {
+/**
+ * The row a live frame belongs to.
+ *
+ * An approval, a permission and a question are keyed by their own event id
+ * rather than by the item id they carry: providers name the interaction after
+ * the call it is about — Claude sends `permission.requested` under the tool's
+ * own id — and keying on that would merge the question into the command,
+ * leaving the reader a tool row with buttons on it and no way to answer.
+ *
+ * Everything else prefers the provider's item id, so a lifecycle's two halves
+ * meet. The synthetic fallback keeps the wire kind, so two halves that carry no
+ * item id stay two rows, exactly as they always have.
+ */
+function liveKey(kind: string, itemId: string | undefined, eventId: number): string | undefined {
   if (kind === "approval.requested" || kind === "approval.resolved") return `approval:${eventId}`;
   const interaction = interactionKind(kind);
   if (interaction) return `${interaction}:${eventId}`;
+  if (itemId) return itemId;
   if (kind.startsWith("plan.")) return "current-plan";
   // Reasoning and prose without an item id borrow the turn's key, which only
   // the reducer knows.
@@ -495,7 +515,7 @@ export function normalizeSessionEntry(entry: SessionEntry): TranscriptEvent | nu
     return null;
   }
   if (isToolKind(kind)) {
-    const surface = surfaceFor(kind);
+    const surface = surfaceFor(kind, flat);
     const started = kind.endsWith(".started");
     return started
       ? { type: "tool.started", envelope, surface, title, text: body, status, role, tool: tool(surface) }

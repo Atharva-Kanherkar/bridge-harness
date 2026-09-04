@@ -1,0 +1,31 @@
+[
+  { "id": 1, "sequence": 1, "kind": "message.completed", "itemId": "user-1", "role": "user", "status": "completed", "text": "Run the tests and fix the failing case.", "data": {} },
+
+  { "id": 0, "sequence": 0, "kind": "reasoning.delta", "itemId": "reasoning-msg-1", "status": "streaming", "text": "Start with the suite.", "data": {} },
+  { "id": 2, "sequence": 2, "kind": "reasoning.completed", "itemId": "reasoning-msg-1", "status": "completed", "text": "Start with the suite.", "data": {} },
+
+  { "id": 3, "sequence": 3, "kind": "command.started", "itemId": "tool-1", "title": "bun test", "status": "inProgress",
+    "data": { "type": "tool_use", "id": "tool-1", "name": "Bash", "input": { "command": "bun test" }, "command": "bun test" } },
+  { "id": 4, "sequence": 4, "kind": "command.completed", "itemId": "tool-1", "status": "completed", "text": "1 failing\n",
+    "data": { "type": "tool_result", "tool_use_id": "tool-1", "content": "1 failing\n", "durationMs": 1200 } },
+
+  { "id": 0, "sequence": 0, "kind": "reasoning.delta", "itemId": "reasoning-msg-2", "status": "streaming", "text": "Read the file it points at.", "data": {} },
+  { "id": 5, "sequence": 5, "kind": "reasoning.completed", "itemId": "reasoning-msg-2", "status": "completed", "text": "Read the file it points at.", "data": {} },
+
+  { "id": 6, "sequence": 6, "kind": "tool.started", "itemId": "tool-2", "title": "Read", "status": "inProgress",
+    "data": { "type": "tool_use", "id": "tool-2", "name": "Read", "input": { "file_path": "src/lib.rs" } } },
+  { "id": 7, "sequence": 7, "kind": "tool.completed", "itemId": "tool-2", "status": "completed", "text": "fn a() {}\n",
+    "data": { "type": "tool_result", "tool_use_id": "tool-2", "content": "fn a() {}\n", "durationMs": 40 } },
+
+  { "id": 8, "sequence": 8, "kind": "file_change.started", "itemId": "tool-3", "title": "Edit", "status": "inProgress",
+    "data": { "type": "tool_use", "id": "tool-3", "name": "Edit",
+      "input": { "file_path": "src/lib.rs", "old_string": "fn a() {}", "new_string": "fn a() { 1 }" },
+      "patch": "@@ -1,1 +1,1 @@\n-fn a() {}\n+fn a() { 1 }\n" } },
+  { "id": 9, "sequence": 9, "kind": "file_change.completed", "itemId": "tool-3", "status": "completed", "text": "edited",
+    "data": { "type": "tool_result", "tool_use_id": "tool-3", "content": "edited", "durationMs": 80, "additions": 1, "deletions": 1 } },
+
+  { "id": 0, "sequence": 0, "kind": "message.delta", "itemId": "msg-1", "role": "assistant", "status": "streaming", "text": "Fixed the assertion in src/lib.rs.", "data": {} },
+  { "id": 10, "sequence": 10, "kind": "message.completed", "itemId": "msg-1", "role": "assistant", "status": "completed", "text": "Fixed the assertion in src/lib.rs.", "data": {} },
+
+  { "id": 0, "sequence": 0, "kind": "turn.completed", "status": "completed", "data": {} }
+]

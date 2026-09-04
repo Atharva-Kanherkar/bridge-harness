@@ -204,7 +204,7 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
       item.role = event.role ?? item.role;
       if (event.text) item.text = event.text;
       item.data = { ...item.data, ...envelope.providerData };
-      restat(item, event.surface);
+      restat(item);
       return;
     }
 
@@ -214,7 +214,7 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
       item.text += event.outputDelta;
       item.status = event.status ?? item.status;
       item.data = { ...item.data, ...envelope.providerData };
-      restat(item, event.surface);
+      restat(item);
       return;
     }
 
@@ -399,13 +399,19 @@ function upsert(
   return item;
 }
 
-/** Re-read the tool facet from the row as it now stands, not from one frame. */
-function restat(item: ConversationItem, surface: "activity" | "diff"): void {
+/**
+ * Re-read the tool facet from the row as it now stands, not from one frame.
+ *
+ * A single frame is not enough: a command's arguments arrive on the start and
+ * its exit code on the completion, and ACP does not repeat the tool category on
+ * the update at all. The surface is the row's own, for the same reason.
+ */
+function restat(item: ConversationItem): void {
   item.tool = readToolCall({
     title: item.title,
     text: item.text,
     status: item.status,
-    surface,
+    surface: item.type === "diff" ? "diff" : "activity",
     data: item.data,
   });
 }
