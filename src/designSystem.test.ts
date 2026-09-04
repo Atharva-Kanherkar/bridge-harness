@@ -139,7 +139,7 @@ describe("theme tokens", () => {
 
   it("locks the graphite and paper grounds", () => {
     expect(tokenValue(":root {", "background")).toBe("#fafaf9");
-    expect(tokenValue(".dark {", "background")).toBe("#111111");
+    expect(tokenValue(".dark {", "background")).toBe("#000000");
   });
 
   it("keeps the ladder rungs distinct within each mode", () => {
@@ -185,9 +185,16 @@ describe("theme tokens", () => {
     expect(css).toMatch(/html\[data-native-fullscreen\] \.u-traffic-inset/);
   });
 
-  it("lets the native canvas show a dark AppKit tint without changing the browser canvas", () => {
+  it("keeps the native canvas and rail fully opaque so no wallpaper tint bleeds through", () => {
+    // The pure-black shell must not let AppKit's material — and the desktop
+    // wallpaper's colour — wash the grounds. Both are solid tokens, not a
+    // color-mix against transparent.
     expect(css).toMatch(
-      /html\[data-tauri\] \.u-vibrancy-canvas\s*\{[^}]*background-color:\s*color-mix\(in srgb,\s*var\(--color-background\) 82%,\s*transparent\)/,
+      /html\[data-tauri\] \.u-vibrancy-canvas\s*\{[^}]*background-color:\s*var\(--color-background\)\s*;/,
     );
+    expect(css).toMatch(
+      /html\[data-tauri\] \.u-vibrancy-sidebar\s*\{[^}]*background-color:\s*var\(--color-sidebar\)\s*;/,
+    );
+    expect(css).not.toMatch(/\.u-vibrancy-canvas\s*\{[^}]*transparent/);
   });
 });

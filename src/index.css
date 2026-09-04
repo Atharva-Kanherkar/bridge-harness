@@ -160,12 +160,12 @@
 .dark {
     color-scheme: dark;
 
-    /* Near-black shell — tighter, darker, denser. Color lives only in harness
-       marks and status ink; the chrome is achromatic. */
-    --sidebar: #0d0d0d;
-    --background: #111111;
-    --card: #161616;
-    --popover: #1a1a1a;
+    /* Pure-black shell — the ground is true black; raised surfaces lift off it
+       in neutral greys. Color lives only in harness marks and status ink. */
+    --sidebar: #000000;
+    --background: #000000;
+    --card: #0f0f0f;
+    --popover: #161616;
 
     --foreground: #e4e4e4;
     --card-foreground: #e4e4e4;
@@ -188,7 +188,7 @@
     --accent-foreground: #e4e4e4;
 
     --primary: #e4e4e4;
-    --primary-foreground: #111111;
+    --primary-foreground: #000000;
 
     --ring: #6a9bcc;
     --scrim: rgb(0 0 0 / 0.62);
@@ -207,7 +207,7 @@
     --harness-codex: #4bc39c;
     --harness-opencode: #9b8cf0;
 
-    --code: #0e0e0d;
+    --code: #0a0a0a;
     --code-foreground: #ececea;
     --code-highlight: color-mix(in srgb, #ececea 7%, transparent);
 
@@ -223,9 +223,9 @@
     --sidebar-foreground: #8b8b8b;
     --sidebar-accent: color-mix(in srgb, #e4e4e4 6%, transparent);
     --sidebar-accent-foreground: #e4e4e4;
-    --sidebar-border: #171717;
+    --sidebar-border: #161616;
     --sidebar-primary: #e4e4e4;
-    --sidebar-primary-foreground: #111111;
+    --sidebar-primary-foreground: #000000;
     --sidebar-ring: #6a9bcc;
 }
 
@@ -388,16 +388,18 @@ html[data-native-fullscreen] .u-traffic-inset {
    `bg-sidebar` / `bg-background`. Vite in Chrome never sets data-tauri, so it
    stays fully opaque. */
 @layer utilities {
+  /* Pure-black shell: no AppKit material bleeds through. The wallpaper wash was
+     the "brown tint" — a warm desktop tinted the translucent grounds. Both the
+     rail and the canvas are now fully opaque, so the ground is exactly its
+     token, never the wallpaper behind the window. */
   html[data-tauri] .u-app-shell {
-    background: transparent;
+    background: var(--color-background);
   }
   html[data-tauri] .u-vibrancy-sidebar {
-    background-color: color-mix(in srgb, var(--color-sidebar) 60%, transparent);
+    background-color: var(--color-sidebar);
   }
   html[data-tauri] .u-vibrancy-canvas {
-    /* Keep the reading surface dark and legible while allowing AppKit's
-       wallpaper tint and blur to reach the canvas, not only the sidebar. */
-    background-color: color-mix(in srgb, var(--color-background) 82%, transparent);
+    background-color: var(--color-background);
   }
 }
 
