@@ -157,11 +157,22 @@ function inDevelopment(): boolean {
   return (import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV === true;
 }
 
+/**
+ * Kinds already reported this process, keyed `${origin}:${kind}`.
+ *
+ * `reduceConversation` re-normalizes the whole live window on every flush, so
+ * without this an unknown kind would log on every one of those instead of
+ * once when it first shows up.
+ */
+const reportedUnknownKinds = new Set<string>();
+
 function reportUnknown(kind: string, origin: string): void {
-  if (inDevelopment()) {
-    // eslint-disable-next-line no-console
-    console.error(`[transcript] unmapped ${origin} event kind: ${kind}`);
-  }
+  if (!inDevelopment()) return;
+  const key = `${origin}:${kind}`;
+  if (reportedUnknownKinds.has(key)) return;
+  reportedUnknownKinds.add(key);
+  // eslint-disable-next-line no-console
+  console.error(`[transcript] unmapped ${origin} event kind: ${kind}`);
 }
 
 /* ── Live events ───────────────────────────────────────────────────────── */

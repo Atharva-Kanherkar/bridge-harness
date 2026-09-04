@@ -100,6 +100,15 @@ describe("normalizeAgentEvent", () => {
     expect(reported).toHaveBeenCalledWith(expect.stringContaining("telepathy.received"));
   });
 
+  it("reports an unmapped kind once, not once per flush", () => {
+    // reduceConversation re-normalizes the whole live window on every 50ms
+    // flush; a kind nothing here has a name for must not log once per flush.
+    const reported = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    normalizeAgentEvent(live("phantom.sighted"));
+    normalizeAgentEvent(live("phantom.sighted"));
+    expect(reported).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps a live raw provider frame out of the transcript", () => {
     // It has no stable identity to reconcile against the durable twin the
     // forest holds a moment later, so drawing it would double every raw row.
