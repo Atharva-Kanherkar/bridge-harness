@@ -32,8 +32,8 @@ use crate::{
     },
     delegation::WriteMode,
     model::{
-        AdapterDescriptor, AuthState, CapabilityTier, ModelCatalogDiagnostics,
-        ModelCatalogSource, ModelLifecycle, ModelOption,
+        AdapterDescriptor, AuthState, CapabilityTier, ModelCatalogDiagnostics, ModelCatalogSource,
+        ModelLifecycle, ModelOption,
     },
     model_catalog::{self, CatalogCandidate},
     BridgeError,
@@ -172,6 +172,9 @@ pub struct GrokProfile {
     pub additional_directories: bool,
     pub prompt_images: bool,
     pub auth_methods: Vec<String>,
+    /// `initialize` proves protocol support, not an authenticated provider
+    /// session. This becomes true only after a real `session/new` succeeds.
+    pub session_opened: bool,
     pub modes: Vec<String>,
     pub current_mode: Option<String>,
     pub models: Vec<ModelOption>,
@@ -277,13 +280,13 @@ fn redact(text: &str, keys: &[(&'static str, String)]) -> String {
 
 fn probe(executable: &GrokExecutable, timeout: Duration) -> Result<GrokProfile, GrokUnavailable> {
     let keys = configured_keys();
-    let launch = launch_for(&executable.path, &std::env::temp_dir(), &keys, timeout);
-    let session = match AcpSession::connect(launch) {
-        Ok(session) => session,
+    let launch = launch_for(&executable.path, &std::env::temp_dir(), &keys, timeout)
+        .ledger_kind("acp.discovery");
+    let capabilities = match AcpSession::probe(launch) {
+        Ok(capabilities) => capabilities,
         Err(error) => return Err(classify_probe_failure(&executable.version, &error, &keys)),
     };
-    let profile = read_profile(executable, session.capabilities(), session.session_state());
-    session.shutdown(ShutdownReason::Completed);
+    let profile = read_profile(executable, &capabilities, &AcpSessionState::default());
     let profile = profile?;
     if !identifies_as_grok(profile.agent_name.as_deref()) {
         return Err(GrokUnavailable::Unidentified {
@@ -327,6 +330,11 @@ fn classify_probe_failure(
     }
 }
 
+/// Build a profile from an initialize-only discovery handshake.
+///
+/// ACP agents report model selectors and modes only after `session/new`; those
+/// fields stay empty until [`profile_after_session`] refreshes the cache
+/// following a user-owned launch.
 fn read_profile(
     executable: &GrokExecutable,
     capabilities: &AcpCapabilities,
@@ -351,6 +359,7 @@ fn read_profile(
             .iter()
             .map(|method| method.id.clone())
             .collect(),
+        session_opened: false,
         modes: state
             .modes
             .as_ref()
@@ -369,6 +378,39 @@ fn read_profile(
         models,
         default_model,
     })
+}
+
+/// Refresh the pieces an agent reports only after opening a real session.
+/// Discovery remains `initialize`-only; a successful user launch fills the
+/// picker cache for later starts without making background discovery expensive.
+fn profile_after_session(profile: &GrokProfile, session: &AcpSession) -> GrokProfile {
+    let mut refreshed = profile.clone();
+    refreshed.session_opened = true;
+    refreshed.modes = session
+        .session_state()
+        .modes
+        .as_ref()
+        .map(|modes| {
+            modes
+                .available_modes
+                .iter()
+                .map(|mode| mode.id.0.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    refreshed.current_mode = session
+        .session_state()
+        .modes
+        .as_ref()
+        .map(|modes| modes.current_mode_id.0.to_string());
+    refreshed.models = model_options(&session.session_state().config_options);
+    refreshed.default_model = refreshed
+        .models
+        .iter()
+        .find(|model| model.default_for_tier && model.tier == CapabilityTier::Standard)
+        .or_else(|| refreshed.models.iter().find(|model| model.default_for_tier))
+        .map(|model| model.id.clone());
+    refreshed
 }
 
 pub fn advertised_auth_method(profile: &GrokProfile) -> Option<&str> {
@@ -404,7 +446,11 @@ fn model_options(options: &[SessionConfigOption]) -> Vec<ModelOption> {
                 tier: model.tier,
                 available: model.available,
                 compatible: model.compatible,
-                lifecycle: if provider_default { ModelLifecycle::Stable } else { model.lifecycle },
+                lifecycle: if provider_default {
+                    ModelLifecycle::Stable
+                } else {
+                    model.lifecycle
+                },
                 promotion_priority: i64::from(provider_default),
             }
         }),
@@ -626,9 +672,12 @@ impl AdapterRuntime for GrokRuntime {
                 BridgeError::Invalid("This Grok approval is no longer outstanding".into())
             })?;
         let option_id = if let Some(exact) = exact_option_id {
-            let offered = options.iter().find(|option| option.id == exact).ok_or_else(|| {
-                BridgeError::Invalid(format!("Grok did not offer option {exact:?}"))
-            })?;
+            let offered = options
+                .iter()
+                .find(|option| option.id == exact)
+                .ok_or_else(|| {
+                    BridgeError::Invalid(format!("Grok did not offer option {exact:?}"))
+                })?;
             let compatible = option_for_decision(decision, std::slice::from_ref(offered));
             compatible.ok_or_else(|| {
                 BridgeError::Invalid(format!(
@@ -814,7 +863,7 @@ fn launch(
     model: Option<&str>,
     instructions: Option<&str>,
     on_progress: Option<crate::adapters::StartupProgress<'_>>,
-) -> Result<StartedAdapter, BridgeError> {
+) -> Result<(StartedAdapter, GrokProfile), BridgeError> {
     let keys = configured_keys();
     if let Some(on_progress) = on_progress {
         on_progress(StartupPhase::Spawning);
@@ -826,11 +875,12 @@ fn launch(
         crate::acp_session::DEFAULT_HANDSHAKE_TIMEOUT,
     ))
     .map_err(|error| launch_error(&error, &keys))?;
+    let established_profile = profile_after_session(profile, &session);
     if let Some(on_progress) = on_progress {
         on_progress(StartupPhase::Handshake);
     }
     if let Some(model) = model {
-        if let Err(error) = apply_model(&session, profile, model) {
+        if let Err(error) = apply_model(&session, model) {
             session.shutdown(ShutdownReason::Failed);
             return Err(error);
         }
@@ -870,20 +920,23 @@ fn launch(
         context_inventory: Mutex::new(grok_context_inventory(ContextLifecyclePhase::Start)?),
         stopped: false,
     };
-    Ok(StartedAdapter {
-        runtime: Box::new(runtime),
-        reader: Box::new(GrokEventReader {
-            lines: receiver,
-            pending: Vec::new(),
-            consumed: 0,
-        }),
-        startup_messages: Vec::new(),
-    })
+    Ok((
+        StartedAdapter {
+            runtime: Box::new(runtime),
+            reader: Box::new(GrokEventReader {
+                lines: receiver,
+                pending: Vec::new(),
+                consumed: 0,
+            }),
+            startup_messages: Vec::new(),
+        },
+        established_profile,
+    ))
 }
 
-fn apply_model(session: &AcpSession, profile: &GrokProfile, model: &str) -> Result<(), BridgeError> {
-    let advertised = profile
-        .models
+fn apply_model(session: &AcpSession, model: &str) -> Result<(), BridgeError> {
+    let models = model_options(&session.session_state().config_options);
+    let advertised = models
         .iter()
         .find(|option| option.id == model)
         .ok_or_else(|| {
@@ -1078,8 +1131,11 @@ impl crate::adapters::HarnessAdapter for GrokAdapter {
             id: HARNESS_ID.into(),
             label: HARNESS_LABEL.into(),
             available: profile.is_some(),
+            // `initialize` proves the binary speaks ACP but deliberately does
+            // not authenticate. Only a real user session is proof of login.
             auth_state: match (profile, unavailable) {
-                (Some(_), _) => AuthState::SignedIn,
+                (Some(profile), _) if profile.session_opened => AuthState::SignedIn,
+                (Some(_), _) => AuthState::Unknown,
                 (None, Some(reason)) => reason.auth_state(),
                 (None, None) => AuthState::Unknown,
             },
@@ -1121,19 +1177,29 @@ impl crate::adapters::HarnessAdapter for GrokAdapter {
         if request.briefing.is_some() {
             return Err(BridgeError::Invalid(
                 "Grok cannot run a briefing: it has no certified permission representation, so \
-                 an empty tool scope cannot be enforced on it".into(),
+                 an empty tool scope cannot be enforced on it"
+                    .into(),
             ));
         }
         let profile = self
             .profile()
             .map_err(|reason| BridgeError::Invalid(reason.reason()))?;
-        launch(
+        let (started, established_profile) = launch(
             &profile,
             request.cwd,
             request.model,
             request.instructions,
             request.on_progress,
-        )
+        )?;
+        *self.probe.write().unwrap() = Some(CachedProbe {
+            executable: established_profile.executable.clone(),
+            version: established_profile.version.clone(),
+            outcome: Ok(established_profile),
+        });
+        if let Some(notify) = &self.notify {
+            notify();
+        }
+        Ok(started)
     }
 
     /// Unreachable while [`Self::supports_native_resume`] is false — the
@@ -1361,8 +1427,14 @@ mod tests {
         ];
         let launch = launch_for(exec, cwd, &keys, Duration::from_secs(5));
 
-        assert_eq!(launch.env.get("XAI_API_KEY"), Some(&"xai-value".to_string()));
-        assert_eq!(launch.env.get("GROK_API_KEY"), Some(&"grok-value".to_string()));
+        assert_eq!(
+            launch.env.get("XAI_API_KEY"),
+            Some(&"xai-value".to_string())
+        );
+        assert_eq!(
+            launch.env.get("GROK_API_KEY"),
+            Some(&"grok-value".to_string())
+        );
     }
 
     #[test]
@@ -1427,6 +1499,7 @@ mod tests {
             additional_directories: false,
             prompt_images: false,
             auth_methods: Vec::new(),
+            session_opened: false,
             modes: Vec::new(),
             current_mode: None,
             models: Vec::new(),
@@ -1450,7 +1523,9 @@ mod tests {
             version: "1.0.1-upgraded".into(),
         };
         assert!(
-            adapter.profile_for(&upgraded).map(|profile| profile.version)
+            adapter
+                .profile_for(&upgraded)
+                .map(|profile| profile.version)
                 != Ok("1.0.0-cached".to_string()),
             "cache invalidation must not return the stale profile"
         );
@@ -1473,13 +1548,22 @@ mod tests {
             },
         ];
 
-        assert_eq!(option_for_decision("accept", &options), Some("allow-once-id"));
+        assert_eq!(
+            option_for_decision("accept", &options),
+            Some("allow-once-id")
+        );
         assert_eq!(
             option_for_decision("acceptForSession", &options),
             Some("allow-always-id")
         );
-        assert_eq!(option_for_decision("decline", &options), Some("reject-once-id"));
-        assert_eq!(option_for_decision("cancel", &options), Some("reject-once-id"));
+        assert_eq!(
+            option_for_decision("decline", &options),
+            Some("reject-once-id")
+        );
+        assert_eq!(
+            option_for_decision("cancel", &options),
+            Some("reject-once-id")
+        );
         assert_eq!(option_for_decision("unknown", &options), None);
     }
 
@@ -1493,7 +1577,7 @@ mod tests {
     }
 
     #[test]
-    fn fake_cli_probe_succeeds_and_reads_models() {
+    fn fake_cli_probe_is_initialize_only() {
         let fixture = fixture_cli();
         if !fixture.exists() {
             return;
@@ -1507,8 +1591,9 @@ mod tests {
         let profile = probe(&executable, Duration::from_secs(5)).unwrap();
         assert_eq!(profile.version, "1.0.4-e2b819f");
         assert!(profile.load_session);
-        assert!(!profile.models.is_empty());
-        assert!(profile.models.iter().any(|m| m.id == "grok-code"));
+        assert!(!profile.session_opened);
+        assert!(profile.models.is_empty());
+        assert!(profile.modes.is_empty());
     }
 
     #[test]
@@ -1531,7 +1616,7 @@ mod tests {
     }
 
     #[test]
-    fn fake_cli_probe_fails_on_needs_login() {
+    fn fake_cli_probe_does_not_open_a_session_to_check_login() {
         let fixture = fixture_cli();
         if !fixture.exists() {
             return;
@@ -1543,10 +1628,10 @@ mod tests {
             version: "1.0.4".into(),
         };
 
-        let err = probe(&executable, Duration::from_secs(3)).unwrap_err();
+        let profile = probe(&executable, Duration::from_secs(3)).unwrap();
         std::env::remove_var("BRIDGE_GROK_FAKE_MODE");
 
-        assert!(matches!(err, GrokUnavailable::NeedsSignIn { .. }));
+        assert!(!profile.session_opened);
     }
 
     #[test]
@@ -1558,7 +1643,12 @@ mod tests {
             },
             &[],
         );
-        assert_eq!(err, GrokUnavailable::NeedsSignIn { version: "1.0.0".into() });
+        assert_eq!(
+            err,
+            GrokUnavailable::NeedsSignIn {
+                version: "1.0.0".into()
+            }
+        );
 
         let err2 = classify_probe_failure(
             "1.0.0",
@@ -1588,6 +1678,7 @@ mod tests {
             additional_directories: false,
             prompt_images: true,
             auth_methods: vec!["grok_login".into()],
+            session_opened: true,
             modes: vec!["agent".into(), "plan".into()],
             current_mode: Some("agent".into()),
             models: vec![ModelOption {

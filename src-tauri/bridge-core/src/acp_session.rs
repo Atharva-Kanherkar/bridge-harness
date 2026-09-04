@@ -51,7 +51,7 @@ use crate::{
         session_update_event, turn_completed_event, unknown_frame_event, AcpReplayLedger,
         AcpTurnOutcome,
     },
-    adapters::{terminate_process_group, ShutdownReason},
+    adapters::{supervised_acp_parts, terminate_process_group, ShutdownReason},
     agent::NormalizedEvent,
 };
 use agent_client_protocol::{
@@ -161,6 +161,8 @@ pub struct AcpLaunch {
     pub cwd: PathBuf,
     /// Reported to the agent at initialization so its logs name the client.
     pub client_name: String,
+    /// Durable ownership category written before the child can outlive Bridge.
+    pub ledger_kind: &'static str,
     pub handshake_timeout: Duration,
 }
 
@@ -172,6 +174,7 @@ impl AcpLaunch {
             env: BTreeMap::new(),
             cwd: cwd.into(),
             client_name: "bridge".into(),
+            ledger_kind: "acp.session",
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
         }
     }
@@ -191,6 +194,12 @@ impl AcpLaunch {
     #[must_use]
     pub fn handshake_timeout(mut self, timeout: Duration) -> Self {
         self.handshake_timeout = timeout;
+        self
+    }
+
+    #[must_use]
+    pub fn ledger_kind(mut self, kind: &'static str) -> Self {
+        self.ledger_kind = kind;
         self
     }
 }
@@ -787,13 +796,18 @@ impl std::fmt::Debug for AcpSession {
 }
 
 impl AcpSession {
-    /// Launch an agent, negotiate protocol version 1, and open a session.
+    /// Launch an agent and negotiate only ACP `initialize`.
     ///
-    /// Blocks until the agent has answered `initialize` and `session/new`, or
-    /// until the handshake timeout expires. Either way the child is accounted
-    /// for: a failed handshake reaps the process group before returning.
-    pub fn connect(launch: AcpLaunch) -> Result<Self, AcpError> {
-        let mut config = AcpAgentConfig::new(launch.executable.clone()).args(launch.args.clone());
+    /// This is deliberately separate from [`Self::connect`]: provider
+    /// discovery needs executable identity and advertised capabilities, while
+    /// `session/new` is an interactive side effect that may authenticate and
+    /// start every provider-configured MCP server. The temporary process is
+    /// still covered by the watchdog and durable ledger, then reaped before
+    /// this method returns.
+    pub fn probe(launch: AcpLaunch) -> Result<AcpCapabilities, AcpError> {
+        let ledger_label = launch.executable.to_string_lossy().into_owned();
+        let (executable, args) = supervised_acp_parts(&launch.executable, &launch.args);
+        let mut config = AcpAgentConfig::new(executable).args(args);
         for (name, value) in &launch.env {
             config = config.env(name.clone(), value.clone());
         }
@@ -804,6 +818,47 @@ impl AcpSession {
                     reason: error.message,
                 })?;
         let process_id = child.id();
+        let ledger =
+            crate::process_ledger::record_launch(launch.ledger_kind, &ledger_label, process_id);
+        let shared = Arc::new(Shared::default());
+        let transport = Lines::new(
+            outgoing_lines(stdin),
+            incoming_lines(stdout, shared.clone()),
+        );
+        Self::probe_start(
+            launch,
+            transport,
+            shared,
+            Some(SupervisedChild {
+                process_id,
+                child: Box::new(child),
+                stderr: Box::pin(stderr),
+                _ledger: ledger,
+            }),
+        )
+    }
+
+    /// Launch an agent, negotiate protocol version 1, and open a session.
+    ///
+    /// Blocks until the agent has answered `initialize` and `session/new`, or
+    /// until the handshake timeout expires. Either way the child is accounted
+    /// for: a failed handshake reaps the process group before returning.
+    pub fn connect(launch: AcpLaunch) -> Result<Self, AcpError> {
+        let ledger_label = launch.executable.to_string_lossy().into_owned();
+        let (executable, args) = supervised_acp_parts(&launch.executable, &launch.args);
+        let mut config = AcpAgentConfig::new(executable).args(args);
+        for (name, value) in &launch.env {
+            config = config.env(name.clone(), value.clone());
+        }
+        let (stdin, stdout, stderr, child) =
+            AcpAgent::new(config)
+                .spawn_process()
+                .map_err(|error| AcpError::Launch {
+                    reason: error.message,
+                })?;
+        let process_id = child.id();
+        let ledger =
+            crate::process_ledger::record_launch(launch.ledger_kind, &ledger_label, process_id);
         let shared = Arc::new(Shared::default());
         let transport = Lines::new(
             outgoing_lines(stdin),
@@ -817,8 +872,60 @@ impl AcpSession {
                 process_id,
                 child: Box::new(child),
                 stderr: Box::pin(stderr),
+                _ledger: ledger,
             }),
         )
+    }
+
+    /// The transport-generic body of [`Self::probe`]. Keeping this beside
+    /// [`Self::start`] makes the side-effect boundary testable without a real
+    /// provider executable.
+    fn probe_start<T>(
+        launch: AcpLaunch,
+        transport: T,
+        shared: Arc<Shared>,
+        supervision: Option<SupervisedChild>,
+    ) -> Result<AcpCapabilities, AcpError>
+    where
+        T: agent_client_protocol::ConnectTo<Client> + Send + 'static,
+    {
+        let process_id = supervision.as_ref().map(|child| child.process_id);
+        let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<AcpCapabilities, AcpError>>(1);
+        let (finished_tx, finished_rx) = mpsc::sync_channel::<()>(1);
+        let thread = thread::Builder::new()
+            .name("acp-probe".into())
+            .stack_size(CONNECTION_STACK_BYTES)
+            .spawn({
+                move || {
+                    let mut supervision = supervision;
+                    let stderr = supervision.as_mut().map(SupervisedChild::take_stderr);
+                    futures::executor::block_on(drive_probe(
+                        launch, transport, shared, ready_tx, stderr,
+                    ));
+                    if let Some(child) = supervision.as_mut() {
+                        child.reap(None);
+                    }
+                    let _ = finished_tx.send(());
+                }
+            })
+            .map_err(|error| AcpError::Launch {
+                reason: error.to_string(),
+            })?;
+        let result = ready_rx.recv().unwrap_or_else(|_| {
+            Err(AcpError::HandshakeFailed {
+                reason: "the connection ended before initialization completed".into(),
+                output: None,
+            })
+        });
+        // The probe owns no live session. Once its one response has been
+        // observed, reap its complete group even if the provider ignores EOF.
+        if let Some(process_id) = process_id {
+            terminate_process_group(process_id);
+        }
+        if finished_rx.recv_timeout(REAP_TIMEOUT).is_ok() {
+            let _ = thread.join();
+        }
+        result
     }
 
     /// The body of [`Self::connect`], over any transport the protocol crate can
@@ -860,7 +967,7 @@ impl AcpSession {
                     ));
                     shared.closed.store(true, Ordering::Release);
                     if let Some(child) = supervision.as_mut() {
-                        child.reap(&shared);
+                        child.reap(Some(&shared));
                     }
                     let _ = finished_tx.send(());
                 }
@@ -1230,6 +1337,7 @@ struct SupervisedChild {
     process_id: u32,
     child: Box<async_process::Child>,
     stderr: Pin<Box<dyn AsyncRead + Send>>,
+    _ledger: crate::process_ledger::LaunchGuard,
 }
 
 impl SupervisedChild {
@@ -1246,14 +1354,23 @@ impl SupervisedChild {
     /// sequence that follows is Bridge's usual one: SIGTERM, a grace period,
     /// then SIGKILL to the whole group so a wrapper launcher's real agent goes
     /// with it.
-    fn reap(&mut self, shared: &Arc<Shared>) {
+    fn reap(&mut self, shared: Option<&Arc<Shared>>) {
         terminate_process_group(self.process_id);
-        if let Ok(Some(status)) = self.child.try_status() {
+        if let (Some(shared), Ok(Some(status))) = (shared, self.child.try_status()) {
             let mut exit = shared.exit.lock().expect("acp exit slot poisoned");
             if exit.is_none() {
                 *exit = Some(format!("the agent exited with {status}"));
             }
         }
+    }
+}
+
+impl Drop for SupervisedChild {
+    fn drop(&mut self) {
+        // A thread-creation failure or panic happens before the regular reap
+        // path. `async_process::Child` alone does not kill on drop, so make
+        // this last-resort ownership explicit as well.
+        terminate_process_group(self.process_id);
     }
 }
 
@@ -1336,6 +1453,52 @@ async fn drive_connection<T>(
     // able to observe closed-and-empty while the terminal event is still on
     // its way.
     shared.closed.store(true, Ordering::Release);
+}
+
+/// Drive the deliberately small discovery protocol: only `initialize`, then
+/// close. In particular, this must never grow into a convenience wrapper for
+/// `session/new`; that request has provider-visible startup side effects.
+async fn drive_probe<T>(
+    launch: AcpLaunch,
+    transport: T,
+    shared: Arc<Shared>,
+    ready: mpsc::SyncSender<Result<AcpCapabilities, AcpError>>,
+    stderr: Option<Pin<Box<dyn AsyncRead + Send>>>,
+) where
+    T: agent_client_protocol::ConnectTo<Client> + Send + 'static,
+{
+    let delivered = Arc::new(AtomicBool::new(false));
+    let protocol = Client
+        .builder()
+        .name(launch.client_name.clone())
+        .connect_with(transport, {
+            let shared = shared.clone();
+            let ready = ready.clone();
+            let delivered = delivered.clone();
+            async move |cx: ConnectionTo<Agent>| {
+                let result = initialize_only(&launch, &shared, &cx).await;
+                delivered.store(true, Ordering::Release);
+                let _ = ready.send(result);
+                Ok(())
+            }
+        });
+    let drain = async {
+        if let Some(stderr) = stderr {
+            drain_stderr(stderr, shared.clone()).await;
+        }
+    };
+    let outcome = match select(std::pin::pin!(protocol), std::pin::pin!(drain)).await {
+        Either::Left((outcome, _)) => outcome,
+        Either::Right(((), protocol)) => protocol.await,
+    };
+    if let Err(error) = outcome {
+        if !delivered.swap(true, Ordering::AcqRel) {
+            let _ = ready.send(Err(AcpError::HandshakeFailed {
+                reason: error.message,
+                output: shared.failure_context(),
+            }));
+        }
+    }
 }
 
 /// The connection ended because a caller asked it to. Distinguished from a
@@ -1486,22 +1649,22 @@ async fn open_session(
             });
         }
     }
-        .map_err(|error| {
-            // The protocol reserves one code for "sign in first", and the
-            // message beside it is the agent's own prose. Keyed on the code so
-            // a caller can act on the condition rather than pattern-match
-            // sentences.
-            if i32::from(error.code) == i32::from(ErrorCode::AuthRequired) {
-                AcpError::AuthenticationRequired {
-                    reason: error.message,
-                }
-            } else {
-                AcpError::HandshakeFailed {
-                    reason: error.message,
-                    output: shared.failure_context(),
-                }
+    .map_err(|error| {
+        // The protocol reserves one code for "sign in first", and the
+        // message beside it is the agent's own prose. Keyed on the code so
+        // a caller can act on the condition rather than pattern-match
+        // sentences.
+        if i32::from(error.code) == i32::from(ErrorCode::AuthRequired) {
+            AcpError::AuthenticationRequired {
+                reason: error.message,
             }
-        })?;
+        } else {
+            AcpError::HandshakeFailed {
+                reason: error.message,
+                output: shared.failure_context(),
+            }
+        }
+    })?;
     Ok(OpenedSession {
         capabilities,
         session_state: AcpSessionState {
@@ -1510,6 +1673,41 @@ async fn open_session(
         },
         session_id: opened.session_id,
     })
+}
+
+/// Negotiate protocol capabilities without authenticating or opening a
+/// provider session. Used only by the discovery probe above.
+async fn initialize_only(
+    launch: &AcpLaunch,
+    shared: &Arc<Shared>,
+    cx: &ConnectionTo<Agent>,
+) -> Result<AcpCapabilities, AcpError> {
+    let initialize = cx
+        .send_request(InitializeRequest::new(ProtocolVersion::V1))
+        .block_task();
+    let deadline = async_io::Timer::after(launch.handshake_timeout);
+    let response = match select(std::pin::pin!(initialize), deadline).await {
+        Either::Left((response, _)) => response,
+        Either::Right((_, _)) => {
+            observe_exit().await;
+            return Err(AcpError::HandshakeTimeout {
+                millis: u64::try_from(launch.handshake_timeout.as_millis()).unwrap_or(u64::MAX),
+                output: shared.failure_context(),
+            });
+        }
+    };
+    let response = response.map_err(|error| AcpError::HandshakeFailed {
+        reason: error.message,
+        output: shared.failure_context(),
+    })?;
+    let capabilities = AcpCapabilities::from_initialize(&response);
+    if capabilities.protocol_version != ProtocolVersion::V1.as_u16() {
+        return Err(AcpError::ProtocolVersion {
+            requested: ProtocolVersion::V1.as_u16(),
+            offered: capabilities.protocol_version,
+        });
+    }
+    Ok(capabilities)
 }
 
 async fn run_turn(
@@ -2037,6 +2235,19 @@ mod tests {
         (session, agent)
     }
 
+    fn try_probe_scripted<F>(
+        launch: AcpLaunch,
+        handler: F,
+    ) -> (Result<AcpCapabilities, AcpError>, ScriptedAgent)
+    where
+        F: FnMut(&Value, &AgentWire) + Send + 'static,
+    {
+        let (transport, agent) = scripted_agent(handler);
+        let capabilities =
+            AcpSession::probe_start(launch, transport, Arc::new(Shared::default()), None);
+        (capabilities, agent)
+    }
+
     fn connect_with_capabilities(capabilities: Value) -> (AcpSession, ScriptedAgent) {
         let (session, agent) = try_connect_scripted(test_launch(), move |message, wire| {
             answer_handshake(message, wire, &capabilities);
@@ -2123,6 +2334,35 @@ mod tests {
     fn a_session_handle_can_be_shared_across_the_threads_that_use_it() {
         const fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<AcpSession>();
+    }
+
+    #[test]
+    fn discovery_probe_sends_initialize_and_never_opens_a_session() {
+        let (capabilities, agent) = try_probe_scripted(test_launch(), |message, wire| {
+            if message.get("method").and_then(Value::as_str) == Some("initialize") {
+                wire.result(
+                    message,
+                    json!({
+                        "protocolVersion": 1,
+                        "agentCapabilities": {"loadSession": true},
+                        "authMethods": [],
+                        "agentInfo": {"name": "probe-agent", "version": "1.0"},
+                    }),
+                );
+            }
+        });
+        let capabilities = capabilities.expect("initialize completes");
+        assert!(capabilities.load_session);
+        assert_eq!(capabilities.agent_name.as_deref(), Some("probe-agent"));
+        assert_eq!(
+            agent
+                .messages()
+                .iter()
+                .filter_map(|message| message.get("method").and_then(Value::as_str))
+                .collect::<Vec<_>>(),
+            ["initialize"],
+            "availability discovery must not send session/new"
+        );
     }
 
     #[test]
@@ -2264,7 +2504,10 @@ mod tests {
         let launch = test_launch().handshake_timeout(Duration::from_millis(250));
         let (session, agent) = try_connect_scripted(launch, |message, wire| {
             if message.get("method").and_then(Value::as_str) == Some("initialize") {
-                wire.result(message, json!({"protocolVersion": 1, "agentCapabilities": {}, "authMethods": []}));
+                wire.result(
+                    message,
+                    json!({"protocolVersion": 1, "agentCapabilities": {}, "authMethods": []}),
+                );
             }
         });
         match session {
@@ -2409,7 +2652,11 @@ mod tests {
             .into_iter()
             .filter(|event| event.kind == "message.completed")
             .collect();
-        assert_eq!(assembled.len(), 2, "a changed messageId starts a new message");
+        assert_eq!(
+            assembled.len(),
+            2,
+            "a changed messageId starts a new message"
+        );
         assert_eq!(assembled[0].text.as_deref(), Some("Let me check the file."));
         assert_eq!(assembled[0].item_id.as_deref(), Some("m1"));
         assert_eq!(assembled[1].text.as_deref(), Some("The bug is on line 42."));
@@ -3126,8 +3373,9 @@ mod tests {
         assert!(wait_until(|| session.is_closed()));
         let events = session.drain();
         assert!(
-            events.iter().any(|event| event.kind == "error"
-                && event.status.as_deref() == Some("failed")),
+            events
+                .iter()
+                .any(|event| event.kind == "error" && event.status.as_deref() == Some("failed")),
             "provider death must land on the failure arm every adapter shares, saw {events:?}"
         );
     }
@@ -3212,7 +3460,10 @@ mod tests {
             event.item_id = Some(index.to_string());
             queue.push(event);
         }
-        assert_eq!(queue.evicted, 0, "nothing was dropped before the queue filled");
+        assert_eq!(
+            queue.evicted, 0,
+            "nothing was dropped before the queue filled"
+        );
 
         let mut newest = NormalizedEvent::new("tool.started");
         newest.item_id = Some("newest".into());
@@ -3281,6 +3532,17 @@ mod tests {
             })
     }
 
+    #[cfg(unix)]
+    fn process_group(process_id: u32) -> Option<u32> {
+        std::process::Command::new("ps")
+            .args(["-p", &process_id.to_string(), "-o", "pgid="])
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .and_then(|output| String::from_utf8(output.stdout).ok())
+            .and_then(|group| group.trim().parse().ok())
+    }
+
     fn recorded_pid(path: &std::path::Path) -> u32 {
         let mut parsed = None;
         assert!(
@@ -3313,7 +3575,15 @@ mod tests {
         let process_id = session
             .process_id()
             .expect("a spawned agent has a process id");
-        assert_eq!(recorded_pid(&pid_file), process_id);
+        let provider_pid = recorded_pid(&pid_file);
+        #[cfg(unix)]
+        assert_eq!(
+            process_group(provider_pid),
+            Some(process_id),
+            "the provider must be inside the watchdog-led group Bridge owns"
+        );
+        #[cfg(not(unix))]
+        assert_eq!(provider_pid, process_id);
         assert!(
             wait_until(|| sleeper_is_running(marker)),
             "the group mate should be running before shutdown"
