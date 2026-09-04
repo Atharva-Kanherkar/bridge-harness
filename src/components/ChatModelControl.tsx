@@ -150,7 +150,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
                   const selected = adapter.id === harness && (option.id ? option.id === model : !model);
                   return <button key={`${adapter.id}:${option.id || "default"}`} type="button" role="option" aria-selected={selected} disabled={!adapter.available} onClick={() => { onChange(adapter.id as Harness, option.id || null); setOpen(false); }} className={cn("flex h-9 w-full items-center gap-2 rounded-[7px] px-2 text-left transition-colors disabled:opacity-40", selected ? "bg-accent" : "hover:bg-accent", !adapter.available && "opacity-60")}>
                     <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[12.5px] text-foreground">{cleanModelLabel(option.label)}</span>
-                    <span className={cn("shrink-0 font-mono text-[10px] uppercase tracking-[0.08em]", option.tier === "strong" ? "text-foreground/70" : option.tier === "standard" ? "text-muted-foreground" : "text-muted-foreground/45")}>{option.tier}</span>
+                    <span data-tier={option.tier} className={cn("shrink-0 font-mono text-[10px] uppercase tracking-[0.08em]", option.tier === "strong" ? "text-foreground/70" : option.tier === "standard" ? "text-muted-foreground" : "text-muted-foreground/45")}>{option.tier}</span>
                     {selected && <Check size={13} className="shrink-0 text-foreground" aria-hidden="true" />}
                   </button>;
                 })}
