@@ -43,3 +43,30 @@ jobs:
 
       - name: Web tests (vitest)
         run: bunx vitest run
+
+  rust:
+    name: Rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # The Rust job does not build the frontend, but tauri::generate_context!
+      # (src-tauri/src/lib.rs) reads frontendDist ("../dist") at compile time
+      # and fails if the directory is missing. Stub an empty one; only
+      # check/test run here, never a bundle, so empty assets are fine.
+      - name: Stub frontend dist for tauri codegen
+        run: mkdir -p dist
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: cargo check (workspace)
+        run: cargo check --manifest-path src-tauri/Cargo.toml --workspace
+
+      - name: cargo test (workspace)
+        run: cargo test --manifest-path src-tauri/Cargo.toml --workspace
+
