@@ -75,8 +75,8 @@ use crate::{
     },
     delegation::WriteMode,
     model::{
-        AdapterDescriptor, AuthState, CapabilityTier, ModelCatalogDiagnostics,
-        ModelCatalogSource, ModelLifecycle, ModelOption,
+        AdapterDescriptor, AuthState, CapabilityTier, ModelCatalogDiagnostics, ModelCatalogSource,
+        ModelLifecycle, ModelOption,
     },
     model_catalog::{self, CatalogCandidate},
     BridgeError,
@@ -255,6 +255,9 @@ pub struct CursorProfile {
     pub prompt_images: bool,
     /// Authentication methods the agent advertised, by the ids it used.
     pub auth_methods: Vec<String>,
+    /// `initialize` proves protocol support, not an authenticated provider
+    /// session. This becomes true only after a real `session/new` succeeds.
+    pub session_opened: bool,
     /// Session modes, in the order advertised, with the current one first in
     /// [`Self::current_mode`].
     pub modes: Vec<String>,
@@ -402,11 +405,11 @@ fn redact(text: &str, key: Option<&str>) -> String {
     }
 }
 
-/// Confirm that this build speaks the protocol, by speaking it.
+/// Confirm that this build speaks ACP without opening a provider session.
 ///
-/// Opens a real session against the executable and immediately closes it. The
-/// session is what carries the models and modes, so the probe is also the only
-/// place they can be read before a user has started anything.
+/// `session/new` can boot every MCP server the provider has configured. That
+/// work belongs to an actual user session, not an availability refresh. Models
+/// and modes are therefore learned on the first real launch and cached there.
 fn probe(
     executable: &CursorExecutable,
     timeout: Duration,
@@ -417,9 +420,10 @@ fn probe(
         &std::env::temp_dir(),
         key.as_deref(),
         timeout,
-    );
-    let session = match AcpSession::connect(launch) {
-        Ok(session) => session,
+    )
+    .ledger_kind("acp.discovery");
+    let capabilities = match AcpSession::probe(launch) {
+        Ok(capabilities) => capabilities,
         Err(error) => {
             return Err(classify_probe_failure(
                 &executable.version,
@@ -428,8 +432,7 @@ fn probe(
             ))
         }
     };
-    let profile = read_profile(executable, session.capabilities(), session.session_state());
-    session.shutdown(ShutdownReason::Completed);
+    let profile = read_profile(executable, &capabilities, &AcpSessionState::default());
     let profile = profile?;
     // The bare name resolves an unrelated vendor's CLI too, so it only counts
     // once the executable has said who it is. The published name needs no such
@@ -477,12 +480,11 @@ fn classify_probe_failure(version: &str, error: &AcpError, key: Option<&str>) ->
     }
 }
 
-/// Read a profile off a session that opened.
+/// Build a profile from an initialize-only discovery handshake.
 ///
-/// `session/new` failing with the authentication code never reaches here — it
-/// is a handshake failure the shared client reports — so what this sees is a
-/// working session, and the only thing left to check is whether it belongs to
-/// the vendor Bridge thinks it does.
+/// ACP agents report model selectors and modes only after `session/new`; those
+/// fields stay empty until [`profile_after_session`] refreshes the cache after
+/// a user-owned launch.
 fn read_profile(
     executable: &CursorExecutable,
     capabilities: &AcpCapabilities,
@@ -507,6 +509,7 @@ fn read_profile(
             .iter()
             .map(|method| method.id.clone())
             .collect(),
+        session_opened: false,
         modes: state
             .modes
             .as_ref()
@@ -525,6 +528,39 @@ fn read_profile(
         models,
         default_model,
     })
+}
+
+/// Refresh the parts an agent only reports after opening a real session.
+/// Discovery remains `initialize`-only; this profile is cached after the
+/// first user-owned launch so later model pickers stay fully populated.
+fn profile_after_session(profile: &CursorProfile, session: &AcpSession) -> CursorProfile {
+    let mut refreshed = profile.clone();
+    refreshed.session_opened = true;
+    refreshed.modes = session
+        .session_state()
+        .modes
+        .as_ref()
+        .map(|modes| {
+            modes
+                .available_modes
+                .iter()
+                .map(|mode| mode.id.0.to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    refreshed.current_mode = session
+        .session_state()
+        .modes
+        .as_ref()
+        .map(|modes| modes.current_mode_id.0.to_string());
+    refreshed.models = model_options(&session.session_state().config_options);
+    refreshed.default_model = refreshed
+        .models
+        .iter()
+        .find(|model| model.default_for_tier && model.tier == CapabilityTier::Standard)
+        .or_else(|| refreshed.models.iter().find(|model| model.default_for_tier))
+        .map(|model| model.id.clone());
+    refreshed
 }
 
 /// Which advertised authentication method Bridge would use.
@@ -578,7 +614,11 @@ fn model_options(options: &[SessionConfigOption]) -> Vec<ModelOption> {
                 tier: model.tier,
                 available: model.available,
                 compatible: model.compatible,
-                lifecycle: if provider_default { ModelLifecycle::Stable } else { model.lifecycle },
+                lifecycle: if provider_default {
+                    ModelLifecycle::Stable
+                } else {
+                    model.lifecycle
+                },
                 promotion_priority: i64::from(provider_default),
             }
         }),
@@ -874,9 +914,12 @@ impl AdapterRuntime for CursorRuntime {
                 BridgeError::Invalid("This Cursor approval is no longer outstanding".into())
             })?;
         let option_id = if let Some(exact) = exact_option_id {
-            let offered = options.iter().find(|option| option.id == exact).ok_or_else(|| {
-                BridgeError::Invalid(format!("Cursor did not offer option {exact:?}"))
-            })?;
+            let offered = options
+                .iter()
+                .find(|option| option.id == exact)
+                .ok_or_else(|| {
+                    BridgeError::Invalid(format!("Cursor did not offer option {exact:?}"))
+                })?;
             let compatible = option_for_decision(decision, std::slice::from_ref(offered));
             compatible.ok_or_else(|| {
                 BridgeError::Invalid(format!(
@@ -1097,7 +1140,7 @@ fn launch(
     model: Option<&str>,
     instructions: Option<&str>,
     on_progress: Option<crate::adapters::StartupProgress<'_>>,
-) -> Result<StartedAdapter, BridgeError> {
+) -> Result<(StartedAdapter, CursorProfile), BridgeError> {
     let key = configured_key();
     if let Some(on_progress) = on_progress {
         on_progress(StartupPhase::Spawning);
@@ -1109,11 +1152,12 @@ fn launch(
         crate::acp_session::DEFAULT_HANDSHAKE_TIMEOUT,
     ))
     .map_err(|error| launch_error(&error, key.as_deref()))?;
+    let established_profile = profile_after_session(profile, &session);
     if let Some(on_progress) = on_progress {
         on_progress(StartupPhase::Handshake);
     }
     if let Some(model) = model {
-        if let Err(error) = apply_model(&session, profile, model) {
+        if let Err(error) = apply_model(&session, model) {
             session.shutdown(ShutdownReason::Failed);
             return Err(error);
         }
@@ -1153,18 +1197,21 @@ fn launch(
         context_inventory: Mutex::new(cursor_context_inventory(ContextLifecyclePhase::Start)?),
         stopped: false,
     };
-    Ok(StartedAdapter {
-        runtime: Box::new(runtime),
-        reader: Box::new(CursorEventReader {
-            lines: receiver,
-            pending: Vec::new(),
-            consumed: 0,
-        }),
-        // Nothing is emitted ahead of the reader: the pump starts holding the
-        // same queue the handshake filled, so anything the agent said before
-        // this point arrives on the stream like everything else.
-        startup_messages: Vec::new(),
-    })
+    Ok((
+        StartedAdapter {
+            runtime: Box::new(runtime),
+            reader: Box::new(CursorEventReader {
+                lines: receiver,
+                pending: Vec::new(),
+                consumed: 0,
+            }),
+            // Nothing is emitted ahead of the reader: the pump starts holding the
+            // same queue the handshake filled, so anything the agent said before
+            // this point arrives on the stream like everything else.
+            startup_messages: Vec::new(),
+        },
+        established_profile,
+    ))
 }
 
 /// Select a model on a session that has just opened.
@@ -1174,13 +1221,9 @@ fn launch(
 /// answers an identifier from the wrong namespace with an invalid-params error
 /// for every model, which a user reads as their subscription having lapsed
 /// rather than as Bridge having invented a name.
-fn apply_model(
-    session: &AcpSession,
-    profile: &CursorProfile,
-    model: &str,
-) -> Result<(), BridgeError> {
-    let advertised = profile
-        .models
+fn apply_model(session: &AcpSession, model: &str) -> Result<(), BridgeError> {
+    let models = model_options(&session.session_state().config_options);
+    let advertised = models
         .iter()
         .find(|option| option.id == model)
         .ok_or_else(|| {
@@ -1412,11 +1455,13 @@ impl crate::adapters::HarnessAdapter for CursorAdapter {
             id: HARNESS_ID.into(),
             label: HARNESS_LABEL.into(),
             available: profile.is_some(),
-            // A session that opened is proof of a working login; nothing else
-            // here is proof of anything, and a probe that has not run yet must
-            // not read as signed out.
+            // `initialize` proves the binary speaks ACP but deliberately does
+            // not authenticate. Only a real user session is proof of login;
+            // discovery therefore stays honest rather than showing a false
+            // signed-in state.
             auth_state: match (profile, unavailable) {
-                (Some(_), _) => AuthState::SignedIn,
+                (Some(profile), _) if profile.session_opened => AuthState::SignedIn,
+                (Some(_), _) => AuthState::Unknown,
                 (None, Some(reason)) => reason.auth_state(),
                 (None, None) => AuthState::Unknown,
             },
@@ -1472,19 +1517,29 @@ impl crate::adapters::HarnessAdapter for CursorAdapter {
         if request.briefing.is_some() {
             return Err(BridgeError::Invalid(
                 "Cursor cannot run a briefing: it has no certified permission representation, so \
-                 an empty tool scope cannot be enforced on it".into(),
+                 an empty tool scope cannot be enforced on it"
+                    .into(),
             ));
         }
         let profile = self
             .profile()
             .map_err(|reason| BridgeError::Invalid(reason.reason()))?;
-        launch(
+        let (started, established_profile) = launch(
             &profile,
             request.cwd,
             request.model,
             request.instructions,
             request.on_progress,
-        )
+        )?;
+        *self.probe.write().unwrap() = Some(CachedProbe {
+            executable: established_profile.executable.clone(),
+            version: established_profile.version.clone(),
+            outcome: Ok(established_profile),
+        });
+        if let Some(notify) = &self.notify {
+            notify();
+        }
+        Ok(started)
     }
 
     /// Unreachable while [`Self::supports_native_resume`] is false — the
@@ -1754,7 +1809,10 @@ mod tests {
             .expect("the cache is never emptied mid-refresh")
             .outcome
             .clone();
-        assert!(recorded.is_ok(), "the replacement is what later reads serve");
+        assert!(
+            recorded.is_ok(),
+            "the replacement is what later reads serve"
+        );
     }
 
     #[test]
@@ -1780,7 +1838,7 @@ mod tests {
     }
 
     #[test]
-    fn a_probe_reads_capabilities_and_models_off_the_session_it_opened() {
+    fn a_probe_reads_capabilities_without_opening_a_session() {
         let directory = temp_directory();
         FakeCli::speaking_protocol().install(directory.path(), PUBLISHED_EXECUTABLE);
         let executable = locate_in(directory.path()).expect("the fake CLI resolves");
@@ -1795,18 +1853,11 @@ mod tests {
         );
         assert!(!profile.additional_directories);
         assert_eq!(profile.auth_methods, ["cursor_login"]);
-        assert_eq!(profile.modes, ["agent", "plan", "ask"]);
-        assert_eq!(profile.current_mode.as_deref(), Some("plan"));
-        assert_eq!(
-            profile
-                .models
-                .iter()
-                .map(|model| model.id.as_str())
-                .collect::<Vec<_>>(),
-            ["cheetah", "claude-4.5-sonnet", "composer-1"],
-            "identifiers retain agent spelling in normalized capability order"
-        );
-        assert_eq!(profile.default_model.as_deref(), Some("composer-1"));
+        assert!(!profile.session_opened);
+        assert!(profile.modes.is_empty());
+        assert!(profile.current_mode.is_none());
+        assert!(profile.models.is_empty());
+        assert!(profile.default_model.is_none());
     }
 
     #[test]
@@ -1862,42 +1913,30 @@ mod tests {
     }
 
     #[test]
-    fn an_agent_that_wants_a_sign_in_is_reported_as_signed_out_rather_than_broken() {
+    fn a_probe_does_not_open_a_session_to_check_login() {
         let directory = temp_directory();
         FakeCli::speaking_protocol()
             .mode("needs_login")
             .install(directory.path(), PUBLISHED_EXECUTABLE);
         let executable = locate_in(directory.path()).expect("the fake CLI resolves");
 
-        let reason = probe(&executable, PROBE_TIMEOUT).unwrap_err();
-        assert_eq!(
-            reason,
-            CursorUnavailable::NeedsSignIn {
-                version: "2026.07.23-e383d2b".into()
-            }
-        );
-        assert_eq!(reason.auth_state(), AuthState::SignedOut);
-        assert!(
-            reason.reason().contains(SIGN_IN_COMMAND),
-            "the remedy is the vendor's own command: {}",
-            reason.reason()
-        );
+        let profile = probe(&executable, PROBE_TIMEOUT).unwrap();
+        assert!(!profile.session_opened);
     }
 
-    /// The vendor issues requests outside the protocol's vocabulary, and some
-    /// of them block until answered. The fixture withholds the session until it
-    /// has been answered, so a handshake that completes at all is the proof.
+    /// Vendor requests are handled only on actual sessions. Discovery must not
+    /// reach one, so this fixture's session-new traffic is never triggered.
     #[test]
-    fn a_blocking_vendor_request_is_answered_instead_of_stalling_the_agent() {
+    fn discovery_never_reaches_vendor_session_traffic() {
         let directory = temp_directory();
         FakeCli::speaking_protocol()
             .mode("vendor_traffic")
             .install(directory.path(), PUBLISHED_EXECUTABLE);
         let executable = locate_in(directory.path()).expect("the fake CLI resolves");
 
-        let profile = probe(&executable, PROBE_TIMEOUT)
-            .expect("an unanswered cursor/ask_question would leave the session unopened");
-        assert_eq!(profile.current_mode.as_deref(), Some("plan"));
+        let profile = probe(&executable, PROBE_TIMEOUT).expect("initialize succeeds");
+        assert!(!profile.session_opened);
+        assert!(profile.modes.is_empty());
     }
 
     #[test]
@@ -2111,10 +2150,21 @@ mod tests {
             ]
             .into(),
         )]);
-        assert!(options.iter().all(|model| model.tier == CapabilityTier::Standard));
-        let selected = options.iter().find(|model| model.default_for_tier).expect("a catalog default");
+        assert!(options
+            .iter()
+            .all(|model| model.tier == CapabilityTier::Standard));
+        let selected = options
+            .iter()
+            .find(|model| model.default_for_tier)
+            .expect("a catalog default");
         assert_eq!(selected.id, "b");
-        assert_eq!(options.iter().filter(|model| model.default_for_tier).count(), 1);
+        assert_eq!(
+            options
+                .iter()
+                .filter(|model| model.default_for_tier)
+                .count(),
+            1
+        );
 
         // A single advertised model is a standard model, not a third of one.
         let single = model_options(&[model_selector_option(
@@ -2455,7 +2505,7 @@ mod tests {
         assert_eq!(descriptor.label, HARNESS_LABEL);
         assert!(descriptor.available);
         assert!(descriptor.unavailable_reason.is_none());
-        assert_eq!(descriptor.auth_state, AuthState::SignedIn);
+        assert_eq!(descriptor.auth_state, AuthState::Unknown);
         assert_eq!(
             descriptor.version.as_deref(),
             Some(profile.version.as_str())
@@ -2510,7 +2560,12 @@ mod tests {
         let Err(error) = adapter.start(request(Some(WriteMode::ReadOnly), None)) else {
             panic!("a read-only worker must not run unsandboxed");
         };
-        assert!(error.to_string().contains("refusing to start without isolation"), "{error}");
+        assert!(
+            error
+                .to_string()
+                .contains("refusing to start without isolation"),
+            "{error}"
+        );
 
         let policy =
             crate::briefing_policy::BriefingRuntimePolicy::compile_scoped(Vec::new(), limits())
@@ -2518,7 +2573,10 @@ mod tests {
         let Err(error) = adapter.start(request(None, Some(&policy))) else {
             panic!("a briefing needs an authority cursor does not have");
         };
-        assert!(error.to_string().contains("cannot run a briefing"), "{error}");
+        assert!(
+            error.to_string().contains("cannot run a briefing"),
+            "{error}"
+        );
     }
 
     fn limits() -> bridge_protocol::messages::WorkBriefLimits {
@@ -2536,7 +2594,7 @@ mod tests {
         let directory = temp_directory();
         let profile = probed_in(directory.path());
         let workspace = temp_directory();
-        let started = launch(
+        let (started, established_profile) = launch(
             &profile,
             workspace.path().to_str().expect("a utf-8 workspace path"),
             Some("claude-4.5-sonnet"),
@@ -2544,6 +2602,11 @@ mod tests {
             None,
         )
         .expect("the fake CLI starts a session");
+        assert!(established_profile.session_opened);
+        assert!(established_profile
+            .models
+            .iter()
+            .any(|model| model.id == "claude-4.5-sonnet"));
         let mut reader = started.reader;
 
         let echoed = read_until(reader.as_mut(), "provider.unknown")

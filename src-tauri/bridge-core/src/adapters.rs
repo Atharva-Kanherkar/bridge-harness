@@ -1,6 +1,7 @@
 use crate::{
+    agent,
     briefing_policy::BriefingRuntimePolicy,
-    agent, claude_adapter, codex_adapter, cursor_adapter,
+    claude_adapter, codex_adapter, cursor_adapter,
     delegation::WriteMode,
     grok_adapter,
     model::{
@@ -16,6 +17,7 @@ use serde_json::Value;
 use std::{
     any::Any,
     collections::HashMap,
+    ffi::OsStr,
     io::BufRead,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -232,7 +234,10 @@ pub const PARENT_WATCHDOG_DISABLE_ENV: &str = "BRIDGE_DISABLE_PARENT_WATCHDOG";
 // `2>/dev/null` redirect, so the group was never actually signaled on Linux.
 #[cfg(unix)]
 const PARENT_WATCHDOG_SCRIPT: &str = r#"cmd="$1"; shift
-"$cmd" "$@" &
+# POSIX shells may attach /dev/null to an asynchronous command's stdin when
+# job control is unavailable. Override that default: ACP is stdio-framed and
+# must inherit the supervisor pipe exactly.
+"$cmd" "$@" <&0 &
 child=$!
 trap 'trap "" TERM INT; /bin/kill -TERM -- -$$ 2>/dev/null' TERM INT
 while kill -0 "$child" 2>/dev/null; do
@@ -254,7 +259,11 @@ wait "$child""#;
 /// existing identity/tracking primitives keep working against the returned
 /// process id; the child's exit status propagates through the wrapper.
 #[cfg(unix)]
-pub fn supervised_command(executable: &Path, args: &[&str]) -> Command {
+pub fn supervised_command<I, S>(executable: &Path, args: I) -> Command
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     if std::env::var_os(PARENT_WATCHDOG_DISABLE_ENV).is_some() {
         let mut command = Command::new(executable);
         command.args(args);
@@ -271,10 +280,40 @@ pub fn supervised_command(executable: &Path, args: &[&str]) -> Command {
 }
 
 #[cfg(not(unix))]
-pub fn supervised_command(executable: &Path, args: &[&str]) -> Command {
+pub fn supervised_command<I, S>(executable: &Path, args: I) -> Command
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
     let mut command = Command::new(executable);
     command.args(args);
     command
+}
+
+/// The executable and argument vector for an ACP child protected by the same
+/// parent-death watchdog as Bridge's `std::process::Command` children.
+///
+/// `agent-client-protocol` owns ACP spawning and accepts command parts rather
+/// than a prepared [`Command`], so this adapts the shared watchdog to that
+/// boundary. ACP arguments are already UTF-8 by the protocol crate contract.
+#[cfg(unix)]
+pub fn supervised_acp_parts(executable: &Path, args: &[String]) -> (PathBuf, Vec<String>) {
+    if std::env::var_os(PARENT_WATCHDOG_DISABLE_ENV).is_some() {
+        return (executable.to_path_buf(), args.to_vec());
+    }
+    let mut wrapped = vec![
+        "-c".to_owned(),
+        PARENT_WATCHDOG_SCRIPT.to_owned(),
+        "bridge-watchdog".to_owned(),
+        executable.to_string_lossy().into_owned(),
+    ];
+    wrapped.extend_from_slice(args);
+    (PathBuf::from("/bin/sh"), wrapped)
+}
+
+#[cfg(not(unix))]
+pub fn supervised_acp_parts(executable: &Path, args: &[String]) -> (PathBuf, Vec<String>) {
+    (executable.to_path_buf(), args.to_vec())
 }
 
 #[cfg(unix)]
@@ -510,8 +549,13 @@ pub struct AdapterRegistry {
 /// can enforce. Orchestrators additionally require the briefing boundary.
 pub fn descriptor_supports_agent_role(descriptor: &AdapterDescriptor, role: &str) -> bool {
     match role {
-        "orchestrator" => descriptor.capabilities.iter().any(|value| value == "briefings")
-            && descriptor.supports_sandbox(SandboxMode::WorkspaceWrite),
+        "orchestrator" => {
+            descriptor
+                .capabilities
+                .iter()
+                .any(|value| value == "briefings")
+                && descriptor.supports_sandbox(SandboxMode::WorkspaceWrite)
+        }
         "implementation" => descriptor.supports_sandbox(SandboxMode::WorkspaceWrite),
         "research" | "verification" | "planning" | "documentation" => {
             descriptor.supports_sandbox(SandboxMode::ReadOnly)
@@ -520,11 +564,24 @@ pub fn descriptor_supports_agent_role(descriptor: &AdapterDescriptor, role: &str
     }
 }
 
-fn validate_start_compatibility(descriptor: &AdapterDescriptor, request: &StartRequest<'_>) -> Result<(), BridgeError> {
-    if request.briefing.is_some() && !descriptor.capabilities.iter().any(|value| value == "briefings") {
-        return Err(BridgeError::Invalid(format!("{} cannot run orchestrator briefings", descriptor.label)));
+fn validate_start_compatibility(
+    descriptor: &AdapterDescriptor,
+    request: &StartRequest<'_>,
+) -> Result<(), BridgeError> {
+    if request.briefing.is_some()
+        && !descriptor
+            .capabilities
+            .iter()
+            .any(|value| value == "briefings")
+    {
+        return Err(BridgeError::Invalid(format!(
+            "{} cannot run orchestrator briefings",
+            descriptor.label
+        )));
     }
-    let sandbox = if request.read_only_sandbox.is_some() || matches!(request.write_mode, Some(WriteMode::ReadOnly)) {
+    let sandbox = if request.read_only_sandbox.is_some()
+        || matches!(request.write_mode, Some(WriteMode::ReadOnly))
+    {
         Some(SandboxMode::ReadOnly)
     } else {
         match request.write_mode {
@@ -535,7 +592,10 @@ fn validate_start_compatibility(descriptor: &AdapterDescriptor, request: &StartR
         }
     };
     if sandbox.is_some_and(|mode| !descriptor.supports_sandbox(mode)) {
-        return Err(BridgeError::Invalid(format!("{} cannot enforce the requested worker sandbox", descriptor.label)));
+        return Err(BridgeError::Invalid(format!(
+            "{} cannot enforce the requested worker sandbox",
+            descriptor.label
+        )));
     }
     Ok(())
 }
@@ -544,12 +604,7 @@ fn model_options(items: &[(&str, &str, CapabilityTier, bool)]) -> Vec<ModelOptio
     model_catalog::normalize(
         ModelCatalogSource::CuratedFallback,
         items.iter().map(|(id, label, tier, default_for_tier)| {
-            CatalogCandidate::stable(
-                *id,
-                *label,
-                *tier,
-                i64::from(*default_for_tier),
-            )
+            CatalogCandidate::stable(*id, *label, *tier, i64::from(*default_for_tier))
         }),
     )
 }
@@ -589,11 +644,7 @@ impl AdapterRegistry {
         opencode_settings: opencode_adapter::OpenCodeSettings,
         on_discovered: Option<Box<dyn Fn() + Send + Sync>>,
     ) -> Result<Self, BridgeError> {
-        Self::built_in_with_opencode_notify_and_cache(
-            opencode_settings,
-            on_discovered,
-            None,
-        )
+        Self::built_in_with_opencode_notify_and_cache(opencode_settings, on_discovered, None)
     }
 
     pub fn built_in_with_opencode_notify_and_cache(
@@ -627,9 +678,7 @@ impl AdapterRegistry {
         registry.register(Box::new(cursor_adapter::CursorAdapter::new(
             on_discovered.clone(),
         )))?;
-        registry.register(Box::new(grok_adapter::GrokAdapter::new(
-            on_discovered,
-        )))?;
+        registry.register(Box::new(grok_adapter::GrokAdapter::new(on_discovered)))?;
         Ok(registry)
     }
 
@@ -797,7 +846,16 @@ impl AdapterRegistry {
             .copied()
             .find(|model| model.tier == tier && model.default_for_tier)
             .or_else(|| selectable.iter().copied().find(|model| model.tier == tier))
-            .or_else(|| unranked.then(|| selectable.iter().copied().find(|model| model.default_for_tier)).flatten())
+            .or_else(|| {
+                unranked
+                    .then(|| {
+                        selectable
+                            .iter()
+                            .copied()
+                            .find(|model| model.default_for_tier)
+                    })
+                    .flatten()
+            })
             .or_else(|| unranked.then(|| selectable.first().copied()).flatten())
             .ok_or_else(|| {
                 BridgeError::Invalid(format!(
@@ -811,15 +869,19 @@ impl AdapterRegistry {
                 .copied()
                 .find(|model| model.id.eq_ignore_ascii_case(hint.trim()))
         });
-        let selected = hinted.filter(|model| unranked || model.tier == tier).unwrap_or(tier_default);
+        let selected = hinted
+            .filter(|model| unranked || model.tier == tier)
+            .unwrap_or(tier_default);
         let warning = model_hint.and_then(|hint| {
-            (hinted.is_none() || hinted.is_some_and(|model| !unranked && model.tier != tier)).then(|| {
-                format!(
-                    "Model hint {hint:?} is unknown or outside tier {}; using {}",
-                    tier.as_str(),
-                    tier_default.id
-                )
-            })
+            (hinted.is_none() || hinted.is_some_and(|model| !unranked && model.tier != tier)).then(
+                || {
+                    format!(
+                        "Model hint {hint:?} is unknown or outside tier {}; using {}",
+                        tier.as_str(),
+                        tier_default.id
+                    )
+                },
+            )
         });
         Ok(ModelResolution {
             requested_tier: tier,
@@ -872,19 +934,20 @@ impl OpenCodeAdapter {
             .spawn(move || {
                 match opencode_adapter::discover(&settings, &directory) {
                     Ok(result) => {
-                        let raw_options = opencode_adapter::model_options(
-                            &result,
-                            &settings.visible_models,
-                        );
-                        let candidates = raw_options.into_iter().map(|model| CatalogCandidate {
-                            id: model.id,
-                            label: model.label,
-                            tier: model.tier,
-                            available: model.available,
-                            compatible: model.compatible,
-                            lifecycle: model.lifecycle,
-                            promotion_priority: i64::from(model.default_for_tier),
-                        }).collect();
+                        let raw_options =
+                            opencode_adapter::model_options(&result, &settings.visible_models);
+                        let candidates = raw_options
+                            .into_iter()
+                            .map(|model| CatalogCandidate {
+                                id: model.id,
+                                label: model.label,
+                                tier: model.tier,
+                                available: model.available,
+                                compatible: model.compatible,
+                                lifecycle: model.lifecycle,
+                                promotion_priority: i64::from(model.default_for_tier),
+                            })
+                            .collect();
                         *model_catalog.write().unwrap() = model_catalog::resolve(
                             "opencode",
                             Ok(candidates),
@@ -929,19 +992,20 @@ impl OpenCodeAdapter {
         *self.settings.write().unwrap() = settings.clone();
         match opencode_adapter::discover(&settings, directory) {
             Ok(catalog) => {
-                let raw_options = opencode_adapter::model_options(
-                    &catalog,
-                    &settings.visible_models,
-                );
-                let candidates = raw_options.into_iter().map(|model| CatalogCandidate {
-                    id: model.id,
-                    label: model.label,
-                    tier: model.tier,
-                    available: model.available,
-                    compatible: model.compatible,
-                    lifecycle: model.lifecycle,
-                    promotion_priority: i64::from(model.default_for_tier),
-                }).collect();
+                let raw_options =
+                    opencode_adapter::model_options(&catalog, &settings.visible_models);
+                let candidates = raw_options
+                    .into_iter()
+                    .map(|model| CatalogCandidate {
+                        id: model.id,
+                        label: model.label,
+                        tier: model.tier,
+                        available: model.available,
+                        compatible: model.compatible,
+                        lifecycle: model.lifecycle,
+                        promotion_priority: i64::from(model.default_for_tier),
+                    })
+                    .collect();
                 *self.model_catalog.write().unwrap() = model_catalog::resolve(
                     "opencode",
                     Ok(candidates),
@@ -1003,15 +1067,18 @@ impl OpenCodeAdapter {
             &catalog,
             &self.settings.read().unwrap().visible_models,
         );
-        let candidates = raw_options.into_iter().map(|model| CatalogCandidate {
-            id: model.id,
-            label: model.label,
-            tier: model.tier,
-            available: model.available,
-            compatible: model.compatible,
-            lifecycle: model.lifecycle,
-            promotion_priority: i64::from(model.default_for_tier),
-        }).collect();
+        let candidates = raw_options
+            .into_iter()
+            .map(|model| CatalogCandidate {
+                id: model.id,
+                label: model.label,
+                tier: model.tier,
+                available: model.available,
+                compatible: model.compatible,
+                lifecycle: model.lifecycle,
+                promotion_priority: i64::from(model.default_for_tier),
+            })
+            .collect();
         *self.model_catalog.write().unwrap() = model_catalog::resolve(
             "opencode",
             Ok(candidates),
@@ -1039,7 +1106,9 @@ impl HarnessAdapter for OpenCodeAdapter {
         let runtime_available = crate::managed_runtime::managed_entrypoint("opencode").is_some()
             || crate::binary::resolve("opencode").is_some();
         let available = runtime_available
-            && models.iter().any(|model| model.available && model.compatible);
+            && models
+                .iter()
+                .any(|model| model.available && model.compatible);
         // Every unavailable state names a reason: install status must be
         // distinguishable from auth status, and "unavailable" with no reason
         // reads as a signed-out problem to the usage widget.
@@ -1436,7 +1505,10 @@ mod tests {
         let mut descriptor = Fake.descriptor();
         descriptor.capabilities = vec!["messages".into()];
         descriptor.sandbox_modes = vec![SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess];
-        assert!(descriptor_supports_agent_role(&descriptor, "implementation"));
+        assert!(descriptor_supports_agent_role(
+            &descriptor,
+            "implementation"
+        ));
         assert!(!descriptor_supports_agent_role(&descriptor, "research"));
         assert!(!descriptor_supports_agent_role(&descriptor, "orchestrator"));
         descriptor.capabilities.push("briefings".into());
@@ -1520,7 +1592,10 @@ mod tests {
             model_catalog: ModelCatalogDiagnostics::curated(),
         };
         assert!(!unavailable_but_signed_in.available);
-        assert_eq!(unavailable_but_signed_in.auth_state, crate::model::AuthState::SignedIn);
+        assert_eq!(
+            unavailable_but_signed_in.auth_state,
+            crate::model::AuthState::SignedIn
+        );
     }
 
     #[test]
@@ -1684,7 +1759,10 @@ mod tests {
         adapter.forget_session("ses_1");
         adapter.forget_session("default");
         let streams = adapter.streams.lock().unwrap();
-        assert!(!streams.contains_key("ses_1"), "the ended session is dropped");
+        assert!(
+            !streams.contains_key("ses_1"),
+            "the ended session is dropped"
+        );
         assert!(
             streams.contains_key("default"),
             "the shared fallback entry survives per-session teardown"
@@ -1737,7 +1815,9 @@ mod tests {
             .stdout(Stdio::null())
             .stderr(Stdio::null());
         configure_process_group(&mut intermediate);
-        let mut supervisor = intermediate.spawn().expect("intermediate supervisor spawns");
+        let mut supervisor = intermediate
+            .spawn()
+            .expect("intermediate supervisor spawns");
 
         let deadline = Instant::now() + Duration::from_secs(8);
         while !(probe(&mate_marker) && probe(&child_marker)) {

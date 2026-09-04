@@ -625,7 +625,11 @@ impl Launcher {
             return format!("could not seek daemon log {}", self.log_path().display());
         }
         let mut contents = Vec::new();
-        if (&mut file).take(TAIL_BYTES).read_to_end(&mut contents).is_err() {
+        if (&mut file)
+            .take(TAIL_BYTES)
+            .read_to_end(&mut contents)
+            .is_err()
+        {
             return format!("could not read daemon log {}", self.log_path().display());
         }
         let contents = String::from_utf8_lossy(&contents);
@@ -655,15 +659,17 @@ fn retryable_handshake(error: &bridge_protocol::RpcError) -> bool {
 }
 
 fn daemon_command(binary: &Path, data_dir: &Path, browser_extension: &Path) -> Command {
-    let mut command = Command::new(binary);
-    command
-        .arg("--data-dir")
-        .arg(data_dir)
-        .arg("--health-addr")
-        .arg("none")
-        .arg("--browser-extension")
-        .arg(browser_extension);
-    command
+    bridge_core::adapters::supervised_command(
+        binary,
+        [
+            std::ffi::OsStr::new("--data-dir"),
+            data_dir.as_os_str(),
+            std::ffi::OsStr::new("--health-addr"),
+            std::ffi::OsStr::new("none"),
+            std::ffi::OsStr::new("--browser-extension"),
+            browser_extension.as_os_str(),
+        ],
+    )
 }
 
 /// The bundled `bridged` binary. In a bundle Tauri places external binaries
@@ -900,7 +906,7 @@ mod tests {
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
         assert_eq!(
-            args,
+            &args[args.len() - 6..],
             [
                 "--data-dir",
                 "data",
@@ -1029,11 +1035,7 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let mut launcher = Launcher::new(
-            data_dir,
-            fixture.path().join("extension"),
-            Some(binary),
-        );
+        let mut launcher = Launcher::new(data_dir, fixture.path().join("extension"), Some(binary));
         let error = match launcher.ensure_with_deadline(Duration::from_millis(1500)) {
             Ok(_) => panic!("a stale daemon was attached to"),
             Err(error) => error,
@@ -1068,11 +1070,7 @@ mod tests {
     fn startup_timeout_kills_and_reaps_an_unreachable_child() {
         let fixture = tempfile::tempdir().unwrap();
         let binary = fixture.path().join("fake-bridged");
-        std::fs::write(
-            &binary,
-            b"#!/bin/sh\nexec sleep 30\n",
-        )
-        .unwrap();
+        std::fs::write(&binary, b"#!/bin/sh\nexec sleep 30\n").unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
         let data_dir = fixture.path().join("data");
         let mut launcher = Launcher::new(
@@ -1089,7 +1087,11 @@ mod tests {
         };
         assert!(error.contains("did not become reachable"), "{error}");
         assert!(launcher.child.is_none());
-        assert_ne!(unsafe { libc::kill(pid, 0) }, 0, "child {pid} survived timeout");
+        assert_ne!(
+            unsafe { libc::kill(pid, 0) },
+            0,
+            "child {pid} survived timeout"
+        );
     }
 
     #[test]
@@ -1129,18 +1131,17 @@ mod tests {
         )
         .unwrap();
         std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let mut launcher = Launcher::new(
-            data_dir,
-            fixture.path().join("extension"),
-            Some(binary),
-        );
+        let mut launcher = Launcher::new(data_dir, fixture.path().join("extension"), Some(binary));
         let error = match launcher.ensure_with_deadline(Duration::from_millis(1500)) {
             Ok(_) => panic!("fake replacement unexpectedly accepted connections"),
             Err(error) => error,
         };
         server.join().unwrap();
         assert!(error.contains("did not become reachable"), "{error}");
-        assert!(spawned.is_file(), "replacement binary was never started: {error}");
+        assert!(
+            spawned.is_file(),
+            "replacement binary was never started: {error}"
+        );
         assert!(launcher.child.is_none());
     }
 }
