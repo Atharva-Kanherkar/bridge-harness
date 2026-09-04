@@ -203,6 +203,39 @@ pub struct AcpThoughtRun {
     resumable: Option<(String, String)>,
 }
 
+/// Whether an event of this kind means the agent moved on from what it was
+/// thinking, so an open thought run should close.
+///
+/// ACP interleaves non-conversational notifications into the middle of a
+/// turn wherever the agent's runtime happens to flush them: a `usage_update`,
+/// an `available_commands_update`, a mode or config change, a session
+/// lifecycle frame. None of those are the agent moving on — they are
+/// bookkeeping that arrives beside whatever it is actually doing. Treating
+/// every one of them as "moved on" closed a thought run early: a `usage_update`
+/// landing between two chunks of one thought split it in two, so an
+/// agent-named run had to be stitched back together into one card with two
+/// completions, and an unnamed run became two cards, the first a fragment.
+/// Only a conversational move — prose, a tool call, a plan update, an
+/// approval or permission exchange, an error, or the turn itself ending —
+/// actually ends what the agent was thinking, so only those kinds close the
+/// run here. Anything else passes through untouched and the run stays open.
+fn is_conversational(kind: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "message.",
+        "tool.",
+        "command.",
+        "file_change.",
+        "diff.",
+        "approval.",
+        "permission.",
+        "question.",
+        "plan.",
+        "turn.",
+        "runtime.",
+    ];
+    kind == "error" || PREFIXES.iter().any(|prefix| kind.starts_with(prefix))
+}
+
 impl AcpThoughtRun {
     /// Fold one normalized event into the run, returning the completion this
     /// event ended, if any.
@@ -212,8 +245,15 @@ impl AcpThoughtRun {
     /// completion agree on which thought they are.
     pub fn absorb(&mut self, event: &mut NormalizedEvent) -> Option<NormalizedEvent> {
         if event.kind != "reasoning.delta" {
-            // Anything else is the agent moving on. A run that is already
-            // closed stays closed: `close` is a no-op with nothing open.
+            if !is_conversational(&event.kind) {
+                // Usage, commands, mode, config, session lifecycle, and
+                // unrecognized frames are not the agent moving on — leave the
+                // run open and let the frame pass through untouched.
+                return None;
+            }
+            // A conversational move is the agent moving on. A run that is
+            // already closed stays closed: `close` is a no-op with nothing
+            // open.
             return self.close();
         }
         let incoming = event.item_id.clone();
@@ -827,6 +867,73 @@ mod tests {
         drive(&mut run, &[thought("abandoned")]);
         run.reset();
         assert!(run.close().is_none());
+    }
+
+    #[test]
+    fn a_usage_update_between_chunks_does_not_split_the_thought() {
+        // A `usage_update` is bookkeeping the agent's runtime flushes wherever
+        // it happens to land in the stream, not the agent moving on from what
+        // it was thinking. Closing the run on it used to split one thought
+        // into two cards; the fix leaves the run open and lets the frame pass
+        // through.
+        let mut run = AcpThoughtRun::default();
+        let published = drive(
+            &mut run,
+            &[
+                thought("Start with "),
+                SessionUpdate::UsageUpdate(UsageUpdate::new(120, 200_000)),
+                thought("the suite."),
+                tool("call-1"),
+            ],
+        );
+        let closed = completions(&published);
+        assert_eq!(
+            closed.len(),
+            1,
+            "a usage update must not end the thought it interrupts"
+        );
+        assert_eq!(closed[0].text.as_deref(), Some("Start with the suite."));
+        let kinds: Vec<&str> = published.iter().map(|event| event.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "reasoning.delta",
+                "usage.updated",
+                "reasoning.delta",
+                "reasoning.completed",
+                "tool.started",
+            ],
+            "the usage update passes through untouched, and the completion \
+             still lands just before the tool call that actually ended it"
+        );
+    }
+
+    #[test]
+    fn an_available_commands_update_between_chunks_does_not_split_an_unnamed_thought() {
+        let mut run = AcpThoughtRun::default();
+        let commands = SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(
+            vec![AvailableCommand::new("plan", "make one")],
+        ));
+        let published = drive(
+            &mut run,
+            &[
+                thought("Weighing "),
+                commands,
+                thought("the options."),
+                tool("call-1"),
+            ],
+        );
+        let closed = completions(&published);
+        assert_eq!(
+            closed.len(),
+            1,
+            "an available-commands update must not end the thought it interrupts"
+        );
+        assert_eq!(closed[0].text.as_deref(), Some("Weighing the options."));
+        assert_eq!(
+            closed[0].item_id, published[0].item_id,
+            "one minted id for the one thought, not two"
+        );
     }
 
     #[test]
