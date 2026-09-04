@@ -48,5 +48,8 @@ if ! codesign -dv --verbose=2 "$app" 2>&1 | grep -q 'Authority=Developer ID Appl
 fi
 
 echo "DMG: $dmg"
-xcrun stapler validate "$dmg"
-shasum -a 256 "$dmg"
+if [ -f "$HOME/.bridge-release/env" ] && [ -z "${APPLE_API_KEY_PATH:-}" ]; then
+  # shellcheck disable=SC1091
+  . "$HOME/.bridge-release/env"
+fi
+sh "$project_root/scripts/notarize-dmg.sh" "$dmg"

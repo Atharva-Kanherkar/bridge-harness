@@ -22,6 +22,15 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
+sdk_dir="$dest/node_modules/@anthropic-ai/claude-agent-sdk"
+if [ -f "$src/index.mjs" ] && [ -f "$sdk_dir/package.json" ] && [ ! -L "$sdk_dir" ]; then
+  for file in index.mjs briefing.mjs input.mjs options.mjs package.json package-lock.json; do
+    cp "$src/$file" "$dest/$file"
+  done
+  echo "Prepared Claude sidecar at $dest (reused node_modules)"
+  exit 0
+fi
+
 rm -rf "$dest"
 mkdir -p "$dest"
 
@@ -35,7 +44,6 @@ done
 
 npm ci --prefix "$dest" --ignore-scripts
 
-sdk_dir="$dest/node_modules/@anthropic-ai/claude-agent-sdk"
 if [ ! -f "$sdk_dir/package.json" ] || [ -L "$sdk_dir" ]; then
   echo "prepare-claude-sidecar: expected a real (non-symlink) SDK at $sdk_dir" >&2
   exit 1

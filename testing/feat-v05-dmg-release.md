@@ -29,7 +29,7 @@ Locked before implementation.
 
 1. `scripts/release-dmg.sh` (or `bun run tauri build` with signing + notary env) produces a Developer ID-signed DMG.
 2. `codesign -dv --verbose=4` on `Bridge.app` shows a TeamIdentifier, not `Signature=adhoc`.
-3. `xcrun stapler validate` on the DMG succeeds.
+3. `scripts/notarize-dmg.sh` (or `bun run notarize:dmg`) submits the signed DMG, staples it, and `xcrun stapler validate` succeeds.
 4. Install from the DMG into `/Applications`, launch, daemon comes up, Claude adapter finds the bundled sidecar when Node 18+ is on PATH.
 
 ## Explicit v0.5 Boundaries
