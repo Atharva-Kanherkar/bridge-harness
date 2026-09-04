@@ -67,6 +67,14 @@ describe("reduceTranscript", () => {
     expect(items[1].itemId).toBeUndefined();
   });
 
+  it("settles a thinking.started row of default status when the turn ends", () => {
+    const items = reduce([
+      live(1, "reasoning.started", { itemId: "r1", text: "Thinking deeply..." }),
+      live(2, "turn.completed", { status: "completed" }),
+    ]);
+    expect(items).toEqual([expect.objectContaining({ type: "reasoning", status: "completed", text: "Thinking deeply..." })]);
+  });
+
   it("settles streaming thinking when the turn ends", () => {
     const items = reduce([
       live(1, "reasoning.delta", { sequence: 0, text: "Thinking deeply..." }),

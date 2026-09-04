@@ -211,7 +211,7 @@ export function normalizeAgentEvent(raw: AgentEvent): TranscriptEvent {
     return { type: "thinking.delta", envelope, text };
   }
   if (kind === "reasoning.started") {
-    return { type: "thinking.started", envelope, text, summary: reasoningDisplayText(null, data), status: status ?? "inProgress" };
+    return { type: "thinking.started", envelope, text, summary: reasoningDisplayText(null, data), status: status ?? "streaming" };
   }
   if (kind === "reasoning" || kind.startsWith("reasoning.")) {
     return { type: "thinking.completed", envelope, text, summary: reasoningDisplayText(null, data), title, status: status ?? "completed" };
@@ -459,7 +459,7 @@ export function normalizeSessionEntry(entry: SessionEntry): TranscriptEvent | nu
       return { type: "thinking.delta", envelope: carded, text };
     }
     if (kind === "reasoning.started") {
-      return { type: "thinking.started", envelope: carded, text, summary: reasoningDisplayText(null, payload), status: status ?? "inProgress" };
+      return { type: "thinking.started", envelope: carded, text, summary: reasoningDisplayText(null, payload), status: status ?? "streaming" };
     }
     return {
       type: "thinking.completed",

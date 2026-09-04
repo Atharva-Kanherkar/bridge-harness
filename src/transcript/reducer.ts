@@ -417,8 +417,11 @@ function restat(item: ConversationItem): void {
 }
 
 function settleThinking(fold: Fold): void {
+  // Both spellings are recognized defensively: the codec defaults a
+  // `thinking.started` frame to "streaming", but a provider or an older
+  // durable entry may still label it "inProgress".
   for (const item of fold.items.values()) {
-    if (item.type === "reasoning" && item.status === "streaming") item.status = "completed";
+    if (item.type === "reasoning" && (item.status === "streaming" || item.status === "inProgress")) item.status = "completed";
   }
 }
 
