@@ -862,7 +862,7 @@ fn codex_vendor_triple() -> Option<&'static str> {
 /// Pinned version of the Claude Agent SDK closure.
 pub const CLAUDE_SDK_VERSION: &str = "0.3.209";
 /// Pinned version of the Codex runtime closure.
-pub const CODEX_VERSION: &str = "0.147.0";
+pub const CODEX_VERSION: &str = "0.152.0";
 /// Pinned version of the OpenCode runtime closure.
 pub const OPENCODE_VERSION: &str = "1.18.16";
 /// Pinned version of the Cursor agent CLI release.
