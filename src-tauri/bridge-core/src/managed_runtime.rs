@@ -864,7 +864,7 @@ pub const CLAUDE_SDK_VERSION: &str = "0.3.252";
 /// Pinned version of the Codex runtime closure.
 pub const CODEX_VERSION: &str = "0.152.0";
 /// Pinned version of the OpenCode runtime closure.
-pub const OPENCODE_VERSION: &str = "1.18.16";
+pub const OPENCODE_VERSION: &str = "1.18.25";
 /// Pinned version of the Cursor agent CLI release.
 pub const CURSOR_VERSION: &str = "2026.08.25-3e8eec8";
 
