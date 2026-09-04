@@ -63,11 +63,14 @@ describe("a hundred-step turn, reduced and grouped", () => {
   });
 
   it("grows with the turn rather than with the square of it", () => {
-    // Four times the steps must not cost sixteen times the work. Generous
-    // because the machine is shared: this catches a per-item scan over the
-    // whole list, which is what a return to the old grouping would look like.
-    const small = Math.max(medianMs(flushWork(100)), 0.05);
-    const large = medianMs(flushWork(400));
-    expect(large / small, `400 steps cost ${(large / small).toFixed(1)}x what 100 did`).toBeLessThan(10);
+    // Ten times the steps must not cost a hundred times the work. The floor
+    // matters as much as the ratio: a hundred steps is under a millisecond
+    // here, and dividing by a number that small turns scheduler noise into a
+    // failing test. Thirty leaves an order of magnitude of headroom over what
+    // linear growth actually measures, and still catches a per-item scan of
+    // the whole list — which is what a return to the old grouping looks like.
+    const small = Math.max(medianMs(flushWork(100)), 0.5);
+    const large = medianMs(flushWork(1000));
+    expect(large / small, `1000 steps cost ${(large / small).toFixed(1)}x what 100 did`).toBeLessThan(30);
   });
 });
