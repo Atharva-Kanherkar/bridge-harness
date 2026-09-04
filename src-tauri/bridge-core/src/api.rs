@@ -2338,6 +2338,25 @@ fn terminal_runtime_id(workspace_id: &str, terminal_id: &str) -> String {
 /// threads need, and a global sidesteps per-key bookkeeping.
 static TERMINAL_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+/// The login shell for new terminals: zsh where it exists (the macOS default
+/// this app was built around), else the user's `$SHELL`, else bash. Linux
+/// servers and CI runners frequently ship neither zsh nor a spawnable `$SHELL`
+/// value, so a hardcoded zsh would make terminals unopenable there.
+fn login_shell() -> String {
+    for candidate in ["/bin/zsh", "/usr/bin/zsh", "/usr/local/bin/zsh"] {
+        if Path::new(candidate).exists() {
+            return candidate.to_owned();
+        }
+    }
+    if let Some(shell) = std::env::var_os("SHELL") {
+        let shell = shell.to_string_lossy().into_owned();
+        if !shell.is_empty() {
+            return shell;
+        }
+    }
+    "/bin/bash".to_owned()
+}
+
 pub fn open_terminal(
     core: &Arc<BridgeCore>,
     workspace_id: &str,
@@ -2369,7 +2388,7 @@ pub fn open_terminal(
             pixel_height: 0,
         })
         .map_err(|e| BridgeError::Pty(e.to_string()))?;
-    let mut command = CommandBuilder::new("zsh");
+    let mut command = CommandBuilder::new(login_shell());
     command.args(["-l"]);
     command.cwd(&path);
     command.env("TERM", "xterm-256color");
