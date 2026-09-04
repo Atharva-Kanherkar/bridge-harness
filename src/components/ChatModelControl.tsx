@@ -126,36 +126,42 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
           />
           <span className="shrink-0 font-mono text-[11px] text-faint" aria-hidden="true">↑↓ ⏎</span>
         </div>
-        <div role="listbox" aria-label={`${roleLabel} models`} className="min-h-0 flex-1 overflow-y-auto p-1">
-          {chatAdapters.map(adapter => {
-            const catalog = adapter.models.length ? adapter.models : [{ id: "", label: "Default", tier: "fast" as const, defaultForTier: true }];
-            const groupMatches = matchesQuery(adapter.label);
-            const models = catalog.filter(option => groupMatches || matchesQuery(option.label));
-            if (models.length === 0) return null;
-            return <div key={adapter.id} className="mb-0.5">
-              {/* Group header: harness mark + name; an unavailable harness is dimmed
-                  and flagged, its rows shown but greyed. */}
-              <div className="flex items-center gap-2 px-2 py-1.5">
-                <HarnessMark harness={adapter.id} size={13} className={adapter.available ? undefined : "opacity-40"} />
-                <span className={cn("text-[11.5px] font-medium", adapter.available ? "text-body" : "text-muted-foreground/50")}>{adapter.label}</span>
-                {!adapter.available && <span className="ml-auto text-[10.5px] text-muted-foreground/40">unavailable</span>}
+        <div role="listbox" aria-label={`${roleLabel} models`} className="min-h-0 flex-1 overflow-y-auto p-1.5">
+          {chatAdapters
+            .map(adapter => {
+              const catalog = adapter.models.length ? adapter.models : [{ id: "", label: "Default", tier: "fast" as const, defaultForTier: true }];
+              const groupMatches = matchesQuery(adapter.label);
+              const models = catalog.filter(option => groupMatches || matchesQuery(option.label));
+              return { adapter, models };
+            })
+            .filter(group => group.models.length > 0)
+            .map(({ adapter, models }, index) => (
+              <div key={adapter.id}>
+                {/* Group header: a small-caps label, quiet enough to read as a
+                    section marker rather than another row competing with the
+                    models beneath it. An unavailable harness is dimmed and
+                    flagged, its rows shown but greyed. */}
+                <div className={cn("flex items-center gap-1.5 px-2 pb-1.5 pt-2", index > 0 && "mt-1 border-t border-border/60")}>
+                  <HarnessMark harness={adapter.id} size={11} className={cn("opacity-70", !adapter.available && "opacity-30")} />
+                  <span className={cn("text-[9.5px] font-medium uppercase tracking-[0.12em]", adapter.available ? "text-muted-foreground/70" : "text-muted-foreground/40")}>{adapter.label}</span>
+                  {!adapter.available && <span className="ml-auto text-[10px] text-muted-foreground/40">unavailable</span>}
+                </div>
+                {models.map(option => {
+                  const selected = adapter.id === harness && (option.id ? option.id === model : !model);
+                  return <button key={`${adapter.id}:${option.id || "default"}`} type="button" role="option" aria-selected={selected} disabled={!adapter.available} onClick={() => { onChange(adapter.id as Harness, option.id || null); setOpen(false); }} className={cn("flex h-9 w-full items-center gap-2 rounded-[7px] px-2 text-left transition-colors disabled:opacity-40", selected ? "bg-accent" : "hover:bg-accent", !adapter.available && "opacity-60")}>
+                    <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[12.5px] text-foreground">{cleanModelLabel(option.label)}</span>
+                    <span className={cn("shrink-0 font-mono text-[10px] uppercase tracking-[0.08em]", option.tier === "strong" ? "text-foreground/70" : option.tier === "standard" ? "text-muted-foreground" : "text-muted-foreground/45")}>{option.tier}</span>
+                    {selected && <Check size={13} className="shrink-0 text-foreground" aria-hidden="true" />}
+                  </button>;
+                })}
               </div>
-              {models.map(option => {
-                const selected = adapter.id === harness && (option.id ? option.id === model : !model);
-                return <button key={`${adapter.id}:${option.id || "default"}`} type="button" role="option" aria-selected={selected} disabled={!adapter.available} onClick={() => { onChange(adapter.id as Harness, option.id || null); setOpen(false); }} className={cn("flex h-11 w-full items-center gap-2 rounded-[7px] px-2 text-left transition-colors disabled:opacity-40", selected ? "bg-card" : "hover:bg-card", !adapter.available && "opacity-60")}>
-                  <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[13px] text-foreground">{cleanModelLabel(option.label)}</span>
-                  <span className="shrink-0 font-mono text-[11px] uppercase tracking-[0.06em] text-muted-foreground">{option.tier}</span>
-                  {selected && <Check size={14} className="shrink-0 text-foreground" aria-hidden="true" />}
-                </button>;
-              })}
-            </div>;
-          })}
+            ))}
         </div>
         {showEffort && (
-          <div className="shrink-0 border-t border-border px-3 py-2" data-testid="effort-control">
+          <div className="shrink-0 border-t border-border px-3 py-2.5" data-testid="effort-control">
             <div className="flex items-center gap-2">
               <span className="shrink-0 text-[11px] text-muted-foreground">Effort</span>
-              <div role="group" aria-label="Reasoning effort" className="flex flex-1 items-center gap-0.5 rounded-[7px] bg-card p-0.5">
+              <div role="group" aria-label="Reasoning effort" className="u-segmented flex-1">
                 {EFFORT_OPTIONS.map(option => {
                   const active = effort === option.value;
                   return <button
@@ -165,14 +171,15 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
                     disabled={!onEffortChange}
                     onClick={() => onEffortChange?.(option.value)}
                     data-effort={option.value}
-                    className={cn("flex-1 rounded-[5px] px-2 py-1 text-[11px] transition-colors disabled:cursor-default", active ? "bg-popover text-foreground" : "text-muted-foreground hover:text-foreground")}
+                    data-active={active}
+                    className="u-segmented-item flex-1 disabled:cursor-default"
                   >{option.label}</button>;
                 })}
               </div>
             </div>
           </div>
         )}
-        <div className="shrink-0 border-t border-border px-3 py-2">
+        <div className="shrink-0 border-t border-border px-3 py-2.5">
           <p className="text-[12px] leading-4 text-faint">Switching restarts the provider session. History stays.</p>
         </div>
       </div>
