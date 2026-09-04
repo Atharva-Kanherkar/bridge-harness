@@ -1,7 +1,7 @@
 import { memo, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Maximize2, Navigation, Pencil, Pin, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
-import { attachmentUris, delegationChildSessionId, delegationFacet, foldWorkerDelegations, mergeConversationProjections, projectSessionConversation, reduceConversation, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
+import { attachmentUris, delegationChildSessionId, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
 import { humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeResolution } from "../humanize";
 import { pickGreeting, type GreetingPart } from "../greetings";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, SessionStartupPhase, WorkerRepositoryBinding, WorkerRuntimeRecord } from "../types";
@@ -27,82 +27,10 @@ function providerLabel(harness?: string | null): string | undefined {
   return harness ? harnessLabel(harness) : undefined;
 }
 
-// Codex-style conversation: prose messages, live tool-call cards, clickable
-// thinking, and consecutive tool work folded into activity groups that expand
-// into per-action rows.
-
-type Rendered =
-  | { kind: "item"; item: ConversationItem }
-  | { kind: "group"; key: string; items: ConversationItem[] }
-  | { kind: "raw-group"; key: string; items: ConversationItem[] };
-
-const GROUPABLE = new Set(["activity", "diff", "artifact"]);
-
-function groupItems(items: ConversationItem[]): Rendered[] {
-  const out: Rendered[] = [];
-  const rawItems: ConversationItem[] = [];
-
-  const nonRaw: ConversationItem[] = [];
-  for (const item of items) {
-    if (item.type === "raw") {
-      rawItems.push(item);
-    } else {
-      nonRaw.push(item);
-    }
-  }
-
-  let currentGroup: ConversationItem[] | null = null;
-
-  function flushGroup() {
-    if (currentGroup && currentGroup.length > 0) {
-      out.push({ kind: "group", key: `group-${currentGroup[0].key}`, items: currentGroup });
-      currentGroup = null;
-    }
-  }
-
-  function lastReasoning(): ConversationItem | undefined {
-    const last = out[out.length - 1];
-    return last?.kind === "item" && last.item.type === "reasoning" ? last.item : undefined;
-  }
-
-  for (const item of nonRaw) {
-    if (item.data.staleBase === true || item.data.freshProviderSession === true) {
-      flushGroup();
-      out.push({ kind: "item", item });
-      continue;
-    }
-
-    if (item.type === "reasoning") {
-      flushGroup();
-      const prior = lastReasoning();
-      if (prior) {
-        prior.text = prior.text ? `${prior.text}\n${item.text}` : item.text;
-        prior.status = item.status === "streaming" || prior.status === "streaming" ? "streaming" : "completed";
-        prior.data = { ...prior.data, ...item.data };
-      } else {
-        out.push({ kind: "item", item });
-      }
-      continue;
-    }
-
-    if (GROUPABLE.has(item.type)) {
-      if (!currentGroup) currentGroup = [item];
-      else currentGroup.push(item);
-      continue;
-    }
-
-    flushGroup();
-    out.push({ kind: "item", item });
-  }
-
-  flushGroup();
-
-  if (rawItems.length) {
-    out.push({ kind: "raw-group", key: "raw-provider-events", items: rawItems });
-  }
-
-  return out;
-}
+// A conversation of prose messages, live tool-call cards, clickable thinking,
+// and a turn's tool work folded into one activity group that expands into
+// per-action rows. The folding rules themselves are pure data and live in
+// `transcript/grouping.ts`; this file only draws what they decide.
 
 /* ── Shared surfaces ─────────────────────────────────────────────────────
    Chrome is achromatic and elevation is a lightness ladder, so an alert is a
@@ -237,19 +165,24 @@ const TOOL_ICON: Record<ToolGlyph, React.ReactNode> = {
 /// group label, while an edit or a command becomes a card with a body.
 const FLAT_VERBS = new Set<ToolVerb>(["read", "search"]);
 
+/// What a collapsed run says it did, in the order the work reads: commands
+/// first, then the files it looked at, then the files it changed. This is the
+/// only description of a hundred steps most readers will ever want, so it
+/// names them by verb and count rather than by a step total alone.
 function summarize(items: ConversationItem[], live: boolean): string {
   const counts: Record<ToolVerb, number> = { edit: 0, read: 0, run: 0, search: 0, tool: 0 };
-  for (const item of items) counts[toolCallDisplay(item).verb] += 1;
+  for (const item of items) if (isToolItem(item)) counts[toolCallDisplay(item).verb] += 1;
   const noun = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
   const parts: string[] = [];
-  if (counts.read) parts.push(live ? `Reading ${noun(counts.read, "file", "files")}` : `Read ${noun(counts.read, "file", "files")}`);
-  if (counts.edit) parts.push(live ? `editing ${noun(counts.edit, "file", "files")}` : `edited ${noun(counts.edit, "file", "files")}`);
   if (counts.run) parts.push(live ? `running ${noun(counts.run, "command", "commands")}` : `ran ${noun(counts.run, "command", "commands")}`);
+  if (counts.read) parts.push(live ? `reading ${noun(counts.read, "file", "files")}` : `read ${noun(counts.read, "file", "files")}`);
+  if (counts.edit) parts.push(live ? `editing ${noun(counts.edit, "file", "files")}` : `edited ${noun(counts.edit, "file", "files")}`);
   if (counts.search) parts.push(live ? `searching the web` : `searched the web`);
   if (counts.tool) parts.push(live ? `using ${noun(counts.tool, "tool", "tools")}` : `used ${noun(counts.tool, "tool", "tools")}`);
   if (!parts.length) return live ? "Working…" : "Done";
   const text = parts.join(", ");
-  return live ? `${text.charAt(0).toUpperCase() + text.slice(1)}…` : text.charAt(0).toUpperCase() + text.slice(1);
+  const sentence = text.charAt(0).toUpperCase() + text.slice(1);
+  return live ? `${sentence}…` : sentence;
 }
 
 const OUTPUT_DISPLAY_CAP = 6000;
@@ -396,15 +329,23 @@ function ActionRow({ item }: { item: ConversationItem }) {
 }
 
 /// A run of consecutive rows that belong together: exploration under one label,
-/// everything else on its own. *Consecutive*, never sorted — reordering the
-/// transcript to tidy it would destroy the one thing it is for.
+/// a thought where the model paused to think, everything else on its own.
+/// *Consecutive*, never sorted — reordering the transcript to tidy it would
+/// destroy the one thing it is for.
 type ActionChunk =
   | { kind: "explored"; key: string; items: ConversationItem[] }
-  | { kind: "row"; key: string; item: ConversationItem };
+  | { kind: "row"; key: string; item: ConversationItem }
+  /// A thought or a plan update that fell inside the run. Drawn by the same
+  /// components the top level uses; a run is not a different kind of thinking.
+  | { kind: "note"; key: string; item: ConversationItem };
 
 function chunkActions(items: ConversationItem[]): ActionChunk[] {
   const out: ActionChunk[] = [];
   for (const item of items) {
+    if (!isToolItem(item)) {
+      out.push({ kind: "note", key: item.key, item });
+      continue;
+    }
     if (!FLAT_VERBS.has(toolCallDisplay(item).verb)) {
       out.push({ kind: "row", key: item.key, item });
       continue;
@@ -416,17 +357,33 @@ function chunkActions(items: ConversationItem[]): ActionChunk[] {
   return out;
 }
 
+/// A run short enough to take in at a glance opens itself when it carries a
+/// patch. What the model wrote is the most important thing on the screen, and a
+/// diff the reader has to dig for twice is not an inline diff. Past this the
+/// run is a flood, and a flood that opens itself is the defect this bound
+/// exists to prevent.
+const SELF_OPENING_STEPS = 3;
+
+/// A turn's tool work as one row: what it did, how many steps it took, and —
+/// only if the reader asks — every call in order.
+///
+/// Collapsed by default, and it stays that way when the run finishes. The old
+/// behaviour latched a group open the moment it was ever live, which is
+/// pleasant for a three-step turn and unusable for a hundred-step one: the
+/// reader came back to a wall of a hundred open cards and no turn. Live, the
+/// group names the step running right now, which is the one thing worth
+/// watching; finished, it is a single line. A click is what opens it, and that
+/// click sticks — through the rest of the run and past the moment it ends.
 function ActivityGroup({ items }: { items: ConversationItem[] }) {
-  const live = items.some(item => item.status === "inProgress" || item.status === "streaming");
-  // A group holding a diff opens itself: a patch the reader has to go digging
-  // for is not an inline patch.
-  const carriesPatch = items.some(item => !!toolCallDisplay(item).patch);
+  const tools = useMemo(() => items.filter(isToolItem), [items]);
+  // Live is a claim about the *work*, not about the transcript: a thought left
+  // streaming by a provider that never settles it must not keep a finished run
+  // spinning forever.
+  const live = tools.some(item => item.status === "inProgress" || item.status === "streaming");
+  const glance = tools.length <= SELF_OPENING_STEPS && tools.some(item => !!toolCallDisplay(item).patch);
+  // `null` is "nobody has decided yet", which is not the same as closed.
   const [toggled, setToggled] = useState<boolean | null>(null);
-  const [heldOpen, setHeldOpen] = useState(live);
-  useEffect(() => { if (live) setHeldOpen(true); }, [live]);
-  // Once the reader watched this group live, finishing the turn must not slam
-  // it shut. A later click is the only thing that overrides that.
-  const expanded = toggled !== null ? toggled : (live || carriesPatch || heldOpen);
+  const expanded = toggled ?? glance;
   // Rows revealed together arrive one after another at the same 40ms cadence the
   // CSS entrance used, so an expanding group unfolds instead of appearing whole.
   const stagger = useMotionStagger();
@@ -434,13 +391,17 @@ function ActivityGroup({ items }: { items: ConversationItem[] }) {
   // One collapsed line for the whole run: the summary, then a mono step count on
   // the right. The count is the number of tool calls folded away, faint because
   // it is a measure of the work rather than the work itself.
-  const stepCount = items.length;
+  const stepCount = tools.length;
+  // What the run is doing right now, for a reader watching it work. One line,
+  // not the whole timeline: the point of collapsing is that the tail is where
+  // the news is.
+  const current = live ? toolCallDisplay(tools[tools.length - 1]) : undefined;
   // Wall-clock the run occupied, not the sum of call durations: overlapping
   // tool calls would otherwise be counted twice. Each item contributes the
   // window [start, start+duration]; the trailer reports the union's span, which
   // also folds in the reasoning gaps between calls. Falls back to nothing when
   // the projection carries no timestamps, rather than showing a wrong number.
-  const spans = items
+  const spans = tools
     .map(item => {
       const start = item.createdAt ? Date.parse(item.createdAt) : NaN;
       return { start, end: start + (toolCallDisplay(item).durationMs ?? 0) };
@@ -452,6 +413,7 @@ function ActivityGroup({ items }: { items: ConversationItem[] }) {
       <button
         type="button"
         className="group flex w-full items-center gap-2 rounded-[7px] px-1 py-1 text-left text-[12px] text-muted-foreground transition-colors hover:text-foreground"
+        aria-expanded={expanded}
         onClick={() => setToggled(!expanded)}
       >
         {live ? <PulseDot size={7}/> : <Check size={12} className="shrink-0 text-faint" aria-hidden="true"/>}
@@ -459,6 +421,15 @@ function ActivityGroup({ items }: { items: ConversationItem[] }) {
         <span className="ml-auto shrink-0 font-mono text-[11px] tabular-nums text-faint">{stepCount} step{stepCount === 1 ? "" : "s"}</span>
         <ChevronDown size={13} className={cn("shrink-0 text-faint transition-transform", expanded && "rotate-180")} aria-hidden="true"/>
       </button>
+      {/* Collapsed and still working: the step running right now, and nothing
+          else. A reader watching a run wants the head of it, not its history. */}
+      {current && !expanded && (
+        <div className="flex min-w-0 items-center gap-2 pl-1 font-mono text-[11px] text-faint">
+          <span className="shrink-0" aria-hidden="true">{TOOL_ICON[current.glyph]}</span>
+          <span className="min-w-0 truncate">{current.doing}{current.target ? ` ${current.target}` : ""}</span>
+          <StatusGlyph live failed={false} succeeded={false}/>
+        </div>
+      )}
       <Disclosure open={expanded}>
         <motion.div
           className="mt-1 grid min-w-0 gap-1.5"
@@ -469,6 +440,10 @@ function ActivityGroup({ items }: { items: ConversationItem[] }) {
         >
           {chunks.map(chunk => chunk.kind === "row"
             ? <ActionRow key={chunk.key} item={chunk.item}/>
+            : chunk.kind === "note"
+            ? <div key={chunk.key} className="min-w-0">
+                {chunk.item.type === "plan" ? <PlanCard item={chunk.item}/> : <Reasoning item={chunk.item}/>}
+              </div>
             : <div key={chunk.key} className="min-w-0">
                 <GroupLabel>Explored</GroupLabel>
                 <div className="grid min-w-0 gap-0.5">

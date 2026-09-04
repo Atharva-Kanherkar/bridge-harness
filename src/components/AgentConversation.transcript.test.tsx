@@ -181,16 +181,20 @@ describe("three layers", () => {
     expect(text.split("Explored")).toHaveLength(3);
   });
 
-  it("keeps plans in stream order instead of lifting them ahead of earlier activity", () => {
+  it("keeps a plan in stream order without splitting the run around it", () => {
+    // A plan update is the model narrating work in progress, so it travels
+    // with the run rather than cutting it in two. It keeps its place in the
+    // timeline: between the command before it and the command after it.
     mount([
       event(1, "command.completed", { title: "bun test", data: { type: "commandExecution", command: "bun test" } }),
       event(2, "plan.updated", { title: "Next step", data: { steps: [{ step: "Run tests", status: "completed" }] } }),
       event(3, "command.completed", { title: "bun run check", data: { type: "commandExecution", command: "bun run check" } }),
     ]);
+    expect([...host.querySelectorAll("button")].filter(btn => btn.textContent?.includes("Ran 2 commands"))).toHaveLength(1);
+    act(() => buttonWith("Ran 2 commands")!.click());
     const text = host.textContent ?? "";
-    expect(text.indexOf("Ran 1 command")).toBeLessThan(text.indexOf("Next step"));
-    expect(text.indexOf("Next step")).toBeLessThan(text.lastIndexOf("Ran 1 command"));
-    expect([...host.querySelectorAll("button")].filter(btn => btn.textContent?.includes("Ran 1 command"))).toHaveLength(2);
+    expect(text.indexOf("Ran bun test")).toBeLessThan(text.indexOf("Next step"));
+    expect(text.indexOf("Next step")).toBeLessThan(text.indexOf("Ran bun run check"));
   });
 
   it("preserves multiple distinct plan items without dropping", () => {
@@ -200,6 +204,7 @@ describe("three layers", () => {
       event(3, "plan.updated", { itemId: "plan-2", title: "Plan Phase 2", data: { steps: [{ step: "Phase 2", status: "inProgress" }] } }),
       event(4, "command.completed", { title: "bun run check", data: { type: "commandExecution", command: "bun run check" } }),
     ]);
+    act(() => buttonWith("Ran 2 commands")!.click());
     expect(host.textContent).toContain("Plan Phase 1");
     expect(host.textContent).toContain("Plan Phase 2");
   });

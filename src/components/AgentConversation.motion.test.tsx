@@ -123,15 +123,17 @@ describe("tool row disclosure", () => {
   });
 
   it("shows exactly one status glyph, swapped when the run finishes", async () => {
+    // A live run stays collapsed and names the step it is on, so the one
+    // spinner on screen is the current step's, not a row's.
     mount([command({ status: "inProgress" })]);
-    // A live group opens itself, so the row is reachable without a click.
     await settle();
-    const glyphs = () => host.querySelectorAll(".animate-spin, .text-success, .text-destructive");
-    expect(glyphs().length).toBeGreaterThan(0);
     expect(host.querySelectorAll(".animate-spin")).toHaveLength(1);
 
-    // A group that was open while live stays open when the turn finishes.
+    // Opened by hand, the finished call wears the tick instead.
     mount([command({ status: "completed" })]);
+    await settle();
+    const summary = [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes("Ran 1 command"));
+    await act(async () => summary!.click());
     await settle();
     expect(host.querySelectorAll(".animate-spin")).toHaveLength(0);
     expect(host.querySelectorAll(".text-success").length).toBeGreaterThan(0);

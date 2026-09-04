@@ -58,12 +58,14 @@ describe("golden streams, rendered", () => {
       drawn[harness] = shapes;
       await unmount();
     }
-    // One turn: the user's bubble, a thought, the command, a second thought,
-    // then the read and the patch folded into one run of tool work, then the
-    // reply. The two tool rows after the second thought are consecutive, so
-    // they group; the command stands alone because a thought interrupts it.
+    // One turn, four rows: the user's bubble, the thought the model opened
+    // with, the run — all three calls, and the second thought that fell
+    // between two of them, folded into one group — then the reply. A thought
+    // between two calls travels with the run rather than cutting it in half;
+    // that is the whole difference between a turn a reader can take in and one
+    // that arrives as a hundred separate cards.
     expect(drawn.claude).toEqual([
-      "user-bubble", "thought", "activity-group", "thought", "activity-group", "assistant-prose",
+      "user-bubble", "thought", "activity-group", "assistant-prose",
     ]);
     for (const harness of HARNESSES) {
       expect(drawn[harness], `${harness} drew a different transcript`).toEqual(drawn.claude);

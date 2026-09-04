@@ -41,3 +41,15 @@ What differs, and why, is asserted in `../golden.test.ts`:
   part, so progress arrives as a repeated `command.started` rather than as a
   delta. Arguments live under `state.input`, output under `state.output`, and
   the exit code under `state.metadata.exit`.
+
+## The flood
+
+`codexFlood.ts` is the same turn scaled up: one hundred steps, with a fresh
+reasoning item between every tool item, which is what the item-prefixed
+emitter really publishes on a long turn. It is generated rather than written
+out — four hundred hand-written frames would be unreviewable, and what is
+under test is the shape, not any particular command. The recipe is the
+fixture: exactly 62 commands, 30 reads and 8 patches, interleaved, wrapped in
+a user message, an opening thought, a closing thought and the reply.
+`src/components/AgentConversation.flood.test.tsx` and
+`src/transcript/flood.perf.test.ts` read it.
