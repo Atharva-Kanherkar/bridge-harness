@@ -3282,15 +3282,17 @@ mod tests {
     }
 
     fn recorded_pid(path: &std::path::Path) -> u32 {
+        let mut parsed = None;
         assert!(
-            wait_until(|| path.exists()),
+            wait_until(|| {
+                parsed = std::fs::read_to_string(path)
+                    .ok()
+                    .and_then(|body| body.trim().parse().ok());
+                parsed.is_some()
+            }),
             "the fake agent should record its pid"
         );
-        std::fs::read_to_string(path)
-            .expect("the pid file is readable")
-            .trim()
-            .parse()
-            .expect("the pid file holds a pid")
+        parsed.expect("the pid file holds a pid")
     }
 
     #[test]
