@@ -52,6 +52,14 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      # Compiling the tauri shell on Linux pulls its gtk/webkit2gtk sys-crates,
+      # whose build scripts need the system dev headers (glib-2.0 and friends).
+      # macOS never sees these paths, so this is invisible to local check/test.
+      - name: Install Tauri Linux dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev
+
       # The Rust job does not build the frontend, but tauri::generate_context!
       # (src-tauri/src/lib.rs) reads frontendDist ("../dist") at compile time
       # and fails if the directory is missing. Stub an empty one; only
