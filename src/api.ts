@@ -8,6 +8,16 @@ import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult } from "./protocol/generated/protocol";
 import type { TurnImage } from "./protocol/generated/protocol";
+import type {
+  CommitExternalImportParams,
+  DiscoverExternalImportParams,
+  ExternalImportCandidate,
+  ExternalImportCommit,
+  ExternalImportDiscovery,
+  ExternalImportPlan,
+  ExternalImportPreview,
+  PreviewExternalImportParams,
+} from "./protocol/generated/protocol";
 import type { ComposerAttachment } from "./pasteAttachments";
 import type { GithubCiFinishedPayload } from "./githubSurface";
 import type {
@@ -765,6 +775,83 @@ function browserWorkBoard(): WorkBoard {
 }
 
 export const bridgeApi = {
+  discoverExternalImport: (params: DiscoverExternalImportParams): Promise<ExternalImportDiscovery> => {
+    if (isTauri()) return call("imports/discover_external_import", params);
+    const discoveredAt = new Date().toISOString();
+    const root = params.selectedExport ?? params.approvedRoots[0] ?? "/mock/.claude";
+    return Promise.resolve({
+      discoveryId: "mock-claude-discovery",
+      provider: params.provider,
+      approvedRoots: params.approvedRoots,
+      sourceVersion: params.sourceVersion ?? null,
+      formatVersions: params.formatVersions,
+      discoveredAt,
+      diagnostics: [],
+      artifacts: [
+        { artifactId: "mock-instructions", canonicalSourceRef: `${root}/CLAUDE.md`, sourceLabel: "CLAUDE.md", kind: "instruction", classification: "documented", stability: "stable", estimatedBytes: 820, modifiedAt: discoveredAt, requiredSchemaGate: null },
+        { artifactId: "mock-memory", canonicalSourceRef: `${root}/projects/demo/memory/MEMORY.md`, sourceLabel: "projects/demo/memory/MEMORY.md", kind: "memory", classification: "version_gated_private", stability: "version_gated", estimatedBytes: 430, modifiedAt: discoveredAt, requiredSchemaGate: "claude-auto-memory-v1" },
+        { artifactId: "mock-history", canonicalSourceRef: `${root}/projects/demo/session.jsonl`, sourceLabel: "projects/demo/session.jsonl", kind: "conversation", classification: "version_gated_private", stability: "version_gated", estimatedBytes: 2_400, modifiedAt: discoveredAt, requiredSchemaGate: "claude-jsonl-v1" },
+      ],
+    });
+  },
+  previewExternalImport: (discovery: ExternalImportDiscovery, artifactIds: string[]): Promise<ExternalImportPreview> => {
+    if (isTauri()) return call("imports/preview_external_import", { discoveryId: discovery.discoveryId, artifactIds } satisfies PreviewExternalImportParams);
+    const selected = new Set(artifactIds);
+    const source = (artifactId: string) => {
+      const artifact = discovery.artifacts.find(item => item.artifactId === artifactId)!;
+      return {
+        provider: "claude_code",
+        adapterVersion: "1",
+        sourceVersion: discovery.sourceVersion ?? null,
+        schemaVersion: artifact.requiredSchemaGate,
+        canonicalSourceRef: artifact.canonicalSourceRef,
+        sourcePathFingerprint: `mock-${artifactId}`,
+        discoveredAt: discovery.discoveredAt,
+        sourceMetadata: { classification: artifact.classification },
+      };
+    };
+    const candidate = (artifactId: string, candidate: Partial<ExternalImportCandidate>): ExternalImportCandidate => ({
+      candidateId: `candidate-${artifactId}`,
+      source: source(artifactId),
+      sourceNativeId: null,
+      kind: discovery.artifacts.find(item => item.artifactId === artifactId)!.kind,
+      title: discovery.artifacts.find(item => item.artifactId === artifactId)!.sourceLabel,
+      createdAt: null,
+      updatedAt: null,
+      projectHint: null,
+      contentHash: `sha256:mock-${artifactId}`,
+      stability: discovery.artifacts.find(item => item.artifactId === artifactId)!.stability,
+      confidenceBps: 9_000,
+      selectedByDefault: false,
+      redactionSummary: { structuredFieldsExcluded: 0, textValuesRedacted: 0, categories: [], safelyRepresentable: true },
+      diagnostics: [],
+      normalizedPayload: { text: "Local browser preview" },
+      ...candidate,
+    });
+    const candidates: ExternalImportCandidate[] = [];
+    if (selected.has("mock-instructions")) candidates.push(candidate("mock-instructions", { kind: "instruction" }));
+    if (selected.has("mock-memory")) candidates.push(candidate("mock-memory", { kind: "memory", title: "Claude auto memory" }));
+    if (selected.has("mock-history")) candidates.push(candidate("mock-history", { kind: "conversation", title: "Historical Claude session", normalizedPayload: { messages: [] } }));
+    return Promise.resolve({ candidates });
+  },
+  commitExternalImport: (discoveryId: string, candidates: ExternalImportCandidate[], plan: ExternalImportPlan): Promise<ExternalImportCommit> => {
+    if (isTauri()) return call("imports/commit_external_import", { discoveryId, plan } satisfies CommitExternalImportParams);
+    const selected = candidates.filter(candidate => plan.selectedCandidateIds.includes(candidate.candidateId));
+    return Promise.resolve({
+      importId: crypto.randomUUID(),
+      candidateResults: selected.map(candidate => ({ candidateId: candidate.candidateId, status: plan.dryRun ? "dry_run" : "imported", createdBridgeIds: plan.dryRun ? [] : [crypto.randomUUID()], revisionOf: null, diagnostics: [] })),
+      createdBridgeIds: [],
+      imported: plan.dryRun ? 0 : selected.length,
+      skipped: 0,
+      changed: 0,
+      conflicted: 0,
+      rejected: 0,
+      unsupported: 0,
+      rollbackState: plan.dryRun ? "dry_run" : "committed",
+      diagnostics: [],
+      createdAt: new Date().toISOString(),
+    });
+  },
   githubStatus: (workspaceId: string, refresh = false): Promise<GithubStatusResult> =>
     isTauri() ? call("github/github_status", { workspaceId, refresh }) : Promise.resolve(mockGithubStatus(workspaceId)),
   githubPullRequests: (workspaceId: string): Promise<GithubPullRequestsResult> =>

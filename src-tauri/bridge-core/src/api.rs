@@ -16,8 +16,8 @@ use crate::model::{
 };
 use crate::{
     adapters, agent, agent_config, agent_integration, automations, binary, browser_bridge,
-    compaction_controller, completion, delegation, git, handoff, learning_job, learning_router,
-    live_turn, marketplace, memory_ledger,
+    claude_import, compaction_controller, completion, delegation, external_import, git, handoff,
+    learning_job, learning_router, live_turn, marketplace, memory_ledger,
     model_profiles, opencode_adapter, prompt_studio, prompts, routing_evaluation,
     secret_interception,
     session_recall, session_supervisor,
@@ -85,6 +85,148 @@ pub fn health(core: &Arc<BridgeCore>) -> Result<Health, BridgeError> {
 
 pub fn get_state(core: &Arc<BridgeCore>) -> Result<BridgeState, BridgeError> {
     core.state_snapshot()
+}
+
+/// A daemon-issued discovery, keyed by the id the caller must reference it
+/// by. Neither `preview` nor `commit` accepts a client-supplied
+/// `DiscoveryResult`: a compromised renderer, or any local client holding the
+/// daemon socket token, could otherwise hand-build one naming `approvedRoots:
+/// ["/"]` and read any file readable by the process.
+fn require_cached_discovery(
+    core: &Arc<BridgeCore>,
+    discovery_id: &str,
+) -> Result<external_import::DiscoveryResult, BridgeError> {
+    core.external_import_discoveries
+        .lock()
+        .unwrap()
+        .get(discovery_id)
+        .cloned()
+        .ok_or_else(|| {
+            BridgeError::Invalid(
+                "This discovery is no longer available in this session; run discovery again"
+                    .into(),
+            )
+        })
+}
+
+pub fn discover_external_import(
+    core: &Arc<BridgeCore>,
+    params: &wire::DiscoverExternalImportParams,
+) -> Result<wire::ExternalImportDiscovery, BridgeError> {
+    use external_import::ExternalHarnessImporter;
+    let request: external_import::DiscoveryRequest = protocol_wire(params.clone())?;
+    let discovery = match request.provider.as_str() {
+        claude_import::PROVIDER => claude_import::ClaudeCodeImporter.discover(&request)?,
+        provider => {
+            return Err(BridgeError::Invalid(format!(
+                "External import provider '{provider}' is not available in this build"
+            )))
+        }
+    };
+    core.external_import_discoveries
+        .lock()
+        .unwrap()
+        .insert(discovery.discovery_id.clone(), discovery.clone());
+    protocol_wire(discovery)
+}
+
+pub fn preview_external_import(
+    core: &Arc<BridgeCore>,
+    params: &wire::PreviewExternalImportParams,
+) -> Result<wire::ExternalImportPreview, BridgeError> {
+    use external_import::ExternalHarnessImporter;
+    let discovery = require_cached_discovery(core, &params.discovery_id)?;
+    let selection = external_import::DiscoverySelection {
+        artifact_ids: params.artifact_ids.clone(),
+    };
+    let candidates = match discovery.provider.as_str() {
+        claude_import::PROVIDER => {
+            claude_import::ClaudeCodeImporter.preview(&discovery, &selection)?
+        }
+        provider => {
+            return Err(BridgeError::Invalid(format!(
+                "External import provider '{provider}' is not available in this build"
+            )))
+        }
+    };
+    Ok(wire::ExternalImportPreview {
+        candidates: protocol_wire(candidates)?,
+    })
+}
+
+pub fn commit_external_import(
+    core: &Arc<BridgeCore>,
+    params: &wire::CommitExternalImportParams,
+) -> Result<wire::ExternalImportCommit, BridgeError> {
+    use external_import::ExternalHarnessImporter;
+    let discovery = require_cached_discovery(core, &params.discovery_id)?;
+    let plan: external_import::ImportPlan = protocol_wire(params.plan.clone())?;
+    // Re-derive every candidate from disk against the discovery this daemon
+    // actually walked, instead of trusting a client-supplied
+    // `ExternalImportCandidate`. This closes the discover/preview/commit
+    // TOCTOU window: a file rewritten since preview, a forged
+    // `normalizedPayload`, or a hand-built `contentHash`/`candidateId` are all
+    // caught here because the source bytes are read and re-hashed right now,
+    // through the same schema-gate and structural-allowlist checks preview
+    // already applied.
+    let all_artifact_ids = discovery
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.artifact_id.clone())
+        .collect();
+    let selection = external_import::DiscoverySelection {
+        artifact_ids: all_artifact_ids,
+    };
+    let previewed = match discovery.provider.as_str() {
+        claude_import::PROVIDER => {
+            claude_import::ClaudeCodeImporter.preview(&discovery, &selection)?
+        }
+        provider => {
+            return Err(BridgeError::Invalid(format!(
+                "External import provider '{provider}' is not available in this build"
+            )))
+        }
+    };
+    let candidates = previewed
+        .into_iter()
+        // `Unsupported` is diagnostic-only by construction (an artifact whose
+        // preview failed) and `normalize` refuses it outright; excluding it
+        // here means a plan naming its id fails closed with "unknown
+        // candidate" rather than a confusing normalize error.
+        .filter(|candidate| candidate.kind != external_import::CandidateKind::Unsupported)
+        .map(|candidate| match candidate.source.provider.as_str() {
+            claude_import::PROVIDER => claude_import::ClaudeCodeImporter.normalize(candidate),
+            provider => Err(BridgeError::Invalid(format!(
+                "External import provider '{provider}' is not available in this build"
+            ))),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let commit = {
+        let db = core.db.lock().unwrap();
+        external_import::commit_import(&db, &candidates, &plan)?
+    };
+    let imported_ids: std::collections::HashSet<&str> = commit
+        .candidate_results
+        .iter()
+        .filter(|result| result.status == external_import::ImportCandidateStatus::Imported)
+        .map(|result| result.candidate_id.as_str())
+        .collect();
+    let memory_imported = candidates.iter().any(|candidate| {
+        candidate.candidate.kind == external_import::CandidateKind::Memory
+            && imported_ids.contains(candidate.candidate.candidate_id.as_str())
+    });
+    if memory_imported {
+        if let Some(scope_key) = plan.memory_scope.clone() {
+            core.events.publish(CoreEvent::MemoryChanged { scope_key });
+        }
+    }
+    // A committed import writes sessions/memory/setup rows directly, with no
+    // other path that would tell the frontend to refetch — without this the
+    // sidebar shows nothing new until the app restarts.
+    if commit.imported > 0 {
+        core.events.publish(CoreEvent::StateChanged);
+    }
+    protocol_wire(commit)
 }
 
 // --- github ----------------------------------------------------------------
@@ -855,6 +997,9 @@ pub fn start_session(
 /// harness/model with no briefing; an `orchestrator` session runs codex with
 /// the routing briefing + delegation protocol.
 pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeState, BridgeError> {
+    // The "imported history cannot resume" gate lives in `live_turn::start_chat`
+    // itself, since that is also the function `resume_for_send` reaches from
+    // the composer's implicit resume path — a check only here would miss it.
     live_turn::start_chat(core, session_id)
 }
 
@@ -4421,6 +4566,113 @@ mod tests {
             crate::BridgeError::Invalid(_) => {}
             other => panic!("expected Invalid, got {other:?}"),
         }
+    }
+
+    fn stub_import_plan(
+        selected_candidate_ids: Vec<String>,
+    ) -> super::wire::ExternalImportPlan {
+        super::wire::ExternalImportPlan {
+            selected_candidate_ids,
+            conflict_policy: super::wire::ExternalImportConflictPolicy::Skip,
+            setup_activation_policy: super::wire::ExternalImportSetupActivationPolicy::Disabled,
+            memory_scope: None,
+            dry_run: false,
+            created_at: "2026-08-01T11:00:00Z".into(),
+        }
+    }
+
+    /// A hand-built `DiscoveryResult` naming `approvedRoots: ["/"]` used to be
+    /// enough to read any file the daemon process could see, because
+    /// `preview`/`commit` decoded the caller's own blob straight off the wire.
+    /// Both now take only a `discoveryId` and look it up in the daemon's own
+    /// cache — a forged or expired id has to be rejected before any file is
+    /// ever touched.
+    #[test]
+    fn preview_and_commit_reject_a_discovery_id_this_daemon_never_walked() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
+
+        let preview_error = super::preview_external_import(
+            &core,
+            &super::wire::PreviewExternalImportParams {
+                discovery_id: "forged-discovery".into(),
+                artifact_ids: vec!["anything".into()],
+            },
+        )
+        .unwrap_err();
+        assert!(preview_error.to_string().contains("no longer available"));
+
+        let commit_error = super::commit_external_import(
+            &core,
+            &super::wire::CommitExternalImportParams {
+                discovery_id: "forged-discovery".into(),
+                plan: stub_import_plan(vec!["anything".into()]),
+            },
+        )
+        .unwrap_err();
+        assert!(commit_error.to_string().contains("no longer available"));
+    }
+
+    /// End-to-end through the same api functions the daemon dispatches to:
+    /// discover caches the result, preview and commit reference it by id, and
+    /// a successful commit publishes `StateChanged` so the sidebar picks up
+    /// the new session without an app restart.
+    #[test]
+    fn discover_preview_commit_round_trips_through_the_cache_and_publishes_state_changed() {
+        let scratch = tempfile::tempdir().unwrap();
+        let claude_home = scratch.path().join(".claude");
+        std::fs::create_dir_all(claude_home.join("projects/demo")).unwrap();
+        std::fs::write(
+            claude_home.join("projects/demo/session.jsonl"),
+            include_str!("../../../testing/fixtures/import/claude/transcripts/simple.jsonl"),
+        )
+        .unwrap();
+        let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
+        let mut events = core.events.subscribe();
+
+        let discovery = super::discover_external_import(
+            &core,
+            &super::wire::DiscoverExternalImportParams {
+                provider: "claude_code".into(),
+                approved_roots: vec![claude_home.to_string_lossy().into_owned()],
+                selected_export: None,
+                source_version: None,
+                schema_version: None,
+                format_versions: Default::default(),
+            },
+        )
+        .unwrap();
+        let transcript = discovery
+            .artifacts
+            .iter()
+            .find(|artifact| {
+                artifact.kind == super::wire::ExternalImportCandidateKind::Conversation
+            })
+            .unwrap();
+
+        let preview = super::preview_external_import(
+            &core,
+            &super::wire::PreviewExternalImportParams {
+                discovery_id: discovery.discovery_id.clone(),
+                artifact_ids: vec![transcript.artifact_id.clone()],
+            },
+        )
+        .unwrap();
+        assert_eq!(preview.candidates.len(), 1);
+
+        let commit = super::commit_external_import(
+            &core,
+            &super::wire::CommitExternalImportParams {
+                discovery_id: discovery.discovery_id.clone(),
+                plan: stub_import_plan(vec![preview.candidates[0].candidate_id.clone()]),
+            },
+        )
+        .unwrap();
+        assert_eq!(commit.imported, 1);
+        assert!(matches!(
+            events.try_recv().unwrap(),
+            crate::events::CoreEvent::StateChanged
+        ));
     }
 }
 

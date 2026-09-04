@@ -98,6 +98,11 @@ describe("SessionToolbar", () => {
     expect(container.querySelector('[data-testid="tier-label"]')).toBeNull();
   });
 
+  it("keeps imported historical provenance visible in the session chrome", () => {
+    mount({ sourceBadge: "Imported · Claude Code" });
+    expect(container.querySelector('[data-testid="import-source-badge"]')?.textContent).toBe("Imported · Claude Code");
+  });
+
   it("offers search for this chat when the callback exists", () => {
     mount();
     expect(container.querySelector('button[aria-label="Search this chat"]')).toBeNull();

@@ -47,6 +47,68 @@ async fn health(state: State<'_, Arc<BridgeCore>>) -> Result<api::Health, Bridge
 }
 
 #[tauri::command]
+async fn discover_external_import(
+    provider: String,
+    approved_roots: Vec<String>,
+    selected_export: Option<String>,
+    source_version: Option<String>,
+    schema_version: Option<String>,
+    format_versions: std::collections::BTreeMap<String, String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::ExternalImportDiscovery, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Discover external import", move || {
+        api::discover_external_import(
+            &core,
+            &wire::DiscoverExternalImportParams {
+                provider,
+                approved_roots,
+                selected_export,
+                source_version,
+                schema_version,
+                format_versions,
+            },
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn preview_external_import(
+    discovery_id: String,
+    artifact_ids: Vec<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::ExternalImportPreview, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Preview external import", move || {
+        api::preview_external_import(
+            &core,
+            &wire::PreviewExternalImportParams {
+                discovery_id,
+                artifact_ids,
+            },
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn commit_external_import(
+    discovery_id: String,
+    plan: wire::ExternalImportPlan,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::ExternalImportCommit, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Commit external import", move || {
+        api::commit_external_import(
+            &core,
+            &wire::CommitExternalImportParams { discovery_id, plan },
+        )
+    })
+    .await
+}
+
+#[tauri::command]
 async fn github_status(workspace_id: String, refresh: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubStatusResult, BridgeError> {
     let core = state.inner().clone();
     blocking("GitHub status", move || api::github_status(&core, &workspace_id, refresh)).await
@@ -1889,6 +1951,9 @@ pub fn run() {
     let embedded_commands: Box<dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync> =
         Box::new(tauri::generate_handler![
             health,
+            discover_external_import,
+            preview_external_import,
+            commit_external_import,
             github_status,
             github_prs,
             github_pr,

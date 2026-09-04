@@ -391,6 +391,11 @@ function AppContent() {
   const workspace = session?.workspaceId ? state.workspaces.find(w => w.id === session.workspaceId) : undefined;
   const hasRepo = !!workspace?.path;
   const isDirectChat = session?.kind === "direct";
+  const importedSourceFingerprint = useMemo(() => {
+    if (session?.kind !== "imported") return undefined;
+    const value = forest?.entries.find(entry => entry.sessionId === session.id)?.payload.sourcePathFingerprint;
+    return typeof value === "string" ? value : undefined;
+  }, [forest?.entries, session?.id, session?.kind]);
   useEffect(() => { setAgentDispatchNotice(undefined); }, [session?.id]);
 
   // The dock is a workspace possession: width, active pane, and expand state
@@ -2066,7 +2071,8 @@ function AppContent() {
       /> : session ? <>
         <SessionToolbar
           title={session.title || session.label}
-          modelControl={isDirectChat ? undefined : <ChatModelControl
+          sourceBadge={session.kind === "imported" ? `Imported · Claude Code${importedSourceFingerprint ? ` · ${importedSourceFingerprint.slice(0, 12)}…` : ""}` : undefined}
+          modelControl={isDirectChat || session.kind === "imported" ? undefined : <ChatModelControl
             adapters={adapters}
             harness={session.harness}
             model={session.model ?? null}

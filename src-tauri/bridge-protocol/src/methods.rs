@@ -43,6 +43,10 @@ methods![
     (GetState, "state", "get_state"),
     // projects
     (AddProject, "projects", "add_project"),
+    // external harness import
+    (DiscoverExternalImport, "imports", "discover_external_import"),
+    (PreviewExternalImport, "imports", "preview_external_import"),
+    (CommitExternalImport, "imports", "commit_external_import"),
     // github — read-only repository pull-request surface
     (GithubStatus, "github", "github_status"),
     (GithubPullRequests, "github", "github_prs"),

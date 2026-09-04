@@ -10,6 +10,9 @@ export type BridgeMethod =
   | "health/health"
   | "state/get_state"
   | "projects/add_project"
+  | "imports/discover_external_import"
+  | "imports/preview_external_import"
+  | "imports/commit_external_import"
   | "github/github_status"
   | "github/github_prs"
   | "github/github_pr"
@@ -171,6 +174,9 @@ export const BRIDGE_METHODS = [
   { method: "health/health", domain: "health", command: "health" },
   { method: "state/get_state", domain: "state", command: "get_state" },
   { method: "projects/add_project", domain: "projects", command: "add_project" },
+  { method: "imports/discover_external_import", domain: "imports", command: "discover_external_import" },
+  { method: "imports/preview_external_import", domain: "imports", command: "preview_external_import" },
+  { method: "imports/commit_external_import", domain: "imports", command: "commit_external_import" },
   { method: "github/github_status", domain: "github", command: "github_status" },
   { method: "github/github_prs", domain: "github", command: "github_prs" },
   { method: "github/github_pr", domain: "github", command: "github_pr" },
@@ -392,6 +398,9 @@ export interface BridgeMethodParams {
   "health/health": undefined;
   "state/get_state": undefined;
   "projects/add_project": AddProjectParams;
+  "imports/discover_external_import": DiscoverExternalImportParams;
+  "imports/preview_external_import": PreviewExternalImportParams;
+  "imports/commit_external_import": CommitExternalImportParams;
   "github/github_status": GithubStatusParams;
   "github/github_prs": GithubPrsParams;
   "github/github_pr": GithubPrParams;
@@ -555,6 +564,9 @@ export interface BridgeMethodResults {
   "health/health": HealthResult;
   "state/get_state": BridgeState;
   "projects/add_project": BridgeState;
+  "imports/discover_external_import": ExternalImportDiscovery;
+  "imports/preview_external_import": ExternalImportPreview;
+  "imports/commit_external_import": ExternalImportCommit;
   "github/github_status": GithubStatusResult;
   "github/github_prs": GithubPullRequestsResult;
   "github/github_pr": GithubPullRequestResult;
@@ -899,6 +911,92 @@ export type ContinuationFidelity = "native" | "projected_at_boundary" | "project
 export type Effort = "low" | "medium" | "high" | "xhigh";
 
 export type EvalKind = "deterministic" | "scrutiny" | "user_testing";
+
+export interface ExternalImportArtifact {
+  artifactId: string;
+  canonicalSourceRef: string;
+  classification: ExternalImportSourceClassification;
+  estimatedBytes: number;
+  kind: ExternalImportCandidateKind;
+  modifiedAt?: string | null;
+  requiredSchemaGate?: string | null;
+  sourceLabel: string;
+  stability: ExternalImportStability;
+}
+
+export interface ExternalImportCandidate {
+  candidateId: string;
+  confidenceBps: number;
+  contentHash: string;
+  createdAt?: string | null;
+  diagnostics: ExternalImportDiagnostic[];
+  kind: ExternalImportCandidateKind;
+  normalizedPayload: unknown;
+  projectHint?: string | null;
+  redactionSummary: ExternalImportRedactionSummary;
+  selectedByDefault: boolean;
+  source: ExternalImportSource;
+  sourceNativeId?: string | null;
+  stability: ExternalImportStability;
+  title: string;
+  updatedAt?: string | null;
+}
+
+export type ExternalImportCandidateKind = "conversation" | "message" | "attachment" | "memory" | "project_hint" | "instruction" | "rule" | "prompt" | "command" | "skill" | "agent" | "hook" | "mcp_server" | "plugin" | "unsupported";
+
+export interface ExternalImportCandidateResult {
+  candidateId: string;
+  createdBridgeIds: string[];
+  diagnostics: ExternalImportDiagnostic[];
+  revisionOf?: string | null;
+  status: ExternalImportCandidateStatus;
+}
+
+export type ExternalImportCandidateStatus = "imported" | "skipped_duplicate" | "changed_source" | "conflicted" | "rejected" | "unsupported" | "dry_run";
+
+export type ExternalImportConflictPolicy = "skip" | "import_as_new_historical_revision" | "keep_existing" | "import_alongside";
+
+export interface ExternalImportDiagnostic {
+  classification: ExternalImportSourceClassification;
+  code: string;
+  message: string;
+  recovery?: string | null;
+  severity: string;
+  sourceLabel?: string | null;
+}
+
+export interface ExternalImportPlan {
+  conflictPolicy: ExternalImportConflictPolicy;
+  createdAt: string;
+  dryRun: boolean;
+  memoryScope?: string | null;
+  selectedCandidateIds: string[];
+  setupActivationPolicy: ExternalImportSetupActivationPolicy;
+}
+
+export interface ExternalImportRedactionSummary {
+  categories: string[];
+  safelyRepresentable: boolean;
+  structuredFieldsExcluded: number;
+  textValuesRedacted: number;
+}
+
+export type ExternalImportSetupActivationPolicy = "disabled";
+
+export interface ExternalImportSource {
+  adapterVersion: string;
+  canonicalSourceRef: string;
+  discoveredAt: string;
+  provider: string;
+  schemaVersion?: string | null;
+  sourceMetadata: unknown;
+  sourcePathFingerprint: string;
+  sourceVersion?: string | null;
+}
+
+export type ExternalImportSourceClassification = "documented" | "version_gated_private" | "unsupported_private";
+
+export type ExternalImportStability = "stable" | "version_gated" | "experimental" | "unavailable";
 
 export type ExternalLearningTriggerKind = "codex" | "claude" | "open_code";
 
@@ -1819,6 +1917,55 @@ export interface HealthResult {
 
 export interface AddProjectParams {
   path: string;
+}
+
+export interface DiscoverExternalImportParams {
+  approvedRoots: string[];
+  formatVersions: Record<string, string>;
+  provider: string;
+  schemaVersion?: string | null;
+  selectedExport?: string | null;
+  sourceVersion?: string | null;
+}
+
+export interface ExternalImportDiscovery {
+  approvedRoots: string[];
+  artifacts: ExternalImportArtifact[];
+  diagnostics: ExternalImportDiagnostic[];
+  discoveredAt: string;
+  discoveryId: string;
+  formatVersions: Record<string, string>;
+  provider: string;
+  sourceVersion?: string | null;
+}
+
+export interface PreviewExternalImportParams {
+  artifactIds: string[];
+  discoveryId: string;
+}
+
+export interface ExternalImportPreview {
+  candidates: ExternalImportCandidate[];
+}
+
+export interface CommitExternalImportParams {
+  discoveryId: string;
+  plan: ExternalImportPlan;
+}
+
+export interface ExternalImportCommit {
+  candidateResults: ExternalImportCandidateResult[];
+  changed: number;
+  conflicted: number;
+  createdAt: string;
+  createdBridgeIds: string[];
+  diagnostics: ExternalImportDiagnostic[];
+  importId: string;
+  imported: number;
+  rejected: number;
+  rollbackState: string;
+  skipped: number;
+  unsupported: number;
 }
 
 export interface GithubStatusParams {

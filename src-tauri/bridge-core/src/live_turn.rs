@@ -1231,6 +1231,17 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
         )?
     };
+    // The one lifecycle entry point every start path reaches, including the
+    // composer's implicit resume-for-send — so this is where "imported
+    // history cannot resume a foreign provider session" has to live. A copy
+    // on `api::start_chat` alone is not enough: `resume_for_send` calls this
+    // function directly, bypassing that wrapper entirely.
+    if kind == "imported" {
+        return Err(BridgeError::Invalid(
+            "Imported history cannot resume a foreign provider session. Start a fresh Bridge conversation explicitly instead."
+                .into(),
+        ));
+    }
     // An empty stored id is not a thread to resume; treating it as Some would
     // send `""` to registry.resume under the native plan.
     let provider_id = provider_id.filter(|value| !value.is_empty());

@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 45;
+const LATEST_SCHEMA_VERSION: i64 = 46;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -664,6 +664,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             43 => migration_43_interaction_resolutions(&transaction)?,
             44 => migration_44_agent_usage_analytics(&transaction)?,
             45 => migration_45_latest_memory_packet_audit(&transaction)?,
+            46 => crate::external_import::install_import_foundation(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -4613,7 +4614,7 @@ mod tests {
         db.execute_batch(
             "DROP TRIGGER memory_retrieval_audits_compact_previous;
              DROP TRIGGER memory_retrieval_audits_delete_with_session;
-             DELETE FROM schema_version WHERE version=45;
+             DELETE FROM schema_version WHERE version>=45;
              INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,kind)
              VALUES('session-1',NULL,'codex','Chat','ready','now','estimated','direct');
              INSERT INTO memory_retrieval_audits(
