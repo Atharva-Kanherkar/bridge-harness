@@ -97,6 +97,13 @@ pub struct BridgeCore {
     /// workspace. A branch switch must not race an adapter launch or editor
     /// write against the same checkout.
     workspace_operations: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    /// Discoveries this daemon has actually walked, keyed by `discovery_id`.
+    /// `imports/preview_external_import` and `imports/commit_external_import`
+    /// look approved roots and artifacts up here instead of trusting a
+    /// client-supplied `DiscoveryResult` — a caller cannot forge an
+    /// approved-root list or an artifact's source path that this process
+    /// never discovered on disk.
+    pub external_import_discoveries: Mutex<HashMap<String, crate::external_import::DiscoveryResult>>,
     /// The composer typeahead's warm hidden session and fallback cooldowns.
     /// See `suggestion_engine` for why this lives on `BridgeCore` rather than
     /// being started fresh per request: process-start latency on every
@@ -285,6 +292,7 @@ impl BridgeCore {
             events: EventBus::new(),
             lifecycle_claims: Mutex::new(HashMap::new()),
             workspace_operations: Mutex::new(HashMap::new()),
+            external_import_discoveries: Mutex::new(HashMap::new()),
             suggestion_engine: SuggestionEngine::new(),
         }
     }
@@ -391,6 +399,7 @@ impl BridgeCore {
             events,
             lifecycle_claims: Mutex::new(HashMap::new()),
             workspace_operations: Mutex::new(HashMap::new()),
+            external_import_discoveries: Mutex::new(HashMap::new()),
             suggestion_engine: SuggestionEngine::new(),
         })
     }

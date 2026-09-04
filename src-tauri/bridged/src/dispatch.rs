@@ -87,11 +87,11 @@ pub fn dispatch(
 
         MethodName::DiscoverExternalImport => {
             let p: wire::DiscoverExternalImportParams = decode(method, params)?;
-            reply(api::discover_external_import(&p))
+            reply(api::discover_external_import(core, &p))
         }
         MethodName::PreviewExternalImport => {
             let p: wire::PreviewExternalImportParams = decode(method, params)?;
-            reply(api::preview_external_import(&p))
+            reply(api::preview_external_import(core, &p))
         }
         MethodName::CommitExternalImport => {
             let p: wire::CommitExternalImportParams = decode(method, params)?;

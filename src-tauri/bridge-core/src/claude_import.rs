@@ -8,13 +8,13 @@ use crate::external_import::{
     canonicalize_approved_path, content_hash, deterministic_identity, sanitize_import_payload,
     source_now, validate_schema_version, CandidateKind, DiscoveredArtifact, DiscoveryRequest,
     DiscoveryResult, DiscoverySelection, ExternalHarnessImporter, FixtureFormat, FixtureManifest,
-    ImportCandidate, ImportDiagnostic, NormalizedImportCandidate, SchemaGate, SourceClassification,
-    Stability, ValidationResult,
+    ImportCandidate, ImportDiagnostic, NormalizedImportCandidate, RedactionSummary, SchemaGate,
+    SourceClassification, Stability, ValidationResult,
 };
 use crate::BridgeError;
 use chrono::{DateTime, Utc};
 use serde_json::{json, Map, Value};
-use std::collections::HashSet;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -28,6 +28,17 @@ const MAX_DISCOVERY_DEPTH: usize = 20;
 
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ClaudeCodeImporter;
+
+/// The only format versions this adapter build can actually parse, keyed by
+/// gate id. `preview()`'s schema-version gate checks a candidate's declared
+/// version against this map — never against anything a wire caller supplied.
+fn supported_format_versions() -> std::collections::BTreeMap<String, String> {
+    std::collections::BTreeMap::from([
+        (AUTO_MEMORY_GATE.to_string(), AUTO_MEMORY_GATE.to_string()),
+        (TRANSCRIPT_GATE.to_string(), TRANSCRIPT_GATE.to_string()),
+        (SETTINGS_GATE.to_string(), SETTINGS_GATE.to_string()),
+    ])
+}
 
 impl ExternalHarnessImporter for ClaudeCodeImporter {
     fn discover(&self, request: &DiscoveryRequest) -> Result<DiscoveryResult, BridgeError> {
@@ -87,29 +98,23 @@ impl ExternalHarnessImporter for ClaudeCodeImporter {
         artifacts.sort_by(|left, right| left.source_label.cmp(&right.source_label));
         artifacts.dedup_by(|left, right| left.canonical_source_ref == right.canonical_source_ref);
         Ok(DiscoveryResult {
-            discovery_id: deterministic_identity(
-                PROVIDER,
-                &approved_roots
-                    .iter()
-                    .map(|path| path.to_string_lossy())
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                None,
-                &request
-                    .format_versions
-                    .iter()
-                    .map(|(key, value)| format!("{key}={value}"))
-                    .collect::<Vec<_>>()
-                    .join("\n"),
-                &CandidateKind::Unsupported,
-            ),
+            // Opaque server-side cache key: the caller can no longer hand-build
+            // a `DiscoveryResult` at `preview`/`commit` time and have it
+            // accepted, because those calls look this id up in the daemon's own
+            // discovery cache instead of trusting a client-supplied blob.
+            discovery_id: format!("disc_{}", uuid::Uuid::new_v4().simple()),
             provider: PROVIDER.into(),
             approved_roots: approved_roots
                 .iter()
                 .map(|path| path.to_string_lossy().into_owned())
                 .collect(),
             source_version: request.source_version.clone(),
-            format_versions: request.format_versions.clone(),
+            // The set of format versions *this adapter build* can parse, not
+            // whatever the caller claims — the wire request's `format_versions`
+            // is intentionally not read here. Echoing it back would make the
+            // schema-version gate in `preview()` compare the caller's claim
+            // against itself, which can never fail closed.
+            format_versions: supported_format_versions(),
             artifacts,
             diagnostics,
             discovered_at: Utc::now().to_rfc3339(),
@@ -135,53 +140,15 @@ impl ExternalHarnessImporter for ClaudeCodeImporter {
             .iter()
             .filter(|artifact| selected.contains(artifact.artifact_id.as_str()))
         {
-            let source_path = canonicalize_approved_path(
-                &approved_roots,
-                Path::new(&artifact.canonical_source_ref),
-            )?;
-            enforce_size(&source_path)?;
-            if let Some(gate) = artifact.required_schema_gate.as_deref() {
-                let actual = discovery.format_versions.get(gate).map(String::as_str);
-                let validation = validate_schema_version(
-                    &SchemaGate {
-                        format: gate.into(),
-                        allowed_versions: vec![gate.into()],
-                    },
-                    actual,
-                );
-                if !validation.accepted {
-                    return Err(BridgeError::Invalid(
-                        validation.diagnostics[0].message.clone(),
-                    ));
+            // Each artifact previews independently: one unreadable file, one
+            // unsupported record inside a transcript that turned out to carry
+            // nothing else, or one schema-gate rejection must not blank out
+            // every other artifact the caller selected in the same batch.
+            match preview_one_artifact(&approved_roots, artifact, discovery) {
+                Ok(items) => candidates.extend(items),
+                Err(error) => {
+                    candidates.push(unsupported_candidate(artifact, discovery, &error.to_string()))
                 }
-            }
-            match artifact.kind {
-                CandidateKind::Conversation => {
-                    candidates.push(preview_transcript(&source_path, artifact, discovery)?)
-                }
-                CandidateKind::Memory => candidates.push(preview_markdown(
-                    &source_path,
-                    artifact,
-                    discovery,
-                    CandidateKind::Memory,
-                )?),
-                CandidateKind::Instruction
-                | CandidateKind::Rule
-                | CandidateKind::Command
-                | CandidateKind::Skill
-                | CandidateKind::Agent => candidates.push(preview_markdown(
-                    &source_path,
-                    artifact,
-                    discovery,
-                    artifact.kind.clone(),
-                )?),
-                CandidateKind::Prompt => {
-                    candidates.extend(preview_settings(&source_path, artifact, discovery)?)
-                }
-                CandidateKind::McpServer => {
-                    candidates.extend(preview_mcp(&source_path, artifact, discovery)?)
-                }
-                _ => {}
             }
         }
         candidates.sort_by(|left, right| {
@@ -267,6 +234,115 @@ impl ExternalHarnessImporter for ClaudeCodeImporter {
                 },
             ],
         }
+    }
+}
+
+fn preview_one_artifact(
+    approved_roots: &[PathBuf],
+    artifact: &DiscoveredArtifact,
+    discovery: &DiscoveryResult,
+) -> Result<Vec<ImportCandidate>, BridgeError> {
+    let source_path =
+        canonicalize_approved_path(approved_roots, Path::new(&artifact.canonical_source_ref))?;
+    enforce_size(&source_path)?;
+    if let Some(gate) = artifact.required_schema_gate.as_deref() {
+        let actual = discovery.format_versions.get(gate).map(String::as_str);
+        let validation = validate_schema_version(
+            &SchemaGate {
+                format: gate.into(),
+                allowed_versions: vec![gate.into()],
+            },
+            actual,
+        );
+        if !validation.accepted {
+            return Err(BridgeError::Invalid(
+                validation.diagnostics[0].message.clone(),
+            ));
+        }
+    }
+    Ok(match artifact.kind {
+        CandidateKind::Conversation => {
+            vec![preview_transcript(&source_path, artifact, discovery)?]
+        }
+        CandidateKind::Memory => vec![preview_markdown(
+            &source_path,
+            artifact,
+            discovery,
+            CandidateKind::Memory,
+        )?],
+        CandidateKind::Instruction
+        | CandidateKind::Rule
+        | CandidateKind::Command
+        | CandidateKind::Skill
+        | CandidateKind::Agent => vec![preview_markdown(
+            &source_path,
+            artifact,
+            discovery,
+            artifact.kind.clone(),
+        )?],
+        CandidateKind::Prompt => preview_settings(&source_path, artifact, discovery)?,
+        CandidateKind::McpServer => preview_mcp(&source_path, artifact, discovery)?,
+        ref other => {
+            return Err(BridgeError::Invalid(format!(
+                "Claude {} artifacts are not an import candidate on their own",
+                other.as_str()
+            )))
+        }
+    })
+}
+
+/// A diagnostic-only stand-in for an artifact whose preview failed — an
+/// unreadable file, a rejected schema gate, or (most commonly) a transcript
+/// that, after skipping every record type Bridge does not carry into
+/// history, had nothing importable left. `validate_candidate_integrity`
+/// refuses to commit a `CandidateKind::Unsupported` candidate, so this can
+/// only ever surface as information in the preview list.
+fn unsupported_candidate(
+    artifact: &DiscoveredArtifact,
+    discovery: &DiscoveryResult,
+    reason: &str,
+) -> ImportCandidate {
+    let source = source_now(
+        PROVIDER,
+        ADAPTER_VERSION,
+        Path::new(&artifact.canonical_source_ref),
+        discovery.source_version.clone(),
+        artifact
+            .required_schema_gate
+            .as_ref()
+            .and_then(|gate| discovery.format_versions.get(gate))
+            .cloned(),
+    );
+    let candidate_id = deterministic_identity(
+        PROVIDER,
+        &source.canonical_source_ref,
+        Some("unsupported"),
+        &content_hash(&Value::String(reason.to_owned())),
+        &CandidateKind::Unsupported,
+    );
+    ImportCandidate {
+        candidate_id,
+        source,
+        source_native_id: None,
+        kind: CandidateKind::Unsupported,
+        title: artifact.source_label.clone(),
+        created_at: artifact.modified_at.clone(),
+        updated_at: artifact.modified_at.clone(),
+        project_hint: None,
+        content_hash: content_hash(&Value::Null),
+        stability: Stability::Unavailable,
+        confidence_bps: 0,
+        selected_by_default: false,
+        redaction_summary: RedactionSummary {
+            safely_representable: false,
+            ..RedactionSummary::default()
+        },
+        diagnostics: vec![unsupported_diagnostic(
+            "artifact_preview_failed",
+            reason,
+            Some(artifact.source_label.clone()),
+        )],
+        normalized_payload: Value::Object(Map::new()),
     }
 }
 
@@ -666,6 +742,30 @@ fn mcp_candidates(
         .collect()
 }
 
+/// Real Claude Code transcripts interleave `user`/`assistant` turns with
+/// bookkeeping records Bridge has no destination for. These are expected,
+/// documented shapes (`session_titles.rs` already treats `summary` and
+/// `custom-title` as normal Claude output) — skipped silently, not treated as
+/// an anomaly worth a diagnostic.
+fn is_ignorable_transcript_record(record_type: &str) -> bool {
+    matches!(
+        record_type,
+        "summary"
+            | "custom-title"
+            | "ai-title"
+            | "mode"
+            | "pr-link"
+            | "queue-operation"
+            | "system"
+            | "last-prompt"
+            | "attachment"
+    )
+}
+
+fn bump(skipped: &mut BTreeMap<String, u32>, reason: &str) {
+    *skipped.entry(reason.to_owned()).or_insert(0) += 1;
+}
+
 fn preview_transcript(
     path: &Path,
     artifact: &DiscoveredArtifact,
@@ -677,77 +777,41 @@ fn preview_transcript(
     let mut seen_ids = HashSet::new();
     let mut messages = Vec::new();
     let mut project_hint = None;
-    for (index, line) in content.lines().enumerate() {
+    let mut skipped: BTreeMap<String, u32> = BTreeMap::new();
+    for line in content.lines() {
         if line.trim().is_empty() {
             continue;
         }
-        let record: Value = serde_json::from_str(line).map_err(|_| {
-            BridgeError::Invalid(format!(
-                "Claude transcript line {} is malformed; nothing was imported",
-                index + 1
-            ))
-        })?;
-        let object = record.as_object().ok_or_else(|| {
-            BridgeError::Invalid(format!(
-                "Claude transcript line {} is not an object",
-                index + 1
-            ))
-        })?;
-        let record_type = object.get("type").and_then(Value::as_str).ok_or_else(|| {
-            BridgeError::Invalid(format!(
-                "Claude transcript line {} has no supported record type",
-                index + 1
-            ))
-        })?;
+        let Ok(record) = serde_json::from_str::<Value>(line) else {
+            bump(&mut skipped, "malformed_line");
+            continue;
+        };
+        let Some(object) = record.as_object() else {
+            bump(&mut skipped, "non_object_line");
+            continue;
+        };
+        let Some(record_type) = object.get("type").and_then(Value::as_str) else {
+            bump(&mut skipped, "untyped_record");
+            continue;
+        };
         if !matches!(record_type, "user" | "assistant") {
-            return Err(BridgeError::Invalid(format!(
-                "Claude transcript record type '{record_type}' is not allowlisted; nothing was imported"
-            )));
+            if !is_ignorable_transcript_record(record_type) {
+                bump(&mut skipped, record_type);
+            }
+            continue;
         }
-        let source_id = object.get("uuid").and_then(Value::as_str).ok_or_else(|| {
-            BridgeError::Invalid("Claude transcript message is missing uuid".into())
-        })?;
-        if !seen_ids.insert(source_id.to_string()) {
-            return Err(BridgeError::Invalid(
-                "Claude transcript contains a duplicate source message id".into(),
-            ));
-        }
-        let timestamp = object
-            .get("timestamp")
-            .and_then(Value::as_str)
-            .ok_or_else(|| {
-                BridgeError::Invalid("Claude transcript message is missing timestamp".into())
-            })?;
-        DateTime::parse_from_rfc3339(timestamp).map_err(|_| {
-            BridgeError::Invalid("Claude transcript contains an invalid timestamp".into())
-        })?;
         project_hint =
             project_hint.or_else(|| object.get("cwd").and_then(Value::as_str).map(str::to_owned));
-        let message = object
-            .get("message")
-            .and_then(Value::as_object)
-            .ok_or_else(|| {
-                BridgeError::Invalid("Claude transcript message payload is missing".into())
-            })?;
-        let role = message
-            .get("role")
-            .and_then(Value::as_str)
-            .unwrap_or(record_type);
-        if role != record_type {
-            return Err(BridgeError::Invalid(
-                "Claude transcript record and message roles disagree".into(),
-            ));
+        let Some((source_id, message)) =
+            parse_transcript_record(object, record_type, messages.len() + 1, &mut skipped)
+        else {
+            continue;
+        };
+        if !seen_ids.insert(source_id) {
+            bump(&mut skipped, "duplicate_source_id");
+            continue;
         }
-        let (text, tool_metadata) = parse_message_content(message.get("content"), record_type)?;
-        messages.push(json!({
-            "sourceId": source_id,
-            "role": role,
-            "kind": if role == "user" { "user.message" } else { "assistant.message" },
-            "text": text,
-            "toolMetadata": tool_metadata,
-            "timestamp": timestamp,
-            "sequence": messages.len() + 1
-        }));
+        messages.push(message);
     }
     if messages.is_empty() {
         return Err(BridgeError::Invalid(
@@ -804,30 +868,97 @@ fn preview_transcript(
     result.project_hint = result.normalized_payload["projectHint"]
         .as_str()
         .map(str::to_owned);
+    result.diagnostics = skipped
+        .into_iter()
+        .map(|(kind, count)| ImportDiagnostic {
+            code: "transcript_record_skipped".into(),
+            severity: "info".into(),
+            classification: SourceClassification::Documented,
+            message: format!(
+                "Skipped {count} '{kind}' record(s); only user/assistant turns are imported"
+            ),
+            recovery: None,
+            source_label: Some(artifact.source_label.clone()),
+        })
+        .collect();
     Ok(result)
 }
 
+/// Parses one `user`/`assistant` transcript record into its imported message
+/// shape. Anything malformed about this *specific* record — a missing id or
+/// timestamp, an unparsable timestamp, a role that disagrees with the record
+/// type — is recorded in `skipped` and the record is dropped, rather than
+/// failing the whole transcript over one bad line.
+fn parse_transcript_record(
+    object: &Map<String, Value>,
+    record_type: &str,
+    sequence: usize,
+    skipped: &mut BTreeMap<String, u32>,
+) -> Option<(String, Value)> {
+    let Some(source_id) = object.get("uuid").and_then(Value::as_str) else {
+        bump(skipped, "missing_uuid");
+        return None;
+    };
+    let Some(timestamp) = object.get("timestamp").and_then(Value::as_str) else {
+        bump(skipped, "missing_timestamp");
+        return None;
+    };
+    if DateTime::parse_from_rfc3339(timestamp).is_err() {
+        bump(skipped, "invalid_timestamp");
+        return None;
+    }
+    let Some(message) = object.get("message").and_then(Value::as_object) else {
+        bump(skipped, "missing_message_payload");
+        return None;
+    };
+    let role = message
+        .get("role")
+        .and_then(Value::as_str)
+        .unwrap_or(record_type);
+    if role != record_type {
+        bump(skipped, "role_mismatch");
+        return None;
+    }
+    let (text, tool_metadata) = parse_message_content(message.get("content"), record_type, skipped);
+    Some((
+        source_id.to_owned(),
+        json!({
+            "sourceId": source_id,
+            "role": role,
+            "kind": if role == "user" { "user.message" } else { "assistant.message" },
+            "text": text,
+            "toolMetadata": tool_metadata,
+            "timestamp": timestamp,
+            "sequence": sequence
+        }),
+    ))
+}
+
+/// Content blocks Bridge does not carry into imported text — reasoning
+/// traces and inline images are known, expected shapes in a real transcript,
+/// dropped rather than surfaced as an anomaly. Anything else unrecognized is
+/// dropped too, but counted, so one exotic block does not cost the whole
+/// message.
 fn parse_message_content(
     content: Option<&Value>,
     role: &str,
-) -> Result<(String, Vec<Value>), BridgeError> {
+    skipped: &mut BTreeMap<String, u32>,
+) -> (String, Vec<Value>) {
     match content {
-        Some(Value::String(text)) => Ok((text.clone(), Vec::new())),
+        Some(Value::String(text)) => (text.clone(), Vec::new()),
         Some(Value::Array(blocks)) => {
             let mut text = Vec::new();
             let mut tools = Vec::new();
             for block in blocks {
-                let object = block.as_object().ok_or_else(|| {
-                    BridgeError::Invalid("Claude transcript content block is not an object".into())
-                })?;
+                let Some(object) = block.as_object() else {
+                    bump(skipped, "non_object_content_block");
+                    continue;
+                };
                 match object.get("type").and_then(Value::as_str) {
-                    Some("text") => {
-                        let value =
-                            object.get("text").and_then(Value::as_str).ok_or_else(|| {
-                                BridgeError::Invalid("Claude text block has no text".into())
-                            })?;
-                        text.push(value.to_string());
-                    }
+                    Some("text") => match object.get("text").and_then(Value::as_str) {
+                        Some(value) => text.push(value.to_string()),
+                        None => bump(skipped, "text_block_missing_text"),
+                    },
                     Some("tool_use") if role == "assistant" => tools.push(json!({
                         "type": "tool_use",
                         "sourceId": object.get("id"),
@@ -838,23 +969,17 @@ fn parse_message_content(
                         "sourceId": object.get("tool_use_id"),
                         "isError": object.get("is_error").and_then(Value::as_bool).unwrap_or(false)
                     })),
-                    Some(other) => {
-                        return Err(BridgeError::Invalid(format!(
-                            "Claude transcript content block '{other}' is not allowlisted"
-                        )))
-                    }
-                    None => {
-                        return Err(BridgeError::Invalid(
-                            "Claude transcript content block has no type".into(),
-                        ))
-                    }
+                    Some("thinking") | Some("image") => {}
+                    Some(other) => bump(skipped, &format!("content_block:{other}")),
+                    None => bump(skipped, "untyped_content_block"),
                 }
             }
-            Ok((text.join("\n\n"), tools))
+            (text.join("\n\n"), tools)
         }
-        _ => Err(BridgeError::Invalid(
-            "Claude transcript message content is unsupported".into(),
-        )),
+        _ => {
+            bump(skipped, "unsupported_content_shape");
+            (String::new(), Vec::new())
+        }
     }
 }
 
@@ -868,9 +993,14 @@ fn candidate(
 ) -> Result<ImportCandidate, BridgeError> {
     let (safe_payload, redaction_summary) = sanitize_import_payload(&payload);
     let hash = content_hash(&safe_payload);
-    let source_native_id = native_suffix
-        .map(str::to_owned)
-        .or_else(|| Some(artifact.source_label.clone()));
+    // `canonical_source_ref` (below) is already the file's stable absolute
+    // path, so identity only needs a native suffix to disambiguate multiple
+    // candidates carved out of one file (e.g. several MCP servers in one
+    // `.mcp.json`). Falling back to the root-relative `source_label` here
+    // would make identity depend on which approved root the user picked,
+    // breaking dedup and revision detection for the same file re-approved
+    // under a different root.
+    let source_native_id = native_suffix.map(str::to_owned);
     let schema_version = artifact
         .required_schema_gate
         .as_ref()
@@ -1110,11 +1240,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_malformed_unknown_and_duplicate_jsonl_records() {
+    fn rejects_transcripts_with_nothing_importable_left() {
         for fixture in [
             include_str!("../../../testing/fixtures/import/claude/transcripts/malformed.jsonl"),
             include_str!("../../../testing/fixtures/import/claude/transcripts/unsupported.jsonl"),
-            include_str!("../../../testing/fixtures/import/claude/transcripts/duplicate-id.jsonl"),
         ] {
             let root = tempfile::tempdir().unwrap();
             let claude = root.path().join(".claude");
@@ -1125,15 +1254,111 @@ mod tests {
                 .iter()
                 .find(|item| item.kind == CandidateKind::Conversation)
                 .unwrap();
-            assert!(ClaudeCodeImporter
+            // The batch itself still succeeds — this artifact just surfaces
+            // as an uncommittable, diagnostic-only candidate instead of
+            // aborting every other selected artifact.
+            let preview = ClaudeCodeImporter
                 .preview(
                     &discovery,
                     &DiscoverySelection {
-                        artifact_ids: vec![transcript.artifact_id.clone()]
-                    }
+                        artifact_ids: vec![transcript.artifact_id.clone()],
+                    },
                 )
-                .is_err());
+                .unwrap();
+            assert_eq!(preview.len(), 1);
+            assert_eq!(preview[0].kind, CandidateKind::Unsupported);
         }
+    }
+
+    /// A duplicate source message id drops the second occurrence with a
+    /// diagnostic rather than failing the whole transcript: one repeated line
+    /// in an otherwise-good export should not cost every other message in it.
+    #[test]
+    fn duplicate_source_id_drops_the_repeat_and_keeps_the_rest() {
+        let root = tempfile::tempdir().unwrap();
+        let claude = root.path().join(".claude");
+        write(
+            &claude.join("projects/demo/session.jsonl"),
+            include_str!("../../../testing/fixtures/import/claude/transcripts/duplicate-id.jsonl"),
+        );
+        let discovery = ClaudeCodeImporter.discover(&request(&claude)).unwrap();
+        let transcript = discovery
+            .artifacts
+            .iter()
+            .find(|item| item.kind == CandidateKind::Conversation)
+            .unwrap();
+        let preview = ClaudeCodeImporter
+            .preview(
+                &discovery,
+                &DiscoverySelection {
+                    artifact_ids: vec![transcript.artifact_id.clone()],
+                },
+            )
+            .unwrap();
+        assert_eq!(preview.len(), 1);
+        let messages = preview[0].normalized_payload["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 1);
+        assert!(preview[0]
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("duplicate_source_id")));
+    }
+
+    /// The reviewer's core complaint: a real transcript interleaves
+    /// `user`/`assistant` turns with metadata records (`ai-title`, `system`,
+    /// ...) and messages carrying `thinking`/`image` blocks. None of that
+    /// should abort the import — only the unsupported pieces are dropped.
+    #[test]
+    fn tolerates_interleaved_metadata_records_and_unsupported_content_blocks() {
+        let root = tempfile::tempdir().unwrap();
+        let claude = root.path().join(".claude");
+        let lines = [
+            json!({"type":"ai-title","uuid":"t-1","timestamp":"2026-08-01T09:59:59Z","title":"Demo"}).to_string(),
+            json!({
+                "type":"user","uuid":"u-1","timestamp":"2026-08-01T10:00:00Z","cwd":"/safe/project",
+                "message":{"role":"user","content":"Investigate the flaky test"}
+            }).to_string(),
+            json!({"type":"system","uuid":"s-1","timestamp":"2026-08-01T10:00:00Z","content":"internal note"}).to_string(),
+            json!({
+                "type":"assistant","uuid":"a-1","timestamp":"2026-08-01T10:00:01Z",
+                "message":{"role":"assistant","content":[
+                    {"type":"thinking","thinking":"reasoning that must not leak"},
+                    {"type":"text","text":"Found it."},
+                    {"type":"image","source":{"type":"base64","data":"not-really-image-bytes"}}
+                ]}
+            }).to_string(),
+            json!({"type":"queue-operation","uuid":"q-1","timestamp":"2026-08-01T10:00:02Z"}).to_string(),
+            json!({"type":"future-unknown-record","uuid":"f-1","timestamp":"2026-08-01T10:00:03Z"}).to_string(),
+        ];
+        write(
+            &claude.join("projects/demo/session.jsonl"),
+            &lines.join("\n"),
+        );
+        let discovery = ClaudeCodeImporter.discover(&request(&claude)).unwrap();
+        let transcript = discovery
+            .artifacts
+            .iter()
+            .find(|item| item.kind == CandidateKind::Conversation)
+            .unwrap();
+        let preview = ClaudeCodeImporter
+            .preview(
+                &discovery,
+                &DiscoverySelection {
+                    artifact_ids: vec![transcript.artifact_id.clone()],
+                },
+            )
+            .unwrap();
+        assert_eq!(preview.len(), 1);
+        let messages = preview[0].normalized_payload["messages"].as_array().unwrap();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1]["text"], "Found it.");
+        let encoded = serde_json::to_string(&preview[0]).unwrap();
+        assert!(!encoded.contains("reasoning that must not leak"));
+        assert!(!encoded.contains("not-really-image-bytes"));
+        assert!(preview[0]
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("future-unknown-record")));
     }
 
     #[test]
@@ -1191,25 +1416,39 @@ mod tests {
             &claude.join("projects/demo/session.jsonl"),
             include_str!("../../../testing/fixtures/import/claude/transcripts/simple.jsonl"),
         );
-        let mut request = request(&claude);
-        request
+        // `discover()` stamps `format_versions` from this build's own known-
+        // supported map — a wire caller cannot influence it (that tautology is
+        // exactly what let a forged discovery bypass the gate before). To
+        // simulate a future artifact gated on a version this build never
+        // learned about, mutate the *returned* discovery rather than the
+        // request.
+        let mut discovery = ClaudeCodeImporter.discover(&request(&claude)).unwrap();
+        discovery
             .format_versions
             .insert(TRANSCRIPT_GATE.into(), "future-private-v9".into());
-        let discovery = ClaudeCodeImporter.discover(&request).unwrap();
         let transcript = discovery
             .artifacts
             .iter()
             .find(|item| item.kind == CandidateKind::Conversation)
             .unwrap();
-        let error = ClaudeCodeImporter
+        // A rejected artifact no longer aborts the whole preview batch — it
+        // surfaces as a diagnostic-only, uncommittable candidate instead, so
+        // one gate rejection cannot blank out everything else selected in the
+        // same call.
+        let preview = ClaudeCodeImporter
             .preview(
                 &discovery,
                 &DiscoverySelection {
                     artifact_ids: vec![transcript.artifact_id.clone()],
                 },
             )
-            .unwrap_err();
-        assert!(error.to_string().contains("not allowlisted"));
+            .unwrap();
+        assert_eq!(preview.len(), 1);
+        assert_eq!(preview[0].kind, CandidateKind::Unsupported);
+        assert!(preview[0]
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("not allowlisted")));
     }
 
     #[test]

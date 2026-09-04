@@ -965,17 +965,6 @@ export interface ExternalImportDiagnostic {
   sourceLabel?: string | null;
 }
 
-export interface ExternalImportDiscovery {
-  approvedRoots: string[];
-  artifacts: ExternalImportArtifact[];
-  diagnostics: ExternalImportDiagnostic[];
-  discoveredAt: string;
-  discoveryId: string;
-  formatVersions: Record<string, string>;
-  provider: string;
-  sourceVersion?: string | null;
-}
-
 export interface ExternalImportPlan {
   conflictPolicy: ExternalImportConflictPolicy;
   createdAt: string;
@@ -1939,9 +1928,20 @@ export interface DiscoverExternalImportParams {
   sourceVersion?: string | null;
 }
 
+export interface ExternalImportDiscovery {
+  approvedRoots: string[];
+  artifacts: ExternalImportArtifact[];
+  diagnostics: ExternalImportDiagnostic[];
+  discoveredAt: string;
+  discoveryId: string;
+  formatVersions: Record<string, string>;
+  provider: string;
+  sourceVersion?: string | null;
+}
+
 export interface PreviewExternalImportParams {
   artifactIds: string[];
-  discovery: ExternalImportDiscovery;
+  discoveryId: string;
 }
 
 export interface ExternalImportPreview {
@@ -1949,7 +1949,7 @@ export interface ExternalImportPreview {
 }
 
 export interface CommitExternalImportParams {
-  candidates: ExternalImportCandidate[];
+  discoveryId: string;
   plan: ExternalImportPlan;
 }
 

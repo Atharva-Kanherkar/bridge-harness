@@ -16,6 +16,7 @@ import type {
   ExternalImportDiscovery,
   ExternalImportPlan,
   ExternalImportPreview,
+  PreviewExternalImportParams,
 } from "./protocol/generated/protocol";
 import type { ComposerAttachment } from "./pasteAttachments";
 import type { GithubCiFinishedPayload } from "./githubSurface";
@@ -794,7 +795,7 @@ export const bridgeApi = {
     });
   },
   previewExternalImport: (discovery: ExternalImportDiscovery, artifactIds: string[]): Promise<ExternalImportPreview> => {
-    if (isTauri()) return call("imports/preview_external_import", { discovery, artifactIds });
+    if (isTauri()) return call("imports/preview_external_import", { discoveryId: discovery.discoveryId, artifactIds } satisfies PreviewExternalImportParams);
     const selected = new Set(artifactIds);
     const source = (artifactId: string) => {
       const artifact = discovery.artifacts.find(item => item.artifactId === artifactId)!;
@@ -833,8 +834,8 @@ export const bridgeApi = {
     if (selected.has("mock-history")) candidates.push(candidate("mock-history", { kind: "conversation", title: "Historical Claude session", normalizedPayload: { messages: [] } }));
     return Promise.resolve({ candidates });
   },
-  commitExternalImport: (candidates: ExternalImportCandidate[], plan: ExternalImportPlan): Promise<ExternalImportCommit> => {
-    if (isTauri()) return call("imports/commit_external_import", { candidates, plan } satisfies CommitExternalImportParams);
+  commitExternalImport: (discoveryId: string, candidates: ExternalImportCandidate[], plan: ExternalImportPlan): Promise<ExternalImportCommit> => {
+    if (isTauri()) return call("imports/commit_external_import", { discoveryId, plan } satisfies CommitExternalImportParams);
     const selected = candidates.filter(candidate => plan.selectedCandidateIds.includes(candidate.candidateId));
     return Promise.resolve({
       importId: crypto.randomUUID(),

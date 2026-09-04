@@ -1047,11 +1047,15 @@ pub fn session_forest_snapshot_with_repository_state(
     session_id: &str,
     current_state: serde_json::Value,
 ) -> Result<SessionForestSnapshot, BridgeError> {
-    let workspace_id: String = db.query_row(
+    // Imported and other workspace-less direct chats carry a NULL
+    // workspace_id; the workspace-scoped queries below simply return empty
+    // results for a key that matches no real workspace row.
+    let workspace_id: Option<String> = db.query_row(
         "SELECT workspace_id FROM sessions WHERE id=?1",
         params![session_id],
         |row| row.get(0),
     )?;
+    let workspace_id = workspace_id.unwrap_or_default();
     let config = policy::PolicyConfig::default();
     let entries = store::session_entries(db, session_id)?;
     let head = store::session_head(db, session_id)?;

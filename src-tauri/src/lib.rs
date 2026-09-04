@@ -54,37 +54,47 @@ async fn discover_external_import(
     source_version: Option<String>,
     schema_version: Option<String>,
     format_versions: std::collections::BTreeMap<String, String>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<wire::ExternalImportDiscovery, BridgeError> {
+    let core = state.inner().clone();
     blocking("Discover external import", move || {
-        api::discover_external_import(&wire::DiscoverExternalImportParams {
-            provider,
-            approved_roots,
-            selected_export,
-            source_version,
-            schema_version,
-            format_versions,
-        })
+        api::discover_external_import(
+            &core,
+            &wire::DiscoverExternalImportParams {
+                provider,
+                approved_roots,
+                selected_export,
+                source_version,
+                schema_version,
+                format_versions,
+            },
+        )
     })
     .await
 }
 
 #[tauri::command]
 async fn preview_external_import(
-    discovery: wire::ExternalImportDiscovery,
+    discovery_id: String,
     artifact_ids: Vec<String>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<wire::ExternalImportPreview, BridgeError> {
+    let core = state.inner().clone();
     blocking("Preview external import", move || {
-        api::preview_external_import(&wire::PreviewExternalImportParams {
-            discovery,
-            artifact_ids,
-        })
+        api::preview_external_import(
+            &core,
+            &wire::PreviewExternalImportParams {
+                discovery_id,
+                artifact_ids,
+            },
+        )
     })
     .await
 }
 
 #[tauri::command]
 async fn commit_external_import(
-    candidates: Vec<wire::ExternalImportCandidate>,
+    discovery_id: String,
     plan: wire::ExternalImportPlan,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<wire::ExternalImportCommit, BridgeError> {
@@ -92,7 +102,7 @@ async fn commit_external_import(
     blocking("Commit external import", move || {
         api::commit_external_import(
             &core,
-            &wire::CommitExternalImportParams { candidates, plan },
+            &wire::CommitExternalImportParams { discovery_id, plan },
         )
     })
     .await

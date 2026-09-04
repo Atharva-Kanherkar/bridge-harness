@@ -217,7 +217,9 @@ pub struct DiscoverExternalImportParams {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PreviewExternalImportParams {
-    pub discovery: ExternalImportDiscovery,
+    /// References a discovery this daemon actually walked — a client cannot
+    /// substitute its own `approvedRoots`/`artifacts` by hand-building one.
+    pub discovery_id: String,
     pub artifact_ids: Vec<String>,
 }
 
@@ -230,7 +232,12 @@ pub struct ExternalImportPreview {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CommitExternalImportParams {
-    pub candidates: Vec<ExternalImportCandidate>,
+    /// Same discovery `preview` reviewed. Commit re-derives every candidate
+    /// from disk against it rather than trusting client-supplied
+    /// `normalizedPayload`/`contentHash`/`candidateId` values — the source
+    /// file is re-read and re-hashed at commit time, closing the
+    /// discover/preview/commit TOCTOU window.
+    pub discovery_id: String,
     pub plan: ExternalImportPlan,
 }
 

@@ -460,10 +460,16 @@ fn excluded_structured_key(key: &str) -> bool {
         "authorization"
             | "auth"
             | "apikey"
+            | "apisecret"
+            | "apitoken"
+            | "token"
             | "accesstoken"
             | "refreshtoken"
+            | "sessiontoken"
             | "oauthtoken"
             | "oauthstate"
+            | "secret"
+            | "clientsecret"
             | "cookie"
             | "cookies"
             | "password"
@@ -475,6 +481,7 @@ fn excluded_structured_key(key: &str) -> bool {
             | "env"
             | "environment"
             | "connectionstring"
+            | "xapikey"
     )
 }
 
@@ -814,11 +821,7 @@ fn destination_conflicts(
         let scope = plan.memory_scope.as_deref().ok_or_else(|| {
             BridgeError::Invalid("Imported memories require an explicit Bridge scope".into())
         })?;
-        let kind = candidate
-            .normalized_payload
-            .get("memoryType")
-            .and_then(Value::as_str)
-            .unwrap_or("note");
+        let kind = imported_memory_kind()?;
         return Ok(db.query_row(
             "SELECT EXISTS(SELECT 1 FROM memory_records WHERE scope_key=?1 AND kind=?2 AND status='active')",
             params![scope, kind],
@@ -1017,15 +1020,23 @@ fn write_conversation(
             "sourcePathFingerprint".into(),
             Value::String(candidate.source.source_path_fingerprint.clone()),
         );
+        payload.insert(
+            crate::session_forest::TYPED_SCHEMA_MARKER.into(),
+            Value::from(crate::session_forest::TYPED_SCHEMA_VERSION),
+        );
+        crate::session_forest::EntryKind::from_storage(kind)
+            .validate_payload(&Value::Object(payload.clone()))
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
         transaction.execute(
             "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,semantic_schema_version,kind,
                 payload,provider_event_id,context_visibility,token_estimate,created_at)
-             VALUES(?1,?2,?3,?4,1,?5,?6,?7,'historical',?8,?9)",
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,'visible',?9,?10)",
             params![
                 entry_id,
                 normalized.deterministic_bridge_id,
                 parent,
                 (index + 1) as i64,
+                crate::model::SEMANTIC_EVENT_SCHEMA_VERSION,
                 kind,
                 Value::Object(payload).to_string(),
                 source_id,
@@ -1057,10 +1068,14 @@ fn write_conversation(
     )?;
     if let Some(project_hint) = candidate.project_hint.as_deref() {
         let hint_hash = sha256_hex(project_hint.as_bytes());
+        // Scoped by content_hash, like `revision_scoped_source_id` above, so
+        // importing a changed-history revision of the same conversation gets
+        // its own hint row instead of colliding on the ledger's primary key.
+        let revision_scoped_hint = format!("{}:{project_hint}", candidate.content_hash);
         let hint_id = deterministic_identity(
             &candidate.source.provider,
             &candidate.source.canonical_source_ref,
-            Some(project_hint),
+            Some(&revision_scoped_hint),
             &hint_hash,
             &CandidateKind::ProjectHint,
         );
@@ -1096,17 +1111,14 @@ fn write_memory(
             .as_deref()
             .ok_or_else(|| BridgeError::Invalid("Imported memory needs a scope".into()))?,
     )?;
-    let body = candidate
+    let raw_body = candidate
         .normalized_payload
         .get("body")
         .and_then(Value::as_str)
-        .filter(|body| !body.trim().is_empty())
         .ok_or_else(|| BridgeError::Invalid("Imported memory body is empty".into()))?;
-    let kind = candidate
-        .normalized_payload
-        .get("memoryType")
-        .and_then(Value::as_str)
-        .unwrap_or("note");
+    let body = crate::memory_ledger::require_body(raw_body)?;
+    let kind = imported_memory_kind()?;
+    crate::memory_consolidation::enforce_scope_budget(transaction, &scope)?;
     let conflict_group = existing_memory_conflict(transaction, &scope, kind)?.map(|_| {
         deterministic_identity(
             "bridge",
@@ -1280,6 +1292,17 @@ fn existing_memory_conflict(
         .optional()?)
 }
 
+/// Claude's own memory taxonomy (an `index` doc vs a per-topic note) has no
+/// counterpart in `memory_ledger`'s closed kind set, so every imported memory
+/// lands as a `fact` — the ledger's most neutral kind. This keeps imported
+/// records inside `memory_ledger::parse_kind`'s allowlist (so they round-trip
+/// through the editor) and makes them a real target for conflict detection
+/// against Bridge-authored memories, instead of a kind value no other writer
+/// ever produces.
+fn imported_memory_kind() -> Result<&'static str, BridgeError> {
+    crate::memory_ledger::parse_kind(Some("fact"))
+}
+
 fn source_native_key(candidate: &ImportCandidate) -> &str {
     candidate
         .source_native_id
@@ -1410,6 +1433,14 @@ pub(crate) fn install_import_foundation(transaction: &Transaction<'_>) -> Result
         WHEN EXISTS (
             SELECT 1 FROM imported_record_provenance p
             WHERE p.bridge_id = OLD.session_id AND p.destination_kind = 'session'
+        ) BEGIN
+            SELECT RAISE(ABORT, 'imported session history is immutable');
+        END;
+        CREATE TRIGGER IF NOT EXISTS imported_session_entries_immutable_insert
+        BEFORE INSERT ON session_entries
+        WHEN EXISTS (
+            SELECT 1 FROM imported_record_provenance p
+            WHERE p.bridge_id = NEW.session_id AND p.destination_kind = 'session'
         ) BEGIN
             SELECT RAISE(ABORT, 'imported session history is immutable');
         END;",
@@ -1714,6 +1745,16 @@ mod tests {
             .execute("UPDATE session_entries SET kind='changed'", [])
             .is_err());
         assert!(db.execute("DELETE FROM session_entries", []).is_err());
+        let session_id: String = db
+            .query_row("SELECT id FROM sessions LIMIT 1", [], |row| row.get(0))
+            .unwrap();
+        assert!(db
+            .execute(
+                "INSERT INTO session_entries(id,session_id,sequence,kind,created_at)
+                 VALUES('injected',?1,99,'user.message','now')",
+                params![session_id],
+            )
+            .is_err());
     }
 
     #[test]
@@ -1747,7 +1788,7 @@ mod tests {
         let db = crate::store::open(Path::new(":memory:")).unwrap();
         db.execute(
             "INSERT INTO memory_records(id,scope_key,kind,body,provenance,status,valid_from,created_at,updated_at)
-             VALUES('existing','account:local','index','Existing memory','user_explicit','active','now','now','now')",
+             VALUES('existing','account:local','fact','Existing memory','user_explicit','active','now','now','now')",
             [],
         )
         .unwrap();
@@ -1854,5 +1895,46 @@ mod tests {
         let error = crate::api::start_chat(&core, candidates[0].deterministic_bridge_id.clone())
             .unwrap_err();
         assert!(error.to_string().contains("cannot resume"));
+    }
+
+    /// The composer's send path never calls `api::start_chat` — it resumes a
+    /// stopped session through `live_turn::resume_for_send` ->
+    /// `live_turn::start_chat` directly. The gate has to live in that shared
+    /// function, or typing into an imported chat silently launches a real
+    /// provider session on top of immutable history.
+    #[test]
+    fn imported_sessions_cannot_resume_through_the_composer_send_path() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
+        let candidates = vec![conversation("session-1", "Done")];
+        {
+            let db = core.db.lock().unwrap();
+            commit_import(&db, &candidates, &plan(&candidates, ConflictPolicy::Skip)).unwrap();
+        }
+        let error = crate::live_turn::send_turn(
+            &core,
+            candidates[0].deterministic_bridge_id.clone(),
+            "hello".into(),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cannot resume"));
+        assert_eq!(row_count(&core.db.lock().unwrap(), "session_entries"), 2);
+    }
+
+    /// An imported conversation has no workspace, so `sessions.workspace_id`
+    /// is NULL — `session_forest_snapshot` used to read that column as a
+    /// non-null `String` and fail every fetch, leaving the imported chat
+    /// permanently blank in the UI.
+    #[test]
+    fn imported_sessions_have_a_fetchable_forest_snapshot() {
+        let db = crate::store::open(Path::new(":memory:")).unwrap();
+        let candidates = vec![conversation("session-1", "Done")];
+        commit_import(&db, &candidates, &plan(&candidates, ConflictPolicy::Skip)).unwrap();
+        let snapshot = crate::sessions::session_forest_snapshot(
+            &db,
+            &candidates[0].deterministic_bridge_id,
+        )
+        .unwrap();
+        assert_eq!(snapshot.entries.len(), 2);
     }
 }

@@ -60,9 +60,11 @@ export function ImportHarnessSection({ onError }: { onError: (message: string) =
 
   async function discover(kind: "directory" | "export") {
     try {
-      const chosen = await open(kind === "directory"
-        ? { directory: true, multiple: false, title: "Choose a Claude Code project or configuration folder" }
-        : { directory: false, multiple: false, title: "Choose a Claude Code JSONL export", filters: [{ name: "Claude Code history", extensions: ["jsonl"] }] });
+      const chosen = ("__TAURI_INTERNALS__" in window)
+        ? await open(kind === "directory"
+          ? { directory: true, multiple: false, title: "Choose a Claude Code project or configuration folder" }
+          : { directory: false, multiple: false, title: "Choose a Claude Code JSONL export", filters: [{ name: "Claude Code history", extensions: ["jsonl"] }] })
+        : (kind === "directory" ? "/mock/.claude" : "/mock/.claude/projects/demo/session.jsonl");
       const path = Array.isArray(chosen) ? chosen[0] : chosen;
       if (!path) return;
       setBusy(true);
@@ -97,10 +99,10 @@ export function ImportHarnessSection({ onError }: { onError: (message: string) =
   }
 
   async function commitSelection() {
-    if (!canConfirm) return;
+    if (!canConfirm || !discovery) return;
     setBusy(true);
     try {
-      const result = await bridgeApi.commitExternalImport(candidates, {
+      const result = await bridgeApi.commitExternalImport(discovery.discoveryId, candidates, {
         selectedCandidateIds: candidateIds,
         conflictPolicy,
         setupActivationPolicy: "disabled",
@@ -150,10 +152,10 @@ export function ImportHarnessSection({ onError }: { onError: (message: string) =
 
     {stage === "preview" && <section className="rounded-3xl border border-border bg-card/45 p-5">
       <div><h3 className="font-display text-sm font-semibold">Select what Bridge may import</h3><p className="mt-1 text-[11px] text-muted-foreground">Review provenance, confidence, stability, redactions, and warnings. Setup stays disabled.</p></div>
-      <div className="mt-4 space-y-2">{candidates.map(candidate => <label key={candidate.candidateId} className="flex items-start gap-3 rounded-2xl border border-border p-3.5">
-        <input type="checkbox" className="mt-0.5" checked={candidateIds.includes(candidate.candidateId)} onChange={event => toggle(candidate.candidateId, event.target.checked, setCandidateIds, candidateIds)}/>
+      <div className="mt-4 space-y-2">{candidates.map(candidate => { const unsupported = candidate.kind === "unsupported"; return <label key={candidate.candidateId} className={cn("flex items-start gap-3 rounded-2xl border border-border p-3.5", unsupported && "opacity-60")}>
+        <input type="checkbox" className="mt-0.5" disabled={unsupported} checked={!unsupported && candidateIds.includes(candidate.candidateId)} onChange={event => toggle(candidate.candidateId, event.target.checked, setCandidateIds, candidateIds)}/>
         <span className="min-w-0 flex-1"><span className="flex flex-wrap items-center gap-1.5"><b className="truncate text-[12px] font-medium">{candidate.title}</b><span className="rounded-full bg-foreground/[0.06] px-1.5 py-0.5 text-[8px] uppercase tracking-wide text-muted-foreground">{kindLabel(candidate.kind)}</span>{SETUP_KINDS.has(candidate.kind) && <span className="rounded-full border border-border px-1.5 py-0.5 text-[8px] uppercase tracking-wide text-muted-foreground">disabled setup</span>}</span><span className="mt-1 block font-mono text-[9.5px] text-muted-foreground">Claude Code · {candidate.source.sourcePathFingerprint.slice(0, 18)}… · {(candidate.confidenceBps / 100).toFixed(0)}% confidence · {candidate.stability.replaceAll("_", " ")}</span>{candidate.redactionSummary.textValuesRedacted + candidate.redactionSummary.structuredFieldsExcluded > 0 && <span className="mt-1 block text-[10px] text-warning">{candidate.redactionSummary.textValuesRedacted} values redacted · {candidate.redactionSummary.structuredFieldsExcluded} structured fields excluded</span>}{candidate.diagnostics.map(diagnostic => <span key={diagnostic.code} className="mt-1 block text-[10px] text-warning">{diagnostic.message}</span>)}</span>
-      </label>)}</div>
+      </label>; })}</div>
       {memorySelected && <label className="mt-4 block text-[11px] font-medium text-muted-foreground">Required memory scope<select className={cn(control, "mt-1.5 w-full")} value={memoryScope} onChange={event => setMemoryScope(event.target.value)}><option value="">Choose a Bridge scope…</option><option value="account:local">This Bridge account</option></select><span className="mt-1 block text-[10px] font-normal">Memories are never auto-merged; the selected scope is stored with imported provenance.</span></label>}
       <div className="mt-4 grid gap-3 sm:grid-cols-2"><label className="text-[11px] font-medium text-muted-foreground">Conflict policy<select className={cn(control, "mt-1.5 w-full")} value={conflictPolicy} onChange={event => setConflictPolicy(event.target.value as ExternalImportConflictPolicy)}><option value="skip">Skip conflicts</option><option value="import_as_new_historical_revision">Import changed history as a revision</option><option value="keep_existing">Keep existing memories</option><option value="import_alongside">Import memories alongside</option></select></label><label className="flex items-center gap-2 self-end rounded-xl border border-border px-3 py-2.5 text-[11px] text-muted-foreground"><input type="checkbox" checked={dryRun} onChange={event => setDryRun(event.target.checked)}/>Dry run — validate without writing</label></div>
       <div className="mt-4 flex items-center justify-between"><button type="button" onClick={() => setStage("discovery")} className="text-[11px] text-muted-foreground hover:text-foreground">Back to discovery</button><button type="button" disabled={!canConfirm} onClick={() => setStage("confirm")} className="h-9 rounded-xl bg-foreground px-3.5 text-xs font-medium text-background disabled:opacity-40">Review exact commit</button></div>
