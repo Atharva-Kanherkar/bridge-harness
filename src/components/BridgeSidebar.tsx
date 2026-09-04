@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { BarChart3, ChevronDown, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, Home, Pin, Plus, RotateCw, Search, Settings2, SquarePen, Store, type LucideIcon } from "lucide-react";
+import { BarChart3, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, Home, Pin, Plus, RotateCw, Search, Settings2, SquarePen, Store, type LucideIcon } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
 import type { Session, SessionStatus, Workspace } from "../types";
@@ -76,13 +76,15 @@ function ChatRow({
       )}
     >
       <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
-        <span className="truncate text-[13px] tracking-[-0.008em] text-foreground">{name}</span>
-        <span className="flex min-w-0 items-center gap-1.5 truncate text-[11px] tracking-[-0.004em] text-muted-foreground">
+        <span className={cn("truncate text-[13px] leading-4 tracking-[-0.008em] text-foreground", active && "font-medium")}>{name}</span>
+        <span className="flex min-w-0 items-center gap-1.5 truncate text-[11px] leading-3.5 tracking-[-0.004em] text-muted-foreground">
           {status && <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", status.dot)} role="img" aria-label={status.label} />}
           {time && <span className="shrink-0 tabular-nums text-faint">{time}</span>}
         </span>
       </span>
-      <HarnessMark harness={chat.harness} size={13} className="shrink-0" />
+      {/* Muted at rest: a column of full-tint marks is the loudest thing in the
+          rail and the chrome stays achromatic. The active row earns its tint. */}
+      <HarnessMark harness={chat.harness} size={13} className={cn("shrink-0", !active && "text-muted-foreground/50")} />
     </button>
   );
 }
@@ -91,8 +93,7 @@ function SectionLabel({ children, action }: { children: React.ReactNode; action?
   return (
     <div className="flex h-7 items-center gap-1.5 px-2">
       <Folder size={13} strokeWidth={1.6} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-      <span className="text-[12px] tracking-[-0.004em] text-muted-foreground">{children}</span>
-      <ChevronDown size={12} strokeWidth={1.8} className="shrink-0 text-faint" aria-hidden="true" />
+      <span className="text-[12px] font-medium tracking-[-0.004em] text-muted-foreground">{children}</span>
       {action && <span className="ml-auto flex items-center gap-0.5">{action}</span>}
     </div>
   );
@@ -138,7 +139,7 @@ function GroupLabel({
         {Icon && <Icon size={13} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />}
         <span className="min-w-0 truncate text-[12px] text-muted-foreground">{label}</span>
       </button>
-      <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground/60">{count}</span>
+      <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground/60">{count}</span>
       {action}
     </div>
   );
@@ -352,13 +353,9 @@ export function BridgeSidebar({
     setQuery("");
   }, []);
 
-  const toggleSearch = useCallback(() => {
-    if (searchOpen) {
-      closeSearch();
-      return;
-    }
-    setSearchOpen(true);
-  }, [searchOpen, closeSearch]);
+  // Open-only: while the field is live it occupies the pill's slot, so the
+  // only ways back out are Escape and an empty blur.
+  const openSearch = useCallback(() => setSearchOpen(true), []);
 
   const stopResize = useCallback((pointerId?: number) => {
     setResizing(false);
@@ -507,21 +504,38 @@ export function BridgeSidebar({
         </div>
       )}
       <div className={cn("flex min-h-0 flex-1 flex-col overflow-hidden px-2 pb-3", showWindowNav ? "pt-1" : "pt-3")}>
-        {/* Search and compose share one row: the ⌘K field carries the label,
-            the pencil is a bare icon button that replaces the old filled pill. */}
+        {/* Search and compose share one row. The pill becomes the input in
+            place when opened — one field, one spot — instead of spawning a
+            second row further down. No ⌘K hint: that chord belongs to
+            open-recall, and a shortcut the field does not own is a lie. */}
         <div className="mb-1.5 flex shrink-0 items-center gap-1.5">
-          <button
-            type="button"
-            onClick={toggleSearch}
-            aria-label="Search"
-            title="Search"
-            aria-expanded={searchOpen}
-            className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-[7px] border border-border bg-background px-2.5 text-left text-[13px] text-muted-foreground transition-colors hover:border-border-card hover:text-foreground"
-          >
-            <Search size={14} strokeWidth={1.6} className="shrink-0" aria-hidden="true" />
-            <span className="min-w-0 flex-1 truncate">Search</span>
-            <span className="shrink-0 font-mono text-[10px] text-faint">⌘K</span>
-          </button>
+          {searchOpen ? (
+            <div className="relative h-8 min-w-0 flex-1">
+              <Search size={14} strokeWidth={1.6} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <input
+                type="text"
+                value={query}
+                autoFocus
+                onChange={event => setQuery(event.target.value)}
+                onKeyDown={event => { if (event.key === "Escape") closeSearch(); }}
+                onBlur={() => { if (!query.trim()) closeSearch(); }}
+                placeholder="Filter chats and projects…"
+                aria-label="Filter chats and projects"
+                className="h-8 w-full rounded-[7px] border border-ring/50 bg-background pl-8 pr-2.5 text-[13px] text-foreground outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-ring"
+              />
+            </div>
+          ) : (
+            <button
+              type="button"
+              onClick={openSearch}
+              aria-label="Search"
+              title="Search"
+              className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-[7px] border border-border bg-background px-2.5 text-left text-[13px] text-muted-foreground transition-colors hover:border-border-card hover:text-foreground"
+            >
+              <Search size={14} strokeWidth={1.6} className="shrink-0" aria-hidden="true" />
+              <span className="min-w-0 flex-1 truncate">Search</span>
+            </button>
+          )}
           <button
             type="button"
             onClick={onOpenNewChat}
@@ -545,22 +559,6 @@ export function BridgeSidebar({
           <ActionRow icon={FolderGit2} label="Projects" chord="open-projects" onClick={onOpenProjects} active={projectsActive} />
           <ActionRow icon={Pin} label="Memory" onClick={onOpenMemory} active={memoryActive} />
         </div>
-
-        {searchOpen && (
-          <div className="relative mb-2 shrink-0">
-            <Search size={13} strokeWidth={1.7} aria-hidden="true" className="pointer-events-none absolute left-2 top-2 text-muted-foreground" />
-            <input
-              type="text"
-              value={query}
-              autoFocus
-              onChange={event => setQuery(event.target.value)}
-              onKeyDown={event => { if (event.key === "Escape") closeSearch(); }}
-              placeholder="Filter chats and projects…"
-              aria-label="Filter chats and projects"
-              className="h-7 w-full rounded-lg border border-border bg-background pl-7 pr-2 text-[13px] text-foreground outline-none transition-colors placeholder:text-muted-foreground/70 focus:border-ring"
-            />
-          </div>
-        )}
 
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
           <SectionLabel action={

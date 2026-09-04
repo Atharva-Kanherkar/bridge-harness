@@ -181,10 +181,14 @@ describe("BridgeSidebar action rows", () => {
     click(container.querySelector('button[aria-label="Search"]')!);
     const input = container.querySelector<HTMLInputElement>('input[aria-label="Filter chats and projects"]')!;
     expect(input).toBeTruthy();
+    // The input replaces the pill in place — one field, not a pill plus a
+    // second row further down.
+    expect(container.querySelector('button[aria-label="Search"]')).toBeNull();
     act(() => {
       input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
     });
     expect(container.querySelector('input[aria-label="Filter chats and projects"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Search"]')).not.toBeNull();
   });
 
   it("opens Projects from the new-folder control", () => {

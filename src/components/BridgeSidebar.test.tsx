@@ -428,6 +428,21 @@ describe("BridgeSidebar search", () => {
     expect(html).not.toContain("Search chats");
     expect(html).not.toContain("Filter chats and projects");
   });
+
+  it("advertises no ⌘K: that chord opens recall, not this field", () => {
+    expect(render()).not.toContain("⌘K");
+  });
+});
+
+describe("BridgeSidebar harness marks", () => {
+  it("mutes the mark at rest and tints only the active row", () => {
+    const chats = [session("quiet", { title: "Quiet row", harness: "claude" }), session("loud", { title: "Loud row", harness: "claude" })];
+    const html = render({ chats, activeSessionId: "loud" });
+    const row = (title: string) => html.split("<button").find(chunk => chunk.includes(title)) ?? "";
+    expect(row("Quiet row")).toContain("text-muted-foreground/50");
+    expect(row("Quiet row")).not.toContain("text-harness-claude");
+    expect(row("Loud row")).toContain("text-harness-claude");
+  });
 });
 
 describe("BridgeSidebar action rows", () => {
