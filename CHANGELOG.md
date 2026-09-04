@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1] - 2026-09-04
+
+### Fixed
+
+- Notarized macOS builds no longer abort on first launch. Hardened Runtime was enabled with an empty entitlements blob, so WKWebView could not JIT and Rust aborted on an uncatchable Objective-C exception in the event loop.
+- Window chrome (traffic lights, wallpaper tint, corner radius) now catches Objective-C exceptions instead of aborting the process. On macOS 26 those AppKit calls can throw through tao's run-loop observer, which Rust cannot unwind.
+
 ## [0.5.0] - 2026-09-04
 
 First public macOS disk image. Install by opening the DMG and dragging Bridge into Applications.

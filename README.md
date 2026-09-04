@@ -12,7 +12,7 @@ Bridge is built for developers who want the speed of coding agents with explicit
 
 macOS 12 or later (Apple Silicon). Open the `.dmg`, drag **Bridge** into Applications, then launch it.
 
-- **Release:** [GitHub Releases](https://github.com/Atharva-Kanherkar/bridge-harness/releases) — look for `Bridge_0.5.0_*.dmg`
+- **Release:** [GitHub Releases](https://github.com/Atharva-Kanherkar/bridge-harness/releases) — look for `Bridge_0.5.1_*.dmg`
 - Claude models need **Node.js 18+** on your `PATH`. Codex, Claude Code, and OpenCode stay optional: a missing CLI shows that adapter as unavailable instead of blocking startup.
 - A notarized build should open without Gatekeeper blocking it. If you built from source yourself, the binary is ad-hoc signed and macOS will ask you to open it anyway.
 

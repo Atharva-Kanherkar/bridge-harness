@@ -44,6 +44,19 @@ pub fn set_layout_fullscreen(on: bool) {
 /// `data-flush-window` on the document so CSS can drop nested squircles
 /// without a frontend window API.
 pub fn sync_fullscreen_chrome<R: tauri::Runtime>(window: &tauri::Window<R>) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = catch_objc(std::panic::AssertUnwindSafe(|| {
+            sync_fullscreen_chrome_inner(window)
+        }));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        sync_fullscreen_chrome_inner(window);
+    }
+}
+
+fn sync_fullscreen_chrome_inner<R: tauri::Runtime>(window: &tauri::Window<R>) {
     let flush = LAYOUT_FULLSCREEN.load(std::sync::atomic::Ordering::Relaxed)
         || window.is_fullscreen().unwrap_or(false)
         || window.is_maximized().unwrap_or(false);
@@ -67,8 +80,28 @@ fn set_document_flush_window<R: tauri::Runtime>(
     }
 }
 
+/// AppKit can throw through these calls. tao's run-loop observer uses Rust
+/// `catch_unwind`, which aborts on a foreign Objective-C exception.
+#[cfg(target_os = "macos")]
+fn catch_objc<R>(f: impl FnOnce() -> R + std::panic::UnwindSafe) -> Option<R> {
+    match objc2::exception::catch(f) {
+        Ok(value) => Some(value),
+        Err(_) => {
+            eprintln!("bridge: ignored Objective-C exception in window chrome");
+            None
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub fn position_traffic_lights<R: tauri::Runtime>(window: &tauri::Window<R>) {
+    let _ = catch_objc(std::panic::AssertUnwindSafe(|| {
+        position_traffic_lights_inner(window)
+    }));
+}
+
+#[cfg(target_os = "macos")]
+fn position_traffic_lights_inner<R: tauri::Runtime>(window: &tauri::Window<R>) {
     use objc2_app_kit::{NSView, NSWindow, NSWindowButton};
 
     let Ok(handle) = window.ns_window() else {
@@ -122,6 +155,13 @@ pub fn position_traffic_lights<R: tauri::Runtime>(_window: &tauri::Window<R>) {
 /// macOS path only ever adds effect views. A no-op off macOS.
 #[cfg(target_os = "macos")]
 pub fn apply_wallpaper_tint<R: tauri::Runtime>(window: &tauri::Window<R>) {
+    let _ = catch_objc(std::panic::AssertUnwindSafe(|| {
+        apply_wallpaper_tint_inner(window)
+    }));
+}
+
+#[cfg(target_os = "macos")]
+fn apply_wallpaper_tint_inner<R: tauri::Runtime>(window: &tauri::Window<R>) {
     use objc2_app_kit::{NSColor, NSWindow};
 
     let Ok(handle) = window.ns_window() else {

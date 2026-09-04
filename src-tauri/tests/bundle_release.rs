@@ -11,9 +11,9 @@ fn tauri_conf() -> Value {
 }
 
 #[test]
-fn release_version_is_0_5_0() {
+fn release_version_is_0_5_1() {
     let parsed = tauri_conf();
-    assert_eq!(parsed["version"], "0.5.0");
+    assert_eq!(parsed["version"], "0.5.1");
 }
 
 #[test]
@@ -25,6 +25,34 @@ fn bundle_targets_include_app_and_dmg() {
     let as_str: Vec<&str> = targets.iter().filter_map(Value::as_str).collect();
     assert!(as_str.contains(&"app"), "targets={as_str:?}");
     assert!(as_str.contains(&"dmg"), "targets={as_str:?}");
+}
+
+#[test]
+fn macos_bundle_ships_webkit_jit_entitlements() {
+    let parsed = tauri_conf();
+    assert_eq!(
+        parsed["bundle"]["macOS"]["hardenedRuntime"],
+        true,
+        "Developer ID notarization requires Hardened Runtime"
+    );
+    assert_eq!(
+        parsed["bundle"]["macOS"]["entitlements"],
+        "entitlements.plist",
+        "without an entitlements file, codesign embeds an empty blob and WKWebView aborts"
+    );
+
+    let plist = Path::new(env!("CARGO_MANIFEST_DIR")).join("entitlements.plist");
+    let body = std::fs::read_to_string(&plist).expect("entitlements.plist is readable");
+    for key in [
+        "com.apple.security.cs.allow-jit",
+        "com.apple.security.cs.allow-unsigned-executable-memory",
+        "com.apple.security.cs.disable-library-validation",
+    ] {
+        assert!(
+            body.contains(key),
+            "entitlements.plist must grant {key} so JavaScriptCore can run under Hardened Runtime"
+        );
+    }
 }
 
 #[test]

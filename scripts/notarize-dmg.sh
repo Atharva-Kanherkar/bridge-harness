@@ -9,12 +9,13 @@ if [ -f "$HOME/.bridge-release/env" ]; then
 fi
 
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+app_version=$(python3 -c 'import json; print(json.load(open("'"$project_root"'/src-tauri/tauri.conf.json"))["version"])')
 dmg=${1:-}
 if [ -z "$dmg" ]; then
-  dmg=$(ls -1 "$project_root"/src-tauri/target/release/bundle/dmg/Bridge_0.5.0_*.dmg 2>/dev/null | head -n 1 || true)
+  dmg=$(ls -1t "$project_root"/src-tauri/target/release/bundle/dmg/Bridge_"${app_version}"_*.dmg 2>/dev/null | head -n 1 || true)
 fi
 if [ -z "$dmg" ] || [ ! -f "$dmg" ]; then
-  echo "notarize-dmg: pass a Bridge_0.5.0_*.dmg path or build one first" >&2
+  echo "notarize-dmg: pass a Bridge_${app_version}_*.dmg path or build one first" >&2
   exit 1
 fi
 

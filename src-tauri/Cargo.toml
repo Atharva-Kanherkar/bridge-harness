@@ -5,7 +5,7 @@ members = ["bridge-client", "bridge-core", "bridge-protocol", "bridged"]
 # CARGO_PKG_VERSION in the health endpoint and provider handshakes, so it must
 # never drift from the application version.
 [workspace.package]
-version = "0.5.0"
+version = "0.5.1"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -63,6 +63,6 @@ incremental = false
 # The traffic lights are an AppKit detail; tao already builds these, so naming
 # them here costs nothing and keeps window_chrome.rs off raw objc_msgSend.
 [target.'cfg(target_os = "macos")'.dependencies]
-objc2 = "0.6"
+objc2 = { version = "0.6", features = ["exception"] }
 objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSButton", "NSView", "NSResponder", "NSColor", "objc2-quartz-core"] }
 objc2-quartz-core = { version = "0.3", features = ["CALayer"] }

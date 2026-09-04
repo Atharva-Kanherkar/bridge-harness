@@ -1,6 +1,6 @@
 # Signed, notarized macOS DMG → GitHub Releases.
 #
-# Does not run on push-to-main. Tag v0.5.0 (or workflow_dispatch) after the
+# Does not run on push-to-main. Tag v0.5.1 (or workflow_dispatch) after the
 # Apple secrets exist. Missing secrets fail the job rather than publishing an
 # ad-hoc disk image that Gatekeeper will refuse.
 #

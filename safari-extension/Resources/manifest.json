@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Bridge Authenticated Browser for Safari",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Attach one user-approved Safari tab to Bridge.",
   "permissions": ["activeTab", "nativeMessaging", "scripting", "storage", "tabs"],
   "host_permissions": ["http://*/*", "https://*/*"],
