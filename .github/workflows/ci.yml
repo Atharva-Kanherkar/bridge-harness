@@ -1,0 +1,45 @@
+name: CI
+
+# Strict gate: typecheck + build + all three test suites on every branch
+# push and every pull request. deploy-docs.yml stays manual-dispatch only,
+# deliberately — see the comment at the top of that file.
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+# Nothing in this workflow writes back to the repository.
+permissions:
+  contents: read
+
+# A new push to the same branch or PR cancels its superseded run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+
+      - name: Cache bun install
+        uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
+      - name: Install dependencies (frozen lockfile)
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck + build (tsc -b && vite build)
+        run: bun run build
+
+      - name: Web tests (vitest)
+        run: bunx vitest run
