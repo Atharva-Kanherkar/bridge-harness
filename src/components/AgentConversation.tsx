@@ -1,7 +1,7 @@
 import { memo, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Maximize2, Navigation, Pencil, Pin, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
-import { attachmentUris, delegationChildSessionId, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
+import { alignTurns, attachmentUris, delegationChildSessionId, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
 import { humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeResolution } from "../humanize";
 import { pickGreeting, type GreetingPart } from "../greetings";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, SessionStartupPhase, WorkerRepositoryBinding, WorkerRuntimeRecord } from "../types";
@@ -599,7 +599,11 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     const items = mergeConversationProjections(durableItems, nextLiveItems);
     // Folded after the merge, not inside either projection: mid-run the spawn is
     // already durable while the result is still only live.
-    return foldWorkerDelegations(items.filter(item => item.type !== "raw"));
+    const folded = foldWorkerDelegations(items.filter(item => item.type !== "raw"));
+    // Re-stamped last, on one list: the two projections each counted turns from
+    // their own start, so mid-turn a run carries two indices and the grouping
+    // walk cuts it at the seam. See `alignTurns`.
+    return alignTurns(folded);
   }, [activeLeafId, events, forestEntries]);
   const renderedItems = useMemo(() => groupItems(visibleItems), [visibleItems]);
 

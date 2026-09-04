@@ -73,6 +73,42 @@ function coalesceThoughts(items: ConversationItem[]): ConversationItem[] {
 }
 
 /**
+ * One turn numbering across a merged list.
+ *
+ * The transcript draws two projections at once: durable rows off the forest
+ * and live rows off the event window, merged row by row. Each was reduced on
+ * its own and each counted turns from its own start — the forest from the
+ * first message of the session, the live window from wherever it opened — so
+ * mid-turn the same real turn carries two different indices, and the walk
+ * below, which closes a group whenever the turn changes, splits the run at the
+ * seam. The seam then moves on every forest poll, as more of the turn goes
+ * durable, which is what made a settled run come apart while the reader
+ * watched.
+ *
+ * So the merged list is re-stamped from the one boundary both projections can
+ * see: a user message opens a turn, and belongs to the turn it opens. Rows
+ * ahead of the first user message keep turn 0, the index the reducer gives
+ * them. Turn markers are deliberately not consulted — they are live-only, and
+ * that asymmetry is the whole defect.
+ *
+ * The reducer keeps its own stamp because it is the right answer for a single
+ * projection: it can see a marker-only boundary that no user message
+ * separates, and the live-versus-durable parity assertion in the golden test
+ * is written against it. This is the merge's answer, and it only has to hold
+ * for a list the merge produced.
+ *
+ * Rows whose turn does not change are returned as they were, so a re-stamp
+ * never invalidates a memo signature it did not need to.
+ */
+export function alignTurns(items: ConversationItem[]): ConversationItem[] {
+  let turn = 0;
+  return items.map((item) => {
+    if (item.type === "message" && item.role === "user") turn += 1;
+    return item.turn === turn ? item : { ...item, turn };
+  });
+}
+
+/**
  * Fold a turn's tool work into one group each, leaving everything else where
  * the reducer put it.
  *

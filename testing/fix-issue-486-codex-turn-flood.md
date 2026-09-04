@@ -76,6 +76,21 @@ Four faults compound, and only the first is visible:
    before the reply stays a top-level row. Top-level rows per turn are O(1) in
    the number of steps.
 
+   *One numbering first.* The transcript groups a **merged** list, and the two
+   projections that produced it each counted turns from their own start — the
+   forest from the first message of the session, the live window from wherever
+   it opened. Mid-turn the durable half of a run therefore carries one index
+   and the live half another, the walk cuts the run at that seam, and every
+   forest poll moves the cut. `alignTurns` re-stamps the merged list from the
+   one boundary both projections can see — a user message opens a turn and
+   belongs to the turn it opens, rows ahead of the first stay turn 0 — and runs
+   in `AgentConversation`'s `useMemo` after the merge and the delegation fold,
+   immediately before `groupItems`. Rows whose index does not change are
+   returned unchanged, so the re-stamp invalidates no memo signature it did not
+   have to. The reducer keeps its own stamp: it is the right answer for a
+   single projection, it can see a marker-only boundary no user message
+   separates, and the golden parity assertion is written against it.
+
    **Locked by:** `src/components/AgentConversation.flood.test.tsx` (jsdom) —
    the 100-step fixture draws exactly five top-level rows (user bubble,
    opening thought, one group, closing thought, reply) and the group's summary
@@ -83,6 +98,11 @@ Four faults compound, and only the first is visible:
    `src/transcript/grouping.test.ts` — the walk itself, case by case:
    thought inside a run folds in, thought after the run does not, a plan update
    does not split a run, prose does, a new turn does.
+   `src/transcript/turnSeam.test.ts` — a two-turn stream whose forest holds the
+   first half and whose live window opened with the second turn: without
+   `alignTurns` the merged list draws more than one group, with it exactly one,
+   the top-level shape is the same at 10 steps and at 40, and an already
+   correct row comes back as the same object.
 
    *The fixture is a recipe, not a file.* The issue asks for
    `fixtures/codex-flood.json`; four hundred hand-written frames would be

@@ -10,7 +10,7 @@ import claude from "./fixtures/claude.json";
 import codex from "./fixtures/codex.json";
 import cursor from "./fixtures/cursor.json";
 import opencode from "./fixtures/opencode.json";
-import { asWireKind } from "./wire";
+import { asWireKind, readWireKind } from "./wire";
 import { normalizeAgentEvent } from "./codec";
 import { reduceTranscript } from "./reducer";
 import type { ConversationItem } from "./item";
@@ -68,17 +68,26 @@ export function reduceHarness(harness: GoldenHarness): ConversationItem[] {
  * fields `normalizeSessionEntry` reads back out.
  */
 export function durableEntries(harness: GoldenHarness): SessionEntry[] {
-  const persisted = (STREAMS[harness] as RawFixtureEvent[]).filter(event => event.sequence > 0);
+  return durableEntriesFrom(harness, harnessStream(harness));
+}
+
+/**
+ * The same rule over any live stream, so a test that generates its frames
+ * rather than loading them can still ask what the forest would hold.
+ */
+export function durableEntriesFrom(sessionId: string, events: AgentEvent[]): SessionEntry[] {
   const entries: SessionEntry[] = [];
   let parentEntryId: string | null = null;
-  for (const event of persisted) {
-    const id = `${harness}-e${event.sequence}`;
-    const kind = event.kind === "message.completed"
+  for (const event of events) {
+    if (event.sequence <= 0) continue;
+    const id = `${sessionId}-e${event.sequence}`;
+    const wireKind = readWireKind(event.kind);
+    const kind = wireKind === "message.completed"
       ? (event.role === "user" ? "user.message" : "assistant.message")
-      : event.kind;
+      : wireKind;
     entries.push({
       id,
-      sessionId: harness,
+      sessionId,
       parentEntryId,
       sequence: event.sequence,
       semanticSchemaVersion: 2,
@@ -94,7 +103,7 @@ export function durableEntries(harness: GoldenHarness): SessionEntry[] {
       providerEventId: null,
       contextVisibility: "eligible",
       tokenEstimate: null,
-      createdAt: "2026-09-05T10:00:00Z",
+      createdAt: event.createdAt,
     });
     parentEntryId = id;
   }
