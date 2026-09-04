@@ -1,7 +1,7 @@
 import { memo, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Maximize2, Navigation, Pencil, Pin, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
-import { attachmentUris, delegationChildSessionId, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
+import { attachmentUris, delegationChildSessionId, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
 import { humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeResolution } from "../humanize";
 import { pickGreeting, type GreetingPart } from "../greetings";
 import type { AgentEvent, ApprovalDecision, CompletionSummary, ContinuationFidelity, Session, SessionEntry, SessionStartupPhase, WorkerRepositoryBinding, WorkerRuntimeRecord } from "../types";
@@ -250,7 +250,7 @@ function GroupLabel({ children }: { children: ReactNode }) {
 /// the patch was sliced to its last 8,000 characters, which cut hunks in half
 /// and left the gutter lying about line numbers. What the model wrote is the
 /// most important thing on the screen, so it is what the row shows by default.
-function ActionRow({ item }: { item: ConversationItem }) {
+const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) {
   const call = toolCallDisplay(item);
   const live = call.status === "running";
   const failed = call.status === "failed";
@@ -326,7 +326,7 @@ function ActionRow({ item }: { item: ConversationItem }) {
       </div>
     </motion.div>
   );
-}
+}, (previous, next) => sameItem(previous.item, next.item));
 
 /// A run of consecutive rows that belong together: exploration under one label,
 /// a thought where the model paused to think, everything else on its own.
@@ -374,7 +374,7 @@ const SELF_OPENING_STEPS = 3;
 /// group names the step running right now, which is the one thing worth
 /// watching; finished, it is a single line. A click is what opens it, and that
 /// click sticks — through the rest of the run and past the moment it ends.
-function ActivityGroup({ items }: { items: ConversationItem[] }) {
+const ActivityGroup = memo(function ActivityGroup({ items }: { items: ConversationItem[] }) {
   const tools = useMemo(() => items.filter(isToolItem), [items]);
   // Live is a claim about the *work*, not about the transcript: a thought left
   // streaming by a provider that never settles it must not keep a finished run
@@ -462,7 +462,10 @@ function ActivityGroup({ items }: { items: ConversationItem[] }) {
       )}
     </div>
   );
-}
+  // The reducer rebuilds every item on every fold, so reference equality would
+  // never hold and a live turn would re-render all hundred rows on every 50ms
+  // flush. The signature says which rows a frame actually touched.
+}, (previous, next) => sameItems(previous.items, next.items));
 
 /// Variants an `ActionRow` inherits from the group that reveals it. Declared
 /// once so the stagger and the row agree on what "hidden" means.
@@ -809,32 +812,41 @@ function Empty({ title, copy, parts }: { title: string; copy: string; parts?: Gr
   </div>;
 }
 
-function ItemView({ item, workers, now, onResolve, onAnswerQuestion, onOpenSession, onExpandWorker, onRefreshBase, onRetryWorker, onRetryCompaction, onRemember, errorContext }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
-  if (item.type === "message") {
-    if (item.role === "user") {
-      const attachments = attachmentUris(item.data);
-      return <div className={BUBBLE}>
-        <MentionText text={item.text}/>
-        {attachments.length > 0 && <div className="flex flex-wrap justify-end gap-1.5 pt-1.5">
-          {attachments.map((dataUri, index) => <img key={index} src={dataUri} alt={`Attached image ${index + 1}`} className="max-h-40 rounded-xl"/>)}
-        </div>}
-      </div>;
-    }
-    // No bubble, no card: the agent writes straight onto the canvas, in body
-    // ink a step under `foreground` so prose reads as text rather than chrome.
-    return <div className="group w-full min-w-0 text-[14px] text-body">
-      {item.status === "streaming" && !item.text.trim() ? <div className="thinking-shimmer h-[2px] w-16 rounded-full" /> : <Markdown text={item.text} dim={item.status === "streaming"} />}
-      {onRemember && item.status !== "streaming" && item.text.trim() !== "" && (
-        <button
-          type="button"
-          aria-label="Remember this"
-          title="Remember this"
-          className="mt-1 inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
-          onClick={() => onRemember(item.text)}
-        ><Pin size={12} aria-hidden="true" />Remember this</button>
-      )}
+/// Prose, from either side of the conversation.
+///
+/// Memoized on the row's own signature rather than on object identity: a live
+/// turn hands the transcript a freshly folded copy of every item twenty times a
+/// second, and a settled message that re-renders on each of them is most of
+/// what made a hundred-step turn stop responding. Streaming prose still
+/// re-renders on every chunk, because its text length moves.
+const MessageRow = memo(function MessageRow({ item, onRemember }: { item: ConversationItem; onRemember?: (text: string) => void }) {
+  if (item.role === "user") {
+    const attachments = attachmentUris(item.data);
+    return <div className={BUBBLE}>
+      <MentionText text={item.text}/>
+      {attachments.length > 0 && <div className="flex flex-wrap justify-end gap-1.5 pt-1.5">
+        {attachments.map((dataUri, index) => <img key={index} src={dataUri} alt={`Attached image ${index + 1}`} className="max-h-40 rounded-xl"/>)}
+      </div>}
     </div>;
   }
+  // No bubble, no card: the agent writes straight onto the canvas, in body
+  // ink a step under `foreground` so prose reads as text rather than chrome.
+  return <div className="group w-full min-w-0 text-[14px] text-body">
+    {item.status === "streaming" && !item.text.trim() ? <div className="thinking-shimmer h-[2px] w-16 rounded-full" /> : <Markdown text={item.text} dim={item.status === "streaming"} />}
+    {onRemember && item.status !== "streaming" && item.text.trim() !== "" && (
+      <button
+        type="button"
+        aria-label="Remember this"
+        title="Remember this"
+        className="mt-1 inline-flex items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+        onClick={() => onRemember(item.text)}
+      ><Pin size={12} aria-hidden="true" />Remember this</button>
+    )}
+  </div>;
+}, (previous, next) => previous.onRemember === next.onRemember && sameItem(previous.item, next.item));
+
+function ItemView({ item, workers, now, onResolve, onAnswerQuestion, onOpenSession, onExpandWorker, onRefreshBase, onRetryWorker, onRetryCompaction, onRemember, errorContext }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
+  if (item.type === "message") return <MessageRow item={item} onRemember={onRemember}/>;
   if (item.data.staleBase === true) return <StaleBaseCard item={item} onRefresh={onRefreshBase}/>;
   if (item.type === "reasoning") return <Reasoning item={item}/>;
   if (item.type === "plan") return <PlanCard item={item}/>;
@@ -941,7 +953,7 @@ function RawEventGroup({ items }: { items: ConversationItem[] }) {
   </details>;
 }
 
-function Reasoning({ item }: { item: ConversationItem }) {
+const Reasoning = memo(function Reasoning({ item }: { item: ConversationItem }) {
   const streaming = item.status === "streaming";
   const text = item.text || stringList(item.data.summary);
   const durationMs = typeof item.data.durationMs === "number" ? item.data.durationMs : undefined;
@@ -976,7 +988,7 @@ function Reasoning({ item }: { item: ConversationItem }) {
       </div>
     </details>
   );
-}
+}, (previous, next) => sameItem(previous.item, next.item));
 
 function PlanCard({ item }: { item: ConversationItem }) {
   return <div className="my-[14px] min-w-0 border border-border rounded-lg bg-card overflow-hidden">

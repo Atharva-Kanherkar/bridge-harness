@@ -15,7 +15,7 @@ import { readToolCall, type ToolCallDisplay, type ToolCallSource } from "./trans
 import { itemIdentity, type ConversationItem } from "./transcript/item";
 import type { AgentEvent, SessionEntry } from "./types";
 
-export { itemIdentity, type ConversationItem, type ConversationItemType } from "./transcript/item";
+export { itemIdentity, itemSignature, sameItem, sameItems, type ConversationItem, type ConversationItemType } from "./transcript/item";
 export { groupItems, isToolItem, type Rendered } from "./transcript/grouping";
 export { compactionReasonLabel, reasoningDisplayText } from "./transcript/codec";
 export { isInternalCompactionEnvelope, stripWorkerResultBlocks } from "./transcript/reducer";
