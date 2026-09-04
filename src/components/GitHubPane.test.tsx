@@ -316,6 +316,20 @@ describe("GitHubPane", () => {
     expect(host!.textContent).toContain("Review started with codex");
   });
 
+  it("asks Cursor Bugbot by posting the GitHub trigger comment", async () => {
+    mockReads();
+    const review = vi.spyOn(bridgeApi, "githubReview").mockResolvedValue({
+      status: "launched", sessionId: null, message: "Asked Cursor Bugbot to review PR #1. It will comment on the pull request.",
+    });
+    await mount({ sessionId: "sess-1" });
+    await click(buttonByText("Safe GitHub surface"));
+    await click(buttonByText("Review"));
+    expect(host!.textContent).toContain("Cursor Bugbot");
+    await click(buttonByText("Cursor Bugbot"));
+    expect(review).toHaveBeenCalledWith("w", 1, "bugbot", "sess-1");
+    expect(host!.textContent).toContain("Asked Cursor Bugbot to review PR #1");
+  });
+
   it("surfaces a failed review launch as an error notice", async () => {
     mockReads();
     vi.spyOn(bridgeApi, "githubReview").mockResolvedValue({

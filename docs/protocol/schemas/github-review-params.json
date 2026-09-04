@@ -5,7 +5,7 @@
   "description": "Ask a Bridge subagent to review a pull request and post its findings as a comment via `gh`. The worker is research-role, read-only, network-on; the user picks the harness at click time and the model comes from the Reviewer model profile in settings.",
   "properties": {
     "harness": {
-      "description": "The harness that runs the review worker (`claude` | `codex` | `opencode`).",
+      "description": "The harness that runs the review worker (`claude` | `codex` | `opencode`), or `bugbot` to post `cursor review` and summon Cursor Bugbot on GitHub.",
       "type": "string"
     },
     "number": {

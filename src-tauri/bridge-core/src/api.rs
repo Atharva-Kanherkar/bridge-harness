@@ -358,6 +358,9 @@ pub fn github_act(
 /// card. The harness is the user's click-time pick; the model comes from the
 /// Reviewer model profile when its provider matches that harness, otherwise the
 /// launch path resolves the harness's tier default.
+///
+/// `bugbot` (and `cursor-bugbot`) is not a local worker: it posts `cursor review`
+/// on the pull request so Cursor Bugbot runs the review on GitHub.
 pub fn github_review(
     core: &Arc<BridgeCore>,
     workspace_id: &str,
@@ -365,6 +368,9 @@ pub fn github_review(
     harness: &str,
     session_id: Option<String>,
 ) -> Result<wire::GithubReviewResult, BridgeError> {
+    if is_cursor_bugbot(harness) {
+        return request_cursor_bugbot_review(core, workspace_id, number);
+    }
     let harness = crate::delegation::normalize_harness(harness)
         .ok_or_else(|| BridgeError::Invalid(format!("unsupported harness: {harness}")))?;
     // Validate the workspace exists before spending a session on it.
@@ -475,6 +481,31 @@ pub fn github_review(
         },
     };
     Ok(result)
+}
+
+fn is_cursor_bugbot(harness: &str) -> bool {
+    matches!(
+        harness.trim().to_ascii_lowercase().as_str(),
+        "bugbot" | "cursor-bugbot" | "cursor_bugbot"
+    )
+}
+
+fn request_cursor_bugbot_review(
+    core: &Arc<BridgeCore>,
+    workspace_id: &str,
+    number: u64,
+) -> Result<wire::GithubReviewResult, BridgeError> {
+    let path = locked_workspace_path(core, workspace_id)?;
+    core.github_surface
+        .comment_on_pull_request(Path::new(&path), number, "cursor review")
+        .map_err(github_error)?;
+    Ok(wire::GithubReviewResult {
+        status: "launched".into(),
+        session_id: None,
+        message: format!(
+            "Asked Cursor Bugbot to review PR #{number}. It will comment on the pull request."
+        ),
+    })
 }
 
 /// Check a PR's head branch out into a task worktree of its own — a new
@@ -4279,6 +4310,19 @@ mod tests {
                 assert!(acted.message.starts_with("Declined:"), "{}: names the decline", case.id);
             }
         }
+    }
+
+    #[test]
+    fn cursor_bugbot_is_not_rejected_as_an_unsupported_harness() {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
+        let error = super::github_review(&core, "missing-workspace", 12, "bugbot", None)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            !error.contains("unsupported harness"),
+            "bugbot must not be treated as a local worker harness, got: {error}"
+        );
     }
 
     #[test]
