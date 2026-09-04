@@ -310,9 +310,12 @@ fn process_group_is_running(pid: u32) -> bool {
 #[cfg(unix)]
 pub fn terminate_process_group(pid: u32) -> bool {
     let target = format!("-{pid}");
+    // The "--" is load-bearing on Linux: procps kill otherwise treats the
+    // negative pid as another option token and exits 0 without signalling
+    // anything. macOS's kill happens to tolerate the bare form.
     let signal = |value: &str| {
         Command::new("kill")
-            .args([value, &target])
+            .args([value, "--", &target])
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .status()
