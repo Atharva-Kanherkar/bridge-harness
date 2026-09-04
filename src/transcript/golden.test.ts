@@ -28,10 +28,12 @@ const EXPECTED_ROWS = [
 /**
  * The normalized event types each harness emits for that turn.
  *
- * Not identical, and honestly so: Claude streams no tool output, OpenCode
- * re-sends a whole running part instead of a delta, and ACP has no
- * "thought completed" frame at all. What has to be identical is the row
- * structure below, which is what a reader actually sees.
+ * Not identical, and honestly so: Claude streams no tool output and OpenCode
+ * re-sends a whole running part instead of a delta. Every one of them does end
+ * a thought, though — ACP has no terminal reasoning frame on the wire, so
+ * `acp_events.rs` closes the thought run itself at the first update that is not
+ * a thought chunk. What has to be identical is the row structure below, which
+ * is what a reader actually sees.
  */
 const EXPECTED_EVENT_TYPES: Record<GoldenHarness, string[]> = {
   claude: [
@@ -56,9 +58,9 @@ const EXPECTED_EVENT_TYPES: Record<GoldenHarness, string[]> = {
   ],
   cursor: [
     "message.completed",
-    "thinking.delta",
+    "thinking.delta", "thinking.completed",
     "tool.started", "tool.progress", "tool.completed",
-    "thinking.delta",
+    "thinking.delta", "thinking.completed",
     "tool.started", "tool.completed",
     "tool.started", "tool.completed",
     "message.delta", "message.completed",
@@ -175,15 +177,10 @@ describe("golden streams", () => {
     const entries = durableEntries(harness);
     const lastEntryId = entries.at(-1)?.id ?? null;
     const durableRows = projectSessionConversation(entries, lastEntryId).map(projectRow);
-    if (harness === "cursor") {
-      // Documented divergence 11: ACP (acp_events.rs) emits a thought only as
-      // `reasoning.delta`, never a `reasoning.completed`, so the live window's
-      // two thought cards are built from deltas alone. The durable writer
-      // never persists a kind ending in `.delta` (store.rs), so a Cursor
-      // turn replayed from the forest has no thought cards at all.
-      expect(durableRows).toEqual(liveRows.filter(row => row.type !== "reasoning"));
-      return;
-    }
+    // No exception for any of the four. Cursor used to need one: ACP streams a
+    // thought as deltas and the forest refuses to persist a `.delta`, so a
+    // replayed Cursor turn had no thoughts in it at all. The adapter closes the
+    // run itself now, and the completion is what the forest keeps.
     expect(durableRows).toEqual(liveRows);
   });
 });

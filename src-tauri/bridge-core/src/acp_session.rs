@@ -49,7 +49,7 @@ use crate::{
     acp_events::{
         approval_settled_event, permission_request_event, runtime_failed_event,
         session_update_event, turn_completed_event, unknown_frame_event, AcpReplayLedger,
-        AcpTurnOutcome,
+        AcpThoughtRun, AcpTurnOutcome,
     },
     adapters::{supervised_acp_parts, terminate_process_group, ShutdownReason},
     agent::NormalizedEvent,
@@ -575,6 +575,9 @@ struct Shared {
     /// stores deltas as transient, so without an assembled `message.completed`
     /// at turn end the reply would stream once and never persist.
     turn_message: Mutex<TurnMessage>,
+    /// The thought being streamed, if one is. ACP never says a thought is
+    /// finished, so the run is closed here — see [`AcpThoughtRun`].
+    turn_thought: Mutex<AcpThoughtRun>,
     closed: AtomicBool,
 }
 
@@ -677,9 +680,20 @@ impl Shared {
             return;
         }
         drop(replay);
-        let ended = self.accumulate(&mut event);
+        let ended_message = self.accumulate(&mut event);
+        // Prose first, then the thought: a delta of either kind closes an open
+        // thought run, so a thought still open when this event arrives started
+        // after whatever prose is being assembled.
+        let ended_thought = self
+            .turn_thought
+            .lock()
+            .expect("acp turn thought poisoned")
+            .absorb(&mut event);
         let mut events = self.events.lock().expect("acp event queue poisoned");
-        if let Some(ended) = ended {
+        if let Some(ended) = ended_message {
+            events.push(ended);
+        }
+        if let Some(ended) = ended_thought {
             events.push(ended);
         }
         events.push(event);
@@ -730,6 +744,10 @@ impl Shared {
     /// persisted message and latches its id.
     fn begin_turn(&self) {
         *self.turn_message.lock().expect("acp turn message poisoned") = TurnMessage::default();
+        self.turn_thought
+            .lock()
+            .expect("acp turn thought poisoned")
+            .reset();
     }
 
     /// The assembled assistant message of the turn that just ended, if any text
@@ -746,6 +764,17 @@ impl Shared {
             .expect("acp turn message poisoned")
             .take(status)
             .map(identified)
+    }
+
+    /// The thought the turn ended mid-way through, if one was open. ACP has no
+    /// terminal reasoning frame, so a turn that ends while the agent is still
+    /// thinking would otherwise leave a card shimmering with nothing to settle
+    /// it and nothing durable behind it.
+    fn take_turn_thought(&self) -> Option<NormalizedEvent> {
+        self.turn_thought
+            .lock()
+            .expect("acp turn thought poisoned")
+            .close()
     }
 
     fn failure_context(&self) -> Option<String> {
@@ -1728,9 +1757,13 @@ async fn run_turn(
         Ok(response) => {
             let outcome = AcpTurnOutcome::from_stop_reason(response.stop_reason);
             let completed = shared.take_turn_message(turn_message_status(outcome));
+            let thought = shared.take_turn_thought();
             let mut events = shared.events.lock().expect("acp event queue poisoned");
             if let Some(completed) = completed {
                 events.push(completed);
+            }
+            if let Some(thought) = thought {
+                events.push(thought);
             }
             events.push(turn_completed_event(outcome));
             Ok(outcome)
@@ -1771,12 +1804,20 @@ const INTERRUPTED_STATUS: &str = "interrupted";
 /// watched arrive and a reload that shows nothing — the same gap the assembly
 /// exists to close, on the side that is easier to forget.
 fn publish_turn_message(shared: &Arc<Shared>, status: &str) {
-    if let Some(message) = shared.take_turn_message(status) {
-        shared
-            .events
-            .lock()
-            .expect("acp event queue poisoned")
-            .push(message);
+    let message = shared.take_turn_message(status);
+    // The thought the interruption cut short travels with it, for the same
+    // reason: an assembly dropped on this path is the one the reader watched
+    // arrive and then could not find again.
+    let thought = shared.take_turn_thought();
+    if message.is_none() && thought.is_none() {
+        return;
+    }
+    let mut events = shared.events.lock().expect("acp event queue poisoned");
+    if let Some(message) = message {
+        events.push(message);
+    }
+    if let Some(thought) = thought {
+        events.push(thought);
     }
 }
 
@@ -2570,6 +2611,10 @@ mod tests {
             kinds,
             [
                 "reasoning.delta",
+                // ACP never says a thought is finished, so the thought run is
+                // closed where it actually ended: at the first update that is
+                // not a thought chunk.
+                "reasoning.completed",
                 "message.delta",
                 // The prose lands before the call it broke off for, not after
                 // the whole turn.
@@ -2583,9 +2628,22 @@ mod tests {
                 "turn.completed",
             ]
         );
-        assert_eq!(events[1].text.as_deref(), Some("hello"));
-        assert_eq!(events[1].role.as_deref(), Some("assistant"));
-        let completed = &events[2];
+        // By kind rather than by index: an assembled frame arriving one slot
+        // earlier or later is the subject of the sequence assertion above, not
+        // of these.
+        let only = |kind: &str| {
+            let mut found = events.iter().filter(|event| event.kind == kind);
+            let one = found.next().unwrap_or_else(|| panic!("no {kind}"));
+            assert!(found.next().is_none(), "more than one {kind}");
+            one
+        };
+        let thought = only("reasoning.completed");
+        assert_eq!(thought.text.as_deref(), Some("thinking"));
+        assert_eq!(thought.status.as_deref(), Some("completed"));
+        let delta = only("message.delta");
+        assert_eq!(delta.text.as_deref(), Some("hello"));
+        assert_eq!(delta.role.as_deref(), Some("assistant"));
+        let completed = only("message.completed");
         assert_eq!(completed.text.as_deref(), Some("hello"));
         assert_eq!(completed.role.as_deref(), Some("assistant"));
         assert_eq!(completed.status.as_deref(), Some("completed"));
@@ -2594,15 +2652,15 @@ mod tests {
             "an assembled message the agent left unnamed still needs an identity"
         );
         assert_eq!(
-            events[1].item_id.as_deref(),
+            delta.item_id.as_deref(),
             completed.item_id.as_deref(),
             "the streamed chunks and the assembled reply must share one identity"
         );
-        assert_eq!(events[3].item_id.as_deref(), Some("t1"));
-        assert_eq!(events[3].status.as_deref(), Some("inProgress"));
-        assert_eq!(events[4].status.as_deref(), Some("completed"));
+        assert_eq!(only("tool.started").item_id.as_deref(), Some("t1"));
+        assert_eq!(only("tool.started").status.as_deref(), Some("inProgress"));
+        assert_eq!(only("tool.completed").status.as_deref(), Some("completed"));
         assert_eq!(
-            events[8]
+            only("usage.updated")
                 .data
                 .pointer("/usage/used_tokens")
                 .and_then(Value::as_u64),
