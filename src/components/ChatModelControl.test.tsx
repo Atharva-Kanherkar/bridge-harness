@@ -200,11 +200,28 @@ describe("ChatModelControl", () => {
       <ChatModelControl adapters={claudeAdapters} harness="claude" model="sonnet" onChange={vi.fn()} />,
     ));
     await act(async () => trigger().click());
-    const tierBadges = panel().querySelectorAll('[class*="uppercase"][class*="tracking"]');
-    const tiers = [...tierBadges].map(el => el.textContent);
-    expect(tiers).toContain("fast");
-    expect(tiers).toContain("standard");
-    expect(tiers).toContain("strong");
+    const tierBadges = panel().querySelectorAll('[data-tier]');
+    const tiers = [...tierBadges].map(el => el.getAttribute("data-tier"));
+    expect(tiers).toEqual(["fast", "standard", "strong"]);
+  });
+
+  // Group headers get a divider once search narrows the list to fewer groups
+  // than the full catalog — only the first *visible* group should go
+  // undecorated, not literally the first adapter in the catalog.
+  it("puts the divider on the first visible group, not the first catalog group", async () => {
+    await act(async () => root.render(
+      <ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" onChange={vi.fn()} />,
+    ));
+    await act(async () => trigger().click());
+    const search = panel().querySelector<HTMLInputElement>('input[aria-label="Search models"]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!;
+    // "Codex" is the first adapter in the catalog; filtering it out entirely
+    // must not leave "OpenCode" carrying a divider meant for a group that no
+    // longer renders.
+    await act(async () => { setter.call(search, "opencode"); search.dispatchEvent(new Event("input", { bubbles: true })); });
+    const headers = [...panel().querySelectorAll('[role="listbox"] > div > div:first-child')];
+    expect(headers).toHaveLength(1);
+    expect(headers[0].className).not.toContain("border-t");
   });
 
   it("highlights the current effort in the footer segmented control", async () => {
