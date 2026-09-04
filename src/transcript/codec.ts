@@ -111,7 +111,10 @@ const KNOWN_PREFIXES = [
   "compaction.", "turn.", "session.", "worker.", "workspace.", "provider.",
   "raw.", "model.", "mode.", "config.", "commands.", "todo.", "extension.",
   "usage.", "branch.", "handoff.", "runtime.", "effort.", "checkpoint.",
-  // Legacy forest entries from before the lifecycle kinds were split by family.
+  // Codex's fallback family: `normalize_item` in `bridge-core/src/agent.rs`
+  // (around line 757) maps any Codex item type outside its named set — a
+  // `readFile`, for instance — to `item.started`/`item.completed`. Live, not
+  // legacy: it is how an unrecognized Codex item still lands on a tool card.
   "item.",
 ] as const;
 
