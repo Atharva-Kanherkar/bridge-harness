@@ -589,17 +589,17 @@ describe("the dock in the session view", () => {
     expect(container.querySelector('button[aria-label="Toggle dock"]')).not.toBeNull();
   });
 
-  it("opens the toolbar model picker downward, into the view rather than above it", async () => {
+  it("carries the model picker only in the composer, not the toolbar", async () => {
     await mountApp();
     await openWorkspaceSession("7 files");
-    const pill = [...container.querySelectorAll<HTMLButtonElement>('button[aria-label*="model:"]')][0];
-    expect(pill).toBeTruthy();
-    await click(pill);
-    // The toolbar is the first row of an overflow-hidden <main>; an upward
-    // panel there is clipped out of existence.
+    // The toolbar no longer duplicates the composer's model control; the sole
+    // picker lives below and opens upward, into the view.
+    const pickers = [...container.querySelectorAll<HTMLButtonElement>('button[aria-label*="model:"]')];
+    expect(pickers).toHaveLength(1);
+    await click(pickers[0]);
     const panel = container.querySelector<HTMLElement>(".u-glass-popover")!;
     expect(panel).not.toBeNull();
-    expect(panel.className).toContain("top-full");
+    expect(panel.className).toContain("bottom-full");
   });
 
   // Contract: testing/feat-aside-chat.md. A `$harness` shortcut typed inside

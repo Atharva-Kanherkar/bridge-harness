@@ -37,14 +37,14 @@ function readWidth(): number {
   return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, value));
 }
 
-// A row's second line names the one state worth acting on, in that state's own
-// ink. Everything at rest resolves to null, so the subtitle falls back to the
-// chat's age rather than repeating "idle" down the whole list.
-function rowStatus(status: SessionStatus): { word: string; ink: string } | null {
+// A row's status is a single coloured dot, not a word: the one state worth
+// acting on in its own ink. Everything at rest resolves to null, so no dot
+// shows and the subtitle is just the chat's age.
+function rowStatus(status: SessionStatus): { label: string; dot: string } | null {
   const bucket = statusBucket(status);
-  if (bucket === "active") return { word: "working", ink: "text-success" };
-  if (bucket === "waiting") return { word: "needs you", ink: "text-warning" };
-  if (bucket === "failed") return { word: "failed", ink: "text-destructive" };
+  if (bucket === "active") return { label: "working", dot: "bg-success" };
+  if (bucket === "waiting") return { label: "needs you", dot: "bg-warning" };
+  if (bucket === "failed") return { label: "failed", dot: "bg-destructive" };
   return null;
 }
 
@@ -52,14 +52,12 @@ function ChatRow({
   chat,
   active,
   indented,
-  branch,
   time,
   onClick,
 }: {
   chat: Session;
   active: boolean;
   indented: boolean;
-  branch: string | null | undefined;
   time: string | null;
   onClick: () => void;
 }) {
@@ -79,17 +77,9 @@ function ChatRow({
     >
       <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
         <span className="truncate text-[13px] tracking-[-0.008em] text-foreground">{name}</span>
-        <span className="flex min-w-0 items-center gap-1 truncate text-[11px] tracking-[-0.004em] text-muted-foreground">
-          {branch && (
-            <span className="inline-flex min-w-0 items-center gap-0.5 truncate text-faint">
-              <GitBranch size={10} strokeWidth={1.7} className="shrink-0" aria-label="On a git branch" />
-              <span className="truncate">{branch}</span>
-            </span>
-          )}
-          {branch && (status || time) && <span aria-hidden="true" className="shrink-0 text-faint-2">·</span>}
-          {status
-            ? <span className={cn("shrink-0", status.ink)}>{status.word}</span>
-            : time && <span className="shrink-0 tabular-nums text-faint">{time}</span>}
+        <span className="flex min-w-0 items-center gap-1.5 truncate text-[11px] tracking-[-0.004em] text-muted-foreground">
+          {status && <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", status.dot)} role="img" aria-label={status.label} />}
+          {time && <span className="shrink-0 tabular-nums text-faint">{time}</span>}
         </span>
       </span>
       <HarnessMark harness={chat.harness} size={13} className="shrink-0" />
@@ -434,10 +424,6 @@ export function BridgeSidebar({
     const titles = new Map(workspaces.map(workspace => [workspace.id, workspace.title]));
     return (id: string | null | undefined) => (id ? titles.get(id) : undefined);
   }, [workspaces]);
-  const workspaceById = useMemo(
-    () => new Map(workspaces.map(workspace => [workspace.id, workspace])),
-    [workspaces],
-  );
   const visible = useMemo(
     () => filterChats(chats, { query, status: view.status, agent: view.agent, workspaceTitle }),
     [chats, query, view.status, view.agent, workspaceTitle],
@@ -628,7 +614,6 @@ export function BridgeSidebar({
                     chat={chat}
                     active={chat.id === activeSessionId}
                     indented={!!group.label}
-                    branch={chat.workspaceId ? workspaceById.get(chat.workspaceId)?.branch : undefined}
                     time={chatListTime(chatTimestamp(chat), now)}
                     onClick={() => onOpenSession(chat.id)}
                   />

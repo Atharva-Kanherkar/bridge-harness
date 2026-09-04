@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { Check, Folder, Maximize2, Minimize2, Monitor, MoreHorizontal, PanelLeft, PanelRight, Search, Settings2, Square } from "lucide-react";
+import { Check, Maximize2, Minimize2, Monitor, MoreHorizontal, PanelLeft, PanelRight, Search, Settings2, Square } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { MenuItem, MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
 import type { DockPaneId } from "../dockLayout";
@@ -140,20 +140,11 @@ export function SessionToolbar({
         </button>
       )}
 
-      {/* Breadcrumb, not a bare title: a folder mark, the muted project crumb,
-          then the session in the foreground — `folder  project / title`. The
-          `h1` stays the title alone so it remains the one document heading. */}
-      <div className="flex min-w-0 flex-1 items-center gap-1.5">
-        <Folder size={14} strokeWidth={1.7} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-        {projectName && (
-          <>
-            <span className="hidden shrink-0 truncate text-[13px] leading-none text-muted-foreground sm:inline" title={projectName}>{projectName}</span>
-            <span className="hidden shrink-0 text-faint-2 sm:inline" aria-hidden="true">/</span>
-          </>
-        )}
-        <h1 className="m-0 min-w-0 truncate font-display text-[14px] font-semibold leading-none tracking-[-0.014em] text-foreground">
-          {title}
-        </h1>
+      {/* The visible breadcrumb is gone — session titles are often a pasted URL
+          and read as clutter here, and the sidebar already marks the active
+          chat. The `h1` stays as the one document heading, screen-reader only. */}
+      <div className="min-w-0 flex-1">
+        <h1 className="sr-only">{projectName ? `${projectName} / ${title}` : title}</h1>
       </div>
 
       {sourceBadge && <span data-testid="import-source-badge" title={sourceBadge} className="hidden max-w-[260px] shrink-0 truncate rounded-full border border-border px-2 py-0.5 font-mono text-[9px] font-medium uppercase tracking-[0.04em] text-muted-foreground sm:inline">{sourceBadge}</span>}

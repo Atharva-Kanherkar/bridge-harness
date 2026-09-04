@@ -230,8 +230,7 @@ describe("BridgeSidebar theming", () => {
   });
 
   it("carries session status on semantic tokens", () => {
-    // A row's second line names the actionable state in that state's own ink,
-    // so the check moved from a status dot's fill to the status word's colour.
+    // A row's status is a single coloured dot in that state's own ink — no word.
     const html = render({
       chats: [
         session("a", { status: "working" }),
@@ -239,18 +238,20 @@ describe("BridgeSidebar theming", () => {
         session("c", { status: "failed" }),
       ],
     });
-    expect(html).toContain("text-success");
-    expect(html).toContain("text-warning");
-    expect(html).toContain("text-destructive");
+    expect(html).toContain("bg-success");
+    expect(html).toContain("bg-warning");
+    expect(html).toContain("bg-destructive");
+    // The dot carries the meaning; the word is gone from the row.
+    expect(html).not.toMatch(/>working<|>needs you<|>failed</);
     expect(html).not.toMatch(/emerald-|amber-|sky-|red-4/);
   });
 
-  it("leaves an idle chat without a status word", () => {
+  it("leaves an idle chat without a status dot", () => {
     // An idle chat falls back to a muted time and never wears an active-status ink.
     const html = render({ chats: [session("idle", { status: "completed" })] });
-    expect(html).not.toContain("text-success");
-    expect(html).not.toContain("text-warning");
-    expect(html).not.toContain("text-destructive");
+    expect(html).not.toContain("bg-success");
+    expect(html).not.toContain("bg-warning");
+    expect(html).not.toContain("bg-destructive");
   });
 });
 
@@ -317,8 +318,8 @@ describe("BridgeSidebar history", () => {
 
   it("indents rows under a group and shows a compact time", () => {
     localStorage.setItem(CHAT_VIEW_KEY, DATE_VIEW);
-    // An at-rest chat shows its age on the second line; an active one would show
-    // its status word there instead, so the time check uses a settled session.
+    // An at-rest chat shows its age on the second line; an active one shows a
+    // status dot instead, so the time check uses a settled session.
     const html = render({
       chats: [session("now", { title: "Today chat", status: "completed", startedAt: new Date(Date.now() - 2_000).toISOString() })],
     });
@@ -326,10 +327,10 @@ describe("BridgeSidebar history", () => {
     expect(html).toMatch(/>now</);
   });
 
-  it("shows a git badge only when the chat's workspace has a branch", () => {
+  it("never shows a git branch on a chat row", () => {
+    // The row's second line is a status dot and a time — no repo branch.
     const chats = [session("branched", { title: "On main", workspaceId: "workspace-1" })];
-    expect(render({ chats })).toContain("On a git branch");
-    expect(render({ chats, workspaces: [{ ...workspace, branch: null }] })).not.toContain("On a git branch");
+    expect(render({ chats })).not.toContain("On a git branch");
   });
 
   it("never renders a cloud/sync badge", () => {

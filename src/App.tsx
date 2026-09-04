@@ -2074,21 +2074,6 @@ function AppContent() {
         <SessionToolbar
           title={session.title || session.label}
           sourceBadge={session.kind === "imported" ? `Imported · Claude Code${importedSourceFingerprint ? ` · ${importedSourceFingerprint.slice(0, 12)}…` : ""}` : undefined}
-          modelControl={isDirectChat || session.kind === "imported" ? undefined : <ChatModelControl
-            adapters={adapters}
-            harness={session.harness}
-            model={session.model ?? null}
-            disabled={busy || turnActive}
-            disabledReason={turnActive ? "Wait for the current response before switching models" : undefined}
-            onChange={(harness, model) => void changeChatModel(harness, model)}
-            compact
-            maxWidthClassName="max-w-[190px]"
-            // The toolbar is the top row of an overflow-hidden container, so
-            // the composer's upward panel would open above the viewport.
-            placement="down"
-            roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"}
-            effort={session.effort}
-          />}
           leading={sidebarNav}
           sidebarHidden={sidebarCollapsed}
           navOpen={navOpen}
