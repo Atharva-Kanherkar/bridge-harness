@@ -104,11 +104,14 @@ something.
    counts work (files read, commands run), and the trailer reports a wall clock
    span, not a sum of overlapping call durations. A provider that emits ten
    progress frames per call must not read as ten times busier than one that
-   emits one.
-4. **A completed group is collapsed.** Expansion is an explicit user action, and
-   a user's choice outranks liveness: a group the reader collapsed stays
+   emits one. Where a protocol reports no durations at all, the trailer is
+   absent rather than zero, on the same rule as the exit code: a field the
+   protocol does not have is not reported as a value.
+4. **A completed group is collapsed**, and expansion is an explicit user action.
+   A user's choice outranks liveness: a group the reader collapsed stays
    collapsed while it is still running, and one they opened stays open after it
-   finishes.
+   finishes. One exception, deliberate: a group holding a patch opens itself,
+   because a diff the reader has to go digging for is not an inline diff.
 5. **A live group is legible while it is live.** It says what is happening now,
    and it settles into its summary without the row changing identity or the
    scroll position jumping.
