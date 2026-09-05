@@ -56,8 +56,9 @@ every group is a card of rows, every row is one label and one control.**
 
 ### Saving
 
-- A switch or select row persists on change and shows a check plus "Saved" in
-  that row for about 1.5 seconds, then returns to its control.
+- A switch or select row persists on change and shows a check plus "Saved"
+  beside its control, in the same row, for about 1.5 seconds. The control stays
+  live throughout: the confirmation never replaces the thing that was clicked.
 - Editors and text fields do not persist on change. A dirty page shows exactly
   one save bar at the bottom of the column reading "Unsaved changes" with
   Discard and Save. No per-card Save button exists anywhere in Settings.
