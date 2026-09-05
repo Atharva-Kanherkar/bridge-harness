@@ -1180,7 +1180,7 @@ function AppContent() {
   // it was asked from, send it the question, and float it over the chat. The
   // aside is a real standalone chat: it lives in the sidebar afterwards, and
   // closing the panel never ends it.
-  async function openAside(adapter: import("./types").AdapterDescriptor, text: string, carryFromSessionId: string): Promise<void> {
+  async function openAside(adapter: import("./types").AdapterDescriptor, text: string, carryFromSessionId: string, sentAttachments?: ComposerAttachment[]): Promise<void> {
     // The same double-submit lock every create path takes: a second Enter
     // while the create awaits must not make a second aside.
     if (newChatPendingRef.current) return;
@@ -1219,7 +1219,7 @@ function AppContent() {
         fidelity: result.fidelity,
       });
       try {
-        await deliverPrompt(created, text);
+        await deliverPrompt(created, text, sentAttachments);
       } catch (e) {
         const message = errorMessage(e);
         setAsideLifecycle(current => current && {
@@ -1244,7 +1244,7 @@ function AppContent() {
   // provider's native thread fork — and reads that chat's context, but it
   // never appends to it: the aside session is a separate forest, and the only
   // thing written to the parent is nothing.
-  async function openSideChat(query: string, sourceSessionId: string): Promise<void> {
+  async function openSideChat(query: string, sourceSessionId: string, attachments: ComposerAttachment[] = []): Promise<void> {
     const source = state.sessions.find(item => item.id === sourceSessionId);
     if (!source) return;
     const adapter = adapters.find(item => item.id === source.harness);
@@ -1260,7 +1260,7 @@ function AppContent() {
       setError("Ask a side question: type /btw followed by your question. The answer opens beside this chat without touching it.");
       return;
     }
-    await openAside(adapter, query, sourceSessionId);
+    await openAside(adapter, query, sourceSessionId, attachments);
   }
   // Entry point for the Welcome screen's own composer, which has no session
   // to skip past — a `$harness` prefix there is the only branch either way.
@@ -1590,16 +1590,20 @@ function AppContent() {
     if (!submittedText && sentAttachments.length === 0) return;
     // `/btw` and `/side` are Bridge's side-chat commands, not turns for the
     // open chat: the question opens beside this conversation with its context,
-    // and the chat underneath is untouched. With no chat open there is nothing
-    // to consult beside, so the text falls through like any other message.
+    // and the chat underneath is untouched. Images on the composer ride along
+    // as the side chat's first-message attachments — the same delivery the
+    // aside's own composer uses — instead of being stranded on a chat the user
+    // has stopped looking at. With no chat open there is nothing to consult
+    // beside, so the text falls through like any other message.
     const sideChat = parseSideChatCommand(submittedText);
     if (sideChat && session) {
       try {
-        await openSideChat(sideChat.query, session.id);
+        await openSideChat(sideChat.query, session.id, sentAttachments);
         setComposer("");
+        setAttachments([]);
       } catch {
         // The aside lifecycle owns the inline recovery state. Keep the source
-        // draft untouched so Enter is also a valid retry path.
+        // draft and its attachments so Enter is also a valid retry path.
       }
       return;
     }

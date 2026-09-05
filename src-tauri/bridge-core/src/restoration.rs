@@ -36,22 +36,40 @@ pub fn fallback_after_failure(
     }
 }
 
-/// Decide how a cold start restores context. `head_requests_fork` is the
-/// persisted aside instruction (`native_fork` head mode, only honored when the
-/// adapter can actually fork) — it outranks the plain resume ladder, because
-/// resuming would continue the source conversation instead of consulting
-/// beside it.
+/// Decide how a cold start restores context.
+///
+/// `head_says_fork` is the persisted aside instruction (`native_fork` head
+/// mode), independent of whether the adapter can actually fork — that gate is
+/// the ladder's job. The stored thread id of a fork-headed session belongs to
+/// the SOURCE conversation, so plain native resume is forbidden for it in
+/// every branch: resuming would continue the parent conversation, the one
+/// write a side chat must never make. The fork-honoring arm forks; every
+/// other arm projects the stored brief or starts fresh.
 pub fn select_plan(
     process_is_hot: bool,
     provider_session_id: Option<&str>,
     adapter_supports_native: bool,
+    adapter_supports_fork: bool,
     has_stored_context: bool,
-    head_requests_fork: bool,
+    head_says_fork: bool,
 ) -> RestorationPlan {
     if process_is_hot {
         RestorationPlan::Hot
-    } else if head_requests_fork && provider_session_id.is_some() && adapter_supports_native {
+    } else if head_says_fork
+        && provider_session_id.is_some()
+        && adapter_supports_native
+        && adapter_supports_fork
+    {
         RestorationPlan::NativeFork
+    } else if head_says_fork {
+        // A fork instruction that cannot be honored (no thread yet — e.g. a
+        // model switch cleared it — or an adapter without the fork verb) must
+        // still never resume whatever id is stored: that id is the parent's.
+        if has_stored_context {
+            RestorationPlan::CheckpointRestored
+        } else {
+            RestorationPlan::Fresh
+        }
     } else if provider_session_id.is_some() && adapter_supports_native {
         RestorationPlan::Native
     } else if has_stored_context {
@@ -212,19 +230,19 @@ mod tests {
     #[test]
     fn restoration_order_is_hot_native_checkpoint_then_fresh() {
         assert_eq!(
-            select_plan(true, Some("p"), true, true, false),
+            select_plan(true, Some("p"), true, false, true, false),
             RestorationPlan::Hot
         );
         assert_eq!(
-            select_plan(false, Some("p"), true, true, false),
+            select_plan(false, Some("p"), true, false, true, false),
             RestorationPlan::Native
         );
         assert_eq!(
-            select_plan(false, Some("p"), false, true, false),
+            select_plan(false, Some("p"), false, false, true, false),
             RestorationPlan::CheckpointRestored
         );
         assert_eq!(
-            select_plan(false, None, false, false, false),
+            select_plan(false, None, false, false, false, false),
             RestorationPlan::Fresh
         );
         assert_eq!(
@@ -247,18 +265,8 @@ mod tests {
         // The aside's explicit instruction: fork the stored thread, never
         // resume it in place.
         assert_eq!(
-            select_plan(false, Some("parent-thread"), true, true, true),
+            select_plan(false, Some("parent-thread"), true, true, true, true),
             RestorationPlan::NativeFork
-        );
-        // Fork support is the gate the caller applies before asking; the plan
-        // honors it only with a thread id to fork.
-        assert_eq!(
-            select_plan(false, None, true, true, true),
-            RestorationPlan::CheckpointRestored
-        );
-        assert_eq!(
-            select_plan(false, Some("parent-thread"), false, true, true),
-            RestorationPlan::CheckpointRestored
         );
         assert_eq!(
             fallback_after_failure(RestorationPlan::NativeFork, true),
@@ -268,6 +276,41 @@ mod tests {
         assert_eq!(
             fallback_after_failure(RestorationPlan::NativeFork, false),
             Some(RestorationPlan::Fresh)
+        );
+    }
+
+    // The bug bugbot caught: a fork-headed aside stores the PARENT's thread id
+    // in provider_session_id. If the fork cannot be honored at start time, the
+    // ladder must not fall through to plain native resume — that resumes the
+    // parent conversation, the one write a side chat must never make.
+    #[test]
+    fn a_fork_head_never_degrades_to_resuming_the_parent_thread() {
+        // Fork support lost since creation (binary downgraded, backend swap):
+        // the stored id is still the parent's, so project the brief.
+        assert_eq!(
+            select_plan(false, Some("parent-thread"), true, false, true, true),
+            RestorationPlan::CheckpointRestored
+        );
+        // Nothing stored to project and no fork verb: fresh, still never a
+        // parent-thread resume.
+        assert_eq!(
+            select_plan(false, Some("parent-thread"), true, false, false, true),
+            RestorationPlan::Fresh
+        );
+        // A model switch cleared the thread but left the fork head: brief if
+        // there is one, fresh otherwise — never a resume of nothing.
+        assert_eq!(
+            select_plan(false, None, true, true, true, true),
+            RestorationPlan::CheckpointRestored
+        );
+        assert_eq!(
+            select_plan(false, None, true, true, false, true),
+            RestorationPlan::Fresh
+        );
+        // Resume support itself is gone: same veto.
+        assert_eq!(
+            select_plan(false, Some("parent-thread"), false, false, true, true),
+            RestorationPlan::CheckpointRestored
         );
     }
 

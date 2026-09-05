@@ -732,19 +732,32 @@ export function selectionQuote(selection: Selection | null): string | null {
 function AskAsideChip({ onAsk }: { onAsk: (quoted: string) => void }) {
   const [placement, setPlacement] = useState<{ left: number; top: number } | null>(null);
   const quoteRef = useRef("");
+  const rootRef = useRef<HTMLSpanElement>(null);
   useEffect(() => {
     const hide = () => setPlacement(null);
     const read = () => {
       const selection = window.getSelection();
       const quote = selectionQuote(selection);
       if (!quote) { hide(); return; }
+      // The chip speaks only for its own transcript. The parent conversation
+      // stays mounted under an aside panel, and the rest of the chrome carries
+      // selectable text of its own, so a selection anchored outside this
+      // transcript must not raise this chip — selecting prose inside the aside
+      // panel must never open another side chat from the parent.
+      const container = rootRef.current?.parentElement;
+      const anchor = selection?.anchorNode ?? null;
+      const focus = selection?.focusNode ?? null;
+      if (!container || !anchor || !focus || !container.contains(anchor) || !container.contains(focus)) {
+        hide();
+        return;
+      }
       quoteRef.current = quote;
       const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
       // Range.getBoundingClientRect is browser-only (jsdom's Range lacks it);
       // a missing or zero-sized rect still offers the action, just centered
       // instead of pinned to the selection's end.
-      const rect = typeof (range as Range | null | undefined)?.getBoundingClientRect === "function"
-        ? range!.getBoundingClientRect()
+      const rect = typeof range?.getBoundingClientRect === "function"
+        ? range.getBoundingClientRect()
         : undefined;
       setPlacement(rect && (rect.width > 0 || rect.height > 0 || rect.right > 0)
         ? { left: rect.right, top: rect.bottom }
@@ -766,23 +779,27 @@ function AskAsideChip({ onAsk }: { onAsk: (quoted: string) => void }) {
       document.removeEventListener("keydown", onKeyDown);
     };
   }, []);
-  if (!placement) return null;
-  return <button
-    type="button"
-    data-ask-aside-chip
-    aria-label="Ask aside about the selected text"
-    className="u-glass-popover fixed z-50 inline-flex -translate-y-full items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[11px] text-foreground shadow-sm transition-colors hover:bg-accent"
-    style={{ left: Math.max(8, Math.min(placement.left, (typeof window !== "undefined" ? window.innerWidth : 0) - 120)) , top: placement.top }}
-    onMouseDown={event => event.preventDefault()}
-    onClick={() => {
-      onAsk(quoteSelection(quoteRef.current));
-      window.getSelection()?.removeAllRanges();
-      setPlacement(null);
-    }}
-  >
-    <MessageSquarePlus size={12} aria-hidden="true"/>
-    Ask aside
-  </button>;
+  // The wrapper span is always mounted so the chip can find the transcript
+  // scroll container it belongs to (`parentElement`) even before any selection
+  // has raised the button itself; display:contents keeps it layout-invisible.
+  return <span ref={rootRef} className="contents">
+    {placement && <button
+      type="button"
+      data-ask-aside-chip
+      aria-label="Ask aside about the selected text"
+      className="u-glass-popover fixed z-50 inline-flex -translate-y-full items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[11px] text-foreground shadow-sm transition-colors hover:bg-accent"
+      style={{ left: Math.max(8, Math.min(placement.left, (typeof window !== "undefined" ? window.innerWidth : 0) - 120)) , top: placement.top }}
+      onMouseDown={event => event.preventDefault()}
+      onClick={() => {
+        onAsk(quoteSelection(quoteRef.current));
+        window.getSelection()?.removeAllRanges();
+        setPlacement(null);
+      }}
+    >
+      <MessageSquarePlus size={12} aria-hidden="true"/>
+      Ask aside
+    </button>}
+  </span>;
 }
 
 /// Changes that exist only in a worker's own worktree. The parent session cannot

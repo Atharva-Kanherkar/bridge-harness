@@ -928,6 +928,7 @@ pub fn start_session(
         false,
         stored_provider_id.as_deref(),
         state.adapter_registry.supports_native_resume(dispatch_id),
+        false,
         checkpoint_context.is_some(),
         false,
     );
@@ -1490,16 +1491,16 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     // only a genuinely empty chat starts fresh. A `native_fork` head mode is
     // the aside's explicit instruction to fork the stored thread instead of
     // resuming it — resuming would continue the source conversation the aside
-    // must never write to. The instruction only counts when this adapter can
-    // actually fork; otherwise the ladder falls to the projected brief.
-    let head_requests_fork = head_mode.as_deref() == Some(RestorationMode::NativeFork.as_str())
-        && state.adapter_registry.supports_native_fork(&dispatch_id);
+    // must never write to, so the raw instruction is passed un-gated and the
+    // ladder vetoes plain resume for it in every branch.
+    let head_says_fork = head_mode.as_deref() == Some(RestorationMode::NativeFork.as_str());
     let plan = restoration::select_plan(
         false,
         provider_id.as_deref(),
         state.adapter_registry.supports_native_resume(&dispatch_id),
+        state.adapter_registry.supports_native_fork(&dispatch_id),
         checkpoint_context.is_some(),
-        head_requests_fork,
+        head_says_fork,
     );
     // Narration for the cold path only: a hot return already left above, so
     // every phase published here is a real launch boundary this call is
