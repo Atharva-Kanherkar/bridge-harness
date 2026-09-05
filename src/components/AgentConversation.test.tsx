@@ -65,15 +65,15 @@ describe("AgentConversation", () => {
   // long it has been. Contract: testing/feat-startup-mark-and-switch-checkpoint.md.
   it("wears the harness's own mark while starting, turning", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} working />);
-    expect(html).toContain("text-harness-codex");
+    expect(html).toContain('data-harness="codex"');
     expect(html).toContain("harness-mark-live");
-    expect(html).not.toContain("text-harness-claude");
+    expect(html).not.toContain('data-harness="claude"');
   });
 
   it("marks a Claude session with Claude's figure, not Codex's", () => {
     const html = renderToStaticMarkup(<AgentConversation session={{ ...session, harness: "claude" }} onResolve={() => undefined} events={[]} working />);
-    expect(html).toContain("text-harness-claude");
-    expect(html).not.toContain("text-harness-codex");
+    expect(html).toContain('data-harness="claude"');
+    expect(html).not.toContain('data-harness="codex"');
   });
 
   it("keeps the mark and drops the label once streaming has begun", () => {
@@ -188,8 +188,8 @@ describe("AgentConversation", () => {
   it("narrates a model switch with the incoming harness's mark, and no first-launch note anywhere", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} modelSwitch={{ harness: "claude", label: "Opus" }} />);
     expect(html).toContain("Switching to Opus…");
-    expect(html).toContain("text-harness-claude");
-    expect(html).not.toContain("text-harness-codex");
+    expect(html).toContain('data-harness="claude"');
+    expect(html).not.toContain('data-harness="codex"');
     expect(html).not.toContain("First time opening this chat");
   });
 
