@@ -581,5 +581,9 @@ function namedToolFacet(source: ToolCallSource, data: Record<string, unknown>): 
     if (exploratory) return { ...exploratory, command };
     return { ...acp, target: acp.verb === "run" ? command ?? "command" : file ?? (title || undefined), command };
   }
-  return { verb: "tool", glyph: "wrench", doing: "Using a tool", done: "Used a tool", target: title || undefined };
+  // ACP's uncategorized calls still carry an action title. Preserve that
+  // provider wording without guessing its intent or manufacturing past tense.
+  const action = text(title);
+  if (action) return { verb: "tool", glyph: "wrench", doing: action, done: action };
+  return { verb: "tool", glyph: "wrench", doing: "Using a tool", done: "Used a tool" };
 }
