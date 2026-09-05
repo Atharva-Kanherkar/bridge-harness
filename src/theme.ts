@@ -7,7 +7,21 @@ import { useCallback, useEffect, useState } from "react";
 export type ThemePreference = "system" | "light" | "dark";
 export type ResolvedTheme = "light" | "dark";
 
+/**
+ * The skin is orthogonal to the light/dark mode: it chooses the *character* of
+ * the chrome, not its brightness. `graphite` is the opaque pure-black shell;
+ * `vibrancy` is the translucent, cursor-style shell that lets AppKit wash the
+ * desktop wallpaper through the grounds. Both render every token — only the
+ * `data-skin` attribute on <html> changes at runtime. This is the seed of the
+ * user-customisable theme pack; new skins slot in by extending this union.
+ */
+export type ThemeSkin = "graphite" | "vibrancy";
+
 export const THEME_STORAGE_KEY = "bridge.theme";
+export const SKIN_STORAGE_KEY = "bridge.skin";
+
+/** The shell stays exactly as it ships until the user opts into another skin. */
+export const DEFAULT_SKIN: ThemeSkin = "graphite";
 
 /** Window background per mode, kept in sync with `--background` in index.css. */
 const THEME_COLOR: Record<ResolvedTheme, string> = {
@@ -38,6 +52,38 @@ export function writeThemePreference(
   } catch {
     // A read-only storage should never stop the theme from applying.
   }
+}
+
+export function isThemeSkin(value: unknown): value is ThemeSkin {
+  return value === "graphite" || value === "vibrancy";
+}
+
+export function readThemeSkin(storage: Pick<Storage, "getItem"> = localStorage): ThemeSkin {
+  let raw: string | null = null;
+  try {
+    raw = storage.getItem(SKIN_STORAGE_KEY);
+  } catch {
+    return DEFAULT_SKIN;
+  }
+  return isThemeSkin(raw) ? raw : DEFAULT_SKIN;
+}
+
+export function writeThemeSkin(
+  skin: ThemeSkin,
+  storage: Pick<Storage, "setItem"> = localStorage,
+): void {
+  try {
+    storage.setItem(SKIN_STORAGE_KEY, skin);
+  } catch {
+    // A read-only storage should never stop the skin from applying.
+  }
+}
+
+/** Stamps the chosen skin on the document so CSS can key off `data-skin`. */
+export function applySkin(skin: ThemeSkin): ThemeSkin {
+  if (typeof document === "undefined") return skin;
+  document.documentElement.dataset.skin = skin;
+  return skin;
 }
 
 export function systemPrefersDark(): boolean {
@@ -92,9 +138,12 @@ export function useThemePreference(): {
   preference: ThemePreference;
   resolved: ResolvedTheme;
   setPreference: (next: ThemePreference) => void;
+  skin: ThemeSkin;
+  setSkin: (next: ThemeSkin) => void;
 } {
   const [preference, setPreferenceState] = useState<ThemePreference>(() => readThemePreference());
   const [resolved, setResolved] = useState<ResolvedTheme>(() => resolveTheme(preference));
+  const [skin, setSkinState] = useState<ThemeSkin>(() => readThemeSkin());
 
   useEffect(() => {
     setResolved(applyTheme(preference));
@@ -102,7 +151,14 @@ export function useThemePreference(): {
   }, [preference]);
 
   useEffect(() => {
-    const onExternalChange = () => setPreferenceState(readThemePreference());
+    applySkin(skin);
+  }, [skin]);
+
+  useEffect(() => {
+    const onExternalChange = () => {
+      setPreferenceState(readThemePreference());
+      setSkinState(readThemeSkin());
+    };
     window.addEventListener(THEME_EVENT, onExternalChange);
     return () => window.removeEventListener(THEME_EVENT, onExternalChange);
   }, []);
@@ -114,5 +170,12 @@ export function useThemePreference(): {
     window.dispatchEvent(new Event(THEME_EVENT));
   }, []);
 
-  return { preference, resolved, setPreference };
+  const setSkin = useCallback((next: ThemeSkin) => {
+    writeThemeSkin(next);
+    setSkinState(next);
+    applySkin(next);
+    window.dispatchEvent(new Event(THEME_EVENT));
+  }, []);
+
+  return { preference, resolved, setPreference, skin, setSkin };
 }

@@ -16,6 +16,8 @@
           var dark = pref === "dark" || (pref === "system" && window.matchMedia("(prefers-color-scheme: dark)").matches);
           document.documentElement.classList.toggle("dark", dark);
           document.documentElement.dataset.theme = dark ? "dark" : "light";
+          var skin = localStorage.getItem("bridge.skin");
+          document.documentElement.dataset.skin = skin === "vibrancy" ? "vibrancy" : "graphite";
           if ("__TAURI_INTERNALS__" in window) document.documentElement.dataset.tauri = "";
           var meta = document.querySelector('meta[name="theme-color"]');
           if (meta) meta.setAttribute("content", dark ? "#171716" : "#fafaf9");

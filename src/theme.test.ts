@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { isThemePreference, readThemePreference, resolveTheme, THEME_STORAGE_KEY, writeThemePreference } from "./theme";
+import { isThemePreference, isThemeSkin, readThemePreference, readThemeSkin, resolveTheme, SKIN_STORAGE_KEY, THEME_STORAGE_KEY, writeThemePreference, writeThemeSkin } from "./theme";
 
 const fakeStorage = (initial: Record<string, string> = {}) => {
   const store = { ...initial };
@@ -53,6 +53,51 @@ describe("writeThemePreference", () => {
   it("does not throw when storage is read-only", () => {
     const hostile = { setItem: () => { throw new Error("denied"); } };
     expect(() => writeThemePreference("dark", hostile)).not.toThrow();
+  });
+});
+
+describe("isThemeSkin", () => {
+  it("accepts the supported skins", () => {
+    expect(isThemeSkin("graphite")).toBe(true);
+    expect(isThemeSkin("vibrancy")).toBe(true);
+  });
+
+  it("rejects anything else", () => {
+    expect(isThemeSkin("cursor")).toBe(false);
+    expect(isThemeSkin(null)).toBe(false);
+    expect(isThemeSkin(undefined)).toBe(false);
+  });
+});
+
+describe("readThemeSkin", () => {
+  it("defaults to graphite when nothing is stored", () => {
+    expect(readThemeSkin(fakeStorage())).toBe("graphite");
+  });
+
+  it("reads a stored skin", () => {
+    expect(readThemeSkin(fakeStorage({ [SKIN_STORAGE_KEY]: "vibrancy" }))).toBe("vibrancy");
+  });
+
+  it("falls back to graphite for a corrupt value", () => {
+    expect(readThemeSkin(fakeStorage({ [SKIN_STORAGE_KEY]: "glass" }))).toBe("graphite");
+  });
+
+  it("falls back to graphite when storage throws", () => {
+    const hostile = { getItem: () => { throw new Error("denied"); } };
+    expect(readThemeSkin(hostile)).toBe("graphite");
+  });
+});
+
+describe("writeThemeSkin", () => {
+  it("persists the skin", () => {
+    const storage = fakeStorage();
+    writeThemeSkin("vibrancy", storage);
+    expect(storage.store[SKIN_STORAGE_KEY]).toBe("vibrancy");
+  });
+
+  it("does not throw when storage is read-only", () => {
+    const hostile = { setItem: () => { throw new Error("denied"); } };
+    expect(() => writeThemeSkin("vibrancy", hostile)).not.toThrow();
   });
 });
 

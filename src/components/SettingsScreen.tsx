@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Bot, Check, ChevronRight, Code2, Download, LoaderCircle, Lock, Monitor, Moon, Plus, RotateCcw, Save, ScrollText, Settings2, Shield, ShieldOff, Sparkles, Sun, Trash2 } from "lucide-react";
+import { Bot, Check, ChevronRight, Code2, Download, Layers, LoaderCircle, Lock, Monitor, Moon, Plus, RotateCcw, Save, ScrollText, Settings2, Shield, ShieldOff, Sparkles, Square, Sun, Trash2 } from "lucide-react";
 import { bridgeApi } from "../api";
 import { modelProfilesChanged, profileDraftsFromSetup } from "../modelProfiles";
 import type { AdapterDescriptor, AgentDefinition, AgentRole, BridgeEvent, ConfigState, HarnessConfig, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PermissionPolicy, ReasoningEffort } from "../types";
@@ -10,7 +10,7 @@ import { WorkSettingsSection } from "./WorkSettingsSection";
 import { SuggestionSettingsCard } from "./SuggestionSettingsCard";
 import type { SuggestionSettingsSnapshot } from "../protocol/generated/protocol";
 import { OpenCodeHarnessSettings, type OpenCodeAdvancedSettings } from "./OpenCodeHarnessSettings";
-import { useThemePreference, type ThemePreference } from "../theme";
+import { useThemePreference, type ThemePreference, type ThemeSkin } from "../theme";
 import { cn } from "@/lib/utils";
 import { ImportHarnessSection } from "./ImportHarnessSection";
 
@@ -38,25 +38,51 @@ const THEME_OPTIONS: { id: ThemePreference; label: string; hint: string; icon: R
   { id: "dark", label: "Graphite", hint: "Dark mode", icon: <Moon size={15} /> },
 ];
 
+const SKIN_OPTIONS: { id: ThemeSkin; label: string; hint: string; icon: React.ReactNode }[] = [
+  { id: "graphite", label: "Solid", hint: "Opaque shell", icon: <Square size={15} /> },
+  { id: "vibrancy", label: "Cursor", hint: "Translucent, tints with your wallpaper", icon: <Layers size={15} /> },
+];
+
 function AppearanceSection() {
-  const { preference, resolved, setPreference } = useThemePreference();
-  return <div className="mx-auto max-w-2xl">
-    <div className="mb-5"><h2 className="font-display text-lg font-semibold">Appearance</h2><p className="mt-1 text-xs text-muted-foreground">Bridge follows macOS by default. Both modes render the same palette — currently showing {resolved === "dark" ? "graphite" : "paper"}.</p></div>
-    <div className="grid gap-2 sm:grid-cols-3">
-      {THEME_OPTIONS.map(option => <button
-        type="button"
-        key={option.id}
-        onClick={() => setPreference(option.id)}
-        aria-pressed={preference === option.id}
-        className={cn(
-          "flex flex-col items-start gap-1.5 rounded-2xl border p-4 text-left transition-colors",
-          preference === option.id ? "border-ring bg-card" : "border-border hover:bg-accent",
-        )}
-      >
-        <span className="text-muted-foreground">{option.icon}</span>
-        <span className="text-[13px] font-medium text-foreground">{option.label}</span>
-        <span className="text-[11px] text-muted-foreground">{option.hint}</span>
-      </button>)}
+  const { preference, resolved, setPreference, skin, setSkin } = useThemePreference();
+  return <div className="mx-auto max-w-2xl space-y-8">
+    <div>
+      <div className="mb-5"><h2 className="font-display text-lg font-semibold">Appearance</h2><p className="mt-1 text-xs text-muted-foreground">Bridge follows macOS by default. Both modes render the same palette — currently showing {resolved === "dark" ? "graphite" : "paper"}.</p></div>
+      <div className="grid gap-2 sm:grid-cols-3">
+        {THEME_OPTIONS.map(option => <button
+          type="button"
+          key={option.id}
+          onClick={() => setPreference(option.id)}
+          aria-pressed={preference === option.id}
+          className={cn(
+            "flex flex-col items-start gap-1.5 rounded-2xl border p-4 text-left transition-colors",
+            preference === option.id ? "border-ring bg-card" : "border-border hover:bg-accent",
+          )}
+        >
+          <span className="text-muted-foreground">{option.icon}</span>
+          <span className="text-[13px] font-medium text-foreground">{option.label}</span>
+          <span className="text-[11px] text-muted-foreground">{option.hint}</span>
+        </button>)}
+      </div>
+    </div>
+    <div>
+      <div className="mb-5"><h2 className="font-display text-lg font-semibold">Theme</h2><p className="mt-1 text-xs text-muted-foreground">The shell's surface. Solid is the default opaque shell; Cursor is translucent and lets your desktop wallpaper tint the app, like the earlier build.</p></div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {SKIN_OPTIONS.map(option => <button
+          type="button"
+          key={option.id}
+          onClick={() => setSkin(option.id)}
+          aria-pressed={skin === option.id}
+          className={cn(
+            "flex flex-col items-start gap-1.5 rounded-2xl border p-4 text-left transition-colors",
+            skin === option.id ? "border-ring bg-card" : "border-border hover:bg-accent",
+          )}
+        >
+          <span className="text-muted-foreground">{option.icon}</span>
+          <span className="text-[13px] font-medium text-foreground">{option.label}</span>
+          <span className="text-[11px] text-muted-foreground">{option.hint}</span>
+        </button>)}
+      </div>
     </div>
   </div>;
 }
