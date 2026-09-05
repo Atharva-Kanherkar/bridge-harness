@@ -499,7 +499,8 @@ impl BridgeCore {
             descriptor
                 .models
                 .iter()
-                .find(|option| option.tier == default_tier && option.default_for_tier)
+                .find(|option| Some(&option.id) == descriptor.default_model.as_ref())
+                .or_else(|| descriptor.models.iter().find(|option| option.tier == default_tier && option.default_for_tier))
                 .or_else(|| {
                     descriptor
                         .models
@@ -515,6 +516,9 @@ impl BridgeCore {
                     ))
                 })?
         };
+        if !selected.available || !selected.compatible {
+            return Err(BridgeError::Invalid(format!("{} is not available for this session", selected.label)));
+        }
         if previous_harness == adapter_id && previous_model.as_deref() == Some(selected.id.as_str())
         {
             return Ok(None);
@@ -1304,7 +1308,7 @@ mod tests {
                         compatible: true,
                         lifecycle: crate::model::ModelLifecycle::Stable,
                         source: crate::model::ModelCatalogSource::CuratedFallback,
-                        supported_effort_levels: Vec::new(),
+                        supported_effort_levels: vec!["high".into(), "ultra".into()],
                         default_for_tier: true,
                     },
                     ModelOption {
@@ -2648,6 +2652,33 @@ mod tests {
             )
             .unwrap();
         assert_eq!(active.as_deref(), Some("user-turn"), "a live turn is not cleared");
+    }
+
+    #[test]
+    fn chat_effort_changes_restart_warm_runtime_and_validate_before_teardown() {
+        let (_scratch, core) = fixture();
+        seed_workspace(&core, false);
+        let core = std::sync::Arc::new(core);
+        core.db.lock().unwrap().execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,model,effort,provider_session_id) VALUES('effort-chat','w','codex','Chat','idle','estimated','direct','stub-standard','high','native-thread')", [],
+        ).unwrap();
+        core.adapters.lock().unwrap().insert("effort-chat".into(), Box::new(RecordingRuntime {
+            interrupted: Default::default(), usage_requested: Default::default(),
+        }));
+        assert!(crate::api::update_chat_model(&core, "effort-chat", &Harness::Codex, Some("stub-standard"), Some("invalid")).is_err());
+        assert!(core.adapters.lock().unwrap().contains_key("effort-chat"));
+        crate::api::update_chat_model(&core, "effort-chat", &Harness::Codex, Some("stub-standard"), Some("high")).unwrap();
+        assert!(core.adapters.lock().unwrap().contains_key("effort-chat"), "same effort must not restart");
+        crate::api::update_chat_model(&core, "effort-chat", &Harness::Codex, Some("stub-standard"), Some("ultra")).unwrap();
+        assert!(!core.adapters.lock().unwrap().contains_key("effort-chat"));
+        let (effort, provider): (String, String) = core.db.lock().unwrap().query_row(
+            "SELECT effort,provider_session_id FROM sessions WHERE id='effort-chat'", [], |row| Ok((row.get(0)?,row.get(1)?)),
+        ).unwrap();
+        assert_eq!(effort, "ultra");
+        assert_eq!(provider, "native-thread");
+        crate::api::update_chat_model(&core, "effort-chat", &Harness::Codex, Some("stub-fast"), None).unwrap();
+        let effort: Option<String> = core.db.lock().unwrap().query_row("SELECT effort FROM sessions WHERE id='effort-chat'", [], |row| row.get(0)).unwrap();
+        assert!(effort.is_none(), "switching to a model without thinking support clears effort");
     }
 
     /// A live adapter runtime that records control calls.

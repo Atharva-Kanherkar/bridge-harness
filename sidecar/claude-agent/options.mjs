@@ -61,3 +61,8 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
     ...authority,
   };
 }
+
+// Discovery needs model metadata only, not a project's hooks, plugins or MCP startup.
+export function catalogOptions() {
+  return { settingSources: [], strictMcpConfig: true, mcpServers: {}, plugins: [], tools: [] };
+}

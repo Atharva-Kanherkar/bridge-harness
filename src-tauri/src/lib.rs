@@ -9,7 +9,6 @@ pub mod menu;
 pub mod window_chrome;
 
 use bridge_core::api;
-use bridge_core::delegation;
 use bridge_core::managed_agents;
 use bridge_core::live_turn;
 use bridge_core::work_observation;
@@ -1105,14 +1104,14 @@ async fn update_chat_model(
     session_id: String,
     harness: Harness,
     model: Option<String>,
-    effort: Option<delegation::Effort>,
+    effort: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
     // Stopping the old adapter can block on process teardown; run the whole
     // claim -> teardown -> commit window on the blocking pool.
     let core = state.inner().clone();
     blocking("Adapter shutdown", move || {
-        api::update_chat_model(&core, &session_id, &harness, model.as_deref(), effort)
+        api::update_chat_model(&core, &session_id, &harness, model.as_deref(), effort.as_deref())
     })
     .await
 }
@@ -2229,8 +2228,27 @@ mod tests {
 
     #[test]
     fn orchestrator_start_uses_the_persisted_standard_profile() {
-        let registry = adapters::AdapterRegistry::built_in().unwrap();
-        let descriptors = registry.descriptors();
+        struct CatalogSnapshot(AdapterDescriptor);
+        impl adapters::HarnessAdapter for CatalogSnapshot {
+            fn as_any(&self) -> &dyn std::any::Any { self }
+            fn descriptor(&self) -> AdapterDescriptor { self.0.clone() }
+            fn start(&self, _: adapters::StartRequest<'_>) -> Result<adapters::StartedAdapter, BridgeError> {
+                unreachable!("profile selection must not start an adapter")
+            }
+            fn resume(&self, _: adapters::ResumeRequest<'_>) -> Result<adapters::StartedAdapter, BridgeError> {
+                unreachable!("profile selection must not resume an adapter")
+            }
+            fn supports_native_resume(&self) -> bool { false }
+            fn normalize(&self, _: &serde_json::Value) -> Vec<agent::NormalizedEvent> { Vec::new() }
+        }
+
+        // Discovery can replace fallback aliases while profiles are being saved.
+        // This test exercises persistence against one consistent catalogue.
+        let descriptors = adapters::AdapterRegistry::built_in().unwrap().descriptors();
+        let mut registry = adapters::AdapterRegistry::empty();
+        for descriptor in &descriptors {
+            registry.register(Box::new(CatalogSnapshot(descriptor.clone()))).unwrap();
+        }
         let Ok(mut profiles) = model_profiles::recommended_profiles(&descriptors) else {
             // Provider-binary availability is environment-owned. Catalog/profile
             // resolution itself is covered with a deterministic fake catalog.

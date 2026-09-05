@@ -173,6 +173,13 @@ describe("deferred new-chat creation (#350)", () => {
     await act(async () => opus!.click());
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
 
+    const chosenModel = [...container.querySelectorAll<HTMLButtonElement>("button")]
+      .find(button => (button.getAttribute("aria-label") ?? "").startsWith("Chat model:"))!;
+    await act(async () => chosenModel.click());
+    const max = container.querySelector<HTMLButtonElement>('[data-effort="max"]')!;
+    expect(max, "thinking can be selected before the first message").toBeTruthy();
+    await act(async () => max.click());
+
     const composer = composerField();
     await type(composer!, "with opus please");
     await act(async () => pressEnter(composer!));
@@ -182,6 +189,7 @@ describe("deferred new-chat creation (#350)", () => {
     // updateChatModel since create_workspace_session takes no model).
     const call = updateModel.mock.calls.find(c => c[1] === "claude" && c[2] === "opus");
     expect(call, "the draft's chosen harness/model was applied").toBeTruthy();
+    expect(call?.[3]).toBe("max");
   });
 
   it("the worktree decision is held on the draft and applied on submit, not on toggle", async () => {

@@ -40,38 +40,86 @@ pub const DEFAULT_MODEL: &str = "sonnet";
 pub fn discover_models() -> Result<Vec<crate::adapters::DiscoveredModel>, BridgeError> {
     let node = binary::resolve("node").ok_or_else(|| BridgeError::Invalid("Node.js is required to discover Claude models".into()))?;
     let sidecar = sidecar_entry()?;
-    let output = Command::new(node).arg(sidecar).arg(serde_json::json!({ "catalog": true, "cwd": "." }).to_string())
-        .env_remove("NODE_OPTIONS").output()
+    let mut command = Command::new(node);
+    command.arg(sidecar).arg(serde_json::json!({ "catalog": true }).to_string())
+        .env_remove("NODE_OPTIONS").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
+    configure_sdk_environment(&mut command);
+    crate::adapters::configure_process_group(&mut command);
+    let mut child = command.spawn()
         .map_err(|error| BridgeError::Adapter(format!("Cannot query Claude model catalogue: {error}")))?;
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
+    let stdout = child.stdout.take().expect("catalogue stdout is piped");
+    let (send, receive) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        use std::io::Read;
+        let mut output = String::new();
+        let result = stdout.take(512 * 1024).read_to_string(&mut output).map(|_| output);
+        let _ = send.send(result);
+    });
+    let result = receive.recv_timeout(std::time::Duration::from_secs(15));
+    // Also cleans up the SDK child on success or a malformed/oversized response.
+    crate::adapters::terminate_process_group(child.id());
+    let _ = child.kill();
+    let _ = child.wait();
+    let output = result.map_err(|_| BridgeError::Adapter("Claude model discovery timed out after 15 seconds".into()))??;
+    parse_discovered_models(&output)
+}
+
+fn parse_discovered_models(output: &str) -> Result<Vec<crate::adapters::DiscoveredModel>, BridgeError> {
+    for line in output.lines() {
         let Ok(value) = serde_json::from_str::<Value>(line) else { continue };
         let Some(models) = value.get("models").and_then(Value::as_array) else { continue };
         let found = models.iter().filter_map(|model| {
-            let id = model.get("value")?.as_str()?.trim();
-            let label = model.get("displayName").and_then(Value::as_str).unwrap_or(id).trim();
+            let alias = model.get("value")?.as_str()?.trim();
+            let id = model.get("resolvedModel").and_then(Value::as_str)
+                .map(str::trim).filter(|id| !id.is_empty()).unwrap_or(alias);
+            let display = model.get("displayName").and_then(Value::as_str).unwrap_or(id).trim();
+            let description_name = model.get("description").and_then(Value::as_str)
+                .and_then(|description| description.split(" · ").next())
+                .filter(|name| ["Opus ", "Sonnet ", "Haiku ", "Fable "].iter().any(|prefix| name.starts_with(prefix))
+                    && name.chars().any(|character| character.is_ascii_digit()));
+            let label = description_name.unwrap_or(display);
             // Absent or empty supportedEffortLevels means no effort knob (e.g.
             // haiku); the picker then hides the effort control for the model.
-            let supported_effort_levels = model.get("supportedEffortLevels")
+            let mut supported_effort_levels: Vec<String> = model.get("supportedEffortLevels")
                 .and_then(Value::as_array)
                 .map(|levels| levels.iter().filter_map(|level| {
                     level.as_str().map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned)
                 }).collect::<Vec<_>>())
                 .unwrap_or_default();
+            if model.get("supportsEffort").and_then(Value::as_bool) == Some(false) { supported_effort_levels.clear(); }
             // "default" is the CLI's alias for whatever it currently prefers,
             // not a model; Bridge tracks its own per-tier defaults instead.
             (!id.is_empty() && !label.is_empty() && id != "default").then(|| crate::adapters::DiscoveredModel {
                 id: id.to_owned(),
                 label: label.to_owned(),
-                // Claude's supportedModels() carries no per-model default flag;
-                // the "default" alias is filtered above, so Bridge's curated
-                // per-tier defaults stay authoritative.
-                is_default: false,
+                // Canonicalizing the default alias preserves provider preference.
+                is_default: alias == "default",
                 supported_effort_levels,
             })
         }).collect::<Vec<_>>();
         if !found.is_empty() { return Ok(found); }
     }
     Err(BridgeError::Adapter("Claude returned no model catalogue".into()))
+}
+
+fn configure_sdk_environment(command: &mut Command) {
+    match managed_sdk_module() {
+        Some(module) => {
+            command.env("BRIDGE_CLAUDE_SDK_ENTRY", module);
+        }
+        None => {
+            command.env_remove("BRIDGE_CLAUDE_SDK_ENTRY");
+        }
+    }
+    if let Some(cache_dir) = NODE_COMPILE_CACHE_ROOT
+        .read()
+        .expect("the node compile cache root lock is never poisoned")
+        .clone()
+    {
+        if std::fs::create_dir_all(&cache_dir).is_ok() {
+            command.env("NODE_COMPILE_CACHE", &cache_dir);
+        }
+    }
 }
 
 pub struct ClaudeRuntime {
@@ -215,14 +263,7 @@ fn launch(
     // also cleared when there is no managed payload, so a stale value inherited
     // from the environment can never point the sidecar at something Bridge does
     // not own.
-    match managed_sdk_module() {
-        Some(module) => {
-            command.env("BRIDGE_CLAUDE_SDK_ENTRY", module);
-        }
-        None => {
-            command.env_remove("BRIDGE_CLAUDE_SDK_ENTRY");
-        }
-    }
+    configure_sdk_environment(&mut command);
     if let Some(sandbox) = read_only_sandbox {
         let config_dir = prepare_isolated_claude_config(sandbox)?;
         command
@@ -247,17 +288,6 @@ fn launch(
     // Reasoning effort is passed to the SDK natively through the sidecar config
     // (Options.effort) rather than the deprecated MAX_THINKING_TOKENS budget, so
     // every level — low and medium included — reaches the model.
-    // Best effort: warms SDK module load across launches on Node 22+. A cache
-    // directory we cannot create just means the sidecar boots without it.
-    if let Some(cache_dir) = NODE_COMPILE_CACHE_ROOT
-        .read()
-        .expect("the node compile cache root lock is never poisoned")
-        .clone()
-    {
-        if std::fs::create_dir_all(&cache_dir).is_ok() {
-            command.env("NODE_COMPILE_CACHE", &cache_dir);
-        }
-    }
     crate::adapters::configure_process_group(&mut command);
     if let Some(on_progress) = on_progress {
         on_progress(crate::adapters::StartupPhase::Spawning);
@@ -1297,5 +1327,32 @@ mod briefing_boundary_tests {
         for expected in ["Bash", "Read", "Write", "WebFetch", "Task", "Skill"] {
             assert!(denied.contains(&expected), "{expected} must be denied explicitly");
         }
+    }
+}
+
+#[cfg(test)]
+mod catalogue_tests {
+    use super::*;
+    #[test]
+    fn canonical_ids_collapse_aliases_and_preserve_distinct_releases() {
+        let models = parse_discovered_models(&serde_json::from_str::<Value>(r#"{"models":[
+            {"value":"default","resolvedModel":"claude-opus-5","displayName":"Default (recommended)","description":"Opus 5 · Best for complex tasks","supportedEffortLevels":["high","max"]},
+            {"value":"claude-opus-5","displayName":"Opus 5","supportedEffortLevels":["high","max"]},
+            {"value":"claude-opus-4-8","displayName":"Opus 4.8"},
+            {"value":"haiku","displayName":"Haiku","supportsEffort":false,"supportedEffortLevels":["high"]}
+        ]}"#).unwrap().to_string()).unwrap();
+        assert_eq!(models[0].id, models[1].id);
+        assert_eq!(models[0].label, "Opus 5");
+        assert!(models[0].is_default);
+        assert_ne!(models[0].id, models[2].id);
+        assert_eq!(models[0].supported_effort_levels, ["high", "max"]);
+        assert!(models[3].supported_effort_levels.is_empty());
+    }
+    #[test]
+    fn ignores_malformed_rows_and_unresolved_default() {
+        let models = parse_discovered_models("{\"models\":[{}, {\"value\":\"default\"}, {\"value\":\"sonnet\",\"displayName\":\"Sonnet\"}]}" ).unwrap();
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "sonnet");
+        assert!(parse_discovered_models("not json").is_err());
     }
 }

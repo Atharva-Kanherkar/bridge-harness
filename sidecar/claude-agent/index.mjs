@@ -18,7 +18,7 @@
 
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
-import { buildOptions } from "./options.mjs";
+import { buildOptions, catalogOptions } from "./options.mjs";
 import { userContentBlocks } from "./input.mjs";
 
 // Which copy of the Agent SDK to load.
@@ -83,7 +83,7 @@ function userMessage(content) {
   };
 }
 
-const options = buildOptions(config);
+const options = config.catalog === true ? catalogOptions() : buildOptions(config);
 
 const run = query({ prompt: input, options });
 
@@ -94,7 +94,7 @@ if (config.catalog === true) {
   try {
     const models = await run.supportedModels();
     process.stdout.write(JSON.stringify({ type: "model_catalog", models }) + "\n");
-    await run.interrupt().catch(() => {});
+    run.close();
     process.exit(0);
   } catch (error) {
     fail(`Claude model catalogue error: ${error?.message ?? error}`);

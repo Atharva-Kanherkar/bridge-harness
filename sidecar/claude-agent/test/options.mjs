@@ -93,3 +93,9 @@ test("full and default modes intentionally enable permission bypass", () => {
     });
   }
 });
+
+
+test("catalogue discovery does not start project integrations", async () => {
+  const { catalogOptions } = await import("../options.mjs");
+  assert.deepEqual(catalogOptions(), { settingSources: [], strictMcpConfig: true, mcpServers: {}, plugins: [], tools: [] });
+});

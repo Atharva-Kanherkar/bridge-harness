@@ -19,12 +19,6 @@ function effortLabel(value: string): string {
   return EFFORT_LABELS[value] ?? value.charAt(0).toUpperCase() + value.slice(1);
 }
 
-// Fallback effort ladder for a provider whose catalog reports no per-model
-// effort levels — the fixed list Bridge showed before discovery carried them.
-const EFFORT_OPTIONS: { value: string; label: string }[] = ["low", "medium", "high", "xhigh"].map(
-  value => ({ value, label: effortLabel(value) }),
-);
-
 // Vendor noise at the tail of a catalog label. OpenCode Zen's free tier
 // suffixes "(Unlimited)": it names the plan, not the model. Cursor reports a
 // model whose variant brackets came through empty ("default[]"), which read as
@@ -82,6 +76,8 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [refreshing, setRefreshing] = useState(false);
+  const [refreshError, setRefreshError] = useState<string | null>(null);
+  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
   // Escape closes the picker and nothing else. Captured on window so it wins
   // against modal hosts with their own window-level Escape (the aside panel
   // closes itself on Escape — without this, dismissing the picker tore down
@@ -102,7 +98,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   // require another frontend provider-name allowlist.
   const chatAdapters = adapters.filter(adapter => adapter.capabilities.includes("messages") || adapter.models.length > 0);
   const current = chatAdapters.find(adapter => adapter.id === harness);
-  const currentModel = current?.models.find(option => option.id === model) ?? current?.models.find(option => option.defaultForTier) ?? current?.models[0];
+  const currentModel = current?.models.find(option => option.id === (model ?? current.defaultModel));
   const modelLabel = cleanModelLabel(currentModel?.label ?? model ?? "Default");
   // Some catalogs bake the provider into the model label ("OpenCode Go ·
   // MiMo V2.5"), and prefixing the harness again read as a stutter:
@@ -112,21 +108,9 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   const compactLabel = modelLabel.toLowerCase().startsWith(harnessName.toLowerCase())
     ? modelLabel
     : `${harnessName} · ${modelLabel}`;
-  // Per-model effort. When the adapter's catalog reports effort levels for any
-  // model, trust it per model: offer the selected model's levels, and treat a
-  // model with none (e.g. Claude Haiku) as having no effort knob. When no model
-  // reports levels (a provider discovery that predates the field, or a curated
-  // fallback), keep the fixed ladder so nothing regresses.
-  const adapterReportsEffort = current?.models.some(option => (option.supportedEffortLevels?.length ?? 0) > 0) ?? false;
-  const modelEffortLevels = currentModel?.supportedEffortLevels ?? [];
-  const effortOptions = modelEffortLevels.length
-    ? modelEffortLevels.map(value => ({ value, label: effortLabel(value) }))
-    : EFFORT_OPTIONS;
-  const modelSupportsEffort = adapterReportsEffort ? modelEffortLevels.length > 0 : true;
-  // Effort has a home in the footer whenever the selected model takes one and
-  // there is an effort to show or a setter to drive it — otherwise the segmented
-  // control would be dead chrome.
-  const showEffort = !!current?.capabilities.includes("reasoning") && modelSupportsEffort && (effort != null || !!onEffortChange);
+  const effortOptions = [...new Set(currentModel?.supportedEffortLevels ?? [])]
+    .map(value => ({ value, label: effortLabel(value) }));
+  const showEffort = effortOptions.length > 0 && (effort != null || !!onEffortChange);
   const q = query.trim().toLowerCase();
   const matchesQuery = (label: string) => !q || cleanModelLabel(label).toLowerCase().includes(q);
   return <div className="relative">
@@ -151,11 +135,13 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
           />
           {onRefresh && <button type="button" disabled={refreshing} aria-label="Refresh model catalogues" title="Refresh model catalogues" onClick={() => {
             setRefreshing(true);
-            Promise.resolve(onRefresh()).finally(() => setRefreshing(false));
+            setRefreshError(null);
+            Promise.resolve().then(onRefresh).catch(() => setRefreshError("Could not refresh models. Try again.")).finally(() => setRefreshing(false));
           }} className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50">
             <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />
           </button>}
         </div>
+        {refreshError && <p role="alert" className="px-3 py-2 text-xs text-destructive">{refreshError}</p>}
         <div role="listbox" aria-label={`${roleLabel} models`} className="min-h-0 flex-1 overflow-y-auto p-1.5">
           {chatAdapters
             .map(adapter => {
@@ -182,7 +168,6 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
                   const selectable = adapter.available && option.available !== false && option.compatible !== false;
                   return <button key={`${adapter.id}:${option.id || "default"}`} type="button" role="option" aria-selected={selected} disabled={!selectable} onClick={() => { onChange(adapter.id as Harness, option.id || null); setOpen(false); }} className={cn("flex h-9 w-full items-center gap-2 rounded-[7px] px-2 text-left transition-colors disabled:opacity-40", selected ? "bg-accent" : "hover:bg-accent", !selectable && "opacity-60")}>
                     <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[12.5px] text-foreground">{cleanModelLabel(option.label)}</span>
-                    <span data-tier={option.tier} className={cn("shrink-0 font-mono text-[10px] uppercase tracking-[0.08em]", option.tier === "strong" ? "text-foreground/70" : option.tier === "standard" ? "text-muted-foreground" : "text-muted-foreground/45")}>{option.tier}</span>
                     {option.lifecycle === "preview" && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[8px] uppercase text-muted-foreground">preview</span>}
                     {selected && <Check size={13} className="shrink-0 text-foreground" aria-hidden="true" />}
                   </button>;
@@ -193,7 +178,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
         {showEffort && (
           <div className="shrink-0 border-t border-border px-3 py-2.5" data-testid="effort-control">
             <div className="flex items-center gap-2">
-              <span className="shrink-0 text-[11px] text-muted-foreground">Effort</span>
+              <span className="shrink-0 text-[11px] text-muted-foreground">Thinking</span>
               <div role="group" aria-label="Reasoning effort" className="u-segmented flex-1">
                 {effortOptions.map(option => {
                   const active = effort === option.value;
@@ -201,7 +186,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
                     key={option.value}
                     type="button"
                     aria-pressed={active}
-                    disabled={!onEffortChange}
+                    disabled={disabled || !onEffortChange}
                     onClick={() => onEffortChange?.(option.value)}
                     data-effort={option.value}
                     data-active={active}

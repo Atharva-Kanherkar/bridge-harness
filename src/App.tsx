@@ -9,7 +9,7 @@ import { bridgeApi } from "./api";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
 import { openExternalUrl } from "./externalLinks";
 import { appendAgentEventBatch, queueAgentEvent as queueAgentEventBatch } from "./agentEvents";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, PermissionPolicy, Project, ReasoningEffort, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
@@ -119,6 +119,7 @@ function StatusDot({ status }: { status: SessionStatus }) {
 // choices made before sending. Harness/model are snapshotted at open time so the
 // carry-over from the current direct chat survives deselecting it.
 type NewChatDraft = {
+  effort?: string;
   harness: Harness;
   model: string | null;
   workspaceId: string | null;
@@ -1099,11 +1100,9 @@ function AppContent() {
         let created = draft.workspaceId
           ? [...next.sessions].reverse().find(s => !s.parentSessionId && s.workspaceId === draft.workspaceId)
           : [...next.sessions].reverse().find(s => !s.parentSessionId && !s.workspaceId);
-        if (created && draft.workspaceId && (created.harness !== draft.harness || (created.model ?? null) !== draft.model)) {
-          try {
-            next = await bridgeApi.updateChatModel(created.id, draft.harness, draft.model);
-            created = next.sessions.find(s => s.id === created!.id) ?? created;
-          } catch { /* keep the orchestrator's default model rather than fail the chat */ }
+        if (created && (draft.effort != null || (draft.workspaceId && (created.harness !== draft.harness || (created.model ?? null) !== draft.model)))) {
+          next = await bridgeApi.updateChatModel(created.id, draft.harness, draft.model, draft.effort);
+          created = next.sessions.find(s => s.id === created!.id) ?? created;
         }
         // Carry before selecting: the welcome-message effect fires on session-id
         // change, and the brief must be in the forest before the first cold start
@@ -1442,7 +1441,7 @@ function AppContent() {
   async function changeChatEffort(effort: string) {
     if (!session) return;
     setBusy(true); setError(undefined);
-    try { setState(await bridgeApi.updateChatModel(session.id, session.harness, session.model ?? null, effort as ReasoningEffort)); }
+    try { setState(await bridgeApi.updateChatModel(session.id, session.harness, session.model ?? null, effort)); }
     catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); }
   }
@@ -2147,6 +2146,9 @@ function AppContent() {
                 throw e;
               }
             }}
+            onChangeEffort={async effort => {
+              setState(await bridgeApi.updateChatModel(asideSession.id, asideSession.harness, asideSession.model ?? null, effort));
+            }}
             onChangeModel={async (harness, model) => {
               // Same path the main chat's control uses, bound to the aside
               // session so the switch never touches the chat underneath —
@@ -2429,10 +2431,16 @@ function AppContent() {
         adapters={adapters}
         harness={(newChatDraft ?? resolveDraftHarnessModel()).harness}
         model={(newChatDraft ?? resolveDraftHarnessModel()).model}
+        effort={newChatDraft?.effort}
+        onSelectEffort={effort => setNewChatDraft(current => ({
+          ...(current ?? { ...resolveDraftHarnessModel(), workspaceId: resolvedWelcomeWorkspaceId, createWorktree: false }),
+          effort,
+        }))}
         onSelectModel={(harness, model) => setNewChatDraft(current => ({
           ...(current ?? { workspaceId: resolvedWelcomeWorkspaceId, createWorktree: false }),
           harness,
           model,
+          effort: undefined,
         }))}
         canStartChat={adaptersReady}
         busy={busy}
@@ -2527,10 +2535,12 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
   </aside>;
 }
 
-function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, onStartChat, onNewWorkspace, workspaces, workspace, projectName, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree }: {
+function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, onNewWorkspace, workspaces, workspace, projectName, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree }: {
   adapters: import("./types").AdapterDescriptor[];
   harness: Harness;
   model: string | null;
+  effort?: string;
+  onSelectEffort: (effort: string) => void;
   onSelectModel: (harness: Harness, model: string | null) => void;
   busy: boolean;
   canStartChat: boolean;
@@ -2613,7 +2623,7 @@ function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, 
       onPlusClick={onNewWorkspace}
       // The unstarted draft is a real chat-in-waiting: let the model be chosen
       // before the first message, the same picker the session composer uses.
-      modelControl={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
+      modelControl={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} onEffortChange={onSelectEffort} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
       footer={workspaces.length > 0 ? <ComposerContextStrip
         workspaces={workspaces}
         workspace={workspace}
