@@ -8,7 +8,7 @@ const markup = (harness?: string | null, live = false) =>
 
 describe("HarnessMark", () => {
   it("gives each built-in harness its own figure", () => {
-    const drawn = ["claude", "codex", "opencode", "cursor"].map(markup);
+    const drawn = ["claude", "codex", "opencode", "cursor"].map(harness => markup(harness));
     for (const [index, harness] of ["claude", "codex", "opencode", "cursor"].entries()) {
       expect(drawn[index]).toContain(`data-harness="${harness}"`);
     }
