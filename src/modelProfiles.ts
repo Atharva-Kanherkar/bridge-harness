@@ -5,6 +5,15 @@ export const profilePurposes: ProfilePurpose[] = [
   "reviewer", "research", "documentation", "evaluator",
 ];
 
+// The orchestrator is the model the user talks to, so it is chosen directly
+// from the provider's live catalog rather than routed by a capability tier.
+// Worker roles keep the fast/standard/strong tiers.
+const orchestratorPurposes: ProfilePurpose[] = ["standard_orchestrator", "premium_orchestrator"];
+
+export function isOrchestratorPurpose(purpose: ProfilePurpose): boolean {
+  return orchestratorPurposes.includes(purpose);
+}
+
 export const profileLabels: Record<ProfilePurpose, string> = {
   standard_orchestrator: "Standard orchestrator",
   premium_orchestrator: "Premium orchestrator",
@@ -68,15 +77,17 @@ export function recommendedProfileDrafts(adapters: AdapterDescriptor[]): ModelPr
     const selected = options.find(option => option.model.tier === tier && option.model.defaultForTier)
       ?? options.find(option => option.model.tier === tier);
     if (!selected) throw new Error(`No available ${tier} model for ${profileLabels[purpose]}`);
+    const orchestrator = isOrchestratorPurpose(purpose);
     return {
       purpose,
       provider: selected.adapter.id,
       model: selected.model.id,
       effort: purposeEffort[purpose],
       fallbackPurpose: purposeFallback[purpose],
-      selectionMode: "track_standard",
-      pinned: false,
-      learningEnabled: true,
+      // The orchestrator is a direct, pinned user choice; workers track their tier.
+      selectionMode: orchestrator ? "pinned" : "track_standard",
+      pinned: orchestrator,
+      learningEnabled: !orchestrator,
       budgetPreference: null,
       latencyPreference: null,
     };

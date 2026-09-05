@@ -56,6 +56,26 @@ describe("adaptive setup surfaces", () => {
     expect(html).not.toContain("Unsupported");
   });
 
+  it("gives the orchestrator a tier-free direct picker and keeps tiers for workers", () => {
+    const drafts = recommendedProfileDrafts(adapters);
+    // The orchestrator is the user's own model: a directly-chosen, pinned model.
+    for (const purpose of ["standard_orchestrator", "premium_orchestrator"] as const) {
+      const draft = drafts.find(profile => profile.purpose === purpose)!;
+      expect(draft.selectionMode).toBe("pinned");
+      expect(draft.pinned).toBe(true);
+      expect(draft.learningEnabled).toBe(false);
+    }
+    // Delegated workers still track their capability tier.
+    expect(drafts.find(profile => profile.purpose === "implementer")!.selectionMode).toBe("track_standard");
+
+    const html = renderToStaticMarkup(<ModelProfileEditor profiles={drafts} adapters={adapters} onChange={() => undefined} />);
+    expect(html).toContain("Orchestrator model");
+    expect(html).toContain("Worker roles");
+    expect(html).toContain("Thinking");            // orchestrator's tier-free effort control
+    expect(html).toContain("Reasoning effort");     // worker rows keep the tier editor
+    expect(html).toContain("Track standard");       // ...including tier-tracking behavior
+  });
+
   it("explains the single local runner and truthful provider limitations", () => {
     const html = renderToStaticMarkup(<RouterSettingsDialog open workspaceId="workspace" adapters={adapters} onClose={() => undefined} onError={() => undefined} />);
     expect(html).toContain("Run learning now");

@@ -75,10 +75,9 @@ describe("model profile catalog helpers", () => {
     const refreshed = structuredClone(adapters);
     refreshed[0].models.find(model => model.id === "balanced")!.defaultForTier = false;
     refreshed[0].models.push({ id: "balanced-v2", label: "Balanced v2", tier: "standard", defaultForTier: true, available: true, compatible: true, lifecycle: "stable", source: "runtime_api" });
-    expect(resolveProfileOption("standard_orchestrator", setup, refreshed)?.value).toBe("catalog:balanced-v2");
-    const pinned = setup.profiles.find(profile => profile.purpose === "standard_orchestrator")!;
-    pinned.selectionMode = "pinned";
-    pinned.pinned = true;
+    // A tracking worker (standard tier) follows the newly promoted default.
+    expect(resolveProfileOption("implementer", setup, refreshed)?.value).toBe("catalog:balanced-v2");
+    // The orchestrator is pinned by default, so it holds its exact model across promotion.
     expect(resolveProfileOption("standard_orchestrator", setup, refreshed)?.value).toBe("catalog:balanced");
   });
 

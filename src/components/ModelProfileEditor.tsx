@@ -1,7 +1,22 @@
 import type { AdapterDescriptor, ModelProfileDraft, ProfilePurpose, ReasoningEffort } from "../types";
-import { availableModelOptions, profileLabels, profilePurposes } from "../modelProfiles";
+import { availableModelOptions, isOrchestratorPurpose, profileLabels, profilePurposes } from "../modelProfiles";
 
 const fieldClass = "h-9 w-full min-w-0 rounded-xl border border-input bg-card px-3 text-xs text-foreground transition-colors disabled:opacity-45";
+
+// The reasoning-effort values Bridge can persist (the wire `Effort` enum). A
+// provider may advertise more exotic labels; the orchestrator picker offers the
+// intersection so "Thinking" only ever shows a level the backend accepts.
+const KNOWN_EFFORTS: ReasoningEffort[] = ["low", "medium", "high", "xhigh"];
+
+/** Thinking levels to offer for a model: the provider's own supported set,
+ *  narrowed to what Bridge can store, or the full set when it advertises none. */
+function effortOptions(model: { supportedEffortLevels?: string[] } | undefined, current: ReasoningEffort): ReasoningEffort[] {
+  const advertised = (model?.supportedEffortLevels ?? []).filter((level): level is ReasoningEffort => (KNOWN_EFFORTS as string[]).includes(level));
+  const base = advertised.length ? [...new Set(advertised)] : KNOWN_EFFORTS;
+  // Never drop the currently-selected level, or the control would silently
+  // desync from the saved profile.
+  return base.includes(current) ? base : [...base, current];
+}
 
 export function ModelProfileEditor({ profiles, adapters, disabled, onChange }: {
   profiles: ModelProfileDraft[];
@@ -11,9 +26,45 @@ export function ModelProfileEditor({ profiles, adapters, disabled, onChange }: {
 }) {
   const options = availableModelOptions(adapters);
   const update = (purpose: ProfilePurpose, patch: Partial<ModelProfileDraft>) => onChange(profiles.map(profile => profile.purpose === purpose ? { ...profile, ...patch } : profile));
-  return <div className="space-y-3">
+  const orchestrators = profiles.filter(profile => isOrchestratorPurpose(profile.purpose));
+  const workers = profiles.filter(profile => !isOrchestratorPurpose(profile.purpose));
+  return <div className="space-y-6">
     {adapters.filter(adapter => adapter.modelCatalog?.stale || adapter.modelCatalog?.lastError).map(adapter => <div key={adapter.id} className="rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-[10px] text-muted-foreground"><span className="font-medium text-foreground">{adapter.label} catalog:</span> {adapter.modelCatalog?.source === "last_known_good" ? "using last-known-good models" : "using curated fallback"}{adapter.modelCatalog?.lastError ? ` · ${adapter.modelCatalog.lastError}` : ""}</div>)}
-    {profiles.map(profile => {
+
+    {/* Orchestrator: the model the user talks to. A direct choice from whatever
+        the provider exposes — no fast/standard/strong tier in sight. */}
+    <section className="space-y-3">
+      <div>
+        <h3 className="text-sm font-medium text-foreground">Orchestrator model</h3>
+        <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">The model you talk to. Pick any model your providers expose and set how hard it thinks. Bridge still routes the workers it delegates to by capability tier below.</p>
+      </div>
+      {orchestrators.map(profile => {
+        const selected = options.find(option => option.value === `${profile.provider}:${profile.model}`);
+        return <section key={profile.purpose} className="rounded-2xl border border-border bg-muted/50 p-3.5">
+          <h4 className="mb-3 text-sm font-medium text-foreground">{profileLabels[profile.purpose]}</h4>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="space-y-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Model
+              <select className={fieldClass} value={`${profile.provider}:${profile.model}`} disabled={disabled} onChange={event => { const option = options.find(candidate => candidate.value === event.target.value); if (option) update(profile.purpose, { provider: option.adapter.id, model: option.model.id, selectionMode: "pinned", pinned: true, learningEnabled: false }); }}>
+                {options.map(option => <option key={option.value} value={option.value}>{option.adapter.label} · {option.model.label}</option>)}
+              </select>
+            </label>
+            <label className="space-y-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Thinking
+              <select className={fieldClass} value={profile.effort} disabled={disabled} onChange={event => update(profile.purpose, { effort: event.target.value as ReasoningEffort })}>
+                {effortOptions(selected?.model, profile.effort).map(effort => <option key={effort} value={effort}>{effort}</option>)}
+              </select>
+            </label>
+          </div>
+        </section>;
+      })}
+    </section>
+
+    {/* Worker roles: delegated agents, routed by capability tier. */}
+    <section className="space-y-3">
+      <div>
+        <h3 className="text-sm font-medium text-foreground">Worker roles</h3>
+        <p className="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">Agents the orchestrator delegates to. Each tracks the standard model for its capability tier, or you can pin a specific one.</p>
+      </div>
+      {workers.map(profile => {
       const selectionMode = profile.selectionMode ?? (profile.pinned ? "pinned" : "track_standard");
       return <section key={profile.purpose} className="rounded-2xl border border-border bg-muted/50 p-3.5">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
@@ -47,5 +98,6 @@ export function ModelProfileEditor({ profiles, adapters, disabled, onChange }: {
         </label>
       </div>
     </section>;})}
+    </section>
   </div>;
 }
