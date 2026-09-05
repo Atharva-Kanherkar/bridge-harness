@@ -59,6 +59,34 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedCodex, BridgeError> {
     )
 }
 
+pub fn discover_models() -> Result<Vec<(String, String)>, BridgeError> {
+    let binary = resolve_runtime().ok_or_else(|| BridgeError::Invalid("Codex binary is not installed".into()))?;
+    let mut child = Command::new(binary).args(["app-server", "--listen", "stdio://"])
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?;
+    let stdin = child.stdin.take().ok_or_else(|| BridgeError::Adapter("Codex catalogue stdin unavailable".into()))?;
+    let stdout = child.stdout.take().ok_or_else(|| BridgeError::Adapter("Codex catalogue stdout unavailable".into()))?;
+    let writer = Arc::new(Mutex::new(stdin));
+    let mut reader = BufReader::new(stdout);
+    let result = (|| {
+        write_value(&writer, &json!({"method":"initialize","id":1,"params":{"clientInfo":{"name":"bridge","title":"Bridge","version":env!("CARGO_PKG_VERSION")},"capabilities":{"experimentalApi":false}}}))?;
+        wait_for_response(&mut reader, 1)?;
+        write_value(&writer, &json!({"method":"initialized"}))?;
+        write_value(&writer, &json!({"method":"model/list","id":2,"params":{}}))?;
+        let (response, _) = wait_for_response(&mut reader, 2)?;
+        let rows = response.pointer("/result/data").or_else(|| response.pointer("/result/models")).and_then(Value::as_array)
+            .ok_or_else(|| BridgeError::Adapter("Codex returned no model catalogue".into()))?;
+        let models = rows.iter().filter_map(|row| {
+            let id = row.get("id").or_else(|| row.get("model")).and_then(Value::as_str)?.trim();
+            let label = row.get("displayName").or_else(|| row.get("name")).and_then(Value::as_str).unwrap_or(id).trim();
+            (!id.is_empty() && !label.is_empty()).then(|| (id.to_owned(), label.to_owned()))
+        }).collect::<Vec<_>>();
+        if models.is_empty() { Err(BridgeError::Adapter("Codex returned an empty model catalogue".into())) } else { Ok(models) }
+    })();
+    let _ = child.kill();
+    let _ = child.wait();
+    result
+}
+
 fn launch(
     request: StartRequest<'_>,
     resume_thread_id: Option<&str>,

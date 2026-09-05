@@ -33,6 +33,7 @@ pub fn dispatch(
 
     match method {
         MethodName::Health => reply(api::health(core)),
+        MethodName::RefreshModelCatalogs => reply(api::refresh_model_catalogs(core)),
         MethodName::GetState => reply(api::get_state(core)),
 
         MethodName::GithubStatus => {
@@ -221,7 +222,13 @@ pub fn dispatch(
         }
         MethodName::UpdateChatModel => {
             let p: wire::UpdateChatModelParams = decode(method, params)?;
-            reply(api::update_chat_model(core, &p.session_id, &p.harness.into(), p.model.as_deref()))
+            let effort = p.effort.map(|effort| match effort {
+                wire::Effort::Low => bridge_core::delegation::Effort::Low,
+                wire::Effort::Medium => bridge_core::delegation::Effort::Medium,
+                wire::Effort::High => bridge_core::delegation::Effort::High,
+                wire::Effort::Xhigh => bridge_core::delegation::Effort::Xhigh,
+            });
+            reply(api::update_chat_model(core, &p.session_id, &p.harness.into(), p.model.as_deref(), effort))
         }
         MethodName::CarrySessionHandoff => {
             let p: wire::CarrySessionHandoffParams = decode(method, params)?;

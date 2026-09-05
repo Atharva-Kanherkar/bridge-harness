@@ -83,6 +83,11 @@ pub fn health(core: &Arc<BridgeCore>) -> Result<Health, BridgeError> {
     })
 }
 
+pub fn refresh_model_catalogs(core: &Arc<BridgeCore>) -> Result<Health, BridgeError> {
+    core.adapter_registry.refresh_model_catalogs();
+    health(core)
+}
+
 pub fn get_state(core: &Arc<BridgeCore>) -> Result<BridgeState, BridgeError> {
     core.state_snapshot()
 }
@@ -1041,23 +1046,29 @@ pub fn update_chat_model(
     session_id: &str,
     harness: &Harness,
     model: Option<&str>,
+    effort: Option<crate::delegation::Effort>,
 ) -> Result<BridgeState, BridgeError> {
     // Exclusive for the whole plan -> teardown -> commit window: a concurrent
     // start would otherwise slip in after teardown and be orphaned by the
     // commit clearing its process and turn state.
     let _lifecycle = core.claim_session_lifecycle(session_id, "model switch")?;
-    let Some(change) = core.plan_chat_model_change(session_id, harness, model)? else {
-        return core.state_snapshot();
-    };
-    summarise_for_switch(core, session_id);
-    core.stop_session_adapter(session_id, adapters::ShutdownReason::Replaced);
-    // The summary turn wrote `active_turn_id` asynchronously and its
-    // `turn.completed` may be dead with the adapter; settle that residue so
-    // the commit's revision check sees the idle row the plan verified instead
-    // of failing the switch against its own summary turn.
-    core.settle_adapterless_turn_state(session_id, std::time::Duration::from_secs(3))?;
-    // The core publishes the durable agent event when the commit lands.
-    core.commit_chat_model_change(change)?;
+    let change = core.plan_chat_model_change(session_id, harness, model)?;
+    if let Some(change) = change {
+        summarise_for_switch(core, session_id);
+        core.stop_session_adapter(session_id, adapters::ShutdownReason::Replaced);
+        // The summary turn wrote `active_turn_id` asynchronously and its
+        // `turn.completed` may be dead with the adapter; settle that residue so
+        // the commit's revision check sees the idle row the plan verified instead
+        // of failing the switch against its own summary turn.
+        core.settle_adapterless_turn_state(session_id, std::time::Duration::from_secs(3))?;
+        core.commit_chat_model_change(change)?;
+    }
+    if let Some(effort) = effort {
+        core.db.lock().unwrap().execute(
+            "UPDATE sessions SET effort=?2 WHERE id=?1 AND active_turn_id IS NULL",
+            rusqlite::params![session_id, effort.as_str()],
+        )?;
+    }
     core.state_snapshot()
 }
 

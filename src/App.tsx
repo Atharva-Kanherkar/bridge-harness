@@ -9,7 +9,7 @@ import { bridgeApi } from "./api";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
 import { openExternalUrl } from "./externalLinks";
 import { appendAgentEventBatch, queueAgentEvent as queueAgentEventBatch } from "./agentEvents";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, PermissionPolicy, Project, ReasoningEffort, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
@@ -1439,6 +1439,13 @@ function AppContent() {
     catch (e) { setError(errorMessage(e)); }
     finally { setBusy(false); setModelSwitch(null); }
   }
+  async function changeChatEffort(effort: string) {
+    if (!session) return;
+    setBusy(true); setError(undefined);
+    try { setState(await bridgeApi.updateChatModel(session.id, session.harness, session.model ?? null, effort as ReasoningEffort)); }
+    catch (e) { setError(errorMessage(e)); }
+    finally { setBusy(false); }
+  }
   async function connectNewWorkspaceFolder(value: string) {
     setBusy(true); setError(undefined);
     try {
@@ -2342,7 +2349,7 @@ function AppContent() {
                     plusIcon="paperclip"
                     leading={usageRing}
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"
-                      ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} />
+                      ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
                     footer={<ComposerContextStrip
                       workspaces={state.workspaces}
@@ -2606,7 +2613,7 @@ function Welcome({ adapters, harness, model, onSelectModel, busy, canStartChat, 
       onPlusClick={onNewWorkspace}
       // The unstarted draft is a real chat-in-waiting: let the model be chosen
       // before the first message, the same picker the session composer uses.
-      modelControl={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} compact roleLabel="Chat" />}
+      modelControl={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
       footer={workspaces.length > 0 ? <ComposerContextStrip
         workspaces={workspaces}
         workspace={workspace}

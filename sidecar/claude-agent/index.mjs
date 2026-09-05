@@ -87,6 +87,20 @@ const options = buildOptions(config);
 
 const run = query({ prompt: input, options });
 
+// Catalogue discovery is a short-lived control-plane request. It uses the
+// installed SDK/CLI itself, so new provider releases appear without a Bridge
+// code change. No user turn is submitted and the normal stream pump is skipped.
+if (config.catalog === true) {
+  try {
+    const models = await run.supportedModels();
+    process.stdout.write(JSON.stringify({ type: "model_catalog", models }) + "\n");
+    await run.interrupt().catch(() => {});
+    process.exit(0);
+  } catch (error) {
+    fail(`Claude model catalogue error: ${error?.message ?? error}`);
+  }
+}
+
 // Control frames from Rust.
 const rl = createInterface({ input: process.stdin });
 rl.on("line", (line) => {

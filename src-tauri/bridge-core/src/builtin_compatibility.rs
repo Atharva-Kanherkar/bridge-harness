@@ -133,8 +133,8 @@ const BUILT_IN_AGENTS: &[BuiltInAgentContract] = &[
         native_resume: NativeResumeContract::WhenRuntimeAvailable,
         capabilities: CLAUDE_CAPABILITIES,
         sandbox_modes: ALL_SANDBOXES,
-        model_source: ModelSource::Static,
-        model_ids: &["haiku", "sonnet", "fable", "opus"],
+        model_source: ModelSource::RuntimeCatalog,
+        model_ids: &[],
         default_model_id: Some("sonnet"),
     },
     BuiltInAgentContract {
@@ -146,13 +146,8 @@ const BUILT_IN_AGENTS: &[BuiltInAgentContract] = &[
         native_resume: NativeResumeContract::WhenProtocolAdvertises,
         capabilities: CODEX_CAPABILITIES,
         sandbox_modes: ALL_SANDBOXES,
-        model_source: ModelSource::Static,
-        model_ids: &[
-            "gpt-5.6-luna",
-            "gpt-5.6-terra",
-            "gpt-5.3-codex",
-            "gpt-5.6-sol",
-        ],
+        model_source: ModelSource::RuntimeCatalog,
+        model_ids: &[],
         default_model_id: Some("gpt-5.6-luna"),
     },
     BuiltInAgentContract {

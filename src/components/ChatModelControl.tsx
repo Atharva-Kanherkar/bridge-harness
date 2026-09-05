@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Check, ChevronDown, Search } from "lucide-react";
+import { Check, ChevronDown, RefreshCw, Search } from "lucide-react";
 import type { AdapterDescriptor, Harness } from "../types";
 import { harnessLabel } from "../utils";
 import { HarnessMark } from "./harnessMarks";
@@ -64,11 +64,14 @@ export type ChatModelControlProps = {
    *  the current effort but is inert — the state lives with the caller, so a
    *  surface that has not wired a setter yet reads rather than writes. */
   onEffortChange?: (effort: string) => void;
+  /** Re-probes provider-owned catalogues and repaints from fresh descriptors. */
+  onRefresh?: () => Promise<void> | void;
 };
 
-export function ChatModelControl({ adapters, harness, model, disabled, disabledReason, onChange, compact, roleLabel = "Chat", maxWidthClassName = "max-w-[220px]", placement = "up", effort, onEffortChange }: ChatModelControlProps) {
+export function ChatModelControl({ adapters, harness, model, disabled, disabledReason, onChange, compact, roleLabel = "Chat", maxWidthClassName = "max-w-[220px]", placement = "up", effort, onEffortChange, onRefresh }: ChatModelControlProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [refreshing, setRefreshing] = useState(false);
   // Escape closes the picker and nothing else. Captured on window so it wins
   // against modal hosts with their own window-level Escape (the aside panel
   // closes itself on Escape — without this, dismissing the picker tore down
@@ -101,7 +104,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
     : `${harnessName} · ${modelLabel}`;
   // Effort has a home in the footer whenever there is an effort to show or a
   // setter to drive it — otherwise the segmented control would be dead chrome.
-  const showEffort = effort != null || !!onEffortChange;
+  const showEffort = !!current?.capabilities.includes("reasoning") && (effort != null || !!onEffortChange);
   const q = query.trim().toLowerCase();
   const matchesQuery = (label: string) => !q || cleanModelLabel(label).toLowerCase().includes(q);
   return <div className="relative">
@@ -124,7 +127,12 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
             aria-label="Search models"
             className="min-w-0 flex-1 bg-transparent text-[12.5px] text-foreground outline-none placeholder:text-muted-foreground"
           />
-          <span className="shrink-0 font-mono text-[11px] text-faint" aria-hidden="true">↑↓ ⏎</span>
+          {onRefresh && <button type="button" disabled={refreshing} aria-label="Refresh model catalogues" title="Refresh model catalogues" onClick={() => {
+            setRefreshing(true);
+            Promise.resolve(onRefresh()).finally(() => setRefreshing(false));
+          }} className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-50">
+            <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />
+          </button>}
         </div>
         <div role="listbox" aria-label={`${roleLabel} models`} className="min-h-0 flex-1 overflow-y-auto p-1.5">
           {chatAdapters
@@ -144,13 +152,16 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
                 <div className={cn("flex items-center gap-1.5 px-2 pb-1.5 pt-2", index > 0 && "mt-1 border-t border-border/60")}>
                   <HarnessMark harness={adapter.id} size={11} className={cn("opacity-70", !adapter.available && "opacity-30")} />
                   <span className={cn("text-[9.5px] font-medium uppercase tracking-[0.12em]", adapter.available ? "text-muted-foreground/70" : "text-muted-foreground/40")}>{adapter.label}</span>
+                  {adapter.capabilities.includes("reasoning") && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.08em] text-muted-foreground/60">thinking</span>}
                   {!adapter.available && <span className="ml-auto text-[10px] text-muted-foreground/40">unavailable</span>}
                 </div>
                 {models.map(option => {
                   const selected = adapter.id === harness && (option.id ? option.id === model : !model);
-                  return <button key={`${adapter.id}:${option.id || "default"}`} type="button" role="option" aria-selected={selected} disabled={!adapter.available} onClick={() => { onChange(adapter.id as Harness, option.id || null); setOpen(false); }} className={cn("flex h-9 w-full items-center gap-2 rounded-[7px] px-2 text-left transition-colors disabled:opacity-40", selected ? "bg-accent" : "hover:bg-accent", !adapter.available && "opacity-60")}>
+                  const selectable = adapter.available && option.available !== false && option.compatible !== false;
+                  return <button key={`${adapter.id}:${option.id || "default"}`} type="button" role="option" aria-selected={selected} disabled={!selectable} onClick={() => { onChange(adapter.id as Harness, option.id || null); setOpen(false); }} className={cn("flex h-9 w-full items-center gap-2 rounded-[7px] px-2 text-left transition-colors disabled:opacity-40", selected ? "bg-accent" : "hover:bg-accent", !selectable && "opacity-60")}>
                     <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[12.5px] text-foreground">{cleanModelLabel(option.label)}</span>
                     <span data-tier={option.tier} className={cn("shrink-0 font-mono text-[10px] uppercase tracking-[0.08em]", option.tier === "strong" ? "text-foreground/70" : option.tier === "standard" ? "text-muted-foreground" : "text-muted-foreground/45")}>{option.tier}</span>
+                    {option.lifecycle === "preview" && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[8px] uppercase text-muted-foreground">preview</span>}
                     {selected && <Check size={13} className="shrink-0 text-foreground" aria-hidden="true" />}
                   </button>;
                 })}

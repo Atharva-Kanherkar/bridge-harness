@@ -9,6 +9,7 @@ pub mod menu;
 pub mod window_chrome;
 
 use bridge_core::api;
+use bridge_core::delegation;
 use bridge_core::managed_agents;
 use bridge_core::live_turn;
 use bridge_core::work_observation;
@@ -1104,15 +1105,22 @@ async fn update_chat_model(
     session_id: String,
     harness: Harness,
     model: Option<String>,
+    effort: Option<delegation::Effort>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
     // Stopping the old adapter can block on process teardown; run the whole
     // claim -> teardown -> commit window on the blocking pool.
     let core = state.inner().clone();
     blocking("Adapter shutdown", move || {
-        api::update_chat_model(&core, &session_id, &harness, model.as_deref())
+        api::update_chat_model(&core, &session_id, &harness, model.as_deref(), effort)
     })
     .await
+}
+
+#[tauri::command]
+async fn refresh_model_catalogs(state: State<'_, Arc<BridgeCore>>) -> Result<api::Health, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Model catalogue refresh", move || api::refresh_model_catalogs(&core)).await
 }
 
 /// Carry a source chat's projected context into another chat as a durable
@@ -2081,6 +2089,7 @@ pub fn run() {
             search_github_repos,
             locate_workspace_folders,
             update_chat_model,
+            refresh_model_catalogs,
             carry_session_handoff,
             list_slash_commands,
             resolve_slash_command,
