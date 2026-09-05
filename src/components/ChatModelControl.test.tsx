@@ -452,6 +452,16 @@ describe("ChatModelControl effort styles", () => {
       expect(control().textContent).toContain("Ultra");
     });
 
+    it("says Default, with nothing lit, while the session has no effort yet", async () => {
+      const onEffortChange = vi.fn();
+      await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="opus" onChange={vi.fn()} effort={null} onEffortChange={onEffortChange} />));
+      await act(async () => trigger().click());
+      expect(control().querySelector('[role="slider"]')!.getAttribute("aria-valuetext")).toBe("Default");
+      expect(control().querySelectorAll('[aria-pressed="true"]')).toHaveLength(0);
+      await act(async () => { key(control().querySelector('[role="slider"]')!, "ArrowRight"); });
+      expect(onEffortChange).toHaveBeenLastCalledWith("medium");
+    });
+
     it("stays inert without a setter but still shows the level", async () => {
       await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="opus" onChange={vi.fn()} effort="max" />));
       await act(async () => trigger().click());
@@ -483,6 +493,16 @@ describe("ChatModelControl effort styles", () => {
       const top = control().querySelector<HTMLButtonElement>('button[data-effort="xhigh"]')!;
       await act(async () => { pointer(top, "pointerdown"); });
       await act(async () => { pointer(top, "pointerup"); });
+      expect(onEffortChange).toHaveBeenLastCalledWith("low");
+    });
+
+    it("reads 'normally' while unset and steps onto the first level", async () => {
+      const onEffortChange = vi.fn();
+      await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="sonnet" onChange={vi.fn()} effort={null} onEffortChange={onEffortChange} />));
+      await act(async () => trigger().click());
+      const word = control().querySelector<HTMLButtonElement>("p button")!;
+      expect(word.textContent).toBe("normally");
+      await act(async () => { key(word, "Enter"); });
       expect(onEffortChange).toHaveBeenLastCalledWith("low");
     });
 

@@ -12,9 +12,12 @@ import { harnessFillClass } from "../harnessMarks";
 import { effortIndex, type EffortControlProps } from "./effortLevels";
 
 export function EffortSlider({ levels, value, onChange, disabled, harness, modelLabel }: EffortControlProps) {
+  // A value off the ladder (unset: the provider's own default) parks the thumb
+  // at the start with nothing lit and says so, rather than claiming "Low".
+  const known = effortIndex(levels, value) >= 0;
   const index = Math.max(0, effortIndex(levels, value));
   const last = levels.length - 1;
-  const ratio = last > 0 ? index / last : 0;
+  const ratio = known && last > 0 ? index / last : 0;
   const inert = disabled || !onChange;
   const rail = useRef<HTMLDivElement>(null);
   const fill = harnessFillClass(harness);
@@ -40,7 +43,7 @@ export function EffortSlider({ levels, value, onChange, disabled, harness, model
   return <div className="flex h-full flex-col justify-between" data-effort-style="slider">
     <div className="flex items-baseline justify-between text-[11px] text-muted-foreground">
       <span>Thinking</span>
-      <span key={pulse} className={cn("min-w-[6ch] text-right font-medium tabular-nums text-foreground", pulse > 0 && "animate-effort-label")}>{levels[index]?.label ?? ""}</span>
+      <span key={pulse} className={cn("min-w-[6ch] text-right font-medium tabular-nums text-foreground", pulse > 0 && "animate-effort-label")}>{known ? levels[index]?.label : "Default"}</span>
     </div>
     <div
       ref={rail}
@@ -58,16 +61,16 @@ export function EffortSlider({ levels, value, onChange, disabled, harness, model
         style={{ width: `${ratio * 100}%` }}
       />
       {levels.map((level, i) => {
-        const on = i <= index;
+        const on = known && i <= index;
         return <button
           key={level.value}
           type="button"
           tabIndex={-1}
-          aria-pressed={i === index}
+          aria-pressed={known && i === index}
           aria-label={`${modelLabel}: think ${level.label}`}
           disabled={inert}
           data-effort={level.value}
-          data-active={i === index}
+          data-active={known && i === index}
           onClick={() => commit(i)}
           className="absolute top-1/2 grid size-5 -translate-x-1/2 -translate-y-1/2 place-items-center disabled:cursor-default"
           style={{ left: `${last > 0 ? (i / last) * 100 : 0}%` }}
@@ -83,8 +86,8 @@ export function EffortSlider({ levels, value, onChange, disabled, harness, model
         aria-label="Reasoning effort"
         aria-valuemin={0}
         aria-valuemax={last}
-        aria-valuenow={index}
-        aria-valuetext={levels[index]?.label}
+        aria-valuenow={known ? index : 0}
+        aria-valuetext={known ? levels[index]?.label : "Default"}
         aria-disabled={inert || undefined}
         onKeyDown={event => {
           if (inert) return;

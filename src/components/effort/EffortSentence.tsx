@@ -42,12 +42,15 @@ function useScramble(target: string): { text: string; settled: boolean } {
 }
 
 export function EffortSentence({ levels, value, onChange, disabled, harness, modelLabel }: EffortControlProps) {
+  // Off the ladder (unset: the provider's own default) reads as "normally"
+  // with nothing lit; the first click steps onto the first level.
+  const known = effortIndex(levels, value) >= 0;
   const index = Math.max(0, effortIndex(levels, value));
   const last = levels.length - 1;
   const inert = disabled || !onChange;
   const fill = harnessFillClass(harness);
-  const current = levels[index];
-  const { text, settled } = useScramble(current ? effortWord(current.value) : "");
+  const current = known ? levels[index] : undefined;
+  const { text, settled } = useScramble(current ? effortWord(current.value) : "normally");
   const drag = useRef<{ startX: number; startIndex: number; moved: boolean } | null>(null);
 
   const commit = (next: number) => {
@@ -82,19 +85,19 @@ export function EffortSentence({ levels, value, onChange, disabled, harness, mod
           if (!state) return;
           const steps = Math.round((event.clientX - state.startX) / SCRUB_PX);
           if (Math.abs(event.clientX - state.startX) > 4) state.moved = true;
-          if (state.startIndex + steps !== index) commit(state.startIndex + steps);
+          if (state.startIndex + steps !== index || !known) commit(state.startIndex + steps);
         }}
         onPointerUp={() => {
           const state = drag.current;
           drag.current = null;
-          if (state && !state.moved) commit(index === last ? 0 : index + 1);
+          if (state && !state.moved) commit(!known ? 0 : index === last ? 0 : index + 1);
         }}
         onPointerCancel={() => { drag.current = null; }}
         onKeyDown={event => {
           if (inert) return;
           if (event.key === "ArrowRight" || event.key === "ArrowUp") { event.preventDefault(); commit(index + 1); }
           if (event.key === "ArrowLeft" || event.key === "ArrowDown") { event.preventDefault(); commit(index - 1); }
-          if (event.key === "Enter" || event.key === " ") { event.preventDefault(); commit(index === last ? 0 : index + 1); }
+          if (event.key === "Enter" || event.key === " ") { event.preventDefault(); commit(!known ? 0 : index === last ? 0 : index + 1); }
         }}
         className={cn(
           "min-w-[12ch] touch-none select-none rounded-md border border-border bg-muted px-2 text-center font-semibold tabular-nums text-foreground transition-colors",
@@ -105,7 +108,7 @@ export function EffortSentence({ levels, value, onChange, disabled, harness, mod
       <span className="min-w-0 truncate">with {modelLabel}.</span>
     </p>
     <div className="flex h-1.5 gap-1" aria-hidden="true">
-      {levels.map((level, i) => <span key={level.value} className={cn("min-w-0 flex-1 rounded-[2px] transition-[background-color,opacity] duration-200", i <= index ? fill : "bg-faint-2 opacity-40")} style={{ transitionDelay: `${i <= index ? i * 30 : 0}ms` }} />)}
+      {levels.map((level, i) => <span key={level.value} className={cn("min-w-0 flex-1 rounded-[2px] transition-[background-color,opacity] duration-200", known && i <= index ? fill : "bg-faint-2 opacity-40")} style={{ transitionDelay: `${known && i <= index ? i * 30 : 0}ms` }} />)}
     </div>
   </div>;
 }
