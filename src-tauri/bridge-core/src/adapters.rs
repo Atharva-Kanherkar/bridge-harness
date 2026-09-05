@@ -1667,6 +1667,85 @@ mod tests {
     use super::*;
     use crate::model::ModelCatalogDiagnostics;
 
+    fn descriptor_completes_during_catalog_refresh(
+        make_adapter: impl FnOnce(Arc<RwLock<model_catalog::ResolvedCatalog>>) -> Box<dyn HarnessAdapter>,
+    ) {
+        let candidates = (0..model_catalog::MAX_CATALOG_ENTRIES)
+            .map(|index| CatalogCandidate::stable(
+                format!("test-model-{index}"),
+                format!("Test model {index}"),
+                CapabilityTier::Standard,
+                index as i64,
+            ))
+            .collect();
+        let models = Arc::new(RwLock::new(model_catalog::resolve(
+            "test", Ok(candidates), &[], None, chrono::Utc::now(),
+        )));
+        let adapter = make_adapter(models.clone());
+        let stop = Arc::new(AtomicBool::new(false));
+        let start = Arc::new(std::sync::Barrier::new(2));
+        let writer = {
+            let stop = stop.clone();
+            let start = start.clone();
+            thread::spawn(move || {
+                start.wait();
+                let mut generation = 0;
+                while !stop.load(Ordering::Acquire) {
+                    {
+                        let mut current = models.write().unwrap();
+                        let label = generation.to_string();
+                        current.models[0].label = label.clone();
+                        current.diagnostics.last_error = Some(label);
+                    }
+                    generation += 1;
+                    thread::yield_now();
+                }
+            })
+        };
+        let (done, completed) = std::sync::mpsc::channel();
+        let reader = thread::spawn(move || {
+            start.wait();
+            for _ in 0..64 {
+                let descriptor = adapter.descriptor();
+                assert_eq!(descriptor.models.len(), model_catalog::MAX_CATALOG_ENTRIES);
+                assert!(descriptor.models.iter().any(|model| {
+                    Some(&model.id) == descriptor.default_model.as_ref()
+                }));
+                if let Some(generation) = descriptor.model_catalog.last_error {
+                    assert_eq!(descriptor.models[0].label, generation);
+                }
+            }
+            done.send(()).unwrap();
+        });
+        // A recursive read can deadlock behind the pending refresh writer on
+        // Linux. Bound the regression itself so it fails instead of hanging CI.
+        let result = completed.recv_timeout(Duration::from_secs(30));
+        stop.store(true, Ordering::Release);
+        result.expect("descriptor reads must complete while the catalog is refreshed");
+        reader.join().unwrap();
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn codex_descriptors_complete_during_catalog_refresh() {
+        descriptor_completes_during_catalog_refresh(|models| Box::new(CodexAdapter {
+            streams: Mutex::new(HashMap::new()),
+            models,
+            notify: None,
+            refreshing: Arc::new(AtomicBool::new(false)),
+        }));
+    }
+
+    #[test]
+    fn claude_descriptors_complete_during_catalog_refresh() {
+        descriptor_completes_during_catalog_refresh(|models| Box::new(ClaudeAdapter {
+            streams: Mutex::new(HashMap::new()),
+            models,
+            notify: None,
+            refreshing: Arc::new(AtomicBool::new(false)),
+        }));
+    }
+
     fn discovered(id: &str, label: &str) -> DiscoveredModel {
         DiscoveredModel {
             id: id.into(),
