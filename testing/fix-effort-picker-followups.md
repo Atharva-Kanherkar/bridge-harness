@@ -71,3 +71,23 @@ Locked before implementation.
 
 ## E2E / Manual
 N/A beyond the smoke run — frontend-only.
+
+## Amendment — settle semantics for the in-flight switch (review findings)
+
+- The queue outlives the popover. Closing (backdrop, Escape) while the host is
+  still switching keeps the pending pick and the queued level; the level is
+  sent when the switch settles even though nothing is showing.
+- A level the picker has sent keeps showing, and the control stays live,
+  until the `effort` prop confirms it. If the host settles without adopting it,
+  the display reverts to the prop.
+- On settle, the queue is sent only if the pending pick landed (props equal the
+  pick). A switch that failed drops the queue and the highlight, so a level is
+  never applied to the model the user just left.
+- A second model pick while the picker's own switch is in flight is ignored;
+  the list is `aria-busy` for the duration.
+- A disable the picker did not cause (a turn starting) drops the pending pick
+  and the queue along with closing the popover: nothing of ours is in flight.
+
+Integration tests: close-then-settle sends once; shown level survives the
+effort round-trip; failed switch sends nothing and re-highlights the old model;
+second pick during a switch does not call `onChange`; a rejected level reverts.
