@@ -22,6 +22,7 @@ import { taskRoute, type TaskAction } from "./components/workTasks";
 import { isHiddenSession } from "./components/sidebarChats";
 import { SessionToolbar } from "./components/SessionToolbar";
 import { ChatModelControl, modelDisplayName } from "./components/ChatModelControl";
+import { carryEffort, supportedEffortLevelsOf } from "./components/effort/effortLevels";
 export { ChatModelControl };
 import { SessionDock, type DockPaneDescriptor } from "./components/SessionDock";
 import { AsideChat } from "./components/AsideChat";
@@ -2440,7 +2441,9 @@ function AppContent() {
           ...(current ?? { workspaceId: resolvedWelcomeWorkspaceId, createWorktree: false }),
           harness,
           model,
-          effort: undefined,
+          // The picker stays open across the pick so model and thinking are set
+          // together; a level the new model also offers survives the switch.
+          effort: carryEffort(supportedEffortLevelsOf(adapters, harness, model), current?.effort),
         }))}
         canStartChat={adaptersReady}
         busy={busy}
