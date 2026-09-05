@@ -2105,9 +2105,14 @@ mod tests {
             .unwrap();
         let tail = StderrTail::capture(&mut child);
         child.wait().unwrap();
-        // The capture thread races the wait; poll briefly for the tail.
+        // Waiting for the child does not drain the capture thread. Seeing the
+        // first line ("boot") is not evidence that its final error arrived.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while tail.snapshot().is_none() && std::time::Instant::now() < deadline {
+        while tail
+            .snapshot()
+            .is_none_or(|text| !text.contains("API error: connection refused"))
+            && std::time::Instant::now() < deadline
+        {
             thread::sleep(Duration::from_millis(10));
         }
         let context = process_failure_context(&mut child, &tail).expect("context after exit");
