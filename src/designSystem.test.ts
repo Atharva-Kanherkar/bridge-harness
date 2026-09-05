@@ -185,16 +185,39 @@ describe("theme tokens", () => {
     expect(css).toMatch(/html\[data-native-fullscreen\] \.u-traffic-inset/);
   });
 
-  it("keeps the native canvas and rail fully opaque so no wallpaper tint bleeds through", () => {
-    // The pure-black shell must not let AppKit's material — and the desktop
-    // wallpaper's colour — wash the grounds. Both are solid tokens, not a
-    // color-mix against transparent.
+  it("keeps the default graphite shell fully opaque so no wallpaper tint bleeds through", () => {
+    // The default pure-black shell must not let AppKit's material — and the
+    // desktop wallpaper's colour — wash the grounds. Both are solid tokens, not
+    // a color-mix against transparent. The tight `{ ... }` bounds prove the
+    // graphite rule itself carries no transparency.
     expect(css).toMatch(
-      /html\[data-tauri\] \.u-vibrancy-canvas\s*\{[^}]*background-color:\s*var\(--color-background\)\s*;/,
+      /html\[data-tauri\] \.u-vibrancy-canvas\s*\{\s*background-color:\s*var\(--color-background\)\s*;\s*\}/,
     );
     expect(css).toMatch(
-      /html\[data-tauri\] \.u-vibrancy-sidebar\s*\{[^}]*background-color:\s*var\(--color-sidebar\)\s*;/,
+      /html\[data-tauri\] \.u-vibrancy-sidebar\s*\{\s*background-color:\s*var\(--color-sidebar\)\s*;\s*\}/,
     );
-    expect(css).not.toMatch(/\.u-vibrancy-canvas\s*\{[^}]*transparent/);
+    expect(css).toMatch(
+      /html\[data-tauri\] \.u-app-shell\s*\{\s*background:\s*var\(--color-background\)\s*;\s*\}/,
+    );
+    // Any translucency must be gated behind the opt-in vibrancy skin, never the
+    // bare graphite rule.
+    expect(css).not.toMatch(/html\[data-tauri\] \.u-vibrancy-canvas\s*\{[^}]*transparent/);
+  });
+
+  it("offers the translucent cursor-style vibrancy skin, gated behind data-skin", () => {
+    // Pure black cannot host the wallpaper wash, so the skin lifts the dark
+    // grounds back to near-black before letting AppKit's material through.
+    const skinStart = css.indexOf('.dark[data-skin="vibrancy"]');
+    const skinBlock = css.slice(skinStart, css.indexOf("}", skinStart));
+    expect(skinBlock).toMatch(/--background:\s*#111111/);
+    expect(css).toMatch(
+      /html\[data-tauri\]\[data-skin="vibrancy"\] \.u-app-shell\s*\{\s*background:\s*transparent/,
+    );
+    expect(css).toMatch(
+      /html\[data-tauri\]\[data-skin="vibrancy"\] \.u-vibrancy-sidebar\s*\{[^}]*color-mix\(in srgb,\s*var\(--color-sidebar\) 60%,\s*transparent\)/,
+    );
+    expect(css).toMatch(
+      /html\[data-tauri\]\[data-skin="vibrancy"\] \.u-vibrancy-canvas\s*\{[^}]*color-mix\(in srgb,\s*var\(--color-background\) 82%,\s*transparent\)/,
+    );
   });
 });

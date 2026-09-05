@@ -229,6 +229,24 @@
     --sidebar-ring: #6a9bcc;
 }
 
+/* ── Dark · vibrancy skin (cursor-style translucency) ─────────────────────────
+   Pure black cannot host the AppKit wallpaper wash — a color-mix of #000 and
+   transparent is still black. The translucent shell needs a near-black ground
+   to lift the material into a warm, cursor-like haze, so the vibrancy skin
+   restores the graphite near-blacks the opaque shell dropped. Higher specificity
+   than `.dark` alone (class + attribute) and declared after it, so it wins only
+   when the user opts into this skin; graphite stays pure black. */
+.dark[data-skin="vibrancy"] {
+    --sidebar: #0d0d0d;
+    --background: #111111;
+    --card: #161616;
+    --popover: #1a1a1a;
+    --primary-foreground: #111111;
+    --code: #0e0e0d;
+    --sidebar-border: #171717;
+    --sidebar-primary-foreground: #111111;
+}
+
 /* Unlayered so this beats `:root { --window-radius: 16px }`. Fullscreen is a
    flush rectangle; chip radius stays 10pt because there is no window arc to
    stay concentric with. */
@@ -400,6 +418,31 @@ html[data-native-fullscreen] .u-traffic-inset {
   }
   html[data-tauri] .u-vibrancy-canvas {
     background-color: var(--color-background);
+  }
+
+  /* Vibrancy skin: the cursor-style translucent shell. The webview is
+     transparent over an NSVisualEffectView, so dropping the grounds to a
+     color-mix against transparent lets AppKit's material — and the desktop
+     wallpaper tint — wash through. Sidebar keeps more material (60%) than the
+     canvas (82% ground) so the reading surface stays legible. These carry an
+     extra attribute over the opaque defaults above, so they win only under this
+     skin; graphite keeps the solid grounds. Chrome (no data-tauri) has no
+     material behind it and stays opaque regardless.
+
+     Mode-agnostic on purpose (this restores the original pre-graphite
+     behaviour). Dark needs the near-black `.dark[data-skin=vibrancy]` lift
+     because a color-mix of pure black against transparent is still black and
+     shows no tint; light needs no such compensation — the paper ground
+     (#fafaf9) is already a high-luminance frost base that the wallpaper tints
+     cleanly. */
+  html[data-tauri][data-skin="vibrancy"] .u-app-shell {
+    background: transparent;
+  }
+  html[data-tauri][data-skin="vibrancy"] .u-vibrancy-sidebar {
+    background-color: color-mix(in srgb, var(--color-sidebar) 60%, transparent);
+  }
+  html[data-tauri][data-skin="vibrancy"] .u-vibrancy-canvas {
+    background-color: color-mix(in srgb, var(--color-background) 82%, transparent);
   }
 }
 
