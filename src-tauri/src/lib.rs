@@ -3820,7 +3820,11 @@ mod tests {
                 Some("not-an-advertised-model"),
             )
             .unwrap();
-        assert_eq!(resolution.actual_model, "gpt-5.6-terra");
+        // The exact id is not asserted: with the Codex CLI present, live
+        // discovery can promote the provider's own default over the curated one.
+        // What must hold is that an unknown hint falls back to *some* Standard
+        // model and records a warning naming both the hint and that fallback.
+        assert!(resolution.warning.is_some());
         record_model_resolution_warning(&db, "parent", &resolution).unwrap();
         let (kind, body): (String, String) = db
             .query_row(
@@ -3831,7 +3835,7 @@ mod tests {
             .unwrap();
         assert_eq!(kind, "capability.model_fallback");
         assert!(body.contains("not-an-advertised-model"));
-        assert!(body.contains("gpt-5.6-terra"));
+        assert!(body.contains(&resolution.actual_model));
     }
 
     #[test]

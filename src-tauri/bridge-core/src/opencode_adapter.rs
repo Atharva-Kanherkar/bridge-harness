@@ -1289,6 +1289,7 @@ pub fn model_options(catalog: &OpenCodeCatalog, visible_models: &[String]) -> Ve
             compatible: model.tool_call,
             lifecycle: crate::model::ModelLifecycle::Unknown,
             source: crate::model::ModelCatalogSource::RuntimeApi,
+            supported_effort_levels: Vec::new(),
             default_for_tier: false,
         })
         .collect::<Vec<_>>();

@@ -1073,6 +1073,7 @@ fn result_payloads_mirror_core() {
                 compatible: true,
                 lifecycle: model::ModelLifecycle::Stable,
                 source: model::ModelCatalogSource::CuratedFallback,
+                supported_effort_levels: Vec::new(),
                 default_for_tier: true,
             }],
             default_model: Some("gpt-5".into()),

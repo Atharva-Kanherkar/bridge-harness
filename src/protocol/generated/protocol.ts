@@ -1232,6 +1232,7 @@ export interface ModelOption {
   label: string;
   lifecycle?: ModelLifecycle;
   source?: ModelCatalogSource;
+  supportedEffortLevels?: string[];
   tier: CapabilityTier;
 }
 
