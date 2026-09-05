@@ -99,11 +99,14 @@ every group is a card of rows, every row is one label and one control.**
   Visible models for OpenCode only. Repair replaces Install when `repairable`.
 - **Prompts**: list page with a target select in the header and a "Sections"
   group of rows (mono id, token estimate, Modified/Deleted pill, unsaved dot);
-  Export overrides and Import overrides are header actions. Detail page:
+  Export overrides, Import overrides, and Reset all for this target are header
+  actions. The Compiled preview group (Stable prefix, Variable suffix, Provider
+  layers, and the cache-miss note) sits on the *list* page rather than the
+  detail page, because it describes the target rather than any one section, and
+  a direct session has sections to compile but none to open. Detail page:
   breadcrumb "Prompts / Target / section", lint warnings above the editor, a
-  file bar with an unsaved indicator, then groups History (row per revision with
-  Restore) and Compiled preview (Stable prefix, Variable suffix, and Provider
-  layers as expandable rows, including the cache-miss note).
+  file bar with an unsaved indicator, a Reset action, and a History group with a
+  row per revision and Restore.
 - **Work briefing**: groups Suggested work (Enabled, Harness, Model, Effort),
   What it reads (Everything connected switch, then a switch per connector with a
   sign-in note), When it runs (Cadence, Refresh on focus). The same validation
