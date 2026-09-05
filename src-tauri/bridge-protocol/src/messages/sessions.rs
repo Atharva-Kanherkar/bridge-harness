@@ -192,6 +192,13 @@ pub struct CreateChatParams {
     pub title: Option<String>,
 }
 
+/// The identity committed by this creation, unaffected by concurrent clients.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateChatIdResult {
+    pub session_id: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CreateAsideChatParams {

@@ -83,6 +83,7 @@ methods![
     (ReplaySessionEvents, "sessions", "replay_session_events"),
     (ActivateSessionEntry, "sessions", "activate_session_entry"),
     (CreateChat, "sessions", "create_chat"),
+    (CreateChatId, "sessions", "create_chat_id"),
     (CreateAsideChat, "sessions", "create_aside_chat"),
     (CreateWorkspaceSession, "sessions", "create_workspace_session"),
     (StartSession, "sessions", "start_session"),

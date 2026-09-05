@@ -64,25 +64,10 @@ fn connect(data_dir: &Path) -> DaemonClient {
 }
 
 fn create_chat(client: &DaemonClient) -> String {
-    // Identify the NEW session by state difference — array position and
-    // recency are both unreliable (the reviewer's finding on exec, equally
-    // true here).
-    let ids = |state: &serde_json::Value| -> std::collections::HashSet<String> {
-        state["sessions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|session| session["id"].as_str().unwrap().to_owned())
-            .collect()
-    };
-    let before = ids(&client.call(MethodName::GetState, None).unwrap());
-    let state = client
-        .call(MethodName::CreateChat, Some(json!({"harness": "shell"})))
+    let created = client
+        .call(MethodName::CreateChatId, Some(json!({"harness": "shell"})))
         .unwrap();
-    ids(&state)
-        .into_iter()
-        .find(|id| !before.contains(id))
-        .expect("create_chat added a session")
+    created["sessionId"].as_str().unwrap().to_owned()
 }
 
 /// Persist a durable event and publish it on the bus, as a live mutation does.
@@ -566,4 +551,36 @@ fn a_timed_out_call_does_not_desynchronize_the_next_one() {
     assert!(state["sessions"].is_array());
 
     running.stop();
+}
+
+#[test]
+fn concurrent_chat_creators_receive_their_own_committed_identity() {
+    let dir = tempfile::tempdir().unwrap();
+    seed_data_dir(dir.path());
+    let daemon = RunningDaemon::start(dir.path());
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+    let creators: Vec<_> = (0..8).map(|index| {
+        let client = connect(dir.path());
+        let barrier = barrier.clone();
+        std::thread::spawn(move || {
+            let title = format!("creator {index}");
+            barrier.wait();
+            let result = client.call(MethodName::CreateChatId, Some(json!({
+                "harness": "shell", "title": title,
+            }))).unwrap();
+            (result["sessionId"].as_str().unwrap().to_owned(), title)
+        })
+    }).collect();
+    let created: Vec<_> = creators.into_iter().map(|thread| thread.join().unwrap()).collect();
+    let client = connect(dir.path());
+    let state = client.call(MethodName::GetState, None).unwrap();
+    let sessions = state["sessions"].as_array().unwrap();
+    let mut ids = std::collections::HashSet::new();
+    for (id, title) in created {
+        assert!(ids.insert(id.clone()), "creators must receive distinct identities");
+        let session = sessions.iter().find(|session| session["id"] == id).unwrap();
+        assert_eq!(session["title"], title);
+    }
+    drop(client);
+    daemon.stop();
 }
