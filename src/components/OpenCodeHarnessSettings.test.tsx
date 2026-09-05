@@ -24,7 +24,7 @@ const catalog: OpenCodeCatalog = {
 };
 
 describe("OpenCodeHarnessSettings", () => {
-  it("shows provider status, redacted key entry, executable override, and qualified model controls", () => {
+  it("shows provider status, redacted key entry, and qualified model controls", () => {
     const html = renderToStaticMarkup(<OpenCodeHarnessSettings
       value={{ executablePath: "/custom/opencode", visibleModels: ["opencode-go/kimi-k2.5"] }}
       catalog={catalog}
@@ -38,9 +38,15 @@ describe("OpenCodeHarnessSettings", () => {
     expect(html).toContain("Anthropic");
     expect(html).toContain('type="password"');
     expect(html).toContain("never saved by Bridge");
-    expect(html).toContain("/custom/opencode");
+    // Fully qualified ids are preserved, and the visibility control is a switch
+    // rather than a native checkbox.
     expect(html).toContain("opencode-go/kimi-k2.5");
+    expect(html).toContain('role="switch"');
+    expect(html).not.toContain('type="checkbox"');
     expect(html).toContain("Disconnect");
+    // The executable override is an Advanced row on the harness detail page,
+    // not a field buried inside the provider list.
+    expect(html).not.toContain("/custom/opencode");
   });
 
   it("submits an API key once and clears it from component state", async () => {

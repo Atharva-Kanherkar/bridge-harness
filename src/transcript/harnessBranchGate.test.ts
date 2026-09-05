@@ -92,8 +92,8 @@ const HARNESS_BRANCH_ALLOWLIST: Record<string, string> = {
     "skips `shell` sessions in the worker roster: a session-kind rule, and the roster draws no conversation items",
   "../components/GitHubPane.tsx":
     "`bugbot` names a code-review provider on a pull request, not a harness that produces a transcript",
-  "../components/SettingsScreen.tsx":
-    "`bridge` is the agent-draft sentinel for 'Bridge chooses the runtime', in a form that picks one",
+  "../components/settings/PresetsPage.tsx":
+    "`bridge` is the preset-draft sentinel for 'Bridge chooses the runtime', in the form that picks one",
   "../App.tsx":
     "filters `shell` sessions out of the chat roster and labels a `bridge`-owned agent or slash command; neither reaches a transcript row",
 };

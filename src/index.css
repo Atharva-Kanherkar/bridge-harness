@@ -124,6 +124,22 @@
     --harness-codex: #0f8f6f;
     --harness-opencode: #6a5acd;
 
+    /* Cursor draws its own five facets rather than taking a Bridge hue. Paper
+       runs the ladder inverted so the mark keeps its shape against light. */
+    --cursor-facet-darkest: #b5b5b5;
+    --cursor-facet-mid: #909090;
+    --cursor-facet-light: #707070;
+    --cursor-facet-lighter: #303030;
+    --cursor-facet-lightest: #121212;
+
+    /* Appearance preview swatches: the literal sidebar and canvas each mode
+       renders. Fixed in both themes on purpose, because the Paper tile has to
+       look like paper while Graphite is the one switched on. */
+    --preview-paper-sidebar: #f3f3f1;
+    --preview-paper-canvas: #fafaf9;
+    --preview-graphite-sidebar: #000000;
+    --preview-graphite-canvas: #0f0f0f;
+
     /* Code */
     --code: #f3f3f1;
     --code-foreground: #1f1f1d;
@@ -206,6 +222,13 @@
     --harness-claude: #d97757;
     --harness-codex: #4bc39c;
     --harness-opencode: #9b8cf0;
+
+    /* Cursor's own greys, as the vendor draws them. */
+    --cursor-facet-darkest: #4a4a4a;
+    --cursor-facet-mid: #6f6f6f;
+    --cursor-facet-light: #8f8f8f;
+    --cursor-facet-lighter: #cfcfcf;
+    --cursor-facet-lightest: #ededed;
 
     --code: #0a0a0a;
     --code-foreground: #ececea;
@@ -515,24 +538,18 @@ html[data-native-fullscreen] .u-traffic-inset {
   animation: thinking-shimmer 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
-/* The startup mark: the harness's own glyph, turning while Bridge waits on it.
-   Every mark is radially symmetric, so the rotation reads as scintillation
-   rather than as a logo being spun. The breathe is the same 2s cadence the
-   shimmer and the in-progress pulse keep. `@media (prefers-reduced-motion)` at
-   the bottom of this file freezes both. */
-@keyframes harness-turn {
-  to { transform: rotate(360deg); }
-}
-
+/* The startup mark: the harness's own glyph, breathing while Bridge waits on
+   it. These are vendor marks, so they never rotate or deform — opacity is the
+   only channel that moves. The breathe is the same 2s cadence the shimmer and
+   the in-progress pulse keep. `@media (prefers-reduced-motion)` at the bottom
+   of this file freezes it. */
 @keyframes harness-breathe {
   0%, 100% { opacity: 0.6; }
   50% { opacity: 1; }
 }
 
 .harness-mark-live {
-  animation:
-    harness-turn 9s linear infinite,
-    harness-breathe 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  animation: harness-breathe 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
 /* Text that shimmers while something is in flight. Now one caller: the startup
