@@ -23,11 +23,28 @@ export const SKIN_STORAGE_KEY = "bridge.skin";
 /** The shell stays exactly as it ships until the user opts into another skin. */
 export const DEFAULT_SKIN: ThemeSkin = "graphite";
 
-/** Window background per mode, kept in sync with `--background` in index.css. */
-const THEME_COLOR: Record<ResolvedTheme, string> = {
-  light: "#fafaf9",
-  dark: "#171716",
-};
+/**
+ * Window background for the `theme-color` meta, kept in sync with `--background`
+ * in index.css. Dark depends on the skin: graphite grounds are true black,
+ * vibrancy lifts them to near-black so the wallpaper wash has a base to tint.
+ */
+function themeColorFor(resolved: ResolvedTheme, skin: ThemeSkin): string {
+  if (resolved === "light") return "#fafaf9";
+  return skin === "vibrancy" ? "#111111" : "#000000";
+}
+
+/** Reads the skin already stamped on the document, defaulting when absent. */
+function currentSkin(): ThemeSkin {
+  if (typeof document === "undefined") return DEFAULT_SKIN;
+  const raw = document.documentElement.dataset.skin;
+  return isThemeSkin(raw) ? raw : DEFAULT_SKIN;
+}
+
+function syncThemeColor(resolved: ResolvedTheme, skin: ThemeSkin): void {
+  if (typeof document === "undefined") return;
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute("content", themeColorFor(resolved, skin));
+}
 
 export function isThemePreference(value: unknown): value is ThemePreference {
   return value === "system" || value === "light" || value === "dark";
@@ -83,6 +100,9 @@ export function writeThemeSkin(
 export function applySkin(skin: ThemeSkin): ThemeSkin {
   if (typeof document === "undefined") return skin;
   document.documentElement.dataset.skin = skin;
+  // The dark ground differs by skin, so the meta colour follows the skin too.
+  const resolved: ResolvedTheme = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+  syncThemeColor(resolved, skin);
   return skin;
 }
 
@@ -108,8 +128,7 @@ export function applyTheme(preference: ThemePreference, prefersDark = systemPref
     document.documentElement.dataset.tauri = "";
   }
 
-  const meta = document.querySelector('meta[name="theme-color"]');
-  if (meta) meta.setAttribute("content", THEME_COLOR[resolved]);
+  syncThemeColor(resolved, currentSkin());
 
   return resolved;
 }

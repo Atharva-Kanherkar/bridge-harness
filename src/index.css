@@ -427,7 +427,14 @@ html[data-native-fullscreen] .u-traffic-inset {
      canvas (82% ground) so the reading surface stays legible. These carry an
      extra attribute over the opaque defaults above, so they win only under this
      skin; graphite keeps the solid grounds. Chrome (no data-tauri) has no
-     material behind it and stays opaque regardless. */
+     material behind it and stays opaque regardless.
+
+     Mode-agnostic on purpose (this restores the original pre-graphite
+     behaviour). Dark needs the near-black `.dark[data-skin=vibrancy]` lift
+     because a color-mix of pure black against transparent is still black and
+     shows no tint; light needs no such compensation — the paper ground
+     (#fafaf9) is already a high-luminance frost base that the wallpaper tints
+     cleanly. */
   html[data-tauri][data-skin="vibrancy"] .u-app-shell {
     background: transparent;
   }

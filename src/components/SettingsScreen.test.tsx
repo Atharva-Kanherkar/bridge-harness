@@ -26,6 +26,50 @@ describe("SettingsScreen", () => {
     expect(html).toContain("Permissions");
   });
 
+  describe("Appearance section", () => {
+    let container: HTMLDivElement;
+    let root: Root;
+
+    beforeEach(() => {
+      (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+      delete document.documentElement.dataset.skin;
+      container = document.createElement("div");
+      document.body.append(container);
+      root = createRoot(container);
+    });
+
+    afterEach(async () => {
+      await act(async () => root.unmount());
+      container.remove();
+      delete document.documentElement.dataset.skin;
+    });
+
+    it("stamps the chosen skin on the document from the Theme picker", async () => {
+      await act(async () => {
+        root.render(<SettingsScreen adapters={[]} onModelSetupChange={() => undefined} onSuggestionSettingsChange={() => undefined} onError={() => undefined} />);
+        await flush();
+      });
+      await act(async () => {
+        button(container, "Appearance").click();
+        await flush();
+      });
+      expect(container.textContent).toContain("Theme");
+      expect(container.textContent).toContain("Cursor");
+
+      await act(async () => {
+        button(container, "Cursor").click();
+        await flush();
+      });
+      expect(document.documentElement.dataset.skin).toBe("vibrancy");
+
+      await act(async () => {
+        button(container, "Solid").click();
+        await flush();
+      });
+      expect(document.documentElement.dataset.skin).toBe("graphite");
+    });
+  });
+
   describe("Prompt Studio section", () => {
     let container: HTMLDivElement;
     let root: Root;

@@ -207,7 +207,8 @@ describe("theme tokens", () => {
   it("offers the translucent cursor-style vibrancy skin, gated behind data-skin", () => {
     // Pure black cannot host the wallpaper wash, so the skin lifts the dark
     // grounds back to near-black before letting AppKit's material through.
-    const skinBlock = css.slice(css.indexOf('.dark[data-skin="vibrancy"]'));
+    const skinStart = css.indexOf('.dark[data-skin="vibrancy"]');
+    const skinBlock = css.slice(skinStart, css.indexOf("}", skinStart));
     expect(skinBlock).toMatch(/--background:\s*#111111/);
     expect(css).toMatch(
       /html\[data-tauri\]\[data-skin="vibrancy"\] \.u-app-shell\s*\{\s*background:\s*transparent/,
