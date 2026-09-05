@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowRight, Bot, CircleDot, Hammer, LoaderCircle, Maximize2, Minimize2, Navigation, RefreshCw, User, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { AgentEvent, Session, WorkerRuntimeRecord } from "../types";
+import { readWireKind } from "../transcript/wire";
 import { cn } from "@/lib/utils";
 import { formatElapsed } from "../utils";
 import { workerStatus, type WorkerTone } from "./workerStatus";
@@ -68,7 +69,7 @@ function cacheFeed(sessionId: string, events: AgentEvent[]) {
 }
 
 function FeedIcon({ event }: { event: AgentEvent }) {
-  if (event.kind.startsWith("tool.")) return <Hammer size={11} className="text-muted-foreground" aria-hidden="true" />;
+  if (readWireKind(event.kind).startsWith("tool.")) return <Hammer size={11} className="text-muted-foreground" aria-hidden="true" />;
   if (event.role === "user") return <User size={11} className="text-muted-foreground" aria-hidden="true" />;
   if (event.role === "assistant") return <Bot size={11} className="text-muted-foreground" aria-hidden="true" />;
   return <CircleDot size={11} className="text-muted-foreground/60" aria-hidden="true" />;
@@ -77,8 +78,9 @@ function FeedIcon({ event }: { event: AgentEvent }) {
 function feedLabel(event: AgentEvent): string | null {
   const title = (event.title ?? "").trim();
   const text = (event.text ?? "").trim();
-  if (event.kind === "tool.started") return title ? `Running ${title}` : text ? `Running ${text}` : "Running a tool";
-  if (event.kind === "tool.completed") return title || text || "Tool finished";
+  const kind = readWireKind(event.kind);
+  if (kind === "tool.started") return title ? `Running ${title}` : text ? `Running ${text}` : "Running a tool";
+  if (kind === "tool.completed") return title || text || "Tool finished";
   return text || title || null;
 }
 
@@ -228,7 +230,7 @@ export function WorkerDetail({
           {feed.map(event => (
             <li key={eventKey(event)} className="flex items-start gap-2">
               <span className="mt-[3px] w-4 shrink-0 text-center"><FeedIcon event={event}/></span>
-              <p className={cn("m-0 min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[10.5px] leading-[1.55]", event.kind.startsWith("tool.") ? "text-muted-foreground" : "text-foreground/85")}>{feedLabel(event)}</p>
+              <p className={cn("m-0 min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[10.5px] leading-[1.55]", readWireKind(event.kind).startsWith("tool.") ? "text-muted-foreground" : "text-foreground/85")}>{feedLabel(event)}</p>
             </li>
           ))}
         </ol>

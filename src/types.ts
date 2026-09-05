@@ -31,10 +31,13 @@ import type {
   AutomationProvider,
   SaveAutomationParams,
 } from "./protocol/generated/protocol";
+import type { WireKind } from "./transcript/wire";
 
 // ---------------------------------------------------------------------------
 // Contracted shapes, re-exported under their app names.
 // ---------------------------------------------------------------------------
+
+export type { WireKind } from "./transcript/wire";
 
 export type {
   AdapterDescriptor,
@@ -130,8 +133,13 @@ export type {
 
 /** A durable/live agent event. The contract types `data`/`providerMeta` as
  * arbitrary structured JSON; every producer emits objects, and the
- * conversation UI reads them as objects, so the frontend narrows here. */
-export type AgentEvent = Omit<ReplaySessionEvent, "data" | "providerMeta"> & {
+ * conversation UI reads them as objects, so the frontend narrows here.
+ *
+ * `kind` is branded rather than a bare string: the wire vocabulary belongs to
+ * the transcript codec, and branding it turns "one more per-harness branch in a
+ * component" into a compile error. See `src/transcript/wire.ts`. */
+export type AgentEvent = Omit<ReplaySessionEvent, "data" | "providerMeta" | "kind"> & {
+  kind: WireKind;
   data: Record<string, unknown>;
   providerMeta: Record<string, unknown>;
   /**

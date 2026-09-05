@@ -3,13 +3,14 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentEvent, SessionEntry } from "../types";
+import { asWireKind } from "../transcript/wire";
 import type { SessionHead } from "../protocol/generated/protocol";
 import { TRANSCRIPT_PAGE_SIZE, TranscriptPane, type TranscriptLoader } from "./TranscriptPane";
 
 // Contract: testing/feat-dock-transcript.md §1–§3.
 
 const event = (id: number, sequence: number, kind: string, overrides: Partial<AgentEvent> = {}): AgentEvent => ({
-  id, sessionId: "s", sequence, protocolVersion: 1, kind, itemId: null, role: null, status: null,
+  id, sessionId: "s", sequence, protocolVersion: 1, kind: asWireKind(kind), itemId: null, role: null, status: null,
   title: null, text: null, data: {}, providerMeta: {}, createdAt: "2026-08-25T10:00:00Z", ...overrides,
 });
 

@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AsideChat } from "./AsideChat";
+import { asWireKind } from "../transcript/wire";
 import { bridgeApi } from "../api";
 import type { ComposerAttachment } from "../pasteAttachments";
 import type { AdapterDescriptor, AgentEvent, Session } from "../types";
@@ -56,7 +57,7 @@ afterEach(() => {
 const dialog = () => container.querySelector<HTMLElement>('div[role="dialog"]')!;
 
 const makeEvent = (sequence: number): AgentEvent => ({
-  id: sequence, sessionId: "aside-1", sequence, protocolVersion: 1, kind: "assistant.delta", itemId: null, role: "assistant", status: null, title: null, text: "…", data: {}, providerMeta: {}, createdAt: "now",
+  id: sequence, sessionId: "aside-1", sequence, protocolVersion: 1, kind: asWireKind("assistant.delta"), itemId: null, role: "assistant", status: null, title: null, text: "…", data: {}, providerMeta: {}, createdAt: "now",
 });
 
 describe("AsideChat", () => {
@@ -253,7 +254,7 @@ describe("AsideChat", () => {
     const onResolve = vi.fn();
     await mount({
       onResolve,
-      events: [{ id: 7, sessionId: "aside-1", sequence: 7, protocolVersion: 1, kind: "approval.requested", itemId: null, role: null, status: "pending", title: "Run bun test", text: "bun test", data: {}, providerMeta: {}, createdAt: "now" }],
+      events: [{ id: 7, sessionId: "aside-1", sequence: 7, protocolVersion: 1, kind: asWireKind("approval.requested"), itemId: null, role: null, status: "pending", title: "Run bun test", text: "bun test", data: {}, providerMeta: {}, createdAt: "now" }],
     });
     const approve = [...container.querySelectorAll("button")].find(button => /approve|allow|accept/i.test(button.textContent ?? ""))!;
     expect(approve).toBeTruthy();

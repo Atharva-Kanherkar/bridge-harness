@@ -1,0 +1,102 @@
+/**
+ * Loading the golden streams.
+ *
+ * Separate from `golden.test.ts` so the jsdom render test can use the same
+ * fixtures without duplicating the hydration, and so neither test has to know
+ * that a fixture is JSON on disk.
+ */
+
+import claude from "./fixtures/claude.json";
+import codex from "./fixtures/codex.json";
+import cursor from "./fixtures/cursor.json";
+import opencode from "./fixtures/opencode.json";
+import { asWireKind } from "./wire";
+import { normalizeAgentEvent } from "./codec";
+import { reduceTranscript } from "./reducer";
+import type { ConversationItem } from "./item";
+import type { AgentEvent, SessionEntry } from "../types";
+
+export const HARNESSES = ["claude", "codex", "cursor", "opencode"] as const;
+export type GoldenHarness = (typeof HARNESSES)[number];
+
+interface RawFixtureEvent {
+  id: number;
+  sequence: number;
+  kind: string;
+  itemId?: string;
+  role?: string;
+  status?: string;
+  title?: string;
+  text?: string;
+  data?: Record<string, unknown>;
+}
+
+const STREAMS: Record<GoldenHarness, unknown> = { claude, codex, cursor, opencode };
+
+/** One harness's turn, as `bridgeApi.onAgentEvent` would deliver it. */
+export function harnessStream(harness: GoldenHarness): AgentEvent[] {
+  return (STREAMS[harness] as RawFixtureEvent[]).map(raw => ({
+    id: raw.id,
+    sessionId: harness,
+    sequence: raw.sequence,
+    protocolVersion: 1,
+    kind: asWireKind(raw.kind),
+    itemId: raw.itemId ?? null,
+    role: raw.role ?? null,
+    status: raw.status ?? null,
+    title: raw.title ?? null,
+    text: raw.text ?? null,
+    data: raw.data ?? {},
+    providerMeta: { adapter: harness },
+    createdAt: "2026-09-05T10:00:00Z",
+  }));
+}
+
+export function reduceHarness(harness: GoldenHarness): ConversationItem[] {
+  return reduceTranscript(harnessStream(harness).map(normalizeAgentEvent));
+}
+
+/**
+ * The same turn, as the durable writer would have stored it.
+ *
+ * Mirrors `store::session_event_in_transaction`: only frames with
+ * `sequence > 0` are persisted (transient deltas, progress and turn markers
+ * carry `sequence: 0` and are never written to the forest); a
+ * `message.completed` is rewritten to `user.message`/`assistant.message` by
+ * role; every other kind is stored unchanged. The payload carries the raw
+ * event's `itemId`, `role`, `status`, `title`, `text` and `data`, exactly the
+ * fields `normalizeSessionEntry` reads back out.
+ */
+export function durableEntries(harness: GoldenHarness): SessionEntry[] {
+  const persisted = (STREAMS[harness] as RawFixtureEvent[]).filter(event => event.sequence > 0);
+  const entries: SessionEntry[] = [];
+  let parentEntryId: string | null = null;
+  for (const event of persisted) {
+    const id = `${harness}-e${event.sequence}`;
+    const kind = event.kind === "message.completed"
+      ? (event.role === "user" ? "user.message" : "assistant.message")
+      : event.kind;
+    entries.push({
+      id,
+      sessionId: harness,
+      parentEntryId,
+      sequence: event.sequence,
+      semanticSchemaVersion: 2,
+      kind,
+      payload: {
+        itemId: event.itemId ?? null,
+        role: event.role ?? null,
+        status: event.status ?? null,
+        title: event.title ?? null,
+        text: event.text ?? null,
+        data: event.data ?? {},
+      },
+      providerEventId: null,
+      contextVisibility: "eligible",
+      tokenEstimate: null,
+      createdAt: "2026-09-05T10:00:00Z",
+    });
+    parentEntryId = id;
+  }
+  return entries;
+}

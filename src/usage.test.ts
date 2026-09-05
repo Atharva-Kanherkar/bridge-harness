@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import type { AgentEvent } from "./types";
 import type { Session, UsageLedgerRow } from "./types";
+import { asWireKind } from "./transcript/wire";
 import { buildCacheDiagnostics, buildUsageHistory, clampPercent, contextPressure, extractUsageSnapshot, formatReset, latestUsageSnapshot, MAX_CACHE_DIAGNOSTIC_ROWS, projectUsageExhaustion, windowLabel } from "./usage";
 
 function event(kind: string, data: Record<string, unknown>, sequence = 1): AgentEvent {
-  return { id: sequence, sessionId: "s1", sequence, protocolVersion: 1, kind, itemId: null, role: null, status: null, title: null, text: null, data, providerMeta: {}, createdAt: new Date().toISOString() };
+  return { id: sequence, sessionId: "s1", sequence, protocolVersion: 1, kind: asWireKind(kind), itemId: null, role: null, status: null, title: null, text: null, data, providerMeta: {}, createdAt: new Date().toISOString() };
 }
 
 function ledger(overrides: Partial<UsageLedgerRow> = {}): UsageLedgerRow {

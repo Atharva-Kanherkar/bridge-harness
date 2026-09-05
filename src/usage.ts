@@ -1,4 +1,5 @@
 import type { AgentEvent, Harness, Session, SessionStatus, UsageLedgerRow } from "./types";
+import { readWireKind } from "./transcript/wire";
 
 // Ambient subscription-usage snapshot, parsed from real provider `usage.updated`
 // events. Codex (app-server) reports `rate_limits` windows — the same data its
@@ -358,7 +359,7 @@ export function buildCacheDiagnostics(rows: UsageLedgerRow[]): CacheDiagnostic[]
 /** Latest real usage snapshot from a session's live event stream, if any. */
 export function latestUsageSnapshot(events: AgentEvent[]): UsageSnapshot | null {
   for (let index = events.length - 1; index >= 0; index -= 1) {
-    if (events[index].kind === "usage.updated") {
+    if (readWireKind(events[index].kind) === "usage.updated") {
       const snapshot = extractUsageSnapshot(events[index].data);
       if (snapshot) return snapshot;
     }

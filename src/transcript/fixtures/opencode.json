@@ -1,0 +1,46 @@
+[
+  { "id": 1, "sequence": 1, "kind": "message.completed", "itemId": "user-1", "role": "user", "status": "completed", "text": "Run the tests and fix the failing case.", "data": {} },
+
+  { "id": 0, "sequence": 0, "kind": "reasoning.delta", "itemId": "reasoning-1", "role": "assistant", "status": "inProgress", "text": "Start with the suite.",
+    "data": { "type": "reasoning", "id": "reasoning-1", "reasoning": "Start with the suite." } },
+  { "id": 2, "sequence": 2, "kind": "reasoning.completed", "itemId": "reasoning-1", "role": "assistant", "status": "completed", "text": "Start with the suite.",
+    "data": { "type": "reasoning", "id": "reasoning-1", "reasoning": "Start with the suite.", "time": { "end": 1 } } },
+
+  { "id": 3, "sequence": 3, "kind": "command.started", "itemId": "part-tool-1", "title": "bun test", "status": "inProgress",
+    "data": { "type": "tool", "id": "part-tool-1", "tool": "bash",
+      "state": { "status": "running", "title": "bun test", "input": { "command": "bun test" } } } },
+  { "id": 4, "sequence": 4, "kind": "command.started", "itemId": "part-tool-1", "title": "bun test", "status": "inProgress", "text": "1 failing\n",
+    "data": { "type": "tool", "id": "part-tool-1", "tool": "bash",
+      "state": { "status": "running", "title": "bun test", "input": { "command": "bun test" }, "output": "1 failing\n" } } },
+  { "id": 5, "sequence": 5, "kind": "command.completed", "itemId": "part-tool-1", "title": "bun test", "status": "completed", "text": "1 failing\n",
+    "data": { "type": "tool", "id": "part-tool-1", "tool": "bash",
+      "state": { "status": "completed", "title": "bun test", "input": { "command": "bun test" }, "output": "1 failing\n",
+        "metadata": { "exit": 1 }, "time": { "start": 0, "end": 1200 } }, "durationMs": 1200 } },
+
+  { "id": 0, "sequence": 0, "kind": "reasoning.delta", "itemId": "reasoning-2", "role": "assistant", "status": "inProgress", "text": "Read the file it points at.",
+    "data": { "type": "reasoning", "id": "reasoning-2", "reasoning": "Read the file it points at." } },
+  { "id": 6, "sequence": 6, "kind": "reasoning.completed", "itemId": "reasoning-2", "role": "assistant", "status": "completed", "text": "Read the file it points at.",
+    "data": { "type": "reasoning", "id": "reasoning-2", "reasoning": "Read the file it points at.", "time": { "end": 2 } } },
+
+  { "id": 7, "sequence": 7, "kind": "tool.started", "itemId": "part-tool-2", "title": "Read src/lib.rs", "status": "inProgress",
+    "data": { "type": "tool", "id": "part-tool-2", "tool": "read",
+      "state": { "status": "running", "title": "Read src/lib.rs", "input": { "filePath": "src/lib.rs" } } } },
+  { "id": 8, "sequence": 8, "kind": "tool.completed", "itemId": "part-tool-2", "title": "Read src/lib.rs", "status": "completed", "text": "fn a() {}\n",
+    "data": { "type": "tool", "id": "part-tool-2", "tool": "read", "durationMs": 40,
+      "state": { "status": "completed", "title": "Read src/lib.rs", "input": { "filePath": "src/lib.rs" }, "output": "fn a() {}\n" } } },
+
+  { "id": 9, "sequence": 9, "kind": "file_change.started", "itemId": "part-tool-3", "title": "Edit src/lib.rs", "status": "inProgress",
+    "data": { "type": "tool", "id": "part-tool-3", "tool": "edit",
+      "state": { "status": "running", "title": "Edit src/lib.rs", "input": { "filePath": "src/lib.rs" } } } },
+  { "id": 10, "sequence": 10, "kind": "file_change.completed", "itemId": "part-tool-3", "title": "Edit src/lib.rs", "status": "completed", "text": "edited",
+    "data": { "type": "tool", "id": "part-tool-3", "tool": "edit", "additions": 1, "deletions": 1, "durationMs": 80,
+      "state": { "status": "completed", "title": "Edit src/lib.rs", "input": { "filePath": "src/lib.rs" }, "output": "edited",
+        "diff": "@@ -1,1 +1,1 @@\n-fn a() {}\n+fn a() { 1 }\n" } } },
+
+  { "id": 0, "sequence": 0, "kind": "message.delta", "itemId": "part-text-1", "role": "assistant", "status": "inProgress", "text": "Fixed the assertion in src/lib.rs.",
+    "data": { "type": "text", "id": "part-text-1", "text": "Fixed the assertion in src/lib.rs." } },
+  { "id": 11, "sequence": 11, "kind": "message.completed", "itemId": "part-text-1", "role": "assistant", "status": "completed", "text": "Fixed the assertion in src/lib.rs.",
+    "data": { "type": "text", "id": "part-text-1", "text": "Fixed the assertion in src/lib.rs.", "time": { "end": 3 } } },
+
+  { "id": 0, "sequence": 0, "kind": "turn.completed", "status": "completed", "data": {} }
+]

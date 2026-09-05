@@ -2,6 +2,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import type { AgentEvent, BridgeEvent, Session, WorkerRuntimeRecord } from "../types";
 import { MissionControl } from "./MissionControl";
+import { asWireKind } from "../transcript/wire";
 
 const NOW = Date.parse("2026-07-29T10:05:00Z");
 
@@ -47,7 +48,7 @@ const event = (id: number, sessionId: string, text: string): AgentEvent => ({
   sessionId,
   sequence: id,
   protocolVersion: 1,
-  kind: "reasoning",
+  kind: asWireKind("reasoning"),
   itemId: null,
   role: "assistant",
   status: null,
