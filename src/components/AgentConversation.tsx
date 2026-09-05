@@ -919,8 +919,31 @@ function ScrollFollow({ sessionKey, populated, signature, className, children }:
   }}>{children}</div>;
 }
 
+/// *This item is in progress.* A running tool call, a plan step being executed,
+/// a worker still going. Deliberately not the thinking mark: thinking is about
+/// text still arriving, this is about an operation still running, and
+/// `docs/transcript-behavior-contract.md` keeps the two apart.
 function PulseDot({ size = 8 }: { size?: number }) {
   return <span className="inline-block flex-none rounded-full bg-muted-foreground/60 animate-[thinking-pulse_1.6s_ease-in-out_infinite]" style={{ width: size, height: size }} aria-hidden="true" />;
+}
+
+/// The transcript's one thinking mark: a single achromatic sweep, meaning
+/// "there is more of this coming".
+///
+/// One animation, one call site per meaning. A streaming thought used to pulse
+/// its icon *and* sweep its label, while a reply whose first token had not
+/// landed drew a third, unrelated bar — three animations for one statement, and
+/// nothing tying them together. This is that statement.
+function ThinkingMark({ className }: { className?: string }) {
+  return <span className={cn("thinking-shimmer block h-[2px] w-16 rounded-full", className)} aria-hidden="true"/>;
+}
+
+/// Whether an item's text is still arriving. Both spellings are recognized for
+/// the same reason the reducer recognizes both: the codec defaults a started
+/// thought to `streaming`, and an older durable entry may still say
+/// `inProgress`.
+function isStreamingText(status?: string): boolean {
+  return status === "streaming" || status === "inProgress";
 }
 
 function GreetingEmpty({ seed, projectName }: { seed?: string; projectName?: string }) {
@@ -965,7 +988,9 @@ const MessageRow = memo(function MessageRow({ item, onRemember }: { item: Conver
   // No bubble, no card: the agent writes straight onto the canvas, in body
   // ink a step under `foreground` so prose reads as text rather than chrome.
   return <div className="group w-full min-w-0 text-[14px] text-body">
-    {item.status === "streaming" && !item.text.trim() ? <div className="thinking-shimmer h-[2px] w-16 rounded-full" /> : <Markdown text={item.text} dim={item.status === "streaming"} />}
+    {/* A reply whose first token has not landed is the same statement a
+        streaming thought makes, so it draws the same mark. */}
+    {isStreamingText(item.status) && !item.text.trim() ? <ThinkingMark/> : <Markdown text={item.text} dim={item.status === "streaming"} />}
     {onRemember && item.status !== "streaming" && item.text.trim() !== "" && (
       <button
         type="button"
@@ -1086,8 +1111,19 @@ function RawEventGroup({ items }: { items: ConversationItem[] }) {
   </details>;
 }
 
+/// The transcript's one thinking presentation, in its two states.
+///
+/// Driven by `item.status` and nothing else: never by which agent produced the
+/// turn, never by a wire kind. Streaming is open, with the one thinking mark
+/// beside the label; completed collapses to a single line and stays collapsed
+/// until the reader opens it. The icon is the same in both, so a thought
+/// settling does not change the row's identity under the eye.
+///
+/// `docs/transcript-behavior-contract.md` is the statement of this; every other
+/// row that means "still going" either draws `ThinkingMark` or is `PulseDot`,
+/// which means something else.
 const Reasoning = memo(function Reasoning({ item }: { item: ConversationItem }) {
-  const streaming = item.status === "streaming";
+  const streaming = isStreamingText(item.status);
   const text = item.text || stringList(item.data.summary);
   const durationMs = typeof item.data.durationMs === "number" ? item.data.durationMs : undefined;
   const lastLine = text.split("\n").map(line => line.trim()).filter(Boolean).at(-1);
@@ -1095,10 +1131,10 @@ const Reasoning = memo(function Reasoning({ item }: { item: ConversationItem }) 
   if (streaming) {
     const lines = text.split("\n").map(line => line.trim()).filter(Boolean);
     return (
-      <div className="my-3 flex min-w-0 items-start gap-3 rounded-xl border border-border bg-card px-3.5 py-3 sm:px-4">
-        <Brain size={14} className="mt-0.5 shrink-0 text-muted-foreground animate-[thinking-pulse_1.6s_ease-in-out_infinite]" aria-hidden="true"/>
+      <div data-thinking="streaming" className="my-3 flex min-w-0 items-start gap-3 rounded-xl border border-border bg-card px-3.5 py-3 sm:px-4">
+        <Brain size={14} className="mt-0.5 shrink-0 text-muted-foreground/70" aria-hidden="true"/>
         <div className="min-w-0 flex-1">
-          <span className="text-shimmer text-[12px] font-medium">Thinking…</span>
+          <span className="flex items-center gap-2 text-[12px] font-medium text-muted-foreground">Thinking…<ThinkingMark/></span>
           {lines.length > 0 && <div className="mt-1.5 space-y-0.5">
             {lines.map((line, index) => <p key={index} className={`whitespace-pre-wrap break-words text-[12px] leading-relaxed ${index === lines.length - 1 ? "text-muted-foreground" : "text-muted-foreground/70"}`}>{line}</p>)}
           </div>}
@@ -1107,7 +1143,7 @@ const Reasoning = memo(function Reasoning({ item }: { item: ConversationItem }) 
     );
   }
   return (
-    <details className="group my-3 min-w-0 rounded-xl border border-border bg-card [&_summary::-webkit-details-marker]:hidden">
+    <details data-thinking="completed" className="group my-3 min-w-0 rounded-xl border border-border bg-card [&_summary::-webkit-details-marker]:hidden">
       <summary className="flex cursor-pointer items-center gap-2.5 px-3.5 py-2.5 text-[12px] text-muted-foreground transition-colors hover:text-foreground sm:px-4">
         <Brain size={13} className="shrink-0 text-muted-foreground/70" aria-hidden="true"/>
         <span className="min-w-0 flex-1 truncate">

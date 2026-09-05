@@ -26,6 +26,8 @@ Every controller append stamps the entry with the repository `HEAD` and a determ
 
 The React UI requests a forest snapshot and walks from the active leaf to the root. Raw provider notifications stay inspectable but collapsed. The legacy linear `agent_events` table is removed at schema version 6; normalized adapter events append directly to the forest.
 
+How that projection is drawn, and what a reader is entitled to see identically whichever agent produced the turn, is [`transcript-behavior-contract.md`](transcript-behavior-contract.md): thinking presentation, grouping invariants, stream-state meanings, and the rule that a harness id is display and never behavior. It also explains why a frame the forest refuses to persist (anything ending in `.delta`) has to be assembled into a durable one by the adapter rather than left to the live window.
+
 ## Session recall
 
 FTS5 indexes conversational `session_entries` (`user.message`, `assistant.message`, `worker.result`, plus checkpoint/compaction/branch summaries). Search is always `session_id = ?`. Direct chats with a NULL workspace still do not share a bucket: each chat has its own id. There is no workspace-wide MATCH, no LLM, and no account-memory lookup.

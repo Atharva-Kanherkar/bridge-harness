@@ -31,9 +31,18 @@ use agent_client_protocol::schema::v1::{
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use uuid::Uuid;
 
 /// The exact wire method carried by an ACP permission interaction.
 pub const ACP_PERMISSION_REQUEST_METHOD: &str = "session/request_permission";
+
+/// How much of one thought run is kept. A thought is persisted and replayed
+/// into a model's context like any other entry, so it is capped for the same
+/// reason the assembled reply is.
+const THOUGHT_BYTES: usize = 1024 * 1024;
+
+/// What a capped thought ends with, so a truncated one says so.
+const THOUGHT_TRUNCATED: &str = "\n[truncated]";
 
 /// How a prompt turn ended.
 ///
@@ -155,6 +164,194 @@ pub fn session_update_event(update: &SessionUpdate) -> NormalizedEvent {
             event
         }
         _ => unknown_frame_event(frame),
+    }
+}
+
+/// One run of `agent_thought_chunk` updates, held so that it can be closed.
+///
+/// **ACP has no "thought completed" frame.** A thought arrives as chunks and
+/// simply stops when the agent moves on to something else. Every other
+/// normalizer Bridge has emits a terminal reasoning event — Codex on
+/// `item/completed`, OpenCode when the part carries `time.end`, the Claude
+/// sidecar directly — and the transcript is built on that: a thought card
+/// shimmers until its completion settles it, and the session forest refuses to
+/// persist a kind ending in `.delta`. So an ACP thought used to shimmer until
+/// the whole turn ended, and a reloaded Cursor conversation had no thoughts in
+/// it at all, however many the live window had shown.
+///
+/// The run is closed here instead, at the boundary where the agent moves on:
+/// the first non-thought update after it, or the end of the turn. What is
+/// published is a `reasoning.completed` carrying the accumulated text under the
+/// same item id the run's deltas carried, which is what makes the streamed card
+/// and its persisted twin one item rather than two.
+#[derive(Debug, Default)]
+pub struct AcpThoughtRun {
+    text: String,
+    /// The id every delta in this run carries: the agent's `messageId` when it
+    /// sent one, otherwise the one minted here.
+    item_id: Option<String>,
+    /// Whether `item_id` came from the agent. Only an agent-named run can be
+    /// resumed — a minted id belongs to the run that opened it and to nothing
+    /// else.
+    named: bool,
+    truncated: bool,
+    /// The run this accumulator last closed, kept for the length of the turn.
+    /// An agent is free to break off mid-thought, call a tool, and carry on
+    /// under the same `messageId`; ACP says that is one message, so the second
+    /// completion has to carry the whole thought rather than replace the first
+    /// one's text with its tail.
+    resumable: Option<(String, String)>,
+}
+
+/// Whether an event of this kind means the agent moved on from what it was
+/// thinking, so an open thought run should close.
+///
+/// ACP interleaves non-conversational notifications into the middle of a
+/// turn wherever the agent's runtime happens to flush them: a `usage_update`,
+/// an `available_commands_update`, a mode or config change, a session
+/// lifecycle frame. None of those are the agent moving on — they are
+/// bookkeeping that arrives beside whatever it is actually doing. Treating
+/// every one of them as "moved on" closed a thought run early: a `usage_update`
+/// landing between two chunks of one thought split it in two, so an
+/// agent-named run had to be stitched back together into one card with two
+/// completions, and an unnamed run became two cards, the first a fragment.
+/// Only a conversational move — prose, a tool call, a plan update, an
+/// approval or permission exchange, an error, or the turn itself ending —
+/// actually ends what the agent was thinking, so only those kinds close the
+/// run here. Anything else passes through untouched and the run stays open.
+fn is_conversational(kind: &str) -> bool {
+    const PREFIXES: &[&str] = &[
+        "message.",
+        "tool.",
+        "command.",
+        "file_change.",
+        "diff.",
+        "approval.",
+        "permission.",
+        "question.",
+        "plan.",
+        "turn.",
+        "runtime.",
+    ];
+    kind == "error" || PREFIXES.iter().any(|prefix| kind.starts_with(prefix))
+}
+
+impl AcpThoughtRun {
+    /// Fold one normalized event into the run, returning the completion this
+    /// event ended, if any.
+    ///
+    /// Takes the event by `&mut` for one reason: a chunk the agent did not name
+    /// leaves with the run's minted id stamped on it, so the deltas and the
+    /// completion agree on which thought they are.
+    pub fn absorb(&mut self, event: &mut NormalizedEvent) -> Option<NormalizedEvent> {
+        if event.kind != "reasoning.delta" {
+            if !is_conversational(&event.kind) {
+                // Usage, commands, mode, config, session lifecycle, and
+                // unrecognized frames are not the agent moving on — leave the
+                // run open and let the frame pass through untouched.
+                return None;
+            }
+            // A conversational move is the agent moving on. A run that is
+            // already closed stays closed: `close` is a no-op with nothing
+            // open.
+            return self.close();
+        }
+        let incoming = event.item_id.clone();
+        let ended = (!self.continues(incoming.as_deref()))
+            .then(|| self.close())
+            .flatten();
+        if self.item_id.is_none() {
+            self.open(incoming.as_deref());
+        }
+        if event.item_id.is_none() {
+            event.item_id.clone_from(&self.item_id);
+        }
+        if let Some(text) = event.text.as_deref() {
+            self.push(text);
+        }
+        ended
+    }
+
+    /// The completion for whatever is open, and nothing when nothing is.
+    pub fn close(&mut self) -> Option<NormalizedEvent> {
+        let item_id = self.item_id.take()?;
+        let text = std::mem::take(&mut self.text);
+        let truncated = std::mem::replace(&mut self.truncated, false);
+        let named = std::mem::replace(&mut self.named, false);
+        if text.trim().is_empty() {
+            return None;
+        }
+        // Only an agent-named run is worth keeping: a minted id can never be
+        // matched by a later chunk, so holding its text would only strand it.
+        self.resumable = named.then(|| (item_id.clone(), text.clone()));
+        let mut event = NormalizedEvent::new("reasoning.completed");
+        event.item_id = Some(item_id);
+        event.status = Some("completed".into());
+        event.text = Some(if truncated {
+            format!("{text}{THOUGHT_TRUNCATED}")
+        } else {
+            text
+        });
+        event.data = json!({"assembledFrom": "reasoning.delta"});
+        Some(event)
+    }
+
+    /// Arm the accumulator for a turn about to start. Deltas can arrive with no
+    /// prompt outstanding — this module accepts what an agent flushes after a
+    /// cancel — so a turn boundary clears the run rather than only draining it.
+    pub fn reset(&mut self) {
+        *self = Self::default();
+    }
+
+    /// Whether a chunk belongs to the run in flight. ACP states that a change of
+    /// `messageId` starts a new message, so a chunk carrying a different one
+    /// ends this run instead of being concatenated onto it. An unnamed chunk
+    /// continues whatever is open, because the only id it could carry is the one
+    /// minted here.
+    fn continues(&self, item_id: Option<&str>) -> bool {
+        match item_id {
+            None => true,
+            Some(incoming) => self.item_id.as_deref() == Some(incoming),
+        }
+    }
+
+    fn open(&mut self, item_id: Option<&str>) {
+        if let Some(id) = item_id {
+            if let Some((resumed, text)) = self
+                .resumable
+                .take()
+                .filter(|(resumed, _)| resumed.as_str() == id)
+            {
+                self.item_id = Some(resumed);
+                self.text = text;
+                self.named = true;
+                return;
+            }
+        }
+        self.resumable = None;
+        self.named = item_id.is_some();
+        self.item_id = Some(
+            item_id
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("acp-thought-{}", Uuid::new_v4())),
+        );
+    }
+
+    /// Append one chunk, stopping at the cap rather than growing past it. The
+    /// cut lands on a character boundary, because the text is persisted and
+    /// replayed to a model rather than only shown.
+    fn push(&mut self, text: &str) {
+        let room = THOUGHT_BYTES.saturating_sub(self.text.len());
+        if text.len() <= room {
+            self.text.push_str(text);
+            return;
+        }
+        let mut cut = room;
+        while cut > 0 && !text.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        self.text.push_str(&text[..cut]);
+        self.truncated = true;
     }
 }
 
@@ -469,8 +666,8 @@ fn with_data(kind: &str, data: Value) -> NormalizedEvent {
 mod tests {
     use super::*;
     use agent_client_protocol::schema::v1::{
-        AvailableCommand, AvailableCommandsUpdate, CurrentModeUpdate, PermissionOption, Plan,
-        PlanEntry, PlanEntryPriority, PlanEntryStatus, TextContent, ToolCallUpdateFields,
+        AvailableCommand, AvailableCommandsUpdate, CurrentModeUpdate, MessageId, PermissionOption,
+        Plan, PlanEntry, PlanEntryPriority, PlanEntryStatus, TextContent, ToolCallUpdateFields,
         UsageUpdate,
     };
 
@@ -494,6 +691,249 @@ mod tests {
         let event = session_update_event(&SessionUpdate::AgentThoughtChunk(chunk("pondering")));
         assert_eq!(event.kind, "reasoning.delta");
         assert_eq!(event.text.as_deref(), Some("pondering"));
+    }
+
+    /// The stream as [`crate::acp_session`]'s `publish_event` drives it: every
+    /// normalized event goes through the run, and whatever the run closes is
+    /// published just before it.
+    fn drive(run: &mut AcpThoughtRun, updates: &[SessionUpdate]) -> Vec<NormalizedEvent> {
+        let mut published = Vec::new();
+        for update in updates {
+            let mut event = session_update_event(update);
+            if let Some(ended) = run.absorb(&mut event) {
+                published.push(ended);
+            }
+            published.push(event);
+        }
+        published
+    }
+
+    fn thought(text: &str) -> SessionUpdate {
+        SessionUpdate::AgentThoughtChunk(chunk(text))
+    }
+
+    fn named_thought(text: &str, message_id: &str) -> SessionUpdate {
+        let mut content = chunk(text);
+        content.message_id = Some(MessageId::new(message_id));
+        SessionUpdate::AgentThoughtChunk(content)
+    }
+
+    fn tool(id: &'static str) -> SessionUpdate {
+        SessionUpdate::ToolCall(ToolCall::new(id, "bun test"))
+    }
+
+    fn completions(published: &[NormalizedEvent]) -> Vec<&NormalizedEvent> {
+        published
+            .iter()
+            .filter(|event| event.kind == "reasoning.completed")
+            .collect()
+    }
+
+    #[test]
+    fn a_thought_run_closes_before_the_tool_call_that_ended_it() {
+        let mut run = AcpThoughtRun::default();
+        let published = drive(
+            &mut run,
+            &[thought("Start with "), thought("the suite."), tool("call-1")],
+        );
+        let kinds: Vec<&str> = published.iter().map(|event| event.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "reasoning.delta",
+                "reasoning.delta",
+                "reasoning.completed",
+                "tool.started"
+            ],
+            "the completion belongs before the call that ended the thought"
+        );
+        let completed = &published[2];
+        assert_eq!(completed.text.as_deref(), Some("Start with the suite."));
+        assert_eq!(completed.status.as_deref(), Some("completed"));
+        // The id the deltas carried, so the streamed card and the persisted one
+        // are the same item rather than two.
+        assert_eq!(completed.item_id, published[0].item_id);
+        assert_eq!(completed.item_id, published[1].item_id);
+    }
+
+    #[test]
+    fn a_thought_run_open_at_the_end_of_the_turn_still_closes() {
+        let mut run = AcpThoughtRun::default();
+        let published = drive(&mut run, &[thought("Still weighing it.")]);
+        assert_eq!(published.len(), 1, "nothing has ended the run yet");
+        let completed = run.close().expect("the open run closes at turn end");
+        assert_eq!(completed.kind, "reasoning.completed");
+        assert_eq!(completed.text.as_deref(), Some("Still weighing it."));
+        assert_eq!(completed.item_id, published[0].item_id);
+        assert!(run.close().is_none(), "a closed run closes once");
+    }
+
+    #[test]
+    fn two_thought_runs_get_two_ids() {
+        let mut run = AcpThoughtRun::default();
+        let published = drive(
+            &mut run,
+            &[
+                thought("Start with the suite."),
+                tool("call-1"),
+                thought("Read the file it points at."),
+                tool("call-2"),
+            ],
+        );
+        let closed = completions(&published);
+        assert_eq!(closed.len(), 2);
+        assert_eq!(closed[0].text.as_deref(), Some("Start with the suite."));
+        assert_eq!(
+            closed[1].text.as_deref(),
+            Some("Read the file it points at."),
+            "the second run carries only its own text"
+        );
+        assert_ne!(
+            closed[0].item_id, closed[1].item_id,
+            "two thoughts are two cards"
+        );
+        assert!(closed.iter().all(|event| event.item_id.is_some()));
+    }
+
+    #[test]
+    fn an_unnamed_chunk_leaves_with_the_runs_minted_id() {
+        let mut run = AcpThoughtRun::default();
+        let published = drive(&mut run, &[thought("one "), thought("two")]);
+        let minted = published[0].item_id.clone().expect("a run is always named");
+        assert!(minted.starts_with("acp-thought-"));
+        assert_eq!(published[1].item_id.as_deref(), Some(minted.as_str()));
+    }
+
+    #[test]
+    fn an_agent_named_thought_keeps_the_agents_id() {
+        let mut run = AcpThoughtRun::default();
+        let published = drive(&mut run, &[named_thought("hm", "thought-1"), tool("call-1")]);
+        assert_eq!(published[0].item_id.as_deref(), Some("thought-1"));
+        assert_eq!(published[1].item_id.as_deref(), Some("thought-1"));
+    }
+
+    #[test]
+    fn a_thought_resumed_under_the_same_message_id_finishes_as_one_thought() {
+        // ACP: chunks sharing a `messageId` are one message. An agent that
+        // breaks off to call a tool and carries on is still on that message, so
+        // the second completion has to carry the whole thought — otherwise the
+        // durable card's text is replaced by its own tail.
+        let mut run = AcpThoughtRun::default();
+        let published = drive(
+            &mut run,
+            &[
+                named_thought("Start with the suite. ", "thought-1"),
+                tool("call-1"),
+                named_thought("That failed, so read the file.", "thought-1"),
+                tool("call-2"),
+            ],
+        );
+        let closed = completions(&published);
+        assert_eq!(closed.len(), 2);
+        assert_eq!(
+            closed[1].text.as_deref(),
+            Some("Start with the suite. That failed, so read the file.")
+        );
+        assert_eq!(closed[1].item_id.as_deref(), Some("thought-1"));
+    }
+
+    #[test]
+    fn a_new_message_id_starts_a_new_thought_without_a_gap() {
+        let mut run = AcpThoughtRun::default();
+        let published = drive(
+            &mut run,
+            &[named_thought("first", "a"), named_thought("second", "b")],
+        );
+        let kinds: Vec<&str> = published.iter().map(|event| event.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            ["reasoning.delta", "reasoning.completed", "reasoning.delta"],
+            "the id change ends the first thought where it actually ended"
+        );
+        assert_eq!(published[1].item_id.as_deref(), Some("a"));
+        assert_eq!(published[1].text.as_deref(), Some("first"));
+    }
+
+    #[test]
+    fn a_run_that_streamed_nothing_publishes_nothing() {
+        let mut run = AcpThoughtRun::default();
+        let published = drive(&mut run, &[thought(""), tool("call-1")]);
+        assert_eq!(completions(&published).len(), 0);
+    }
+
+    #[test]
+    fn a_turn_boundary_clears_a_run_left_over_from_a_cancel() {
+        let mut run = AcpThoughtRun::default();
+        drive(&mut run, &[thought("abandoned")]);
+        run.reset();
+        assert!(run.close().is_none());
+    }
+
+    #[test]
+    fn a_usage_update_between_chunks_does_not_split_the_thought() {
+        // A `usage_update` is bookkeeping the agent's runtime flushes wherever
+        // it happens to land in the stream, not the agent moving on from what
+        // it was thinking. Closing the run on it used to split one thought
+        // into two cards; the fix leaves the run open and lets the frame pass
+        // through.
+        let mut run = AcpThoughtRun::default();
+        let published = drive(
+            &mut run,
+            &[
+                thought("Start with "),
+                SessionUpdate::UsageUpdate(UsageUpdate::new(120, 200_000)),
+                thought("the suite."),
+                tool("call-1"),
+            ],
+        );
+        let closed = completions(&published);
+        assert_eq!(
+            closed.len(),
+            1,
+            "a usage update must not end the thought it interrupts"
+        );
+        assert_eq!(closed[0].text.as_deref(), Some("Start with the suite."));
+        let kinds: Vec<&str> = published.iter().map(|event| event.kind.as_str()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "reasoning.delta",
+                "usage.updated",
+                "reasoning.delta",
+                "reasoning.completed",
+                "tool.started",
+            ],
+            "the usage update passes through untouched, and the completion \
+             still lands just before the tool call that actually ended it"
+        );
+    }
+
+    #[test]
+    fn an_available_commands_update_between_chunks_does_not_split_an_unnamed_thought() {
+        let mut run = AcpThoughtRun::default();
+        let commands = SessionUpdate::AvailableCommandsUpdate(AvailableCommandsUpdate::new(
+            vec![AvailableCommand::new("plan", "make one")],
+        ));
+        let published = drive(
+            &mut run,
+            &[
+                thought("Weighing "),
+                commands,
+                thought("the options."),
+                tool("call-1"),
+            ],
+        );
+        let closed = completions(&published);
+        assert_eq!(
+            closed.len(),
+            1,
+            "an available-commands update must not end the thought it interrupts"
+        );
+        assert_eq!(closed[0].text.as_deref(), Some("Weighing the options."));
+        assert_eq!(
+            closed[0].item_id, published[0].item_id,
+            "one minted id for the one thought, not two"
+        );
     }
 
     #[test]

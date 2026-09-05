@@ -475,7 +475,7 @@ html[data-native-fullscreen] .u-traffic-inset {
 /* The startup mark: the harness's own glyph, turning while Bridge waits on it.
    Every mark is radially symmetric, so the rotation reads as scintillation
    rather than as a logo being spun. The breathe is the same 2s cadence the
-   shimmer and the reasoning pulse keep. `@media (prefers-reduced-motion)` at
+   shimmer and the in-progress pulse keep. `@media (prefers-reduced-motion)` at
    the bottom of this file freezes both. */
 @keyframes harness-turn {
   to { transform: rotate(360deg); }
@@ -492,9 +492,12 @@ html[data-native-fullscreen] .u-traffic-inset {
     harness-breathe 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
 }
 
-/* Text that shimmers while something is in flight. The `Thinking…` row carried
-   this as an eight-utility arbitrary-value string; two callers is one too many
-   for that, so the gradient lives here once. */
+/* Text that shimmers while something is in flight. Now one caller: the startup
+   narration row, which is session-level and says what Bridge is waiting on
+   before any item exists. The transcript's own thinking mark is
+   `.thinking-shimmer` above, and it is the only animation an item-level row
+   uses to say "there is more of this coming" (see
+   `docs/transcript-behavior-contract.md`). */
 .text-shimmer {
   background: linear-gradient(
     90deg,

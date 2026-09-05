@@ -36,7 +36,11 @@ What differs, and why, is asserted in `../golden.test.ts`:
 - **cursor** — ACP. Every call is `tool.started`/`tool.completed` with the
   category on `data.kind` and the payload under `data.update`; output lives in
   the update's content blocks, and paths in its `locations`. No exit code — the
-  protocol has no field for one.
+  protocol has no field for one. A thought streams as `agent_thought_chunk`
+  updates and the protocol never says it finished, so `acp_events.rs` closes the
+  run itself: the `reasoning.completed` frames here are the ones it assembles,
+  carrying the run's text under the id its deltas carried. They are persisted,
+  which is what gives a replayed Cursor turn its thoughts back.
 - **opencode** — parts with a nested `state`. A running tool re-sends the whole
   part, so progress arrives as a repeated `command.started` rather than as a
   delta. Arguments live under `state.input`, output under `state.output`, and
