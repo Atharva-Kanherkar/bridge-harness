@@ -477,10 +477,12 @@ export function normalizeSessionEntry(entry: SessionEntry): TranscriptEvent | nu
   // Everything below reads the flattened wrapper: the inner event data (tool
   // input, command, output…) wins, so a replayed row renders like a live one.
   const title = stringValue(payload.title) ?? humanizeKind(kind);
+  // Sparse tool updates must preserve the start title when the reducer joins them.
+  const toolTitle = stringValue(payload.title);
   const body = stringValue(payload.text) ?? stringValue(payload.summary) ?? stringValue(payload.reason) ?? "";
   const role = payload.role ? messageRole(payload.role) : undefined;
   const tool = (surface: ToolSurface): ToolCallDisplay =>
-    readToolCall({ title, text: body, status, surface, data: flat });
+    readToolCall({ title: toolTitle, text: body, status, surface, data: flat });
 
   if (kind === "approval.requested") {
     return { type: "approval.requested", envelope, title, text: body, status: status ?? "pending" };
@@ -532,8 +534,8 @@ export function normalizeSessionEntry(entry: SessionEntry): TranscriptEvent | nu
     const surface = surfaceFor(kind, flat);
     const started = kind.endsWith(".started");
     return started
-      ? { type: "tool.started", envelope, surface, title, text: body, status, role, tool: tool(surface) }
-      : { type: "tool.completed", envelope, surface, title, text: body, status, role, tool: tool(surface) };
+      ? { type: "tool.started", envelope, surface, title: toolTitle, text: body, status, role, tool: tool(surface) }
+      : { type: "tool.completed", envelope, surface, title: toolTitle, text: body, status, role, tool: tool(surface) };
   }
   if (isKnownKind(kind)) {
     return { type: "notice", envelope, title, text: body, status, role };

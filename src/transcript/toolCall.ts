@@ -22,7 +22,7 @@ import type { ToolSurface } from "./events";
 export type ToolVerb = "edit" | "read" | "run" | "search" | "tool";
 
 /** Which icon the row wears. A key, not a component. */
-export type ToolGlyph = "pencil" | "file-plus" | "file" | "terminal" | "search" | "globe" | "fork" | "list" | "wrench";
+export type ToolGlyph = "pencil" | "file-plus" | "file" | "terminal" | "search" | "globe" | "fork" | "list" | "wrench" | "brain" | "navigation";
 
 export type ToolStatus = "running" | "completed" | "failed" | "idle";
 
@@ -501,6 +501,8 @@ export function classifyExploratoryCommand(rawCommand: string): {
  * anonymous "Using a tool".
  */
 const ACP_TOOL_KINDS: Record<string, { verb: ToolVerb; glyph: ToolGlyph; doing: string; done: string }> = {
+  think: { verb: "tool", glyph: "brain", doing: "Thinking", done: "Thought" },
+  switch_mode: { verb: "tool", glyph: "navigation", doing: "Switching mode", done: "Switched mode" },
   read: { verb: "read", glyph: "file", doing: "Reading", done: "Read" },
   edit: { verb: "edit", glyph: "pencil", doing: "Editing", done: "Edited" },
   delete: { verb: "edit", glyph: "pencil", doing: "Deleting", done: "Deleted" },
@@ -581,9 +583,9 @@ function namedToolFacet(source: ToolCallSource, data: Record<string, unknown>): 
     if (exploratory) return { ...exploratory, command };
     return { ...acp, target: acp.verb === "run" ? command ?? "command" : file ?? (title || undefined), command };
   }
-  // ACP's uncategorized calls still carry an action title. Preserve that
-  // provider wording without guessing its intent or manufacturing past tense.
-  const action = text(title);
-  if (action) return { verb: "tool", glyph: "wrench", doing: action, done: action };
+  // Provider-neutral fallback: preserve the action wording, with an explicit
+  // state cue that does not depend on the tense chosen by the provider.
+  const action = text(title)?.trim();
+  if (action) return { verb: "tool", glyph: "wrench", doing: `Running: ${action}`, done: `Finished: ${action}` };
   return { verb: "tool", glyph: "wrench", doing: "Using a tool", done: "Used a tool" };
 }

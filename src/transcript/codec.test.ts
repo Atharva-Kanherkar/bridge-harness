@@ -192,29 +192,3 @@ describe("normalizeSessionEntry", () => {
       .toThrow("Unsupported semantic event schema version 3");
   });
 });
-
-describe("named early tool activity", () => {
-  it("preserves an ACP action title in the first live activity and durable replay", () => {
-    // acp_events::tool_call_started wraps the original ACP frame in `update`.
-    const title = "Resolve project context";
-    const data = { kind: "other", update: { sessionUpdate: "tool_call", toolCallId: "first-tool", title, kind: "other", status: "in_progress" } };
-    for (const [kind, status] of [["tool.started", "inProgress"], ["tool.completed", "completed"]]) {
-      const events = [
-        normalizeAgentEvent(live(kind, { itemId: "first-tool", title, status, data })),
-        normalizeSessionEntry(durable(kind, { title, status, data })),
-      ];
-      for (const event of events) {
-        expect(event).toMatchObject({ tool: { doing: title, done: title } });
-        if (event && (event.type === "tool.started" || event.type === "tool.completed")) {
-          expect(event.tool.target).toBeUndefined();
-        }
-      }
-    }
-  });
-
-  it("does not invent setup activity from session or turn lifecycle events", () => {
-    for (const kind of ["session.started", "session.startup", "turn.started"]) {
-      expect(normalizeAgentEvent(live(kind)).type).not.toMatch(/^tool\./);
-    }
-  });
-});

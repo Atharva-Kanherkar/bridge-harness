@@ -6,6 +6,7 @@
  * that a fixture is JSON on disk.
  */
 
+import acpOther from "./fixtures/acp-other.json";
 import claude from "./fixtures/claude.json";
 import codex from "./fixtures/codex.json";
 import cursor from "./fixtures/cursor.json";
@@ -35,7 +36,15 @@ const STREAMS: Record<GoldenHarness, unknown> = { claude, codex, cursor, opencod
 
 /** One harness's turn, as `bridgeApi.onAgentEvent` would deliver it. */
 export function harnessStream(harness: GoldenHarness): AgentEvent[] {
-  return (STREAMS[harness] as RawFixtureEvent[]).map(raw => ({
+  return fixtureStream(harness, STREAMS[harness] as RawFixtureEvent[]);
+}
+
+export function acpOtherStream(): AgentEvent[] {
+  return fixtureStream("cursor", acpOther);
+}
+
+function fixtureStream(harness: GoldenHarness, frames: RawFixtureEvent[]): AgentEvent[] {
+  return frames.map(raw => ({
     id: raw.id,
     sessionId: harness,
     sequence: raw.sequence,

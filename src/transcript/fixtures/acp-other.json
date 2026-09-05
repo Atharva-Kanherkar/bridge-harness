@@ -1,0 +1,44 @@
+[
+  {
+    "id": 1,
+    "sequence": 1,
+    "kind": "tool.started",
+    "itemId": "context",
+    "title": "Resolve project context",
+    "status": "inProgress",
+    "data": {
+      "kind": "other",
+      "update": {
+        "sessionUpdate": "tool_call",
+        "toolCallId": "context",
+        "title": "Resolve project context",
+        "kind": "other",
+        "status": "in_progress"
+      }
+    }
+  },
+  {
+    "id": 0,
+    "sequence": 0,
+    "kind": "tool.progress",
+    "itemId": "context",
+    "status": "inProgress",
+    "data": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "context",
+      "status": "in_progress"
+    }
+  },
+  {
+    "id": 2,
+    "sequence": 2,
+    "kind": "tool.completed",
+    "itemId": "context",
+    "status": "completed",
+    "data": {
+      "sessionUpdate": "tool_call_update",
+      "toolCallId": "context",
+      "status": "completed"
+    }
+  }
+]
