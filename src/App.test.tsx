@@ -684,6 +684,100 @@ describe("the dock in the session view", () => {
     expect(asideId).not.toBe("session-1");
   });
 
+  // Contract: the /btw side chat. The command is Bridge's, not a turn for the
+  // open chat: the question opens beside this conversation with its context,
+  // the chat underneath keeps its selection, its forest, and its composer —
+  // and the turn is delivered to the aside session, never to the parent.
+  it("opens /btw as a side chat that reads the parent and never writes to it", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    const titleBefore = container.querySelector("h1")!.textContent;
+    const createSpy = vi.spyOn(bridgeApi, "createAsideChat");
+    const submitSpy = vi.spyOn(bridgeApi, "submitInput");
+    const type = async (text: string) => {
+      const box = composer()!;
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+        setter.call(box, text);
+        box.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+      await settle(4);
+    };
+    await type("/btw is the plan sound?");
+    const aside = container.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Claude"]');
+    expect(aside).not.toBeNull();
+    expect(aside!.textContent).toContain("is the plan sound?");
+    // The parent chat never moved and its composer is clean.
+    expect(container.querySelector("h1")!.textContent).toBe(titleBefore);
+    expect(composer()!.value).toBe("");
+    // The turn went to the aside session, never to the consulted chat.
+    const sourceId = createSpy.mock.calls[0]?.[0];
+    expect(sourceId).toBeTruthy();
+    expect(submitSpy).toHaveBeenCalled();
+    for (const call of submitSpy.mock.calls) expect(call[0]).not.toBe(sourceId);
+  });
+
+  it("treats /side as the same side-chat command", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    const box = composer()!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "/side what did we pick?");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await settle(4);
+    expect(container.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Claude"]')).not.toBeNull();
+    expect(composer()!.value).toBe("");
+  });
+
+  it("answers a bare /btw with guidance instead of opening an empty aside", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    const box = composer()!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "/btw");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await settle(4);
+    expect(container.querySelector('div[role="dialog"][aria-label^="Aside"]')).toBeNull();
+    expect(container.textContent).toContain("Ask a side question");
+  });
+
+  // Contract: selection opens a side chat. Selecting prose in the transcript
+  // raises an "Ask aside" chip; clicking it opens the side chat with the
+  // excerpt quoted as its first message — the parent conversation untouched.
+  it("offers Ask aside on a transcript selection and quotes the excerpt", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    const transcriptRow = container.querySelector<HTMLElement>("[id^='forest-entry-']");
+    const selectable = transcriptRow
+      ?? [...container.querySelectorAll("h1, h2, p")].find(node => (node.textContent ?? "").trim().length > 3);
+    expect(selectable).toBeTruthy();
+    const range = document.createRange();
+    range.selectNodeContents(selectable!);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    await act(async () => { document.dispatchEvent(new Event("selectionchange")); });
+    await settle(2);
+    const chip = container.querySelector<HTMLButtonElement>("[data-ask-aside-chip]");
+    expect(chip).not.toBeNull();
+    await click(chip!);
+    await settle(4);
+    const aside = container.querySelector<HTMLElement>('div[role="dialog"][aria-label^="Aside with"]')!;
+    expect(aside).not.toBeNull();
+    const expectedQuote = (selectable!.textContent ?? "").trim();
+    expect(aside.textContent).toContain(expectedQuote);
+    // The selection is spent and the chip gone.
+    expect(window.getSelection()!.isCollapsed).toBe(true);
+    expect(container.querySelector("[data-ask-aside-chip]")).toBeNull();
+  });
+
   it("keeps AppTitleBar unchanged on every other view", async () => {
     await mountApp();
     await click(container.querySelector<HTMLButtonElement>('button[title^="Open settings"]')!);

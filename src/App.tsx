@@ -58,6 +58,7 @@ import { scheduleSuggestion } from "./suggestionTypeahead";
 import { projectSessionConversation, reduceConversation, undeliveredPending } from "./conversation";
 import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
 import { resolveAsideModel } from "./asideModel";
+import { parseSideChatCommand, quoteSelection } from "./sideChat";
 import { pickGreeting } from "./greetings";
 import { useThemePreference } from "./theme";
 import { recordPlace, type AppPlace, type AppView } from "./navigationHistory";
@@ -1186,14 +1187,14 @@ function AppContent() {
     // The model the side chat begins on: carry the model of the chat it was
     // asked from when the harness matches, else that harness's Standard model —
     // never the bare adapter default (Codex's is a Fast model; OpenCode's is
-    // null until a provider loads, which is what made codex/opencode asides
-    // start on the wrong model or fail to cold start). See `resolveAsideModel`.
+    // null until a provider loads, which is what used to make codex/opencode
+    // asides start on the wrong model or fail to cold start). See
+    // `resolveAsideModel`. A null result is still valid: every adapter can run
+    // on its own provider default, exactly like a normal new chat — the old
+    // "no model available" refusal here broke asides whenever an adapter's
+    // health payload carried no catalog (the $codex aside never opened).
     const source = state.sessions.find(item => item.id === carryFromSessionId);
     const model = resolveAsideModel(adapter, source ? { harness: source.harness, model: source.model ?? null } : null);
-    if (!model && adapter.models.length === 0) {
-      setError(`${adapter.label} has no model available to start a side chat. Connect a provider model, then try again.`);
-      return;
-    }
     newChatPendingRef.current = true;
     setError(undefined);
     setAsideLifecycle({ sourceSessionId: carryFromSessionId, phase: "creating" });
@@ -1236,6 +1237,30 @@ function AppContent() {
       throw e;
     }
     finally { newChatPendingRef.current = false; }
+  }
+  // Open a side chat beside this conversation (`/btw`, `/side`, or a quoted
+  // transcript selection). The side chat is delegated to the chat it was asked
+  // from — its harness, so a Codex chat gets a Codex side chat and can use the
+  // provider's native thread fork — and reads that chat's context, but it
+  // never appends to it: the aside session is a separate forest, and the only
+  // thing written to the parent is nothing.
+  async function openSideChat(query: string, sourceSessionId: string): Promise<void> {
+    const source = state.sessions.find(item => item.id === sourceSessionId);
+    if (!source) return;
+    const adapter = adapters.find(item => item.id === source.harness);
+    if (!adapter) {
+      setError(`No agent is available to open a side chat from. Connect a provider first.`);
+      return;
+    }
+    if (!adapter.available) {
+      setError(`${adapter.label} isn't available${adapter.unavailableReason ? `: ${adapter.unavailableReason}` : ""}.`);
+      return;
+    }
+    if (!query.trim()) {
+      setError("Ask a side question: type /btw followed by your question. The answer opens beside this chat without touching it.");
+      return;
+    }
+    await openAside(adapter, query, sourceSessionId);
   }
   // Entry point for the Welcome screen's own composer, which has no session
   // to skip past — a `$harness` prefix there is the only branch either way.
@@ -1563,6 +1588,21 @@ function AppContent() {
     const submittedText = (forcedText ?? composer).trim();
     const sentAttachments = forcedAttachments ?? attachments;
     if (!submittedText && sentAttachments.length === 0) return;
+    // `/btw` and `/side` are Bridge's side-chat commands, not turns for the
+    // open chat: the question opens beside this conversation with its context,
+    // and the chat underneath is untouched. With no chat open there is nothing
+    // to consult beside, so the text falls through like any other message.
+    const sideChat = parseSideChatCommand(submittedText);
+    if (sideChat && session) {
+      try {
+        await openSideChat(sideChat.query, session.id);
+        setComposer("");
+      } catch {
+        // The aside lifecycle owns the inline recovery state. Keep the source
+        // draft untouched so Enter is also a valid retry path.
+      }
+      return;
+    }
     // A harness shortcut is a chat launcher, not a turn — `$codex fix the lint`
     // opens a chat whose first message is that text. An image has nowhere to
     // go in that handoff, so with attachments in hand the words route into the
@@ -2217,8 +2257,14 @@ function AppContent() {
                   modelSwitch={modelSwitch?.sessionId === session?.id ? modelSwitch : null}
                    pendingMessages={pendingForSession}
                    pendingAttachments={pendingForSessionAttachments}
-                  onResolve={resolveApproval}
-                  onAnswerQuestion={resolveQuestion}
+                   onResolve={resolveApproval}
+                   onAnswerQuestion={resolveQuestion}
+                   onAskAside={quoted => {
+                     // Selecting transcript prose and asking aside: the same
+                     // side-chat contract as /btw, with the excerpt quoted as
+                     // the side chat's first message.
+                     void openSideChat(quoted, session.id).catch(() => undefined);
+                   }}
                   workspaceFiles={hasRepo ? workspaceFiles : undefined}
                   onOpenFile={hasRepo && workspace ? openFileInDock : undefined}
                   highlightEntryId={highlightEntryId}

@@ -987,13 +987,28 @@ pub fn create_aside_chat(
     model: Option<&str>,
     title: Option<&str>,
 ) -> Result<wire::CreateAsideChatResult, BridgeError> {
-    let (session_id, carried) = core.create_aside_chat_id(source_session_id, harness, model, title)?;
+    let (session_id, carried, native_fork) =
+        core.create_aside_chat_id(source_session_id, harness, model, title)?;
     Ok(wire::CreateAsideChatResult {
         state: protocol_wire(core.state_snapshot()?)?,
         source_session_id: source_session_id.to_owned(),
         session_id,
-        handoff_status: if carried { "carried" } else { "empty" }.into(),
-        fidelity: if carried { "projected_at_boundary" } else { "native" }.into(),
+        handoff_status: if native_fork {
+            "forked"
+        } else if carried {
+            "carried"
+        } else {
+            "empty"
+        }
+        .into(),
+        fidelity: if native_fork {
+            "native"
+        } else if carried {
+            "projected_at_boundary"
+        } else {
+            "native"
+        }
+        .into(),
     })
 }
 

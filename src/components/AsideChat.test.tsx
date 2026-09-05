@@ -316,7 +316,7 @@ describe("AsideChat", () => {
     expect(box.value).toBe("@src/App.tsx ");
   });
 
-  it("completes slash and $harness tokens without sending", async () => {
+  it("completes slash tokens without sending, and never offers a $harness shortcut", async () => {
     const onSend = vi.fn(async () => undefined);
     await mount({
       onSend,
@@ -335,16 +335,21 @@ describe("AsideChat", () => {
     expect(box.value).toBe("/review ");
     expect(onSend).not.toHaveBeenCalled();
 
+    // The aside is pinned to its harness: typing `$` must not offer "talk to a
+    // harness directly" — completing that token used to insert `$claude` text
+    // that was then delivered to the pinned harness as a literal message.
     await act(async () => {
       setter.call(box, "$cl");
       box.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    expect(dialog().textContent).toContain("Talk to a harness directly");
+    expect(dialog().textContent).not.toContain("Talk to a harness directly");
+    // A side chat cannot open a side chat: Bridge's own commands stay out of
+    // the aside picker even when the host catalog carries them.
     await act(async () => {
-      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      setter.call(box, "/bt");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    expect(box.value).toBe("$claude ");
-    expect(onSend).not.toHaveBeenCalled();
+    expect(dialog().textContent).not.toContain("/btw");
   });
 
   it("polls the forest by digest instead of refetching the full snapshot on every streamed event", async () => {

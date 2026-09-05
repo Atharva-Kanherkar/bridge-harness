@@ -1222,6 +1222,7 @@ mod tests {
         started.runtime.stop(ShutdownReason::AppShutdown);
 
         let mut resumed = resume(ResumeRequest {
+            fork: false,
             cwd,
             model: None,
             effort: None,

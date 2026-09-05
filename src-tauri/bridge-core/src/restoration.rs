@@ -10,7 +10,13 @@ use rusqlite::{params, Connection};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestorationPlan {
     Hot,
+    /// Resume the stored provider thread in place.
     Native,
+    /// Fork the stored provider thread into a NEW thread before the first
+    /// turn — a Codex-native side chat: the fork reads the source thread's
+    /// full history and every aside write lands on the fork, so the source
+    /// conversation is never appended to.
+    NativeFork,
     CheckpointRestored,
     Fresh,
 }
@@ -20,22 +26,32 @@ pub fn fallback_after_failure(
     has_stored_context: bool,
 ) -> Option<RestorationPlan> {
     match failed {
-        RestorationPlan::Native if has_stored_context => Some(RestorationPlan::CheckpointRestored),
-        RestorationPlan::Native | RestorationPlan::CheckpointRestored => {
+        RestorationPlan::NativeFork | RestorationPlan::Native if has_stored_context => {
+            Some(RestorationPlan::CheckpointRestored)
+        }
+        RestorationPlan::NativeFork | RestorationPlan::Native | RestorationPlan::CheckpointRestored => {
             Some(RestorationPlan::Fresh)
         }
         RestorationPlan::Fresh | RestorationPlan::Hot => None,
     }
 }
 
+/// Decide how a cold start restores context. `head_requests_fork` is the
+/// persisted aside instruction (`native_fork` head mode, only honored when the
+/// adapter can actually fork) — it outranks the plain resume ladder, because
+/// resuming would continue the source conversation instead of consulting
+/// beside it.
 pub fn select_plan(
     process_is_hot: bool,
     provider_session_id: Option<&str>,
     adapter_supports_native: bool,
     has_stored_context: bool,
+    head_requests_fork: bool,
 ) -> RestorationPlan {
     if process_is_hot {
         RestorationPlan::Hot
+    } else if head_requests_fork && provider_session_id.is_some() && adapter_supports_native {
+        RestorationPlan::NativeFork
     } else if provider_session_id.is_some() && adapter_supports_native {
         RestorationPlan::Native
     } else if has_stored_context {
@@ -196,19 +212,19 @@ mod tests {
     #[test]
     fn restoration_order_is_hot_native_checkpoint_then_fresh() {
         assert_eq!(
-            select_plan(true, Some("p"), true, true),
+            select_plan(true, Some("p"), true, true, false),
             RestorationPlan::Hot
         );
         assert_eq!(
-            select_plan(false, Some("p"), true, true),
+            select_plan(false, Some("p"), true, true, false),
             RestorationPlan::Native
         );
         assert_eq!(
-            select_plan(false, Some("p"), false, true),
+            select_plan(false, Some("p"), false, true, false),
             RestorationPlan::CheckpointRestored
         );
         assert_eq!(
-            select_plan(false, None, false, false),
+            select_plan(false, None, false, false, false),
             RestorationPlan::Fresh
         );
         assert_eq!(
@@ -224,6 +240,35 @@ mod tests {
             Some(RestorationPlan::Fresh)
         );
         assert_eq!(fallback_after_failure(RestorationPlan::Fresh, true), None);
+    }
+
+    #[test]
+    fn a_fork_head_outranks_the_resume_ladder_and_falls_back_like_a_resume() {
+        // The aside's explicit instruction: fork the stored thread, never
+        // resume it in place.
+        assert_eq!(
+            select_plan(false, Some("parent-thread"), true, true, true),
+            RestorationPlan::NativeFork
+        );
+        // Fork support is the gate the caller applies before asking; the plan
+        // honors it only with a thread id to fork.
+        assert_eq!(
+            select_plan(false, None, true, true, true),
+            RestorationPlan::CheckpointRestored
+        );
+        assert_eq!(
+            select_plan(false, Some("parent-thread"), false, true, true),
+            RestorationPlan::CheckpointRestored
+        );
+        assert_eq!(
+            fallback_after_failure(RestorationPlan::NativeFork, true),
+            Some(RestorationPlan::CheckpointRestored),
+            "a failed fork falls back to the projected brief, never to resuming the parent thread"
+        );
+        assert_eq!(
+            fallback_after_failure(RestorationPlan::NativeFork, false),
+            Some(RestorationPlan::Fresh)
+        );
     }
 
     #[test]

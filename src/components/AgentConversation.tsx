@@ -1,6 +1,6 @@
 import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Maximize2, Navigation, Pencil, Pin, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
+import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Maximize2, MessageSquarePlus, Navigation, Pencil, Pin, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
 import { alignTurns, attachmentUris, delegationChildSessionId, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
 import { humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeResolution } from "../humanize";
 import { pickGreeting, type GreetingPart } from "../greetings";
@@ -16,6 +16,7 @@ import { MOTION_DURATION, useMotionStagger, useMotionTransition } from "../motio
 import { workerPanelModel, type WorkerPanelModel } from "./workerPanel";
 import type { WorkerTone } from "./workerStatus";
 import { bridgeApi } from "../api";
+import { quoteSelection } from "../sideChat";
 import { computeNarration, type NarrationView } from "../startupNarration";
 import { HarnessMark } from "./harnessMarks";
 import type { InteractionResolutionResult, QuestionAction } from "../protocol/generated/protocol";
@@ -594,7 +595,7 @@ function StallNotice({ onStop }: { onStop?: () => void }) {
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onExpandWorker, onWaiveCompletion, onRefreshBase, onRetryWorker, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onExpandWorker, onWaiveCompletion, onRefreshBase, onRetryWorker, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void }) {
   const visibleItems = useMemo(() => {
     const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
     const nextLiveItems = reduceConversation(events);
@@ -670,6 +671,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const transcriptIsForThisSession = !session || !historySessionId || historySessionId === session.id;
   const populated = transcriptIsForThisSession && (visibleItems.length > 0 || optimisticBubbles.length > 0);
   return <FileLinkContext.Provider value={fileLinks}><ScrollFollow sessionKey={session?.id ?? "preview"} populated={populated} signature={scrollSignature} className="absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth px-3 py-8 pb-24 sm:px-6 sm:py-10">
+    {onAskAside && <AskAsideChip onAsk={onAskAside}/>}
     <div className="mx-auto flex w-full min-w-0 max-w-3xl flex-col gap-6 sm:gap-8">
       {pendingAdoptions.map(binding => <AdoptionCard key={binding.sessionId} binding={binding} onResolve={onResolveAdoption}/>)}
       {completion && <VerificationCard summary={completion} onWaive={onWaiveCompletion}/>}
@@ -713,6 +715,75 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     </div>
   </ScrollFollow></FileLinkContext.Provider>;
 });
+
+/// Whether the current document selection holds selectable prose worth asking
+/// a side chat about. Collapsed and whitespace-only selections are nothing.
+export function selectionQuote(selection: Selection | null): string | null {
+  if (!selection || selection.isCollapsed) return null;
+  const text = selection.toString().trim();
+  return text ? text : null;
+}
+
+/// The floating "Ask aside" affordance: select any prose in the transcript and
+/// a chip appears at the selection's end; clicking it opens a side chat whose
+/// first message is the quoted selection. The aside reads this conversation's
+/// context and writes nothing back to it — the same contract as `/btw`, with
+/// the excerpt instead of a typed question.
+function AskAsideChip({ onAsk }: { onAsk: (quoted: string) => void }) {
+  const [placement, setPlacement] = useState<{ left: number; top: number } | null>(null);
+  const quoteRef = useRef("");
+  useEffect(() => {
+    const hide = () => setPlacement(null);
+    const read = () => {
+      const selection = window.getSelection();
+      const quote = selectionQuote(selection);
+      if (!quote) { hide(); return; }
+      quoteRef.current = quote;
+      const range = selection && selection.rangeCount > 0 ? selection.getRangeAt(0) : null;
+      // Range.getBoundingClientRect is browser-only (jsdom's Range lacks it);
+      // a missing or zero-sized rect still offers the action, just centered
+      // instead of pinned to the selection's end.
+      const rect = typeof (range as Range | null | undefined)?.getBoundingClientRect === "function"
+        ? range!.getBoundingClientRect()
+        : undefined;
+      setPlacement(rect && (rect.width > 0 || rect.height > 0 || rect.right > 0)
+        ? { left: rect.right, top: rect.bottom }
+        : { left: window.innerWidth / 2, top: window.innerHeight / 2 });
+    };
+    const onSelectionChange = () => window.setTimeout(read, 0);
+    const onPointerDown = (event: MouseEvent) => {
+      if (!(event.target instanceof Element) || !event.target.closest("[data-ask-aside-chip]")) hide();
+    };
+    const onKeyDown = (event: globalThis.KeyboardEvent) => { if (event.key === "Escape") hide(); };
+    document.addEventListener("selectionchange", onSelectionChange);
+    document.addEventListener("mousedown", onPointerDown);
+    document.addEventListener("scroll", hide, true);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("selectionchange", onSelectionChange);
+      document.removeEventListener("mousedown", onPointerDown);
+      document.removeEventListener("scroll", hide, true);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, []);
+  if (!placement) return null;
+  return <button
+    type="button"
+    data-ask-aside-chip
+    aria-label="Ask aside about the selected text"
+    className="u-glass-popover fixed z-50 inline-flex -translate-y-full items-center gap-1.5 rounded-full px-2.5 py-1.5 text-[11px] text-foreground shadow-sm transition-colors hover:bg-accent"
+    style={{ left: Math.max(8, Math.min(placement.left, (typeof window !== "undefined" ? window.innerWidth : 0) - 120)) , top: placement.top }}
+    onMouseDown={event => event.preventDefault()}
+    onClick={() => {
+      onAsk(quoteSelection(quoteRef.current));
+      window.getSelection()?.removeAllRanges();
+      setPlacement(null);
+    }}
+  >
+    <MessageSquarePlus size={12} aria-hidden="true"/>
+    Ask aside
+  </button>;
+}
 
 /// Changes that exist only in a worker's own worktree. The parent session cannot
 /// finish while this is unresolved, so the choice has to be reachable here.

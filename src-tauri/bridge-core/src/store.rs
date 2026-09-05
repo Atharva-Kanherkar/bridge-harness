@@ -2685,6 +2685,7 @@ fn restoration_mode(value: &str) -> RestorationMode {
     match value {
         "hot" => RestorationMode::Hot,
         "native" => RestorationMode::Native,
+        "native_fork" => RestorationMode::NativeFork,
         "checkpoint_restored" => RestorationMode::CheckpointRestored,
         _ => RestorationMode::Fresh,
     }

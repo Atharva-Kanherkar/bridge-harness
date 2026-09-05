@@ -929,6 +929,7 @@ pub fn start_session(
         stored_provider_id.as_deref(),
         state.adapter_registry.supports_native_resume(dispatch_id),
         checkpoint_context.is_some(),
+        false,
     );
     let start_fresh = |instructions: &str| {
         state.adapter_registry.start(
@@ -959,6 +960,11 @@ pub fn start_session(
         })
         .transpose()?;
     let (mut started, restoration_mode, resume_eligibility) = match plan {
+        // Aside creation leaves the fork instruction on the head; a workspace
+        // orchestrator never carries one, so this plan cannot be selected here.
+        restoration::RestorationPlan::NativeFork => {
+            unreachable!("orchestrator sessions never request a native fork")
+        }
         restoration::RestorationPlan::Native => {
             let provider_id = stored_provider_id
                 .as_deref()
@@ -967,6 +973,7 @@ pub fn start_session(
                 dispatch_id,
                 adapters::ResumeRequest {
                     provider_session_id: provider_id,
+                    fork: false,
                     cwd: &path,
                     model: chosen_model.as_deref(),
                     effort: chosen_effort_name,
@@ -1139,7 +1146,9 @@ pub fn start_session(
         Some(&thread_id),
     )?;
     let continuation_fidelity = match restoration_mode {
-        RestorationMode::Hot | RestorationMode::Native => ContinuationFidelity::Native,
+        RestorationMode::Hot | RestorationMode::Native | RestorationMode::NativeFork => {
+            ContinuationFidelity::Native
+        }
         RestorationMode::CheckpointRestored => ContinuationFidelity::ProjectedAtBoundary,
         RestorationMode::Fresh if existing.is_some() => ContinuationFidelity::ProjectedMidTurn,
         RestorationMode::Fresh => ContinuationFidelity::Native,
@@ -1215,9 +1224,10 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     // switch flow tears the adapter down across an await, and a start
     // interleaving into that window would be orphaned by its commit.
     let _lifecycle = state.claim_session_lifecycle(&session_id, "session start")?;
-    let (harness, kind, model, cwd_col, workspace_id, provider_id, effort): (
+    let (harness, kind, model, cwd_col, workspace_id, provider_id, effort, head_mode): (
         String,
         String,
+        Option<String>,
         Option<String>,
         Option<String>,
         Option<String>,
@@ -1226,9 +1236,9 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     ) = {
         let db = state.db.lock().unwrap();
         db.query_row(
-            "SELECT harness,kind,model,cwd,workspace_id,provider_session_id,effort FROM sessions WHERE id=?1",
+            "SELECT s.harness,s.kind,s.model,s.cwd,s.workspace_id,s.provider_session_id,s.effort,h.restoration_mode FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id WHERE s.id=?1",
             params![session_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
         )?
     };
     // The one lifecycle entry point every start path reaches, including the
@@ -1477,12 +1487,19 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     let launch_model = chosen_model.clone();
     // Same decision ladder as the orchestrator launch: native resume when the
     // stored thread can be resumed, otherwise project the stored branch, and
-    // only a genuinely empty chat starts fresh.
+    // only a genuinely empty chat starts fresh. A `native_fork` head mode is
+    // the aside's explicit instruction to fork the stored thread instead of
+    // resuming it — resuming would continue the source conversation the aside
+    // must never write to. The instruction only counts when this adapter can
+    // actually fork; otherwise the ladder falls to the projected brief.
+    let head_requests_fork = head_mode.as_deref() == Some(RestorationMode::NativeFork.as_str())
+        && state.adapter_registry.supports_native_fork(&dispatch_id);
     let plan = restoration::select_plan(
         false,
         provider_id.as_deref(),
         state.adapter_registry.supports_native_resume(&dispatch_id),
         checkpoint_context.is_some(),
+        head_requests_fork,
     );
     // Narration for the cold path only: a hot return already left above, so
     // every phase published here is a real launch boundary this call is
@@ -1531,6 +1548,75 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
             .map(|prompt| prompt.instructions().to_owned())
         })
         .transpose()?;    let (mut started, mode, eligibility) = match plan {
+        restoration::RestorationPlan::NativeFork => {
+            let provider = provider_id
+                .as_deref()
+                .expect("native-fork plan has a provider id");
+            match registry.resume(
+                &launch_adapter_id,
+                adapters::ResumeRequest {
+                    provider_session_id: provider,
+                    fork: true,
+                    cwd: &launch_cwd,
+                    model: launch_model.as_deref(),
+                    effort: chosen_effort.as_deref(),
+                    instructions: Some(&runtime_instructions),
+                    write_mode: None,
+                    read_only_sandbox: None,
+                    briefing: None,
+                    on_progress: Some(&on_startup_progress),
+                },
+            ) {
+                // The fork IS the aside's own thread from here: the runtime
+                // hands back the new forked thread id, which the persistence
+                // below stores as this session's provider session, so the
+                // source conversation is never resumed or appended to.
+                Ok(started) => (started, RestorationMode::Native, ResumeEligibility::Native),
+                Err(error) => {
+                    let db = state.db.lock().unwrap();
+                    restoration::record_resume_failed(&db, &session_id, &error.to_string())?;
+                    drop(db);
+                    match restoration::fallback_after_failure(
+                        restoration::RestorationPlan::NativeFork,
+                        checkpoint_instructions.is_some(),
+                    ) {
+                        Some(restoration::RestorationPlan::CheckpointRestored) => {
+                            match start_fresh(
+                                checkpoint_instructions
+                                    .as_deref()
+                                    .expect("checkpoint fallback has stored context"),
+                            ) {
+                                Ok(started) => (
+                                    started,
+                                    RestorationMode::CheckpointRestored,
+                                    ResumeEligibility::CheckpointRestored,
+                                ),
+                                Err(error) => {
+                                    let db = state.db.lock().unwrap();
+                                    restoration::record_checkpoint_restore_failed(
+                                        &db,
+                                        &session_id,
+                                        &error.to_string(),
+                                    )?;
+                                    drop(db);
+                                    (
+                                        start_fresh(&runtime_instructions)?,
+                                        RestorationMode::Fresh,
+                                        ResumeEligibility::Fresh,
+                                    )
+                                }
+                            }
+                        }
+                        Some(restoration::RestorationPlan::Fresh) => (
+                            start_fresh(&runtime_instructions)?,
+                            RestorationMode::Fresh,
+                            ResumeEligibility::Fresh,
+                        ),
+                        _ => unreachable!("native-fork failure has a deterministic fallback"),
+                    }
+                }
+            }
+        }
         restoration::RestorationPlan::Native => {
             let provider = provider_id
                 .as_deref()
@@ -1539,6 +1625,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                 &launch_adapter_id,
                 adapters::ResumeRequest {
                     provider_session_id: provider,
+                    fork: false,
                     cwd: &launch_cwd,
                     model: launch_model.as_deref(),
                     effort: chosen_effort.as_deref(),
@@ -1700,7 +1787,9 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
             &db,
             &session_id,
             match mode {
-                RestorationMode::Hot | RestorationMode::Native => ContinuationFidelity::Native,
+                RestorationMode::Hot
+                | RestorationMode::Native
+                | RestorationMode::NativeFork => ContinuationFidelity::Native,
                 RestorationMode::CheckpointRestored => ContinuationFidelity::ProjectedAtBoundary,
                 RestorationMode::Fresh if has_prior_history => {
                     ContinuationFidelity::ProjectedMidTurn
@@ -4535,6 +4624,7 @@ pub fn launch_worker_outcome(
                     &dispatch_id,
                     adapters::ResumeRequest {
                         provider_session_id,
+                        fork: false,
                         cwd: &reservation.path,
                         model: Some(model.as_str()),
                         effort: Some(&effort),
@@ -8096,6 +8186,24 @@ fn prepare_input(
                 "Cleared this chat’s provider session. Send a message to start fresh.",
             )?;
             core.events.publish(CoreEvent::StateChanged);
+            return Ok(InputPreparation::Handled { interceptions });
+        }
+        slash::SlashDispatch::SideChat { command, .. } => {
+            // The composer opens the side chat before anything is submitted, so
+            // reaching this arm means the command came from somewhere a side
+            // chat cannot be opened from — inside one, or from a client that
+            // skipped the composer. Say so instead of forwarding `/btw` to the
+            // provider as literal text.
+            emit_local_assistant(
+                core,
+                session_id,
+                &session_harness,
+                &format!(
+                    "`/{command}` opens a side chat beside a conversation, so it cannot run inside this one. \
+                     Send it from a chat composer in Bridge: the side chat reads that conversation's context \
+                     and never writes to it."
+                ),
+            )?;
             return Ok(InputPreparation::Handled { interceptions });
         }
         slash::SlashDispatch::Unsupported { name, harness } => {
