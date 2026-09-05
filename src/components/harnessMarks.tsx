@@ -32,6 +32,14 @@ const OPENCODE_FRAME_PATH = "M2.4 0h19.2v24H2.4zM7.2 4.8v14.4h9.6V4.8z";
 /** A gapped ring: a spinner, which needs no brand knowledge to be right. */
 const UNKNOWN_PATH = "M12 3.4A8.6 8.6 0 1 1 3.4 12";
 
+/** Bridge's own routing, drawn as a span on two piers.
+ *
+ *  Not a vendor mark: `bridge` is the harness id for "Bridge picks the runtime",
+ *  and it shows up wherever a preset or a default has not named a provider. The
+ *  gapped-ring fallback reads as a spinner there, which is the one thing it is
+ *  not, so this is Bridge's own achromatic glyph rather than a stand-in. */
+const BRIDGE_PATH = "M3 14.5C3 10.36 7.03 7 12 7s9 3.36 9 7.5M6.5 13.6V19M17.5 13.6V19M3 19h18";
+
 /** Cursor's five facets, dark to light, plus the outline. The values live in
  *  `src/index.css` so Paper can invert the ladder without a second component. */
 const CURSOR_FACETS: { points: string; facet: string }[] = [
@@ -68,6 +76,8 @@ function figure(harness?: string | null) {
         <path d={OPENCODE_FRAME_PATH} fill="currentColor" fillRule="evenodd" />
         <rect x="7.2" y="9.6" width="9.6" height="9.6" className="fill-current opacity-45" />
       </>;
+    case "bridge":
+      return <path d={BRIDGE_PATH} stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" fill="none" />;
     case "cursor":
       return <>
         {CURSOR_FACETS.map(face => <polygon key={face.points} points={face.points} className={face.facet} />)}

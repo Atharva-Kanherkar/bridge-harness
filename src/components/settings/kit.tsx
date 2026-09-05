@@ -110,8 +110,10 @@ export function SettingsRow({ label, openLabel, description, mono, lead, control
   const text = <span className="min-w-0 flex-1 text-left">
     <span className="block truncate text-[13px] text-foreground">{label}</span>
     {description !== undefined && description !== null && description !== "" && <span className={cn(
-      "mt-0.5 block truncate text-muted-foreground",
-      mono ? "font-mono text-[10.5px]" : "text-[11.5px]",
+      "mt-0.5 block text-muted-foreground",
+      // Prose wraps; an id or a path truncates, because half a sentence is
+      // useless and half a hash is still a hash you can widen the window to read.
+      mono ? "truncate font-mono text-[10.5px]" : "text-[11.5px] leading-relaxed",
     )}>{description}</span>}
   </span>;
   const trailing = <>

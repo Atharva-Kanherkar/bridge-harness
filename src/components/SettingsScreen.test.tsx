@@ -172,6 +172,26 @@ describe("SettingsScreen", () => {
 
     // Row content is covered in settings/ModelsPage.test.tsx, which can supply
     // profiles; the mock setup deliberately ships none.
+    // A rail item is named for a page, not for whatever detail was last open on
+    // it. The draft still survives, which is what the contract asks for.
+    it("returns to the list when the rail item is clicked again, keeping the draft", async () => {
+      await render({ initialSection: "agents" });
+      await open("Edit Bridge orchestrator");
+      expect(container.querySelector('[aria-label="Breadcrumb"]')).toBeTruthy();
+
+      const name = container.querySelector<HTMLInputElement>('input[aria-label="Preset name"]')!;
+      type(name, "Renamed orchestrator");
+      await act(async () => flush());
+
+      await open("Harnesses");
+      await open("Presets");
+      expect(container.querySelector('[aria-label="Breadcrumb"]')).toBeNull();
+
+      await open("Edit Bridge orchestrator");
+      expect(container.querySelector<HTMLInputElement>('input[aria-label="Preset name"]')!.value)
+        .toBe("Renamed orchestrator");
+    });
+
     it("shows Models with a version pill and no Save button", async () => {
       await render({ initialSection: "models" });
       expect(container.textContent).toContain("Which model runs each Bridge role");

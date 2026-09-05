@@ -50,6 +50,17 @@ describe("HarnessMark", () => {
     expect(cursor).not.toContain("text-harness-");
   });
 
+  // `bridge` means "Bridge picks the runtime", which is not an unknown agent.
+  // Falling through to the gapped ring made every Bridge preset row look like it
+  // was loading.
+  it("gives Bridge its own achromatic glyph rather than the unknown spinner", () => {
+    const bridge = markup("bridge");
+    expect(bridge).toContain('data-harness="bridge"');
+    expect(bridge).not.toContain("A8.6 8.6");
+    expect(bridge).toContain("text-muted-foreground");
+    expect(bridge).not.toContain("text-harness-");
+  });
+
   // The harness id space is open, so an agent Bridge has no mark for must still
   // get something honest rather than another harness's figure.
   it("falls back to the arc spinner and the muted tint for an unknown harness", () => {

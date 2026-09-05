@@ -35,7 +35,12 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
   const [config, setConfig] = useState<ConfigState>();
   const [modelSetup, setModelSetup] = useState<ModelSetupState>();
   const [profiles, setProfiles] = useState<ModelProfileDraft[]>([]);
-  const [agentDraft, setAgentDraft] = useState<AgentDefinition>();
+  // Preset edits, keyed by preset id ("" is the one being created). Kept apart
+  // from `presetDetailId` so leaving the page and coming back lands on the list
+  // without throwing away what was typed, exactly as the harness and prompt
+  // drafts behave.
+  const [agentDrafts, setAgentDrafts] = useState<Record<string, AgentDefinition>>({});
+  const [presetDetailId, setPresetDetailId] = useState<string | null>(null);
   // Unsaved *text* only. Switches and selects never enter this map: they write
   // the stored record directly, so a dirty system prompt cannot ride along with
   // a toggle. Held here rather than in the page so a draft survives navigating
@@ -118,7 +123,14 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       acceptConfig(stored);
       const savedAgent = stored.agents.find(item => item.id === next.id)
         ?? stored.agents.find(item => item.name === next.name);
-      if (savedAgent) setAgentDraft(structuredClone(savedAgent));
+      // The draft is spent: the stored record is now the truth for this preset,
+      // and a newly created one moves from the "" slot to its real id.
+      setAgentDrafts(current => {
+        const drafts = { ...current };
+        delete drafts[next.id ?? ""];
+        return drafts;
+      });
+      if (savedAgent) setPresetDetailId(savedAgent.id ?? "");
       flashSaved();
     } finally { setBusy(false); }
   };
@@ -132,8 +144,13 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       acceptConfig(stored);
       // A deleted preset has no detail page left to sit on; a reset one is
       // reloaded from what the host returned.
+      setAgentDrafts(current => {
+        const drafts = { ...current };
+        delete drafts[agent.id ?? ""];
+        return drafts;
+      });
       const restored = stored.agents.find(item => item.id === agent.id);
-      setAgentDraft(restored ? structuredClone(restored) : undefined);
+      setPresetDetailId(restored ? (restored.id ?? null) : null);
       flashSaved();
     }
     catch (error) { onError(String(error)); } finally { setBusy(false); }
@@ -144,8 +161,11 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
     try {
       const stored = await bridgeApi.setDefaultAgent(agent.id ?? "");
       acceptConfig(stored);
-      const updated = stored.agents.find(item => item.id === agent.id);
-      if (updated) setAgentDraft(structuredClone(updated));
+      setAgentDrafts(current => {
+        const drafts = { ...current };
+        delete drafts[agent.id ?? ""];
+        return drafts;
+      });
       flashSaved();
     }
     catch (error) { onError(String(error)); } finally { setBusy(false); }
@@ -189,7 +209,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
     setBusy(true);
     try {
       const [next, setup] = await Promise.all([bridgeApi.resetAllConfig(), bridgeApi.resetModelProfiles()]);
-      acceptConfig(next); setAgentDraft(undefined); setHarnessDrafts({}); setHarnessDetailId(null);
+      acceptConfig(next); setAgentDrafts({}); setPresetDetailId(null); setHarnessDrafts({}); setHarnessDetailId(null);
       setModelSetup(setup); setProfiles(profileDraftsFromSetup(setup)); onModelSetupChange(setup); flashSaved();
     }
     catch (error) { onError(String(error)); } finally { setBusy(false); }
@@ -202,7 +222,9 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       rows={searchRows}
       resetting={busy}
       onQueryChange={setQuery}
-      onSelect={next => { setSection(next); setQuery(""); }}
+      // A rail item is named for a page, not for whatever detail was last open
+      // on it, so it lands on the list. Drafts survive; only the routing resets.
+      onSelect={next => { setSection(next); setQuery(""); setPresetDetailId(null); setHarnessDetailId(null); }}
       onResetAll={() => void resetEverything()}
     />
     <div className="relative min-h-0 flex-1 overflow-y-auto">
@@ -230,12 +252,12 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
         adapters={adapters}
         modelOptions={modelOptions}
         busy={busy}
-        draft={agentDraft}
+        draft={presetDetailId === null ? undefined : (agentDrafts[presetDetailId] ?? config.agents.find(item => item.id === presetDetailId))}
         supportsRole={adapterSupportsAgentRole}
-        onOpen={agent => setAgentDraft(structuredClone(agent))}
-        onClose={() => setAgentDraft(undefined)}
-        onNew={() => setAgentDraft(newAgent())}
-        onDraft={setAgentDraft}
+        onOpen={agent => setPresetDetailId(agent.id ?? "")}
+        onClose={() => setPresetDetailId(null)}
+        onNew={() => { setAgentDrafts(current => ({ ...current, "": newAgent() })); setPresetDetailId(""); }}
+        onDraft={next => setAgentDrafts(current => ({ ...current, [next.id ?? ""]: next }))}
         onSave={saveAgent}
         onRemove={agent => void removeAgent(agent)}
         onMakeDefault={agent => void makeDefault(agent)}
