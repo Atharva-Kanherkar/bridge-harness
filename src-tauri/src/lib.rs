@@ -1062,6 +1062,17 @@ async fn create_chat(
     api::create_chat(state.inner(), &harness, model.as_deref(), title.as_deref())
 }
 
+/// Create a direct chat and return the exact identity committed by this call.
+#[tauri::command]
+async fn create_chat_id(
+    harness: Harness,
+    model: Option<String>,
+    title: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::CreateChatIdResult, BridgeError> {
+    api::create_chat_id(state.inner(), &harness, model.as_deref(), title.as_deref())
+}
+
 /// Create a source-scoped aside and return the exact session id that was
 /// committed with its handoff, so the caller never has to infer it from state.
 #[tauri::command]
@@ -2081,6 +2092,7 @@ pub fn run() {
             add_project,
             create_workspace,
             create_chat,
+            create_chat_id,
             create_aside_chat,
             create_workspace_session,
             connect_workspace_folder,

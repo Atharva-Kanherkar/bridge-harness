@@ -980,6 +980,18 @@ pub fn create_chat(
     core.create_chat(harness, model, title)
 }
 
+/// Return the identity from the insert instead of inferring it from a snapshot.
+pub fn create_chat_id(
+    core: &Arc<BridgeCore>,
+    harness: &Harness,
+    model: Option<&str>,
+    title: Option<&str>,
+) -> Result<wire::CreateChatIdResult, BridgeError> {
+    let session_id = core.create_chat_id(harness, model, title)?;
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(wire::CreateChatIdResult { session_id })
+}
+
 pub fn create_aside_chat(
     core: &Arc<BridgeCore>,
     source_session_id: &str,
