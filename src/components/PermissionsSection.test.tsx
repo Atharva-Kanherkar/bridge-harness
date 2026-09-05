@@ -27,7 +27,9 @@ describe("PermissionsSection", () => {
     );
     const toggle = container.querySelector<HTMLButtonElement>('[role="switch"]')!;
     expect(toggle.getAttribute("aria-checked")).toBe("false");
-    expect(container.textContent).toContain("OFF");
+    // The state is the switch, not a word beside it, and never a native
+    // checkbox: Settings renders no `input[type=checkbox]` anywhere.
+    expect(container.querySelector('input[type="checkbox"]')).toBeNull();
     await unmount();
   });
 

@@ -132,6 +132,14 @@
     --cursor-facet-lighter: #303030;
     --cursor-facet-lightest: #121212;
 
+    /* Appearance preview swatches: the literal sidebar and canvas each mode
+       renders. Fixed in both themes on purpose, because the Paper tile has to
+       look like paper while Graphite is the one switched on. */
+    --preview-paper-sidebar: #f3f3f1;
+    --preview-paper-canvas: #fafaf9;
+    --preview-graphite-sidebar: #000000;
+    --preview-graphite-canvas: #0f0f0f;
+
     /* Code */
     --code: #f3f3f1;
     --code-foreground: #1f1f1d;
