@@ -23,3 +23,10 @@ N/A — provider sessions are not launched for this code-based investigation; no
 ## Manual / cURL Tests
 - Review the ACP normalizer and transcript ingestion path against the event fixture used by the regression test.
 - In a fresh ACP chat, an `other` tool titled `Resolve project context` should show that action instead of `Using a tool`; after reload the label should be unchanged.
+
+## Review revision contract
+- The terminal fallback is provider-neutral: trimmed titles render as `Running: <title>` / `Finished: <title>` without a duplicate target.
+- ACP `think` and `switch_mode` have explicit tense pairs and meaningful icons.
+- A real ACP start followed by title-less raw progress/completion updates retains its title through live reduction and durable replay. Replay must not synthesize a replacement tool title.
+- A dedicated golden fixture covers this sequence and render assertions distinguish running from finished text.
+- Remove redundant lifecycle assertions and the unrealistic completion codec test.
