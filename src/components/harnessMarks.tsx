@@ -60,6 +60,19 @@ const TINTS: Record<string, string> = {
   cursor: "text-foreground",
 };
 
+/** The same tints as backgrounds: the effort control's fill and its marks. */
+const FILLS: Record<string, string> = {
+  claude: "bg-harness-claude",
+  opencode: "bg-harness-opencode",
+  codex: "bg-foreground",
+  cursor: "bg-foreground",
+};
+
+/** The fill class for a harness id — muted ink for one Bridge does not know. */
+export function harnessFillClass(harness?: string | null): string {
+  return (harness && FILLS[harness]) || "bg-muted-foreground";
+}
+
 /** The tint class for a harness id — muted ink for one Bridge does not know. */
 export function harnessTintClass(harness?: string | null): string {
   return (harness && TINTS[harness]) || "text-muted-foreground";
@@ -93,6 +106,7 @@ function figure(harness?: string | null) {
       return <path d={UNKNOWN_PATH} stroke="currentColor" strokeWidth={2.2} strokeLinecap="round" fill="none" />;
   }
 }
+
 
 /**
  * A harness's mark.

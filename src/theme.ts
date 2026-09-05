@@ -17,8 +17,18 @@ export type ResolvedTheme = "light" | "dark";
  */
 export type ThemeSkin = "graphite" | "vibrancy";
 
+/**
+ * How the model picker draws the thinking-effort control. Every style renders
+ * the same wire levels from the same capability data; only the footer's form
+ * changes. `slider` is the default: one rail, one thumb, one label at a time.
+ */
+export type EffortSelectorStyle = "slider" | "sentence" | "list";
+
 export const THEME_STORAGE_KEY = "bridge.theme";
 export const SKIN_STORAGE_KEY = "bridge.skin";
+export const EFFORT_SELECTOR_STORAGE_KEY = "bridge.effortSelector";
+
+export const DEFAULT_EFFORT_SELECTOR: EffortSelectorStyle = "slider";
 
 /** The shell stays exactly as it ships until the user opts into another skin. */
 export const DEFAULT_SKIN: ThemeSkin = "graphite";
@@ -96,6 +106,31 @@ export function writeThemeSkin(
   }
 }
 
+export function isEffortSelectorStyle(value: unknown): value is EffortSelectorStyle {
+  return value === "slider" || value === "sentence" || value === "list";
+}
+
+export function readEffortSelectorStyle(storage: Pick<Storage, "getItem"> = localStorage): EffortSelectorStyle {
+  let raw: string | null = null;
+  try {
+    raw = storage.getItem(EFFORT_SELECTOR_STORAGE_KEY);
+  } catch {
+    return DEFAULT_EFFORT_SELECTOR;
+  }
+  return isEffortSelectorStyle(raw) ? raw : DEFAULT_EFFORT_SELECTOR;
+}
+
+export function writeEffortSelectorStyle(
+  style: EffortSelectorStyle,
+  storage: Pick<Storage, "setItem"> = localStorage,
+): void {
+  try {
+    storage.setItem(EFFORT_SELECTOR_STORAGE_KEY, style);
+  } catch {
+    // A read-only storage should never stop the picker from rendering.
+  }
+}
+
 /** Stamps the chosen skin on the document so CSS can key off `data-skin`. */
 export function applySkin(skin: ThemeSkin): ThemeSkin {
   if (typeof document === "undefined") return skin;
@@ -159,10 +194,13 @@ export function useThemePreference(): {
   setPreference: (next: ThemePreference) => void;
   skin: ThemeSkin;
   setSkin: (next: ThemeSkin) => void;
+  effortSelector: EffortSelectorStyle;
+  setEffortSelector: (next: EffortSelectorStyle) => void;
 } {
   const [preference, setPreferenceState] = useState<ThemePreference>(() => readThemePreference());
   const [resolved, setResolved] = useState<ResolvedTheme>(() => resolveTheme(preference));
   const [skin, setSkinState] = useState<ThemeSkin>(() => readThemeSkin());
+  const [effortSelector, setEffortSelectorState] = useState<EffortSelectorStyle>(() => readEffortSelectorStyle());
 
   useEffect(() => {
     setResolved(applyTheme(preference));
@@ -177,6 +215,7 @@ export function useThemePreference(): {
     const onExternalChange = () => {
       setPreferenceState(readThemePreference());
       setSkinState(readThemeSkin());
+      setEffortSelectorState(readEffortSelectorStyle());
     };
     window.addEventListener(THEME_EVENT, onExternalChange);
     return () => window.removeEventListener(THEME_EVENT, onExternalChange);
@@ -196,5 +235,27 @@ export function useThemePreference(): {
     window.dispatchEvent(new Event(THEME_EVENT));
   }, []);
 
-  return { preference, resolved, setPreference, skin, setSkin };
+  const setEffortSelector = useCallback((next: EffortSelectorStyle) => {
+    writeEffortSelectorStyle(next);
+    setEffortSelectorState(next);
+    window.dispatchEvent(new Event(THEME_EVENT));
+  }, []);
+
+  return { preference, resolved, setPreference, skin, setSkin, effortSelector, setEffortSelector };
+}
+
+/**
+ * The effort-control style alone, for the model picker. Unlike
+ * `useThemePreference` it touches nothing on the document — the picker only
+ * needs to know which form to draw — but it follows the same broadcast, so a
+ * change in Settings repaints an open picker.
+ */
+export function useEffortSelectorStyle(): EffortSelectorStyle {
+  const [style, setStyle] = useState<EffortSelectorStyle>(() => readEffortSelectorStyle());
+  useEffect(() => {
+    const onExternalChange = () => setStyle(readEffortSelectorStyle());
+    window.addEventListener(THEME_EVENT, onExternalChange);
+    return () => window.removeEventListener(THEME_EVENT, onExternalChange);
+  }, []);
+  return style;
 }
