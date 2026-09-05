@@ -1,0 +1,223 @@
+{
+  "pages": [
+    {
+      "id": "page-1",
+      "name": "Before and after"
+    },
+    {
+      "id": "page-2",
+      "name": "System"
+    }
+  ],
+  "artboards": [
+    {
+      "file": "BeforeHarnesses.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1200,
+      "h": 1000,
+      "title": "Before · Harnesses",
+      "page": "page-1",
+      "expand": "fit"
+    },
+    {
+      "file": "Main.dc.html",
+      "x": 0,
+      "y": 1160,
+      "w": 1440,
+      "h": 900,
+      "title": "After · Harnesses",
+      "page": "page-1"
+    },
+    {
+      "file": "HarnessDetail.dc.html",
+      "x": 1560,
+      "y": 1160,
+      "w": 1440,
+      "h": 1180,
+      "title": "After · Harness detail (OpenCode)",
+      "page": "page-1"
+    },
+    {
+      "file": "BeforeRoleModels.dc.html",
+      "x": 3120,
+      "y": 0,
+      "w": 1200,
+      "h": 1000,
+      "title": "Before · Role models",
+      "page": "page-1",
+      "expand": "fit"
+    },
+    {
+      "file": "Models.dc.html",
+      "x": 3120,
+      "y": 1160,
+      "w": 1440,
+      "h": 1040,
+      "title": "After · Models",
+      "page": "page-1"
+    },
+    {
+      "file": "BeforeAgents.dc.html",
+      "x": 4680,
+      "y": 0,
+      "w": 1200,
+      "h": 750,
+      "title": "Before · Agents",
+      "page": "page-1",
+      "expand": "fit"
+    },
+    {
+      "file": "Presets.dc.html",
+      "x": 4680,
+      "y": 1160,
+      "w": 1440,
+      "h": 900,
+      "title": "After · Presets detail",
+      "page": "page-1"
+    },
+    {
+      "file": "BeforePromptStudio.dc.html",
+      "x": 6240,
+      "y": 0,
+      "w": 1200,
+      "h": 750,
+      "title": "Before · Prompt Studio",
+      "page": "page-1",
+      "expand": "fit"
+    },
+    {
+      "file": "Prompts.dc.html",
+      "x": 6240,
+      "y": 1160,
+      "w": 1440,
+      "h": 1080,
+      "title": "After · Prompts",
+      "page": "page-1"
+    },
+    {
+      "file": "BeforePermissions.dc.html",
+      "x": 7800,
+      "y": 0,
+      "w": 1200,
+      "h": 750,
+      "title": "Before · Permissions",
+      "page": "page-1",
+      "expand": "fit"
+    },
+    {
+      "file": "Permissions.dc.html",
+      "x": 7800,
+      "y": 1160,
+      "w": 1440,
+      "h": 900,
+      "title": "After · Permissions",
+      "page": "page-1"
+    },
+    {
+      "file": "BeforeWork.dc.html",
+      "x": 9360,
+      "y": 0,
+      "w": 1200,
+      "h": 750,
+      "title": "Before · Work",
+      "page": "page-1",
+      "expand": "fit"
+    },
+    {
+      "file": "Work.dc.html",
+      "x": 9360,
+      "y": 1160,
+      "w": 1440,
+      "h": 900,
+      "title": "After · Work briefing",
+      "page": "page-1"
+    },
+    {
+      "file": "BeforeAppearance.dc.html",
+      "x": 10920,
+      "y": 0,
+      "w": 1200,
+      "h": 750,
+      "title": "Before · Appearance",
+      "page": "page-1",
+      "expand": "fit"
+    },
+    {
+      "file": "Appearance.dc.html",
+      "x": 10920,
+      "y": 1160,
+      "w": 1440,
+      "h": 900,
+      "title": "After · Appearance",
+      "page": "page-1"
+    },
+    {
+      "file": "BeforeImport.dc.html",
+      "x": 12480,
+      "y": 0,
+      "w": 1200,
+      "h": 750,
+      "title": "Before · Import (unchanged, restyled)",
+      "page": "page-1",
+      "expand": "fit"
+    },
+    {
+      "file": "Composer.dc.html",
+      "x": 12480,
+      "y": 1160,
+      "w": 1440,
+      "h": 900,
+      "title": "After · Composer (new page)",
+      "page": "page-1"
+    },
+    {
+      "file": "System.dc.html",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 1780,
+      "title": "Settings system",
+      "page": "page-2"
+    },
+    {
+      "file": "Icons.dc.html",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 1000,
+      "title": "Icon set",
+      "page": "page-2"
+    }
+  ],
+  "annotations": [
+    {
+      "id": "why",
+      "x": 0,
+      "y": -260,
+      "w": 640,
+      "page": "page-1",
+      "text": "Settings redesign · issue 459\n\nTop row: the current build, captured from the running app.\nBottom row: the proposal. Same tokens, same fonts, same marks.\n\nOne rule fixes most of it: every page is a column of groups, every group is a card of rows, every row is one label and one control. See the System page for the rules."
+    },
+    {
+      "id": "ia",
+      "x": 700,
+      "y": -260,
+      "w": 560,
+      "page": "page-1",
+      "text": "Information architecture\n\nGeneral: Appearance, Permissions, Composer\nAgents: Presets, Models, Prompts\nRuntimes: Harnesses\nData: Work briefing, Import\n\nRenames: Agents to Presets, Role models to Models, Prompt Studio to Prompts.\nMoves: Inline suggestions leaves Role models for Composer. Agent runtimes and harness config merge into one Harnesses list with a detail page each."
+    },
+    {
+      "id": "save",
+      "x": 1320,
+      "y": -260,
+      "w": 520,
+      "page": "page-1",
+      "text": "Saving\n\nToday there are five save patterns: per-card Save, header Save, bottom Save, autosave on toggle, and a global Reset all that also deletes custom agents.\n\nAfter: switches and menus autosave with a check in the row. Editors dirty the page and one bar at the bottom of the column saves or discards. Reset all moves to the rail footer and gets a real confirmation."
+    }
+  ],
+  "launch": {
+    "view": "canvas",
+    "page": "page-1"
+  }
+}
