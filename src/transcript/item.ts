@@ -23,6 +23,17 @@ export interface ConversationItem {
   text: string;
   data: Record<string, unknown>;
   sequence: number;
+  /**
+   * Which turn produced this row: 1 for the first, 0 for anything the reducer
+   * saw before a boundary. Stamped at creation, so a tool call belongs to the
+   * turn it started in whatever arrives afterwards.
+   *
+   * Derived from what *both* projections can see. A turn-marker frame is
+   * transient — it carries sequence zero and the durable writer refuses to
+   * store it — so a replay would count a different number of turns than the
+   * live window if the index came from those alone. See `reduceTranscript`.
+   */
+  turn: number;
   entryId?: string;
   /**
    * When the item was first seen — the timestamp of the event that created it,
@@ -53,6 +64,46 @@ export interface ConversationItem {
    * hand.
    */
   tool?: ToolCallDisplay;
+}
+
+/**
+ * A cheap stand-in for "this row still says the same thing".
+ *
+ * Reference equality would be the natural test and is worthless here: the
+ * reducer is a fold that rebuilds every item on every run, so a live turn hands
+ * the transcript a hundred brand-new objects twenty times a second even when
+ * ninety-nine of them are unchanged. What actually moves is one of these
+ * fields — a status, a length of streamed text, the event id every frame
+ * stamps onto the row it lands on — so a memo keyed on them re-renders exactly
+ * the rows a frame touched.
+ */
+export function itemSignature(item: ConversationItem): string {
+  return [
+    item.identity ?? item.key,
+    item.type,
+    item.status ?? "",
+    item.text.length,
+    item.title ?? "",
+    // Every frame the reducer folds into a row restamps this, which is what
+    // makes it a change detector for payloads the fields above cannot see —
+    // a plan's steps, a diffstat, an exit code.
+    item.eventId,
+    item.sequence,
+    item.turn,
+    item.tool?.status ?? "",
+  ].join("\u0000");
+}
+
+/** Whether two rows are the same row, saying the same thing. */
+export function sameItem(left: ConversationItem, right: ConversationItem): boolean {
+  return left === right || itemSignature(left) === itemSignature(right);
+}
+
+/** The same, for the list a group draws. */
+export function sameItems(left: readonly ConversationItem[], right: readonly ConversationItem[]): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  return left.every((item, index) => sameItem(item, right[index]));
 }
 
 /**

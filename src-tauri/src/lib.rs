@@ -3,6 +3,7 @@ pub use bridge_core::{
     routing_policy,
 };
 
+pub mod agent_batch;
 pub mod daemon_host;
 pub mod menu;
 pub mod window_chrome;
@@ -1849,6 +1850,15 @@ fn start_daemon_host(
     let supervisor_proxy = proxy.clone();
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let supervisor_stop = stop.clone();
+    // One IPC message per flush window rather than one per frame. A hundred-
+    // step turn is roughly four hundred frames, and the webview woke for each.
+    let batcher = agent_batch::AgentEventBatcher::spawn(
+        agent_batch::FLUSH_WINDOW,
+        agent_batch::MAX_BATCH,
+        move |kind, payload| {
+            let _ = app.emit(kind, payload);
+        },
+    );
     let supervisor = std::thread::Builder::new()
         .name("daemon-host-supervisor".into())
         .spawn(move || {
@@ -1857,9 +1867,7 @@ fn start_daemon_host(
                 launcher,
                 Some(clients),
                 &supervisor_stop,
-                |kind, payload| {
-                    let _ = app.emit(kind, payload);
-                },
+                |kind, payload| batcher.emit(kind, payload),
             );
         })
         .map_err(|error| format!("could not start the daemon supervisor: {error}"))?;
@@ -1898,19 +1906,27 @@ fn setup_embedded(
     let events = bridge_core::events::EventBus::new();
     let mut receiver = events.subscribe();
     let forwarder = app.handle().clone();
+    // Same coalescing as the daemon path: the batcher is the only thing
+    // between the bus and the webview, so both hosts deliver a turn the same
+    // way.
+    let batcher = agent_batch::AgentEventBatcher::spawn(
+        agent_batch::FLUSH_WINDOW,
+        agent_batch::MAX_BATCH,
+        move |kind, payload| {
+            let _ = forwarder.emit(kind, payload);
+        },
+    );
     std::thread::Builder::new()
         .name("core-event-forwarder".into())
         .spawn(move || loop {
             match receiver.blocking_recv() {
-                Ok(event) => {
-                    let _ = forwarder.emit(event.kind().as_str(), event.payload());
-                }
+                Ok(event) => batcher.emit(event.kind().as_str(), event.payload()),
                 // The compatibility UI already reconciles durable
                 // history from the session forest. Skip stale live
                 // frames here; daemon clients use cursor replay.
                 Err(bridge_core::events::ReceiveError::Lagged(_)) => {
                     for event in receiver.reconciliation_events() {
-                        let _ = forwarder.emit(event.kind().as_str(), event.payload());
+                        batcher.emit(event.kind().as_str(), event.payload());
                     }
                     continue;
                 }

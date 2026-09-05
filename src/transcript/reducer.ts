@@ -59,9 +59,37 @@ interface Fold {
   /** Assistant prose emitted inside a compaction maintenance window. */
   internal: Set<ConversationItem>;
   compacting: boolean;
-  turnIndex: number;
+  /** The turn every row created from here on belongs to. */
+  turn: number;
+  /** Whether the current turn was opened by a user message. */
+  userOpenedTurn: boolean;
+  /** Whether any row has been created since the current turn opened. */
+  turnHasContent: boolean;
 }
 
+/**
+ * Reduce a transcript, stamping every row with the turn that produced it.
+ *
+ * Turn boundaries are derived from what both projections can see. The live
+ * window is told when a turn starts; the forest is not — a turn marker is
+ * transient, carries sequence zero, and the durable writer refuses to store
+ * it. Counting those alone would give a replayed session a different set of
+ * turns than the one the reader just watched. So a completed **user** message
+ * opens a turn, and a turn marker opens one only when no user message has
+ * already opened it, which is what keeps a live boundary from being counted
+ * twice.
+ *
+ * The two frames arrive in either order — one runtime announces the turn and
+ * then echoes the prompt inside the turn it just opened, another sends the
+ * prompt first — so the pairing is decided by whether the open turn has
+ * produced anything yet, not by which frame came first. A user message that lands in a
+ * turn no row has been created in yet joins that turn instead of opening
+ * another, and `turn.completed` releases the pairing so the next marker counts.
+ *
+ * The one case the two cannot agree on is a turn nothing durable records — an
+ * auto-continuation with no user message of its own. The replay keeps the
+ * previous index there rather than inventing a boundary the forest never saw.
+ */
 export function reduceTranscript(events: TranscriptEvent[]): ConversationItem[] {
   const fold: Fold = {
     items: new Map(),
@@ -69,7 +97,9 @@ export function reduceTranscript(events: TranscriptEvent[]): ConversationItem[] 
     byItemId: new Map(),
     internal: new Set(),
     compacting: false,
-    turnIndex: 0,
+    turn: 0,
+    userOpenedTurn: false,
+    turnHasContent: false,
   };
 
   for (const event of orderTranscript(events)) {
@@ -91,6 +121,16 @@ export function reduceTranscript(events: TranscriptEvent[]): ConversationItem[] 
 function applyEvent(fold: Fold, event: TranscriptEvent): void {
   const envelope = event.envelope;
 
+  // Ahead of everything else, including this event's own key: the user's
+  // message belongs to the turn it opens, not to the one it ended.
+  if (event.type === "message.completed" && event.role === "user") {
+    // Unless a turn marker has already opened a turn nothing has landed in:
+    // that turn is this message's, and counting it again would number one real
+    // turn twice wherever the marker precedes the echoed prompt.
+    if (fold.turn === 0 || fold.turnHasContent || fold.userOpenedTurn) openTurn(fold);
+    fold.userOpenedTurn = true;
+  }
+
   // The compaction maintenance window. A checkpoint round trip is Bridge
   // talking to the model on the user's behalf; its prose is not conversation.
   if (event.type === "compaction" && event.phase === "requested") fold.compacting = true;
@@ -105,15 +145,22 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
       if (event.settles) settleThinking(fold);
       return;
     case "turn.started":
-      fold.turnIndex += 1;
+      // Only when the user's message has not already opened this turn —
+      // otherwise the live window counts one boundary twice and stops
+      // agreeing with the replay.
+      if (!fold.userOpenedTurn) openTurn(fold);
+      fold.userOpenedTurn = false;
       return;
     case "turn.completed":
+      // The pairing above is spent: whatever opened this turn, the next marker
+      // opens a turn of its own.
+      fold.userOpenedTurn = false;
       settleThinking(fold);
       return;
 
     case "message.delta": {
       if (!event.text) return;
-      const key = envelope.key ?? `message:live:${fold.turnIndex}`;
+      const key = envelope.key ?? `message:live:${fold.turn}`;
       const item = fold.items.get(key) ?? place(fold, {
         key, type: "message", eventId: envelope.eventId, role: event.role,
         status: "streaming", text: "", data: {}, sequence: envelope.sequence,
@@ -127,7 +174,7 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
     }
 
     case "message.completed": {
-      const key = envelope.key ?? `message:live:${fold.turnIndex}`;
+      const key = envelope.key ?? `message:live:${fold.turn}`;
       const held = fold.items.get(key);
       // A provider that only names a message when it finishes leaves the
       // streamed chunks under a turn-scoped key. Adopting them keeps one bubble
@@ -154,7 +201,7 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
 
     case "thinking.delta": {
       if (!event.text) return;
-      const key = envelope.key ?? `reasoning:live:${fold.turnIndex}`;
+      const key = envelope.key ?? `reasoning:live:${fold.turn}`;
       const item = fold.items.get(key) ?? place(fold, {
         key, type: "reasoning", eventId: envelope.eventId, status: "streaming",
         text: "", data: {}, sequence: envelope.sequence, entryId: envelope.entryId,
@@ -168,7 +215,7 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
 
     case "thinking.started":
     case "thinking.completed": {
-      const key = envelope.key ?? `reasoning:live:${fold.turnIndex}`;
+      const key = envelope.key ?? `reasoning:live:${fold.turn}`;
       const held = fold.items.get(key) ?? joined(fold, envelope.itemId);
       const adopted = held ? undefined : lastStreamingThinking(fold);
       const target = held ?? adopted;
@@ -338,9 +385,23 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
 
 /* ── Fold helpers ──────────────────────────────────────────────────────── */
 
-function place(fold: Fold, item: ConversationItem): ConversationItem {
+/**
+ * The one place a row comes into existence — and therefore the one place the
+ * turn is stamped. Every row the reducer returns passed through here, so no
+ * variant can quietly grow an item with no turn on it.
+ */
+function place(fold: Fold, seed: Omit<ConversationItem, "turn">): ConversationItem {
+  const item: ConversationItem = { ...seed, turn: fold.turn };
   fold.items.set(item.key, item);
+  // What tells a turn marker's empty turn apart from a turn that has run.
+  fold.turnHasContent = true;
   return item;
+}
+
+/** Advance to the next turn. The content flag is per turn, so it resets here. */
+function openTurn(fold: Fold): void {
+  fold.turn += 1;
+  fold.turnHasContent = false;
 }
 
 /**

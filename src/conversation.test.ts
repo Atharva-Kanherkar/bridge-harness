@@ -396,7 +396,7 @@ describe("worker delegation fold",()=>{
 /* ── Tool-call display data ─────────────────────────────────────────────── */
 
 const call = (overrides: Partial<ConversationItem> = {}): ConversationItem => ({
-  key: "k", type: "activity", eventId: 1, sequence: 1, text: "", data: {}, ...overrides,
+  key: "k", type: "activity", eventId: 1, sequence: 1, turn: 1, text: "", data: {}, ...overrides,
 });
 
 describe("toolCallDisplay", () => {

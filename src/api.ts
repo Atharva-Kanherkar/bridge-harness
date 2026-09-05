@@ -81,6 +81,15 @@ function call<M extends BridgeMethod>(
 const subscribe = <T,>(notification: BridgeNotification, handler: (payload: T) => void): Promise<UnlistenFn> =>
   listen<T>(notification, event => handler(event.payload));
 
+/**
+ * Shell-to-webview transport for the live agent stream, deliberately not a
+ * protocol notification: `bridged` still speaks `agent-event`, one frame per
+ * notification, and the daemon contract is unchanged. The Tauri shell batches
+ * a flush window's worth of those into one message under this name
+ * (`src-tauri/src/agent_batch.rs`), and `onAgentEvent` unpacks it.
+ */
+const AGENT_EVENT_BATCH = "agent-event-batch";
+
 /** Adapt a contract `UnitResult` (null) to the `Promise<void>` the app uses. */
 const unit = (result: Promise<null>): Promise<void> => result.then(() => undefined);
 const now = new Date().toISOString();
@@ -1766,8 +1775,21 @@ export const bridgeApi = {
     isTauri() ? call("workspaces/write_workspace_file", { workspaceId, path, content, baseSha256 }) : mockWriteFile(path, content, baseSha256),
   onTerminal: async (handler: (chunk: TerminalChunk) => void): Promise<UnlistenFn> => isTauri() ? subscribe<TerminalChunk>("session-output", handler) : () => undefined,
   onTerminalExited: async (handler: (exit: TerminalExit) => void): Promise<UnlistenFn> => isTauri() ? subscribe<TerminalExit>("terminal-exited", handler) : () => undefined,
+  /**
+   * The live conversation stream, one call per frame.
+   *
+   * The shell coalesces frames on their way across the process boundary — a
+   * hundred-step turn is roughly four hundred of them, and one IPC message
+   * each woke the webview four hundred times while it was trying to draw. The
+   * batch is unpacked here so nothing above this line can tell: every
+   * subscriber still sees one frame at a time, in order.
+   */
   onAgentEvent: async (handler: (event: AgentEvent) => void): Promise<UnlistenFn> => {
-    if (isTauri()) return subscribe<AgentEvent>("agent-event", handler);
+    if (isTauri()) {
+      return listen<AgentEvent[]>(AGENT_EVENT_BATCH, event => {
+        for (const frame of event.payload) handler(frame);
+      });
+    }
     agentListeners.add(handler);
     return () => agentListeners.delete(handler);
   },
