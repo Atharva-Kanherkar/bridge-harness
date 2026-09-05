@@ -56,6 +56,44 @@ describe("adaptive setup surfaces", () => {
     expect(html).not.toContain("Unsupported");
   });
 
+  it("gives the orchestrator a tier-free direct picker and keeps tiers for workers", () => {
+    const withEfforts: AdapterDescriptor = { ...adapters[0], models: [
+      { id: "quick", label: "Quick", tier: "fast", defaultForTier: true },
+      { id: "balanced", label: "Balanced", tier: "standard", defaultForTier: true, supportedEffortLevels: ["low", "medium", "high"] },
+      { id: "deep", label: "Deep", tier: "strong", defaultForTier: true, supportedEffortLevels: ["high", "xhigh"] },
+    ] };
+    const drafts = recommendedProfileDrafts([withEfforts]);
+    // The orchestrator is the user's own model: a directly-chosen, pinned model.
+    for (const purpose of ["standard_orchestrator", "premium_orchestrator"] as const) {
+      const draft = drafts.find(profile => profile.purpose === purpose)!;
+      expect(draft.selectionMode).toBe("pinned");
+      expect(draft.pinned).toBe(true);
+      expect(draft.learningEnabled).toBe(false);
+    }
+    // Delegated workers still track their capability tier.
+    expect(drafts.find(profile => profile.purpose === "implementer")!.selectionMode).toBe("track_standard");
+
+    const html = renderToStaticMarkup(<ModelProfileEditor profiles={drafts} adapters={[withEfforts]} onChange={() => undefined} />);
+    expect(html).toContain("Orchestrator model");
+    expect(html).toContain("Worker roles");
+    expect(html).toContain("Thinking");            // orchestrator's tier-free effort control (model advertises levels)
+    expect(html).toContain("Reasoning effort");     // worker rows keep the tier editor
+    expect(html).toContain("Track standard");       // ...including tier-tracking behavior
+  });
+
+  it("hides the orchestrator Thinking control for a model with no effort knob", () => {
+    // supportedEffortLevels: [] is the catalog signal for "no effort knob"
+    // (e.g. Claude Haiku); the picker must not invent levels the model rejects.
+    const noEffort: AdapterDescriptor = { ...adapters[0], models: [
+      { id: "quick", label: "Quick", tier: "fast", defaultForTier: true, supportedEffortLevels: [] },
+      { id: "balanced", label: "Balanced", tier: "standard", defaultForTier: true, supportedEffortLevels: [] },
+      { id: "deep", label: "Deep", tier: "strong", defaultForTier: true, supportedEffortLevels: [] },
+    ] };
+    const html = renderToStaticMarkup(<ModelProfileEditor profiles={recommendedProfileDrafts([noEffort])} adapters={[noEffort]} onChange={() => undefined} />);
+    expect(html).toContain("Orchestrator model");
+    expect(html).not.toContain("Thinking");
+  });
+
   it("explains the single local runner and truthful provider limitations", () => {
     const html = renderToStaticMarkup(<RouterSettingsDialog open workspaceId="workspace" adapters={adapters} onClose={() => undefined} onError={() => undefined} />);
     expect(html).toContain("Run learning now");
