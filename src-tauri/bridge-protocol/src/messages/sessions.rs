@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 
-use super::common::HarnessId;
+use super::common::{Effort, HarnessId};
 use super::state::BridgeState;
 
 pub const DEFAULT_REPLAY_EVENT_LIMIT: u32 = 500;
@@ -232,6 +232,9 @@ pub struct UpdateChatModelParams {
     /// chat's tier.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    /// Per-session reasoning effort. Omitted preserves the current value.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort: Option<Effort>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -643,11 +646,12 @@ mod tests {
             session_id: "s-1".into(),
             harness: HarnessId::parse("opencode").unwrap(),
             model: Some("kimi-k2.5".into()),
+            effort: Some(Effort::High),
         };
         let wire = serde_json::to_value(&update).unwrap();
         assert_eq!(
             wire,
-            json!({"sessionId": "s-1", "harness": "opencode", "model": "kimi-k2.5"})
+            json!({"sessionId": "s-1", "harness": "opencode", "model": "kimi-k2.5", "effort": "high"})
         );
         assert_eq!(round_trip(&update), update);
 

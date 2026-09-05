@@ -146,6 +146,7 @@ fn push_payload(schemas: &mut Vec<(&'static str, Value)>, name: &'static str, sc
 typed_methods![
     // health
     (Health, _, HealthResult),
+    (RefreshModelCatalogs, _, HealthResult),
     // state — the aggregate application snapshot
     (GetState, _, BridgeState),
     // projects

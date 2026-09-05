@@ -29,11 +29,12 @@ const adapters: AdapterDescriptor[] = [
 
 const claudeAdapters: AdapterDescriptor[] = [
   {
-    id: "claude", label: "Claude", available: true, authState: "signed_in", version: "test", capabilities: ["messages"], unavailableReason: null,
+    id: "claude", label: "Claude", available: true, authState: "signed_in", version: "test", capabilities: ["messages", "reasoning"], unavailableReason: null,
     models: [
       { id: "haiku", label: "Claude Haiku", tier: "fast", defaultForTier: true },
       { id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForTier: true },
-      { id: "fable", label: "Claude Fable", tier: "strong", defaultForTier: true },
+      { id: "fable-5", label: "Claude Fable 5", tier: "strong", defaultForTier: false },
+      { id: "fable-5-1", label: "Claude Fable 5.1", tier: "strong", defaultForTier: true },
     ],
     defaultModel: "sonnet",
   },
@@ -56,6 +57,25 @@ const trigger = () => container.querySelector<HTMLButtonElement>("button")!;
 const panel = () => container.querySelector<HTMLElement>(".u-glass-popover")!;
 
 describe("ChatModelControl", () => {
+  it("keeps distinct provider releases in the full catalogue", async () => {
+    const onChange = vi.fn();
+    await act(async () => root.render(<ChatModelControl adapters={claudeAdapters} harness="claude" model="sonnet" onChange={onChange} />));
+    await act(async () => trigger().click());
+    expect(panel().textContent).toContain("Claude Fable 5");
+    expect(panel().textContent).toContain("Claude Fable 5.1");
+    const latest = [...panel().querySelectorAll<HTMLButtonElement>('button[role="option"]')].find(button => button.textContent?.includes("5.1"))!;
+    await act(async () => latest.click());
+    expect(onChange).toHaveBeenCalledWith("claude", "fable-5-1");
+  });
+
+  it("refreshes provider catalogues from the picker", async () => {
+    const onRefresh = vi.fn().mockResolvedValue(undefined);
+    await act(async () => root.render(<ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" onChange={vi.fn()} onRefresh={onRefresh} />));
+    await act(async () => trigger().click());
+    const refresh = panel().querySelector<HTMLButtonElement>('button[aria-label="Refresh model catalogues"]')!;
+    await act(async () => refresh.click());
+    expect(onRefresh).toHaveBeenCalledOnce();
+  });
   it("caps the compact pill's width and ellipsizes when constrained", async () => {
     await act(async () => root.render(
       <ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" compact maxWidthClassName="max-w-[190px]" onChange={vi.fn()} />,
@@ -202,7 +222,7 @@ describe("ChatModelControl", () => {
     await act(async () => trigger().click());
     const tierBadges = panel().querySelectorAll('[data-tier]');
     const tiers = [...tierBadges].map(el => el.getAttribute("data-tier"));
-    expect(tiers).toEqual(["fast", "standard", "strong"]);
+    expect(tiers).toEqual(["fast", "standard", "strong", "strong"]);
   });
 
   // Group headers get a divider once search narrows the list to fewer groups

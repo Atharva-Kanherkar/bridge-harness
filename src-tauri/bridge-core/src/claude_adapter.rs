@@ -37,6 +37,27 @@ pub fn register_node_compile_cache_root(root: impl Into<PathBuf>) {
 /// Referenced by the catalog in `adapters.rs` and by the runtime fallback below.
 pub const DEFAULT_MODEL: &str = "sonnet";
 
+pub fn discover_models() -> Result<Vec<(String, String)>, BridgeError> {
+    let node = binary::resolve("node").ok_or_else(|| BridgeError::Invalid("Node.js is required to discover Claude models".into()))?;
+    let sidecar = sidecar_entry()?;
+    let output = Command::new(node).arg(sidecar).arg(serde_json::json!({ "catalog": true, "cwd": "." }).to_string())
+        .env_remove("NODE_OPTIONS").output()
+        .map_err(|error| BridgeError::Adapter(format!("Cannot query Claude model catalogue: {error}")))?;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let Ok(value) = serde_json::from_str::<Value>(line) else { continue };
+        let Some(models) = value.get("models").and_then(Value::as_array) else { continue };
+        let found = models.iter().filter_map(|model| {
+            let id = model.get("value")?.as_str()?.trim();
+            let label = model.get("displayName").and_then(Value::as_str).unwrap_or(id).trim();
+            // "default" is the CLI's alias for whatever it currently prefers,
+            // not a model; Bridge tracks its own per-tier defaults instead.
+            (!id.is_empty() && !label.is_empty() && id != "default").then(|| (id.to_owned(), label.to_owned()))
+        }).collect::<Vec<_>>();
+        if !found.is_empty() { return Ok(found); }
+    }
+    Err(BridgeError::Adapter("Claude returned no model catalogue".into()))
+}
+
 pub struct ClaudeRuntime {
     pub writer: Arc<Mutex<ChildStdin>>,
     pub child: Child,

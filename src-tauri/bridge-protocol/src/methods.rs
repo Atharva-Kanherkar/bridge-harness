@@ -39,6 +39,7 @@ macro_rules! methods {
 methods![
     // health
     (Health, "health", "health"),
+    (RefreshModelCatalogs, "health", "refresh_model_catalogs"),
     // state — the aggregate application snapshot
     (GetState, "state", "get_state"),
     // projects

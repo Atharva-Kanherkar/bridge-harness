@@ -8,6 +8,7 @@ export const CANCEL_METHOD = "$/cancel" as const;
 
 export type BridgeMethod =
   | "health/health"
+  | "health/refresh_model_catalogs"
   | "state/get_state"
   | "projects/add_project"
   | "imports/discover_external_import"
@@ -172,6 +173,7 @@ export type BridgeMethod =
 
 export const BRIDGE_METHODS = [
   { method: "health/health", domain: "health", command: "health" },
+  { method: "health/refresh_model_catalogs", domain: "health", command: "refresh_model_catalogs" },
   { method: "state/get_state", domain: "state", command: "get_state" },
   { method: "projects/add_project", domain: "projects", command: "add_project" },
   { method: "imports/discover_external_import", domain: "imports", command: "discover_external_import" },
@@ -396,6 +398,7 @@ export const ERROR_CODES = {
 /** Params types for methods whose payloads are contracted so far. */
 export interface BridgeMethodParams {
   "health/health": undefined;
+  "health/refresh_model_catalogs": undefined;
   "state/get_state": undefined;
   "projects/add_project": AddProjectParams;
   "imports/discover_external_import": DiscoverExternalImportParams;
@@ -562,6 +565,7 @@ export interface BridgeMethodParams {
 /** Result types for every registered method. */
 export interface BridgeMethodResults {
   "health/health": HealthResult;
+  "health/refresh_model_catalogs": HealthResult;
   "state/get_state": BridgeState;
   "projects/add_project": BridgeState;
   "imports/discover_external_import": ExternalImportDiscovery;
@@ -2305,6 +2309,7 @@ export interface StartChatParams {
 }
 
 export interface UpdateChatModelParams {
+  effort?: Effort | null;
   harness: HarnessId;
   model?: string | null;
   sessionId: string;

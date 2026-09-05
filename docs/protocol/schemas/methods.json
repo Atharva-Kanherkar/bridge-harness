@@ -9,6 +9,13 @@
       "resultSchema": "health-result.json"
     },
     {
+      "command": "refresh_model_catalogs",
+      "domain": "health",
+      "method": "health/refresh_model_catalogs",
+      "paramsSchema": null,
+      "resultSchema": "health-result.json"
+    },
+    {
       "command": "get_state",
       "domain": "state",
       "method": "state/get_state",

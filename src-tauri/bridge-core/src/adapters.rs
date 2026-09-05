@@ -4,10 +4,7 @@ use crate::{
     claude_adapter, codex_adapter, cursor_adapter,
     delegation::WriteMode,
     grok_adapter,
-    model::{
-        AdapterDescriptor, CapabilityTier, ModelCatalogDiagnostics, ModelCatalogSource,
-        ModelOption, SandboxMode,
-    },
+    model::{AdapterDescriptor, CapabilityTier, SandboxMode},
     model_catalog::{self, CatalogCandidate},
     opencode_adapter,
     worker_sandbox::ReadOnlySandbox,
@@ -600,15 +597,6 @@ fn validate_start_compatibility(
     Ok(())
 }
 
-fn model_options(items: &[(&str, &str, CapabilityTier, bool)]) -> Vec<ModelOption> {
-    model_catalog::normalize(
-        ModelCatalogSource::CuratedFallback,
-        items.iter().map(|(id, label, tier, default_for_tier)| {
-            CatalogCandidate::stable(*id, *label, *tier, i64::from(*default_for_tier))
-        }),
-    )
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelResolution {
     pub requested_tier: CapabilityTier,
@@ -655,11 +643,9 @@ impl AdapterRegistry {
         let mut registry = Self {
             adapters: HashMap::new(),
         };
-        registry.register(Box::new(CodexAdapter::new()))?;
-        registry.register(Box::new(ClaudeAdapter {
-            streams: Mutex::new(HashMap::new()),
-        }))?;
         let on_discovered: Option<Arc<dyn Fn() + Send + Sync>> = on_discovered.map(Arc::from);
+        registry.register(Box::new(CodexAdapter::new(on_discovered.clone())))?;
+        registry.register(Box::new(ClaudeAdapter::new(on_discovered.clone())))?;
         let notify = |shared: &Option<Arc<dyn Fn() + Send + Sync>>| {
             shared
                 .clone()
@@ -703,6 +689,12 @@ impl AdapterRegistry {
     /// finished a sign-in, and not every provider has a structured adapter.
     pub fn refresh_availability(&self, id: &str) {
         if let Some(adapter) = self.adapters.get(id) {
+            adapter.refresh_availability();
+        }
+    }
+
+    pub fn refresh_model_catalogs(&self) {
+        for adapter in self.adapters.values() {
             adapter.refresh_availability();
         }
     }
@@ -1200,16 +1192,99 @@ impl HarnessAdapter for OpenCodeAdapter {
     }
 }
 
+fn inferred_tier(id: &str, label: &str) -> CapabilityTier {
+    let name = format!("{id} {label}").to_ascii_lowercase();
+    if ["haiku", "mini", "nano", "luna", "fast"]
+        .iter()
+        .any(|part| name.contains(part))
+    {
+        CapabilityTier::Fast
+    } else if ["opus", "sol", "strong", "pro", "max"]
+        .iter()
+        .any(|part| name.contains(part))
+    {
+        CapabilityTier::Strong
+    } else {
+        CapabilityTier::Standard
+    }
+}
+
+fn runtime_candidates_with_fallbacks(
+    models: Vec<(String, String)>,
+    fallbacks: &[CatalogCandidate],
+) -> Vec<CatalogCandidate> {
+    let mut candidates: Vec<CatalogCandidate> = models
+        .into_iter()
+        .enumerate()
+        .map(|(index, (id, label))| {
+            match fallbacks.iter().find(|fallback| fallback.id == id) {
+                // Curated entries stay authoritative for tier and default
+                // promotion; discovery only refreshes the display name. This
+                // keeps tier defaults deterministic across machines whatever
+                // order a live provider lists its models in.
+                Some(fallback) => {
+                    let mut merged = fallback.clone();
+                    merged.label = label;
+                    merged
+                }
+                None => CatalogCandidate::stable(
+                    id.clone(),
+                    label.clone(),
+                    inferred_tier(&id, &label),
+                    // Strictly below every curated priority so a newly
+                    // discovered model never steals a tier default.
+                    -1 - (index as i64),
+                ),
+            }
+        })
+        .collect();
+    let additions =
+        fallbacks
+            .iter()
+            .filter(|fallback| !candidates.iter().any(|model| model.id == fallback.id))
+            .cloned()
+            .collect::<Vec<_>>();
+    candidates.extend(additions);
+    candidates
+}
+
 struct CodexAdapter {
     streams: Mutex<HashMap<String, agent::CodexStreamState>>,
+    models: Arc<RwLock<model_catalog::ResolvedCatalog>>,
+    notify: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 impl CodexAdapter {
-    fn new() -> Self {
-        Self {
+    fn new(notify: Option<Arc<dyn Fn() + Send + Sync>>) -> Self {
+        let fallback = codex_fallback_candidates();
+        let models = Arc::new(RwLock::new(model_catalog::resolve(
+            "codex",
+            Err("Codex discovery has not completed".into()),
+            &fallback,
+            None,
+            chrono::Utc::now(),
+        )));
+        let adapter = Self {
             streams: Mutex::new(HashMap::new()),
-        }
+            models,
+            notify,
+        };
+        adapter.refresh_availability();
+        adapter
     }
+}
+fn codex_fallback_candidates() -> Vec<CatalogCandidate> {
+    vec![
+        CatalogCandidate::stable("gpt-5.6-luna", "GPT Luna", CapabilityTier::Fast, 1),
+        CatalogCandidate::stable("gpt-5.6-terra", "GPT Terra", CapabilityTier::Standard, 1),
+        CatalogCandidate::stable("gpt-5.6-sol", "GPT Sol", CapabilityTier::Strong, 1),
+        CatalogCandidate::stable(
+            "gpt-5.3-codex",
+            "GPT-5.3 Codex",
+            CapabilityTier::Standard,
+            0,
+        ),
+    ]
 }
 
 impl HarnessAdapter for CodexAdapter {
@@ -1245,20 +1320,30 @@ impl HarnessAdapter for CodexAdapter {
             unavailable_reason: codex_adapter::resolve_runtime()
                 .is_none()
                 .then(|| "Codex binary is not installed".into()),
-            models: model_options(&[
-                ("gpt-5.6-luna", "GPT Luna", CapabilityTier::Fast, true),
-                ("gpt-5.6-terra", "GPT Terra", CapabilityTier::Standard, true),
-                ("gpt-5.6-sol", "GPT Sol", CapabilityTier::Strong, true),
-                (
-                    "gpt-5.3-codex",
-                    "GPT-5.3 Codex",
-                    CapabilityTier::Standard,
-                    false,
-                ),
-            ]),
+            models: self.models.read().unwrap().models.clone(),
             default_model: Some("gpt-5.6-luna".into()),
-            model_catalog: ModelCatalogDiagnostics::curated(),
+            model_catalog: self.models.read().unwrap().diagnostics.clone(),
         }
+    }
+    fn refresh_availability(&self) {
+        let models = self.models.clone();
+        let notify = self.notify.clone();
+        thread::spawn(move || {
+            let fallback = codex_fallback_candidates();
+            let discovered = codex_adapter::discover_models()
+                .map(|models| runtime_candidates_with_fallbacks(models, &fallback))
+                .map_err(|error| error.to_string());
+            *models.write().unwrap() = model_catalog::resolve(
+                "codex",
+                discovered,
+                &fallback,
+                None,
+                chrono::Utc::now(),
+            );
+            if let Some(notify) = notify {
+                notify();
+            }
+        });
     }
     fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
         let started = codex_adapter::start(request)?;
@@ -1309,6 +1394,41 @@ impl HarnessAdapter for CodexAdapter {
 
 struct ClaudeAdapter {
     streams: Mutex<HashMap<String, agent::ClaudeStreamState>>,
+    models: Arc<RwLock<model_catalog::ResolvedCatalog>>,
+    notify: Option<Arc<dyn Fn() + Send + Sync>>,
+}
+impl ClaudeAdapter {
+    fn new(notify: Option<Arc<dyn Fn() + Send + Sync>>) -> Self {
+        let fallback = claude_fallback_candidates();
+        let models = Arc::new(RwLock::new(model_catalog::resolve(
+            "claude",
+            Err("Claude discovery has not completed".into()),
+            &fallback,
+            None,
+            chrono::Utc::now(),
+        )));
+        let adapter = Self {
+            streams: Mutex::new(HashMap::new()),
+            models,
+            notify,
+        };
+        adapter.refresh_availability();
+        adapter
+    }
+}
+fn claude_fallback_candidates() -> Vec<CatalogCandidate> {
+    vec![
+        CatalogCandidate::stable("haiku", "Claude Haiku", CapabilityTier::Fast, 1),
+        CatalogCandidate::stable("sonnet", "Claude Sonnet", CapabilityTier::Standard, 1),
+        CatalogCandidate::stable("opus", "Claude Opus", CapabilityTier::Strong, 0),
+        CatalogCandidate::stable("fable", "Claude Fable 5", CapabilityTier::Strong, 2),
+        CatalogCandidate::stable(
+            "fable-5-1",
+            "Claude Fable 5.1",
+            CapabilityTier::Strong,
+            1,
+        ),
+    ]
 }
 impl HarnessAdapter for ClaudeAdapter {
     fn as_any(&self) -> &dyn Any {
@@ -1346,15 +1466,30 @@ impl HarnessAdapter for ClaudeAdapter {
             .collect(),
             sandbox_modes: SandboxMode::ALL.to_vec(),
             unavailable_reason: claude_adapter::unavailable_reason(),
-            models: model_options(&[
-                ("haiku", "Claude Haiku", CapabilityTier::Fast, true),
-                ("sonnet", "Claude Sonnet", CapabilityTier::Standard, true),
-                ("opus", "Claude Opus", CapabilityTier::Strong, false),
-                ("fable", "Claude Fable", CapabilityTier::Strong, true),
-            ]),
+            models: self.models.read().unwrap().models.clone(),
             default_model: Some(claude_adapter::DEFAULT_MODEL.into()),
-            model_catalog: ModelCatalogDiagnostics::curated(),
+            model_catalog: self.models.read().unwrap().diagnostics.clone(),
         }
+    }
+    fn refresh_availability(&self) {
+        let models = self.models.clone();
+        let notify = self.notify.clone();
+        thread::spawn(move || {
+            let fallback = claude_fallback_candidates();
+            let discovered = claude_adapter::discover_models()
+                .map(|models| runtime_candidates_with_fallbacks(models, &fallback))
+                .map_err(|error| error.to_string());
+            *models.write().unwrap() = model_catalog::resolve(
+                "claude",
+                discovered,
+                &fallback,
+                None,
+                chrono::Utc::now(),
+            );
+            if let Some(notify) = notify {
+                notify();
+            }
+        });
     }
     fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
         let started = claude_adapter::start(request)?;
@@ -1396,6 +1531,53 @@ impl HarnessAdapter for ClaudeAdapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::model::ModelCatalogDiagnostics;
+
+    #[test]
+    fn runtime_catalog_keeps_compatibility_models_and_provider_names() {
+        let fallback = claude_fallback_candidates();
+        let candidates = runtime_candidates_with_fallbacks(
+            vec![("claude-fable-5-1".into(), "Claude Fable 5.1 Latest".into())],
+            &fallback,
+        );
+
+        assert!(candidates.iter().any(|model| {
+            model.id == "claude-fable-5-1" && model.label == "Claude Fable 5.1 Latest"
+        }));
+        assert!(candidates
+            .iter()
+            .any(|model| model.id == "fable" && model.label == "Claude Fable 5"));
+        assert!(candidates
+            .iter()
+            .any(|model| model.id == "fable-5-1" && model.label == "Claude Fable 5.1"));
+    }
+
+    #[test]
+    fn discovered_models_never_steal_curated_tier_defaults() {
+        let fallback = codex_fallback_candidates();
+        let candidates = runtime_candidates_with_fallbacks(
+            vec![
+                ("gpt-6-new".into(), "GPT-6 New".into()),
+                ("gpt-5.6-terra".into(), "GPT Terra Refreshed".into()),
+            ],
+            &fallback,
+        );
+        let resolved =
+            model_catalog::normalize(crate::model::ModelCatalogSource::RuntimeApi, candidates);
+
+        let standard_default = resolved
+            .iter()
+            .find(|model| model.tier == CapabilityTier::Standard && model.default_for_tier)
+            .unwrap();
+        // The curated default keeps its promotion; discovery only refreshed
+        // the display name and added the new release alongside it.
+        assert_eq!(standard_default.id, "gpt-5.6-terra");
+        assert_eq!(standard_default.label, "GPT Terra Refreshed");
+        assert!(resolved
+            .iter()
+            .any(|model| model.id == "gpt-6-new" && !model.default_for_tier));
+    }
+
     struct Fake;
     impl HarnessAdapter for Fake {
         fn as_any(&self) -> &dyn Any {
