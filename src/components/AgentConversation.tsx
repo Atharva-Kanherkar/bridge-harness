@@ -1,4 +1,4 @@
-import { memo, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Maximize2, Navigation, Pencil, Pin, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
 import { attachmentUris, delegationChildSessionId, delegationFacet, foldWorkerDelegations, mergeConversationProjections, projectSessionConversation, reduceConversation, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
@@ -678,7 +678,14 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const stalled = !!working && !stopping && !streaming && lastEventAt > 0 && clock - lastEventAt > 45_000;
   const tailLength = visibleItems.length ? visibleItems[visibleItems.length - 1].text.length : 0;
   const scrollSignature = `${visibleItems.length}:${tailLength}:${optimistic.length}:${working ? 1 : 0}`;
-  return <FileLinkContext.Provider value={fileLinks}><ScrollFollow signature={scrollSignature} className="absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth px-3 py-8 pb-24 sm:px-6 sm:py-10">
+  // Selecting a chat swaps `session` a commit before its forest snapshot
+  // follows, so the render in between shows the previous chat's history under
+  // the new chat's id. `ScrollFollow` must not place against that: it would
+  // measure the wrong transcript and count the chat as opened.
+  const historySessionId = forestEntries?.[0]?.sessionId;
+  const transcriptIsForThisSession = !session || !historySessionId || historySessionId === session.id;
+  const populated = transcriptIsForThisSession && (visibleItems.length > 0 || optimisticBubbles.length > 0);
+  return <FileLinkContext.Provider value={fileLinks}><ScrollFollow sessionKey={session?.id ?? "preview"} populated={populated} signature={scrollSignature} className="absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth px-3 py-8 pb-24 sm:px-6 sm:py-10">
     <div className="mx-auto flex w-full min-w-0 max-w-3xl flex-col gap-6 sm:gap-8">
       {pendingAdoptions.map(binding => <AdoptionCard key={binding.sessionId} binding={binding} onResolve={onResolveAdoption}/>)}
       {completion && <VerificationCard summary={completion} onWaive={onWaiveCompletion}/>}
@@ -795,16 +802,138 @@ function VerificationCard({ summary, onWaive }: { summary: CompletionSummary; on
   </section>;
 }
 
-function ScrollFollow({ signature, className, children }: { signature: string; className?: string; children: React.ReactNode }) {
-  const ref = useRef<HTMLDivElement>(null);
+/// Where each chat was last read, so reopening one returns you to it rather
+/// than to the top. Module scope, not component state: `ScrollFollow` unmounts
+/// whenever a chat falls back to its greeting, and the record has to outlive
+/// that. `pinned` records "was at the bottom", which reopens at the bottom of
+/// whatever has arrived since rather than at a stale offset.
+const readPositions = new Map<string, { top: number; pinned: boolean }>();
+const READ_POSITION_LIMIT = 64;
+
+function rememberReadPosition(key: string, position: { top: number; pinned: boolean }) {
+  readPositions.delete(key);
+  readPositions.set(key, position);
+  if (readPositions.size > READ_POSITION_LIMIT) {
+    const oldest = readPositions.keys().next();
+    if (!oldest.done) readPositions.delete(oldest.value);
+  }
+}
+
+/// How close to the bottom still counts as following along.
+const PIN_SLACK = 80;
+/// How long after a scroll of ours the layout still counts as settling. Long
+/// enough for an image to decode or a code block to be highlighted, short
+/// enough that expanding a group an hour later is the reader's move, not ours.
+const SETTLE_MS = 1200;
+
+/// One instant move, clamped, returning the offset it actually asked for. The
+/// container is `scroll-smooth`, so a plain `scrollTop` assignment would
+/// animate: the landing would glide down from the top and, while in flight,
+/// look exactly like a reader scrolling away from the bottom.
+function scrollInstantly(el: HTMLElement, top: number): number {
+  const target = Math.max(0, Math.min(top, Math.max(0, el.scrollHeight - el.clientHeight)));
+  if (typeof el.scrollTo === "function") el.scrollTo({ top: target, behavior: "instant" });
+  else el.scrollTop = target;
+  return target;
+}
+
+function ScrollFollow({ sessionKey, populated, signature, className, children }: { sessionKey: string; populated: boolean; signature: string; className?: string; children: React.ReactNode }) {
+  const ref = useRef<HTMLDivElement | null>(null);
   const pinned = useRef(true);
+  // The chat this instance's state describes, and whether that chat has had its
+  // opening placement yet. A switch invalidates both: nothing the previous chat
+  // taught this container applies to the next one.
+  const trackedFor = useRef<string | null>(null);
+  const landed = useRef(false);
+  // The offset the last programmatic scroll asked for. The `scroll` event it
+  // produces is the app moving the viewport, not the reader leaving the bottom.
+  const placedTop = useRef<number | null>(null);
+  // How long a scroll counts as still settling, and so as still ours to finish.
+  const settleUntil = useRef(0);
+
+  const place = useCallback((el: HTMLDivElement, top: number, pin: boolean) => {
+    pinned.current = pin;
+    settleUntil.current = Date.now() + SETTLE_MS;
+    placedTop.current = scrollInstantly(el, top);
+  }, []);
+
+  /// The opening placement: the last-read position when this chat has one, the
+  /// latest message otherwise.
+  const land = useCallback((el: HTMLDivElement) => {
+    const scrollable = Math.max(0, el.scrollHeight - el.clientHeight);
+    const remembered = readPositions.get(sessionKey);
+    if (remembered && !remembered.pinned && scrollable > 0) {
+      landed.current = true;
+      place(el, Math.min(remembered.top, scrollable), false);
+      return;
+    }
+    // No remembered position, a remembered position that was pinned, or
+    // nothing to scroll through yet: land pinned. When there is nothing to
+    // scroll through, the top and the bottom are the same offset, so landing
+    // pinned here also arms live follow right away, instead of leaving
+    // `landed.current` false and stalling the follow effect forever waiting
+    // for a commit that already happened. This is a programmatic placement,
+    // so it never touches `readPositions` — the remembered offset survives,
+    // and a later reopen can still restore it once the chat has grown.
+    landed.current = true;
+    place(el, scrollable, true);
+  }, [place, sessionKey]);
+
+  // Placement runs from the ref callback, not an effect: React attaches refs in
+  // the commit phase, after the transcript's DOM exists and before the browser
+  // paints, so the first frame a reader sees is already the latest message. (A
+  // layout effect has the same timing but warns whenever this component is
+  // rendered by `react-dom/server`.) Re-keying it on `populated` is what makes
+  // history that lands seconds after the first commit still place: a chat
+  // opened cold renders its shimmer first and its transcript later.
+  const attach = useCallback((el: HTMLDivElement | null) => {
+    ref.current = el;
+    if (!el) return;
+    if (trackedFor.current !== sessionKey) {
+      trackedFor.current = sessionKey;
+      landed.current = false;
+      pinned.current = true;
+      placedTop.current = null;
+    }
+    if (populated && !landed.current) land(el);
+  }, [land, sessionKey, populated]);
+
+  // The opening placement's second chance, and live follow after it: while the
+  // reader is at the bottom, every new item and every streamed character keeps
+  // them there.
   useEffect(() => {
     const el = ref.current;
-    if (el && pinned.current) el.scrollTop = el.scrollHeight;
-  }, [signature]);
-  return <div ref={ref} className={className} onScroll={event => {
+    if (!el || trackedFor.current !== sessionKey) return;
+    if (!landed.current) { if (populated) land(el); return; }
+    if (pinned.current) place(el, el.scrollHeight, true);
+  }, [land, place, sessionKey, populated, signature]);
+
+  // Rows can grow after they commit: an image decodes, a code block is
+  // highlighted. Re-pin while the reader is still at the bottom so the landing
+  // holds instead of drifting up by the height that arrived late. Bounded to
+  // the settle window on purpose, so growth the reader caused themselves, like
+  // expanding a group, is left exactly where they put it.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(() => {
+      if (trackedFor.current !== sessionKey || !pinned.current) return;
+      if (Date.now() > settleUntil.current) return;
+      place(el, el.scrollHeight, true);
+    });
+    observer.observe(el.firstElementChild ?? el);
+    return () => observer.disconnect();
+  }, [place, sessionKey]);
+
+  return <div ref={attach} className={className} onScroll={event => {
     const el = event.currentTarget;
-    pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    const placed = placedTop.current;
+    placedTop.current = null;
+    // Our own move, arriving back as an event. Leave `pinned` alone: this is
+    // what used to disarm live follow halfway through its own animation.
+    if (placed !== null && Math.abs(el.scrollTop - placed) <= 2) return;
+    pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < PIN_SLACK;
+    rememberReadPosition(sessionKey, { top: el.scrollTop, pinned: pinned.current });
   }}>{children}</div>;
 }
 
