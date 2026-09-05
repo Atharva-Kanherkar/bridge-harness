@@ -93,8 +93,10 @@ export function RowLead({ children }: { children: ReactNode }) {
  * confirmation *beside* the control: a switch that vanishes for a second and a
  * half the moment it is clicked is a switch the user cannot correct.
  */
-export function SettingsRow({ label, description, mono, lead, control, onOpen, saved, disabled, className }: {
+export function SettingsRow({ label, openLabel, description, mono, lead, control, onOpen, saved, disabled, className }: {
   label: ReactNode;
+  /** The accessible name of the open action, when `label` is not plain text. */
+  openLabel?: string;
   description?: ReactNode;
   /** Render the description as mono meta (an id, a path, a version line). */
   mono?: boolean;
@@ -105,29 +107,51 @@ export function SettingsRow({ label, description, mono, lead, control, onOpen, s
   disabled?: boolean;
   className?: string;
 }) {
-  const body = <>
-    {lead && <RowLead>{lead}</RowLead>}
-    <span className="min-w-0 flex-1 text-left">
-      <span className="block truncate text-[13px] text-foreground">{label}</span>
-      {description !== undefined && description !== null && description !== "" && <span className={cn(
-        "mt-0.5 block truncate text-muted-foreground",
-        mono ? "font-mono text-[10.5px]" : "text-[11.5px]",
-      )}>{description}</span>}
-    </span>
+  const text = <span className="min-w-0 flex-1 text-left">
+    <span className="block truncate text-[13px] text-foreground">{label}</span>
+    {description !== undefined && description !== null && description !== "" && <span className={cn(
+      "mt-0.5 block truncate text-muted-foreground",
+      mono ? "font-mono text-[10.5px]" : "text-[11.5px]",
+    )}>{description}</span>}
+  </span>;
+  const trailing = <>
     {saved && <SavedFlash />}
     {control}
     {onOpen && <CaretRight size={12} weight="regular" aria-hidden="true" className="shrink-0 text-muted-foreground/60" />}
   </>;
 
-  if (onOpen) {
+  // A row that only opens a page is the button, so the hit target matches what
+  // the chevron promises.
+  if (onOpen && !control) {
     return <button
       type="button"
       disabled={disabled}
       onClick={onOpen}
       className={cn("flex min-h-11 w-full items-center gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-accent disabled:opacity-45", className)}
-    >{body}</button>;
+    >{lead && <RowLead>{lead}</RowLead>}{text}{trailing}</button>;
   }
-  return <div className={cn("flex min-h-11 items-center gap-3 px-3.5 py-2.5", disabled && "opacity-45", className)}>{body}</div>;
+
+  // A row that both opens a page and carries an action (Install next to a
+  // chevron) cannot nest one button inside another, so the open action is a
+  // full-bleed button underneath and the action sits above it. One accessible
+  // name each, and the whole row is still the target for "open this".
+  if (onOpen) {
+    return <div className={cn("relative flex min-h-11 items-center gap-3 px-3.5 py-2.5", className)}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onOpen}
+        className="absolute inset-0 z-0 transition-colors hover:bg-accent disabled:opacity-45"
+      ><span className="sr-only">{openLabel ?? (typeof label === "string" ? label : "Open")}</span></button>
+      {lead && <span className="pointer-events-none relative z-10"><RowLead>{lead}</RowLead></span>}
+      <span className="pointer-events-none relative z-10 flex min-w-0 flex-1">{text}</span>
+      <span className="relative z-10 flex shrink-0 items-center gap-2">{trailing}</span>
+    </div>;
+  }
+
+  return <div className={cn("flex min-h-11 items-center gap-3 px-3.5 py-2.5", disabled && "opacity-45", className)}>
+    {lead && <RowLead>{lead}</RowLead>}{text}{trailing}
+  </div>;
 }
 
 /** A row whose control needs the full width beneath the label: an editor, a

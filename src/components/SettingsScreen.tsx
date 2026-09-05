@@ -4,17 +4,18 @@ import { bridgeApi } from "../api";
 import { modelProfilesChanged, profileDraftsFromSetup } from "../modelProfiles";
 import type { AdapterDescriptor, AgentDefinition, AgentRole, BridgeEvent, ConfigState, HarnessConfig, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PermissionPolicy, ReasoningEffort } from "../types";
 import { ModelProfileEditor } from "./ModelProfileEditor";
-import { ManagedAgentsPanel } from "./ManagedAgentsPanel";
+import { useManagedAgents } from "./ManagedAgentsPanel";
 import { PromptStudio } from "./PromptStudio";
 import { WorkSettingsSection } from "./WorkSettingsSection";
 import type { SuggestionSettingsSnapshot } from "../protocol/generated/protocol";
-import { OpenCodeHarnessSettings, type OpenCodeAdvancedSettings } from "./OpenCodeHarnessSettings";
+import { type OpenCodeAdvancedSettings } from "./OpenCodeHarnessSettings";
 import { cn } from "@/lib/utils";
 import { ImportHarnessSection } from "./ImportHarnessSection";
 import { SettingsRail } from "./settings/SettingsRail";
 import { AppearancePage } from "./settings/AppearancePage";
 import { PermissionsSection } from "./settings/PermissionsPage";
 import { ComposerPage } from "./settings/ComposerPage";
+import { HarnessesPage, type HarnessDraft } from "./settings/HarnessesPage";
 import { STATIC_SETTINGS_ROWS, type SearchableRow } from "./settings/settingsSearch";
 import { type Section } from "./settings/sections";
 
@@ -49,20 +50,26 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
   const [profiles, setProfiles] = useState<ModelProfileDraft[]>([]);
   const [selectedAgentId, setSelectedAgentId] = useState("bridge-orchestrator");
   const [agentDraft, setAgentDraft] = useState<AgentDefinition>();
-  const [harnessDrafts, setHarnessDrafts] = useState<Record<string, HarnessConfig>>({});
-  const [advancedText, setAdvancedText] = useState<Record<string, string>>({});
+  // Unsaved *text* only. Switches and selects never enter this map: they write
+  // the stored record directly, so a dirty system prompt cannot ride along with
+  // a toggle. Held here rather than in the page so a draft survives navigating
+  // away and back, as Prompt Studio's drafts do.
+  const [harnessDrafts, setHarnessDrafts] = useState<Record<string, HarnessDraft>>({});
+  const [harnessDetailId, setHarnessDetailId] = useState<string | null>(null);
   const [openCodeCatalog, setOpenCodeCatalog] = useState<OpenCodeCatalog>();
   const [openCodeDiscoveryError, setOpenCodeDiscoveryError] = useState<string>();
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
+  // One copy of the runtime list, read by both the Harnesses list and a single
+  // harness's detail page, so an install never has to be reported twice.
+  const managed = useManagedAgents();
 
   useEffect(() => {
     let active = true;
     setBusy(true);
     Promise.all([bridgeApi.configState(), bridgeApi.modelSetup()]).then(([next, setup]) => {
       if (!active) return;
-      setConfig(next); setHarnessDrafts(Object.fromEntries(next.harnesses.map(item => [item.id, item])));
-      setAdvancedText(Object.fromEntries(next.harnesses.map(item => [item.id, JSON.stringify(item.advanced, null, 2)])));
+      setConfig(next);
       setModelSetup(setup); setProfiles(profileDraftsFromSetup(setup));
     }).catch(error => onError(String(error))).finally(() => { if (active) setBusy(false); });
     return () => { active = false; };
@@ -97,20 +104,13 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
 
   const modelOptions = useMemo(() => {
     const staticOptions = adapters.filter(item => item.available && item.id !== "opencode").flatMap(adapter => adapter.models.map(model => ({ adapter: adapter.id, id: model.id, label: `${adapter.label} · ${model.label}` })));
-    let configuredVisibleModels: string[] = [];
-    try {
-      const parsed = JSON.parse(advancedText.opencode || "{}");
-      if (Array.isArray(parsed.visibleModels)) configuredVisibleModels = parsed.visibleModels;
-    } catch { /* the save action reports malformed JSON */ }
-    const visible = new Set(configuredVisibleModels);
+    const stored = (config?.harnesses.find(item => item.id === "opencode")?.advanced ?? {}) as OpenCodeAdvancedSettings;
+    const visible = new Set(stored.visibleModels ?? []);
     const openCodeOptions = openCodeCatalog?.providers.flatMap(provider => provider.connected ? provider.models.filter(model => visible.size === 0 || visible.has(model.id)).map(model => ({ adapter: "opencode", id: model.id, label: `${provider.name} · ${model.label}` })) : []) ?? [];
     return [...staticOptions, ...openCodeOptions];
-  }, [adapters, openCodeCatalog, advancedText.opencode]);
+  }, [adapters, openCodeCatalog, config]);
   const flashSaved = () => { setSaved(true); window.setTimeout(() => setSaved(false), 1600); };
-  const acceptConfig = (next: ConfigState) => {
-    setConfig(next); setHarnessDrafts(Object.fromEntries(next.harnesses.map(item => [item.id, item])));
-    setAdvancedText(Object.fromEntries(next.harnesses.map(item => [item.id, JSON.stringify(item.advanced, null, 2)])));
-  };
+  const acceptConfig = (next: ConfigState) => setConfig(next);
 
   /** The rows the rail search can reach: the fixed ones, plus whatever the
    *  user's own configuration named. A harness or a preset is findable by its
@@ -158,35 +158,23 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
     catch (error) { onError(String(error)); } finally { setBusy(false); }
   };
 
-  const saveHarness = async (id: string) => {
-    const draft = harnessDrafts[id]; if (!draft) return;
-    let advanced: Record<string, unknown>;
-    try { const parsed: unknown = JSON.parse(advancedText[id] || "{}"); if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error("Advanced configuration must be a JSON object"); advanced = parsed as Record<string, unknown>; }
-    catch (error) { onError(error instanceof Error ? error.message : String(error)); return; }
+  const saveHarness = async (next: HarnessConfig) => {
     setBusy(true);
     try {
-      acceptConfig(await bridgeApi.saveHarnessConfig({ ...draft, advanced }));
-      if (id === "opencode") {
+      acceptConfig(await bridgeApi.saveHarnessConfig(next));
+      if (next.id === "opencode") {
         setOpenCodeCatalog(await bridgeApi.refreshOpenCodeCatalog());
         setOpenCodeDiscoveryError(undefined);
       }
       flashSaved();
-    }
-    catch (error) { onError(String(error)); } finally { setBusy(false); }
+    } finally { setBusy(false); }
   };
 
-  const openCodeAdvanced = (): OpenCodeAdvancedSettings => {
-    try { return JSON.parse(advancedText.opencode || "{}"); }
-    catch { return {}; }
-  };
-  const updateOpenCodeAdvanced = (value: OpenCodeAdvancedSettings) => {
-    setAdvancedText(current => ({ ...current, opencode: JSON.stringify(value, null, 2) }));
-  };
-
-  const resetHarness = async (id: HarnessConfig["id"]) => {
+  const resetHarness = async (id: string) => {
     setBusy(true);
     try {
-      acceptConfig(await bridgeApi.resetHarnessConfig(id));
+      acceptConfig(await bridgeApi.resetHarnessConfig(id as HarnessConfig["id"]));
+      setHarnessDrafts(current => { const draft = { ...current }; delete draft[id]; return draft; });
       if (id === "opencode") {
         setOpenCodeCatalog(await bridgeApi.refreshOpenCodeCatalog());
         setOpenCodeDiscoveryError(undefined);
@@ -251,23 +239,24 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
         </section>}
       </div>}
 
-      {section === "harnesses" && config && <div className="mx-auto max-w-4xl p-5">
-        <div className="mb-5"><h2 className="font-display text-lg font-semibold">Harness configuration</h2><p className="mt-1 text-xs text-muted-foreground">Defaults apply to new sessions. Provider credentials stay in each harness's own credential store.</p></div>
-        <section className="mb-6" aria-labelledby="managed-runtimes-heading">
-          <div className="mb-3"><h3 id="managed-runtimes-heading" className="font-display text-sm font-semibold">Agent runtimes</h3></div>
-          <ManagedAgentsPanel />
-        </section>
-        <div className="space-y-4">{config.harnesses.map(item => {
-          const draft = harnessDrafts[item.id] ?? item;
-          return <section key={item.id} className="rounded-3xl border border-border/80 bg-card/45 p-5">
-            <div className="flex items-center gap-3"><div className="flex-1"><h3 className="font-display font-semibold">{draft.label}</h3><p className="text-[10px] text-muted-foreground">{item.isOverride ? "Customized" : "Bridge defaults"}</p></div><label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={draft.enabled} onChange={event => setHarnessDrafts(current => ({ ...current, [item.id]: { ...draft, enabled: event.target.checked } }))}/>Enabled</label></div>
-            <div className="mt-4 grid gap-4 sm:grid-cols-2"><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Default model<select className={field} value={draft.defaultModel ?? ""} disabled={item.id === "bridge"} onChange={event => setHarnessDrafts(current => ({ ...current, [item.id]: { ...draft, defaultModel: event.target.value || null } }))}><option value="">Automatic</option>{modelOptions.filter(option => option.adapter === item.id).map(option => <option key={option.id} value={option.id}>{option.label}</option>)}</select></label><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Default effort<select className={field} value={draft.effort ?? ""} onChange={event => setHarnessDrafts(current => ({ ...current, [item.id]: { ...draft, effort: (event.target.value || null) as ReasoningEffort | null } }))}><option value="">Role default</option>{efforts.map(value => <option key={value} value={value}>{value}</option>)}</select></label></div>
-            <label className="mt-4 block space-y-1.5 text-[11px] font-medium text-muted-foreground">Harness system prompt<textarea className={textarea} value={draft.systemPrompt} placeholder={`Instructions for every ${draft.label} session…`} onChange={event => setHarnessDrafts(current => ({ ...current, [item.id]: { ...draft, systemPrompt: event.target.value } }))}/></label>
-            {item.id === "opencode" ? <OpenCodeHarnessSettings value={openCodeAdvanced()} catalog={openCodeCatalog} discoveryError={openCodeDiscoveryError} disabled={busy} onChange={value => { updateOpenCodeAdvanced(value); if (draft.defaultModel && value.visibleModels?.length && !value.visibleModels.includes(draft.defaultModel)) setHarnessDrafts(current => ({ ...current, opencode: { ...draft, defaultModel: null } })); }} onCatalog={catalog => { setOpenCodeCatalog(catalog); setOpenCodeDiscoveryError(undefined); }} onError={message => { setOpenCodeDiscoveryError(message); onError(message); }}/> : <label className="mt-4 block space-y-1.5 text-[11px] font-medium text-muted-foreground">Advanced JSON<textarea className={cn(textarea, "min-h-24")} spellCheck={false} value={advancedText[item.id] ?? "{}"} onChange={event => setAdvancedText(current => ({ ...current, [item.id]: event.target.value }))}/></label>}
-            <div className="mt-4 flex gap-2"><button type="button" disabled={busy} onClick={() => void saveHarness(item.id)} className="inline-flex h-9 items-center gap-2 rounded-xl bg-foreground px-3.5 text-xs font-medium text-background disabled:opacity-40">Save {draft.label}</button><button type="button" disabled={busy || !item.isOverride} onClick={() => void resetHarness(item.id)} className="inline-flex h-9 items-center gap-2 rounded-xl px-3 text-xs text-muted-foreground hover:bg-foreground/[0.05] hover:text-foreground disabled:opacity-35">Reset</button></div>
-          </section>;
-        })}</div>
-      </div>}
+      {section === "harnesses" && config && <HarnessesPage
+        harnesses={config.harnesses}
+        modelOptions={modelOptions}
+        managed={managed}
+        busy={busy}
+        openCodeCatalog={openCodeCatalog}
+        openCodeDiscoveryError={openCodeDiscoveryError}
+        drafts={harnessDrafts}
+        detailId={harnessDetailId}
+        onOpenDetail={setHarnessDetailId}
+        onCloseDetail={() => setHarnessDetailId(null)}
+        onDraft={(id, patch) => setHarnessDrafts(current => ({ ...current, [id]: { ...current[id], ...patch } }))}
+        onDiscard={id => setHarnessDrafts(current => { const next = { ...current }; delete next[id]; return next; })}
+        onSaveHarness={saveHarness}
+        onResetHarness={resetHarness}
+        onCatalog={catalog => { setOpenCodeCatalog(catalog); setOpenCodeDiscoveryError(undefined); }}
+        onError={message => { setOpenCodeDiscoveryError(message); onError(message); }}
+      />}
 
       {section === "models" && modelSetup && <div className="mx-auto max-w-5xl p-5"><div className="mb-5 flex items-start justify-between gap-4"><div><h2 className="font-display text-lg font-semibold">Models</h2><p className="mt-1 text-xs text-muted-foreground">Version {modelSetup.activeVersion ?? "—"}.</p></div><button type="button" disabled={busy || !modelProfilesChanged(profiles, modelSetup)} onClick={() => void saveModels()} className="inline-flex h-9 items-center gap-2 rounded-xl bg-foreground px-3.5 text-xs font-medium text-background disabled:opacity-40">Save profiles</button></div><ModelProfileEditor profiles={profiles} adapters={adapters} disabled={busy} onChange={setProfiles}/></div>}
     </div>

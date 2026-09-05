@@ -135,6 +135,26 @@ describe("SettingsScreen", () => {
       expect(container.textContent).toContain("No setting matches that.");
     });
 
+    it("opens a harness detail page from a list row, and comes back by breadcrumb", async () => {
+      await render({ initialSection: "harnesses" });
+      expect(container.textContent).toContain("Installed");
+      // Bridge is always on and lives under Defaults rather than in the
+      // install/repair groups.
+      expect(container.textContent).toContain("Always on");
+
+      await open("Configure Claude Code");
+      const crumbs = container.querySelector('[aria-label="Breadcrumb"]')!;
+      expect(crumbs.textContent).toContain("Harnesses");
+      expect(container.textContent).toContain("System prompt");
+      expect(container.textContent).toContain("Sessions");
+
+      await act(async () => {
+        crumbs.querySelector<HTMLButtonElement>("button")!.click();
+        await flush();
+      });
+      expect(container.querySelector('[aria-label="Breadcrumb"]')).toBeNull();
+    });
+
     it("names what Reset all deletes before it deletes it", async () => {
       await render();
       await open("Reset all settings");
