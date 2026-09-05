@@ -278,7 +278,7 @@
       "command": "create_chat_id",
       "domain": "sessions",
       "method": "sessions/create_chat_id",
-      "paramsSchema": "create-chat-params.json",
+      "paramsSchema": "create-chat-id-params.json",
       "resultSchema": "create-chat-id-result.json"
     },
     {

@@ -197,7 +197,7 @@ pub fn dispatch(
             reply(api::activate_session_entry(core, &p.session_id, &p.entry_id))
         }
         MethodName::CreateChatId => {
-            let p: wire::CreateChatParams = decode(method, params)?;
+            let p: wire::CreateChatIdParams = decode(method, params)?;
             reply(api::create_chat_id(core, &p.harness.into(), p.model.as_deref(), p.title.as_deref()))
         }
         MethodName::CreateChat => {
