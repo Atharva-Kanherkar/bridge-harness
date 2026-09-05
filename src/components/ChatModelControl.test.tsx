@@ -505,6 +505,98 @@ describe("ChatModelControl effort styles", () => {
       expect(panel()).not.toBeNull();
     });
 
+    it("sends a queued level after the popover was closed mid-switch", async () => {
+      const onEffortChange = vi.fn();
+      const props = { adapters: effortAwareAdapters, harness: "claude" as const, model: "sonnet", onChange: vi.fn(), effort: "high", onEffortChange };
+      await act(async () => root.render(<ChatModelControl {...props} />));
+      await act(async () => trigger().click());
+      const opus = [...panel().querySelectorAll<HTMLButtonElement>('button[role="option"]')].find(button => button.textContent?.includes("Opus"))!;
+      await act(async () => opus.click());
+      await act(async () => root.render(<ChatModelControl {...props} disabled />));
+      await act(async () => { key(control().querySelector('[role="slider"]')!, "End"); });
+      // "I'm done": dismiss while the provider is still restarting.
+      await act(async () => container.querySelector<HTMLElement>(".fixed.inset-0")!.click());
+      expect(panel()).toBeNull();
+      expect(onEffortChange).not.toHaveBeenCalled();
+      await act(async () => root.render(<ChatModelControl {...props} model="opus" />));
+      expect(onEffortChange).toHaveBeenCalledTimes(1);
+      expect(onEffortChange).toHaveBeenCalledWith("max");
+    });
+
+    it("keeps showing a sent level, live, until the host confirms it", async () => {
+      const onEffortChange = vi.fn();
+      const props = { adapters: effortAwareAdapters, harness: "claude" as const, model: "opus", onChange: vi.fn(), effort: "high", onEffortChange };
+      await act(async () => root.render(<ChatModelControl {...props} />));
+      await act(async () => trigger().click());
+      await act(async () => { key(control().querySelector('[role="slider"]')!, "End"); });
+      expect(onEffortChange).toHaveBeenCalledWith("max");
+      // The host goes busy for the effort round-trip; the prop is still stale.
+      await act(async () => root.render(<ChatModelControl {...props} disabled />));
+      const thumb = control().querySelector('[role="slider"]')!;
+      expect(thumb.getAttribute("aria-valuetext")).toBe("Max");
+      expect(thumb.getAttribute("aria-disabled")).toBeNull();
+      await act(async () => root.render(<ChatModelControl {...props} effort="max" />));
+      expect(control().querySelector('[role="slider"]')!.getAttribute("aria-valuetext")).toBe("Max");
+    });
+
+    it("reverts to the host's level when it settles without adopting the sent one", async () => {
+      const props = { adapters: effortAwareAdapters, harness: "claude" as const, model: "opus", onChange: vi.fn(), effort: "high", onEffortChange: vi.fn() };
+      await act(async () => root.render(<ChatModelControl {...props} />));
+      await act(async () => trigger().click());
+      await act(async () => { key(control().querySelector('[role="slider"]')!, "End"); });
+      await act(async () => root.render(<ChatModelControl {...props} disabled />));
+      await act(async () => root.render(<ChatModelControl {...props} />));
+      expect(control().querySelector('[role="slider"]')!.getAttribute("aria-valuetext")).toBe("High");
+    });
+
+    it("drops the queue and the highlight when the switch fails", async () => {
+      const onEffortChange = vi.fn();
+      const props = { adapters: effortAwareAdapters, harness: "claude" as const, model: "sonnet", onChange: vi.fn(), effort: "high", onEffortChange };
+      await act(async () => root.render(<ChatModelControl {...props} />));
+      await act(async () => trigger().click());
+      const opus = [...panel().querySelectorAll<HTMLButtonElement>('button[role="option"]')].find(button => button.textContent?.includes("Opus"))!;
+      await act(async () => opus.click());
+      await act(async () => root.render(<ChatModelControl {...props} disabled />));
+      await act(async () => { key(control().querySelector('[role="slider"]')!, "End"); });
+      // The host settles still on Sonnet: the switch did not happen.
+      await act(async () => root.render(<ChatModelControl {...props} />));
+      expect(onEffortChange).not.toHaveBeenCalled();
+      const sonnet = [...panel().querySelectorAll<HTMLButtonElement>('button[role="option"]')].find(button => button.textContent?.includes("Sonnet"))!;
+      expect(sonnet.getAttribute("aria-selected")).toBe("true");
+      expect([...control().querySelectorAll("[data-effort]")].map(el => el.getAttribute("data-effort"))).toEqual(["low", "high", "xhigh"]);
+      expect(control().querySelector('[role="slider"]')!.getAttribute("aria-valuetext")).toBe("High");
+    });
+
+    it("ignores a second pick while its own switch is in flight", async () => {
+      const onChange = vi.fn();
+      const props = { adapters: effortAwareAdapters, harness: "claude" as const, model: "sonnet", onChange, effort: "high", onEffortChange: vi.fn() };
+      await act(async () => root.render(<ChatModelControl {...props} />));
+      await act(async () => trigger().click());
+      const row = (name: string) => [...panel().querySelectorAll<HTMLButtonElement>('button[role="option"]')].find(button => button.textContent?.includes(name))!;
+      await act(async () => row("Opus").click());
+      await act(async () => root.render(<ChatModelControl {...props} disabled />));
+      expect(panel().querySelector('[role="listbox"]')!.getAttribute("aria-busy")).toBe("true");
+      await act(async () => row("Haiku").click());
+      expect(onChange).toHaveBeenCalledTimes(1);
+      // Once settled, picking is possible again.
+      await act(async () => root.render(<ChatModelControl {...props} model="opus" />));
+      await act(async () => row("Haiku").click());
+      expect(onChange).toHaveBeenCalledTimes(2);
+    });
+
+    it("forgets anything in flight when a turn, not the picker, disables it", async () => {
+      const onEffortChange = vi.fn();
+      const props = { adapters: effortAwareAdapters, harness: "claude" as const, model: "opus", onChange: vi.fn(), effort: "high", onEffortChange };
+      await act(async () => root.render(<ChatModelControl {...props} />));
+      await act(async () => trigger().click());
+      // Nothing of ours is in flight when the turn starts, so it closes…
+      await act(async () => root.render(<ChatModelControl {...props} disabled />));
+      expect(panel()).toBeNull();
+      // …and settling afterwards sends nothing.
+      await act(async () => root.render(<ChatModelControl {...props} />));
+      expect(onEffortChange).not.toHaveBeenCalled();
+    });
+
     it("still closes on pick for a plain surface that does not do effort", async () => {
       await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="sonnet" onChange={vi.fn()} />));
       await act(async () => trigger().click());
@@ -535,8 +627,11 @@ describe("ChatModelControl effort styles", () => {
       expect(thumb.getAttribute("aria-valuetext")).toBe("High");
       await act(async () => { key(thumb, "ArrowRight"); });
       expect(onEffortChange).toHaveBeenLastCalledWith("xhigh");
+      // The chosen level shows at once (the word is mid-scramble for a beat,
+      // so read the rail), and the next step is relative to it.
+      expect(control().querySelector('[role="slider"]')!.getAttribute("aria-valuetext")).toBe("XHigh");
       await act(async () => { key(thumb, "ArrowLeft"); });
-      expect(onEffortChange).toHaveBeenLastCalledWith("low");
+      expect(onEffortChange).toHaveBeenLastCalledWith("high");
     });
 
     it("reads 'normally' while unset and steps onto the first level", async () => {

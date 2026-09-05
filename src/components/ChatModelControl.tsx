@@ -75,40 +75,60 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   const [refreshError, setRefreshError] = useState<string | null>(null);
   // Optimistic selection: the row the user just picked highlights and drives
   // the effort ladder at once, while the host is still switching. Cleared when
-  // the props catch up, when the host's disable window ends, or on close.
+  // the props catch up or when the host's disable window ends.
   const [pending, setPending] = useState<{ harness: Harness; model: string | null } | null>(null);
-  // A level chosen while the host is still switching models; shown at once,
-  // sent the instant the switch settles.
-  const [queuedEffort, setQueuedEffort] = useState<string | null>(null);
+  // The level the user last chose here, until the host confirms it. `sent`
+  // is false while the host is still switching models — the level waits and
+  // goes out the instant the switch settles, provided the pick landed. The
+  // shown value is this one, so a round-trip never flashes the stale prop.
+  const [queued, setQueued] = useState<{ value: string; sent: boolean } | null>(null);
   // Set whenever the picker itself asks the host for a change. A live
   // session's handler sets busy, which flips `disabled` for the length of the
-  // switch; that flip must not count as "a turn started" and close the
-  // popover. A disable from anywhere else still does.
+  // request; that flip must not count as "a turn started" and close the
+  // popover. A disable from anywhere else still does — and drops anything of
+  // ours still in flight, since the host is busy with something else now.
   const ownChange = useRef(false);
   const wasDisabled = useRef(!!disabled);
   useEffect(() => {
     const was = wasDisabled.current;
     wasDisabled.current = !!disabled;
     if (disabled && !was) {
-      if (!ownChange.current) setOpen(false);
+      if (!ownChange.current) { setOpen(false); setPending(null); setQueued(null); }
       return;
     }
     if (!disabled && was) {
       ownChange.current = false;
+      // The switch settled. Only a pick the host adopted may carry the queue;
+      // a failed switch must not apply the level to the model just left.
+      const landed = !pending || (pending.harness === harness && pending.model === model);
       setPending(null);
-      if (queuedEffort != null && onEffortChange) {
-        ownChange.current = true;
-        onEffortChange(queuedEffort);
-        setQueuedEffort(null);
+      if (!queued) return;
+      if (!queued.sent) {
+        if (landed && onEffortChange) {
+          ownChange.current = true;
+          setQueued({ value: queued.value, sent: true });
+          onEffortChange(queued.value);
+        } else {
+          setQueued(null);
+        }
+      } else if (effort !== queued.value) {
+        // The host settled without adopting the level: show what it has.
+        setQueued(null);
       }
     }
-  }, [disabled, queuedEffort, onEffortChange]);
+  }, [disabled, pending, queued, harness, model, effort, onEffortChange]);
   useEffect(() => {
     if (pending && pending.harness === harness && pending.model === model) setPending(null);
   }, [harness, model, pending]);
   useEffect(() => {
-    if (!open) { setPending(null); setQueuedEffort(null); }
-  }, [open]);
+    if (queued?.sent && effort === queued.value) setQueued(null);
+  }, [effort, queued]);
+  // Closing while nothing is in flight forgets the optimistic state. Closing
+  // mid-switch keeps it: the pick already went to the host, and a level chosen
+  // meanwhile still goes out when the switch settles.
+  useEffect(() => {
+    if (!open && !disabled) { setPending(null); setQueued(null); }
+  }, [open, disabled]);
   // Fit the popover to the window. The composer sits near the bottom of the
   // view, so an upward popover of fixed height ran off the top of a short
   // window; measure the room on each side, cap the height to it, and flip when
@@ -180,19 +200,24 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   const twoPane = effortStyle === "list" && effortSurface;
   // While the host switches to the picked model the ladder is the new model's;
   // the session's level carries over only if that ladder has it, which is the
-  // backend's rule too. A queued level wins over both.
-  const effortValue = queuedEffort ?? (pending ? (effortLevels.some(level => level.value === effort) ? effort : null) : effort);
+  // backend's rule too. A level chosen here wins over both until confirmed.
+  const effortValue = queued?.value ?? (pending ? (effortLevels.some(level => level.value === effort) ? effort : null) : effort);
   const changeEffort = (value: string) => {
     if (!onEffortChange) return;
-    if (disabled) { setQueuedEffort(value); return; }
+    if (disabled) { setQueued({ value, sent: false }); return; }
     ownChange.current = true;
+    setQueued({ value, sent: true });
     onEffortChange(value);
   };
-  // The control stays live through the picker's own switch so both can be set
-  // in one open; only a disable from elsewhere makes it inert.
-  const effortDisabled = !!disabled && !pending;
+  // The picker's own switch is in flight: the pick went out and the host has
+  // not settled. Rows ignore a second pick meanwhile — it would race the first
+  // on the session lock — and the effort control stays live so both can be
+  // set in one open. Only a disable from elsewhere makes the control inert.
+  const switchInFlight = !!disabled && !!pending;
+  const effortDisabled = !!disabled && !pending && !queued;
   const effortProps = { levels: effortLevels, value: effortValue, onChange: onEffortChange ? changeEffort : undefined, disabled: effortDisabled, harness: activeHarness, modelLabel };
   const pickModel = (nextHarness: Harness, nextModel: string | null) => {
+    if (switchInFlight) return;
     ownChange.current = true;
     if (effortSurface) setPending({ harness: nextHarness, model: nextModel });
     onChange(nextHarness, nextModel);
@@ -244,7 +269,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
         </div>
         {refreshError && <p role="alert" className="px-3 py-2 text-xs text-destructive">{refreshError}</p>}
         <div className={cn("flex min-h-0 flex-1", !twoPane && "flex-col")}>
-        <div role="listbox" aria-label={`${roleLabel} models`} className={cn("min-h-0 flex-1 overflow-y-auto p-1.5", twoPane && "w-[210px] flex-none border-r border-border")}>
+        <div role="listbox" aria-label={`${roleLabel} models`} aria-busy={switchInFlight || undefined} className={cn("min-h-0 flex-1 overflow-y-auto p-1.5", twoPane && "w-[210px] flex-none border-r border-border", switchInFlight && "cursor-progress")}>
           {chatAdapters
             .map(adapter => {
               const catalog = adapter.models.length ? adapter.models : [{ id: "", label: "Default", tier: "fast" as const, defaultForTier: true }];
