@@ -1306,6 +1306,32 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
         .as_ref()
         .filter(|value| !value.is_empty())
         .cloned()
+        // A pinned model that has dropped out of the live catalogue resolves to
+        // the tier default instead of failing the session start with a raw
+        // provider "unknown model" error.
+        .map(|requested| {
+            match state
+                .adapter_registry
+                .resolve_pinned_model(adapter_id, &requested)
+            {
+                Ok(resolution) => {
+                    if let Some(warning) = resolution.warning {
+                        let db = state.db.lock().unwrap();
+                        let _ = store::event(
+                            &db,
+                            "capability",
+                            "capability.model_pin_fallback",
+                            &session_id,
+                            &warning,
+                        );
+                    }
+                    resolution.actual_model
+                }
+                // No registered adapter to resolve against: keep the pin and let
+                // the adapter decide, exactly as before.
+                Err(_) => requested,
+            }
+        })
         .or_else(|| {
             configured_harness
                 .as_ref()

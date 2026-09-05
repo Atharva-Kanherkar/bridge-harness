@@ -37,7 +37,7 @@ pub fn register_node_compile_cache_root(root: impl Into<PathBuf>) {
 /// Referenced by the catalog in `adapters.rs` and by the runtime fallback below.
 pub const DEFAULT_MODEL: &str = "sonnet";
 
-pub fn discover_models() -> Result<Vec<(String, String)>, BridgeError> {
+pub fn discover_models() -> Result<Vec<crate::adapters::DiscoveredModel>, BridgeError> {
     let node = binary::resolve("node").ok_or_else(|| BridgeError::Invalid("Node.js is required to discover Claude models".into()))?;
     let sidecar = sidecar_entry()?;
     let output = Command::new(node).arg(sidecar).arg(serde_json::json!({ "catalog": true, "cwd": "." }).to_string())
@@ -49,9 +49,25 @@ pub fn discover_models() -> Result<Vec<(String, String)>, BridgeError> {
         let found = models.iter().filter_map(|model| {
             let id = model.get("value")?.as_str()?.trim();
             let label = model.get("displayName").and_then(Value::as_str).unwrap_or(id).trim();
+            // Absent or empty supportedEffortLevels means no effort knob (e.g.
+            // haiku); the picker then hides the effort control for the model.
+            let supported_effort_levels = model.get("supportedEffortLevels")
+                .and_then(Value::as_array)
+                .map(|levels| levels.iter().filter_map(|level| {
+                    level.as_str().map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned)
+                }).collect::<Vec<_>>())
+                .unwrap_or_default();
             // "default" is the CLI's alias for whatever it currently prefers,
             // not a model; Bridge tracks its own per-tier defaults instead.
-            (!id.is_empty() && !label.is_empty() && id != "default").then(|| (id.to_owned(), label.to_owned()))
+            (!id.is_empty() && !label.is_empty() && id != "default").then(|| crate::adapters::DiscoveredModel {
+                id: id.to_owned(),
+                label: label.to_owned(),
+                // Claude's supportedModels() carries no per-model default flag;
+                // the "default" alias is filtered above, so Bridge's curated
+                // per-tier defaults stay authoritative.
+                is_default: false,
+                supported_effort_levels,
+            })
         }).collect::<Vec<_>>();
         if !found.is_empty() { return Ok(found); }
     }
@@ -173,6 +189,11 @@ fn launch(
         // Absent for every non-briefing session, so the sidecar's existing
         // write-mode handling is reached by exactly the same path as before.
         "briefing": briefing_config,
+        // The routed reasoning effort. The Claude Agent SDK takes this natively
+        // (Options.effort), so low/medium are honoured instead of being silently
+        // dropped the way the old thinking-budget mapping dropped them. The
+        // sidecar sanitizes it to the levels the SDK accepts.
+        "effort": effort.map(str::trim).filter(|value| !value.is_empty()),
     });
     let mut command = crate::worker_sandbox::command(&node, read_only_sandbox)?;
     command
@@ -223,11 +244,9 @@ fn launch(
             }
         }
     }
-    // Claude Code has no per-run effort flag; the closest real knob is the
-    // extended-thinking budget, which we scale by the routed effort tier.
-    if let Some(budget) = thinking_budget(effort) {
-        command.env("MAX_THINKING_TOKENS", budget.to_string());
-    }
+    // Reasoning effort is passed to the SDK natively through the sidecar config
+    // (Options.effort) rather than the deprecated MAX_THINKING_TOKENS budget, so
+    // every level — low and medium included — reaches the model.
     // Best effort: warms SDK module load across launches on Node 22+. A cache
     // directory we cannot create just means the sidecar boots without it.
     if let Some(cache_dir) = NODE_COMPILE_CACHE_ROOT
@@ -876,16 +895,6 @@ pub fn unavailable_reason() -> Option<String> {
         return Some("Node.js 18+ is required to run Claude models".into());
     }
     sidecar_entry().err().map(|error| error.to_string())
-}
-
-/// Map a routed effort tier to an extended-thinking token budget. `None` leaves
-/// Claude Code on its default (used for low/medium).
-fn thinking_budget(effort: Option<&str>) -> Option<u32> {
-    match effort.map(str::trim).unwrap_or("") {
-        "high" => Some(16_000),
-        "xhigh" => Some(32_000),
-        _ => None,
-    }
 }
 
 fn write_value(writer: &Arc<Mutex<ChildStdin>>, value: &Value) -> Result<(), BridgeError> {

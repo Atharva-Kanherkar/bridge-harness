@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildOptions, permissionOptions } from "../options.mjs";
+import { buildOptions, permissionOptions, sdkEffort } from "../options.mjs";
 
 const base = {
   sessionId: "11111111-1111-4111-8111-111111111111",
@@ -50,6 +50,23 @@ test("Claude receives the compiled stable prefix before variable context", () =>
     assert.ok(appended.startsWith(stable));
     assert.ok(appended.indexOf("stable-provider-contract") < appended.indexOf("variable-task-evidence"));
   }
+});
+
+test("routed effort is passed to the SDK natively, low and medium included", () => {
+  for (const level of ["low", "medium", "high", "xhigh", "max"]) {
+    const options = buildOptions({ ...base, resume: false, effort: level });
+    assert.equal(options.effort, level);
+  }
+});
+
+test("effort is normalized and an out-of-set level is dropped rather than sent", () => {
+  assert.equal(buildOptions({ ...base, resume: false, effort: "HIGH " }).effort, "high");
+  // Codex's `ultra` has no Claude equivalent, so it is omitted entirely.
+  assert.equal(buildOptions({ ...base, resume: false, effort: "ultra" }).effort, undefined);
+  assert.equal(buildOptions({ ...base, resume: false, effort: null }).effort, undefined);
+  assert.equal(sdkEffort("xhigh"), "xhigh");
+  assert.equal(sdkEffort("ultra"), null);
+  assert.equal(sdkEffort(undefined), null);
 });
 
 test("read-only mode denies direct write tools without dangerous bypass", () => {

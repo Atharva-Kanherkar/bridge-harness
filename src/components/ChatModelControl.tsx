@@ -5,15 +5,25 @@ import { harnessLabel } from "../utils";
 import { HarnessMark } from "./harnessMarks";
 import { cn } from "@/lib/utils";
 
-// Reasoning effort, in the order the segmented control shows them. Values match
-// the wire `Effort` union ("low" | "medium" | "high" | "xhigh"); the labels are
-// the compact glyphs the 2a footer draws.
-const EFFORT_OPTIONS: { value: string; label: string }[] = [
-  { value: "low", label: "Low" },
-  { value: "medium", label: "Med" },
-  { value: "high", label: "High" },
-  { value: "xhigh", label: "XHigh" },
-];
+// Compact glyphs the effort footer draws, keyed by the wire effort value.
+const EFFORT_LABELS: Record<string, string> = {
+  low: "Low",
+  medium: "Med",
+  high: "High",
+  xhigh: "XHigh",
+  max: "Max",
+  ultra: "Ultra",
+};
+
+function effortLabel(value: string): string {
+  return EFFORT_LABELS[value] ?? value.charAt(0).toUpperCase() + value.slice(1);
+}
+
+// Fallback effort ladder for a provider whose catalog reports no per-model
+// effort levels — the fixed list Bridge showed before discovery carried them.
+const EFFORT_OPTIONS: { value: string; label: string }[] = ["low", "medium", "high", "xhigh"].map(
+  value => ({ value, label: effortLabel(value) }),
+);
 
 // Vendor noise at the tail of a catalog label. OpenCode Zen's free tier
 // suffixes "(Unlimited)": it names the plan, not the model. Cursor reports a
@@ -102,9 +112,21 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   const compactLabel = modelLabel.toLowerCase().startsWith(harnessName.toLowerCase())
     ? modelLabel
     : `${harnessName} · ${modelLabel}`;
-  // Effort has a home in the footer whenever there is an effort to show or a
-  // setter to drive it — otherwise the segmented control would be dead chrome.
-  const showEffort = !!current?.capabilities.includes("reasoning") && (effort != null || !!onEffortChange);
+  // Per-model effort. When the adapter's catalog reports effort levels for any
+  // model, trust it per model: offer the selected model's levels, and treat a
+  // model with none (e.g. Claude Haiku) as having no effort knob. When no model
+  // reports levels (a provider discovery that predates the field, or a curated
+  // fallback), keep the fixed ladder so nothing regresses.
+  const adapterReportsEffort = current?.models.some(option => (option.supportedEffortLevels?.length ?? 0) > 0) ?? false;
+  const modelEffortLevels = currentModel?.supportedEffortLevels ?? [];
+  const effortOptions = modelEffortLevels.length
+    ? modelEffortLevels.map(value => ({ value, label: effortLabel(value) }))
+    : EFFORT_OPTIONS;
+  const modelSupportsEffort = adapterReportsEffort ? modelEffortLevels.length > 0 : true;
+  // Effort has a home in the footer whenever the selected model takes one and
+  // there is an effort to show or a setter to drive it — otherwise the segmented
+  // control would be dead chrome.
+  const showEffort = !!current?.capabilities.includes("reasoning") && modelSupportsEffort && (effort != null || !!onEffortChange);
   const q = query.trim().toLowerCase();
   const matchesQuery = (label: string) => !q || cleanModelLabel(label).toLowerCase().includes(q);
   return <div className="relative">
@@ -173,7 +195,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
             <div className="flex items-center gap-2">
               <span className="shrink-0 text-[11px] text-muted-foreground">Effort</span>
               <div role="group" aria-label="Reasoning effort" className="u-segmented flex-1">
-                {EFFORT_OPTIONS.map(option => {
+                {effortOptions.map(option => {
                   const active = effort === option.value;
                   return <button
                     key={option.value}

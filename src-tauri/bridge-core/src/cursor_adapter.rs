@@ -601,6 +601,7 @@ fn model_options(options: &[SessionConfigOption]) -> Vec<ModelOption> {
             compatible: true,
             lifecycle: ModelLifecycle::Unknown,
             source: ModelCatalogSource::RuntimeApi,
+            supported_effort_levels: Vec::new(),
             default_for_tier: false,
         })
         .collect();
@@ -619,6 +620,7 @@ fn model_options(options: &[SessionConfigOption]) -> Vec<ModelOption> {
                 } else {
                     model.lifecycle
                 },
+                supported_effort_levels: model.supported_effort_levels,
                 promotion_priority: i64::from(provider_default),
             }
         }),

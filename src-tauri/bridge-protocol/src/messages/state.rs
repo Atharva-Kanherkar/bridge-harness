@@ -159,6 +159,8 @@ pub struct ModelOption {
     pub lifecycle: ModelLifecycle,
     #[serde(default)]
     pub source: ModelCatalogSource,
+    #[serde(default)]
+    pub supported_effort_levels: Vec<String>,
     pub default_for_tier: bool,
 }
 
@@ -418,6 +420,7 @@ mod tests {
                     compatible: true,
                     lifecycle: ModelLifecycle::Stable,
                     source: ModelCatalogSource::CuratedFallback,
+                    supported_effort_levels: Vec::new(),
                     default_for_tier: true,
                 }],
                 default_model: Some("gpt-5".into()),

@@ -881,6 +881,36 @@ impl AdapterRegistry {
             warning,
         })
     }
+
+    /// Resolve a model a session pinned itself to, preserving the pinned model's
+    /// own tier when it is still selectable. A pin that has dropped out of the
+    /// live catalogue (a renamed or retired id, e.g. an old `fable-5-1`) falls
+    /// back to the Standard tier default with a warning rather than failing the
+    /// session start with a raw provider "unknown model" error.
+    pub fn resolve_pinned_model(
+        &self,
+        id: &str,
+        model: &str,
+    ) -> Result<ModelResolution, BridgeError> {
+        let descriptor = self
+            .adapters
+            .get(id)
+            .ok_or_else(|| {
+                BridgeError::Invalid(format!("No structured adapter is registered for {id}"))
+            })?
+            .descriptor();
+        let tier = descriptor
+            .models
+            .iter()
+            .find(|option| {
+                option.id.eq_ignore_ascii_case(model.trim())
+                    && option.available
+                    && option.compatible
+            })
+            .map(|option| option.tier)
+            .unwrap_or(CapabilityTier::Standard);
+        self.resolve_model(id, tier, Some(model))
+    }
 }
 
 struct OpenCodeAdapter {
@@ -937,6 +967,7 @@ impl OpenCodeAdapter {
                                 available: model.available,
                                 compatible: model.compatible,
                                 lifecycle: model.lifecycle,
+                                supported_effort_levels: model.supported_effort_levels,
                                 promotion_priority: i64::from(model.default_for_tier),
                             })
                             .collect();
@@ -995,6 +1026,7 @@ impl OpenCodeAdapter {
                         available: model.available,
                         compatible: model.compatible,
                         lifecycle: model.lifecycle,
+                        supported_effort_levels: model.supported_effort_levels,
                         promotion_priority: i64::from(model.default_for_tier),
                     })
                     .collect();
@@ -1068,6 +1100,7 @@ impl OpenCodeAdapter {
                 available: model.available,
                 compatible: model.compatible,
                 lifecycle: model.lifecycle,
+                supported_effort_levels: model.supported_effort_levels,
                 promotion_priority: i64::from(model.default_for_tier),
             })
             .collect();
@@ -1209,32 +1242,93 @@ fn inferred_tier(id: &str, label: &str) -> CapabilityTier {
     }
 }
 
+/// One model a provider reports at discovery time, before Bridge's promotion
+/// policy runs. Adapters supply facts only; `is_default` and the effort levels
+/// come straight off the provider's own catalogue row.
+#[derive(Debug, Clone)]
+pub struct DiscoveredModel {
+    pub id: String,
+    pub label: String,
+    /// The provider marks this as its own default for the (inferred) tier.
+    pub is_default: bool,
+    /// Reasoning effort levels the provider says this model accepts.
+    pub supported_effort_levels: Vec<String>,
+}
+
+/// Priority handed to a discovered model the provider marks as its default. Set
+/// far above any curated priority so the provider's newest default wins its tier
+/// promotion over Bridge's curated fallback.
+const DISCOVERED_DEFAULT_PRIORITY: i64 = 1_000;
+
+/// The id a descriptor advertises as its default: Bridge's promoted Standard
+/// model, else any promoted tier default, else the provider's own fallback id.
+/// Reflects a live catalogue whose promoted default outran the curated one,
+/// rather than a hardcoded model that discovery has since superseded.
+fn promoted_default_model(models: &[crate::model::ModelOption], fallback: &str) -> Option<String> {
+    models
+        .iter()
+        .find(|model| {
+            model.tier == CapabilityTier::Standard
+                && model.default_for_tier
+                && model.available
+                && model.compatible
+        })
+        .or_else(|| {
+            models
+                .iter()
+                .find(|model| model.default_for_tier && model.available && model.compatible)
+        })
+        .map(|model| model.id.clone())
+        .or_else(|| Some(fallback.to_owned()))
+}
+
 fn runtime_candidates_with_fallbacks(
-    models: Vec<(String, String)>,
+    models: Vec<DiscoveredModel>,
     fallbacks: &[CatalogCandidate],
 ) -> Vec<CatalogCandidate> {
     let mut candidates: Vec<CatalogCandidate> = models
         .into_iter()
         .enumerate()
-        .map(|(index, (id, label))| {
+        .map(|(index, model)| {
+            let DiscoveredModel {
+                id,
+                label,
+                is_default,
+                supported_effort_levels,
+            } = model;
             match fallbacks.iter().find(|fallback| fallback.id == id) {
-                // Curated entries stay authoritative for tier and default
-                // promotion; discovery only refreshes the display name. This
+                // Curated entries stay authoritative for tier; discovery
+                // refreshes the display name and effort levels. A model the
+                // provider now marks default outranks the curated priority so
+                // the live default wins its tier, otherwise curation holds. This
                 // keeps tier defaults deterministic across machines whatever
                 // order a live provider lists its models in.
                 Some(fallback) => {
                     let mut merged = fallback.clone();
                     merged.label = label;
+                    merged.supported_effort_levels = supported_effort_levels;
+                    if is_default {
+                        merged.promotion_priority = DISCOVERED_DEFAULT_PRIORITY;
+                    }
                     merged
                 }
-                None => CatalogCandidate::stable(
-                    id.clone(),
-                    label.clone(),
-                    inferred_tier(&id, &label),
-                    // Strictly below every curated priority so a newly
-                    // discovered model never steals a tier default.
-                    -1 - (index as i64),
-                ),
+                None => {
+                    let mut candidate = CatalogCandidate::stable(
+                        id.clone(),
+                        label.clone(),
+                        inferred_tier(&id, &label),
+                        // A provider default wins its tier; every other
+                        // discovery stays strictly below curated priority so it
+                        // never steals a tier default.
+                        if is_default {
+                            DISCOVERED_DEFAULT_PRIORITY
+                        } else {
+                            -1 - (index as i64)
+                        },
+                    );
+                    candidate.supported_effort_levels = supported_effort_levels;
+                    candidate
+                }
             }
         })
         .collect();
@@ -1321,7 +1415,10 @@ impl HarnessAdapter for CodexAdapter {
                 .is_none()
                 .then(|| "Codex binary is not installed".into()),
             models: self.models.read().unwrap().models.clone(),
-            default_model: Some("gpt-5.6-luna".into()),
+            default_model: promoted_default_model(
+                &self.models.read().unwrap().models,
+                "gpt-5.6-luna",
+            ),
             model_catalog: self.models.read().unwrap().diagnostics.clone(),
         }
     }
@@ -1467,7 +1564,10 @@ impl HarnessAdapter for ClaudeAdapter {
             sandbox_modes: SandboxMode::ALL.to_vec(),
             unavailable_reason: claude_adapter::unavailable_reason(),
             models: self.models.read().unwrap().models.clone(),
-            default_model: Some(claude_adapter::DEFAULT_MODEL.into()),
+            default_model: promoted_default_model(
+                &self.models.read().unwrap().models,
+                claude_adapter::DEFAULT_MODEL,
+            ),
             model_catalog: self.models.read().unwrap().diagnostics.clone(),
         }
     }
@@ -1533,11 +1633,20 @@ mod tests {
     use super::*;
     use crate::model::ModelCatalogDiagnostics;
 
+    fn discovered(id: &str, label: &str) -> DiscoveredModel {
+        DiscoveredModel {
+            id: id.into(),
+            label: label.into(),
+            is_default: false,
+            supported_effort_levels: Vec::new(),
+        }
+    }
+
     #[test]
     fn runtime_catalog_keeps_compatibility_models_and_provider_names() {
         let fallback = claude_fallback_candidates();
         let candidates = runtime_candidates_with_fallbacks(
-            vec![("claude-fable-5-1".into(), "Claude Fable 5.1 Latest".into())],
+            vec![discovered("claude-fable-5-1", "Claude Fable 5.1 Latest")],
             &fallback,
         );
 
@@ -1553,12 +1662,30 @@ mod tests {
     }
 
     #[test]
+    fn discovered_effort_levels_flow_onto_the_selectable_model() {
+        let fallback = claude_fallback_candidates();
+        let mut sonnet = discovered("sonnet", "Claude Sonnet");
+        sonnet.supported_effort_levels = vec!["low".into(), "high".into(), "xhigh".into()];
+        let haiku = discovered("haiku", "Claude Haiku");
+        let resolved = model_catalog::normalize(
+            crate::model::ModelCatalogSource::RuntimeApi,
+            runtime_candidates_with_fallbacks(vec![sonnet, haiku], &fallback),
+        );
+        let sonnet = resolved.iter().find(|model| model.id == "sonnet").unwrap();
+        assert_eq!(sonnet.supported_effort_levels, ["low", "high", "xhigh"]);
+        // A model that reports no effort levels stays empty — the picker hides
+        // the control rather than offering a fixed list it does not accept.
+        let haiku = resolved.iter().find(|model| model.id == "haiku").unwrap();
+        assert!(haiku.supported_effort_levels.is_empty());
+    }
+
+    #[test]
     fn discovered_models_never_steal_curated_tier_defaults() {
         let fallback = codex_fallback_candidates();
         let candidates = runtime_candidates_with_fallbacks(
             vec![
-                ("gpt-6-new".into(), "GPT-6 New".into()),
-                ("gpt-5.6-terra".into(), "GPT Terra Refreshed".into()),
+                discovered("gpt-6-new", "GPT-6 New"),
+                discovered("gpt-5.6-terra", "GPT Terra Refreshed"),
             ],
             &fallback,
         );
@@ -1569,13 +1696,38 @@ mod tests {
             .iter()
             .find(|model| model.tier == CapabilityTier::Standard && model.default_for_tier)
             .unwrap();
-        // The curated default keeps its promotion; discovery only refreshed
-        // the display name and added the new release alongside it.
+        // A discovery the provider does not mark default keeps curation
+        // authoritative; discovery only refreshed the display name and added the
+        // new release alongside it.
         assert_eq!(standard_default.id, "gpt-5.6-terra");
         assert_eq!(standard_default.label, "GPT Terra Refreshed");
         assert!(resolved
             .iter()
             .any(|model| model.id == "gpt-6-new" && !model.default_for_tier));
+    }
+
+    #[test]
+    fn a_discovered_provider_default_becomes_the_tier_default() {
+        let fallback = codex_fallback_candidates();
+        // A brand-new model the provider now marks as its own default. It infers
+        // to Standard and must outrank the curated Standard default.
+        let mut astra = discovered("gpt-6-astra", "GPT Astra");
+        astra.is_default = true;
+        let candidates = runtime_candidates_with_fallbacks(
+            vec![astra, discovered("gpt-5.6-terra", "GPT Terra")],
+            &fallback,
+        );
+        let resolved =
+            model_catalog::normalize(crate::model::ModelCatalogSource::RuntimeApi, candidates);
+        let standard_default = resolved
+            .iter()
+            .find(|model| model.tier == CapabilityTier::Standard && model.default_for_tier)
+            .unwrap();
+        assert_eq!(standard_default.id, "gpt-6-astra");
+        // The curated model is still selectable, just no longer the default.
+        assert!(resolved
+            .iter()
+            .any(|model| model.id == "gpt-5.6-terra" && !model.default_for_tier));
     }
 
     struct Fake;
@@ -1837,6 +1989,26 @@ mod tests {
                 .as_deref()
                 .is_some_and(|text| text.contains(hint)));
         }
+    }
+
+    #[test]
+    fn a_stale_pinned_model_falls_back_to_the_tier_default_with_a_warning() {
+        let registry = AdapterRegistry::built_in().unwrap();
+        // A model id that has dropped out of the live catalogue must not fail the
+        // session start; it resolves to the Standard tier default and warns.
+        let stale = registry
+            .resolve_pinned_model("claude", "fable-5-1-retired")
+            .unwrap();
+        assert_eq!(stale.actual_model, "sonnet");
+        assert!(stale
+            .warning
+            .as_deref()
+            .is_some_and(|text| text.contains("fable-5-1-retired")));
+
+        // A model still in the catalogue keeps its own tier and never warns.
+        let known = registry.resolve_pinned_model("claude", "opus").unwrap();
+        assert_eq!(known.actual_model, "opus");
+        assert!(known.warning.is_none());
     }
 
     #[cfg(unix)]

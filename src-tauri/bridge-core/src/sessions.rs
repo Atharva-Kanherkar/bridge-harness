@@ -1304,6 +1304,7 @@ mod tests {
                         compatible: true,
                         lifecycle: crate::model::ModelLifecycle::Stable,
                         source: crate::model::ModelCatalogSource::CuratedFallback,
+                        supported_effort_levels: Vec::new(),
                         default_for_tier: true,
                     },
                     ModelOption {
@@ -1314,6 +1315,7 @@ mod tests {
                         compatible: true,
                         lifecycle: crate::model::ModelLifecycle::Stable,
                         source: crate::model::ModelCatalogSource::CuratedFallback,
+                        supported_effort_levels: Vec::new(),
                         default_for_tier: true,
                     },
                 ],

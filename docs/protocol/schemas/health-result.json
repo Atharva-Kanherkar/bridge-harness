@@ -213,6 +213,13 @@
           ],
           "default": "curated_fallback"
         },
+        "supportedEffortLevels": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "type": "array"
+        },
         "tier": {
           "$ref": "#/definitions/CapabilityTier"
         }

@@ -40,6 +40,20 @@ const claudeAdapters: AdapterDescriptor[] = [
   },
 ];
 
+// A live Claude catalog that reports per-model effort levels: sonnet takes a
+// ladder, haiku has no effort knob at all.
+const effortAwareAdapters: AdapterDescriptor[] = [
+  {
+    id: "claude", label: "Claude", available: true, authState: "signed_in", version: "test", capabilities: ["messages", "reasoning"], unavailableReason: null,
+    models: [
+      { id: "haiku", label: "Claude Haiku", tier: "fast", defaultForTier: true, supportedEffortLevels: [] },
+      { id: "sonnet", label: "Claude Sonnet", tier: "standard", defaultForTier: true, supportedEffortLevels: ["low", "high", "xhigh"] },
+      { id: "opus", label: "Claude Opus", tier: "strong", defaultForTier: true, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max"] },
+    ],
+    defaultModel: "sonnet",
+  },
+];
+
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   container = document.createElement("div");
@@ -263,6 +277,42 @@ describe("ChatModelControl", () => {
     ));
     await act(async () => trigger().click());
     expect(panel().querySelector('[data-testid="effort-control"]')).toBeNull();
+  });
+
+  it("offers only the selected model's effort levels when the catalog reports them", async () => {
+    await act(async () => root.render(
+      <ChatModelControl adapters={effortAwareAdapters} harness="claude" model="sonnet" onChange={vi.fn()} effort="high" onEffortChange={vi.fn()} />,
+    ));
+    await act(async () => trigger().click());
+    const labels = [...panel().querySelectorAll('[data-testid="effort-control"] button')].map(button => button.textContent);
+    // Sonnet advertises low/high/xhigh — medium is not offered.
+    expect(labels).toEqual(["Low", "High", "XHigh"]);
+  });
+
+  it("shows the wider ladder, including Max, for a model that supports it", async () => {
+    await act(async () => root.render(
+      <ChatModelControl adapters={effortAwareAdapters} harness="claude" model="opus" onChange={vi.fn()} effort="high" onEffortChange={vi.fn()} />,
+    ));
+    await act(async () => trigger().click());
+    const efforts = [...panel().querySelectorAll('[data-testid="effort-control"] button')].map(button => button.getAttribute("data-effort"));
+    expect(efforts).toEqual(["low", "medium", "high", "xhigh", "max"]);
+  });
+
+  it("hides the effort control for a model with no effort support", async () => {
+    await act(async () => root.render(
+      <ChatModelControl adapters={effortAwareAdapters} harness="claude" model="haiku" onChange={vi.fn()} effort="high" onEffortChange={vi.fn()} />,
+    ));
+    await act(async () => trigger().click());
+    expect(panel().querySelector('[data-testid="effort-control"]')).toBeNull();
+  });
+
+  it("falls back to the fixed effort ladder when no model reports levels", async () => {
+    await act(async () => root.render(
+      <ChatModelControl adapters={claudeAdapters} harness="claude" model="sonnet" onChange={vi.fn()} effort="high" onEffortChange={vi.fn()} />,
+    ));
+    await act(async () => trigger().click());
+    const labels = [...panel().querySelectorAll('[data-testid="effort-control"] button')].map(button => button.textContent);
+    expect(labels).toEqual(["Low", "Med", "High", "XHigh"]);
   });
 
   it("moves effort selection off the rows into the footer control", async () => {

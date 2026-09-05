@@ -335,6 +335,11 @@ pub struct ModelOption {
     pub lifecycle: ModelLifecycle,
     #[serde(default)]
     pub source: ModelCatalogSource,
+    /// Reasoning effort levels this model accepts, in the provider's order. Empty
+    /// when the model has no effort knob (e.g. Claude Haiku) or the provider does
+    /// not report one — the picker then hides or falls back to its fixed list.
+    #[serde(default)]
+    pub supported_effort_levels: Vec<String>,
     /// Bridge's promoted model for this tier, not merely the provider's
     /// advertised default. Exactly one eligible entry per populated tier wins.
     pub default_for_tier: bool,

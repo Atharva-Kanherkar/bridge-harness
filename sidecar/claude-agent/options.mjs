@@ -20,7 +20,17 @@ export function permissionOptions(mode) {
   }
 }
 
-export function buildOptions({ sessionId, model, cwd, resume, instructions, writeMode, plugins = [], mcpServers = {}, briefing = null }) {
+// Effort levels the Claude Agent SDK's `Options.effort` accepts. Bridge routes
+// an effort per session; anything outside this set (e.g. Codex's `ultra`) is
+// dropped so the SDK falls back to the model's own default rather than erroring.
+const SDK_EFFORT_LEVELS = new Set(["low", "medium", "high", "xhigh", "max"]);
+
+export function sdkEffort(effort) {
+  const value = typeof effort === "string" ? effort.trim().toLowerCase() : "";
+  return SDK_EFFORT_LEVELS.has(value) ? value : null;
+}
+
+export function buildOptions({ sessionId, model, cwd, resume, instructions, writeMode, plugins = [], mcpServers = {}, briefing = null, effort = null }) {
   // A briefing run replaces the permission half of these options wholesale. It is
   // not a stricter write mode, so it does not layer on top of one — see
   // briefing.mjs and bridge-core/src/briefing_policy.rs.
@@ -36,7 +46,11 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
         plugins: plugins.map(path => ({ type: "local", path })),
         ...permissionOptions(writeMode),
       };
+  // Reasoning effort is handled natively by the SDK; low/medium are honoured
+  // rather than dropped the way the old thinking-budget mapping dropped them.
+  const resolvedEffort = sdkEffort(effort);
   return {
+    ...(resolvedEffort ? { effort: resolvedEffort } : {}),
     ...(model ? { model } : {}),
     ...(cwd ? { cwd } : {}),
     ...(resume && sessionId ? { resume: sessionId } : sessionId ? { sessionId } : {}),
