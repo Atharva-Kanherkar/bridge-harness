@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, RefreshCw, Search } from "lucide-react";
 import type { AdapterDescriptor, Harness } from "../types";
 import { harnessLabel } from "../utils";
@@ -68,7 +68,17 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   const [query, setQuery] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
-  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
+  // A model pick in the two-pane list keeps the popover open so effort can be
+  // set next — but a live session's onChange sets busy, which flips
+  // `disabled` for the length of the switch. That flip must not count as "a
+  // turn started": it is our own switch, so the popover rides through it and
+  // becomes editable again when the switch settles.
+  const switching = useRef(false);
+  useEffect(() => {
+    if (!disabled) { switching.current = false; return; }
+    if (switching.current) return;
+    setOpen(false);
+  }, [disabled]);
   // Escape closes the picker and nothing else. Captured on window so it wins
   // against modal hosts with their own window-level Escape (the aside panel
   // closes itself on Escape — without this, dismissing the picker tore down
@@ -120,7 +130,18 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
     </button>
     {open && <>
       <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-      <div className={cn("u-glass-popover absolute left-0 z-40 flex max-h-[420px] flex-col overflow-hidden rounded-xl border border-border bg-popover", twoPane ? "w-[460px]" : "w-[340px]", placement === "down" ? "top-full mt-2" : "bottom-full mb-2")}>
+      <div
+        className={cn("u-glass-popover absolute left-0 z-40 flex max-h-[420px] flex-col overflow-hidden rounded-xl border border-border bg-popover", twoPane ? "w-[460px]" : "w-[340px]", placement === "down" ? "top-full mt-2" : "bottom-full mb-2")}
+        onKeyDown={event => {
+          // Two-pane digit shortcuts live on the popover, not the list: after a
+          // model pick focus sits on that row in the other pane, and the key
+          // has to work from wherever focus is — except while typing a search.
+          if (!twoPane || !showEffort || disabled || !onEffortChange || !/^[1-9]$/.test(event.key)) return;
+          if (event.target instanceof HTMLInputElement) return;
+          const level = effortLevels[Number(event.key) - 1];
+          if (level) { event.preventDefault(); onEffortChange(level.value); }
+        }}
+      >
         {/* Search header: magnifier + input, with a faint keyboard hint at the right. */}
         <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
           <Search size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
@@ -166,7 +187,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
                 {models.map(option => {
                   const selected = adapter.id === harness && (option.id ? option.id === model : !model);
                   const selectable = adapter.available && option.available !== false && option.compatible !== false;
-                  return <button key={`${adapter.id}:${option.id || "default"}`} type="button" role="option" aria-selected={selected} disabled={!selectable} onClick={() => { onChange(adapter.id as Harness, option.id || null); if (!twoPane) setOpen(false); }} className={cn("flex h-9 w-full items-center gap-2 rounded-[7px] px-2 text-left transition-colors disabled:opacity-40", selected ? "bg-accent" : "hover:bg-accent", !selectable && "opacity-60")}>
+                  return <button key={`${adapter.id}:${option.id || "default"}`} type="button" role="option" aria-selected={selected} disabled={!selectable} onClick={() => { if (twoPane) switching.current = true; onChange(adapter.id as Harness, option.id || null); if (!twoPane) setOpen(false); }} className={cn("flex h-9 w-full items-center gap-2 rounded-[7px] px-2 text-left transition-colors disabled:opacity-40", selected ? "bg-accent" : "hover:bg-accent", !selectable && "opacity-60")}>
                     <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[12.5px] text-foreground">{cleanModelLabel(option.label)}</span>
                     {option.lifecycle === "preview" && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[8px] uppercase text-muted-foreground">preview</span>}
                     {selected && <Check size={13} className="shrink-0 text-foreground" aria-hidden="true" />}

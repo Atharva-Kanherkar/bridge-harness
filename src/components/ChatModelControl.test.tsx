@@ -538,6 +538,40 @@ describe("ChatModelControl effort styles", () => {
       expect(panel()).not.toBeNull();
     });
 
+    it("rides through the disabled flip its own model switch causes, but still closes for a turn", async () => {
+      const props = { adapters: effortAwareAdapters, harness: "claude" as const, model: "opus", onChange: vi.fn(), effort: "high", onEffortChange: vi.fn() };
+      await act(async () => root.render(<ChatModelControl {...props} />));
+      await act(async () => trigger().click());
+      const sonnet = [...panel().querySelectorAll<HTMLButtonElement>('button[role="option"]')].find(button => button.textContent?.includes("Sonnet"))!;
+      await act(async () => sonnet.click());
+      // The live session goes busy while the provider restarts…
+      await act(async () => root.render(<ChatModelControl {...props} model="sonnet" disabled />));
+      expect(panel()).not.toBeNull();
+      // …and the popover is editable again once it settles.
+      await act(async () => root.render(<ChatModelControl {...props} model="sonnet" />));
+      expect(panel()).not.toBeNull();
+      expect([...panel().querySelectorAll<HTMLButtonElement>('[role="radio"]')].every(radio => !radio.disabled)).toBe(true);
+      // A disable that is not our switch — a turn starting — still closes it.
+      await act(async () => root.render(<ChatModelControl {...props} model="sonnet" disabled />));
+      expect(panel()).toBeNull();
+    });
+
+    it("takes digit shortcuts from wherever focus is, except the search box", async () => {
+      const onEffortChange = vi.fn();
+      await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="opus" onChange={vi.fn()} effort="high" onEffortChange={onEffortChange} />));
+      await act(async () => trigger().click());
+      // Focus rests on the model row just clicked, in the other pane.
+      const opus = [...panel().querySelectorAll<HTMLButtonElement>('button[role="option"]')].find(button => button.textContent?.includes("Opus"))!;
+      await act(async () => { opus.focus(); key(opus, "3"); });
+      expect(onEffortChange).toHaveBeenLastCalledWith("high");
+      await act(async () => { key(opus, "5"); });
+      expect(onEffortChange).toHaveBeenLastCalledWith("max");
+      // Typing a digit into the search box is a search, not a shortcut.
+      onEffortChange.mockClear();
+      await act(async () => { key(panel().querySelector("input")!, "2"); });
+      expect(onEffortChange).not.toHaveBeenCalled();
+    });
+
     it("keeps the pane, and its width, for a model with no effort knob", async () => {
       await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="haiku" onChange={vi.fn()} effort="high" onEffortChange={vi.fn()} />));
       await act(async () => trigger().click());

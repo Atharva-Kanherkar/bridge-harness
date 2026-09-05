@@ -1,7 +1,8 @@
 // The list style: effort as a vertical radio list with one line of meaning per
 // level. It lives in the picker's right pane, so extra levels cost height
-// rather than width and nothing is ever squeezed. Digits jump straight to a
-// level while the list has focus.
+// rather than width and nothing is ever squeezed. The digit shortcuts the rows
+// advertise are handled by the popover that hosts this list, so they work
+// from wherever focus happens to be after a model pick.
 
 import { cn } from "@/lib/utils";
 import { effortIndex, effortMeaning, type EffortControlProps } from "./effortLevels";
@@ -9,17 +10,7 @@ import { effortIndex, effortMeaning, type EffortControlProps } from "./effortLev
 export function EffortList({ levels, value, onChange, disabled }: EffortControlProps) {
   const index = effortIndex(levels, value);
   const inert = disabled || !onChange;
-  return <div
-    role="radiogroup"
-    aria-label="Reasoning effort"
-    data-effort-style="list"
-    className="flex flex-col gap-0.5 outline-none"
-    onKeyDown={event => {
-      if (inert || !/^[1-9]$/.test(event.key)) return;
-      const level = levels[Number(event.key) - 1];
-      if (level) { event.preventDefault(); onChange?.(level.value); }
-    }}
-  >
+  return <div role="radiogroup" aria-label="Reasoning effort" data-effort-style="list" className="flex flex-col gap-0.5">
     {levels.map((level, i) => {
       const on = i === index;
       const meaning = effortMeaning(level.value);
