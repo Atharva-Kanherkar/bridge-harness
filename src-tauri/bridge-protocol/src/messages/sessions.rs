@@ -192,6 +192,17 @@ pub struct CreateChatParams {
     pub title: Option<String>,
 }
 
+/// Create a direct chat with an exact identity result for concurrent clients.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateChatIdParams {
+    pub harness: HarnessId,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+}
+
 /// The identity committed by this creation, unaffected by concurrent clients.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]

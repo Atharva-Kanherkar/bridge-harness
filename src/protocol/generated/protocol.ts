@@ -438,7 +438,7 @@ export interface BridgeMethodParams {
   "sessions/replay_session_events": ReplaySessionEventsParams;
   "sessions/activate_session_entry": ActivateSessionEntryParams;
   "sessions/create_chat": CreateChatParams;
-  "sessions/create_chat_id": CreateChatParams;
+  "sessions/create_chat_id": CreateChatIdParams;
   "sessions/create_aside_chat": CreateAsideChatParams;
   "sessions/create_workspace_session": CreateWorkspaceSessionParams;
   "sessions/start_session": StartSessionParams;
@@ -2278,6 +2278,12 @@ export interface ActivateSessionEntryParams {
 }
 
 export interface CreateChatParams {
+  harness: HarnessId;
+  model?: string | null;
+  title?: string | null;
+}
+
+export interface CreateChatIdParams {
   harness: HarnessId;
   model?: string | null;
   title?: string | null;
