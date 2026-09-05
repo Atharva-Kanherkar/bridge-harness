@@ -173,9 +173,8 @@ describe("deferred new-chat creation (#350)", () => {
     await act(async () => opus!.click());
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
 
-    const chosenModel = [...container.querySelectorAll<HTMLButtonElement>("button")]
-      .find(button => (button.getAttribute("aria-label") ?? "").startsWith("Chat model:"))!;
-    await act(async () => chosenModel.click());
+    // The picker stays open across the pick so model and thinking are set in
+    // one go; the footer already shows Opus's ladder.
     const max = container.querySelector<HTMLButtonElement>('[data-effort="max"]')!;
     expect(max, "thinking can be selected before the first message").toBeTruthy();
     await act(async () => max.click());

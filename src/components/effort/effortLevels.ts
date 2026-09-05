@@ -3,6 +3,8 @@
 // value Bridge has not seen falls back to itself so a new provider level is
 // never hidden, only unstyled.
 
+import type { AdapterDescriptor } from "../../types";
+
 export type EffortLevel = { value: string; label: string };
 
 /** Compact glyphs for the footer's single label. */
@@ -68,3 +70,19 @@ export type EffortControlProps = {
   /** The resolved model's display label, for styles that name it. */
   modelLabel: string;
 };
+
+/** The ladder a catalog reports for a model; `null` means the adapter's default model. */
+export function supportedEffortLevelsOf(adapters: readonly Pick<AdapterDescriptor, "id" | "models" | "defaultModel">[], harness: string, model: string | null): string[] {
+  const adapter = adapters.find(item => item.id === harness);
+  const option = adapter?.models.find(item => item.id === (model ?? adapter.defaultModel));
+  return option?.supportedEffortLevels ?? [];
+}
+
+/**
+ * The effort to keep across a model switch: the chosen level when the new
+ * model's ladder includes it, else nothing — the same rule the backend's
+ * `selected_chat_effort` applies, so the draft and the session agree.
+ */
+export function carryEffort(levels: readonly string[], effort: string | null | undefined): string | undefined {
+  return effort != null && levels.includes(effort) ? effort : undefined;
+}
