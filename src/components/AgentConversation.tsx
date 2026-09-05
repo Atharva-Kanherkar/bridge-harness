@@ -159,6 +159,8 @@ const TOOL_ICON: Record<ToolGlyph, React.ReactNode> = {
   fork: <GitFork size={12}/>,
   list: <ListChecks size={12}/>,
   wrench: <Wrench size={12}/>,
+  brain: <Brain size={12}/>,
+  navigation: <Navigation size={12}/>,
 };
 
 /// Reads and searches earn less ink than writes: they stay flat rows under a

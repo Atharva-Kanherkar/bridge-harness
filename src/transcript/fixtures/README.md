@@ -57,3 +57,9 @@ fixture: exactly 62 commands, 30 reads and 8 patches, interleaved, wrapped in
 a user message, an opening thought, a closing thought and the reply.
 `src/components/AgentConversation.flood.test.tsx` and
 `src/transcript/flood.perf.test.ts` read it.
+
+`acp-other.json` is a separate lifecycle fixture derived from
+`acp_events::tool_call_started` / `tool_call_progressed`: a titled `other`
+start, raw title-less progress, then raw title-less completion. It is loaded
+by `acpOtherStream` and checked for live/replay label parity in the reducer
+and visible running/finished cues in the render suite.

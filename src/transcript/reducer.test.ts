@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { normalizeAgentEvent, normalizeSessionEntry } from "./codec";
 import { reduceTranscript } from "./reducer";
+import { acpOtherStream, durableEntriesFrom } from "./golden";
 import { asWireKind } from "./wire";
 import type { AgentEvent, SessionEntry } from "../types";
 
@@ -213,5 +214,26 @@ describe("reduceTranscript", () => {
     const before = JSON.stringify(events);
     expect(reduceTranscript(events)).toEqual(reduceTranscript(events));
     expect(JSON.stringify(events)).toBe(before);
+  });
+});
+
+
+describe("ACP title-less updates", () => {
+  it("retains the start title through progress and completion, live and replayed", () => {
+    const frames = acpOtherStream();
+    for (const count of [1, 2, 3]) {
+      const stream = frames.slice(0, count);
+      const liveRows = reduce(stream);
+      const replayRows = reduceTranscript(durableEntriesFrom("cursor", stream).map(entry => normalizeSessionEntry(entry)!));
+      for (const rows of [liveRows, replayRows]) {
+        expect(rows).toHaveLength(1);
+        expect(rows[0]).toMatchObject({ title: "Resolve project context", tool: {
+          doing: "Running: Resolve project context", done: "Finished: Resolve project context",
+          status: count === 3 ? "completed" : "running",
+        } });
+        expect(rows[0].tool?.target).toBeUndefined();
+      }
+      expect(replayRows[0].tool).toEqual(liveRows[0].tool);
+    }
   });
 });
