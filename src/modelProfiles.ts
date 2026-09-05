@@ -14,6 +14,26 @@ export function isOrchestratorPurpose(purpose: ProfilePurpose): boolean {
   return orchestratorPurposes.includes(purpose);
 }
 
+// Reasoning-effort values Bridge can persist — the wire `Effort` enum. A provider
+// may advertise more exotic labels; the picker only ever offers this intersection.
+export const KNOWN_EFFORTS: ReasoningEffort[] = ["low", "medium", "high", "xhigh"];
+
+/** Effort levels a model advertises, narrowed to what Bridge can store, in the
+ *  provider's order. Empty means the model has no effort knob (e.g. Claude Haiku,
+ *  whose catalog row reports `supportedEffortLevels: []`) — callers hide the
+ *  Thinking control rather than inventing levels the provider rejects. */
+export function advertisedEfforts(model: { supportedEffortLevels?: string[] } | undefined): ReasoningEffort[] {
+  return [...new Set((model?.supportedEffortLevels ?? []).filter((level): level is ReasoningEffort => (KNOWN_EFFORTS as string[]).includes(level)))];
+}
+
+/** A supported effort for a model: keep the current one when the model advertises
+ *  it, otherwise the model's first advertised level. Left unchanged when the model
+ *  has no effort knob — the value is then inert and the control is hidden. */
+export function normalizedEffort(current: ReasoningEffort, model: { supportedEffortLevels?: string[] } | undefined): ReasoningEffort {
+  const efforts = advertisedEfforts(model);
+  return efforts.includes(current) ? current : (efforts[0] ?? current);
+}
+
 export const profileLabels: Record<ProfilePurpose, string> = {
   standard_orchestrator: "Standard orchestrator",
   premium_orchestrator: "Premium orchestrator",

@@ -1,22 +1,7 @@
 import type { AdapterDescriptor, ModelProfileDraft, ProfilePurpose, ReasoningEffort } from "../types";
-import { availableModelOptions, isOrchestratorPurpose, profileLabels, profilePurposes } from "../modelProfiles";
+import { advertisedEfforts, availableModelOptions, isOrchestratorPurpose, normalizedEffort, profileLabels, profilePurposes } from "../modelProfiles";
 
 const fieldClass = "h-9 w-full min-w-0 rounded-xl border border-input bg-card px-3 text-xs text-foreground transition-colors disabled:opacity-45";
-
-// The reasoning-effort values Bridge can persist (the wire `Effort` enum). A
-// provider may advertise more exotic labels; the orchestrator picker offers the
-// intersection so "Thinking" only ever shows a level the backend accepts.
-const KNOWN_EFFORTS: ReasoningEffort[] = ["low", "medium", "high", "xhigh"];
-
-/** Thinking levels to offer for a model: the provider's own supported set,
- *  narrowed to what Bridge can store, or the full set when it advertises none. */
-function effortOptions(model: { supportedEffortLevels?: string[] } | undefined, current: ReasoningEffort): ReasoningEffort[] {
-  const advertised = (model?.supportedEffortLevels ?? []).filter((level): level is ReasoningEffort => (KNOWN_EFFORTS as string[]).includes(level));
-  const base = advertised.length ? [...new Set(advertised)] : KNOWN_EFFORTS;
-  // Never drop the currently-selected level, or the control would silently
-  // desync from the saved profile.
-  return base.includes(current) ? base : [...base, current];
-}
 
 export function ModelProfileEditor({ profiles, adapters, disabled, onChange }: {
   profiles: ModelProfileDraft[];
@@ -40,19 +25,22 @@ export function ModelProfileEditor({ profiles, adapters, disabled, onChange }: {
       </div>
       {orchestrators.map(profile => {
         const selected = options.find(option => option.value === `${profile.provider}:${profile.model}`);
+        // A model with no advertised effort levels has no thinking knob (e.g.
+        // Claude Haiku): show the levels it does advertise, or hide the control.
+        const efforts = advertisedEfforts(selected?.model);
         return <section key={profile.purpose} className="rounded-2xl border border-border bg-muted/50 p-3.5">
           <h4 className="mb-3 text-sm font-medium text-foreground">{profileLabels[profile.purpose]}</h4>
           <div className="grid gap-3 sm:grid-cols-2">
             <label className="space-y-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Model
-              <select className={fieldClass} value={`${profile.provider}:${profile.model}`} disabled={disabled} onChange={event => { const option = options.find(candidate => candidate.value === event.target.value); if (option) update(profile.purpose, { provider: option.adapter.id, model: option.model.id, selectionMode: "pinned", pinned: true, learningEnabled: false }); }}>
+              <select className={fieldClass} value={`${profile.provider}:${profile.model}`} disabled={disabled} onChange={event => { const option = options.find(candidate => candidate.value === event.target.value); if (option) update(profile.purpose, { provider: option.adapter.id, model: option.model.id, effort: normalizedEffort(profile.effort, option.model), selectionMode: "pinned", pinned: true, learningEnabled: false }); }}>
                 {options.map(option => <option key={option.value} value={option.value}>{option.adapter.label} · {option.model.label}</option>)}
               </select>
             </label>
-            <label className="space-y-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Thinking
+            {efforts.length > 0 && <label className="space-y-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Thinking
               <select className={fieldClass} value={profile.effort} disabled={disabled} onChange={event => update(profile.purpose, { effort: event.target.value as ReasoningEffort })}>
-                {effortOptions(selected?.model, profile.effort).map(effort => <option key={effort} value={effort}>{effort}</option>)}
+                {efforts.map(effort => <option key={effort} value={effort}>{effort}</option>)}
               </select>
-            </label>
+            </label>}
           </div>
         </section>;
       })}
