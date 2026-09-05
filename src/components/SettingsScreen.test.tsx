@@ -180,6 +180,37 @@ describe("SettingsScreen", () => {
         .not.toContain("Save profiles");
     });
 
+    // The screen-wide invariants. A page that reintroduces a native select or
+    // a lucide icon breaks here rather than in review.
+    it("renders no native select and no native checkbox on any page", async () => {
+      for (const section of ALL_SECTIONS) {
+        await render({ initialSection: section });
+        expect(container.querySelectorAll("select"), SECTION_LABELS[section]).toHaveLength(0);
+        expect(container.querySelectorAll('input[type="checkbox"]'), SECTION_LABELS[section]).toHaveLength(0);
+        await act(async () => root.unmount());
+        container.remove();
+        container = document.createElement("div");
+        document.body.append(container);
+        root = createRoot(container);
+      }
+    });
+
+    it("keeps the content column the same width on every page", async () => {
+      const widths = new Set<string>();
+      for (const section of ALL_SECTIONS) {
+        await render({ initialSection: section });
+        const column = container.querySelector<HTMLElement>("[data-settings-column]");
+        expect(column, SECTION_LABELS[section]).toBeTruthy();
+        widths.add([...column!.classList].find(name => name.startsWith("max-w-"))!);
+        await act(async () => root.unmount());
+        container.remove();
+        container = document.createElement("div");
+        document.body.append(container);
+        root = createRoot(container);
+      }
+      expect([...widths]).toEqual(["max-w-[720px]"]);
+    });
+
     it("names what Reset all deletes before it deletes it", async () => {
       await render();
       await open("Reset all settings");

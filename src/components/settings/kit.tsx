@@ -37,7 +37,7 @@ export function SettingsPage({ title, description, breadcrumb, action, children 
   action?: ReactNode;
   children: ReactNode;
 }) {
-  return <div className="mx-auto w-full max-w-[720px] px-6 pb-24 pt-[30px]">
+  return <div data-settings-column className="mx-auto w-full max-w-[720px] px-6 pb-24 pt-[30px]">
     {breadcrumb && breadcrumb.length > 0 && <nav aria-label="Breadcrumb" className="mb-2 flex items-center gap-1.5 text-xs">
       {breadcrumb.map((crumb, index) => <span key={`${crumb.label}-${index}`} className="flex items-center gap-1.5">
         {index > 0 && <span aria-hidden="true" className="text-muted-foreground/50">/</span>}
@@ -247,7 +247,7 @@ export type SelectOption = {
 const CONTROL = "h-7 rounded-lg border border-border-card bg-popover px-2.5 text-xs text-foreground outline-none transition-colors disabled:opacity-45";
 
 /**
- * A select with no `<select>` in it.
+ * A select that renders no native select element.
  *
  * Native selects render a macOS system menu that ignores every token in this
  * file, which is why the design bans them outright. This is a button plus a
