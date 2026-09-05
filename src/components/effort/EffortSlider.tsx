@@ -47,10 +47,10 @@ export function EffortSlider({ levels, value, onChange, disabled, harness, model
       className={cn("relative h-6 touch-none select-none", inert ? "cursor-default" : "cursor-pointer")}
       onPointerDown={event => {
         if (inert) return;
-        event.currentTarget.setPointerCapture(event.pointerId);
+        event.currentTarget.setPointerCapture?.(event.pointerId);
         commitFromClientX(event.clientX);
       }}
-      onPointerMove={event => { if (!inert && event.currentTarget.hasPointerCapture(event.pointerId)) commitFromClientX(event.clientX); }}
+      onPointerMove={event => { if (!inert && event.currentTarget.hasPointerCapture?.(event.pointerId)) commitFromClientX(event.clientX); }}
     >
       <div className="absolute inset-x-0 top-1/2 h-1 -translate-y-1/2 rounded-full bg-muted" />
       <div

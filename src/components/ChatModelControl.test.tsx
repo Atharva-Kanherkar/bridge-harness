@@ -392,3 +392,139 @@ describe("cleanModelLabel", () => {
   });
 
 });
+
+// The user's chosen thinking-control style (Settings › Appearance) is read from
+// storage; each style renders the same levels in a different form.
+describe("ChatModelControl effort styles", () => {
+  const codexAdapters: AdapterDescriptor[] = [
+    {
+      id: "codex", label: "Codex", available: true, authState: "signed_in", version: "test", capabilities: ["messages", "reasoning"], unavailableReason: null,
+      models: [{ id: "gpt-luna", label: "GPT Luna", tier: "strong", defaultForTier: true, supportedEffortLevels: ["low", "medium", "high", "xhigh", "max", "ultra"] }],
+      defaultModel: "gpt-luna",
+    },
+  ];
+  const control = () => panel().querySelector<HTMLElement>('[data-testid="effort-control"]')!;
+  const key = (target: Element, key: string) => target.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+
+  // jsdom here has an opaque origin and no storage; the style is read from
+  // localStorage during render, so give it a minimal stub.
+  const store = new Map<string, string>();
+  beforeEach(() => {
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => { store.set(key, value); },
+        removeItem: (key: string) => { store.delete(key); },
+        clear: () => store.clear(),
+      },
+    });
+  });
+  afterEach(() => { store.clear(); Reflect.deleteProperty(globalThis, "localStorage"); });
+
+  describe("slider (default)", () => {
+    it("announces the current level on the thumb and steps with the keyboard", async () => {
+      const onEffortChange = vi.fn();
+      await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="opus" onChange={vi.fn()} effort="high" onEffortChange={onEffortChange} />));
+      await act(async () => trigger().click());
+      const thumb = control().querySelector('[role="slider"]')!;
+      expect(thumb.getAttribute("aria-valuetext")).toBe("High");
+      expect(thumb.getAttribute("aria-valuenow")).toBe("2");
+      await act(async () => { key(thumb, "ArrowRight"); });
+      expect(onEffortChange).toHaveBeenLastCalledWith("xhigh");
+      await act(async () => { key(thumb, "Home"); });
+      expect(onEffortChange).toHaveBeenLastCalledWith("low");
+      await act(async () => { key(thumb, "End"); });
+      expect(onEffortChange).toHaveBeenLastCalledWith("max");
+    });
+
+    it("draws Codex's six levels into the same fixed footer box as Claude's five", async () => {
+      await act(async () => root.render(<ChatModelControl adapters={codexAdapters} harness="codex" model="gpt-luna" onChange={vi.fn()} effort="ultra" onEffortChange={vi.fn()} />));
+      await act(async () => trigger().click());
+      expect(control().querySelectorAll("[data-effort]")).toHaveLength(6);
+      expect(control().className).toContain("h-[72px]");
+      expect(control().textContent).toContain("Ultra");
+    });
+
+    it("stays inert without a setter but still shows the level", async () => {
+      await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="opus" onChange={vi.fn()} effort="max" />));
+      await act(async () => trigger().click());
+      expect(control().querySelector('[role="slider"]')!.getAttribute("aria-valuetext")).toBe("Max");
+      expect([...control().querySelectorAll("button")].every(button => button.disabled)).toBe(true);
+    });
+  });
+
+  describe("sentence", () => {
+    beforeEach(() => localStorage.setItem("bridge.effortSelector", "sentence"));
+
+    it("reads as prose naming the model and steps on click, wrapping at the top", async () => {
+      const onEffortChange = vi.fn();
+      await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="sonnet" onChange={vi.fn()} effort="high" onEffortChange={onEffortChange} />));
+      await act(async () => trigger().click());
+      expect(control().textContent).toContain("Think");
+      expect(control().textContent).toContain("with Claude Sonnet.");
+      const word = control().querySelector<HTMLButtonElement>('button[data-effort="high"]')!;
+      expect(word.textContent).toBe("properly");
+      // A click is a pointer down and up without movement. jsdom has no
+      // PointerEvent; a MouseEvent under the pointer type name reaches the
+      // same React handler.
+      const pointer = (target: Element, type: string) => target.dispatchEvent(new MouseEvent(type, { clientX: 100, bubbles: true }));
+      await act(async () => { pointer(word, "pointerdown"); });
+      await act(async () => { pointer(word, "pointerup"); });
+      expect(onEffortChange).toHaveBeenLastCalledWith("xhigh");
+
+      await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="sonnet" onChange={vi.fn()} effort="xhigh" onEffortChange={onEffortChange} />));
+      const top = control().querySelector<HTMLButtonElement>('button[data-effort="xhigh"]')!;
+      await act(async () => { pointer(top, "pointerdown"); });
+      await act(async () => { pointer(top, "pointerup"); });
+      expect(onEffortChange).toHaveBeenLastCalledWith("low");
+    });
+
+    it("scrubs with the arrow keys", async () => {
+      const onEffortChange = vi.fn();
+      await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="sonnet" onChange={vi.fn()} effort="high" onEffortChange={onEffortChange} />));
+      await act(async () => trigger().click());
+      await act(async () => { key(control().querySelector('button[data-effort]')!, "ArrowLeft"); });
+      expect(onEffortChange).toHaveBeenLastCalledWith("low");
+    });
+  });
+
+  describe("list", () => {
+    beforeEach(() => localStorage.setItem("bridge.effortSelector", "list"));
+
+    it("renders effort as radios in a second pane and keeps the popover open across a model switch", async () => {
+      const onChange = vi.fn();
+      const onEffortChange = vi.fn();
+      await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="opus" onChange={onChange} effort="high" onEffortChange={onEffortChange} />));
+      await act(async () => trigger().click());
+      expect(panel().className).toContain("w-[460px]");
+      const radios = control().querySelectorAll('[role="radio"]');
+      expect(radios).toHaveLength(5);
+      expect(control().querySelector('[role="radio"][aria-checked="true"]')!.getAttribute("data-effort")).toBe("high");
+      await act(async () => (radios[4] as HTMLButtonElement).click());
+      expect(onEffortChange).toHaveBeenLastCalledWith("max");
+      await act(async () => { key(control().querySelector('[role="radiogroup"]')!, "1"); });
+      expect(onEffortChange).toHaveBeenLastCalledWith("low");
+
+      const sonnet = [...panel().querySelectorAll<HTMLButtonElement>('button[role="option"]')].find(button => button.textContent?.includes("Sonnet"))!;
+      await act(async () => sonnet.click());
+      expect(onChange).toHaveBeenCalledWith("claude", "sonnet");
+      expect(panel()).not.toBeNull();
+    });
+
+    it("keeps the pane, and its width, for a model with no effort knob", async () => {
+      await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="haiku" onChange={vi.fn()} effort="high" onEffortChange={vi.fn()} />));
+      await act(async () => trigger().click());
+      expect(panel().className).toContain("w-[460px]");
+      expect(panel().querySelector('[data-testid="effort-control"]')).toBeNull();
+      expect(panel().textContent).toContain("No thinking control for this model.");
+    });
+
+    it("stays single-pane on a surface that does not do effort", async () => {
+      await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="opus" onChange={vi.fn()} />));
+      await act(async () => trigger().click());
+      expect(panel().className).toContain("w-[340px]");
+      expect(panel().textContent).not.toContain("Thinking effort");
+    });
+  });
+});

@@ -73,7 +73,9 @@ export function EffortSentence({ levels, value, onChange, disabled, harness, mod
         onPointerDown={event => {
           if (inert) return;
           drag.current = { startX: event.clientX, startIndex: index, moved: false };
-          event.currentTarget.setPointerCapture(event.pointerId);
+          // Capture keeps the scrub alive past the button's edge. Optional
+          // because not every DOM (jsdom) implements it.
+          event.currentTarget.setPointerCapture?.(event.pointerId);
         }}
         onPointerMove={event => {
           const state = drag.current;
