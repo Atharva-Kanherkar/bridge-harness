@@ -221,7 +221,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
 
       {section === "composer" && <ComposerPage adapters={adapters} onChange={onSuggestionSettingsChange} onError={onError} />}
 
-      {section === "prompts" && <div className="mx-auto h-full max-w-6xl"><PromptStudio /></div>}
+      {section === "prompts" && <PromptStudio />}
       {section === "import" && <ImportHarnessSection onError={onError} />}
       {section === "work" && <WorkSettingsSection onError={onError} />}
 

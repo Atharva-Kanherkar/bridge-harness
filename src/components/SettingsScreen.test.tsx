@@ -18,7 +18,8 @@ function type(input: HTMLInputElement, value: string) {
 }
 
 function button(container: HTMLElement, label: string): HTMLButtonElement {
-  const match = [...container.querySelectorAll("button")].find(candidate => candidate.textContent?.includes(label));
+  const match = [...container.querySelectorAll("button")].find(candidate =>
+    candidate.getAttribute("aria-label") === label || candidate.textContent?.includes(label));
   if (!match) throw new Error(`Button ${label} was not rendered`);
   return match;
 }

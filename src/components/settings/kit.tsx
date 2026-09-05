@@ -126,6 +126,7 @@ export function SettingsRow({ label, openLabel, description, mono, lead, control
     return <button
       type="button"
       disabled={disabled}
+      aria-label={openLabel}
       onClick={onOpen}
       className={cn("flex min-h-11 w-full items-center gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-accent disabled:opacity-45", className)}
     >{lead && <RowLead>{lead}</RowLead>}{text}{trailing}</button>;
@@ -140,9 +141,10 @@ export function SettingsRow({ label, openLabel, description, mono, lead, control
       <button
         type="button"
         disabled={disabled}
+        aria-label={openLabel ?? (typeof label === "string" ? label : "Open")}
         onClick={onOpen}
         className="absolute inset-0 z-0 transition-colors hover:bg-accent disabled:opacity-45"
-      ><span className="sr-only">{openLabel ?? (typeof label === "string" ? label : "Open")}</span></button>
+      />
       {lead && <span className="pointer-events-none relative z-10"><RowLead>{lead}</RowLead></span>}
       <span className="pointer-events-none relative z-10 flex min-w-0 flex-1">{text}</span>
       <span className="relative z-10 flex shrink-0 items-center gap-2">{trailing}</span>

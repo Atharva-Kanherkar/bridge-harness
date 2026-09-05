@@ -124,7 +124,7 @@ describe("the runtime list", () => {
   it("a row opens its harness detail page", async () => {
     const onOpen = vi.fn();
     const view = await render([agent()], onOpen);
-    await view.click(view.button("Configure Codex"));
+    await view.click(view.host.querySelector('[aria-label="Configure Codex"]'));
     expect(onOpen).toHaveBeenCalledWith("codex");
     await view.unmount();
   });
