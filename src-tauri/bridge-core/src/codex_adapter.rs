@@ -40,7 +40,7 @@ pub struct StartedCodex {
 }
 
 pub fn start(request: StartRequest<'_>) -> Result<StartedCodex, BridgeError> {
-    launch(request, None)
+    launch(request, None, false)
 }
 
 pub fn resume(request: ResumeRequest<'_>) -> Result<StartedCodex, BridgeError> {
@@ -56,6 +56,7 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedCodex, BridgeError> {
             on_progress: request.on_progress,
         },
         Some(request.provider_session_id),
+        request.fork,
     )
 }
 
@@ -113,6 +114,7 @@ pub fn discover_models() -> Result<Vec<crate::adapters::DiscoveredModel>, Bridge
 fn launch(
     request: StartRequest<'_>,
     resume_thread_id: Option<&str>,
+    fork: bool,
 ) -> Result<StartedCodex, BridgeError> {
     let StartRequest {
         cwd,
@@ -198,7 +200,13 @@ fn launch(
     let (_, mut startup_messages) = wait_for_response(&mut reader, 1)?;
     crate::process_ledger::log_spawn_to_ready("codex", "initialize_response", spawned_at);
     write_value(&writer, &json!({"method":"initialized"}))?;
-    let (method, params, lifecycle_phase) = if let Some(thread_id) = resume_thread_id {
+    let (method, params, lifecycle_phase) = if let Some(thread_id) = resume_thread_id.filter(|_| fork) {
+        (
+            "thread/fork",
+            thread_fork_params(thread_id, cwd, model, instructions, write_mode),
+            ContextLifecyclePhase::Resume,
+        )
+    } else if let Some(thread_id) = resume_thread_id {
         (
             "thread/resume",
             thread_resume_params(thread_id, cwd, model, instructions, write_mode),
@@ -339,9 +347,62 @@ fn thread_resume_params(
     params
 }
 
+/// Fork params mirror resume's, with one different verb: `thread/fork` loads
+/// the source thread from disk and continues into a NEW thread, so the aside
+/// reads the source's full history while every write lands on the fork. The
+/// aside's own compiled instructions ride along as developer instructions.
+fn thread_fork_params(
+    thread_id: &str,
+    cwd: &str,
+    model: Option<&str>,
+    instructions: Option<&str>,
+    write_mode: Option<WriteMode>,
+) -> Value {
+    let mut params = thread_resume_params(thread_id, cwd, model, instructions, write_mode);
+    params["threadSource"] = json!("bridge_side_chat");
+    params
+}
+
 pub fn supports_native_resume() -> bool {
     static SUPPORTS: OnceLock<bool> = OnceLock::new();
     *SUPPORTS.get_or_init(discover_native_resume)
+}
+
+/// Whether this Codex build exposes `thread/fork` — the native side-chat verb:
+/// fork the source thread into a new one, read its full history, and never
+/// write to the source. Discovered from the app-server schema the same way
+/// native resume is, and cached for the process lifetime.
+pub fn supports_native_fork() -> bool {
+    static SUPPORTS: OnceLock<bool> = OnceLock::new();
+    *SUPPORTS.get_or_init(discover_native_fork)
+}
+
+fn discover_native_fork() -> bool {
+    let Some(binary) = resolve_runtime() else {
+        return false;
+    };
+    let output_dir = std::env::temp_dir().join(format!("bridge-codex-schema-{}", Uuid::new_v4()));
+    let generated = Command::new(binary)
+        .args([
+            "app-server",
+            "generate-json-schema",
+            "--experimental",
+            "--out",
+        ])
+        .arg(&output_dir)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success());
+    let supported = generated
+        && std::fs::read_to_string(output_dir.join("ClientRequest.json"))
+            .is_ok_and(|schema| schema_supports_fork(&schema));
+    let _ = std::fs::remove_dir_all(output_dir);
+    supported
+}
+
+fn schema_supports_fork(schema: &str) -> bool {
+    schema.contains("thread/fork") && schema.contains("ThreadForkParams")
 }
 
 fn discover_native_resume() -> bool {
@@ -901,6 +962,7 @@ mod tests {
         started.runtime.stop(ShutdownReason::AppShutdown);
 
         let mut resumed = resume(ResumeRequest {
+            fork: false,
             cwd,
             model: None,
             effort: None,

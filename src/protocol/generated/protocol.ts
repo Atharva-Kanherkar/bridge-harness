@@ -1432,7 +1432,7 @@ export type RequestId = number | string;
 
 export type ResponseId = RequestId | null;
 
-export type RestorationMode = "hot" | "native" | "checkpoint_restored" | "fresh";
+export type RestorationMode = "hot" | "native" | "checkpoint_restored" | "fresh" | "native_fork";
 
 export type ResumeEligibility = "native" | "checkpoint_restored" | "fresh";
 

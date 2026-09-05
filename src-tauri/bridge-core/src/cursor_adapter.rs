@@ -2677,6 +2677,7 @@ mod tests {
         assert!(!adapter.supports_native_resume());
         let Err(error) = adapter.resume(ResumeRequest {
             provider_session_id: "cursor-session",
+            fork: false,
             cwd: "/workspace",
             model: None,
             effort: None,

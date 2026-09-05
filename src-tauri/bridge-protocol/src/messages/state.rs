@@ -42,6 +42,9 @@ pub enum CapabilityTier {
 pub enum RestorationMode {
     Hot,
     Native,
+    /// The session forks a source provider thread on its first cold start
+    /// instead of resuming it (Codex-native side chat).
+    NativeFork,
     CheckpointRestored,
     Fresh,
 }

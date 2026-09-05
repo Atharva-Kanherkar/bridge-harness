@@ -73,6 +73,10 @@ impl CapabilityTier {
 pub enum RestorationMode {
     Hot,
     Native,
+    /// The session head asks its first cold start to fork a source provider
+    /// thread into a new one instead of resuming it — the Codex-native side
+    /// chat: full parent context, and the source thread is never written to.
+    NativeFork,
     CheckpointRestored,
     #[default]
     Fresh,
@@ -83,6 +87,7 @@ impl RestorationMode {
         match self {
             Self::Hot => "hot",
             Self::Native => "native",
+            Self::NativeFork => "native_fork",
             Self::CheckpointRestored => "checkpoint_restored",
             Self::Fresh => "fresh",
         }

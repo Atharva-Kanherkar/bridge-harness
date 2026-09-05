@@ -119,13 +119,24 @@
     },
     "RestorationMode": {
       "description": "Mirrors `bridge_core::model::RestorationMode`.",
-      "enum": [
-        "hot",
-        "native",
-        "checkpoint_restored",
-        "fresh"
-      ],
-      "type": "string"
+      "oneOf": [
+        {
+          "enum": [
+            "hot",
+            "native",
+            "checkpoint_restored",
+            "fresh"
+          ],
+          "type": "string"
+        },
+        {
+          "description": "The session forks a source provider thread on its first cold start instead of resuming it (Codex-native side chat).",
+          "enum": [
+            "native_fork"
+          ],
+          "type": "string"
+        }
+      ]
     },
     "Session": {
       "description": "Mirrors `bridge_core::model::Session`.",

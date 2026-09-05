@@ -23,6 +23,25 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
+/// Whether a new aside may open as a native Codex thread fork of its source:
+/// same harness (the fork verb belongs to the thread's owner), a stored
+/// non-empty provider thread id to fork from, no turn in flight on the source
+/// (forking a live turn is a race), and an installed Codex that exposes
+/// `thread/fork`. Pure so every caller — and every test — gets the same answer.
+fn aside_fork_eligible(
+    aside_harness: &str,
+    source_harness: &str,
+    source_thread: Option<&str>,
+    source_turn_active: bool,
+    codex_supports_fork: bool,
+) -> bool {
+    aside_harness == "codex"
+        && source_harness == "codex"
+        && source_thread.is_some_and(|thread| !thread.trim().is_empty())
+        && !source_turn_active
+        && codex_supports_fork
+}
+
 /// How long a model switch waits for the outgoing provider to produce its
 /// handoff summary before falling back to the mechanical projection. Tighter
 /// than [`compaction_controller::CHECKPOINT_TIMEOUT_SECONDS`] because the user
@@ -252,31 +271,99 @@ impl BridgeCore {
 
     /// Create a source-scoped aside and carry its handoff in the same
     /// transaction. The exact inserted id is returned to prevent races.
+    ///
+    /// Context rides the best channel available. When the aside targets the
+    /// same Codex harness as its source, the source has a stored provider
+    /// thread, that thread is not mid-turn, and the installed Codex exposes
+    /// `thread/fork`, the aside is created already pointed at a NATIVE FORK of
+    /// the source thread: its first cold start forks the source into a new
+    /// thread, so the aside reads the parent conversation's full provider
+    /// history and every write lands on the fork — the parent conversation is
+    /// never appended to, provider-side or forest-side. Anything else falls
+    /// back to the projected handoff brief (stored checkpoint context), which
+    /// is also the fallback ladder's first stop when a fork fails at start
+    /// time.
     pub fn create_aside_chat_id(
         &self,
         source_session_id: &str,
         harness: &Harness,
         model: Option<&str>,
         title: Option<&str>,
-    ) -> Result<(String, bool), BridgeError> {
+    ) -> Result<(String, bool, bool), BridgeError> {
         let adapter_id = store::harness_name(harness);
         let id = Uuid::new_v4().to_string();
         let label = chat_label(title);
+        // Discovered before the database lock: the first call may shell out to
+        // the Codex binary to read its schema, and holding the core lock under
+        // a subprocess would stall every other session operation.
+        let codex_can_fork = adapter_id.as_ref() == "codex" && crate::codex_adapter::supports_native_fork();
         let mut db = self.db.lock().unwrap();
         let transaction = db.transaction()?;
-        let (workspace_id, source_cwd): (Option<String>, Option<String>) = transaction.query_row(
-            "SELECT workspace_id,cwd FROM sessions WHERE id=?1", params![source_session_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+        let (workspace_id, source_cwd, source_harness, source_thread, source_turn): (
+            Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
+            Option<String>,
+        ) = transaction.query_row(
+            "SELECT workspace_id,cwd,harness,provider_session_id,active_turn_id FROM sessions WHERE id=?1",
+            params![source_session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
         ).optional()?.ok_or_else(|| BridgeError::Invalid("Aside source session does not exist".into()))?;
         let cwd = source_cwd.unwrap_or_else(|| self.chat_scratch_dir(&id).to_string_lossy().into_owned());
-        transaction.execute(
-            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,'direct',?6,?7,0)",
-            params![id, workspace_id, adapter_id, label, model, title, cwd],
-        )?;
+        // A fork must target the same harness that owns the thread, on a
+        // source with a resumable thread id and no turn in flight.
+        let native_fork = aside_fork_eligible(
+            adapter_id.as_ref(),
+            &source_harness,
+            source_thread.as_deref(),
+            source_turn.is_some(),
+            codex_can_fork,
+        );
+        let insert_thread = native_fork.then(|| source_thread.clone()).flatten();
+        match insert_thread.as_deref() {
+            Some(thread) => {
+                transaction.execute(
+                    "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth,provider_session_id,continuation_fidelity) VALUES(?1,?2,?3,?4,'idle','estimated',?5,'direct',?6,?7,0,?8,'native')",
+                    params![id, workspace_id, adapter_id, label, model, title, cwd, thread],
+                )?;
+            }
+            None => {
+                transaction.execute(
+                    "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,'direct',?6,?7,0)",
+                    params![id, workspace_id, adapter_id, label, model, title, cwd],
+                )?;
+            }
+        }
         store::event(&transaction, "chat", "aside.created", &id, &format!("Created aside {label} from {source_session_id}"))?;
+        if native_fork {
+            restoration::set_head_state(
+                &transaction,
+                &id,
+                RestorationMode::NativeFork,
+                ResumeEligibility::Native,
+                source_thread.as_deref(),
+            )?;
+            store::event(
+                &transaction,
+                "chat",
+                "aside.native_fork",
+                &id,
+                &format!("Aside {label} will fork Codex thread {thread} on its first turn", thread = source_thread.as_deref().unwrap_or_default()),
+            )?;
+        }
         let carried = handoff::carry_brief_in_transaction(&transaction, &id, source_session_id)?;
+        // The brief is carried either way: it is the fork's checkpoint
+        // fallback if the native fork fails at start time, and the whole
+        // context channel when no fork applies.
+        if !native_fork {
+            transaction.execute(
+                "UPDATE sessions SET continuation_fidelity=?2 WHERE id=?1",
+                params![id, if carried { "projected_at_boundary" } else { "native" }],
+            )?;
+        }
         transaction.commit()?;
-        Ok((id, carried))
+        Ok((id, carried, native_fork))
     }
 
     /// Move a session's conversation head. Publishes the state-changed
@@ -1390,10 +1477,13 @@ mod tests {
                 serde_json::json!({"text":"Keep the repository context"}),
             ).unwrap();
         }
-        let (aside_id, carried) = core.create_aside_chat_id(
+        let (aside_id, carried, native_fork) = core.create_aside_chat_id(
             "source", &Harness::Codex, Some("stub-standard"), Some("Check"),
         ).unwrap();
+        // The stub codex adapter cannot fork (no app-server schema on the test
+        // path), so the aside falls back to the projected handoff brief.
         assert!(carried);
+        assert!(!native_fork);
         let db = core.db.lock().unwrap();
         let (workspace_id, cwd): (Option<String>, Option<String>) = db.query_row(
             "SELECT workspace_id,cwd FROM sessions WHERE id=?1", params![aside_id],
@@ -1406,6 +1496,78 @@ mod tests {
             params![aside_id], |row| row.get(0),
         ).unwrap();
         assert_eq!(handoffs, 1);
+    }
+
+    #[test]
+    fn fork_eligibility_belongs_to_codex_on_a_stored_idle_thread() {
+        assert!(aside_fork_eligible(
+            "codex", "codex", Some("parent-thread"), false, true,
+        ));
+        // The fork verb belongs to the thread's owner: a Claude aside from a
+        // Codex chat reads the projected brief instead.
+        assert!(!aside_fork_eligible(
+            "claude", "codex", Some("parent-thread"), false, true,
+        ));
+        assert!(!aside_fork_eligible(
+            "codex", "claude", Some("parent-thread"), false, true,
+        ));
+        // No stored thread, nothing to fork.
+        assert!(!aside_fork_eligible("codex", "codex", None, false, true));
+        assert!(!aside_fork_eligible("codex", "codex", Some("  "), false, true));
+        // A turn in flight is a fork race: wait for the boundary.
+        assert!(!aside_fork_eligible(
+            "codex", "codex", Some("parent-thread"), true, true,
+        ));
+        // An installed Codex without thread/fork cannot fork.
+        assert!(!aside_fork_eligible(
+            "codex", "codex", Some("parent-thread"), false, false,
+        ));
+    }
+
+    #[test]
+    fn aside_fork_points_the_head_at_the_source_thread_for_a_native_start() {
+        let (_scratch, core) = fixture();
+        seed_workspace(&core, true);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,cwd,kind,depth,provider_session_id) VALUES('forksource','w','codex','Source','idle','estimated','/tmp/sessions-demo','orchestrator',0,'parent-thread')",
+                [],
+            ).unwrap();
+            session_forest::SessionForest::new(&db).append(
+                "forksource", session_forest::EntryKind::UserMessage,
+                serde_json::json!({"text":"Keep the repository context"}),
+            ).unwrap();
+        }
+        let (aside_id, _carried, native_fork) = core.create_aside_chat_id(
+            "forksource", &Harness::Codex, Some("stub-standard"), Some("Check"),
+        ).unwrap();
+        let can_fork_here = aside_fork_eligible(
+            "codex", "codex", Some("parent-thread"), false,
+            crate::codex_adapter::supports_native_fork(),
+        );
+        assert_eq!(native_fork, can_fork_here, "eligibility is decided by the installed codex, not the test");
+        let db = core.db.lock().unwrap();
+        let (provider_id, head_mode, fidelity): (Option<String>, String, String) = db.query_row(
+            "SELECT s.provider_session_id, COALESCE(h.restoration_mode,'fresh'), s.continuation_fidelity FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id WHERE s.id=?1",
+            params![aside_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        if native_fork {
+            assert_eq!(provider_id.as_deref(), Some("parent-thread"));
+            assert_eq!(head_mode, "native_fork");
+            assert_eq!(fidelity, "native");
+        } else {
+            // No fork support on this machine: the aside still carries the
+            // projected brief and nothing claims a native thread.
+            assert_eq!(provider_id, None);
+            assert_ne!(head_mode, "native_fork");
+        }
+        // Either way the parent session was never written to.
+        let source_entries: i64 = db.query_row(
+            "SELECT COUNT(*) FROM session_entries WHERE session_id='forksource'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(source_entries, 1, "the source conversation must not gain entries from an aside");
     }
 
     #[test]

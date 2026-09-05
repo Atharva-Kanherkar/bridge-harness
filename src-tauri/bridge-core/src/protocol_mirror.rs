@@ -763,12 +763,14 @@ fn snapshot_enums_share_their_wire_values() {
     for mode in [
         model::RestorationMode::Hot,
         model::RestorationMode::Native,
+        model::RestorationMode::NativeFork,
         model::RestorationMode::CheckpointRestored,
         model::RestorationMode::Fresh,
     ] {
         let mirrored = match mode {
             model::RestorationMode::Hot => wire::RestorationMode::Hot,
             model::RestorationMode::Native => wire::RestorationMode::Native,
+            model::RestorationMode::NativeFork => wire::RestorationMode::NativeFork,
             model::RestorationMode::CheckpointRestored => wire::RestorationMode::CheckpointRestored,
             model::RestorationMode::Fresh => wire::RestorationMode::Fresh,
         };

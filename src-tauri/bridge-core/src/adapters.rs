@@ -481,6 +481,11 @@ impl std::fmt::Debug for StartRequest<'_> {
 #[derive(Clone, Copy)]
 pub struct ResumeRequest<'a> {
     pub provider_session_id: &'a str,
+    /// Fork `provider_session_id` into a NEW thread instead of resuming it in
+    /// place. Codex-only (`thread/fork`); other adapters ignore it — which is
+    /// why the native-fork restoration plan refuses adapters without native
+    /// fork support before ever building this request.
+    pub fork: bool,
     pub cwd: &'a str,
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
@@ -497,6 +502,7 @@ impl std::fmt::Debug for ResumeRequest<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResumeRequest")
             .field("provider_session_id", &self.provider_session_id)
+            .field("fork", &self.fork)
             .field("cwd", &self.cwd)
             .field("model", &self.model)
             .field("effort", &self.effort)
@@ -521,6 +527,12 @@ pub trait HarnessAdapter: Send + Sync + Any {
     fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError>;
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError>;
     fn supports_native_resume(&self) -> bool;
+    /// Whether [`ResumeRequest::fork`] can fork a stored provider thread into
+    /// a new one. Defaults to false: only harnesses with an explicit fork verb
+    /// (Codex `thread/fork`) opt in.
+    fn supports_native_fork(&self) -> bool {
+        false
+    }
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent>;
     /// Drop any normalization state kept for `provider_session_id`. Called
     /// when the session's runtime is gone; adapters without per-session state
@@ -745,6 +757,11 @@ impl AdapterRegistry {
         let adapter = self.adapters.get(id).ok_or_else(|| {
             BridgeError::Invalid(format!("No structured adapter is registered for {id}"))
         })?;
+        if request.fork && !adapter.supports_native_fork() {
+            return Err(BridgeError::Invalid(format!(
+                "Adapter {id} does not support native thread forks"
+            )));
+        }
         if !adapter.supports_native_resume() {
             return Err(BridgeError::Invalid(format!(
                 "Adapter {id} does not support native resume"
@@ -759,6 +776,12 @@ impl AdapterRegistry {
         self.adapters
             .get(id)
             .is_some_and(|adapter| adapter.supports_native_resume())
+    }
+
+    pub fn supports_native_fork(&self, id: &str) -> bool {
+        self.adapters
+            .get(id)
+            .is_some_and(|adapter| adapter.supports_native_fork())
     }
 
     pub fn normalize(&self, id: &str, value: &Value) -> Vec<agent::NormalizedEvent> {
@@ -1481,6 +1504,9 @@ impl HarnessAdapter for CodexAdapter {
     }
     fn supports_native_resume(&self) -> bool {
         codex_adapter::supports_native_resume()
+    }
+    fn supports_native_fork(&self) -> bool {
+        codex_adapter::supports_native_fork()
     }
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent> {
         if value.get("id").is_some() && value.get("method").is_some() {
