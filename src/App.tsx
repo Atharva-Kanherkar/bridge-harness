@@ -1243,24 +1243,29 @@ function AppContent() {
   // from — its harness, so a Codex chat gets a Codex side chat and can use the
   // provider's native thread fork — and reads that chat's context, but it
   // never appends to it: the aside session is a separate forest, and the only
-  // thing written to the parent is nothing.
-  async function openSideChat(query: string, sourceSessionId: string, attachments: ComposerAttachment[] = []): Promise<void> {
+  // thing written to the parent is nothing. Returns whether the side chat
+  // actually opened: refusals (no question, harness unavailable, create lock
+  // held) report why and leave the caller's composer exactly as it was, so a
+  // rejected ask never costs the user their draft or attachments.
+  async function openSideChat(query: string, sourceSessionId: string, attachments: ComposerAttachment[] = []): Promise<boolean> {
+    if (newChatPendingRef.current) return false;
     const source = state.sessions.find(item => item.id === sourceSessionId);
-    if (!source) return;
+    if (!source) return false;
     const adapter = adapters.find(item => item.id === source.harness);
     if (!adapter) {
       setError(`No agent is available to open a side chat from. Connect a provider first.`);
-      return;
+      return false;
     }
     if (!adapter.available) {
       setError(`${adapter.label} isn't available${adapter.unavailableReason ? `: ${adapter.unavailableReason}` : ""}.`);
-      return;
+      return false;
     }
     if (!query.trim()) {
       setError("Ask a side question: type /btw followed by your question. The answer opens beside this chat without touching it.");
-      return;
+      return false;
     }
     await openAside(adapter, query, sourceSessionId, attachments);
+    return true;
   }
   // Entry point for the Welcome screen's own composer, which has no session
   // to skip past — a `$harness` prefix there is the only branch either way.
@@ -1598,9 +1603,13 @@ function AppContent() {
     const sideChat = parseSideChatCommand(submittedText);
     if (sideChat && session) {
       try {
-        await openSideChat(sideChat.query, session.id, sentAttachments);
-        setComposer("");
-        setAttachments([]);
+        // Only a genuinely opened side chat spends the composer. A refused
+        // ask (no question, unavailable harness, create in flight) keeps both
+        // the draft and its attachments so the user can complete and retry.
+        if (await openSideChat(sideChat.query, session.id, sentAttachments)) {
+          setComposer("");
+          setAttachments([]);
+        }
       } catch {
         // The aside lifecycle owns the inline recovery state. Keep the source
         // draft and its attachments so Enter is also a valid retry path.

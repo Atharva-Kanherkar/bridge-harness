@@ -671,7 +671,6 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const transcriptIsForThisSession = !session || !historySessionId || historySessionId === session.id;
   const populated = transcriptIsForThisSession && (visibleItems.length > 0 || optimisticBubbles.length > 0);
   return <FileLinkContext.Provider value={fileLinks}><ScrollFollow sessionKey={session?.id ?? "preview"} populated={populated} signature={scrollSignature} className="absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth px-3 py-8 pb-24 sm:px-6 sm:py-10">
-    {onAskAside && <AskAsideChip onAsk={onAskAside}/>}
     <div className="mx-auto flex w-full min-w-0 max-w-3xl flex-col gap-6 sm:gap-8">
       {pendingAdoptions.map(binding => <AdoptionCard key={binding.sessionId} binding={binding} onResolve={onResolveAdoption}/>)}
       {completion && <VerificationCard summary={completion} onWaive={onWaiveCompletion}/>}
@@ -712,7 +711,14 @@ export const AgentConversation = memo(function AgentConversation({ session, even
         {stopping && <TranscriptRow key="stopping"><p role="status" className={`${NOTICE} border-l-info`}>Stopping…</p></TranscriptRow>}
         {stalled && <TranscriptRow key="stalled"><StallNotice onStop={onInterrupt}/></TranscriptRow>}
       </AnimatePresence>
-    </div>
+      </div>
+      {/* Last, not first: ScrollFollow's growth observer watches this
+          container's firstElementChild, and the chip's always-mounted wrapper
+          span would otherwise be what it measures — an empty span never grows,
+          so late-growing rows (an image decoding, a code block highlighting)
+          would stop re-pinning the reader at the bottom. The chip itself is
+          position:fixed, so its DOM position is invisible. */}
+      {onAskAside && <AskAsideChip onAsk={onAskAside}/>}
   </ScrollFollow></FileLinkContext.Provider>;
 });
 

@@ -737,6 +737,15 @@ describe("the dock in the session view", () => {
     await mountApp();
     await openWorkspaceSession("4 files");
     const box = composer()!;
+    // A refused ask costs nothing: the image stays on the composer with the
+    // draft, because it was never handed to an aside.
+    const file = new File(["fake-image-bytes"], "refused.png", { type: "image/png" });
+    const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, "clipboardData", {
+      value: { items: [{ kind: "file", type: "image/png", getAsFile: () => file }] },
+    });
+    await act(async () => { box.dispatchEvent(pasteEvent); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
       setter.call(box, "/btw");
@@ -746,6 +755,9 @@ describe("the dock in the session view", () => {
     await settle(4);
     expect(container.querySelector('div[role="dialog"][aria-label^="Aside"]')).toBeNull();
     expect(container.textContent).toContain("Ask a side question");
+    // The draft and its attachment survive the refusal for the retry.
+    expect(box.value).toBe("/btw");
+    expect(container.querySelectorAll("img").length).toBeGreaterThan(0);
   });
 
   // Contract: selection opens a side chat. Selecting prose in the transcript
