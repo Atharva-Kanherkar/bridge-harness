@@ -1,23 +1,14 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Check, ChevronDown, RefreshCw, Search } from "lucide-react";
 import type { AdapterDescriptor, Harness } from "../types";
 import { harnessLabel } from "../utils";
 import { HarnessMark } from "./harnessMarks";
+import { useEffortSelectorStyle } from "../theme";
+import { effortLevelsFrom } from "./effort/effortLevels";
+import { EffortSlider } from "./effort/EffortSlider";
+import { EffortSentence } from "./effort/EffortSentence";
+import { EffortList } from "./effort/EffortList";
 import { cn } from "@/lib/utils";
-
-// Compact glyphs the effort footer draws, keyed by the wire effort value.
-const EFFORT_LABELS: Record<string, string> = {
-  low: "Low",
-  medium: "Med",
-  high: "High",
-  xhigh: "XHigh",
-  max: "Max",
-  ultra: "Ultra",
-};
-
-function effortLabel(value: string): string {
-  return EFFORT_LABELS[value] ?? value.charAt(0).toUpperCase() + value.slice(1);
-}
 
 // Vendor noise at the tail of a catalog label. OpenCode Zen's free tier
 // suffixes "(Unlimited)": it names the plan, not the model. Cursor reports a
@@ -77,7 +68,17 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   const [query, setQuery] = useState("");
   const [refreshing, setRefreshing] = useState(false);
   const [refreshError, setRefreshError] = useState<string | null>(null);
-  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
+  // A model pick in the two-pane list keeps the popover open so effort can be
+  // set next — but a live session's onChange sets busy, which flips
+  // `disabled` for the length of the switch. That flip must not count as "a
+  // turn started": it is our own switch, so the popover rides through it and
+  // becomes editable again when the switch settles.
+  const switching = useRef(false);
+  useEffect(() => {
+    if (!disabled) { switching.current = false; return; }
+    if (switching.current) return;
+    setOpen(false);
+  }, [disabled]);
   // Escape closes the picker and nothing else. Captured on window so it wins
   // against modal hosts with their own window-level Escape (the aside panel
   // closes itself on Escape — without this, dismissing the picker tore down
@@ -108,9 +109,17 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   const compactLabel = modelLabel.toLowerCase().startsWith(harnessName.toLowerCase())
     ? modelLabel
     : `${harnessName} · ${modelLabel}`;
-  const effortOptions = [...new Set(currentModel?.supportedEffortLevels ?? [])]
-    .map(value => ({ value, label: effortLabel(value) }));
-  const showEffort = effortOptions.length > 0 && (effort != null || !!onEffortChange);
+  const effortLevels = effortLevelsFrom(currentModel?.supportedEffortLevels);
+  // A surface that wires neither the value nor a setter does not do effort at
+  // all; one that wires either shows the current level, editable or not.
+  const effortSurface = effort != null || !!onEffortChange;
+  const showEffort = effortLevels.length > 0 && effortSurface;
+  // The user's chosen form for the control (Settings › Appearance). The list
+  // style turns the popover into two panes, so a model can be picked and its
+  // effort set without the popover closing in between.
+  const effortStyle = useEffortSelectorStyle();
+  const twoPane = effortStyle === "list" && effortSurface;
+  const effortProps = { levels: effortLevels, value: effort, onChange: onEffortChange, disabled, harness, modelLabel };
   const q = query.trim().toLowerCase();
   const matchesQuery = (label: string) => !q || cleanModelLabel(label).toLowerCase().includes(q);
   return <div className="relative">
@@ -121,7 +130,18 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
     </button>
     {open && <>
       <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-      <div className={cn("u-glass-popover absolute left-0 z-40 flex w-[340px] max-h-[420px] flex-col overflow-hidden rounded-xl border border-border bg-popover", placement === "down" ? "top-full mt-2" : "bottom-full mb-2")}>
+      <div
+        className={cn("u-glass-popover absolute left-0 z-40 flex max-h-[420px] flex-col overflow-hidden rounded-xl border border-border bg-popover", twoPane ? "w-[460px]" : "w-[340px]", placement === "down" ? "top-full mt-2" : "bottom-full mb-2")}
+        onKeyDown={event => {
+          // Two-pane digit shortcuts live on the popover, not the list: after a
+          // model pick focus sits on that row in the other pane, and the key
+          // has to work from wherever focus is — except while typing a search.
+          if (!twoPane || !showEffort || disabled || !onEffortChange || !/^[1-9]$/.test(event.key)) return;
+          if (event.target instanceof HTMLInputElement) return;
+          const level = effortLevels[Number(event.key) - 1];
+          if (level) { event.preventDefault(); onEffortChange(level.value); }
+        }}
+      >
         {/* Search header: magnifier + input, with a faint keyboard hint at the right. */}
         <div className="flex h-10 shrink-0 items-center gap-2 border-b border-border px-3">
           <Search size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
@@ -142,7 +162,8 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
           </button>}
         </div>
         {refreshError && <p role="alert" className="px-3 py-2 text-xs text-destructive">{refreshError}</p>}
-        <div role="listbox" aria-label={`${roleLabel} models`} className="min-h-0 flex-1 overflow-y-auto p-1.5">
+        <div className={cn("flex min-h-0 flex-1", !twoPane && "flex-col")}>
+        <div role="listbox" aria-label={`${roleLabel} models`} className={cn("min-h-0 flex-1 overflow-y-auto p-1.5", twoPane && "w-[210px] flex-none border-r border-border")}>
           {chatAdapters
             .map(adapter => {
               const catalog = adapter.models.length ? adapter.models : [{ id: "", label: "Default", tier: "fast" as const, defaultForTier: true }];
@@ -166,7 +187,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
                 {models.map(option => {
                   const selected = adapter.id === harness && (option.id ? option.id === model : !model);
                   const selectable = adapter.available && option.available !== false && option.compatible !== false;
-                  return <button key={`${adapter.id}:${option.id || "default"}`} type="button" role="option" aria-selected={selected} disabled={!selectable} onClick={() => { onChange(adapter.id as Harness, option.id || null); setOpen(false); }} className={cn("flex h-9 w-full items-center gap-2 rounded-[7px] px-2 text-left transition-colors disabled:opacity-40", selected ? "bg-accent" : "hover:bg-accent", !selectable && "opacity-60")}>
+                  return <button key={`${adapter.id}:${option.id || "default"}`} type="button" role="option" aria-selected={selected} disabled={!selectable} onClick={() => { if (twoPane) switching.current = true; onChange(adapter.id as Harness, option.id || null); if (!twoPane) setOpen(false); }} className={cn("flex h-9 w-full items-center gap-2 rounded-[7px] px-2 text-left transition-colors disabled:opacity-40", selected ? "bg-accent" : "hover:bg-accent", !selectable && "opacity-60")}>
                     <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[12.5px] text-foreground">{cleanModelLabel(option.label)}</span>
                     {option.lifecycle === "preview" && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[8px] uppercase text-muted-foreground">preview</span>}
                     {selected && <Check size={13} className="shrink-0 text-foreground" aria-hidden="true" />}
@@ -175,26 +196,22 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
               </div>
             ))}
         </div>
-        {showEffort && (
-          <div className="shrink-0 border-t border-border px-3 py-2.5" data-testid="effort-control">
-            <div className="flex items-center gap-2">
-              <span className="shrink-0 text-[11px] text-muted-foreground">Thinking</span>
-              <div role="group" aria-label="Reasoning effort" className="u-segmented flex-1">
-                {effortOptions.map(option => {
-                  const active = effort === option.value;
-                  return <button
-                    key={option.value}
-                    type="button"
-                    aria-pressed={active}
-                    disabled={disabled || !onEffortChange}
-                    onClick={() => onEffortChange?.(option.value)}
-                    data-effort={option.value}
-                    data-active={active}
-                    className="u-segmented-item flex-1 disabled:cursor-default"
-                  >{option.label}</button>;
-                })}
-              </div>
-            </div>
+        {twoPane && <div className="flex min-w-0 flex-1 flex-col gap-2.5 overflow-y-auto p-3">
+          <div className="flex items-center gap-2 text-[12.5px] font-semibold text-foreground">
+            <HarnessMark harness={harness} size={12} />
+            <span className="min-w-0 flex-1 truncate">{modelLabel}</span>
+            {showEffort && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.08em] text-muted-foreground/60">thinking</span>}
+          </div>
+          <div className="text-[9.5px] font-medium uppercase tracking-[0.12em] text-muted-foreground/70">Thinking effort</div>
+          {showEffort
+            ? <div data-testid="effort-control"><EffortList {...effortProps} /></div>
+            : <p className="text-[11.5px] leading-5 text-muted-foreground">No thinking control for this model.</p>}
+          {showEffort && <p className="mt-auto pt-1 text-[10.5px] text-faint">1–{Math.min(9, effortLevels.length)} jumps to a level</p>}
+        </div>}
+        </div>
+        {!twoPane && showEffort && (
+          <div className="h-[72px] shrink-0 border-t border-border px-3.5 pb-2 pt-2.5 [contain:layout]" data-testid="effort-control">
+            {effortStyle === "sentence" ? <EffortSentence {...effortProps} /> : <EffortSlider {...effortProps} />}
           </div>
         )}
         <div className="shrink-0 border-t border-border px-3 py-2.5">

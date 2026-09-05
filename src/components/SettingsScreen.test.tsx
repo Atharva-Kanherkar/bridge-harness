@@ -97,6 +97,34 @@ describe("SettingsScreen", () => {
       expect(document.documentElement.dataset.skin).toBe("graphite");
     });
 
+    it("persists the thinking control style from the Appearance tiles", async () => {
+      const store = new Map<string, string>();
+      const original = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+      Object.defineProperty(globalThis, "localStorage", {
+        configurable: true,
+        value: {
+          getItem: (key: string) => store.get(key) ?? null,
+          setItem: (key: string, value: string) => { store.set(key, value); },
+          removeItem: (key: string) => { store.delete(key); },
+          clear: () => store.clear(),
+        },
+      });
+      try {
+        await render();
+        await open("Appearance");
+        expect(container.textContent).toContain("Thinking control");
+        const group = container.querySelector('[role="radiogroup"][aria-label="Thinking control"]')!;
+        expect(group.querySelector('[role="radio"][aria-checked="true"]')!.textContent).toContain("Slider");
+
+        await act(async () => { button(container, "Sentence").click(); await flush(); });
+        expect(store.get("bridge.effortSelector")).toBe("sentence");
+        expect(group.querySelector('[role="radio"][aria-checked="true"]')!.textContent).toContain("Sentence");
+      } finally {
+        if (original) Object.defineProperty(globalThis, "localStorage", original);
+        else Reflect.deleteProperty(globalThis, "localStorage");
+      }
+    });
+
     it("opens Permissions from initialSection, which is what the bypass badge does", async () => {
       await render({ initialSection: "permissions" });
       expect(container.textContent).toContain("How much Bridge asks before an agent acts.");
