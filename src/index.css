@@ -571,6 +571,29 @@ html[data-native-fullscreen] .u-traffic-inset {
   animation: text-shimmer-sweep 2s linear infinite;
 }
 
+/* The thinking-effort slider's change feedback: the thumb pops, a halo in the
+   harness tint blooms and fades, the single label rises in. All transform and
+   opacity; the footer box itself never moves. */
+@keyframes effort-thumb {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.35); }
+  100% { transform: scale(1); }
+}
+
+@keyframes effort-halo {
+  0% { opacity: 0.55; transform: scale(0.6); }
+  100% { opacity: 0; transform: scale(1.6); }
+}
+
+@keyframes effort-label {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-effort-thumb { animation: effort-thumb 0.36s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+.animate-effort-halo { animation: effort-halo 0.5s ease-out both; }
+.animate-effort-label { animation: effort-label 0.18s cubic-bezier(0.16, 1, 0.3, 1) both; }
+
 @keyframes text-shimmer-sweep {
   from { background-position: -200% 0; }
   to { background-position: 200% 0; }
