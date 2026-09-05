@@ -1419,6 +1419,11 @@ impl HarnessAdapter for CodexAdapter {
     }
     fn descriptor(&self) -> AdapterDescriptor {
         let version = codex_adapter::binary_version();
+        // One owned snapshot releases the read lock before building the
+        // descriptor. Re-entering it can deadlock behind a pending refresh
+        // writer while an earlier field's temporary guard is still alive.
+        let catalog = self.models.read().unwrap().clone();
+        let default_model = promoted_default_model(&catalog.models, "gpt-5.6-luna");
         AdapterDescriptor {
             id: "codex".into(),
             label: "Codex".into(),
@@ -1446,12 +1451,9 @@ impl HarnessAdapter for CodexAdapter {
             unavailable_reason: codex_adapter::resolve_runtime()
                 .is_none()
                 .then(|| "Codex binary is not installed".into()),
-            models: self.models.read().unwrap().models.clone(),
-            default_model: promoted_default_model(
-                &self.models.read().unwrap().models,
-                "gpt-5.6-luna",
-            ),
-            model_catalog: self.models.read().unwrap().diagnostics.clone(),
+            models: catalog.models,
+            default_model,
+            model_catalog: catalog.diagnostics,
         }
     }
     fn refresh_availability(&self) {
@@ -1578,6 +1580,10 @@ impl HarnessAdapter for ClaudeAdapter {
     }
     fn descriptor(&self) -> AdapterDescriptor {
         let version = claude_adapter::binary_version();
+        // Keep the model list, default, and diagnostics from the same read,
+        // without recursively locking against a concurrent discovery writer.
+        let catalog = self.models.read().unwrap().clone();
+        let default_model = promoted_default_model(&catalog.models, claude_adapter::DEFAULT_MODEL);
         AdapterDescriptor {
             id: "claude".into(),
             label: "Claude Code".into(),
@@ -1608,12 +1614,9 @@ impl HarnessAdapter for ClaudeAdapter {
             .collect(),
             sandbox_modes: SandboxMode::ALL.to_vec(),
             unavailable_reason: claude_adapter::unavailable_reason(),
-            models: self.models.read().unwrap().models.clone(),
-            default_model: promoted_default_model(
-                &self.models.read().unwrap().models,
-                claude_adapter::DEFAULT_MODEL,
-            ),
-            model_catalog: self.models.read().unwrap().diagnostics.clone(),
+            models: catalog.models,
+            default_model,
+            model_catalog: catalog.diagnostics,
         }
     }
     fn refresh_availability(&self) {
