@@ -409,7 +409,9 @@ describe("ChatModelControl effort styles", () => {
   // jsdom here has an opaque origin and no storage; the style is read from
   // localStorage during render, so give it a minimal stub.
   const store = new Map<string, string>();
+  let original: PropertyDescriptor | undefined;
   beforeEach(() => {
+    original = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
     Object.defineProperty(globalThis, "localStorage", {
       configurable: true,
       value: {
@@ -420,7 +422,11 @@ describe("ChatModelControl effort styles", () => {
       },
     });
   });
-  afterEach(() => { store.clear(); Reflect.deleteProperty(globalThis, "localStorage"); });
+  afterEach(() => {
+    store.clear();
+    if (original) Object.defineProperty(globalThis, "localStorage", original);
+    else Reflect.deleteProperty(globalThis, "localStorage");
+  });
 
   describe("slider (default)", () => {
     it("announces the current level on the thumb and steps with the keyboard", async () => {
