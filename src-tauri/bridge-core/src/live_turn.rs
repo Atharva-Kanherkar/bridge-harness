@@ -9465,6 +9465,18 @@ pub fn stop_session(
         }
     }
     deactivate_reader_launch(state, &session_id);
+    // Ask the provider to cancel the in-flight turn before tearing the adapter
+    // down. Workers already did this; top-level/main sessions did not, so
+    // clicking Stop on a main chat fell straight through to process teardown.
+    // For OpenCode that meant SIGKILLing the private HTTP server instead of
+    // POSTing /session/{id}/abort, and the turn kept streaming as if nothing
+    // happened (#492). interrupt() is best-effort and parity-safe across
+    // adapters: Codex/Claude soft-interrupt (or no-op when no turn is live),
+    // OpenCode aborts the turn. The return value is discarded because teardown
+    // below is the hard guarantee; this just makes the stop graceful.
+    if let Some(runtime) = state.adapters.lock().unwrap().get(&session_id) {
+        let _ = runtime.interrupt();
+    }
     if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
         runtime.stop(adapters::ShutdownReason::UserStopped);
     }
@@ -10118,6 +10130,9 @@ mod submit_input_tests {
         /// Question rejections, as `requestId`.
         rejected: Arc<Mutex<Vec<serde_json::Value>>>,
         refuse: Arc<AtomicBool>,
+        /// How many times `interrupt()` was called — the whole assertion for
+        /// "Stop gracefully aborted the turn before teardown".
+        interrupts: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     pub(super) struct FakeHandles {
@@ -10127,6 +10142,7 @@ mod submit_input_tests {
         pub(super) answered: Arc<Mutex<Vec<(serde_json::Value, serde_json::Value)>>>,
         pub(super) rejected: Arc<Mutex<Vec<serde_json::Value>>>,
         pub(super) refuse: Arc<AtomicBool>,
+        pub(super) interrupts: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl FakeRuntime {
@@ -10147,6 +10163,7 @@ mod submit_input_tests {
             let answered = Arc::new(Mutex::new(Vec::new()));
             let rejected = Arc::new(Mutex::new(Vec::new()));
             let refuse = Arc::new(AtomicBool::new(false));
+            let interrupts = Arc::new(std::sync::atomic::AtomicUsize::new(0));
             let runtime = FakeRuntime {
                 steering,
                 images,
@@ -10156,6 +10173,7 @@ mod submit_input_tests {
                 answered: answered.clone(),
                 rejected: rejected.clone(),
                 refuse: refuse.clone(),
+                interrupts: interrupts.clone(),
             };
             (
                 Box::new(runtime),
@@ -10166,6 +10184,7 @@ mod submit_input_tests {
                     answered,
                     rejected,
                     refuse,
+                    interrupts,
                 },
             )
         }
@@ -10217,6 +10236,7 @@ mod submit_input_tests {
             Ok(())
         }
         fn interrupt(&self) -> Result<(), BridgeError> {
+            self.interrupts.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
         fn respond(&self, request_id: serde_json::Value, decision: &str) -> Result<(), BridgeError> {
@@ -10310,6 +10330,46 @@ mod submit_input_tests {
         let (runtime, handles) = FakeRuntime::new(steering);
         core.adapters.lock().unwrap().insert("chat".into(), runtime);
         handles
+    }
+
+    // -- stop / interrupt ----------------------------------------------------
+
+    /// Clicking Stop on a mid-turn top-level session must ask the provider to
+    /// abort the turn, not just SIGKILL the process. Without the interrupt call
+    /// OpenCode's private HTTP server kept streaming after Stop (#492). A
+    /// non-steering fake stands in for the OpenCode/Codex family here — the one
+    /// the bug was reported against — precisely because it does not get the
+    /// Claude-only steering fork.
+    #[test]
+    fn stopping_a_top_level_session_interrupts_the_in_flight_turn() {
+        let (fixture, core, _managed_root) = core_with_chat("working");
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')",
+                params![fixture.path().to_string_lossy()],
+            )
+            .unwrap();
+            db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task',?1,'working','now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute(
+                "UPDATE sessions SET workspace_id='w' WHERE id='chat'",
+                [],
+            )
+            .unwrap();
+        }
+        let handles = attach_handles(&core, false);
+
+        super::stop_session(&core, "chat".into()).unwrap();
+
+        assert_eq!(
+            handles.interrupts.load(Ordering::SeqCst),
+            1,
+            "Stop should gracefully interrupt the turn before tearing the adapter down"
+        );
+        assert!(
+            !core.adapters.lock().unwrap().contains_key("chat"),
+            "Stop should still tear the adapter down after interrupting"
+        );
     }
 
     // -- image attachments ---------------------------------------------------
