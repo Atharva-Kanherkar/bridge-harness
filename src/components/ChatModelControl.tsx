@@ -82,30 +82,35 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   // goes out the instant the switch settles, provided the pick landed. The
   // shown value is this one, so a round-trip never flashes the stale prop.
   const [queued, setQueued] = useState<{ value: string; sent: boolean } | null>(null);
-  // Set whenever the picker itself asks the host for a change. A live
-  // session's handler sets busy, which flips `disabled` for the length of the
-  // request; that flip must not count as "a turn started" and close the
-  // popover. A disable from anywhere else still does — and drops anything of
-  // ours still in flight, since the host is busy with something else now.
-  const ownChange = useRef(false);
+  // True while a request the picker itself made — a model pick or a level —
+  // is outstanding at the host. A live session's handler sets busy, which
+  // flips `disabled` for the length of the request; that flip must not count
+  // as "a turn started" and close the popover, must keep the effort control
+  // live, and must block a second pick that would race the first on the
+  // session lock. It is state of its own rather than "is there a pending
+  // pick" because the props can confirm the new model while the host is still
+  // busy — the highlight is settled then, the request is not. A disable from
+  // anywhere else closes the popover and drops anything of ours in flight,
+  // since the host is busy with something else now.
+  const [inFlight, setInFlight] = useState(false);
   const wasDisabled = useRef(!!disabled);
   useEffect(() => {
     const was = wasDisabled.current;
     wasDisabled.current = !!disabled;
     if (disabled && !was) {
-      if (!ownChange.current) { setOpen(false); setPending(null); setQueued(null); }
+      if (!inFlight) { setOpen(false); setPending(null); setQueued(null); }
       return;
     }
     if (!disabled && was) {
-      ownChange.current = false;
-      // The switch settled. Only a pick the host adopted may carry the queue;
+      setInFlight(false);
+      // The request settled. Only a pick the host adopted may carry the queue;
       // a failed switch must not apply the level to the model just left.
       const landed = !pending || (pending.harness === harness && pending.model === model);
       setPending(null);
       if (!queued) return;
       if (!queued.sent) {
         if (landed && onEffortChange) {
-          ownChange.current = true;
+          setInFlight(true);
           setQueued({ value: queued.value, sent: true });
           onEffortChange(queued.value);
         } else {
@@ -116,15 +121,23 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
         setQueued(null);
       }
     }
-  }, [disabled, pending, queued, harness, model, effort, onEffortChange]);
+  }, [disabled, inFlight, pending, queued, harness, model, effort, onEffortChange]);
+  // The props caught up with the optimistic state. A host that applied the
+  // change without ever going busy (the Welcome draft) has nothing of ours
+  // outstanding any more; one still busy is confirming early, and stays in
+  // flight until it settles.
   useEffect(() => {
-    if (pending && pending.harness === harness && pending.model === model) setPending(null);
-  }, [harness, model, pending]);
+    if (!pending || pending.harness !== harness || pending.model !== model) return;
+    setPending(null);
+    if (!disabled) setInFlight(false);
+  }, [harness, model, pending, disabled]);
   useEffect(() => {
-    if (queued?.sent && effort === queued.value) setQueued(null);
-  }, [effort, queued]);
+    if (!queued?.sent || effort !== queued.value) return;
+    setQueued(null);
+    if (!disabled) setInFlight(false);
+  }, [effort, queued, disabled]);
   // Closing while nothing is in flight forgets the optimistic state. Closing
-  // mid-switch keeps it: the pick already went to the host, and a level chosen
+  // mid-request keeps it: the pick already went to the host, and a level chosen
   // meanwhile still goes out when the switch settles.
   useEffect(() => {
     if (!open && !disabled) { setPending(null); setQueued(null); }
@@ -205,20 +218,20 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   const changeEffort = (value: string) => {
     if (!onEffortChange) return;
     if (disabled) { setQueued({ value, sent: false }); return; }
-    ownChange.current = true;
+    setInFlight(true);
     setQueued({ value, sent: true });
     onEffortChange(value);
   };
-  // The picker's own switch is in flight: the pick went out and the host has
-  // not settled. Rows ignore a second pick meanwhile — it would race the first
-  // on the session lock — and the effort control stays live so both can be
-  // set in one open. Only a disable from elsewhere makes the control inert.
-  const switchInFlight = !!disabled && !!pending;
-  const effortDisabled = !!disabled && !pending && !queued;
+  // The picker's own request is outstanding and the host is busy with it.
+  // Rows ignore a second pick meanwhile — it would race the first on the
+  // session lock — and the effort control stays live so both can be set in
+  // one open. Only a disable from elsewhere makes the control inert.
+  const switchInFlight = !!disabled && inFlight;
+  const effortDisabled = !!disabled && !inFlight;
   const effortProps = { levels: effortLevels, value: effortValue, onChange: onEffortChange ? changeEffort : undefined, disabled: effortDisabled, harness: activeHarness, modelLabel };
   const pickModel = (nextHarness: Harness, nextModel: string | null) => {
     if (switchInFlight) return;
-    ownChange.current = true;
+    setInFlight(true);
     if (effortSurface) setPending({ harness: nextHarness, model: nextModel });
     onChange(nextHarness, nextModel);
     // A surface that does effort keeps the popover open so thinking can be set

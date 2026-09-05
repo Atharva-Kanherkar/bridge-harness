@@ -584,6 +584,45 @@ describe("ChatModelControl effort styles", () => {
       expect(onChange).toHaveBeenCalledTimes(2);
     });
 
+    it("stays in flight when the host confirms the model before clearing busy", async () => {
+      const onChange = vi.fn();
+      const onEffortChange = vi.fn();
+      const props = { adapters: effortAwareAdapters, harness: "claude" as const, model: "sonnet", onChange, effort: "high", onEffortChange };
+      await act(async () => root.render(<ChatModelControl {...props} />));
+      await act(async () => trigger().click());
+      const row = (name: string) => [...panel().querySelectorAll<HTMLButtonElement>('button[role="option"]')].find(button => button.textContent?.includes(name))!;
+      await act(async () => row("Opus").click());
+      // The host confirms the new model while still busy with the restart.
+      await act(async () => root.render(<ChatModelControl {...props} model="opus" disabled />));
+      expect(row("Opus").getAttribute("aria-selected")).toBe("true");
+      // Still our request: a second pick is still blocked…
+      await act(async () => row("Haiku").click());
+      expect(onChange).toHaveBeenCalledTimes(1);
+      expect(panel().querySelector('[role="listbox"]')!.getAttribute("aria-busy")).toBe("true");
+      // …and the effort control is still live, queueing for the settle.
+      const thumb = control().querySelector('[role="slider"]')!;
+      expect(thumb.getAttribute("aria-disabled")).toBeNull();
+      await act(async () => { key(thumb, "End"); });
+      expect(onEffortChange).not.toHaveBeenCalled();
+      await act(async () => root.render(<ChatModelControl {...props} model="opus" />));
+      expect(onEffortChange).toHaveBeenCalledTimes(1);
+      expect(onEffortChange).toHaveBeenCalledWith("max");
+    });
+
+    it("does not mistake a later turn for its own request after a pick that never went busy", async () => {
+      const props = { adapters: effortAwareAdapters, harness: "claude" as const, model: "sonnet", onChange: vi.fn(), effort: "high", onEffortChange: vi.fn() };
+      await act(async () => root.render(<ChatModelControl {...props} />));
+      await act(async () => trigger().click());
+      const opus = [...panel().querySelectorAll<HTMLButtonElement>('button[role="option"]')].find(button => button.textContent?.includes("Opus"))!;
+      await act(async () => opus.click());
+      // A draft host applies the pick at once, with no busy window.
+      await act(async () => root.render(<ChatModelControl {...props} model="opus" />));
+      expect(panel()).not.toBeNull();
+      // A turn starting later is not ours: the popover closes.
+      await act(async () => root.render(<ChatModelControl {...props} model="opus" disabled />));
+      expect(panel()).toBeNull();
+    });
+
     it("forgets anything in flight when a turn, not the picker, disables it", async () => {
       const onEffortChange = vi.fn();
       const props = { adapters: effortAwareAdapters, harness: "claude" as const, model: "opus", onChange: vi.fn(), effort: "high", onEffortChange };
