@@ -27,7 +27,7 @@ import type { InteractionResolutionResult, QuestionAction, SuggestCompletionResu
 // real chat in the sidebar after the panel closes. The panel is the delegation
 // surface, not the session's home; reopening later is ordinary navigation.
 
-export function AsideChat({ session, adapters, events, pendingMessages, working, modelSwitch = null, lifecycle, initialDraft, workspaceFiles = [], slashCommands = [], onSend, onChangeModel, onResolve, onAnswerQuestion = async () => undefined, onRetryCompaction, onPromote, onClose }: {
+export function AsideChat({ session, adapters, events, pendingMessages, working, modelSwitch = null, lifecycle, initialDraft, workspaceFiles = [], slashCommands = [], onSend, onChangeModel, onChangeEffort, onResolve, onAnswerQuestion = async () => undefined, onRetryCompaction, onPromote, onClose }: {
   session: Session;
   /** The chat adapters, for the header model picker. */
   adapters: AdapterDescriptor[];
@@ -49,6 +49,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   /** Pick which model the side chat runs on; applies on the next message.
    *  May reject — the panel wears the failure itself, because the main error
    *  banner sits behind the scrim where nobody is looking. */
+  onChangeEffort?: (effort: string) => void | Promise<void>;
   onChangeModel: (harness: Harness, model: string | null) => void | Promise<void>;
   onResolve: (eventId: number, decision: ApprovalDecision, optionId?: string) => Promise<InteractionResolutionResult | void> | void;
   onAnswerQuestion?: (eventId: number, action: QuestionAction, answers: Record<string, string[]>) => Promise<InteractionResolutionResult | void> | void;
@@ -62,6 +63,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   const [composerError, setComposerError] = useState<string>();
   const [sending, setSending] = useState(false);
+  const [changingEffort, setChangingEffort] = useState(false);
   const [queuedFollowUps, setQueuedFollowUps] = useState<{ text: string; attachments: ComposerAttachment[] }[]>([]);
   const queuedFollowUpsRef = useRef<{ text: string; attachments: ComposerAttachment[] }[]>([]);
   const [slashIndex, setSlashIndex] = useState(0);
@@ -361,13 +363,21 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
                 adapters={adapters}
                 harness={session.harness}
                 model={session.model ?? null}
-                disabled={working || !!modelSwitch}
+                disabled={working || !!modelSwitch || changingEffort}
                 disabledReason={working ? "Wait for the current response before switching models" : undefined}
                 onChange={(harness, model) => {
                   setComposerError(undefined);
                   void Promise.resolve(onChangeModel(harness, model))
                     .catch(error => setComposerError(error instanceof Error ? error.message : String(error)));
                 }}
+                effort={session.effort}
+                onEffortChange={onChangeEffort ? effort => {
+                  setComposerError(undefined);
+                  setChangingEffort(true);
+                  void Promise.resolve().then(() => onChangeEffort(effort))
+                    .catch(error => setComposerError(error instanceof Error ? error.message : String(error)))
+                    .finally(() => setChangingEffort(false));
+                } : undefined}
                 compact
                 roleLabel="Aside"
                 placement="down"

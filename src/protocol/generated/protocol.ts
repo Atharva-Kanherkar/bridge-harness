@@ -2310,7 +2310,7 @@ export interface StartChatParams {
 }
 
 export interface UpdateChatModelParams {
-  effort?: Effort | null;
+  effort?: string | null;
   harness: HarnessId;
   model?: string | null;
   sessionId: string;

@@ -229,14 +229,13 @@ describe("ChatModelControl", () => {
     }
   });
 
-  it("renders the tier badge for each model row in the open picker", async () => {
+  it("keeps internal routing tiers out of the model picker", async () => {
     await act(async () => root.render(
       <ChatModelControl adapters={claudeAdapters} harness="claude" model="sonnet" onChange={vi.fn()} />,
     ));
     await act(async () => trigger().click());
-    const tierBadges = panel().querySelectorAll('[data-tier]');
-    const tiers = [...tierBadges].map(el => el.getAttribute("data-tier"));
-    expect(tiers).toEqual(["fast", "standard", "strong", "strong"]);
+    expect(panel().querySelector('[data-tier]')).toBeNull();
+    expect(panel().textContent).not.toMatch(/strong|standard|fast/i);
   });
 
   // Group headers get a divider once search narrows the list to fewer groups
@@ -260,7 +259,7 @@ describe("ChatModelControl", () => {
 
   it("highlights the current effort in the footer segmented control", async () => {
     await act(async () => root.render(
-      <ChatModelControl adapters={claudeAdapters} harness="claude" model="sonnet" onChange={vi.fn()} effort="high" />,
+      <ChatModelControl adapters={effortAwareAdapters} harness="claude" model="sonnet" onChange={vi.fn()} effort="high" />,
     ));
     await act(async () => trigger().click());
     const control = panel().querySelector('[data-testid="effort-control"]');
@@ -306,19 +305,18 @@ describe("ChatModelControl", () => {
     expect(panel().querySelector('[data-testid="effort-control"]')).toBeNull();
   });
 
-  it("falls back to the fixed effort ladder when no model reports levels", async () => {
+  it("does not invent effort levels when discovery has no capability data", async () => {
     await act(async () => root.render(
       <ChatModelControl adapters={claudeAdapters} harness="claude" model="sonnet" onChange={vi.fn()} effort="high" onEffortChange={vi.fn()} />,
     ));
     await act(async () => trigger().click());
-    const labels = [...panel().querySelectorAll('[data-testid="effort-control"] button')].map(button => button.textContent);
-    expect(labels).toEqual(["Low", "Med", "High", "XHigh"]);
+    expect(panel().querySelector('[data-testid="effort-control"]')).toBeNull();
   });
 
   it("moves effort selection off the rows into the footer control", async () => {
     const onEffortChange = vi.fn();
     await act(async () => root.render(
-      <ChatModelControl adapters={claudeAdapters} harness="claude" model="sonnet" onChange={vi.fn()} effort="high" onEffortChange={onEffortChange} />,
+      <ChatModelControl adapters={effortAwareAdapters} harness="claude" model="sonnet" onChange={vi.fn()} effort="high" onEffortChange={onEffortChange} />,
     ));
     await act(async () => trigger().click());
     // The model rows no longer carry an effort badge — effort lives in one place.
@@ -362,4 +360,35 @@ describe("cleanModelLabel", () => {
     // Only an empty pair is noise; a bracket that names something stays.
     expect(cleanModelLabel("Sonnet [thinking]")).toBe("Sonnet [thinking]");
   });
+  it("uses the provider default model for automatic thinking capabilities", async () => {
+    await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model={null} onChange={vi.fn()} onEffortChange={vi.fn()} />));
+    await act(async () => trigger().click());
+    expect(trigger().textContent).toContain("Sonnet");
+    expect([...panel().querySelectorAll('[data-effort]')].map(el => el.getAttribute('data-effort'))).toEqual(["low", "high", "xhigh"]);
+  });
+
+  it("does not borrow another model's capabilities for a stale model", async () => {
+    await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="retired" onChange={vi.fn()} onEffortChange={vi.fn()} />));
+    await act(async () => trigger().click());
+    expect(panel().querySelector('[data-testid="effort-control"]')).toBeNull();
+  });
+
+  it("closes an open picker when a turn disables changes", async () => {
+    const props = { adapters: effortAwareAdapters, harness: "claude" as const, model: "sonnet", onChange: vi.fn(), onEffortChange: vi.fn() };
+    await act(async () => root.render(<ChatModelControl {...props} />));
+    await act(async () => trigger().click());
+    await act(async () => root.render(<ChatModelControl {...props} disabled />));
+    expect(panel()).toBeNull();
+  });
+
+  it.each([false, true])("handles refresh failure without an unhandled rejection (sync=%s)", async sync => {
+    const onRefresh = () => { if (sync) throw new Error("offline"); return Promise.reject(new Error("offline")); };
+    await act(async () => root.render(<ChatModelControl adapters={adapters} harness="codex" model="gpt-balanced" onChange={vi.fn()} onRefresh={onRefresh} />));
+    await act(async () => trigger().click());
+    const refresh = panel().querySelector<HTMLButtonElement>('[aria-label="Refresh model catalogues"]')!;
+    await act(async () => refresh.click());
+    expect(panel().querySelector('[role="alert"]')?.textContent).toContain("Could not refresh");
+    expect(refresh.disabled).toBe(false);
+  });
+
 });

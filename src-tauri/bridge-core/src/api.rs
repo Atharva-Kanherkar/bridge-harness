@@ -1046,13 +1046,27 @@ pub fn update_chat_model(
     session_id: &str,
     harness: &Harness,
     model: Option<&str>,
-    effort: Option<crate::delegation::Effort>,
+    effort: Option<&str>,
 ) -> Result<BridgeState, BridgeError> {
     // Exclusive for the whole plan -> teardown -> commit window: a concurrent
     // start would otherwise slip in after teardown and be orphaned by the
     // commit clearing its process and turn state.
     let _lifecycle = core.claim_session_lifecycle(session_id, "model switch")?;
     let change = core.plan_chat_model_change(session_id, harness, model)?;
+    let (previous_model, previous_effort): (Option<String>, Option<String>) = core.db.lock().unwrap().query_row(
+        "SELECT model,effort FROM sessions WHERE id=?1", params![session_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let target_model = change.as_ref().map(|change| change.selected_model())
+        .or(previous_model.as_deref());
+    let descriptor = core.adapter_registry.descriptors().into_iter()
+        .find(|adapter| adapter.id == store::harness_name(harness))
+        .ok_or_else(|| BridgeError::Invalid("Model adapter is unavailable".into()))?;
+    let selected = descriptor.models.iter().find(|option| Some(option.id.as_str()) == target_model)
+        .ok_or_else(|| BridgeError::Invalid("Selected model is unavailable; refresh models".into()))?;
+    let next_effort = selected_chat_effort(selected, effort, previous_effort.as_deref())?;
+    let effort_changed = next_effort != previous_effort;
+    let model_changed = change.is_some();
     if let Some(change) = change {
         summarise_for_switch(core, session_id);
         core.stop_session_adapter(session_id, adapters::ShutdownReason::Replaced);
@@ -1063,13 +1077,42 @@ pub fn update_chat_model(
         core.settle_adapterless_turn_state(session_id, std::time::Duration::from_secs(3))?;
         core.commit_chat_model_change(change)?;
     }
-    if let Some(effort) = effort {
-        core.db.lock().unwrap().execute(
+    if effort_changed {
+        if !model_changed {
+            // Effort is a launch option. Keep the native session identity and
+            // restart its runtime on the next turn so a warm query cannot ignore it.
+            core.stop_session_adapter(session_id, adapters::ShutdownReason::Replaced);
+        }
+        let db = core.db.lock().unwrap();
+        let transaction = db.unchecked_transaction()?;
+        session_supervisor::SessionSupervisor::clear_adapter_process(&transaction, session_id)?;
+        transaction.execute(
             "UPDATE sessions SET effort=?2 WHERE id=?1 AND active_turn_id IS NULL",
-            rusqlite::params![session_id, effort.as_str()],
+            rusqlite::params![session_id, next_effort],
         )?;
+        transaction.commit()?;
     }
     core.state_snapshot()
+}
+
+/// Explicit user choices are validated; inherited choices incompatible with a
+/// new model return to the provider default instead of leaking across harnesses.
+fn selected_chat_effort(
+    model: &crate::model::ModelOption,
+    requested: Option<&str>,
+    previous: Option<&str>,
+) -> Result<Option<String>, BridgeError> {
+    if let Some(value) = requested {
+        if !model.supported_effort_levels.iter().any(|level| level == value) {
+            return Err(BridgeError::Invalid(format!(
+                "{} does not support thinking level {value}; refresh models and choose a supported level",
+                model.label,
+            )));
+        }
+    }
+    Ok(requested.or(previous)
+        .filter(|value| model.supported_effort_levels.iter().any(|level| level == value))
+        .map(str::to_owned))
 }
 
 /// Best-effort handoff brief: while the outgoing provider is still alive, ask
@@ -4847,4 +4890,21 @@ pub fn authorize_backend_change(
         installation: None,
     };
     crate::backend_binding::authorize_backend_change(&db, session_id, &from, &to)
+}
+
+#[cfg(test)]
+mod chat_effort_tests {
+    use super::*;
+    #[test]
+    fn provider_levels_pass_through_and_incompatible_values_are_cleared() {
+        let mut candidate = crate::model_catalog::CatalogCandidate::stable("test", "Test", CapabilityTier::Standard, 0);
+        candidate.supported_effort_levels = vec!["high".into(), "max".into(), "ultra".into()];
+        let model = crate::model_catalog::normalize(crate::model::ModelCatalogSource::RuntimeApi, [candidate]).remove(0);
+        for value in ["max", "ultra"] {
+            assert_eq!(selected_chat_effort(&model, Some(value), None).unwrap().as_deref(), Some(value));
+        }
+        assert!(selected_chat_effort(&model, Some("low"), Some("high")).is_err());
+        assert_eq!(selected_chat_effort(&model, None, Some("low")).unwrap(), None);
+        assert_eq!(selected_chat_effort(&model, None, Some("high")).unwrap().as_deref(), Some("high"));
+    }
 }

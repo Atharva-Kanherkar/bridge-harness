@@ -18,7 +18,7 @@ use std::{
     io::BufRead,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::{Arc, Mutex, RwLock},
+    sync::{atomic::{AtomicBool, Ordering}, Arc, Mutex, RwLock},
     thread,
     time::Duration,
 };
@@ -561,6 +561,13 @@ pub fn descriptor_supports_agent_role(descriptor: &AdapterDescriptor, role: &str
     }
 }
 
+fn supported_model_effort<'a>(descriptor: &AdapterDescriptor, model: Option<&str>, effort: Option<&'a str>) -> Option<&'a str> {
+    let selected = descriptor.models.iter().find(|option|
+        Some(option.id.as_str()) == model.or(descriptor.default_model.as_deref()));
+    effort.filter(|value| selected.is_some_and(|model|
+        model.supported_effort_levels.iter().any(|level| level == value)))
+}
+
 fn validate_start_compatibility(
     descriptor: &AdapterDescriptor,
     request: &StartRequest<'_>,
@@ -712,7 +719,7 @@ impl AdapterRegistry {
     pub fn start(
         &self,
         id: &str,
-        request: StartRequest<'_>,
+        mut request: StartRequest<'_>,
     ) -> Result<StartedAdapter, BridgeError> {
         let adapter = self.adapters.get(id).ok_or_else(|| {
             BridgeError::Invalid(format!("No structured adapter is registered for {id}"))
@@ -726,13 +733,14 @@ impl AdapterRegistry {
             ));
         }
         validate_start_compatibility(&descriptor, &request)?;
+        request.effort = supported_model_effort(&descriptor, request.model, request.effort);
         adapter.start(request)
     }
 
     pub fn resume(
         &self,
         id: &str,
-        request: ResumeRequest<'_>,
+        mut request: ResumeRequest<'_>,
     ) -> Result<StartedAdapter, BridgeError> {
         let adapter = self.adapters.get(id).ok_or_else(|| {
             BridgeError::Invalid(format!("No structured adapter is registered for {id}"))
@@ -742,6 +750,8 @@ impl AdapterRegistry {
                 "Adapter {id} does not support native resume"
             )));
         }
+        let descriptor = adapter.descriptor();
+        request.effort = supported_model_effort(&descriptor, request.model, request.effort);
         adapter.resume(request)
     }
 
@@ -1232,7 +1242,7 @@ fn inferred_tier(id: &str, label: &str) -> CapabilityTier {
         .any(|part| name.contains(part))
     {
         CapabilityTier::Fast
-    } else if ["opus", "sol", "strong", "pro", "max"]
+    } else if ["opus", "fable", "sol", "strong", "pro", "max"]
         .iter()
         .any(|part| name.contains(part))
     {
@@ -1286,7 +1296,7 @@ fn runtime_candidates_with_fallbacks(
     models: Vec<DiscoveredModel>,
     fallbacks: &[CatalogCandidate],
 ) -> Vec<CatalogCandidate> {
-    let mut candidates: Vec<CatalogCandidate> = models
+    let candidates: Vec<CatalogCandidate> = models
         .into_iter()
         .enumerate()
         .map(|(index, model)| {
@@ -1332,13 +1342,7 @@ fn runtime_candidates_with_fallbacks(
             }
         })
         .collect();
-    let additions =
-        fallbacks
-            .iter()
-            .filter(|fallback| !candidates.iter().any(|model| model.id == fallback.id))
-            .cloned()
-            .collect::<Vec<_>>();
-    candidates.extend(additions);
+
     candidates
 }
 
@@ -1346,6 +1350,7 @@ struct CodexAdapter {
     streams: Mutex<HashMap<String, agent::CodexStreamState>>,
     models: Arc<RwLock<model_catalog::ResolvedCatalog>>,
     notify: Option<Arc<dyn Fn() + Send + Sync>>,
+    refreshing: Arc<AtomicBool>,
 }
 
 impl CodexAdapter {
@@ -1362,6 +1367,7 @@ impl CodexAdapter {
             streams: Mutex::new(HashMap::new()),
             models,
             notify,
+            refreshing: Arc::new(AtomicBool::new(false)),
         };
         adapter.refresh_availability();
         adapter
@@ -1423,6 +1429,8 @@ impl HarnessAdapter for CodexAdapter {
         }
     }
     fn refresh_availability(&self) {
+        if self.refreshing.swap(true, Ordering::AcqRel) { return; }
+        let refreshing = self.refreshing.clone();
         let models = self.models.clone();
         let notify = self.notify.clone();
         thread::spawn(move || {
@@ -1430,13 +1438,26 @@ impl HarnessAdapter for CodexAdapter {
             let discovered = codex_adapter::discover_models()
                 .map(|models| runtime_candidates_with_fallbacks(models, &fallback))
                 .map_err(|error| error.to_string());
-            *models.write().unwrap() = model_catalog::resolve(
+            let mut current = models.write().unwrap();
+            if let Err(error) = &discovered {
+                if current.diagnostics.source == crate::model::ModelCatalogSource::RuntimeApi {
+                    current.diagnostics.stale = true;
+                    current.diagnostics.last_error = Some(error.clone());
+                    drop(current);
+                    refreshing.store(false, Ordering::Release);
+                    if let Some(notify) = notify { notify(); }
+                    return;
+                }
+            }
+            *current = model_catalog::resolve(
                 "codex",
                 discovered,
                 &fallback,
                 None,
                 chrono::Utc::now(),
             );
+            drop(current);
+            refreshing.store(false, Ordering::Release);
             if let Some(notify) = notify {
                 notify();
             }
@@ -1493,6 +1514,7 @@ struct ClaudeAdapter {
     streams: Mutex<HashMap<String, agent::ClaudeStreamState>>,
     models: Arc<RwLock<model_catalog::ResolvedCatalog>>,
     notify: Option<Arc<dyn Fn() + Send + Sync>>,
+    refreshing: Arc<AtomicBool>,
 }
 impl ClaudeAdapter {
     fn new(notify: Option<Arc<dyn Fn() + Send + Sync>>) -> Self {
@@ -1508,6 +1530,7 @@ impl ClaudeAdapter {
             streams: Mutex::new(HashMap::new()),
             models,
             notify,
+            refreshing: Arc::new(AtomicBool::new(false)),
         };
         adapter.refresh_availability();
         adapter
@@ -1517,14 +1540,7 @@ fn claude_fallback_candidates() -> Vec<CatalogCandidate> {
     vec![
         CatalogCandidate::stable("haiku", "Claude Haiku", CapabilityTier::Fast, 1),
         CatalogCandidate::stable("sonnet", "Claude Sonnet", CapabilityTier::Standard, 1),
-        CatalogCandidate::stable("opus", "Claude Opus", CapabilityTier::Strong, 0),
-        CatalogCandidate::stable("fable", "Claude Fable 5", CapabilityTier::Strong, 2),
-        CatalogCandidate::stable(
-            "fable-5-1",
-            "Claude Fable 5.1",
-            CapabilityTier::Strong,
-            1,
-        ),
+        CatalogCandidate::stable("opus", "Claude Opus", CapabilityTier::Strong, 1),
     ]
 }
 impl HarnessAdapter for ClaudeAdapter {
@@ -1572,6 +1588,8 @@ impl HarnessAdapter for ClaudeAdapter {
         }
     }
     fn refresh_availability(&self) {
+        if self.refreshing.swap(true, Ordering::AcqRel) { return; }
+        let refreshing = self.refreshing.clone();
         let models = self.models.clone();
         let notify = self.notify.clone();
         thread::spawn(move || {
@@ -1579,13 +1597,26 @@ impl HarnessAdapter for ClaudeAdapter {
             let discovered = claude_adapter::discover_models()
                 .map(|models| runtime_candidates_with_fallbacks(models, &fallback))
                 .map_err(|error| error.to_string());
-            *models.write().unwrap() = model_catalog::resolve(
+            let mut current = models.write().unwrap();
+            if let Err(error) = &discovered {
+                if current.diagnostics.source == crate::model::ModelCatalogSource::RuntimeApi {
+                    current.diagnostics.stale = true;
+                    current.diagnostics.last_error = Some(error.clone());
+                    drop(current);
+                    refreshing.store(false, Ordering::Release);
+                    if let Some(notify) = notify { notify(); }
+                    return;
+                }
+            }
+            *current = model_catalog::resolve(
                 "claude",
                 discovered,
                 &fallback,
                 None,
                 chrono::Utc::now(),
             );
+            drop(current);
+            refreshing.store(false, Ordering::Release);
             if let Some(notify) = notify {
                 notify();
             }
@@ -1643,7 +1674,19 @@ mod tests {
     }
 
     #[test]
-    fn runtime_catalog_keeps_compatibility_models_and_provider_names() {
+    fn launch_effort_cannot_leak_from_a_different_model() {
+        let mut descriptor = Fake.descriptor();
+        let mut candidate = CatalogCandidate::stable("test-model", "Test", CapabilityTier::Standard, 1);
+        candidate.supported_effort_levels = vec!["ultra".into()];
+        descriptor.models = model_catalog::normalize(crate::model::ModelCatalogSource::RuntimeApi, [candidate]);
+        let id = descriptor.models[0].id.as_str();
+        assert_eq!(supported_model_effort(&descriptor, Some(id), Some("ultra")), Some("ultra"));
+        assert_eq!(supported_model_effort(&descriptor, Some(id), Some("high")), None);
+        assert_eq!(supported_model_effort(&descriptor, Some("retired"), Some("ultra")), None);
+    }
+
+    #[test]
+    fn runtime_catalog_excludes_fallback_only_models() {
         let fallback = claude_fallback_candidates();
         let candidates = runtime_candidates_with_fallbacks(
             vec![discovered("claude-fable-5-1", "Claude Fable 5.1 Latest")],
@@ -1653,12 +1696,20 @@ mod tests {
         assert!(candidates.iter().any(|model| {
             model.id == "claude-fable-5-1" && model.label == "Claude Fable 5.1 Latest"
         }));
-        assert!(candidates
-            .iter()
-            .any(|model| model.id == "fable" && model.label == "Claude Fable 5"));
-        assert!(candidates
-            .iter()
-            .any(|model| model.id == "fable-5-1" && model.label == "Claude Fable 5.1"));
+        assert_eq!(candidates.len(), 1);
+    }
+
+    #[test]
+    fn canonical_duplicates_collapse_without_hiding_other_releases() {
+        let candidates = runtime_candidates_with_fallbacks(vec![
+            discovered("claude-opus-5", "Opus 5"),
+            discovered("claude-opus-5", "Opus 5"),
+            discovered("claude-opus-4-8", "Opus 4.8"),
+        ], &claude_fallback_candidates());
+        let models = model_catalog::normalize(crate::model::ModelCatalogSource::RuntimeApi, candidates);
+        assert_eq!(models.len(), 2);
+        assert!(models.iter().any(|model| model.id == "claude-opus-5"));
+        assert!(models.iter().any(|model| model.id == "claude-opus-4-8"));
     }
 
     #[test]
@@ -1970,7 +2021,7 @@ mod tests {
         let default = registry
             .resolve_model("claude", CapabilityTier::Strong, None)
             .unwrap();
-        assert_eq!(default.actual_model, "fable");
+        assert_eq!(default.actual_model, "opus");
         assert!(default.warning.is_none());
 
         let known = registry
@@ -1983,7 +2034,7 @@ mod tests {
             let fallback = registry
                 .resolve_model("claude", CapabilityTier::Strong, Some(hint))
                 .unwrap();
-            assert_eq!(fallback.actual_model, "fable");
+            assert_eq!(fallback.actual_model, "opus");
             assert!(fallback
                 .warning
                 .as_deref()

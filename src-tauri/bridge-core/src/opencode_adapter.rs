@@ -74,6 +74,9 @@ pub struct OpenCodeModel {
     pub model_id: String,
     pub label: String,
     pub reasoning: bool,
+    /// Discovery metadata projected into ModelOption, not the provider settings UI.
+    #[serde(skip)]
+    pub variants: Vec<String>,
     pub tool_call: bool,
     pub attachment: bool,
     pub context_window: Option<u64>,
@@ -1224,6 +1227,11 @@ fn normalize_model(provider_id: &str, model: &Value) -> Option<OpenCodeModel> {
             .pointer("/capabilities/reasoning")
             .and_then(Value::as_bool)
             .unwrap_or(false),
+        variants: model.get("variants").and_then(Value::as_object)
+            .map(|variants| variants.iter()
+                .filter(|(name, options)| !name.trim().is_empty() && options.get("disabled").and_then(Value::as_bool) != Some(true))
+                .map(|(name, _)| name.clone()).collect())
+            .unwrap_or_default(),
         tool_call: model
             .pointer("/capabilities/toolcall")
             .and_then(Value::as_bool)
@@ -1289,7 +1297,7 @@ pub fn model_options(catalog: &OpenCodeCatalog, visible_models: &[String]) -> Ve
             compatible: model.tool_call,
             lifecycle: crate::model::ModelLifecycle::Unknown,
             source: crate::model::ModelCatalogSource::RuntimeApi,
-            supported_effort_levels: Vec::new(),
+            supported_effort_levels: model.variants.clone(),
             default_for_tier: false,
         })
         .collect::<Vec<_>>();
@@ -1768,5 +1776,16 @@ mod tests {
     #[test]
     fn auth_probe_reports_unknown_when_data_dir_is_missing() {
         assert_eq!(auth_state_from_data_dir(None), AuthState::Unknown);
+    }
+}
+
+#[cfg(test)]
+mod model_variant_tests {
+    use super::*;
+    #[test]
+    fn only_advertised_enabled_variants_are_exposed() {
+        let model = normalize_model("test", &json!({"id":"model","variants":{"low":{},"ultra":{},"disabled":{"disabled":true}}})).unwrap();
+        assert_eq!(model.variants, ["low", "ultra"]);
+        assert!(normalize_model("test", &json!({"id":"plain"})).unwrap().variants.is_empty());
     }
 }

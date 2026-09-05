@@ -81,6 +81,15 @@ describe("AsideChat", () => {
     expect(onChangeModel).toHaveBeenCalledWith("claude", "opus");
   });
 
+  it("sets supported thinking levels for the aside independently", async () => {
+    const onChangeEffort = vi.fn();
+    const thinking = [{ ...adapters[0], models: adapters[0].models.map(model => ({ ...model, supportedEffortLevels: ["high", "max"] })) }];
+    await mount({ working: false, adapters: thinking, onChangeEffort });
+    await act(async () => dialog().querySelector<HTMLButtonElement>('[aria-label="Aside model: Claude Sonnet"]')!.click());
+    await act(async () => dialog().querySelector<HTMLButtonElement>('[data-effort="max"]')!.click());
+    expect(onChangeEffort).toHaveBeenCalledWith("max");
+  });
+
   it("wears a failed model switch inside the panel, not the banner behind it", async () => {
     const onChangeModel = vi.fn(async () => { throw new Error("Wait for the current response before switching models"); });
     await mount({ working: false, onChangeModel });

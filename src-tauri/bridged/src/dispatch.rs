@@ -222,13 +222,7 @@ pub fn dispatch(
         }
         MethodName::UpdateChatModel => {
             let p: wire::UpdateChatModelParams = decode(method, params)?;
-            let effort = p.effort.map(|effort| match effort {
-                wire::Effort::Low => bridge_core::delegation::Effort::Low,
-                wire::Effort::Medium => bridge_core::delegation::Effort::Medium,
-                wire::Effort::High => bridge_core::delegation::Effort::High,
-                wire::Effort::Xhigh => bridge_core::delegation::Effort::Xhigh,
-            });
-            reply(api::update_chat_model(core, &p.session_id, &p.harness.into(), p.model.as_deref(), effort))
+            reply(api::update_chat_model(core, &p.session_id, &p.harness.into(), p.model.as_deref(), p.effort.as_deref()))
         }
         MethodName::CarrySessionHandoff => {
             let p: wire::CarrySessionHandoffParams = decode(method, params)?;
