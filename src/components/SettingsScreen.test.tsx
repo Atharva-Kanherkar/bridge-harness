@@ -155,6 +155,30 @@ describe("SettingsScreen", () => {
       expect(container.querySelector('[aria-label="Breadcrumb"]')).toBeNull();
     });
 
+    it("opens a preset detail page from the list, with no third sidebar", async () => {
+      await render({ initialSection: "agents" });
+      expect(container.textContent).toContain("Bridge orchestrator");
+      // The list is rows in the one column; the old build drew its own sidebar
+      // here and started content 440px in.
+      expect(container.querySelectorAll("nav")).toHaveLength(1);
+
+      await open("Edit Bridge orchestrator");
+      expect(container.textContent).toContain("Identity");
+      expect(container.textContent).toContain("Runtime");
+      expect(container.textContent).toContain("System prompt");
+      expect(container.querySelector('[aria-label="Breadcrumb"]')).toBeTruthy();
+    });
+
+    // Row content is covered in settings/ModelsPage.test.tsx, which can supply
+    // profiles; the mock setup deliberately ships none.
+    it("shows Models with a version pill and no Save button", async () => {
+      await render({ initialSection: "models" });
+      expect(container.textContent).toContain("Which model runs each Bridge role");
+      expect(container.textContent).toContain("Catalog");
+      expect([...container.querySelectorAll("button")].map(node => node.textContent))
+        .not.toContain("Save profiles");
+    });
+
     it("names what Reset all deletes before it deletes it", async () => {
       await render();
       await open("Reset all settings");

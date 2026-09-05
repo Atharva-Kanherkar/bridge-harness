@@ -1,35 +1,26 @@
 import { useEffect, useMemo, useState } from "react";
-import { CircleNotch, Plus } from "@phosphor-icons/react";
+import { CircleNotch } from "@phosphor-icons/react";
 import { bridgeApi } from "../api";
-import { modelProfilesChanged, profileDraftsFromSetup } from "../modelProfiles";
+import { profileDraftsFromSetup } from "../modelProfiles";
 import type { AdapterDescriptor, AgentDefinition, AgentRole, BridgeEvent, ConfigState, HarnessConfig, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PermissionPolicy, ReasoningEffort } from "../types";
-import { ModelProfileEditor } from "./ModelProfileEditor";
 import { useManagedAgents } from "./ManagedAgentsPanel";
 import { PromptStudio } from "./PromptStudio";
 import { WorkSettingsSection } from "./WorkSettingsSection";
 import type { SuggestionSettingsSnapshot } from "../protocol/generated/protocol";
 import { type OpenCodeAdvancedSettings } from "./OpenCodeHarnessSettings";
-import { cn } from "@/lib/utils";
 import { ImportHarnessSection } from "./ImportHarnessSection";
 import { SettingsRail } from "./settings/SettingsRail";
 import { AppearancePage } from "./settings/AppearancePage";
 import { PermissionsSection } from "./settings/PermissionsPage";
 import { ComposerPage } from "./settings/ComposerPage";
 import { HarnessesPage, type HarnessDraft } from "./settings/HarnessesPage";
+import { PresetsPage, newAgent } from "./settings/PresetsPage";
+import { ModelsPage } from "./settings/ModelsPage";
 import { STATIC_SETTINGS_ROWS, type SearchableRow } from "./settings/settingsSearch";
 import { type Section } from "./settings/sections";
 
 export type { Section };
 export { PermissionsSection };
-
-const roles: { id: AgentRole; label: string }[] = [
-  { id: "orchestrator", label: "Orchestrator" }, { id: "research", label: "Research" },
-  { id: "implementation", label: "Implementation" }, { id: "verification", label: "Verification" },
-  { id: "planning", label: "Planning" }, { id: "documentation", label: "Documentation" },
-];
-const efforts: ReasoningEffort[] = ["low", "medium", "high", "xhigh"];
-const field = "h-10 w-full rounded-xl border border-border bg-background/60 px-3 text-sm text-foreground outline-none transition-colors focus:border-foreground/25 disabled:opacity-45";
-const textarea = "min-h-36 w-full resize-y rounded-xl border border-border bg-background/60 px-3 py-2.5 font-mono text-xs leading-relaxed text-foreground outline-none transition-colors focus:border-foreground/25 disabled:opacity-45";
 
 export function adapterSupportsAgentRole(adapter: AdapterDescriptor, role: string): boolean {
   const supportsSandbox = (mode: "read_only" | "workspace_write") => !adapter.sandboxModes?.length || adapter.sandboxModes.includes(mode);
@@ -38,17 +29,12 @@ export function adapterSupportsAgentRole(adapter: AdapterDescriptor, role: strin
   return supportsSandbox("read_only");
 }
 
-function newAgent(): AgentDefinition {
-  return { id: "", name: "New agent", description: "", role: "orchestrator", harness: "bridge", model: null, effort: "medium", systemPrompt: "", enabled: true, isDefault: false, isBuiltIn: false, createdAt: "", updatedAt: "" };
-}
-
 export function SettingsScreen({ adapters, autoApprovals = [], initialSection = "agents", onModelSetupChange, onSuggestionSettingsChange, onError }: { adapters: AdapterDescriptor[]; autoApprovals?: BridgeEvent[]; initialSection?: Section; onModelSetupChange: (setup: ModelSetupState) => void; onSuggestionSettingsChange: (snapshot: SuggestionSettingsSnapshot) => void; onError: (message: string) => void }) {
   const [section, setSection] = useState<Section>(initialSection);
   const [query, setQuery] = useState("");
   const [config, setConfig] = useState<ConfigState>();
   const [modelSetup, setModelSetup] = useState<ModelSetupState>();
   const [profiles, setProfiles] = useState<ModelProfileDraft[]>([]);
-  const [selectedAgentId, setSelectedAgentId] = useState("bridge-orchestrator");
   const [agentDraft, setAgentDraft] = useState<AgentDefinition>();
   // Unsaved *text* only. Switches and selects never enter this map: they write
   // the stored record directly, so a dirty system prompt cannot ride along with
@@ -96,12 +82,6 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
     return () => { active = false; };
   }, [openCodeCatalog, openCodeDiscoveryError]);
 
-  useEffect(() => {
-    if (!config || selectedAgentId === "") return;
-    const selected = config.agents.find(item => item.id === selectedAgentId) ?? config.agents[0];
-    if (selected) { setSelectedAgentId(selected.id ?? ""); setAgentDraft(structuredClone(selected)); }
-  }, [config, selectedAgentId]);
-
   const modelOptions = useMemo(() => {
     const staticOptions = adapters.filter(item => item.available && item.id !== "opencode").flatMap(adapter => adapter.models.map(model => ({ adapter: adapter.id, id: model.id, label: `${adapter.label} · ${model.label}` })));
     const stored = (config?.harnesses.find(item => item.id === "opencode")?.advanced ?? {}) as OpenCodeAdvancedSettings;
@@ -129,32 +109,45 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
     })),
   ], [config]);
 
-  const saveAgent = async () => {
-    if (!agentDraft) return;
+  /** Throws on failure so the caller can decide between a Saved flash and an
+   *  error: a page that swallowed this would flash "Saved" on a refusal. */
+  const saveAgent = async (next: AgentDefinition) => {
     setBusy(true);
     try {
-      const next = await bridgeApi.saveAgentConfig(agentDraft);
-      acceptConfig(next);
-      const savedAgent = next.agents.find(item => item.id === agentDraft.id) ?? next.agents.find(item => item.name === agentDraft.name);
-      if (savedAgent) setSelectedAgentId(savedAgent.id ?? "");
+      const stored = await bridgeApi.saveAgentConfig(next);
+      acceptConfig(stored);
+      const savedAgent = stored.agents.find(item => item.id === next.id)
+        ?? stored.agents.find(item => item.name === next.name);
+      if (savedAgent) setAgentDraft(structuredClone(savedAgent));
       flashSaved();
-    } catch (error) { onError(error instanceof Error ? error.message : String(error)); }
-    finally { setBusy(false); }
+    } finally { setBusy(false); }
   };
 
-  const removeAgent = async () => {
-    if (!agentDraft) return;
-    const verb = agentDraft.isBuiltIn ? "Reset" : "Delete";
-    if (!window.confirm(`${verb} ${agentDraft.name}?`)) return;
+  const removeAgent = async (agent: AgentDefinition) => {
+    const verb = agent.isBuiltIn ? "Reset" : "Delete";
+    if (!window.confirm(`${verb} ${agent.name}?`)) return;
     setBusy(true);
-    try { const next = await bridgeApi.deleteAgentConfig(agentDraft.id ?? ""); acceptConfig(next); setSelectedAgentId(next.defaultAgentId); flashSaved(); }
+    try {
+      const stored = await bridgeApi.deleteAgentConfig(agent.id ?? "");
+      acceptConfig(stored);
+      // A deleted preset has no detail page left to sit on; a reset one is
+      // reloaded from what the host returned.
+      const restored = stored.agents.find(item => item.id === agent.id);
+      setAgentDraft(restored ? structuredClone(restored) : undefined);
+      flashSaved();
+    }
     catch (error) { onError(String(error)); } finally { setBusy(false); }
   };
 
-  const makeDefault = async () => {
-    if (!agentDraft) return;
+  const makeDefault = async (agent: AgentDefinition) => {
     setBusy(true);
-    try { acceptConfig(await bridgeApi.setDefaultAgent(agentDraft.id ?? "")); flashSaved(); }
+    try {
+      const stored = await bridgeApi.setDefaultAgent(agent.id ?? "");
+      acceptConfig(stored);
+      const updated = stored.agents.find(item => item.id === agent.id);
+      if (updated) setAgentDraft(structuredClone(updated));
+      flashSaved();
+    }
     catch (error) { onError(String(error)); } finally { setBusy(false); }
   };
 
@@ -184,15 +177,21 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
     catch (error) { onError(String(error)); } finally { setBusy(false); }
   };
 
-  const saveModels = async () => {
+  const saveModels = async (next: ModelProfileDraft[]) => {
     setBusy(true);
-    try { const setup = await bridgeApi.saveModelProfiles(profiles); setModelSetup(setup); setProfiles(profileDraftsFromSetup(setup)); onModelSetupChange(setup); flashSaved(); }
-    catch (error) { onError(String(error)); } finally { setBusy(false); }
+    try {
+      const setup = await bridgeApi.saveModelProfiles(next);
+      setModelSetup(setup); setProfiles(profileDraftsFromSetup(setup)); onModelSetupChange(setup); flashSaved();
+    } finally { setBusy(false); }
   };
 
   const resetEverything = async () => {
     setBusy(true);
-    try { const [next, setup] = await Promise.all([bridgeApi.resetAllConfig(), bridgeApi.resetModelProfiles()]); acceptConfig(next); setSelectedAgentId(next.defaultAgentId); setModelSetup(setup); setProfiles(profileDraftsFromSetup(setup)); onModelSetupChange(setup); flashSaved(); }
+    try {
+      const [next, setup] = await Promise.all([bridgeApi.resetAllConfig(), bridgeApi.resetModelProfiles()]);
+      acceptConfig(next); setAgentDraft(undefined); setHarnessDrafts({}); setHarnessDetailId(null);
+      setModelSetup(setup); setProfiles(profileDraftsFromSetup(setup)); onModelSetupChange(setup); flashSaved();
+    }
     catch (error) { onError(String(error)); } finally { setBusy(false); }
   };
 
@@ -226,18 +225,22 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       {section === "import" && <ImportHarnessSection onError={onError} />}
       {section === "work" && <WorkSettingsSection onError={onError} />}
 
-      {section === "agents" && config && <div className="mx-auto flex max-w-5xl gap-5 p-5">
-        <section className="w-64 shrink-0">
-          <div className="mb-3 flex items-center justify-between"><div><h2 className="font-display text-base font-semibold">Presets</h2><p className="text-[11px] text-muted-foreground">{config.agents.length} presets</p></div><button type="button" onClick={() => { const draft = newAgent(); setSelectedAgentId(""); setAgentDraft(draft); }} className="grid h-8 w-8 place-items-center rounded-xl bg-foreground text-background hover:opacity-90" aria-label="Create agent"><Plus size={14} weight="regular" /></button></div>
-          <div className="space-y-1">{config.agents.map(agent => <button type="button" key={agent.id} onClick={() => { setSelectedAgentId(agent.id ?? ""); setAgentDraft(structuredClone(agent)); }} className={cn("w-full rounded-2xl border p-3 text-left transition-colors", agentDraft?.id === agent.id ? "border-foreground/15 bg-foreground/[0.07]" : "border-transparent hover:bg-foreground/[0.04]")}><div className="flex items-center gap-2"><span className={cn("h-2 w-2 rounded-full", agent.enabled ? "bg-success" : "bg-muted-foreground/30")}/><span className="min-w-0 flex-1 truncate text-[13px] font-medium">{agent.name}</span>{agent.isDefault && <span className="rounded-full bg-accent px-1.5 py-0.5 text-[8px] uppercase tracking-wider text-muted-foreground">default</span>}</div><p className="mt-1 pl-4 text-[10px] capitalize text-muted-foreground">{agent.role} · {agent.harness}</p></button>)}</div>
-        </section>
-        {agentDraft && <section className="min-w-0 flex-1 rounded-3xl border border-border/80 bg-card/45 p-5">
-          <div className="mb-5 flex items-start justify-between gap-3"><div><h2 className="font-display text-lg font-semibold">{agentDraft.id ? agentDraft.name : "Create agent"}</h2><p className="mt-1 text-xs text-muted-foreground">{agentDraft.isBuiltIn ? "Built-in preset · reset restores Bridge defaults" : "Custom preset · safe to delete at any time"}</p></div><label className="flex items-center gap-2 text-xs text-muted-foreground"><input type="checkbox" checked={agentDraft.enabled} onChange={event => setAgentDraft(value => value && ({ ...value, enabled: event.target.checked }))}/>Enabled</label></div>
-          <div className="grid gap-4 sm:grid-cols-2"><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Name<input className={field} value={agentDraft.name} onChange={event => setAgentDraft(value => value && ({ ...value, name: event.target.value }))}/></label><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Role<select className={field} value={agentDraft.role} onChange={event => { const role = event.target.value as AgentRole; setAgentDraft(value => { if (!value) return value; const current = adapters.find(adapter => adapter.id === value.harness); return { ...value, role, harness: value.harness === "bridge" || (current && adapterSupportsAgentRole(current, role)) ? value.harness : "bridge", model: value.harness === "bridge" || (current && adapterSupportsAgentRole(current, role)) ? value.model : null }; }); }}>{roles.map(role => <option key={role.id} value={role.id}>{role.label}</option>)}</select></label><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Runtime<select className={field} value={agentDraft.harness} onChange={event => setAgentDraft(value => value && ({ ...value, harness: event.target.value as AgentDefinition["harness"], model: null }))}><option value="bridge">Bridge chooses</option>{adapters.filter(adapter => adapterSupportsAgentRole(adapter, agentDraft.role)).map(adapter => <option key={adapter.id} value={adapter.id}>{adapter.label}</option>)}</select></label><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Model<select className={field} value={agentDraft.model ?? ""} disabled={agentDraft.harness === "bridge"} onChange={event => setAgentDraft(value => value && ({ ...value, model: event.target.value || null }))}><option value="">Provider default</option>{modelOptions.filter(option => option.adapter === agentDraft.harness).map(option => <option key={`${option.adapter}:${option.id}`} value={option.id}>{option.label}</option>)}</select></label><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Effort<select className={field} value={agentDraft.effort} onChange={event => setAgentDraft(value => value && ({ ...value, effort: event.target.value as ReasoningEffort }))}>{efforts.map(value => <option key={value} value={value}>{value}</option>)}</select></label><label className="space-y-1.5 text-[11px] font-medium text-muted-foreground">Description<input className={field} value={agentDraft.description} onChange={event => setAgentDraft(value => value && ({ ...value, description: event.target.value }))}/></label></div>
-          <label className="mt-4 block space-y-1.5 text-[11px] font-medium text-muted-foreground">System prompt <span className="font-normal text-muted-foreground/60">appended after Bridge safety and routing policy</span><textarea className={textarea} value={agentDraft.systemPrompt} placeholder="Add role-specific behavior…" onChange={event => setAgentDraft(value => value && ({ ...value, systemPrompt: event.target.value }))}/></label>
-          <div className="mt-5 flex flex-wrap items-center gap-2"><button type="button" disabled={busy || !agentDraft.name.trim()} onClick={() => void saveAgent()} className="inline-flex h-9 items-center gap-2 rounded-xl bg-foreground px-3.5 text-xs font-medium text-background disabled:opacity-40">{agentDraft.id ? "Save agent" : "Create agent"}</button>{agentDraft.id && agentDraft.role === "orchestrator" && !agentDraft.isDefault && <button type="button" disabled={busy || !agentDraft.enabled} onClick={() => void makeDefault()} className="h-9 rounded-xl border border-border px-3 text-xs text-foreground hover:bg-foreground/[0.05] disabled:opacity-40">Make default orchestrator</button>}{agentDraft.id && <button type="button" disabled={busy} onClick={() => void removeAgent()} className="ml-auto inline-flex h-9 items-center gap-2 rounded-xl px-3 text-xs text-destructive hover:bg-destructive/10">{agentDraft.isBuiltIn ? "Reset agent" : "Delete agent"}</button>}</div>
-        </section>}
-      </div>}
+      {section === "agents" && config && <PresetsPage
+        agents={config.agents}
+        adapters={adapters}
+        modelOptions={modelOptions}
+        busy={busy}
+        draft={agentDraft}
+        supportsRole={adapterSupportsAgentRole}
+        onOpen={agent => setAgentDraft(structuredClone(agent))}
+        onClose={() => setAgentDraft(undefined)}
+        onNew={() => setAgentDraft(newAgent())}
+        onDraft={setAgentDraft}
+        onSave={saveAgent}
+        onRemove={agent => void removeAgent(agent)}
+        onMakeDefault={agent => void makeDefault(agent)}
+        onError={onError}
+      />}
 
       {section === "harnesses" && config && <HarnessesPage
         harnesses={config.harnesses}
@@ -258,7 +261,15 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
         onError={message => { setOpenCodeDiscoveryError(message); onError(message); }}
       />}
 
-      {section === "models" && modelSetup && <div className="mx-auto max-w-5xl p-5"><div className="mb-5 flex items-start justify-between gap-4"><div><h2 className="font-display text-lg font-semibold">Models</h2><p className="mt-1 text-xs text-muted-foreground">Version {modelSetup.activeVersion ?? "—"}.</p></div><button type="button" disabled={busy || !modelProfilesChanged(profiles, modelSetup)} onClick={() => void saveModels()} className="inline-flex h-9 items-center gap-2 rounded-xl bg-foreground px-3.5 text-xs font-medium text-background disabled:opacity-40">Save profiles</button></div><ModelProfileEditor profiles={profiles} adapters={adapters} disabled={busy} onChange={setProfiles}/></div>}
+      {section === "models" && modelSetup && <ModelsPage
+        profiles={profiles}
+        adapters={adapters}
+        version={modelSetup.activeVersion ?? null}
+        busy={busy}
+        onSave={saveModels}
+        onRefreshCatalogs={async () => { await bridgeApi.refreshModelCatalogs(); }}
+        onError={onError}
+      />}
     </div>
   </div>;
 }

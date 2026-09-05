@@ -411,17 +411,21 @@ export function StatusPill({ tone = "neutral", children }: { tone?: PillTone; ch
  * five different save patterns (per-card Save, header Save, bottom Save,
  * autosave, and a global Reset that also deleted agents) with one.
  */
-export function SaveBar({ dirty, saving, onSave, onDiscard, label = "Unsaved changes" }: {
+export function SaveBar({ dirty, saving, canSave = true, onSave, onDiscard, label = "Unsaved changes", saveLabel = "Save" }: {
   dirty: boolean;
+  /** A request is in flight. Both actions are frozen. */
   saving: boolean;
+  /** The draft is incomplete (an empty name), so Save is offered but refused. */
+  canSave?: boolean;
   onSave: () => void;
   onDiscard: () => void;
   label?: string;
+  saveLabel?: string;
 }) {
   if (!dirty) return null;
   return <div className="sticky bottom-0 z-20 -mx-1 mt-[26px] flex items-center gap-3 rounded-xl border border-border-card bg-card px-3.5 py-2.5">
     <span className="min-w-0 flex-1 text-[13px] text-foreground">{label}</span>
     <TextButton onClick={onDiscard} disabled={saving}>Discard</TextButton>
-    <PrimaryButton onClick={onSave} disabled={saving}>{saving ? "Saving…" : "Save"}</PrimaryButton>
+    <PrimaryButton onClick={onSave} disabled={saving || !canSave}>{saving ? "Saving…" : saveLabel}</PrimaryButton>
   </div>;
 }
