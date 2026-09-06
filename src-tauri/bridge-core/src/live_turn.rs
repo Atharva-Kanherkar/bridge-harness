@@ -325,6 +325,60 @@ mod prompt_section_tests {
     }
 
     #[test]
+    fn root_chat_reuse_marker_compares_against_the_sessions_own_last_compilation() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/reuse','now')",
+            [],
+        )
+        .unwrap();
+        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Kyoto','Task','bridge/task','/tmp/reuse-ws','idle','now')", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('chat','w','codex','Chat','idle','reported')", []).unwrap();
+
+        // A session's first launch has nothing to carry over from.
+        assert_eq!(root_chat_reuse_marker(&db, "chat", "codex"), "not_applicable");
+
+        let mut compilation = PromptCompilationRecord {
+            id: 0,
+            session_id: "chat".into(),
+            turn_id: None,
+            prefix_id: "bridge-prompt-v1-a".into(),
+            prefix_hash: "a".into(),
+            schema_version: 1,
+            prefix_bytes: 10,
+            prefix_token_estimate: 3,
+            harness: "codex".into(),
+            model: Some("gpt-5".into()),
+            role: "orchestrator".into(),
+            task_family: "orchestration".into(),
+            restoration_mode: "fresh".into(),
+            cross_harness_reuse: "not_applicable".into(),
+            created_at: "now".into(),
+            sections_json: None,
+            stable_bytes: None,
+            variable_bytes: None,
+            stable_token_estimate: None,
+            variable_token_estimate: None,
+            token_estimate_source: None,
+        };
+        store::record_prompt_compilation(&db, &compilation).unwrap();
+
+        // Relaunching on the same harness — including a same-harness model
+        // switch — can reuse the prefix.
+        assert_eq!(root_chat_reuse_marker(&db, "chat", "codex"), "same_harness");
+        // Switching harness cannot, and that is exactly what the literal used
+        // to hide.
+        assert_eq!(root_chat_reuse_marker(&db, "chat", "claude"), "incompatible");
+
+        // The newest compilation is the one that counts, not the first.
+        compilation.prefix_id = "bridge-prompt-v1-b".into();
+        compilation.harness = "claude".into();
+        store::record_prompt_compilation(&db, &compilation).unwrap();
+        assert_eq!(root_chat_reuse_marker(&db, "chat", "claude"), "same_harness");
+        assert_eq!(root_chat_reuse_marker(&db, "chat", "codex"), "incompatible");
+    }
+
+    #[test]
     fn default_target_stacks_match_legacy_live_bytes() {
         let db = store::open(Path::new(":memory:")).unwrap();
         let configured = "Repository-specific rule";
@@ -676,6 +730,30 @@ pub fn persist_prompt_compilation(
     )
 }
 
+/// Whether a root chat's stable prefix carries over from its own last launch.
+///
+/// `cross_harness_reuse_marker` answers this for a worker by comparing against
+/// its parent session. A root chat has no parent, and passing the literal
+/// `not_applicable` made every harness switch on a live chat invisible in the
+/// ledger. The comparison that means something for a root chat is against its
+/// own previous compilation, which is still the newest row here because the
+/// caller resolves this before recording the new one.
+fn root_chat_reuse_marker(db: &Connection, session_id: &str, harness: &str) -> &'static str {
+    match db
+        .query_row(
+            "SELECT harness FROM prompt_compilations WHERE session_id=?1 ORDER BY id DESC LIMIT 1",
+            params![session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .as_deref()
+    {
+        Some(previous) if previous == harness => "same_harness",
+        Some(_) => "incompatible",
+        None => "not_applicable",
+    }
+}
+
 pub fn cross_harness_reuse_marker(
     db: &Connection,
     parent_session_id: &str,
@@ -893,7 +971,7 @@ pub fn start_session(
                 "orchestrator",
                 "orchestration",
                 RestorationMode::Hot,
-                "not_applicable",
+                root_chat_reuse_marker(&db, &session_id, adapter_id),
                 &hot_check_prompt,
             )?;
             return store::state(&db);
@@ -1121,7 +1199,7 @@ pub fn start_session(
         "orchestrator",
         "orchestration",
         restoration_mode,
-        "not_applicable",
+        root_chat_reuse_marker(&db, &session_id, adapter_id),
         &orchestrator_prompt,
     ) {
         let _ = db.execute(
@@ -1452,7 +1530,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                     "direct"
                 },
                 RestorationMode::Hot,
-                "not_applicable",
+                root_chat_reuse_marker(&db, &session_id, adapter_id),
                 &hot_check_prompt,
             )?;
             return store::state(&db);
@@ -1760,7 +1838,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                 "direct"
             },
             mode,
-            "not_applicable",
+            root_chat_reuse_marker(&db, &session_id, adapter_id),
             &compiled_prompt,
         ) {
             let _ = db.execute(

@@ -250,6 +250,8 @@ mod builtin_compatibility_tests {
         #[serde(default)]
         cached_input_tokens: Option<u64>,
         #[serde(default)]
+        cache_write_tokens: Option<u64>,
+        #[serde(default)]
         reasoning_tokens: Option<u64>,
         #[serde(default)]
         cost: Option<Value>,
@@ -288,9 +290,17 @@ mod builtin_compatibility_tests {
                     .get("output_tokens")
                     .or_else(|| usage.get("outputTokens"))
                     .and_then(Value::as_u64),
+                // Adapters do not share one spelling for a cache read:
+                // OpenCode says `cached_input_tokens`, Codex is normalized to
+                // the ledger's own `cache_read_tokens`.
                 cached_input_tokens: usage
                     .get("cached_input_tokens")
                     .or_else(|| usage.get("cachedInputTokens"))
+                    .or_else(|| usage.get("cache_read_tokens"))
+                    .and_then(Value::as_u64),
+                cache_write_tokens: usage
+                    .get("cache_write_tokens")
+                    .or_else(|| usage.get("cacheWriteTokens"))
                     .and_then(Value::as_u64),
                 reasoning_tokens: usage
                     .get("reasoning_tokens")
