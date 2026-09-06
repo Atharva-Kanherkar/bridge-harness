@@ -65,11 +65,35 @@ const TRANSIENT_SIGNALS: &[&str] = &[
     "try again later",
     "overloaded",
     "at capacity",
+    "quota",
+    "usage limit",
     "enotfound",
     "ehostunreach",
     "network error",
     "fetch failed",
 ];
+
+/// The subset of [`TRANSIENT_SIGNALS`] that specifically means "this
+/// provider account is out of usage", as opposed to a generic network hiccup
+/// that has nothing to do with which harness answered. Retrying the very same
+/// harness immediately would just hit the same wall, so a quota signal is
+/// routed differently by its caller: see
+/// `learning_router::mark_harness_quota_exhausted`.
+const QUOTA_SIGNALS: &[&str] = &[
+    "rate limit",
+    "rate-limited",
+    "429",
+    "overloaded",
+    "at capacity",
+    "quota",
+    "usage limit",
+];
+
+/// Whether a transient signal `classify` already identified means the
+/// provider account ran out of quota, rather than a passing network fault.
+pub fn is_quota_signal(signal: &str) -> bool {
+    QUOTA_SIGNALS.contains(&signal)
+}
 
 /// What Bridge believes about a failure, from evidence rather than from the
 /// worker's opinion of itself.
@@ -130,6 +154,21 @@ pub fn classify(result: &WorkerResult) -> FailureClass {
         .collect::<Vec<_>>()
         .join("\n")
         .to_ascii_lowercase();
+    // Quota wording is checked first and wins over a generic transient phrase
+    // appearing earlier in the same message (e.g. "usage limit exceeded; try
+    // again later" contains both "try again later" and "usage limit" —
+    // scanning TRANSIENT_SIGNALS in declaration order would return the
+    // generic one first, and `is_quota_signal` on that would be false,
+    // letting the caller retry the same exhausted harness instead of
+    // cooling it down).
+    if let Some(signal) = QUOTA_SIGNALS
+        .iter()
+        .find(|signal| haystack.contains(**signal))
+    {
+        return FailureClass::Transient {
+            signal: (*signal).to_owned(),
+        };
+    }
     if let Some(signal) = TRANSIENT_SIGNALS
         .iter()
         .find(|signal| haystack.contains(**signal))
@@ -346,6 +385,36 @@ mod tests {
         )
         .unwrap();
         db
+    }
+
+    #[test]
+    fn quota_signals_are_told_apart_from_generic_transients() {
+        let result = failure("Request failed: 429 rate limit exceeded, please retry later");
+        assert_eq!(
+            classify(&result),
+            FailureClass::Transient { signal: "rate limit".into() }
+        );
+        assert!(is_quota_signal("rate limit"));
+        assert!(is_quota_signal("429"));
+        assert!(is_quota_signal("quota"));
+        assert!(
+            !is_quota_signal("connection reset"),
+            "a network hiccup is not an account-quota problem"
+        );
+        assert!(!is_quota_signal("timeout"));
+    }
+
+    #[test]
+    fn a_quota_phrase_wins_even_when_a_generic_phrase_appears_earlier() {
+        // "try again later" (generic) precedes "usage limit" (quota-specific)
+        // both in this message and in TRANSIENT_SIGNALS' declaration order;
+        // classify must still surface the quota-specific signal so the
+        // caller's is_quota_signal check does not miss it.
+        let result = failure("Request failed: usage limit exceeded, please try again later");
+        let FailureClass::Transient { signal } = classify(&result) else {
+            panic!("a quota message must classify as transient");
+        };
+        assert!(is_quota_signal(&signal), "{signal}");
     }
 
     #[test]
