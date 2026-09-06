@@ -154,6 +154,21 @@ pub fn classify(result: &WorkerResult) -> FailureClass {
         .collect::<Vec<_>>()
         .join("\n")
         .to_ascii_lowercase();
+    // Quota wording is checked first and wins over a generic transient phrase
+    // appearing earlier in the same message (e.g. "usage limit exceeded; try
+    // again later" contains both "try again later" and "usage limit" —
+    // scanning TRANSIENT_SIGNALS in declaration order would return the
+    // generic one first, and `is_quota_signal` on that would be false,
+    // letting the caller retry the same exhausted harness instead of
+    // cooling it down).
+    if let Some(signal) = QUOTA_SIGNALS
+        .iter()
+        .find(|signal| haystack.contains(**signal))
+    {
+        return FailureClass::Transient {
+            signal: (*signal).to_owned(),
+        };
+    }
     if let Some(signal) = TRANSIENT_SIGNALS
         .iter()
         .find(|signal| haystack.contains(**signal))
@@ -387,6 +402,19 @@ mod tests {
             "a network hiccup is not an account-quota problem"
         );
         assert!(!is_quota_signal("timeout"));
+    }
+
+    #[test]
+    fn a_quota_phrase_wins_even_when_a_generic_phrase_appears_earlier() {
+        // "try again later" (generic) precedes "usage limit" (quota-specific)
+        // both in this message and in TRANSIENT_SIGNALS' declaration order;
+        // classify must still surface the quota-specific signal so the
+        // caller's is_quota_signal check does not miss it.
+        let result = failure("Request failed: usage limit exceeded, please try again later");
+        let FailureClass::Transient { signal } = classify(&result) else {
+            panic!("a quota message must classify as transient");
+        };
+        assert!(is_quota_signal(&signal), "{signal}");
     }
 
     #[test]

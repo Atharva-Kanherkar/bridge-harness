@@ -2261,11 +2261,21 @@ fn handle_agent_value(
         // exit) that looks identical to a genuine crash. That is not a failure
         // to report — the user asked for exactly this — so once `stop_session`
         // has flagged the session, swallow the error frames it provoked rather
-        // than let them fail the turn or render an error card.
+        // than let them fail the turn or render an error card. Codex and
+        // Claude both pair that error with a failed "turn.completed" sibling
+        // in the same frame; left in, its handler still flips the session
+        // (and workspace) back to "ready" as though the turn finished
+        // normally, undoing the "stopped" status `stop_session` already
+        // recorded synchronously. Drop that sibling too, so nothing here
+        // fights the stop.
         if normalized.iter().any(|event| event.kind == "error")
             && state.user_stop_requested.lock().unwrap().remove(session_id)
         {
-            normalized.retain(|event| event.kind != "error");
+            normalized.retain(|event| {
+                event.kind != "error"
+                    && !(event.kind == "turn.completed"
+                        && matches!(event.status.as_deref(), Some("failed") | Some("error")))
+            });
         }
         // A maintenance turn uses the same provider process as the user chat,
         // but none of its content is conversation. `pending` covers the normal
@@ -6499,28 +6509,51 @@ fn settle_worker_after_result(
     // try again seconds later — it will just hit the same wall a second time,
     // at full price. Mark the harness exhausted for this workspace instead,
     // so the *next* delegation (the parent re-delegating this objective)
-    // routes around it via the hard supply-gap check in `learning_router`,
-    // and decline this in-place retry rather than repeat a doomed attempt.
+    // routes around it via the hard supply-gap check in `learning_router`.
+    //
+    // This has to run off `classify` directly, independent of what `decide`
+    // above concluded: a quota signal on a worker that has already used its
+    // retry, lost its hot process, or spent its objective budget still means
+    // the harness is out of quota right now, and still has to be marked —
+    // `decide` returning `Decline` for one of those other reasons must not
+    // suppress it, or the exhaustion this whole path exists to record would
+    // simply never get written.
+    let quota_signal = matches!(
+        result.status,
+        delegation::WorkerResultStatus::Failed | delegation::WorkerResultStatus::ProtocolInvalid
+    )
+    .then(|| worker_retry::classify(result))
+    .and_then(|class| match class {
+        worker_retry::FailureClass::Transient { signal } if worker_retry::is_quota_signal(&signal) => {
+            Some(signal)
+        }
+        _ => None,
+    });
+    if let Some(signal) = &quota_signal {
+        let db = state.db.lock().unwrap();
+        if let Some((workspace_id, harness)) = db
+            .query_row(
+                "SELECT workspace_id,harness FROM sessions WHERE id=?1",
+                params![child_session_id],
+                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+            )
+            .ok()
+            .and_then(|(workspace_id, harness)| workspace_id.map(|w| (w, harness)))
+        {
+            let _ = learning_router::mark_harness_quota_exhausted(
+                &db,
+                &workspace_id,
+                &harness,
+                signal,
+                child_session_id,
+            );
+        }
+    }
+    // Retrying the same harness in place is only ever declined here when it
+    // was actually about to be retried; a decline `decide` already reached
+    // for another reason keeps its own reason.
     let decision = match decision {
-        worker_retry::RetryDecision::Retry { signal } if worker_retry::is_quota_signal(&signal) => {
-            let db = state.db.lock().unwrap();
-            if let Some((workspace_id, harness)) = db
-                .query_row(
-                    "SELECT workspace_id,harness FROM sessions WHERE id=?1",
-                    params![child_session_id],
-                    |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
-                )
-                .ok()
-                .and_then(|(workspace_id, harness)| workspace_id.map(|w| (w, harness)))
-            {
-                let _ = learning_router::mark_harness_quota_exhausted(
-                    &db,
-                    &workspace_id,
-                    &harness,
-                    &signal,
-                    child_session_id,
-                );
-            }
+        worker_retry::RetryDecision::Retry { signal } if quota_signal.is_some() => {
             worker_retry::RetryDecision::Decline {
                 reason: format!(
                     "provider quota exhausted (signal: {signal}); retrying the same harness immediately would repeat the failure, so it was marked unavailable for new delegations in this workspace instead"
@@ -9531,13 +9564,17 @@ pub fn stop_session(
         params![session_id],
         |row| row.get::<_, bool>(0),
     )?;
-    state
-        .user_stop_requested
-        .lock()
-        .unwrap()
-        .insert(session_id.clone());
     if is_worker {
         if let Some(runtime) = state.adapters.lock().unwrap().get(&session_id) {
+            // Only a session with a live adapter to interrupt can have that
+            // interrupt provoke a stop-induced error frame, so only that case
+            // needs the marker — an adapterless stop leaves nothing for a
+            // later resume's genuine error to be mistaken for.
+            state
+                .user_stop_requested
+                .lock()
+                .unwrap()
+                .insert(session_id.clone());
             let _ = runtime.interrupt();
         }
         let result = delegation::WorkerResult {
@@ -9642,6 +9679,11 @@ pub fn stop_session(
     // so the blocking abort request — up to ~10s for OpenCode — never holds the
     // adapters mutex.
     if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
+        state
+            .user_stop_requested
+            .lock()
+            .unwrap()
+            .insert(session_id.clone());
         let _ = runtime.interrupt();
         runtime.stop(adapters::ShutdownReason::UserStopped);
     }
@@ -10593,10 +10635,10 @@ mod submit_input_tests {
             0,
             "a self-inflicted abort error must not be persisted to the transcript"
         );
-        assert_ne!(
+        assert_eq!(
             session_status(&core),
-            "failed",
-            "stopping a turn must never leave the session looking crashed"
+            "stopped",
+            "the failed turn.completed paired with the swallowed error must not flip the session back to ready, undoing the stop"
         );
     }
 
@@ -10645,6 +10687,35 @@ mod submit_input_tests {
             )
             .unwrap();
         assert_eq!(status, "stopped");
+    }
+
+    /// A session with no live adapter to interrupt has nothing that can turn
+    /// its own abort into a stray "error" frame, so it must not be flagged —
+    /// a stale flag would sit there until this session id is reused (e.g. a
+    /// resumed send), ready to swallow a completely unrelated, genuine error
+    /// as if it were fallout from a stop that, on this path, never even
+    /// touched a process.
+    #[test]
+    fn stopping_a_session_with_no_live_adapter_leaves_no_stale_stop_marker() {
+        let (fixture, core, _managed_root) = core_with_chat("ready");
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')",
+                params![fixture.path().to_string_lossy()],
+            )
+            .unwrap();
+            db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task',?1,'ready','now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute("UPDATE sessions SET workspace_id='w' WHERE id='chat'", [])
+                .unwrap();
+        }
+
+        super::stop_session(&core, "chat".into()).unwrap();
+
+        assert!(
+            !core.user_stop_requested.lock().unwrap().contains("chat"),
+            "no adapter was interrupted, so nothing should be waiting to be swallowed"
+        );
     }
 
     // -- image attachments ---------------------------------------------------
@@ -13584,6 +13655,47 @@ mod retry_settlement_tests {
             .expect("the exhaustion is recorded durably, outliving this worker's session");
         assert_eq!(harness, "claude");
         assert!(cooldown_set);
+    }
+
+    /// A quota signal must be marked even when `decide` was always going to
+    /// decline the in-place retry for some other reason (already retried
+    /// once, here) — the harness is still out of quota right now, and the
+    /// next delegation still needs to route around it.
+    #[test]
+    fn a_quota_signal_is_marked_exhausted_even_when_the_retry_is_declined_for_another_reason() {
+        let (_fixture, core, sent, _managed_root) = core_with_working_worker();
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE worker_runtime SET retry_count=1 WHERE session_id='child'",
+                [],
+            )
+            .unwrap();
+        let result = failed("Request failed: 429 rate limit exceeded, please try again later");
+
+        assert!(settle_worker_after_result(&core, "child", &result).unwrap());
+        assert!(
+            sent.lock().unwrap().is_empty(),
+            "already retried once, so no further attempt is sent"
+        );
+        let reason = declined_reason(&core).expect("the decline is recorded");
+        assert!(
+            reason.contains("already been retried"),
+            "decide's own reason is kept, not overwritten: {reason}"
+        );
+
+        let harness: String = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT harness FROM harness_quota_cooldowns WHERE workspace_id='w'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the quota signal is marked regardless of why the retry itself was declined");
+        assert_eq!(harness, "claude");
     }
 }
 

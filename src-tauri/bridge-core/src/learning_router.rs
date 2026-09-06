@@ -1000,7 +1000,7 @@ pub fn route(
                 .unwrap_or_else(|| "No candidate met the quality and safety constraints".into()),
         }
     };
-    let decision = RouterDecision {
+    let mut decision = RouterDecision {
         schema_version: ROUTER_SCHEMA_VERSION,
         id: Uuid::new_v4().to_string(),
         workspace_id: workspace_id.clone(),
@@ -1031,12 +1031,17 @@ pub fn route(
         actual_effort: None,
         created_at: Utc::now().to_rfc3339(),
     };
-    persist_decision(db, &decision)?;
+    // Persisted once, at the bottom, after any substitution below has had a
+    // chance to update `executed_candidate` to the candidate that actually
+    // runs. `record_worker_outcome` later reads this column straight from
+    // the table to attribute the worker's outcome — persisting it here, still
+    // showing the original (unusable) pick, let a substituted harness's
+    // result train the wrong candidate's history.
     let mut routed = request.clone();
     if let Some(key) = executed {
-        let mut selected = candidate_for_key(&decision.candidates, &key).ok_or_else(|| {
-            BridgeError::Invalid(format!("router selected unknown candidate {key}"))
-        })?;
+        let mut selected = candidate_for_key(&decision.candidates, &key)
+            .cloned()
+            .ok_or_else(|| BridgeError::Invalid(format!("router selected unknown candidate {key}")))?;
         // A permission ceiling is a hard incompatibility, not a preference. A
         // manual or pinned route must fail here with something the caller can
         // act on rather than reserving a worker the adapter will refuse.
@@ -1054,6 +1059,7 @@ pub fn route(
                 })
                 .map(|descriptor| descriptor.id.as_str())
                 .collect::<Vec<_>>();
+            persist_decision(db, &decision)?;
             return Err(BridgeError::Invalid(format!(
                 "{} cannot run a {} worker, so this delegation was not started. {}",
                 selected.candidate.harness,
@@ -1090,6 +1096,7 @@ pub fn route(
                 .candidates
                 .iter()
                 .find(|candidate| candidate.eligible())
+                .cloned()
             {
                 let _ = crate::store::event(
                     db,
@@ -1103,8 +1110,10 @@ pub fn route(
                         alternative.candidate.key(),
                     ),
                 );
+                decision.executed_candidate = Some(alternative.candidate.key());
                 selected = alternative;
             } else {
+                persist_decision(db, &decision)?;
                 return Err(BridgeError::Invalid(format!(
                     "{} cannot serve this delegation right now ({:?}), and no other installed harness is eligible either. Install another provider, or wait for quota to recover.",
                     selected.candidate.harness, selected.exclusions,
@@ -1123,6 +1132,7 @@ pub fn route(
                     .exclusions
                     .contains(&CandidateExclusion::PermissionCeiling)
             });
+        persist_decision(db, &decision)?;
         return Err(BridgeError::Invalid(if sandbox_blocked_every_candidate {
             format!(
                 "no installed harness can run a {} worker, so this delegation was not started; change the write mode or install a compatible harness",
@@ -1132,6 +1142,7 @@ pub fn route(
             "learning router found no eligible route under the required constraints".into()
         }));
     }
+    persist_decision(db, &decision)?;
     Ok(RoutedDelegation {
         request: routed,
         decision,
@@ -2762,6 +2773,34 @@ mod tests {
             routed.request.harness.as_deref(),
             Some("claude"),
             "codex just reported a rate limit, so the default route must move to claude"
+        );
+    }
+
+    /// `record_worker_outcome` attributes a finished worker's result back to
+    /// whatever `router_decisions.executed_candidate` says ran. If that
+    /// column still named the unavailable baseline after a substitution, a
+    /// successful run on the substitute harness would train the wrong
+    /// candidate's history.
+    #[test]
+    fn a_substituted_harness_is_the_one_persisted_for_outcome_attribution() {
+        let db = routing_db();
+        let mut descriptors = descriptors();
+        descriptors[0].available = false;
+        let mut pinned = request();
+        pinned.harness = Some("codex".into());
+        let routed = route(&db, "parent", "turn", &pinned, &descriptors).unwrap();
+        assert_eq!(routed.request.harness.as_deref(), Some("claude"));
+
+        let persisted: String = db
+            .query_row(
+                "SELECT executed_candidate FROM router_decisions WHERE id=?1",
+                params![routed.decision.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            persisted, "claude:claude-standard",
+            "the persisted decision must name the candidate that actually ran, not the unavailable pin"
         );
     }
 
