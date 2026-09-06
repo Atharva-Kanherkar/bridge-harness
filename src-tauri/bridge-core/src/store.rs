@@ -2841,7 +2841,28 @@ pub fn repository_path_for_session(
         params![session_id],
         |row| row.get(0),
     ).optional()?.flatten();
-    Ok(path.map(PathBuf::from))
+    let path = path.map(PathBuf::from);
+    // A private chat has no connected repository. Git's normal ancestor
+    // discovery can otherwise reach a home-directory repository and scan it
+    // while a durable event holds the shared database lock. Only an explicit
+    // repository initialized in this scratch directory belongs to the chat.
+    if let (Some(path), Some(database_path)) = (&path, db.path()) {
+        let chats = Path::new(database_path)
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("chats");
+        // Asides share their source chat's scratch directory, so ownership
+        // follows the directory's parent rather than this session's ID.
+        // SQLite resolves aliases such as macOS /var -> /private/var. The
+        // stored cwd may retain the spelling supplied by the caller.
+        let is_scratch = path.parent() == Some(chats.as_path()) || std::fs::canonicalize(path)
+            .and_then(|actual| std::fs::canonicalize(&chats).map(|owned| actual.parent() == Some(owned.as_path())))
+            .unwrap_or(false);
+        if is_scratch && !path.join(".git").exists() {
+            return Ok(None);
+        }
+    }
+    Ok(path)
 }
 
 /// The directory a session's base-branch facts describe: the workspace root
@@ -2859,11 +2880,14 @@ pub fn base_branch_path_for_session(
     session_id: &str,
 ) -> Result<Option<PathBuf>, BridgeError> {
     let path: Option<String> = db.query_row(
-        "SELECT COALESCE(w.path,s.cwd) FROM sessions s LEFT JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
+        "SELECT w.path FROM sessions s LEFT JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
         params![session_id],
         |row| row.get(0),
     ).optional()?.flatten();
-    Ok(path.map(PathBuf::from))
+    match path {
+        Some(path) => Ok(Some(PathBuf::from(path))),
+        None => repository_path_for_session(db, session_id),
+    }
 }
 
 pub fn repository_state_for_path(path: &Path) -> serde_json::Value {
@@ -3596,6 +3620,58 @@ pub(crate) fn session_event_in_transaction(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn private_chat_stamps_do_not_discover_an_ancestor_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = |path: &Path, args: &[&str]| {
+            let output = crate::git::git_command(path).args(args).output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        };
+        git(dir.path(), &["init", "-q"]);
+        git(dir.path(), &["-c", "user.name=Test", "-c", "user.email=test@example.com",
+            "commit", "--allow-empty", "-qm", "parent"]);
+        let data = dir.path().join("app-data");
+        std::fs::create_dir(&data).unwrap();
+        let db = open(&data.join("bridge.db")).unwrap();
+        let scratch = data.join("chats").join("chat");
+        std::fs::create_dir_all(&scratch).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,harness,label,status,metric_source,cwd)
+             VALUES('chat','codex','Chat','idle','estimated',?1)",
+            params![scratch.to_string_lossy()],
+        ).unwrap();
+        // Asides inherit their source chat's cwd rather than getting a
+        // scratch directory named after their own session ID.
+        db.execute(
+            "INSERT INTO sessions(id,harness,label,status,metric_source,cwd)
+             SELECT 'aside',harness,'Aside',status,metric_source,cwd FROM sessions WHERE id='chat'",
+            [],
+        ).unwrap();
+        for session_id in ["chat", "aside"] {
+            assert_eq!(repository_path_for_session(&db, session_id).unwrap(), None);
+            assert_eq!(base_branch_path_for_session(&db, session_id).unwrap(), None);
+            assert_eq!(repository_state_for_session(&db, session_id).unwrap(), json!({"status":"unavailable"}));
+        }
+
+        // Initializing a repository explicitly in the chat still works.
+        git(&scratch, &["init", "-q"]);
+        git(&scratch, &["-c", "user.name=Test", "-c", "user.email=test@example.com",
+            "commit", "--allow-empty", "-qm", "chat"]);
+        for session_id in ["chat", "aside"] {
+            assert_eq!(repository_path_for_session(&db, session_id).unwrap(), Some(scratch.clone()));
+            assert_eq!(base_branch_path_for_session(&db, session_id).unwrap(), Some(scratch.clone()));
+            assert_eq!(repository_state_for_session(&db, session_id).unwrap()["status"], "clean");
+        }
+
+        // A connected/imported cwd in a repository subdirectory retains
+        // ordinary Git discovery; only Bridge's own private scratch is special.
+        let connected = dir.path().join("source");
+        std::fs::create_dir(&connected).unwrap();
+        db.execute("UPDATE sessions SET cwd=?1 WHERE id='chat'", params![connected.to_string_lossy()]).unwrap();
+        assert_eq!(repository_path_for_session(&db, "chat").unwrap(), Some(connected));
+        assert_eq!(repository_state_for_session(&db, "chat").unwrap()["status"], "dirty");
+    }
 
     #[test]
     fn the_harness_column_round_trips_every_shape() {
