@@ -24,8 +24,8 @@ approximate; the functions named there all still exist under the same names.
    `[MIN_RESTORATION_BUDGET_BYTES = 8_000, MAX_RESTORATION_BUDGET_BYTES = 96 KiB]`.
    The cap leaves headroom under `prompt_compiler::MAX_VARIABLE_SUFFIX_BYTES`
    (128 KiB) for the other variable sections (memory packet ≤ 4k chars,
-   session capabilities). Concretely: 32k → 16 000 bytes, 128k → 65 536,
-   200k → 98 304 (cap), 1M → 98 304 (cap).
+   session capabilities). Concretely: 32 000 → 16 000 bytes, 128 000 → 64 000,
+   200 000 → 98 304 (cap), 1 000 000 → 98 304 (cap).
 3. **`restoration::checkpoint_context` is header + verbatim tail up to budget.**
    The header is unchanged in kind (the newest valid compaction's summary and
    decisions, else the latest `checkpoint` summary) and is never dropped.
@@ -138,7 +138,7 @@ plumbing into `ModelOption` (a static family table is the source for now).
 
 `restoration.rs`
 - `restoration_budget_scales_with_the_window_and_respects_the_compiler_cap` —
-  16 000 for 32k, 65 536 for 128k, cap for 200k and 1M; the cap is below
+  16 000 for 32k, 64 000 for 128k, cap for 200k and 1M; the cap is below
   `MAX_VARIABLE_SUFFIX_BYTES`; the floor holds for a 1k window.
 - `a_forty_turn_conversation_keeps_its_recent_turns_verbatim` — 40 alternating
   user/assistant messages (~300 bytes each) on a Claude-model session: the
