@@ -175,14 +175,13 @@ describe("BridgeSidebar action rows", () => {
     expect(container.querySelector('button[aria-label="Work board"]')).toBeNull();
   });
 
-  it("opens the filter from the Search row and closes it on Escape", () => {
+  it("opens the filter from Search and restores New Chat on Escape", () => {
     mount();
     expect(container.querySelector('input[aria-label="Filter chats and projects"]')).toBeNull();
     click(container.querySelector('button[aria-label="Search"]')!);
     const input = container.querySelector<HTMLInputElement>('input[aria-label="Filter chats and projects"]')!;
     expect(input).toBeTruthy();
-    // The input replaces the pill in place — one field, not a pill plus a
-    // second row further down.
+    // The input takes the wide slot, with compose still available beside it.
     expect(container.querySelector('button[aria-label="Search"]')).toBeNull();
     act(() => {
       input.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
@@ -196,6 +195,25 @@ describe("BridgeSidebar action rows", () => {
     mount({ onOpenProjects });
     click(container.querySelector('button[aria-label="New folder"]')!);
     expect(onOpenProjects).toHaveBeenCalledOnce();
+  });
+
+  it("keeps New Chat in place when focus leaves an empty filter for compose", () => {
+    const onOpenNewChat = vi.fn();
+    mount({ onOpenNewChat });
+    click(container.querySelector('button[aria-label="Search"]')!);
+    const compose = container.querySelector<HTMLButtonElement>('button[aria-label="New Chat"]')!;
+    // A mouse click focuses the button before mouseup. Closing the input on
+    // that blur would move compose away from the pointer and lose the click.
+    act(() => compose.focus());
+    expect(container.querySelector('input[aria-label="Filter chats and projects"]')).not.toBeNull();
+    click(compose);
+    expect(onOpenNewChat).toHaveBeenCalledOnce();
+    expect(container.querySelector('input[aria-label="Filter chats and projects"]')).toBeNull();
+    expect(compose.textContent).toBe("New Chat");
+
+    click(container.querySelector('button[aria-label="Search"]')!);
+    act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Marketplace"]')!.focus());
+    expect(container.querySelector('input[aria-label="Filter chats and projects"]')).toBeNull();
   });
 
   it("disables New Chat while a session is being created", () => {

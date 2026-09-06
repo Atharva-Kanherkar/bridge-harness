@@ -353,8 +353,8 @@ export function BridgeSidebar({
     setQuery("");
   }, []);
 
-  // Open-only: while the field is live it occupies the pill's slot, so the
-  // only ways back out are Escape and an empty blur.
+  // While filtering, the field takes the wide slot and New Chat stays
+  // available beside it. Escape or an empty blur restores the main action.
   const openSearch = useCallback(() => setSearchOpen(true), []);
 
   const stopResize = useCallback((pointerId?: number) => {
@@ -504,12 +504,17 @@ export function BridgeSidebar({
         </div>
       )}
       <div className={cn("flex min-h-0 flex-1 flex-col overflow-hidden px-2 pb-3", showWindowNav ? "pt-1" : "pt-3")}>
-        {/* Search and compose share one row. The pill becomes the input in
-            place when opened — one field, one spot — instead of spawning a
-            second row further down. No ⌘K hint: that chord belongs to
-            open-recall, and a shortcut the field does not own is a lie. */}
-        <div className="mb-1.5 flex shrink-0 items-center gap-1.5">
-          {searchOpen ? (
+        {/* New Chat leads the row; Search expands into the wide slot only
+            while filtering, with a compact compose button beside the field. */}
+        <div
+          className="mb-1.5 flex shrink-0 items-center gap-1.5"
+          onBlur={event => {
+            // Focusing compose is part of its click. Keep it in place until
+            // the click completes; only dismiss on focus leaving the row.
+            if (!query.trim() && !event.currentTarget.contains(event.relatedTarget)) closeSearch();
+          }}
+        >
+          {searchOpen && (
             <div className="relative h-8 min-w-0 flex-1">
               <Search size={14} strokeWidth={1.6} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
               <input
@@ -518,37 +523,37 @@ export function BridgeSidebar({
                 autoFocus
                 onChange={event => setQuery(event.target.value)}
                 onKeyDown={event => { if (event.key === "Escape") closeSearch(); }}
-                onBlur={() => { if (!query.trim()) closeSearch(); }}
                 placeholder="Filter chats and projects…"
                 aria-label="Filter chats and projects"
                 className="h-8 w-full rounded-[7px] border border-ring/50 bg-background pl-8 pr-2.5 text-[13px] text-foreground outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-ring"
               />
             </div>
-          ) : (
+          )}
+          <button
+            type="button"
+            onClick={() => { closeSearch(); onOpenNewChat(); }}
+            disabled={newChatBusy}
+            aria-label="New Chat"
+            title={`New Chat  ${chordLabel("new-chat")}`}
+            className={cn(
+              "inline-flex h-8 items-center gap-2 rounded-[7px] bg-primary text-primary-foreground text-[13px] font-medium transition-colors enabled:hover:bg-primary/90 disabled:cursor-default disabled:opacity-50",
+              searchOpen ? "w-8 shrink-0 justify-center" : "min-w-0 flex-1 px-2.5 text-left",
+            )}
+          >
+            <SquarePen size={15} strokeWidth={1.6} className="shrink-0" aria-hidden="true" />
+            {!searchOpen && <span className="min-w-0 flex-1 truncate">New Chat</span>}
+          </button>
+          {!searchOpen && (
             <button
               type="button"
               onClick={openSearch}
               aria-label="Search"
               title="Search"
-              className="flex h-8 min-w-0 flex-1 items-center gap-2 rounded-[7px] border border-border bg-background px-2.5 text-left text-[13px] text-muted-foreground transition-colors hover:border-border-card hover:text-foreground"
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[7px] border border-border text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
             >
-              <Search size={14} strokeWidth={1.6} className="shrink-0" aria-hidden="true" />
-              <span className="min-w-0 flex-1 truncate">Search</span>
+              <Search size={15} strokeWidth={1.6} aria-hidden="true" />
             </button>
           )}
-          <button
-            type="button"
-            onClick={onOpenNewChat}
-            disabled={newChatBusy}
-            aria-label="New Chat"
-            title={`New Chat  ${chordLabel("new-chat")}`}
-            className={cn(
-              "inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[7px] border border-border text-muted-foreground transition-colors hover:bg-card hover:text-foreground",
-              newChatBusy && "cursor-default opacity-50 hover:bg-transparent hover:text-muted-foreground",
-            )}
-          >
-            <SquarePen size={15} strokeWidth={1.6} aria-hidden="true" />
-          </button>
         </div>
 
         <div className="mb-2 shrink-0">

@@ -463,17 +463,23 @@ describe("BridgeSidebar action rows", () => {
     expect(html).not.toContain("Work board");
   });
 
-  it("drops the filled primary new-chat button", () => {
-    expect(render()).not.toContain("bg-primary text-primary-foreground");
+  it("makes New Chat the labeled primary action beside a compact Search control", () => {
+    const html = render();
+    const compose = html.split("<button").find(chunk => chunk.includes('aria-label="New Chat"')) ?? "";
+    const search = html.split("<button").find(chunk => chunk.includes('aria-label="Search"')) ?? "";
+    expect(compose).toContain("bg-primary text-primary-foreground");
+    expect(compose).toContain(">New Chat</span>");
+    expect(search).not.toContain(">Search</span>");
+    expect(html.indexOf('aria-label="New Chat"')).toBeLessThan(html.indexOf('aria-label="Search"'));
   });
 
   it("gives every action an accessible name rather than a bare unlabeled icon", () => {
     const html = render();
-    // Every control is named, including the icon-only compose and search controls.
+    // Every control is named, including the compact search control.
     for (const label of ["New Chat", "Search", "Marketplace", "Projects", "Memory"]) {
       expect(html).toContain(`aria-label="${label}"`);
     }
-    // The nav rows still carry their visible text; compose is now an icon button.
+    // The nav rows still carry their visible text.
     for (const label of ["Marketplace", "Projects", "Memory"]) {
       expect(html).toContain(`>${label}</button>`);
     }
