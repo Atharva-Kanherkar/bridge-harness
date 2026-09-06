@@ -14,7 +14,7 @@ Concrete behavior this branch must deliver (re-derived against current `main`, s
 5. **No unvalidated model prose reaches the new provider's instructions**: only output that passed `Checkpoint::parse_and_validate` (fences/trailing prose/wrong sourceAgent rejected) lands in the forest as a summary; the injected context text is Bridge-generated from validated entries.
 6. **`$codex <question>` from inside a chat** creates the sibling chat AND seeds it with a durable `handoff.brief` entry projecting the source session's stored context, so the new harness's first turn knows what "this" refers to. Sessions without carriable history create exactly as before.
 7. **The `session.model_changed` transcript event states what was carried forward** — e.g. "carried forward: summary + N decisions + M files" vs "no context carried (summary unavailable)" — in both its detail text and structured `data.carriedContext`.
-8. **Fidelity is recorded for switched chats**: after a model switch, the session's `continuation_fidelity` reflects projection (ProjectedAtBoundary / ProjectedMidTurn), so the existing UI fidelity banner tells the truth. Brand-new chats keep `native`.
+8. **Fidelity is recorded for switched chats**: after a *cross-harness* switch, the session's `continuation_fidelity` reflects projection (ProjectedAtBoundary / ProjectedMidTurn), so the existing UI fidelity banner tells the truth. Brand-new chats keep `native` — and since #527 so do same-harness switches, whose next turn resumes the provider session instead of projecting.
 
 Explicitly out of scope (unchanged): same-harness native restarts (`RestorationPlan::Native` path — now delivered by #527, see `testing/fix-same-harness-model-switch-native-resume.md`), worker handoff, compaction triggers/policy.
 
