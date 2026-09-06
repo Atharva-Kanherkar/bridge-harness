@@ -71,6 +71,13 @@ pub struct BridgeCore {
     pub skill_store: PathBuf,
     pub skill_consents: Arc<Mutex<HashMap<String, skill_marketplace::SkillConsent>>>,
     pub credential_broker: Arc<credential_broker::CredentialBroker>,
+    /// Which sessions are owed the session-context frame — the capability
+    /// contract and the memory packet — and which provider thread already
+    /// holds it. In memory on purpose: its lifetime is this process, which is
+    /// exactly the lifetime of the proxy token inside the frame, so a new
+    /// process cannot inherit a claim that a dead token was delivered.
+    /// See `session_context`.
+    pub session_context: Mutex<crate::session_context::SessionContextLedger>,
     pub browser_bridge: Arc<browser_bridge::BrowserBridgeSupervisor>,
     /// Read-only `gh` CLI surface. It owns no credentials and is deliberately
     /// separate from model adapters and their sidecars.
@@ -293,6 +300,7 @@ impl BridgeCore {
             ),
             github_surface: crate::github_surface::GithubSurface::unavailable_for_tests(),
             github_poller: crate::github_poll::GithubPoller::default(),
+            session_context: Mutex::new(Default::default()),
             worker_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
             user_stop_requested: Mutex::new(std::collections::HashSet::new()),
@@ -404,6 +412,7 @@ impl BridgeCore {
             browser_bridge,
             github_surface: crate::github_surface::GithubSurface::discover(),
             github_poller: crate::github_poll::GithubPoller::default(),
+            session_context: Mutex::new(Default::default()),
             worker_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
             user_stop_requested: Mutex::new(std::collections::HashSet::new()),

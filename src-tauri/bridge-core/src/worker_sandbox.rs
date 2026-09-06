@@ -412,7 +412,9 @@ mod tests {
             on_progress: None,
         })
         .unwrap();
-        codex.runtime.start_turn(prompt, None).unwrap();
+        codex.runtime
+            .start_turn(prompt, crate::adapters::TurnContext::default())
+            .unwrap();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
             let mut reader = codex.reader;
@@ -469,7 +471,9 @@ mod tests {
             on_progress: None,
         })
         .unwrap();
-        claude.runtime.start_turn(prompt).unwrap();
+        claude.runtime
+            .start_turn(prompt, crate::adapters::TurnContext::default())
+            .unwrap();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || {
             let mut reader = claude.reader;

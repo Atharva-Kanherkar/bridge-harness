@@ -84,6 +84,7 @@ pub mod routing_evaluation_live;
 pub mod routing_policy;
 mod runtime;
 pub mod secret_interception;
+pub mod session_context;
 pub mod session_forest;
 pub mod session_input;
 pub mod session_recall;

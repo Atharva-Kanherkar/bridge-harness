@@ -1,5 +1,16 @@
 # codex/issue-81-cache-aware-prompts — Test Contract
 
+> **Scope note (#528).** Behavior 2 below said the variable suffix carries
+> "session capability references". It no longer does, and neither does it carry
+> the memory packet: both are volatile for reasons unrelated to the
+> conversation, and the whole compiled prompt — stable prefix *and* variable
+> suffix — is inside the provider's system block, where a changed byte
+> re-writes the entire prefix cache. They are delivered as a Bridge-authored
+> turn frame in the conversation tail instead. See
+> `testing/fix-stable-system-prompt-across-restarts.md`. Everything else here,
+> including the stable/variable split itself and
+> `validate_stable_value`'s rejection rule, is unchanged.
+
 ## Functional Behavior
 
 - Compile a versioned prompt into a byte-stable invariant prefix followed by a bounded variable suffix.

@@ -1635,7 +1635,12 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         let mut core = BridgeCore::for_tests(scratch.path());
         let mut registry = adapters::AdapterRegistry::empty();
-        registry.register(Box::new(StubAdapter { catalog_empty: false })).unwrap();
+        registry
+            .register(Box::new(StubAdapter {
+                catalog_empty: false,
+                expected_model: None,
+            }))
+            .unwrap();
         registry.register(Box::new(ResumableStubAdapter)).unwrap();
         core.adapter_registry = std::sync::Arc::new(registry);
         (scratch, core)

@@ -1,5 +1,5 @@
 use crate::{
-    adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest},
+    adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest, TurnContext},
     binary,
     context_inventory::{
         AdapterContextInventory, ContextInventoryScope, ContextLifecyclePhase, ContextObservedSize,
@@ -615,9 +615,19 @@ pub fn supports_native_resume() -> bool {
 /// unit-testable without a provider process.
 fn user_turn_frame(
     text: &str,
+    context: TurnContext<'_>,
     images: &[bridge_protocol::messages::TurnImage],
 ) -> serde_json::Value {
     let mut content = Vec::with_capacity(1 + images.len());
+    // Bridge's own words first, as their own blocks, so they are never folded
+    // into the user's text. This is the tail delivery that lets the compiled
+    // prompt — Claude's `systemPrompt.append`, and therefore the head of the
+    // cached prefix — stay byte-stable across restarts.
+    content.extend(
+        context
+            .entries()
+            .map(|entry| json!({"type": "text", "text": entry.value})),
+    );
     content.push(json!({"type": "text", "text": text}));
     content.extend(images.iter().map(|image| {
         json!({
@@ -648,8 +658,8 @@ impl ClaudeRuntime {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
-    pub fn start_turn(&self, text: &str) -> Result<(), BridgeError> {
-        self.start_turn_with_images(text, &[])
+    pub fn start_turn(&self, text: &str, context: TurnContext<'_>) -> Result<(), BridgeError> {
+        self.start_turn_with_images(text, context, &[])
     }
 
     /// Start a turn whose user message carries image attachments beside the
@@ -659,11 +669,12 @@ impl ClaudeRuntime {
     pub fn start_turn_with_images(
         &self,
         text: &str,
+        context: TurnContext<'_>,
         images: &[bridge_protocol::messages::TurnImage],
     ) -> Result<(), BridgeError> {
         let turn_id = format!("turn-{}", self.request_id.fetch_add(1, Ordering::Relaxed));
         *self.current_turn.lock().unwrap() = Some(turn_id.clone());
-        write_value(&self.writer, &user_turn_frame(text, images))?;
+        write_value(&self.writer, &user_turn_frame(text, context, images))?;
         let (mcp_names, plugin_names) = {
             let inventory = self.context_inventory.lock().unwrap();
             let catalog = inventory
@@ -740,7 +751,17 @@ impl AdapterRuntime for ClaudeRuntime {
         self.context_inventory.lock().unwrap().clone()
     }
     fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
-        self.start_turn(text)
+        self.start_turn(text, TurnContext::default())
+    }
+    /// The streaming-input frame is an array of content blocks, so Bridge's
+    /// trusted context rides as its own blocks ahead of the user's text —
+    /// the tail channel that keeps `systemPrompt.append` byte-stable.
+    fn send_turn_with_context(
+        &self,
+        text: &str,
+        context: TurnContext<'_>,
+    ) -> Result<(), BridgeError> {
+        self.start_turn(text, context)
     }
     /// Vision-capable transport: the SDK message content is a content-block
     /// array, so image blocks ride beside text natively.
@@ -750,10 +771,10 @@ impl AdapterRuntime for ClaudeRuntime {
     fn send_turn_with_images(
         &self,
         text: &str,
-        _application_context: Option<&str>,
+        context: TurnContext<'_>,
         images: &[bridge_protocol::messages::TurnImage],
     ) -> Result<(), BridgeError> {
-        self.start_turn_with_images(text, images)
+        self.start_turn_with_images(text, context, images)
     }
     /// The sidecar feeds one long-lived streaming-input `query()`, so a user
     /// message written while a turn is running is picked up by that turn — the
@@ -1040,13 +1061,46 @@ mod tests {
     #[test]
     fn a_plain_text_turn_emits_exactly_todays_frame() {
         assert_eq!(
-            user_turn_frame("ship it", &[]),
+            user_turn_frame("ship it", TurnContext::default(), &[]),
             json!({
                 "type": "user",
                 "message": {"role": "user", "content": [{"type": "text", "text": "ship it"}]}
             }),
             "image support must not reshape the no-image wire"
         );
+    }
+
+    #[test]
+    fn bridge_context_rides_as_its_own_blocks_before_the_user_text() {
+        let images = vec![bridge_protocol::messages::TurnImage {
+            media_type: "image/png".into(),
+            base64_data: "iVBORw0".into(),
+        }];
+        let frame = user_turn_frame(
+            "verify [secret:sec_reference]",
+            TurnContext {
+                session: Some("<bridge-session-context schema=\"1\">frame</bridge-session-context>"),
+                credentials: Some("trusted broker capability"),
+            },
+            &images,
+        );
+        let content = frame["message"]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 4, "two context blocks, the user text, one image");
+        assert_eq!(
+            content[0],
+            json!({"type": "text", "text": "<bridge-session-context schema=\"1\">frame</bridge-session-context>"})
+        );
+        assert_eq!(
+            content[1],
+            json!({"type": "text", "text": "trusted broker capability"})
+        );
+        // The user's own words are untouched and still precede the images they
+        // reference positionally.
+        assert_eq!(
+            content[2],
+            json!({"type": "text", "text": "verify [secret:sec_reference]"})
+        );
+        assert_eq!(content[3]["type"], "image");
     }
 
     #[test]
@@ -1061,7 +1115,7 @@ mod tests {
                 base64_data: "/9j/4AAQ".into(),
             },
         ];
-        let frame = user_turn_frame("what are these?", &images);
+        let frame = user_turn_frame("what are these?", TurnContext::default(), &images);
         let content = frame["message"]["content"].as_array().unwrap();
         assert_eq!(content.len(), 3, "one text block, then one block per image");
         assert_eq!(content[0], json!({"type": "text", "text": "what are these?"}));
@@ -1150,7 +1204,10 @@ mod tests {
         let mut runtime = started.runtime;
         let mut reader = started.reader;
         runtime
-            .start_turn("Reply exactly BRIDGE_CLAUDE_OK. Do not use tools.")
+            .start_turn(
+                "Reply exactly BRIDGE_CLAUDE_OK. Do not use tools.",
+                TurnContext::default(),
+            )
             .unwrap();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || loop {
@@ -1191,7 +1248,10 @@ mod tests {
         use std::io::BufRead;
 
         fn run_turn(started: &mut StartedClaude, prompt: &str) -> String {
-            started.runtime.start_turn(prompt).unwrap();
+            started
+                .runtime
+                .start_turn(prompt, TurnContext::default())
+                .unwrap();
             let mut transcript = String::new();
             loop {
                 let mut line = String::new();

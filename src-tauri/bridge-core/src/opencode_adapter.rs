@@ -1,5 +1,5 @@
 use crate::{
-    adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest},
+    adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest, TurnContext},
     binary,
     context_inventory::{
         AdapterContextInventory, ContextInventoryScope, ContextLifecyclePhase, ContextSegmentClass,
@@ -678,19 +678,19 @@ impl AdapterRuntime for OpenCodeRuntime {
         self.context_inventory.lock().unwrap().clone()
     }
     fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
-        self.send_turn_with_context(text, "")
+        self.send_turn_with_context(text, TurnContext::default())
     }
     fn send_turn_with_context(
         &self,
         text: &str,
-        application_context: &str,
+        context: TurnContext<'_>,
     ) -> Result<(), BridgeError> {
         let body = prompt_body(
             self.model.as_ref(),
             self.variant.as_deref(),
             self.instructions.as_deref(),
             text,
-            application_context,
+            context,
         );
         self.request(
             reqwest::Method::POST,
@@ -771,24 +771,25 @@ fn prompt_body(
     variant: Option<&str>,
     instructions: Option<&str>,
     text: &str,
-    application_context: &str,
+    context: TurnContext<'_>,
 ) -> Value {
-    let mut body = json!({
-        "parts": [{"type":"text", "text": text}],
-    });
+    // `system` is rebuilt every turn, so it has to be a function of the launch
+    // alone: folding per-turn context in here made a turn carrying a
+    // `[secret:]` marker bust its own prefix. Bridge's per-turn words are
+    // parts, ahead of the user's text, exactly like every other provider.
+    let mut parts = context
+        .entries()
+        .map(|entry| json!({"type":"text", "text": entry.value}))
+        .collect::<Vec<_>>();
+    parts.push(json!({"type":"text", "text": text}));
+    let mut body = json!({ "parts": parts });
     if let Some(model) = model {
         body["model"] = json!({"providerID": model.provider_id, "modelID": model.model_id});
     }
     if let Some(variant) = variant {
         body["variant"] = json!(variant);
     }
-    let system = [instructions.unwrap_or_default(), application_context]
-        .into_iter()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    if !system.is_empty() {
+    if let Some(system) = instructions.map(str::trim).filter(|value| !value.is_empty()) {
         body["system"] = json!(system);
     }
     body
@@ -1442,6 +1443,42 @@ mod tests {
     use super::*;
     use crate::context_inventory::ContextObservationProvenance;
 
+    /// G9: the turn's `system` value must be a function of the launch alone.
+    /// It is rebuilt on every turn, so anything per-turn folded into it — a
+    /// credential contract for a `[secret:]` marker, say — invalidated that
+    /// turn's prefix by itself.
+    #[test]
+    fn the_system_value_is_identical_with_and_without_turn_context() {
+        let body = |context| {
+            prompt_body(
+                None,
+                None,
+                Some("bridge instructions"),
+                "verify [secret:sec_reference]",
+                context,
+            )
+        };
+        let plain = body(TurnContext::default());
+        let with_context = body(TurnContext {
+            session: Some("<bridge-session-context schema=\"1\">frame</bridge-session-context>"),
+            credentials: Some("trusted broker capability"),
+        });
+        assert_eq!(plain["system"], with_context["system"]);
+        assert_eq!(with_context["system"], "bridge instructions");
+
+        // The context went to the parts instead, ahead of the user's text and
+        // without changing it.
+        let parts = with_context["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(
+            parts[0]["text"],
+            "<bridge-session-context schema=\"1\">frame</bridge-session-context>"
+        );
+        assert_eq!(parts[1]["text"], "trusted broker capability");
+        assert_eq!(parts[2]["text"], "verify [secret:sec_reference]");
+        assert_eq!(plain["parts"].as_array().unwrap().len(), 1);
+    }
+
     #[test]
     fn readiness_probe_backoff_ramps_then_flattens() {
         let observed: Vec<u64> = (0..7).map(|attempt| probe_backoff(attempt).as_millis() as u64).collect();
@@ -1455,9 +1492,9 @@ mod tests {
             None,
             Some("bridge instructions"),
             "hello",
-            "application context",
+            TurnContext::default(),
         );
-        assert_eq!(body["system"], "bridge instructions\n\napplication context");
+        assert_eq!(body["system"], "bridge instructions");
         for phase in [
             ContextLifecyclePhase::Start,
             ContextLifecyclePhase::Resume,
