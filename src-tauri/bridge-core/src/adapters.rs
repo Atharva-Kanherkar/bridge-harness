@@ -68,6 +68,28 @@ impl<'a> TurnContext<'a> {
     }
 }
 
+/// The message a provider gets when the message body is its only channel.
+///
+/// ACP has no system prompt: Cursor and Grok already receive the compiled
+/// prompt folded into their first user message, so Bridge's per-turn context
+/// has nowhere else to go either. Order matters — the launch's instructions,
+/// then the session frame, then the per-turn note, then the user's words,
+/// which stay last and unedited.
+pub fn folded_message(
+    pending_instructions: Option<String>,
+    context: TurnContext<'_>,
+    text: &str,
+) -> String {
+    let mut parts = Vec::new();
+    parts.extend(pending_instructions);
+    parts.extend(context.entries().map(|entry| entry.value.to_owned()));
+    if parts.is_empty() {
+        return text.to_owned();
+    }
+    parts.push(text.to_owned());
+    parts.join("\n\n")
+}
+
 pub trait AdapterRuntime: Send {
     fn process_id(&self) -> u32;
     fn provider_session_id(&self) -> &str;
@@ -2449,5 +2471,57 @@ mod tests {
         // The intermediate's own `sleep 600` shares its group; sweep it so
         // the test leaves nothing behind.
         let _ = terminate_process_group(supervisor.id());
+    }
+}
+
+#[cfg(test)]
+mod turn_context_tests {
+    use super::*;
+
+    #[test]
+    fn entries_are_ordered_and_blank_values_are_absent() {
+        let both = TurnContext {
+            session: Some("frame"),
+            credentials: Some("contract"),
+        };
+        assert_eq!(
+            both.entries().collect::<Vec<_>>(),
+            vec![
+                TurnContextEntry { name: "bridge.session", value: "frame" },
+                TurnContextEntry { name: "bridge.credentials", value: "contract" },
+            ]
+        );
+        assert!(!both.is_empty());
+
+        let blank = TurnContext {
+            session: Some("   \n "),
+            credentials: None,
+        };
+        assert!(blank.is_empty(), "whitespace is absence, not an empty claim");
+        assert!(TurnContext::default().is_empty());
+    }
+
+    #[test]
+    fn a_body_only_provider_keeps_the_user_text_last_and_unedited() {
+        let context = TurnContext {
+            session: Some("<bridge-session-context>frame</bridge-session-context>"),
+            credentials: Some("contract"),
+        };
+        let folded = folded_message(Some("compiled prompt".into()), context, "ship it");
+        assert_eq!(
+            folded,
+            "compiled prompt\n\n<bridge-session-context>frame</bridge-session-context>\n\ncontract\n\nship it"
+        );
+
+        // Nothing to prepend must not reshape the message at all: that is the
+        // wire every turn after the first one takes.
+        assert_eq!(
+            folded_message(None, TurnContext::default(), "ship it"),
+            "ship it"
+        );
+        assert_eq!(
+            folded_message(None, context, "ship it"),
+            "<bridge-session-context>frame</bridge-session-context>\n\ncontract\n\nship it"
+        );
     }
 }

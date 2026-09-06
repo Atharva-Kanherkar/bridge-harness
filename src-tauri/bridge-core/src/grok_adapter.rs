@@ -633,17 +633,11 @@ impl AdapterRuntime for GrokRuntime {
         events
             .send(encode_event(&started))
             .map_err(|_| self.closed())?;
-        let mut preamble = Vec::new();
-        if let Some(instructions) = self.pending_instructions.lock().unwrap().take() {
-            preamble.push(instructions);
-        }
-        preamble.extend(context.entries().map(|entry| entry.value.to_owned()));
-        let text = if preamble.is_empty() {
-            text.to_owned()
-        } else {
-            preamble.push(text.to_owned());
-            preamble.join("\n\n")
-        };
+        let text = crate::adapters::folded_message(
+            self.pending_instructions.lock().unwrap().take(),
+            context,
+            text,
+        );
         let session = self.session.clone();
         thread::Builder::new()
             .name("grok-turn".into())
