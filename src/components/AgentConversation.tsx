@@ -1109,7 +1109,7 @@ function ItemView({ item, workers, now, onResolve, onAnswerQuestion, onOpenSessi
   if (item.type === "question") return <QuestionCard item={item} onResolve={onAnswerQuestion}/>;
   if (item.type === "delegation") return <DelegationRow item={item} workers={workers} now={now} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRetryWorker={onRetryWorker}/>;
   if (item.type === "checkpoint" || item.type === "compaction" || item.type === "branch-summary") return <ForestCard item={item} onRetryCompaction={onRetryCompaction}/>;
-  if (item.data.freshProviderSession === true) return <ModelChangedRow item={item}/>;
+  if (item.type === "model-change") return <ModelChangedRow item={item}/>;
   if (item.type === "raw") return <RawEvent item={item}/>;
   if (item.type === "error") return <ErrorCard item={item} errorContext={errorContext}/>;
   return <ActivityGroup items={[item]}/>;

@@ -147,7 +147,9 @@ export function groupItems(items: ConversationItem[]): Rendered[] {
 
     // A model change and a stale base are milestones, not activity: a group of
     // one labeled "Used tools" is how a reload made either read as a glitch.
-    if (item.data.staleBase === true || item.data.freshProviderSession === true) {
+    // The switch is a normalized item type, so grouping keys off `type` —
+    // never off a payload field.
+    if (item.data.staleBase === true || item.type === "model-change") {
       closeGroup();
       out.push({ kind: "item", item });
       continue;

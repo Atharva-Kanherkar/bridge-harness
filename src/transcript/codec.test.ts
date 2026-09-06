@@ -73,7 +73,7 @@ const VOCABULARY: [kind: string, type: string][] = [
   ["usage.updated", "usage"],
   ["session.started", "session.lifecycle"],
   ["session.idle", "session.lifecycle"],
-  ["session.model_changed", "session.lifecycle"],
+  ["session.model_changed", "model.change"],
   ["provider.unknown", "raw"],
   ["workspace.stale_base", "notice"],
   ["model.rerouted", "notice"],
@@ -179,7 +179,7 @@ describe("normalizeSessionEntry", () => {
     expect(normalizeSessionEntry(durable("session.started", { status: "ready" }))).toBeNull();
     expect(normalizeSessionEntry(durable("session.status", { status: "working" }))).toBeNull();
     expect(normalizeSessionEntry(durable("session.model_changed", { title: "Chat model changed" })))
-      .toMatchObject({ type: "notice" });
+      .toMatchObject({ type: "model.change" });
   });
 
   it("keeps a replayed raw provider frame inspectable", () => {

@@ -209,7 +209,7 @@ fn launch(
     } else if let Some(thread_id) = resume_thread_id {
         (
             "thread/resume",
-            thread_resume_params(thread_id, cwd, model, instructions, write_mode),
+            thread_resume_params(thread_id, cwd, model, effort, instructions, write_mode),
             ContextLifecyclePhase::Resume,
         )
     } else {
@@ -307,8 +307,15 @@ fn thread_start_params(
         // Reasoning-effort override. Field names accepted by current Codex
         // app-server builds; unknown fields are ignored safely on older ones,
         // and the worker briefing also states the effort so behavior follows.
+        // The generated schema for codex-cli 0.153.4 has no top-level `effort`
+        // on either ThreadStartParams or ThreadResumeParams, but both accept
+        // a permissive `config` map — and `model_reasoning_effort` is the
+        // Codex config key for it — so carry it there too. Start and resume
+        // agree on this shape; the top-level fields stay for any build that
+        // did read them.
         params["effort"] = json!(effort);
         params["model_reasoning_effort"] = json!(effort);
+        params["config"] = json!({ "model_reasoning_effort": effort });
     }
     if let Some(instructions) = instructions
         .map(str::trim)
@@ -325,6 +332,7 @@ fn thread_resume_params(
     thread_id: &str,
     cwd: &str,
     model: Option<&str>,
+    effort: Option<&str>,
     instructions: Option<&str>,
     write_mode: Option<WriteMode>,
 ) -> Value {
@@ -337,6 +345,14 @@ fn thread_resume_params(
     });
     if let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) {
         params["model"] = json!(model);
+    }
+    if let Some(effort) = effort.map(str::trim).filter(|value| !value.is_empty()) {
+        // Resume previously sent no effort at all, so a switch that changed
+        // model *and* effort resumed at the thread's previous effort. The
+        // app-server schema has no top-level `effort` on ThreadResumeParams,
+        // but it accepts a permissive `config` map, and
+        // `model_reasoning_effort` is the Codex config key for it.
+        params["config"] = json!({ "model_reasoning_effort": effort });
     }
     if let Some(instructions) = instructions
         .map(str::trim)
@@ -358,7 +374,7 @@ fn thread_fork_params(
     instructions: Option<&str>,
     write_mode: Option<WriteMode>,
 ) -> Value {
-    let mut params = thread_resume_params(thread_id, cwd, model, instructions, write_mode);
+    let mut params = thread_resume_params(thread_id, cwd, model, None, instructions, write_mode);
     params["threadSource"] = json!("bridge_side_chat");
     params
 }
@@ -710,7 +726,7 @@ mod tests {
         let start = thread_start_params("/tmp/work", None, None, Some("bridge"), None);
         assert_eq!(start["instructions"], "bridge");
         assert_eq!(start["developerInstructions"], "bridge");
-        let resume = thread_resume_params("thread", "/tmp/work", None, Some("bridge"), None);
+        let resume = thread_resume_params("thread", "/tmp/work", None, None, Some("bridge"), None);
         assert!(resume.get("instructions").is_none());
         assert_eq!(resume["developerInstructions"], "bridge");
 
@@ -766,7 +782,48 @@ mod tests {
         );
         assert_eq!(params["model"], "runtime-model");
         assert_eq!(params["effort"], "high");
+        assert_eq!(params["model_reasoning_effort"], "high");
+        assert_eq!(params["config"]["model_reasoning_effort"], "high");
         assert_eq!(params["developerInstructions"], "worker rules");
+    }
+
+    #[test]
+    fn thread_resume_carries_effort_as_config_and_omits_it_when_absent() {
+        // A switch that changes model *and* effort resumes the stored thread,
+        // so the resume must carry the effort — via the permissive `config`
+        // map, the only place the 0.153.4 schema accepts it.
+        let with_effort = thread_resume_params(
+            "thread-existing",
+            "/tmp/work",
+            Some("runtime-model"),
+            Some("high"),
+            None,
+            None,
+        );
+        assert_eq!(with_effort["config"]["model_reasoning_effort"], "high");
+
+        let without_effort =
+            thread_resume_params("thread-existing", "/tmp/work", None, None, None, None);
+        assert!(without_effort.get("config").is_none());
+
+        // Start and resume agree; the top-level fields stay for any build that
+        // did read them.
+        let start = thread_start_params("/tmp/work", None, Some("high"), None, None);
+        assert_eq!(start["config"]["model_reasoning_effort"], "high");
+        assert_eq!(start["effort"], "high");
+        let start_without = thread_start_params("/tmp/work", None, None, None, None);
+        assert!(start_without.get("config").is_none());
+
+        // A fork is an aside, not a model switch — its effort is out of scope
+        // and stays untouched.
+        let fork = thread_fork_params(
+            "thread-existing",
+            "/tmp/work",
+            Some("runtime-model"),
+            None,
+            None,
+        );
+        assert!(fork.get("config").is_none());
     }
 
     #[test]
@@ -817,6 +874,7 @@ mod tests {
             "thread-existing",
             "/tmp/work",
             Some("runtime-model"),
+            None,
             Some("restored rules"),
             Some(WriteMode::ReadOnly),
         );

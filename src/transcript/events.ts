@@ -244,9 +244,9 @@ export interface TranscriptError extends Framed {
 
 /**
  * A frame Bridge knows about that has no card of its own: a handoff brief, a
- * model switch, a stale base warning, a settled ACP approval. It draws as an
- * activity row. Distinct from `unknown`, which is a kind nothing here has a
- * name for.
+ * stale base warning, a settled ACP approval. It draws as an activity row.
+ * Distinct from `unknown`, which is a kind nothing here has a name for.
+ * (A model switch used to land here too; it has its own card now, below.)
  */
 export interface TranscriptNotice extends Framed {
   type: "notice";
@@ -254,6 +254,18 @@ export interface TranscriptNotice extends Framed {
   text: string;
   status?: string;
   role?: MessageRole;
+}
+
+/**
+ * A model/harness switch: the milestone divider that reports what the next
+ * provider inherits. Normalized to its own type so grouping and rendering key
+ * off `type`, never off a payload field.
+ */
+export interface ModelChanged extends Framed {
+  type: "model.change";
+  title?: string;
+  text: string;
+  status?: string;
 }
 
 export interface TurnStarted extends Framed {
@@ -323,6 +335,7 @@ export type TranscriptEvent =
   | BranchSummary
   | TranscriptError
   | TranscriptNotice
+  | ModelChanged
   | TurnStarted
   | TurnCompleted
   | SessionLifecycle
