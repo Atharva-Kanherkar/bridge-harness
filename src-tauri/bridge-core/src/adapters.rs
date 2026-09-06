@@ -232,10 +232,13 @@ pub const PARENT_WATCHDOG_DISABLE_ENV: &str = "BRIDGE_DISABLE_PARENT_WATCHDOG";
 #[cfg(unix)]
 const PARENT_WATCHDOG_SCRIPT: &str = r#"cmd="$1"; shift
 # POSIX shells may attach /dev/null to an asynchronous command's stdin when
-# job control is unavailable. Override that default: ACP is stdio-framed and
-# must inherit the supervisor pipe exactly.
-"$cmd" "$@" <&0 &
+# job control is unavailable. Save the real pipe before spawning: dash applies
+# that default before <&0, so duplicating fd 0 in the child just keeps /dev/null.
+# Close the extra descriptor in both processes after wiring the child's stdin.
+exec 3<&0
+"$cmd" "$@" <&3 3<&- &
 child=$!
+exec 3<&-
 trap 'trap "" TERM INT; /bin/kill -TERM -- -$$ 2>/dev/null' TERM INT
 while kill -0 "$child" 2>/dev/null; do
   ppid=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')
@@ -2102,9 +2105,14 @@ mod tests {
             .unwrap();
         let tail = StderrTail::capture(&mut child);
         child.wait().unwrap();
-        // The capture thread races the wait; poll briefly for the tail.
+        // Waiting for the child does not drain the capture thread. Seeing the
+        // first line ("boot") is not evidence that its final error arrived.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while tail.snapshot().is_none() && std::time::Instant::now() < deadline {
+        while tail
+            .snapshot()
+            .is_none_or(|text| !text.contains("API error: connection refused"))
+            && std::time::Instant::now() < deadline
+        {
             thread::sleep(Duration::from_millis(10));
         }
         let context = process_failure_context(&mut child, &tail).expect("context after exit");
@@ -2198,6 +2206,36 @@ mod tests {
             streams.contains_key("default"),
             "the shared fallback entry survives per-session teardown"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn watchdog_preserves_piped_input_in_posix_shells() {
+        use std::io::Write;
+
+        let mut shells = vec![PathBuf::from("/bin/sh")];
+        // macOS's /bin/sh is bash; exercise dash there too when available.
+        // Linux CI already exercises dash through /bin/sh.
+        if let Ok(dash) = which::which("dash") {
+            shells.push(dash);
+        }
+        for shell in shells {
+            let mut command = Command::new(&shell);
+            command
+                .args(["-c", PARENT_WATCHDOG_SCRIPT, "bridge-watchdog", "/bin/cat"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            configure_process_group(&mut command);
+            let mut child = command.spawn().unwrap();
+            let input = b"first protocol frame\nsecond protocol frame\n";
+            // Drop the writer before waiting so the real child observes EOF.
+            let write_result = child.stdin.take().unwrap().write_all(input);
+            let output = child.wait_with_output().unwrap();
+            assert!(write_result.is_ok(), "{} closed its input: {write_result:?}", shell.display());
+            assert!(output.status.success(), "{}: {:?}", shell.display(), output);
+            assert_eq!(output.stdout, input, "{} discarded the provider's stdin", shell.display());
+        }
     }
 
     /// The wrapped child — and anything it forked into the group — must die
