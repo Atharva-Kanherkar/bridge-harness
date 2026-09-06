@@ -2847,15 +2847,16 @@ pub fn repository_path_for_session(
     // while a durable event holds the shared database lock. Only an explicit
     // repository initialized in this scratch directory belongs to the chat.
     if let (Some(path), Some(database_path)) = (&path, db.path()) {
-        let scratch = Path::new(database_path)
+        let chats = Path::new(database_path)
             .parent()
             .unwrap_or_else(|| Path::new("."))
-            .join("chats")
-            .join(session_id);
+            .join("chats");
+        // Asides share their source chat's scratch directory, so ownership
+        // follows the directory's parent rather than this session's ID.
         // SQLite resolves aliases such as macOS /var -> /private/var. The
         // stored cwd may retain the spelling supplied by the caller.
-        let is_scratch = *path == scratch || std::fs::canonicalize(path)
-            .and_then(|actual| std::fs::canonicalize(&scratch).map(|owned| actual == owned))
+        let is_scratch = path.parent() == Some(chats.as_path()) || std::fs::canonicalize(path)
+            .and_then(|actual| std::fs::canonicalize(&chats).map(|owned| actual.parent() == Some(owned.as_path())))
             .unwrap_or(false);
         if is_scratch && !path.join(".git").exists() {
             return Ok(None);
@@ -3622,16 +3623,28 @@ mod tests {
              VALUES('chat','codex','Chat','idle','estimated',?1)",
             params![scratch.to_string_lossy()],
         ).unwrap();
-        assert_eq!(repository_path_for_session(&db, "chat").unwrap(), None);
-        assert_eq!(base_branch_path_for_session(&db, "chat").unwrap(), None);
-        assert_eq!(repository_state_for_session(&db, "chat").unwrap(), json!({"status":"unavailable"}));
+        // Asides inherit their source chat's cwd rather than getting a
+        // scratch directory named after their own session ID.
+        db.execute(
+            "INSERT INTO sessions(id,harness,label,status,metric_source,cwd)
+             SELECT 'aside',harness,'Aside',status,metric_source,cwd FROM sessions WHERE id='chat'",
+            [],
+        ).unwrap();
+        for session_id in ["chat", "aside"] {
+            assert_eq!(repository_path_for_session(&db, session_id).unwrap(), None);
+            assert_eq!(base_branch_path_for_session(&db, session_id).unwrap(), None);
+            assert_eq!(repository_state_for_session(&db, session_id).unwrap(), json!({"status":"unavailable"}));
+        }
 
         // Initializing a repository explicitly in the chat still works.
         git(&scratch, &["init", "-q"]);
         git(&scratch, &["-c", "user.name=Test", "-c", "user.email=test@example.com",
             "commit", "--allow-empty", "-qm", "chat"]);
-        assert_eq!(repository_path_for_session(&db, "chat").unwrap(), Some(scratch));
-        assert_eq!(repository_state_for_session(&db, "chat").unwrap()["status"], "clean");
+        for session_id in ["chat", "aside"] {
+            assert_eq!(repository_path_for_session(&db, session_id).unwrap(), Some(scratch.clone()));
+            assert_eq!(base_branch_path_for_session(&db, session_id).unwrap(), Some(scratch.clone()));
+            assert_eq!(repository_state_for_session(&db, session_id).unwrap()["status"], "clean");
+        }
 
         // A connected/imported cwd in a repository subdirectory retains
         // ordinary Git discovery; only Bridge's own private scratch is special.
