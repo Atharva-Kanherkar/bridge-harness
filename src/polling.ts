@@ -13,7 +13,13 @@ export function createCoalescedRefresh(task: () => Promise<void>): () => Promise
         try {
           while (requested) {
             requested = false;
-            await task();
+            try {
+              await task();
+            } catch (error) {
+              // A newer notification still needs its read, even if this one
+              // failed. Without one, report the failure instead of retrying.
+              if (!requested) throw error;
+            }
           }
         } finally {
           running = undefined;
