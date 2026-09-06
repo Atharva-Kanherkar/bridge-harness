@@ -139,9 +139,13 @@ labelled as the other on the wire.
 - `deliver_worker_objective` does the same for a worker's first turn, which is
   how the worker's objective already reaches it.
 - Bridge's own internal turns — routing notices, checkpoint prompts, steer
-  envelopes — are unchanged and carry no context. They are only ever sent to a
-  session that has already taken a user turn or an objective, so they cannot be
-  the first turn on a thread.
+  envelopes — are unchanged and carry no context. Routing notices and steers go
+  to a session that has already taken a turn, so they cannot be the first turn
+  on a thread. A checkpoint prompt can be: `/compact` typed as the very first
+  input on a fresh chat sends one. That is deliberate — a checkpoint turn asks
+  the model for strict JSON about the conversation and has no use for the
+  capability contract — and the frame simply stays owed until the next real
+  turn.
 
 ### 6. Explicitly out of scope
 
@@ -181,6 +185,10 @@ Rust (`src-tauri/bridge-core`):
   unknown; not pending when the recorded `(provider_session_id, digest)` match;
   pending when the thread id differs (a fresh thread cannot hold the old frame);
   pending when the digest differs (a new process's proxy token).
+- `adapters::turn_context_tests` — entries come out in delivery order, a
+  whitespace-only value is absence rather than an empty claim, and
+  `folded_message` (the Cursor/Grok body-only channel) keeps the user's text
+  last and unedited while leaving a context-free turn byte-identical to today's.
 - `live_turn::tests` — **the headline**: `compile_session_prompt` compiled twice
   is byte-identical, and neither output contains the proxy token, the
   `x-bridge-proxy-auth` header name, the `session_capabilities` section name,
@@ -219,6 +227,9 @@ Rust (`src-tauri/bridge-core`):
   carries no session frame.
 - A same-process native resume onto the same thread id with an unchanged digest
   marks nothing pending, so its first turn carries no session frame.
+- A send that the provider rejects leaves the frame owed, and the retry carries
+  it. Marking it delivered on the attempt rather than the success would lose
+  the capability contract for the rest of the conversation.
 
 ## Smoke Tests
 
