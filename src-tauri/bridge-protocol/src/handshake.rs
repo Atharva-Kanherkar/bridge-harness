@@ -48,7 +48,8 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// **1.5 adds workspace branch listing and checkout.** A new desktop must not
 /// accept an older daemon and discover the missing methods only after the user
 /// opens the branch menu.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 5 };
+/// **1.6 adds exact chat creation identity** for concurrent CLI clients.
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 6 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
