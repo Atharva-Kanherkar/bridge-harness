@@ -774,6 +774,97 @@ pub fn cross_harness_reuse_marker(
     }
 }
 
+fn select_start_model(
+    descriptor: &AdapterDescriptor,
+    model: Option<&str>,
+) -> Result<Option<ModelOption>, BridgeError> {
+    if let Some(requested) = model.filter(|value| !value.trim().is_empty()) {
+        return descriptor
+            .models
+            .iter()
+            .find(|option| option.id.eq_ignore_ascii_case(requested.trim()))
+            .cloned()
+            .map(Some)
+            .ok_or_else(|| {
+                BridgeError::Invalid(format!(
+                    "{} does not offer model {requested}",
+                    descriptor.label
+                ))
+            });
+    }
+    // Some providers publish their catalog only after session/new. Passing None
+    // lets that first user-owned session use the provider's default; discovery
+    // must not create a session or invent a model identifier to break the cycle.
+    if descriptor.models.is_empty() {
+        return Ok(None);
+    }
+    descriptor
+        .models
+        .iter()
+        .find(|option| option.tier == CapabilityTier::Standard && option.default_for_tier)
+        .or_else(|| {
+            descriptor
+                .models
+                .iter()
+                .find(|option| option.tier == CapabilityTier::Standard)
+        })
+        .cloned()
+        .map(Some)
+        .ok_or_else(|| {
+            BridgeError::Invalid(format!("{} has no standard model", descriptor.label))
+        })
+}
+
+#[cfg(test)]
+mod start_model_tests {
+    use super::*;
+
+    fn descriptor(models: serde_json::Value) -> AdapterDescriptor {
+        serde_json::from_value(serde_json::json!({
+            "id": "cursor", "label": "Cursor", "available": true,
+            "authState": "unknown", "capabilities": [], "models": models
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_unpopulated_catalog_uses_the_provider_default() {
+        let descriptor = descriptor(serde_json::json!([]));
+        assert_eq!(select_start_model(&descriptor, None).unwrap(), None);
+        assert_eq!(select_start_model(&descriptor, Some("  ")).unwrap(), None);
+        assert!(select_start_model(&descriptor, Some("invented-model")).is_err());
+    }
+
+    #[test]
+    fn a_populated_catalog_keeps_standard_and_explicit_model_selection() {
+        let descriptor = descriptor(serde_json::json!([
+            {"id": "fast", "label": "Fast", "tier": "fast", "defaultForTier": true},
+            {"id": "standard-other", "label": "Other", "tier": "standard", "defaultForTier": false},
+            {"id": "standard-default", "label": "Default", "tier": "standard", "defaultForTier": true}
+        ]));
+        assert_eq!(
+            select_start_model(&descriptor, None).unwrap().unwrap().id,
+            "standard-default"
+        );
+        assert_eq!(
+            select_start_model(&descriptor, Some(" FAST ")).unwrap().unwrap().id,
+            "fast"
+        );
+        assert!(select_start_model(&descriptor, Some("unknown")).is_err());
+    }
+
+    #[test]
+    fn a_missing_standard_tier_is_not_an_unpopulated_catalog() {
+        let descriptor = descriptor(serde_json::json!([
+            {"id": "fast", "label": "Fast", "tier": "fast", "defaultForTier": true}
+        ]));
+        assert!(select_start_model(&descriptor, None)
+            .unwrap_err()
+            .to_string()
+            .contains("no standard model"));
+    }
+}
+
 pub fn start_session(
     core: &Arc<BridgeCore>,
     workspace_id: String,
@@ -810,40 +901,11 @@ pub fn start_session(
                     .unwrap_or_else(|| format!("{} is unavailable", descriptor.label)),
             ));
         }
-        let selected = if let Some(requested) =
-            model.as_deref().filter(|value| !value.trim().is_empty())
-        {
-            descriptor
-                .models
-                .iter()
-                .find(|option| option.id.eq_ignore_ascii_case(requested.trim()))
-                .cloned()
-                .ok_or_else(|| {
-                    BridgeError::Invalid(format!(
-                        "{} does not offer model {requested}",
-                        descriptor.label
-                    ))
-                })?
-        } else {
-            descriptor
-                .models
-                .iter()
-                .find(|option| option.tier == CapabilityTier::Standard && option.default_for_tier)
-                .or_else(|| {
-                    descriptor
-                        .models
-                        .iter()
-                        .find(|option| option.tier == CapabilityTier::Standard)
-                })
-                .cloned()
-                .ok_or_else(|| {
-                    BridgeError::Invalid(format!("{} has no standard model", descriptor.label))
-                })?
-        };
+        let selected = select_start_model(&descriptor, model.as_deref())?;
         sessions::OrchestratorSelection {
             adapter_id: adapter_id.clone(),
-            model: selected.id,
-            tier: selected.tier,
+            model: selected.as_ref().map(|option| option.id.clone()),
+            tier: selected.map_or(CapabilityTier::Standard, |option| option.tier),
             effort: agent_config::harness_config(&db, &adapter_id).and_then(|config| config.effort),
             label: agent_config::default_orchestrator(&db)
                 .map(|agent| agent.name)
@@ -855,7 +917,7 @@ pub fn start_session(
     };
     let adapter_id = selection.adapter_id.as_str();
     let session_label = selection.label.as_str();
-    let chosen_model = Some(selection.model.clone());
+    let chosen_model = selection.model.clone();
     let chosen_effort = selection.effort;
     let chosen_effort_name = chosen_effort.map(|effort| effort.as_str());
     let db = state.db.lock().unwrap();

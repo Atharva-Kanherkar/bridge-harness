@@ -168,9 +168,12 @@ describe("Work briefing", () => {
 
     const cadence = host.querySelector<HTMLButtonElement>('button[aria-label="Cadence"]')!;
     await click(cadence);
-    const hourly = [...host.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+    const hourly = [...document.querySelectorAll<HTMLElement>('[role="listbox"][aria-label="Cadence"] [role="option"]')]
       .find(option => option.textContent?.includes("Every hour"))!;
-    await click(hourly);
+    await act(async () => {
+      hourly.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      hourly.click();
+    });
     expect(writeWorkSettings.mock.calls.at(-1)![0].refreshIntervalMinutes).toBe(60);
   });
 });

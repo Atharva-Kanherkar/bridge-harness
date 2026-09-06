@@ -2891,16 +2891,24 @@ pub fn base_branch_path_for_session(
 }
 
 pub fn repository_state_for_path(path: &Path) -> serde_json::Value {
-    let head = crate::git::git_command(path)
+    let Ok(head) = crate::git::git_command(path)
         .args(["rev-parse", "HEAD"])
-        .output();
-    let status = crate::git::git_command(path)
-        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
-        .output();
-    let (Ok(head), Ok(status)) = (head, status) else {
+        .output() else {
+            return serde_json::json!({"status":"unavailable"});
+        };
+    // This snapshot needs a commit. An unborn repository cannot provide one;
+    // do not scan all its untracked files while holding a session transaction.
+    // A repository above the workspace (including a user's home) can make that
+    // unnecessary scan stall every daemon request and startup recovery.
+    if !head.status.success() {
         return serde_json::json!({"status":"unavailable"});
-    };
-    if !head.status.success() || !status.status.success() {
+    }
+    let Ok(status) = crate::git::git_command(path)
+        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+        .output() else {
+            return serde_json::json!({"status":"unavailable"});
+        };
+    if !status.status.success() {
         return serde_json::json!({"status":"unavailable"});
     }
     let head = String::from_utf8_lossy(&head.stdout).trim().to_owned();
@@ -3671,6 +3679,18 @@ mod tests {
         db.execute("UPDATE sessions SET cwd=?1 WHERE id='chat'", params![connected.to_string_lossy()]).unwrap();
         assert_eq!(repository_path_for_session(&db, "chat").unwrap(), Some(connected));
         assert_eq!(repository_state_for_session(&db, "chat").unwrap()["status"], "dirty");
+    }
+
+    #[test]
+    fn an_unborn_repository_never_runs_the_status_scan() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
+        assert!(crate::git::git_command(root).args(["init", "-q"]).status().unwrap().success());
+        std::fs::write(root.join("tracked.txt"), "pending first commit").unwrap();
+        let before = crate::git::git_processes_started_on_this_thread();
+        assert_eq!(repository_state_for_path(root), json!({"status":"unavailable"}));
+        assert_eq!(crate::git::git_processes_started_on_this_thread() - before, 1,
+            "the failed HEAD lookup must not be followed by a status scan");
     }
 
     #[test]

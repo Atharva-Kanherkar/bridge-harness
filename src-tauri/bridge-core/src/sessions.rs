@@ -153,7 +153,8 @@ fn carried_context(db: &Connection, session_id: &str) -> Option<CarriedContext> 
 #[derive(Debug, Clone)]
 pub struct OrchestratorSelection {
     pub adapter_id: String,
-    pub model: String,
+    /// None leaves model selection to the provider when its catalog is not yet available.
+    pub model: Option<String>,
     pub tier: CapabilityTier,
     pub effort: Option<crate::delegation::Effort>,
     pub label: String,
@@ -208,13 +209,14 @@ pub struct ChatModelChange {
     kind: String,
     previous_harness: String,
     previous_model: Option<String>,
-    selected: ModelOption,
+    selected: Option<ModelOption>,
+    tier: CapabilityTier,
 }
 
 impl ChatModelChange {
     /// The model the plan selected (visible for logging and tests).
-    pub fn selected_model(&self) -> &str {
-        &self.selected.id
+    pub fn selected_model(&self) -> Option<&str> {
+        self.selected.as_ref().map(|model| model.id.as_str())
     }
 }
 
@@ -506,7 +508,7 @@ impl BridgeCore {
         persisted
     }
 
-    /// Validate a chat model switch and select the concrete model. Returns
+    /// Validate a chat model switch, allowing provider defaults before discovery. Returns
     /// `None` when the chat already runs the requested harness/model.
     pub fn plan_chat_model_change(
         &self,
@@ -576,12 +578,16 @@ impl BridgeCore {
                 .iter()
                 .find(|option| option.id.eq_ignore_ascii_case(requested.trim()))
                 .cloned()
+                .map(Some)
                 .ok_or_else(|| {
                     BridgeError::Invalid(format!(
                         "{} does not offer model {requested}",
                         descriptor.label
                     ))
                 })?
+        } else if descriptor.models.is_empty() {
+            // The first user-owned session may be what publishes the catalog.
+            None
         } else {
             descriptor
                 .models
@@ -595,6 +601,7 @@ impl BridgeCore {
                         .find(|option| option.tier == default_tier)
                 })
                 .cloned()
+                .map(Some)
                 .ok_or_else(|| {
                     BridgeError::Invalid(format!(
                         "{} has no {} model",
@@ -603,10 +610,12 @@ impl BridgeCore {
                     ))
                 })?
         };
-        if !selected.available || !selected.compatible {
-            return Err(BridgeError::Invalid(format!("{} is not available for this session", selected.label)));
+        if let Some(selected) = &selected {
+            if !selected.available || !selected.compatible {
+                return Err(BridgeError::Invalid(format!("{} is not available for this session", selected.label)));
+            }
         }
-        if previous_harness == adapter_id && previous_model.as_deref() == Some(selected.id.as_str())
+        if previous_harness == adapter_id && previous_model.as_deref() == selected.as_ref().map(|model| model.id.as_str())
         {
             return Ok(None);
         }
@@ -616,6 +625,7 @@ impl BridgeCore {
             kind,
             previous_harness,
             previous_model,
+            tier: selected.as_ref().map_or(default_tier, |model| model.tier),
             selected,
         }))
     }
@@ -1003,8 +1013,8 @@ impl BridgeCore {
             &transaction,
             session_id,
             &change.adapter_id,
-            &change.selected.id,
-            change.selected.tier,
+            change.selected_model(),
+            change.tier,
             (&change.previous_harness, change.previous_model.as_deref()),
         )? != 1
         {
@@ -1038,7 +1048,7 @@ impl BridgeCore {
             change.previous_harness,
             change.previous_model.as_deref().unwrap_or("automatic"),
             change.adapter_id,
-            change.selected.id,
+            change.selected_model().unwrap_or("default"),
             carry_note,
         );
         store::event(
@@ -1062,9 +1072,9 @@ impl BridgeCore {
                     "previousHarness": change.previous_harness,
                     "previousModel": change.previous_model,
                     "harness": change.adapter_id,
-                    "model": change.selected.id,
-                    "modelLabel": change.selected.label,
-                    "tier": change.selected.tier,
+                    "model": change.selected_model(),
+                    "modelLabel": change.selected.as_ref().map(|model| model.label.as_str()).unwrap_or("Provider default"),
+                    "tier": change.tier,
                     "freshProviderSession": true,
                     "carriedContext": carried.map(|carried| serde_json::json!({
                         "summary": carried.summary,
@@ -1223,7 +1233,7 @@ pub(crate) fn persist_chat_model_selection(
     db: &Connection,
     session_id: &str,
     adapter_id: &str,
-    model: &str,
+    model: Option<&str>,
     tier: CapabilityTier,
     (previous_harness, previous_model): (&str, Option<&str>),
 ) -> Result<usize, BridgeError> {
@@ -1311,7 +1321,7 @@ pub fn resolve_orchestrator_selection(
                 ) {
                     return Ok(OrchestratorSelection {
                         adapter_id: agent.harness.clone(),
-                        model: resolution.actual_model,
+                        model: Some(resolution.actual_model),
                         tier: CapabilityTier::Standard,
                         effort: harness_config
                             .and_then(|config| config.effort)
@@ -1333,7 +1343,7 @@ pub fn resolve_orchestrator_selection(
             registry.resolve_model(&profile.provider, profile.tier, Some(&profile.model))?;
         return Ok(OrchestratorSelection {
             adapter_id: profile.provider,
-            model: resolution.actual_model,
+            model: Some(resolution.actual_model),
             tier: profile.tier,
             effort: configured_agent
                 .as_ref()
@@ -1352,7 +1362,7 @@ pub fn resolve_orchestrator_selection(
         if let Ok(resolution) = registry.resolve_model(&descriptor.id, orchestrator::TIER, None) {
             return Ok(OrchestratorSelection {
                 adapter_id: descriptor.id.clone(),
-                model: resolution.actual_model,
+                model: Some(resolution.actual_model),
                 tier: orchestrator::TIER,
                 effort: None,
                 label: orchestrator::SESSION_LABEL.into(),
@@ -1371,13 +1381,13 @@ mod tests {
 
     /// A registered, available harness with Standard and Fast models, so
     /// selection logic can run without real provider binaries.
-    struct StubAdapter;
+    struct StubAdapter { catalog_empty: bool }
     impl adapters::HarnessAdapter for StubAdapter {
         fn as_any(&self) -> &dyn std::any::Any {
             self
         }
         fn descriptor(&self) -> AdapterDescriptor {
-            AdapterDescriptor {
+            let mut descriptor = AdapterDescriptor {
                 sandbox_modes: crate::model::SandboxMode::ALL.to_vec(),
                 id: "codex".into(),
                 label: "Codex".into(),
@@ -1412,12 +1422,22 @@ mod tests {
                 ],
                 default_model: None,
                 model_catalog: crate::model::ModelCatalogDiagnostics::curated(),
+            };
+            if self.catalog_empty {
+                descriptor.id = "cursor".into();
+                descriptor.label = "Cursor".into();
+                descriptor.models.clear();
             }
+            descriptor
         }
         fn start(
             &self,
-            _: adapters::StartRequest<'_>,
+            request: adapters::StartRequest<'_>,
         ) -> Result<adapters::StartedAdapter, BridgeError> {
+            if self.catalog_empty {
+                assert_eq!(request.model, None, "the provider must choose its own default");
+                assert_eq!(request.effort, None, "do not carry another provider's effort");
+            }
             Err(BridgeError::Adapter("stub adapter cannot start".into()))
         }
         fn resume(
@@ -1438,7 +1458,8 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         let mut core = BridgeCore::for_tests(scratch.path());
         let mut registry = adapters::AdapterRegistry::empty();
-        registry.register(Box::new(StubAdapter)).unwrap();
+        registry.register(Box::new(StubAdapter { catalog_empty: false })).unwrap();
+        registry.register(Box::new(StubAdapter { catalog_empty: true })).unwrap();
         core.adapter_registry = std::sync::Arc::new(registry);
         (scratch, core)
     }
@@ -1461,6 +1482,40 @@ mod tests {
             .unwrap()
             .query_row("SELECT id FROM sessions", [], |row| row.get(0))
             .unwrap()
+    }
+
+    #[test]
+    fn welcome_chat_can_switch_to_an_undiscovered_provider_default_then_start() {
+        let (_scratch, core) = fixture();
+        seed_workspace(&core, false);
+        let plan = core.plan_workspace_session("w", false).unwrap();
+        core.persist_workspace_session(plan, None).unwrap();
+        let id = only_session_id(&core);
+        let core = std::sync::Arc::new(core);
+
+        // The welcome composer creates the configured orchestrator first, then
+        // applies the user's Cursor/Default choice before starting any provider.
+        crate::api::update_chat_model(&core, &id, &Harness::Cursor, None, None).unwrap();
+        let stored: (String, Option<String>, Option<String>) = core.db.lock().unwrap()
+            .query_row("SELECT harness,model,effort FROM sessions WHERE id=?1", params![id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+        assert_eq!(stored, ("cursor".into(), None, None));
+        // Re-selecting Default is a no-op even before the catalog is discovered.
+        crate::api::update_chat_model(&core, &id, &Harness::Cursor, None, None).unwrap();
+        let error = crate::live_turn::start_chat(&core, id).unwrap_err();
+        assert!(error.to_string().contains("stub adapter cannot start"), "{error}");
+    }
+
+    #[test]
+    fn undiscovered_catalog_does_not_accept_unverified_model_or_effort_choices() {
+        let (_scratch, core) = fixture();
+        let id = core.create_chat_id(&Harness::Claude, None, None).unwrap();
+        let core = std::sync::Arc::new(core);
+        assert!(crate::api::update_chat_model(&core, &id, &Harness::Cursor, Some("invented"), None).is_err());
+        assert!(crate::api::update_chat_model(&core, &id, &Harness::Cursor, None, Some("high")).is_err());
+        let harness: String = core.db.lock().unwrap()
+            .query_row("SELECT harness FROM sessions WHERE id=?1", params![id], |row| row.get(0)).unwrap();
+        assert_eq!(harness, "claude", "a refused switch must leave the chat intact");
     }
 
     #[test]
@@ -1856,9 +1911,10 @@ mod tests {
         let plan = core.plan_workspace_session("w", false).unwrap();
         assert_eq!(plan.selection.adapter_id, "codex");
         assert!(
-            plan.selection.model.starts_with("stub-"),
+            plan.selection.model.as_deref()
+                .is_some_and(|model| model.starts_with("stub-")),
             "selection must come from the registered adapter, got {}",
-            plan.selection.model
+            plan.selection.model.as_deref().unwrap_or("default")
         );
         assert_eq!(plan.workspace_title, "Payments API");
         assert!(plan.worktree_source.is_none());
@@ -2008,7 +2064,7 @@ mod tests {
             &core.db.lock().unwrap(),
             &session_id,
             "claude",
-            "opus",
+            Some("opus"),
             CapabilityTier::Fast,
             ("claude", None),
         )
@@ -2020,7 +2076,7 @@ mod tests {
             &core.db.lock().unwrap(),
             &session_id,
             "codex",
-            "gpt-5.3-codex",
+            Some("gpt-5.3-codex"),
             CapabilityTier::Fast,
             ("claude", Some("opus")),
         )
@@ -2462,7 +2518,7 @@ mod tests {
             .plan_chat_model_change(&session_id, &Harness::Codex, None)
             .unwrap()
             .expect("switching claude -> codex is a real change");
-        assert_eq!(change.selected_model(), "stub-fast");
+        assert_eq!(change.selected_model(), Some("stub-fast"));
         let mut events = core.events.subscribe();
         let event = core.commit_chat_model_change(change).unwrap();
         assert_eq!(event.kind, "session.model_changed");
@@ -2552,7 +2608,7 @@ mod tests {
             &db,
             "orchestrator",
             "claude",
-            "opus",
+            Some("opus"),
             CapabilityTier::Strong,
             ("codex", Some("old-model")),
         )
@@ -2581,7 +2637,7 @@ mod tests {
             &db,
             "orchestrator",
             "codex",
-            "other",
+            Some("other"),
             CapabilityTier::Standard,
             ("codex", Some("old-model")),
         )

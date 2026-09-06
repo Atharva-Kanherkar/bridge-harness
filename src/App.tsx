@@ -73,7 +73,7 @@ import { buildCacheDiagnostics, buildUsageHistory, clampPercent, extractUsageSna
 import { describeError, errorMessage } from "./errors";
 import { mergeForestSnapshot } from "./forest";
 import { queueExplanation, restorationPresentation, turnBudget } from "./observability";
-import { startSerialPoll } from "./polling";
+import { createCoalescedRefresh, startSerialPoll } from "./polling";
 import { Alert, AlertAction, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -258,7 +258,7 @@ function AppContent() {
   const workError = workBoard === undefined ? workQueryError : undefined;
   const workRefreshError = workBoard === undefined ? undefined : workBriefingError ?? workQueryError;
 
-  const reload = useCallback(async () => {
+  const reload = useMemo(() => createCoalescedRefresh(async () => {
     const [nextState, config] = await Promise.all([bridgeApi.state(), bridgeApi.configState()]);
     setState(nextState);
     // Re-read with the state it was published alongside: `save_permission_policy`
@@ -267,7 +267,7 @@ function AppContent() {
     setPermissionPolicy(config.permissionPolicy);
     const enabledHarnesses = new Set(config.harnesses.filter(harness => harness.enabled).map(harness => harness.id));
     setConfiguredAgents(config.agents.filter(agent => enabledHarnesses.has(agent.harness)));
-  }, []);
+  }), []);
   useEffect(() => {
     void reload().catch(value => setError(errorMessage(value)));
     let offState: (() => void) | undefined;
@@ -277,7 +277,12 @@ function AppContent() {
     let offProviderLogin: (() => void) | undefined;
     let active = true;
     const reloadHealth = invalidateHealth;
-    void bridgeApi.onStateChanged(reload).then(fn => offState = fn);
+    void bridgeApi.onStateChanged(() => {
+      void reload().catch(value => { if (active) setError(errorMessage(value)); });
+    }).then(fn => {
+      if (!active) { fn(); return; }
+      offState = fn;
+    });
     // The provider-login flow runs as an ordinary PTY under the "provider-login"
     // pseudo-workspace; when the vendor process exits, re-read health so a
     // completed sign-in populates the widget without a restart.

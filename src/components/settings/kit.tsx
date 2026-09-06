@@ -16,6 +16,7 @@
 // `lucide-react`.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { Select as SelectPrimitive } from "@base-ui/react/select";
 import { CaretDown, CaretRight, Check } from "@phosphor-icons/react";
 import { cn } from "@/lib/utils";
 
@@ -266,49 +267,58 @@ export function Select({ value, options, onChange, disabled, label, placeholder 
 }) {
   const [open, setOpen] = useState(false);
   const selected = options.find(option => option.value === value);
-  return <div className="relative shrink-0">
-    <button
-      type="button"
-      aria-haspopup="listbox"
-      aria-expanded={open}
+  return <SelectPrimitive.Root
+    value={value}
+    onValueChange={next => { if (next !== null) onChange(next); }}
+    open={open}
+    onOpenChange={setOpen}
+    disabled={disabled || options.length === 0}
+    items={options}
+  >
+    <SelectPrimitive.Trigger
       aria-label={label}
-      disabled={disabled || options.length === 0}
-      onClick={() => setOpen(current => !current)}
-      className={cn(CONTROL, width, "flex max-w-full items-center gap-1.5 hover:bg-accent")}
+      className={cn(CONTROL, width, "flex max-w-full shrink-0 items-center gap-1.5 hover:bg-accent")}
     >
       {selected?.lead}
       <span className="min-w-0 flex-1 truncate text-left">{selected?.label ?? (value || placeholder)}</span>
       <CaretDown size={12} weight="regular" aria-hidden="true" className={cn("shrink-0 text-muted-foreground/60 transition-transform", open && "rotate-180")} />
-    </button>
-    {open && <>
-      <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-      <div
-        role="listbox"
-        aria-label={label}
-        className="u-glass-popover absolute right-0 top-full z-40 mt-1 max-h-72 min-w-full overflow-y-auto rounded-lg border border-border bg-popover p-1"
+    </SelectPrimitive.Trigger>
+    {/* Escape the cards' overflow clipping and flip above the trigger when
+        there is not enough room below it. */}
+    <SelectPrimitive.Portal>
+      <SelectPrimitive.Positioner
+        align="end"
+        sideOffset={4}
+        collisionPadding={8}
+        alignItemWithTrigger={false}
+        positionMethod="fixed"
+        className="z-50 data-closed:hidden"
       >
-        {options.map(option => <button
-          key={option.value}
-          type="button"
-          role="option"
-          aria-selected={option.value === value}
-          disabled={option.disabled}
-          onClick={() => { onChange(option.value); setOpen(false); }}
-          className={cn(
-            "flex w-full items-center gap-2 whitespace-nowrap rounded-md px-2 py-1.5 text-left text-xs transition-colors disabled:opacity-40",
-            option.value === value ? "bg-accent text-foreground" : "text-foreground hover:bg-accent",
-          )}
+        <SelectPrimitive.Popup
+          aria-label={label}
+          className="u-glass-popover max-h-[min(18rem,var(--available-height))] min-w-(--anchor-width) max-w-(--available-width) overflow-y-auto rounded-lg border border-border bg-popover p-1 outline-none"
         >
-          {option.lead}
-          <span className="min-w-0 flex-1">
-            {option.label}
-            {option.description && <span className="mt-0.5 block text-[10.5px] text-muted-foreground">{option.description}</span>}
-          </span>
-          {option.value === value && <Check size={12} weight="regular" aria-hidden="true" className="shrink-0" />}
-        </button>)}
-      </div>
-    </>}
-  </div>;
+          {options.map(option => <SelectPrimitive.Item
+            key={option.value}
+            value={option.value}
+            label={option.label}
+            disabled={option.disabled}
+            className={cn(
+              "flex w-full cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs outline-none transition-colors data-disabled:opacity-40 data-highlighted:bg-accent",
+              option.value === value ? "bg-accent text-foreground" : "text-foreground hover:bg-accent",
+            )}
+          >
+            {option.lead}
+            <span className="min-w-0 flex-1">
+              <SelectPrimitive.ItemText render={<span />}>{option.label}</SelectPrimitive.ItemText>
+              {option.description && <span className="mt-0.5 block text-[10.5px] text-muted-foreground">{option.description}</span>}
+            </span>
+            {option.value === value && <Check size={12} weight="regular" aria-hidden="true" className="shrink-0" />}
+          </SelectPrimitive.Item>)}
+        </SelectPrimitive.Popup>
+      </SelectPrimitive.Positioner>
+    </SelectPrimitive.Portal>
+  </SelectPrimitive.Root>;
 }
 
 /** A single-line text field. Same box as the select, without the chevron. */
