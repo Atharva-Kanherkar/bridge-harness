@@ -1419,6 +1419,11 @@ impl HarnessAdapter for CodexAdapter {
     }
     fn descriptor(&self) -> AdapterDescriptor {
         let version = codex_adapter::binary_version();
+        // One owned snapshot releases the read lock before building the
+        // descriptor. Re-entering it can deadlock behind a pending refresh
+        // writer while an earlier field's temporary guard is still alive.
+        let catalog = self.models.read().unwrap().clone();
+        let default_model = promoted_default_model(&catalog.models, "gpt-5.6-luna");
         AdapterDescriptor {
             id: "codex".into(),
             label: "Codex".into(),
@@ -1446,12 +1451,9 @@ impl HarnessAdapter for CodexAdapter {
             unavailable_reason: codex_adapter::resolve_runtime()
                 .is_none()
                 .then(|| "Codex binary is not installed".into()),
-            models: self.models.read().unwrap().models.clone(),
-            default_model: promoted_default_model(
-                &self.models.read().unwrap().models,
-                "gpt-5.6-luna",
-            ),
-            model_catalog: self.models.read().unwrap().diagnostics.clone(),
+            models: catalog.models,
+            default_model,
+            model_catalog: catalog.diagnostics,
         }
     }
     fn refresh_availability(&self) {
@@ -1578,6 +1580,10 @@ impl HarnessAdapter for ClaudeAdapter {
     }
     fn descriptor(&self) -> AdapterDescriptor {
         let version = claude_adapter::binary_version();
+        // Keep the model list, default, and diagnostics from the same read,
+        // without recursively locking against a concurrent discovery writer.
+        let catalog = self.models.read().unwrap().clone();
+        let default_model = promoted_default_model(&catalog.models, claude_adapter::DEFAULT_MODEL);
         AdapterDescriptor {
             id: "claude".into(),
             label: "Claude Code".into(),
@@ -1608,12 +1614,9 @@ impl HarnessAdapter for ClaudeAdapter {
             .collect(),
             sandbox_modes: SandboxMode::ALL.to_vec(),
             unavailable_reason: claude_adapter::unavailable_reason(),
-            models: self.models.read().unwrap().models.clone(),
-            default_model: promoted_default_model(
-                &self.models.read().unwrap().models,
-                claude_adapter::DEFAULT_MODEL,
-            ),
-            model_catalog: self.models.read().unwrap().diagnostics.clone(),
+            models: catalog.models,
+            default_model,
+            model_catalog: catalog.diagnostics,
         }
     }
     fn refresh_availability(&self) {
@@ -1692,6 +1695,85 @@ impl HarnessAdapter for ClaudeAdapter {
 mod tests {
     use super::*;
     use crate::model::ModelCatalogDiagnostics;
+
+    fn descriptor_completes_during_catalog_refresh(
+        make_adapter: impl FnOnce(Arc<RwLock<model_catalog::ResolvedCatalog>>) -> Box<dyn HarnessAdapter>,
+    ) {
+        let candidates = (0..model_catalog::MAX_CATALOG_ENTRIES)
+            .map(|index| CatalogCandidate::stable(
+                format!("test-model-{index}"),
+                format!("Test model {index}"),
+                CapabilityTier::Standard,
+                index as i64,
+            ))
+            .collect();
+        let models = Arc::new(RwLock::new(model_catalog::resolve(
+            "test", Ok(candidates), &[], None, chrono::Utc::now(),
+        )));
+        let adapter = make_adapter(models.clone());
+        let stop = Arc::new(AtomicBool::new(false));
+        let start = Arc::new(std::sync::Barrier::new(2));
+        let writer = {
+            let stop = stop.clone();
+            let start = start.clone();
+            thread::spawn(move || {
+                start.wait();
+                let mut generation = 0;
+                while !stop.load(Ordering::Acquire) {
+                    {
+                        let mut current = models.write().unwrap();
+                        let label = generation.to_string();
+                        current.models[0].label = label.clone();
+                        current.diagnostics.last_error = Some(label);
+                    }
+                    generation += 1;
+                    thread::yield_now();
+                }
+            })
+        };
+        let (done, completed) = std::sync::mpsc::channel();
+        let reader = thread::spawn(move || {
+            start.wait();
+            for _ in 0..64 {
+                let descriptor = adapter.descriptor();
+                assert_eq!(descriptor.models.len(), model_catalog::MAX_CATALOG_ENTRIES);
+                assert!(descriptor.models.iter().any(|model| {
+                    Some(&model.id) == descriptor.default_model.as_ref()
+                }));
+                if let Some(generation) = descriptor.model_catalog.last_error {
+                    assert_eq!(descriptor.models[0].label, generation);
+                }
+            }
+            done.send(()).unwrap();
+        });
+        // A recursive read can deadlock behind the pending refresh writer on
+        // Linux. Bound the regression itself so it fails instead of hanging CI.
+        let result = completed.recv_timeout(Duration::from_secs(30));
+        stop.store(true, Ordering::Release);
+        result.expect("descriptor reads must complete while the catalog is refreshed");
+        reader.join().unwrap();
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn codex_descriptors_complete_during_catalog_refresh() {
+        descriptor_completes_during_catalog_refresh(|models| Box::new(CodexAdapter {
+            streams: Mutex::new(HashMap::new()),
+            models,
+            notify: None,
+            refreshing: Arc::new(AtomicBool::new(false)),
+        }));
+    }
+
+    #[test]
+    fn claude_descriptors_complete_during_catalog_refresh() {
+        descriptor_completes_during_catalog_refresh(|models| Box::new(ClaudeAdapter {
+            streams: Mutex::new(HashMap::new()),
+            models,
+            notify: None,
+            refreshing: Arc::new(AtomicBool::new(false)),
+        }));
+    }
 
     fn discovered(id: &str, label: &str) -> DiscoveredModel {
         DiscoveredModel {

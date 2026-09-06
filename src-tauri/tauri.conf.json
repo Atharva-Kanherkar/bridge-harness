@@ -4,7 +4,7 @@
   "version": "0.5.1",
   "identifier": "dev.bridge.deck",
   "build": {
-    "beforeDevCommand": "bun run prepare:browser-host:dev && bun run prepare:daemon:dev && bun run dev",
+    "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "bun run build && bun run prepare:browser-host && bun run prepare:daemon && bun run prepare:claude-sidecar",
     "frontendDist": "../dist"
