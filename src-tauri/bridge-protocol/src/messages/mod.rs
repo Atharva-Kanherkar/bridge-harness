@@ -194,6 +194,7 @@ typed_methods![
     (ReplaySessionEvents, ReplaySessionEventsParams, ReplaySessionEventsResult),
     (ActivateSessionEntry, ActivateSessionEntryParams, SessionForestSnapshot),
     (CreateChat, CreateChatParams, BridgeState),
+    (CreateChatId, CreateChatIdParams, CreateChatIdResult),
     (CreateAsideChat, CreateAsideChatParams, CreateAsideChatResult),
     (CreateWorkspaceSession, CreateWorkspaceSessionParams, BridgeState),
     (StartSession, StartSessionParams, BridgeState),

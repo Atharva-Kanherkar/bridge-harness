@@ -16,7 +16,6 @@
 use bridge_client::{ClientError, DaemonClient, Endpoint, SessionEventStream};
 use bridge_protocol::MethodName;
 use serde_json::{json, Value};
-use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
@@ -278,27 +277,6 @@ fn exec_method(
     }
 }
 
-/// The session created by a mutation: the id in `after` that `before` lacked.
-fn created_session_id(before: &Value, after: &Value) -> Option<String> {
-    let ids = |state: &Value| -> HashSet<String> {
-        state["sessions"]
-            .as_array()
-            .map(|sessions| {
-                sessions
-                    .iter()
-                    .filter_map(|session| session["id"].as_str().map(str::to_owned))
-                    .collect()
-            })
-            .unwrap_or_default()
-    };
-    let before = ids(before);
-    let mut created = ids(after).into_iter().filter(|id| !before.contains(id));
-    let id = created.next()?;
-    // Two unknown sessions means another client mutated concurrently; better
-    // to fail than to drive someone else's session.
-    created.next().is_none().then_some(id)
-}
-
 /// Whether a `turn.completed` event itself reports the turn as failed.
 fn completed_turn_failed(payload: &Value) -> bool {
     payload["status"].as_str() == Some("failed")
@@ -348,14 +326,14 @@ fn exec_turn(client: &DaemonClient, flags: &ExecFlags, budget: &Budget) -> Resul
         }
     }
 
-    let before = budget.call(client, MethodName::GetState, None)?;
     let mut create = json!({"harness": harness, "title": "bridge exec"});
     if let Some(model) = &flags.model {
         create["model"] = json!(model);
     }
-    let after = budget.call(client, MethodName::CreateChat, Some(create))?;
-    let session_id = created_session_id(&before, &after)
-        .ok_or("could not identify the created session unambiguously")?;
+    let created = budget.call(client, MethodName::CreateChatId, Some(create))?;
+    let created: bridge_protocol::messages::CreateChatIdResult = serde_json::from_value(created)
+        .map_err(|error| format!("invalid chat creation result: {error}"))?;
+    let session_id = created.session_id;
     emit(&json!({"type": "session", "sessionId": session_id, "harness": harness}));
 
     // Subscribe from cursor 0 before starting, so nothing between start and
@@ -486,32 +464,6 @@ fn learning_run(args: &[String]) -> ExitCode {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_created_session_is_identified_by_state_difference_not_recency() {
-        // The pre-existing session has startedAt set; the new chat has null —
-        // recency heuristics pick the wrong one, the set difference cannot.
-        let before = json!({"sessions": [
-            {"id": "old", "startedAt": "2026-08-06T10:00:00Z"},
-        ]});
-        let after = json!({"sessions": [
-            {"id": "old", "startedAt": "2026-08-06T10:00:00Z"},
-            {"id": "new", "startedAt": null},
-        ]});
-        assert_eq!(created_session_id(&before, &after), Some("new".into()));
-    }
-
-    #[test]
-    fn ambiguous_or_missing_creations_are_refused() {
-        let before = json!({"sessions": []});
-        assert_eq!(created_session_id(&before, &before), None, "nothing created");
-        let two = json!({"sessions": [{"id": "a"}, {"id": "b"}]});
-        assert_eq!(
-            created_session_id(&before, &two),
-            None,
-            "two unknown sessions means a concurrent client — refuse to guess"
-        );
-    }
 
     #[test]
     fn turn_failures_are_recognized_in_both_provider_shapes() {

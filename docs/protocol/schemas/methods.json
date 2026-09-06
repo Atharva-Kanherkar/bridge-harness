@@ -275,6 +275,13 @@
       "resultSchema": "bridge-state.json"
     },
     {
+      "command": "create_chat_id",
+      "domain": "sessions",
+      "method": "sessions/create_chat_id",
+      "paramsSchema": "create-chat-id-params.json",
+      "resultSchema": "create-chat-id-result.json"
+    },
+    {
       "command": "create_aside_chat",
       "domain": "sessions",
       "method": "sessions/create_aside_chat",
@@ -1145,7 +1152,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 5
+    "minor": 6
   },
   "reserved": {
     "cancel": "$/cancel",
