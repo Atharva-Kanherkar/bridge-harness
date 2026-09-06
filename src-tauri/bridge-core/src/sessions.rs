@@ -1114,26 +1114,31 @@ impl BridgeCore {
                 status: Some("ready".into()),
                 title: Some(format!("{subject} model changed")),
                 text: Some(detail),
-                data: serde_json::json!({
-                    "previousHarness": change.previous_harness,
-                    "previousModel": change.previous_model,
-                    "harness": change.adapter_id,
-                    "model": change.selected.id,
-                    "modelLabel": change.selected.label,
-                    "tier": change.selected.tier,
-                    // The milestone marker every model change carries, and
-                    // the separate claim about whether the provider session
-                    // survived it. They used to be the same field, so making
-                    // the claim truthful would have hidden the row.
-                    "modelChanged": true,
-                    "freshProviderSession": !resumes_natively,
-                    "carriedContext": carried.map(|carried| serde_json::json!({
-                        "summary": carried.summary,
-                        "decisions": carried.decisions,
-                        "filesTouched": carried.files_touched,
-                        "recentEntries": carried.recent_entries,
-                    })),
-                }),
+                data: {
+                    let mut obj = serde_json::json!({
+                        "previousHarness": change.previous_harness,
+                        "previousModel": change.previous_model,
+                        "harness": change.adapter_id,
+                        "model": change.selected.id,
+                        "modelLabel": change.selected.label,
+                        "tier": change.selected.tier,
+                        // The milestone marker every model change carries, and
+                        // the separate claim about whether the provider session
+                        // survived it. They used to be the same field, so making
+                        // the claim truthful would have hidden the row.
+                        "modelChanged": true,
+                        "freshProviderSession": !resumes_natively,
+                    });
+                    if let Some(carried) = carried {
+                        obj["carriedContext"] = serde_json::json!({
+                            "summary": carried.summary,
+                            "decisions": carried.decisions,
+                            "filesTouched": carried.files_touched,
+                            "recentEntries": carried.recent_entries,
+                        });
+                    }
+                    obj
+                },
             },
             &serde_json::json!({"source": "user-selection"}),
         )?;
