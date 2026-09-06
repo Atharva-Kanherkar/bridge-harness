@@ -147,11 +147,9 @@ export function groupItems(items: ConversationItem[]): Rendered[] {
 
     // A model change and a stale base are milestones, not activity: a group of
     // one labeled "Used tools" is how a reload made either read as a glitch.
-    // `modelChanged` is the stable marker every model change carries;
-    // `freshProviderSession` is the legacy key entries written before the
-    // same-harness native-resume change carry, and still closes a group so
-    // old transcripts keep rendering.
-    if (item.data.staleBase === true || item.data.freshProviderSession === true || item.data.modelChanged === true) {
+    // The switch is a normalized item type, so grouping keys off `type` —
+    // never off a payload field.
+    if (item.data.staleBase === true || item.type === "model-change") {
       closeGroup();
       out.push({ kind: "item", item });
       continue;

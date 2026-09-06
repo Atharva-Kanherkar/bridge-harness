@@ -109,19 +109,18 @@ describe("groupItems", () => {
   it("keeps a model change out of the run it interrupts", () => {
     expect(shape([
       item("activity"),
-      item("activity", { data: { freshProviderSession: true } }),
+      item("model-change"),
       item("activity"),
-    ])).toEqual(["group", "activity", "group"]);
+    ])).toEqual(["group", "model-change", "group"]);
   });
 
-  it("keeps a same-harness model change out of the run via the stable marker", () => {
-    // Same-harness switches carry `modelChanged: true` with
-    // `freshProviderSession: false`; the stable marker alone must still close
-    // the group so the milestone never folds into a "Used tools" run.
+  it("keeps a resumed model change out of the run just the same", () => {
+    // The milestone is a normalized item type, so grouping finds it however
+    // the switch went — natively resumed or freshly started.
     expect(shape([
       item("activity"),
-      item("activity", { data: { modelChanged: true, freshProviderSession: false } }),
+      item("model-change", { data: { modelChanged: true, freshProviderSession: false } }),
       item("activity"),
-    ])).toEqual(["group", "activity", "group"]);
+    ])).toEqual(["group", "model-change", "group"]);
   });
 });

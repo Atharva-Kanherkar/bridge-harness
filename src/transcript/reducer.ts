@@ -361,6 +361,17 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
       return;
     }
 
+    case "model.change": {
+      // The switch milestone: its own item type, so grouping and rendering
+      // never branch on a payload field to find it.
+      const item = upsert(fold, event, "model-change", { title: event.title, status: event.status });
+      item.status = event.status ?? item.status;
+      item.title = event.title || item.title;
+      if (event.text) item.text = event.text;
+      item.data = { ...item.data, ...envelope.providerData };
+      return;
+    }
+
     case "raw": {
       if (!event.inspectable) return;
       const item = upsert(fold, event, "raw", { title: event.title });

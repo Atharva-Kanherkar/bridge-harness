@@ -16,15 +16,22 @@ return `Native`, so a Sonnet→Opus switch discards the whole Claude Code sessio
 exactly like Codex→Claude does and restarts from the 8 KB projection.
 
 The provider prompt cache is per model, so the cache miss on a model change is
-unavoidable. Losing the conversation is not. Both harnesses already support it:
-the Claude Agent SDK sets `resume` and `model` independently
+unavoidable. Losing the conversation is not — where the harness supports it.
+Both Codex and Claude support native resume across a model change: the Claude
+Agent SDK sets `resume` and `model` independently
 (`sidecar/claude-agent/options.mjs:54-56`), and Codex `thread/resume` carries
-`model`. The effort-only path in `api.rs` is the existing proof of the shape —
-it keeps the native identity and just restarts the runtime.
+`model`. Adapters without native resume (Cursor, Grok) cannot, so the switch
+must check eligibility rather than assume it. The effort-only path in `api.rs`
+is the existing proof of the shape — it keeps the native identity and just
+restarts the runtime.
 
 ## Functional Behavior
 
-### 1. A same-harness model switch keeps the provider session
+### 1. A resumable same-harness switch keeps the provider session
+
+Native continuation is an eligibility check made at plan time, not a harness
+comparison: the harness is unchanged, the adapter reports
+`supports_native_resume`, and a provider thread is actually stored. Only then:
 
 - The same-harness branch of `persist_chat_model_selection` keeps
   `provider_session_id` and the `backend_*` binding. It still clears
@@ -35,34 +42,43 @@ it keeps the native identity and just restarts the runtime.
 - The next turn's `select_plan` returns `Native`, the adapter resumes the stored
   thread under the new model, and `usage_ledger.restoration_mode` for that turn
   is `native`.
+- A same-harness change that is *not* resumable — adapter without native
+  resume, or a chat with no stored thread — takes the handover path exactly
+  like a cross-harness change (summary, projection, `Fresh`), except the
+  backend binding is kept, since the same agent still serves the session.
+  The dead provider id is cleared so nothing later mistakes it for a resumable
+  thread.
 - The cross-harness branch is unchanged: it still clears the provider session,
   the backend binding, and the head, and still restores from the projection.
 
-### 2. A same-harness switch does not summarise
+### 2. Only a natively resumed switch skips the summary
 
-- `summarise_for_switch` is skipped entirely when the harness is unchanged: the
-  provider keeps the conversation, so there is nothing to hand over.
-- No `compaction.requested` entry is appended by a same-harness switch, and
-  therefore no `compaction.failed` from its timeout.
-- A cross-harness switch still summarises exactly as today, with the same
-  bounded budget and the same swallow-on-failure behavior.
+- `summarise_for_switch` is skipped entirely when the next turn can resume the
+  stored thread: the provider keeps the conversation, so there is nothing to
+  hand over.
+- No `compaction.requested` entry is appended by such a switch, and therefore
+  no `compaction.failed` from its timeout.
+- Every other switch still summarises exactly as today, with the same bounded
+  budget and the same swallow-on-failure behavior.
 
 ### 3. The transcript tells the truth, and still shows the milestone
 
 - `session.model_changed` is still appended for both kinds of switch — the user
   changed the model, which is a real boundary in the conversation.
-- For a same-harness switch the detail text says the conversation continues on
-  the same provider session, and `data.freshProviderSession` is `false`. It does
-  not claim carried context, because nothing was carried; `data.carriedContext`
-  is absent.
-- For a cross-harness switch the text and `freshProviderSession: true` are
+- For a natively resumed switch the detail text says the conversation continues
+  on the same provider session, and `data.freshProviderSession` is `false`. It
+  does not claim carried context, because nothing was carried;
+  `data.carriedContext` is absent.
+- For a handover switch the text and `freshProviderSession: true` are
   unchanged.
-- Because `freshProviderSession === true` is currently the *only* key the
-  frontend uses to render the milestone (`AgentConversation.tsx` `ItemView`) and
-  to close an activity group (`transcript/grouping.ts`), a stable
-  `data.modelChanged: true` is added to every `session.model_changed` payload and
-  both call sites accept it. The legacy `freshProviderSession` key is still
-  accepted so entries written before this change keep rendering.
+- The milestone is a normalized item type, not a payload branch: both codecs
+  decode `session.model_changed` to the `model.change` event, the reducer folds
+  it to a `model-change` item, and grouping (`transcript/grouping.ts`) and
+  rendering (`AgentConversation.tsx` `ItemView`) key off that type. This keeps
+  the transcript contract's invariant that grouping is a function of item type,
+  position, and status — never of a payload field. The `data.modelChanged` /
+  `data.freshProviderSession` fields are still written as the durable record of
+  what the switch claimed; nothing under `src/transcript/` branches on them.
 
 ### 4. A cross-harness switch clears the stale native id (G10)
 
@@ -112,19 +128,24 @@ it keeps the native identity and just restarts the runtime.
 
 Rust (`src-tauri/bridge-core`):
 
-- `sessions::tests` — `persist_chat_model_selection` on a same-harness change
-  leaves `provider_session_id` and `backend_id` intact; on a cross-harness change
-  it clears both. Same test asserts the guarded UPDATE still matches on the
-  previous harness/model and still returns 0 when the row moved underneath.
-- `sessions::tests` — after `commit_chat_model_change` for a same-harness change,
-  `session_heads.restoration_mode` is `native`, `resume_eligibility` is `native`,
-  and `native_provider_session_id` is unchanged.
+- `sessions::tests` — `persist_chat_model_selection` on a resumable same-harness
+  change leaves `provider_session_id` and `backend_id` intact; on a
+  non-resumable same-harness change it clears the provider id but keeps the
+  backend binding; on a cross-harness change it clears both. The guarded UPDATE
+  still matches on the previous harness/model and still returns 0 when the row
+  moved underneath.
+- `sessions::tests` — after `commit_chat_model_change` for a resumable
+  same-harness change, `session_heads.restoration_mode` is `native`,
+  `resume_eligibility` is `native`, and `native_provider_session_id` is
+  unchanged. A same-harness change on an adapter without resume support, and
+  one with no stored thread, both commit `fresh`, clear the provider id, and
+  report `freshProviderSession: true` with the projection in `carriedContext`.
 - `sessions::tests` — after a cross-harness `commit_chat_model_change`,
   `session_heads.restoration_mode` is `fresh` and `native_provider_session_id`
   IS NULL.
-- `sessions::tests` — the `session.model_changed` payload for a same-harness
-  change has `modelChanged: true`, `freshProviderSession: false`, and no
-  `carriedContext`; the cross-harness payload keeps `freshProviderSession: true`
+- `sessions::tests` — the `session.model_changed` payload for a natively
+  resumed change has `modelChanged: true`, `freshProviderSession: false`, and
+  no `carriedContext`; the handover payload keeps `freshProviderSession: true`
   and gains `modelChanged: true`.
 - `restoration::tests` — `select_plan` with a retained provider id and a native
   adapter returns `Native`, which is what the kept id buys. `set_head_state`
@@ -139,21 +160,24 @@ Rust (`src-tauri/bridge-core`):
 
 Frontend (Vitest):
 
-- `src/transcript/grouping.test.ts` — an item carrying only `modelChanged: true`
-  closes the activity group, and the legacy `freshProviderSession: true` item
-  still does.
+- `src/transcript/codec.test.ts` — `session.model_changed` decodes to the
+  `model.change` event on the live and durable paths alike.
+- `src/transcript/grouping.test.ts` — a `model-change` item closes the
+  activity group however the switch went (resumed or fresh).
+- `src/conversation.test.ts` — a `session.model_changed` entry projects to a
+  `model-change` item carrying the carried-context wording.
 - `src/components/AgentConversation.test.tsx` — a `session.model_changed` entry
   with `freshProviderSession: false` and `modelChanged: true` still renders the
-  model-changed row.
+  model-changed row, via the normalized type rather than the payload.
 
 ## Integration / Functional Tests
 
-- A same-harness switch followed by a cold start selects `Native` and issues a
-  resume rather than a fresh start (asserted at the plan/params level; no test
-  fixture can spawn a provider process — every stub's `start()` errors by
-  design, as `feat-336`'s contract already records).
-- A cross-harness switch followed by a cold start still selects
-  `CheckpointRestored`.
+- A resumable same-harness switch followed by a cold start selects `Native` and
+  issues a resume rather than a fresh start (asserted at the plan/params level;
+  no test fixture can spawn a provider process — every stub's `start()` errors
+  by design, as `feat-336`'s contract already records).
+- A non-resumable same-harness switch and a cross-harness switch followed by a
+  cold start still select `CheckpointRestored`.
 
 ## Smoke Tests
 
