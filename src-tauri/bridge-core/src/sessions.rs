@@ -216,6 +216,15 @@ impl ChatModelChange {
     pub fn selected_model(&self) -> &str {
         &self.selected.id
     }
+
+    /// Whether this change stays on the same harness.
+    ///
+    /// The whole switch differs on this: the same agent can resume its own
+    /// thread under a new model, so there is nothing to summarise, nothing to
+    /// carry, and no reason to discard the provider session.
+    pub fn keeps_harness(&self) -> bool {
+        self.previous_harness == self.adapter_id
+    }
 }
 
 impl BridgeCore {
@@ -1013,34 +1022,63 @@ impl BridgeCore {
                     .into(),
             ));
         }
-        restoration::set_head_state(
-            &transaction,
-            session_id,
-            RestorationMode::Fresh,
-            ResumeEligibility::Fresh,
-            None,
-        )?;
+        let keeps_harness = change.keeps_harness();
+        if keeps_harness {
+            // The stored thread is still this agent's own, so the next turn
+            // resumes it under the new model. `set_head_state` coalesces a
+            // `None` id, which is what keeps the identity here.
+            restoration::set_head_state(
+                &transaction,
+                session_id,
+                RestorationMode::Native,
+                ResumeEligibility::Native,
+                None,
+            )?;
+        } else {
+            // A different agent cannot resume this thread, and leaving the id
+            // on the head surfaced a dead thread in the forest snapshot long
+            // after `sessions.provider_session_id` was cleared.
+            restoration::clear_head_state_for_new_provider(
+                &transaction,
+                session_id,
+                RestorationMode::Fresh,
+                ResumeEligibility::Fresh,
+            )?;
+        }
         // Say what the next provider will actually inherit. The projection is
         // read before any switch bookkeeping appends, so it describes exactly
-        // what start_chat's cold path will inject.
-        let carried = carried_context(&transaction, session_id);
+        // what start_chat's cold path will inject. A same-harness change
+        // inherits everything natively, so there is nothing to project and
+        // nothing to claim.
+        let carried = (!keeps_harness)
+            .then(|| carried_context(&transaction, session_id))
+            .flatten();
         let subject = if change.kind == "orchestrator" {
             "Orchestrator"
         } else {
             "Chat"
         };
-        let carry_note = carried
-            .as_ref()
-            .map(CarriedContext::describe)
-            .unwrap_or_else(|| "no context carried (summary unavailable)".to_owned());
-        let detail = format!(
-            "{subject} runtime changed from {}/{} to {}/{}. The next message starts a fresh provider session; {}.",
-            change.previous_harness,
-            change.previous_model.as_deref().unwrap_or("automatic"),
-            change.adapter_id,
-            change.selected.id,
-            carry_note,
-        );
+        let detail = if keeps_harness {
+            format!(
+                "{subject} model changed from {} to {}. The conversation continues on the same {} session.",
+                change.previous_model.as_deref().unwrap_or("automatic"),
+                change.selected.id,
+                change.adapter_id,
+            )
+        } else {
+            let carry_note = carried
+                .as_ref()
+                .map(CarriedContext::describe)
+                .unwrap_or_else(|| "no context carried (summary unavailable)".to_owned());
+            format!(
+                "{subject} runtime changed from {}/{} to {}/{}. The next message starts a fresh provider session; {}.",
+                change.previous_harness,
+                change.previous_model.as_deref().unwrap_or("automatic"),
+                change.adapter_id,
+                change.selected.id,
+                carry_note,
+            )
+        };
         store::event(
             &transaction,
             "chat",
@@ -1065,7 +1103,12 @@ impl BridgeCore {
                     "model": change.selected.id,
                     "modelLabel": change.selected.label,
                     "tier": change.selected.tier,
-                    "freshProviderSession": true,
+                    // The milestone marker every model change carries, and
+                    // the separate claim about whether the provider session
+                    // survived it. They used to be the same field, so making
+                    // the claim truthful would have hidden the row.
+                    "modelChanged": true,
+                    "freshProviderSession": !keeps_harness,
                     "carriedContext": carried.map(|carried| serde_json::json!({
                         "summary": carried.summary,
                         "decisions": carried.decisions,
@@ -1240,8 +1283,14 @@ pub(crate) fn persist_chat_model_selection(
             params![session_id, adapter_id, model, tier.as_str(), previous_harness, previous_model],
         )?);
     }
+    // The provider session survives a model change on the same harness. The
+    // cache miss is unavoidable — provider caches are per model — but the
+    // conversation is not: the Claude Agent SDK sets `resume` and `model`
+    // independently, and Codex `thread/resume` carries `model`. Clearing the
+    // id here is what forced a Sonnet→Opus switch to restart from an 8 KB
+    // projection as if it had crossed harnesses.
     Ok(db.execute(
-        "UPDATE sessions SET harness=?2,model=?3,requested_tier=?4,provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator') AND harness=?5 AND model IS ?6 AND active_turn_id IS NULL",
+        "UPDATE sessions SET harness=?2,model=?3,requested_tier=?4,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator') AND harness=?5 AND model IS ?6 AND active_turn_id IS NULL",
         params![session_id, adapter_id, model, tier.as_str(), previous_harness, previous_model],
     )?)
 }
@@ -2406,6 +2455,172 @@ mod tests {
             0,
             "a failed outgoing summary cannot create a reconstructed boundary"
         );
+    }
+
+    #[test]
+    fn a_same_harness_model_change_keeps_the_provider_session_and_resumes_natively() {
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Codex, Some("stub-fast"), None).unwrap();
+        let session_id = only_session_id(&core);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "UPDATE sessions SET provider_session_id='thread-1',backend_id='codex.app-server',backend_version='1.2.3' WHERE id=?1",
+                params![session_id],
+            )
+            .unwrap();
+            restoration::set_head_state(
+                &db,
+                &session_id,
+                RestorationMode::Native,
+                ResumeEligibility::Native,
+                Some("thread-1"),
+            )
+            .unwrap();
+            // Something worth summarising, so a skipped summary is a decision
+            // rather than an empty-conversation no-op.
+            session_forest::SessionForest::new(&db)
+                .append(
+                    &session_id,
+                    session_forest::EntryKind::UserMessage,
+                    serde_json::json!({"text":"we decided to change src/app.ts"}),
+                )
+                .unwrap();
+        }
+
+        let change = core
+            .plan_chat_model_change(&session_id, &Harness::Codex, Some("stub-standard"))
+            .unwrap()
+            .expect("stub-fast -> stub-standard is a real change");
+        assert!(change.keeps_harness());
+        let event = core.commit_chat_model_change(change).unwrap();
+
+        let db = core.db.lock().unwrap();
+        let (provider, backend, model): (Option<String>, Option<String>, Option<String>) = db
+            .query_row(
+                "SELECT provider_session_id,backend_id,model FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        // The whole point: the thread survives so the next turn resumes it.
+        assert_eq!(provider.as_deref(), Some("thread-1"));
+        assert_eq!(backend.as_deref(), Some("codex.app-server"));
+        assert_eq!(model.as_deref(), Some("stub-standard"));
+
+        let (mode, eligibility, native): (String, String, Option<String>) = db
+            .query_row(
+                "SELECT restoration_mode,resume_eligibility,native_provider_session_id FROM session_heads WHERE session_id=?1",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(mode, "native");
+        assert_eq!(eligibility, "native");
+        assert_eq!(native.as_deref(), Some("thread-1"));
+
+        // And a plan built on that state resumes rather than projecting.
+        assert_eq!(
+            restoration::select_plan(false, provider.as_deref(), true, false, true, false),
+            restoration::RestorationPlan::Native
+        );
+
+        // The milestone still renders, and it no longer claims a fresh session.
+        assert_eq!(event.data["modelChanged"], true);
+        assert_eq!(event.data["freshProviderSession"], false);
+        assert!(event.data["carriedContext"].is_null());
+        let text = event.text.unwrap_or_default();
+        assert!(text.contains("continues on the same codex session"), "{text}");
+        assert!(!text.contains("fresh provider session"), "{text}");
+    }
+
+    #[test]
+    fn a_cross_harness_change_clears_the_provider_session_and_the_stale_native_id() {
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Claude, None, None).unwrap();
+        let session_id = only_session_id(&core);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "UPDATE sessions SET provider_session_id='claude-session',backend_id='claude.agent-sdk' WHERE id=?1",
+                params![session_id],
+            )
+            .unwrap();
+            restoration::set_head_state(
+                &db,
+                &session_id,
+                RestorationMode::Native,
+                ResumeEligibility::Native,
+                Some("claude-session"),
+            )
+            .unwrap();
+        }
+
+        let change = core
+            .plan_chat_model_change(&session_id, &Harness::Codex, None)
+            .unwrap()
+            .expect("claude -> codex is a real change");
+        assert!(!change.keeps_harness());
+        let event = core.commit_chat_model_change(change).unwrap();
+
+        let db = core.db.lock().unwrap();
+        let (provider, backend): (Option<String>, Option<String>) = db
+            .query_row(
+                "SELECT provider_session_id,backend_id FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(provider, None);
+        assert_eq!(backend, None);
+
+        let (mode, native): (String, Option<String>) = db
+            .query_row(
+                "SELECT restoration_mode,native_provider_session_id FROM session_heads WHERE session_id=?1",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(mode, "fresh");
+        // G10: this used to keep pointing at a thread nothing would ever resume.
+        assert_eq!(native, None);
+        assert_eq!(event.data["modelChanged"], true);
+        assert_eq!(event.data["freshProviderSession"], true);
+    }
+
+    #[test]
+    fn persist_chat_model_selection_still_guards_against_a_row_that_moved() {
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Codex, Some("stub-fast"), None).unwrap();
+        let session_id = only_session_id(&core);
+        let db = core.db.lock().unwrap();
+        db.execute(
+            "UPDATE sessions SET provider_session_id='thread-1' WHERE id=?1",
+            params![session_id],
+        )
+        .unwrap();
+        // The guard reads the model the plan saw; a different one means the row
+        // changed underneath and the switch must not clobber it.
+        assert_eq!(
+            persist_chat_model_selection(
+                &db,
+                &session_id,
+                "codex",
+                "stub-standard",
+                CapabilityTier::Standard,
+                ("codex", Some("someone-else-switched")),
+            )
+            .unwrap(),
+            0
+        );
+        let provider: Option<String> = db
+            .query_row(
+                "SELECT provider_session_id FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(provider.as_deref(), Some("thread-1"));
     }
 
     #[test]

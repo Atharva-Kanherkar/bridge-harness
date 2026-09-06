@@ -187,6 +187,40 @@ pub fn record_checkpoint_restore_failed(
     )
 }
 
+/// Reset the head for a session that is about to be served by a *different*
+/// provider, clearing the native thread id instead of coalescing it.
+///
+/// [`set_head_state`] deliberately keeps an existing id when passed `None`, so
+/// a launch that does not know the thread id cannot wipe a good one. That is
+/// wrong for exactly one caller: a cross-harness switch, where the stored id
+/// belongs to an agent that will never serve this session again. Leaving it
+/// behind left `session_heads.native_provider_session_id` pointing at a dead
+/// thread while `sessions.provider_session_id` was already NULL, and the forest
+/// snapshot surfaced the stale id.
+pub fn clear_head_state_for_new_provider(
+    db: &Connection,
+    session_id: &str,
+    mode: RestorationMode,
+    eligibility: ResumeEligibility,
+) -> Result<(), BridgeError> {
+    db.execute(
+        "INSERT INTO session_heads(session_id,native_provider_session_id,restoration_mode,resume_eligibility,updated_at)
+         VALUES(?1,NULL,?2,?3,?4)
+         ON CONFLICT(session_id) DO UPDATE SET
+            native_provider_session_id=NULL,
+            restoration_mode=excluded.restoration_mode,
+            resume_eligibility=excluded.resume_eligibility,
+            updated_at=excluded.updated_at",
+        params![
+            session_id,
+            mode.as_str(),
+            eligibility.as_str(),
+            Utc::now().to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
 pub fn set_head_state(
     db: &Connection,
     session_id: &str,
@@ -405,5 +439,65 @@ mod tests {
         assert_eq!(failure.payload["stage"], "checkpoint_restored");
         let events = store::state(&db).unwrap().events;
         assert_eq!(events[0].kind, "session.checkpoint_restore_failed");
+    }
+
+    #[test]
+    fn a_retained_provider_id_resumes_natively_which_is_what_the_kept_id_buys() {
+        // The same-harness switch keeps `sessions.provider_session_id`; the
+        // next cold start must select Native on exactly that state.
+        assert_eq!(
+            select_plan(false, Some("thread-1"), true, false, true, false),
+            RestorationPlan::Native
+        );
+    }
+
+    #[test]
+    fn head_state_coalesces_a_none_id_but_clears_it_when_asked() {
+        let db = database();
+        set_head_state(
+            &db,
+            "s",
+            RestorationMode::Native,
+            ResumeEligibility::Native,
+            Some("thread-1"),
+        )
+        .unwrap();
+        // The default: a launch that does not know the thread id must not wipe
+        // a good one.
+        set_head_state(
+            &db,
+            "s",
+            RestorationMode::Native,
+            ResumeEligibility::Native,
+            None,
+        )
+        .unwrap();
+        let kept: Option<String> = db
+            .query_row(
+                "SELECT native_provider_session_id FROM session_heads WHERE session_id='s'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept.as_deref(), Some("thread-1"));
+
+        // The opt-in clear: a cross-harness switch, whose stored id belongs to
+        // an agent that will never serve this session again.
+        clear_head_state_for_new_provider(
+            &db,
+            "s",
+            RestorationMode::Fresh,
+            ResumeEligibility::Fresh,
+        )
+        .unwrap();
+        let (mode, cleared): (String, Option<String>) = db
+            .query_row(
+                "SELECT restoration_mode,native_provider_session_id FROM session_heads WHERE session_id='s'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(mode, "fresh");
+        assert_eq!(cleared, None);
     }
 }

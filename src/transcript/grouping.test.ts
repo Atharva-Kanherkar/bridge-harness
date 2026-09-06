@@ -113,4 +113,15 @@ describe("groupItems", () => {
       item("activity"),
     ])).toEqual(["group", "activity", "group"]);
   });
+
+  it("keeps a same-harness model change out of the run via the stable marker", () => {
+    // Same-harness switches carry `modelChanged: true` with
+    // `freshProviderSession: false`; the stable marker alone must still close
+    // the group so the milestone never folds into a "Used tools" run.
+    expect(shape([
+      item("activity"),
+      item("activity", { data: { modelChanged: true, freshProviderSession: false } }),
+      item("activity"),
+    ])).toEqual(["group", "activity", "group"]);
+  });
 });

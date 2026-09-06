@@ -1095,7 +1095,14 @@ pub fn update_chat_model(
     let effort_changed = next_effort != previous_effort;
     let model_changed = change.is_some();
     if let Some(change) = change {
-        summarise_for_switch(core, session_id);
+        // Only a cross-harness switch needs a handover. The same agent resumes
+        // its own thread under the new model and keeps the conversation, so
+        // asking the outgoing model to summarise would spend a turn and a
+        // 20-second budget producing something nothing reads — and every
+        // timeout would land in the ledger as a compaction failure.
+        if !change.keeps_harness() {
+            summarise_for_switch(core, session_id);
+        }
         core.stop_session_adapter(session_id, adapters::ShutdownReason::Replaced);
         // The summary turn wrote `active_turn_id` asynchronously and its
         // `turn.completed` may be dead with the adapter; settle that residue so
