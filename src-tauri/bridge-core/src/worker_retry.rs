@@ -65,11 +65,35 @@ const TRANSIENT_SIGNALS: &[&str] = &[
     "try again later",
     "overloaded",
     "at capacity",
+    "quota",
+    "usage limit",
     "enotfound",
     "ehostunreach",
     "network error",
     "fetch failed",
 ];
+
+/// The subset of [`TRANSIENT_SIGNALS`] that specifically means "this
+/// provider account is out of usage", as opposed to a generic network hiccup
+/// that has nothing to do with which harness answered. Retrying the very same
+/// harness immediately would just hit the same wall, so a quota signal is
+/// routed differently by its caller: see
+/// `learning_router::mark_harness_quota_exhausted`.
+const QUOTA_SIGNALS: &[&str] = &[
+    "rate limit",
+    "rate-limited",
+    "429",
+    "overloaded",
+    "at capacity",
+    "quota",
+    "usage limit",
+];
+
+/// Whether a transient signal `classify` already identified means the
+/// provider account ran out of quota, rather than a passing network fault.
+pub fn is_quota_signal(signal: &str) -> bool {
+    QUOTA_SIGNALS.contains(&signal)
+}
 
 /// What Bridge believes about a failure, from evidence rather than from the
 /// worker's opinion of itself.
@@ -346,6 +370,23 @@ mod tests {
         )
         .unwrap();
         db
+    }
+
+    #[test]
+    fn quota_signals_are_told_apart_from_generic_transients() {
+        let result = failure("Request failed: 429 rate limit exceeded, please retry later");
+        assert_eq!(
+            classify(&result),
+            FailureClass::Transient { signal: "rate limit".into() }
+        );
+        assert!(is_quota_signal("rate limit"));
+        assert!(is_quota_signal("429"));
+        assert!(is_quota_signal("quota"));
+        assert!(
+            !is_quota_signal("connection reset"),
+            "a network hiccup is not an account-quota problem"
+        );
+        assert!(!is_quota_signal("timeout"));
     }
 
     #[test]

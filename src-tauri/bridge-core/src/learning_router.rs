@@ -1034,7 +1034,7 @@ pub fn route(
     persist_decision(db, &decision)?;
     let mut routed = request.clone();
     if let Some(key) = executed {
-        let selected = candidate_for_key(&decision.candidates, &key).ok_or_else(|| {
+        let mut selected = candidate_for_key(&decision.candidates, &key).ok_or_else(|| {
             BridgeError::Invalid(format!("router selected unknown candidate {key}"))
         })?;
         // A permission ceiling is a hard incompatibility, not a preference. A
@@ -1067,6 +1067,49 @@ pub fn route(
                     )
                 }
             )));
+        }
+        // A harness that is not installed, or that Bridge already knows is out
+        // of quota or context, cannot serve this request no matter which
+        // router mode chose it — unlike a cost/quality preference, a caller
+        // cannot override a supply gap by asking nicely. Manual overrides and
+        // locked profiles used to skip straight past this and reserve a
+        // worker the adapter registry would refuse to start; substitute the
+        // best eligible alternative this workspace has installed, and only
+        // fail when there genuinely isn't one, so a single-harness setup gets
+        // a real answer instead of a launch failure two steps later.
+        let hard_supply_gap = selected.exclusions.iter().any(|exclusion| {
+            matches!(
+                exclusion,
+                CandidateExclusion::HarnessUnavailable
+                    | CandidateExclusion::QuotaExhausted
+                    | CandidateExclusion::ContextExhausted
+            )
+        });
+        if hard_supply_gap {
+            if let Some(alternative) = decision
+                .candidates
+                .iter()
+                .find(|candidate| candidate.eligible())
+            {
+                let _ = crate::store::event(
+                    db,
+                    "router",
+                    "router.harness_substituted",
+                    parent_session_id,
+                    &format!(
+                        "{} was not usable ({:?}); substituted {} for this delegation",
+                        selected.candidate.key(),
+                        selected.exclusions,
+                        alternative.candidate.key(),
+                    ),
+                );
+                selected = alternative;
+            } else {
+                return Err(BridgeError::Invalid(format!(
+                    "{} cannot serve this delegation right now ({:?}), and no other installed harness is eligible either. Install another provider, or wait for quota to recover.",
+                    selected.candidate.harness, selected.exclusions,
+                )));
+            }
         }
         routed.harness = Some(selected.candidate.harness.clone());
         routed.model = Some(selected.candidate.model.clone());
@@ -1127,7 +1170,68 @@ fn harness_capacity(
         let (harness, usage_ok, context_ok) = row?;
         result.insert(harness, (usage_ok == 1, context_ok == 1));
     }
+    // A quota cooldown outlives the session that earned it — the worker that
+    // hit the rate limit is usually the one about to end — so it is checked
+    // as its own durable source, independent of who else is live right now.
+    let now = Utc::now().to_rfc3339();
+    let mut cooldowns = db.prepare(
+        "SELECT harness FROM harness_quota_cooldowns
+         WHERE workspace_id=?1 AND cooldown_until > ?2",
+    )?;
+    let cooled_down = cooldowns.query_map(params![workspace_id, now], |row| {
+        row.get::<_, String>(0)
+    })?;
+    for harness in cooled_down {
+        let harness = harness?;
+        let entry = result.entry(harness).or_insert((true, true));
+        entry.0 = false;
+    }
     Ok(result)
+}
+
+/// How long a detected quota/rate-limit signal keeps its harness out of
+/// routing consideration for this workspace. Deliberately short and
+/// conservative: real reset windows vary a lot by provider and plan, and this
+/// is a floor against immediately re-hammering the same wall, not a claim
+/// about exactly when the limit clears.
+const QUOTA_COOLDOWN_MINUTES: i64 = 15;
+
+/// Record that `harness` just told this workspace it is out of quota, so the
+/// next delegation routes around it instead of repeating the same failure.
+/// See [`harness_capacity`] for how this is consulted, and
+/// `worker_retry::is_quota_signal` for what counts as a quota failure rather
+/// than a generic transient one.
+pub fn mark_harness_quota_exhausted(
+    db: &Connection,
+    workspace_id: &str,
+    harness: &str,
+    reason: &str,
+    event_session_id: &str,
+) -> Result<(), BridgeError> {
+    let now = Utc::now();
+    let cooldown_until = now + chrono::Duration::minutes(QUOTA_COOLDOWN_MINUTES);
+    db.execute(
+        "INSERT INTO harness_quota_cooldowns(workspace_id,harness,reason,exhausted_at,cooldown_until)
+         VALUES(?1,?2,?3,?4,?5)
+         ON CONFLICT(workspace_id,harness) DO UPDATE SET
+            reason=excluded.reason,
+            exhausted_at=excluded.exhausted_at,
+            cooldown_until=excluded.cooldown_until",
+        params![
+            workspace_id,
+            harness,
+            reason,
+            now.to_rfc3339(),
+            cooldown_until.to_rfc3339(),
+        ],
+    )?;
+    crate::store::event(
+        db,
+        "router",
+        "router.harness_quota_exhausted",
+        event_session_id,
+        &format!("{harness} marked out of quota ({reason}); routing around it until {cooldown_until}"),
+    )
 }
 
 pub fn load_preferences(
@@ -2599,6 +2703,65 @@ mod tests {
         assert!(
             error.contains("no installed harness can run a read_only worker"),
             "{error}"
+        );
+    }
+
+    /// A user with only one harness installed must not have delegations
+    /// silently routed to (and fail on) the one they don't have. A manual
+    /// pin, or the plain default, at an unavailable harness must fall back to
+    /// whichever installed harness is actually eligible — the same as the
+    /// permission-ceiling substitution, but for supply rather than sandbox
+    /// compatibility.
+    #[test]
+    fn an_unavailable_harness_is_substituted_with_the_only_eligible_alternative() {
+        let db = routing_db();
+        let mut descriptors = descriptors();
+        descriptors[0].available = false;
+        descriptors[0].unavailable_reason = Some("codex is not installed".into());
+        let mut pinned = request();
+        pinned.harness = Some("codex".into());
+        let routed = route(&db, "parent", "turn", &pinned, &descriptors).unwrap();
+        assert_eq!(
+            routed.request.harness.as_deref(),
+            Some("claude"),
+            "the only installed harness must be used instead of the unavailable pin"
+        );
+    }
+
+    /// When nothing installed can serve the request, the caller needs an
+    /// actionable answer immediately — not a reservation that fails two steps
+    /// later inside `AdapterRegistry::start`.
+    #[test]
+    fn no_installed_harness_at_all_returns_an_actionable_error() {
+        let db = routing_db();
+        let mut descriptors = descriptors();
+        for descriptor in &mut descriptors {
+            descriptor.available = false;
+        }
+        let error = route(&db, "parent", "turn", &request(), &descriptors)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("cannot serve this delegation right now"),
+            "{error}"
+        );
+        assert!(error.contains("no other installed harness"), "{error}");
+    }
+
+    /// A worker that just reported a rate limit must not have the very next
+    /// delegation routed right back onto the same harness. This is the
+    /// durable half of the fix: the cooldown outlives the failed session, so
+    /// even after it ends the workspace keeps routing around the harness
+    /// until the cooldown clears.
+    #[test]
+    fn a_harness_marked_quota_exhausted_is_routed_around() {
+        let db = routing_db();
+        mark_harness_quota_exhausted(&db, "w", "codex", "429 rate limited", "parent").unwrap();
+        let routed = route(&db, "parent", "turn", &request(), &descriptors()).unwrap();
+        assert_eq!(
+            routed.request.harness.as_deref(),
+            Some("claude"),
+            "codex just reported a rate limit, so the default route must move to claude"
         );
     }
 
