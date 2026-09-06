@@ -430,7 +430,9 @@ fn insert_text(
     }
 }
 
-fn canonical_text(value: &str) -> String {
+/// The one text normalization the compiled prompt and the session-context
+/// frame share, so "unchanged text" means the same bytes in both regions.
+pub(crate) fn canonical_text(value: &str) -> String {
     value
         .replace("\r\n", "\n")
         .replace('\r', "\n")
