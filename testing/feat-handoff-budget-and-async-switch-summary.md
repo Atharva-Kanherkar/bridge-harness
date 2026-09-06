@@ -78,8 +78,9 @@ approximate; the functions named there all still exist under the same names.
    instead of `handle_agent_value`. The detached handler only: (a) parses an
    assistant `message.completed` through `CompactionController::handle_output`
    (Completed / Repair → resend prompt via the detached runtime / Failed);
-   (b) on `turn.completed` without a reply, schedules the single repair or
-   records the failure exactly as the main reader does; (c) never writes
+   (b) on `turn.completed` without any assistant reply, records the request's
+   failure (the background waiter then reconstructs from the immutable events);
+   (c) never writes
    `sessions.status`, `active_turn_id`, or any conversation entry. If the
    detached reader exits (provider died), the failure "checkpoint turn ended
    because the adapter exited" is recorded and the detached entry removed.
@@ -176,17 +177,22 @@ plumbing into `ModelOption` (a static family table is the source for now).
 - `detach_moves_the_runtime_out_of_the_adapter_map_without_killing_its_reader` —
   after `detach`, `core.adapters` lacks the session, `core.detached_summaries`
   has it, and `stop` was not called on the runtime.
+- `detach_reports_false_when_no_runtime_is_live`.
 - `a_valid_reply_through_the_detached_handler_completes_the_request` — driving
-  `handle_detached_events` with a valid checkpoint frame records
+  `handle_detached_frame` with a valid checkpoint frame records
   `checkpoint` + `compaction` and leaves nothing pending.
-- `a_turn_without_a_reply_schedules_one_repair_then_fails` — first
-  `turn.completed` resends the repair prompt via the detached runtime; second
-  records `compaction.failed`.
-- `the_detached_handler_never_touches_session_status_or_turn_state` — status
-  and `active_turn_id` are unchanged across `turn.started`/`turn.completed`.
-- `a_failed_background_summary_reconstructs_only_before_the_new_model_speaks` —
-  `settle_failed` reconstructs (before_downgrade) when no conversation entry
-  follows the request, and skips when one does.
+- `a_turn_without_a_reply_records_a_failure` — a `turn.completed` with no
+  assistant reply records `compaction.failed` (the waiter reconstructs after).
+- `an_invalid_reply_repairs_then_the_repair_reply_settles` — an unparseable
+  reply resends a repair prompt through the detached runtime; the repair reply
+  settles the request.
+- `the_detached_handler_never_touches_session_status_or_turn_state` — the
+  incoming model's `status` and `active_turn_id` are unchanged across the
+  detached turn's frames.
+- The "reconstruct only before the new model speaks" decision is covered by
+  `compaction_controller::conversation_appended_since_request` and
+  `reconstruct_with_reason_records_before_downgrade`; the 30-second waiter loop
+  itself is not unit-tested (it sleeps).
 
 `sessions.rs`
 - `a_cross_harness_switch_commits_before_the_summary_turn_starts` — hot

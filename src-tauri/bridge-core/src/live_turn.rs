@@ -11,6 +11,7 @@ use crate::events::CoreEvent;
 use crate::model::*;
 use crate::runtime::BridgeCore;
 use crate::sessions;
+use crate::switch_summary;
 use crate::{
     adapters, agent, agent_config, backend_binding, check_runner, compaction_controller,
     completion, delegation, git, handoff, learning_job, learning_router, managed_agents,
@@ -2214,6 +2215,10 @@ fn spawn_reader_thread(
         if tracks_worker {
             record_worker_activity(&core, &session_id);
         }
+        // Set once this launch is observed serving a detached model-switch
+        // summary, so its exit skips live-session teardown even after the
+        // detached entry has been cleaned up.
+        let mut was_detached = false;
         loop {
             let mut line = String::new();
             match reader.read_line(&mut line) {
@@ -2232,10 +2237,51 @@ fn spawn_reader_thread(
                         record_worker_activity(&core, &session_id);
                     }
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) {
-                        handle_agent_value(&core, &session_id, &current_turn, &value);
+                        // A detached model-switch summary runtime shares this
+                        // session id with the incoming model. Its frames drive
+                        // only the checkpoint pipeline and must never reach the
+                        // live handler, which would write the shared row's turn
+                        // state out from under the new model.
+                        if switch_summary::is_detached_launch(
+                            &core,
+                            &session_id,
+                            launch_process_id,
+                            &launch_provider_session_id,
+                        ) {
+                            was_detached = true;
+                            switch_summary::handle_detached_frame(&core, &session_id, &value);
+                        } else {
+                            handle_agent_value(&core, &session_id, &current_turn, &value);
+                        }
                     }
                 }
             }
+        }
+        if was_detached
+            || switch_summary::is_detached_launch(
+                &core,
+                &session_id,
+                launch_process_id,
+                &launch_provider_session_id,
+            )
+        {
+            // This reader served a detached summary. Its exit is the outgoing
+            // provider going away, not the session ending: record the pending
+            // request's fate and forget it, but touch none of the shared row's
+            // live-session teardown.
+            switch_summary::on_detached_reader_exit(&core, &session_id);
+            if !launch_provider_session_id.is_empty() {
+                core.adapter_registry
+                    .forget_session(&launch_adapter_id, &launch_provider_session_id);
+            }
+            let mut launches = core.reader_launches.lock().unwrap();
+            if launches
+                .get(&session_id)
+                .is_some_and(|current| Arc::ptr_eq(current, &launch_gate))
+            {
+                launches.remove(&session_id);
+            }
+            return;
         }
         {
             let mut launches = core.reader_launches.lock().unwrap();
@@ -2489,11 +2535,15 @@ fn handle_agent_value(
         // path; the durable session status keeps the boundary alive after a
         // timeout records `compaction.failed` and until `turn.completed` closes
         // the provider turn.
+        // A background pending is a detached model-switch summary's request,
+        // answered by the outgoing runtime on a different reader; it must not
+        // make this (incoming model's) reader treat its own turn as a
+        // checkpoint. Only a foreground pending counts here.
         let checkpoint_turn_active =
             compaction_controller::CompactionController::pending(&db, session_id)
                 .ok()
                 .flatten()
-                .is_some()
+                .is_some_and(|pending| !pending.background)
                 || db
                     .query_row(
                         "SELECT status='checkpointing' FROM sessions WHERE id=?1",
@@ -2836,7 +2886,8 @@ fn handle_agent_value(
             let pending_compaction =
                 compaction_controller::CompactionController::pending(&db, session_id)
                     .ok()
-                    .flatten();
+                    .flatten()
+                    .filter(|pending| !pending.background);
             let is_checkpoint_reply = checkpoint_turn_active
                 && normalized_event.kind == "message.completed"
                 && normalized_event.role.as_deref() == Some("assistant")
@@ -3055,8 +3106,10 @@ fn handle_agent_value(
             }
         }
         if turn_completed && checkpoint_prompt_after_turn.is_none() {
-            if let Ok(Some(pending)) =
-                compaction_controller::CompactionController::pending(&db, session_id)
+            if let Some(pending) = compaction_controller::CompactionController::pending(&db, session_id)
+                .ok()
+                .flatten()
+                .filter(|pending| !pending.background)
             {
                 if pending.attempt == 1 {
                     let repair_already_scheduled = db
@@ -3562,11 +3615,13 @@ fn run_compaction_recovery(core: &Arc<BridgeCore>, session_id: &str) -> Result<(
     Ok(())
 }
 
-/// Model-switch compaction has its own safe fallback: the incoming model gets
-/// Bridge's mechanical projection. Starting generic reconstruction after that
-/// failure races the switch commit and can append old-provider state past the
-/// new model boundary. Other compaction reasons retain the established
-/// recovery path.
+/// Model-switch compaction has its own safe fallback owned by the background
+/// waiter ([`crate::switch_summary`]): on a failed summary it reconstructs a
+/// `before_downgrade` checkpoint itself, but only while the incoming model has
+/// not spoken. The live reader must therefore never start generic
+/// reconstruction for `BeforeDowngrade` — doing so from this (incoming model's)
+/// reader would race the switch commit and append old-provider state past the
+/// new model boundary. Other compaction reasons keep the established path.
 fn should_recover_compaction(
     pending: Option<&compaction_controller::PendingCompaction>,
 ) -> bool {
@@ -11433,6 +11488,51 @@ mod submit_input_tests {
             "the consumed reply still completes the checkpoint"
         );
         assert!(published.try_recv().is_err(), "the raw reply must not be published live");
+    }
+
+    #[test]
+    fn a_background_request_does_not_make_the_new_readers_reply_a_checkpoint() {
+        // A detached model-switch summary leaves a background `compaction.requested`
+        // on the shared session. The incoming model's live reader must treat its
+        // OWN reply as ordinary chat, never as an answer to that request.
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET harness='codex' WHERE id='chat'", [])
+            .unwrap();
+        {
+            let db = core.db.lock().unwrap();
+            compaction_controller::CompactionController::begin_background(
+                &db,
+                "chat",
+                compaction_controller::CompactionReason::BeforeDowngrade,
+                100,
+            )
+            .unwrap()
+            .expect("a background request begins");
+        }
+
+        handle_agent_value(
+            &core,
+            "chat",
+            &Arc::new(Mutex::new(Some("turn-1".into()))),
+            &codex_agent_message("Sure — the retry lives in src/billing/retry.ts."),
+        );
+
+        assert_eq!(
+            assistant_message_count(&core),
+            1,
+            "the incoming model's reply is ordinary chat, not swallowed as a checkpoint"
+        );
+        let pending = compaction_controller::CompactionController::pending(
+            &core.db.lock().unwrap(),
+            "chat",
+        )
+        .unwrap()
+        .expect("the background request is still pending, untouched by the live reply");
+        assert!(pending.background);
+        assert_eq!(pending.attempt, 0, "the live reply neither settled nor repaired it");
     }
 
     #[test]

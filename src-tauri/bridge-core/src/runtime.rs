@@ -42,6 +42,10 @@ pub struct BridgeCore {
     pub runtimes: Mutex<HashMap<String, RuntimeSession>>,
     pub adapters: Mutex<HashMap<String, Box<dyn adapters::AdapterRuntime>>>,
     pub reader_launches: Mutex<HashMap<String, Arc<Mutex<bool>>>>,
+    /// A model switch's outgoing runtimes, detached and summarising in the
+    /// background after the switch committed. Keyed by the shared session id;
+    /// distinguished from the incoming model's live runtime by process id.
+    pub detached_summaries: Mutex<HashMap<String, crate::switch_summary::DetachedSummary>>,
     pub adapter_registry: Arc<adapters::AdapterRegistry>,
     /// Which backend serves each agent. The registry executes; this decides
     /// what may execute, and what a session recorded last time.
@@ -277,6 +281,7 @@ impl BridgeCore {
             runtimes: Mutex::new(HashMap::new()),
             adapters: Mutex::new(HashMap::new()),
             reader_launches: Mutex::new(HashMap::new()),
+            detached_summaries: Mutex::new(HashMap::new()),
             adapter_registry: Arc::new(adapters::AdapterRegistry::empty()),
             backend_resolver: Arc::new(backend_binding::BackendResolver::built_in()),
             catalog: Arc::new(
@@ -395,6 +400,7 @@ impl BridgeCore {
             runtimes: Mutex::new(HashMap::new()),
             adapters: Mutex::new(HashMap::new()),
             reader_launches: Mutex::new(HashMap::new()),
+            detached_summaries: Mutex::new(HashMap::new()),
             adapter_registry,
             backend_resolver: Arc::new(backend_resolver),
             catalog: Arc::new(loaded.catalog),
