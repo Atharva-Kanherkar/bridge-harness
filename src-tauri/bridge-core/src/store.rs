@@ -37,6 +37,9 @@ pub fn open(path: &Path) -> Result<Connection, BridgeError> {
         std::fs::create_dir_all(parent)?;
     }
     let mut connection = Connection::open(path)?;
+    // An older build must not run recovery or prune a newer build's rollback
+    // copies. Check before any application writes or maintenance on this store.
+    supported_schema_version(&connection)?;
     // Migrations run with foreign keys disabled so table rebuilds (which drop and
     // recreate parent tables) don't trip referential checks; re-enabled after.
     connection.execute_batch("PRAGMA foreign_keys=OFF;")?;
@@ -597,8 +600,8 @@ pub fn history_snapshot_stats(snapshot_dir: &Path) -> (u64, u64) {
 }
 
 fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<PathBuf>, BridgeError> {
-    let current = current_schema_version(connection)?;
-    if current >= LATEST_SCHEMA_VERSION {
+    let current = supported_schema_version(connection)?;
+    if current == LATEST_SCHEMA_VERSION {
         return Ok(None);
     }
 
@@ -1184,6 +1187,17 @@ fn migration_22_session_backend_binding(transaction: &Transaction<'_>) -> Result
         );",
     )?;
     Ok(())
+}
+
+fn supported_schema_version(connection: &Connection) -> Result<i64, BridgeError> {
+    let current = current_schema_version(connection)?;
+    if current > LATEST_SCHEMA_VERSION {
+        return Err(BridgeError::Invalid(format!(
+            "This database uses schema version {current}, but this Bridge build supports up to \
+             {LATEST_SCHEMA_VERSION}. Open it with a newer Bridge version."
+        )));
+    }
+    Ok(current)
 }
 
 fn current_schema_version(connection: &Connection) -> Result<i64, BridgeError> {
@@ -3628,6 +3642,81 @@ pub(crate) fn session_event_in_transaction(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn newer_schema_is_rejected_before_recovery_or_backup_pruning() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        let db = open(&path).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,harness,label,status,active_turn_id)
+             VALUES('future-session','claude','Future session','working','future-turn')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE schema_version SET version=?1 WHERE version=?2",
+            params![LATEST_SCHEMA_VERSION + 1, LATEST_SCHEMA_VERSION],
+        )
+        .unwrap();
+        drop(db);
+
+        let before = std::fs::read(&path).unwrap();
+        let backups = [
+            dir.path().join("bridge.db.backup-20260101T000000000000000Z"),
+            dir.path().join("bridge.db.backup-20260102T000000000000000Z"),
+        ];
+        for backup in &backups {
+            std::fs::copy(&path, backup).unwrap();
+        }
+
+        let error = open(&path).unwrap_err();
+        assert!(matches!(&error, BridgeError::Invalid(_)));
+        let message = error.to_string();
+        assert!(message.contains(&(LATEST_SCHEMA_VERSION + 1).to_string()));
+        assert!(message.contains(&format!("supports up to {LATEST_SCHEMA_VERSION}")));
+        assert!(message.contains("newer Bridge version"));
+        assert!(
+            std::fs::read(&path).unwrap() == before,
+            "the newer database is unchanged"
+        );
+        for backup in &backups {
+            assert!(
+                std::fs::read(backup).unwrap() == before,
+                "rollback copies are untouched"
+            );
+        }
+
+        let inspected =
+            Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let state: (String, Option<String>, Option<String>) = inspected
+            .query_row(
+                "SELECT status,active_turn_id,ended_at FROM sessions WHERE id='future-session'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(state, ("working".into(), Some("future-turn".into()), None));
+    }
+
+    #[test]
+    fn newer_schema_is_rejected_without_assuming_current_application_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE schema_version(version INTEGER PRIMARY KEY)")
+            .unwrap();
+        db.execute(
+            "INSERT INTO schema_version(version) VALUES(?1)",
+            params![LATEST_SCHEMA_VERSION + 1],
+        )
+        .unwrap();
+        drop(db);
+
+        let error = open(&path).unwrap_err();
+        assert!(matches!(&error, BridgeError::Invalid(_)));
+        assert!(error.to_string().contains("newer Bridge version"));
+    }
 
     #[test]
     fn private_chat_stamps_do_not_discover_an_ancestor_repository() {
