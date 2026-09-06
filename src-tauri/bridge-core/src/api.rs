@@ -1085,13 +1085,19 @@ pub fn update_chat_model(
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
     let target_model = change.as_ref().map(|change| change.selected_model())
-        .or(previous_model.as_deref());
+        .unwrap_or(previous_model.as_deref());
     let descriptor = core.adapter_registry.descriptors().into_iter()
         .find(|adapter| adapter.id == store::harness_name(harness))
         .ok_or_else(|| BridgeError::Invalid("Model adapter is unavailable".into()))?;
-    let selected = descriptor.models.iter().find(|option| Some(option.id.as_str()) == target_model)
-        .ok_or_else(|| BridgeError::Invalid("Selected model is unavailable; refresh models".into()))?;
-    let next_effort = selected_chat_effort(selected, effort, previous_effort.as_deref())?;
+    let next_effort = if target_model.is_none() && descriptor.models.is_empty() && effort.is_none() {
+        // Provider defaults have no advertised effort controls yet. Drop the
+        // outgoing provider's effort rather than carrying it into this launch.
+        None
+    } else {
+        let selected = descriptor.models.iter().find(|option| Some(option.id.as_str()) == target_model)
+            .ok_or_else(|| BridgeError::Invalid("Selected model is unavailable; refresh models".into()))?;
+        selected_chat_effort(selected, effort, previous_effort.as_deref())?
+    };
     let effort_changed = next_effort != previous_effort;
     let model_changed = change.is_some();
     if let Some(change) = change {

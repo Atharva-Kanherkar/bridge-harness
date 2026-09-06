@@ -26,7 +26,7 @@ async function mount(node: React.ReactElement) {
   document.body.append(container);
   const root = createRoot(container);
   await act(async () => root.render(node));
-  return { container, unmount: () => act(async () => root.unmount()) };
+  return { container, unmount: () => act(async () => { root.unmount(); container.remove(); }) };
 }
 
 async function flush() {
@@ -62,13 +62,21 @@ function buttonWithText(container: HTMLElement, text: string): HTMLButtonElement
   return [...container.querySelectorAll<HTMLButtonElement>("button")].find(node => node.textContent === text);
 }
 
+async function clickOption(option: HTMLElement) {
+  await act(async () => {
+    option.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+    option.click();
+    await flush();
+  });
+}
+
 /** Pick a prompt target from the header select. */
 async function chooseTarget(container: HTMLElement, label: string) {
   const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Prompt target"]')!;
   await act(async () => { trigger.click(); await flush(); });
-  const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+  const option = [...document.querySelectorAll<HTMLElement>('[role="listbox"][aria-label="Prompt target"] [role="option"]')]
     .find(node => node.textContent?.startsWith(label))!;
-  await act(async () => { option.click(); await flush(); });
+  await clickOption(option);
 }
 
 /** The list page's row for a section id: its mono id, tokens, and pills. */
@@ -422,7 +430,7 @@ describe("PromptStudio", () => {
     await flush();
     const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Prompt target"]')!;
     await act(async () => { trigger.click(); await flush(); });
-    const labels = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+    const labels = [...document.querySelectorAll<HTMLElement>('[role="listbox"][aria-label="Prompt target"] [role="option"]')]
       .map(node => node.textContent?.replace("Has overrides", "").trim());
     expect(labels).toEqual(["Orchestrator", "Research", "Implementation", "Verification", "Planning", "Documentation", "Direct session"]);
     await unmount();
@@ -433,7 +441,7 @@ describe("PromptStudio", () => {
     await flush();
     await flush();
 
-    const optionFor = (label: string) => [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+    const optionFor = (label: string) => [...document.querySelectorAll<HTMLElement>('[role="listbox"][aria-label="Prompt target"] [role="option"]')]
       .find(node => node.textContent?.startsWith(label));
     const openTargets = async () => {
       const trigger = container.querySelector<HTMLButtonElement>('button[aria-label="Prompt target"]')!;
@@ -442,7 +450,7 @@ describe("PromptStudio", () => {
 
     await openTargets();
     expect(optionFor("Research")!.textContent).not.toContain("Has overrides");
-    await act(async () => { optionFor("Research")!.click(); await flush(); });
+    await clickOption(optionFor("Research")!);
 
     await editAndSave(container, "worker_contract", "Custom research contract.");
 

@@ -12,7 +12,7 @@ async function mount(node: React.ReactElement) {
   document.body.append(container);
   const root = createRoot(container);
   await act(async () => root.render(node));
-  return { container, unmount: () => act(async () => root.unmount()) };
+  return { container, unmount: () => act(async () => { root.unmount(); container.remove(); }) };
 }
 
 const options = [
@@ -97,19 +97,26 @@ describe("Select", () => {
     await unmount();
   });
 
-  it("opens a listbox and reports the chosen value once", async () => {
+  it("opens outside the clipped settings card and reports the chosen value once", async () => {
     const onChange = vi.fn();
     const { container, unmount } = await mount(
-      <Select label="Effort" value="low" options={options} onChange={onChange} />,
+      <SettingsGroup label="Runtime">
+        <SettingsRow label="Effort" control={<Select label="Effort" value="low" options={options} onChange={onChange} />} />
+      </SettingsGroup>,
     );
     await act(async () => container.querySelector<HTMLButtonElement>("button")!.click());
-    const listbox = container.querySelector('[role="listbox"]')!;
+    const listbox = document.querySelector('[role="listbox"]')!;
+    expect(listbox).toBeTruthy();
+    expect(container.contains(listbox)).toBe(false);
     expect(listbox.querySelectorAll('[role="option"]')).toHaveLength(2);
-    const high = [...listbox.querySelectorAll<HTMLButtonElement>('[role="option"]')].find(item => item.textContent?.includes("High"))!;
-    await act(async () => high.click());
+    const high = [...listbox.querySelectorAll<HTMLElement>('[role="option"]')].find(item => item.textContent?.includes("High"))!;
+    await act(async () => {
+      high.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      high.click();
+    });
     expect(onChange.mock.calls).toEqual([["high"]]);
-    // Choosing closes the popup, so a second click cannot land on a stale list.
-    expect(container.querySelector('[role="listbox"]')).toBeNull();
+    // Closing can retain the popup briefly while Base UI finishes its exit.
+    expect(container.querySelector("button")!.getAttribute("aria-expanded")).toBe("false");
     await unmount();
   });
 
