@@ -105,6 +105,7 @@ pub fn normalize_opencode_message_with_state(
                         "input_tokens": tokens.get("input").cloned().unwrap_or(Value::Null),
                         "output_tokens": tokens.get("output").cloned().unwrap_or(Value::Null),
                         "cached_input_tokens": tokens.pointer("/cache/read").cloned().unwrap_or(Value::Null),
+                        "cache_write_tokens": tokens.pointer("/cache/write").cloned().unwrap_or(Value::Null),
                         "reasoning_tokens": tokens.get("reasoning").cloned().unwrap_or(Value::Null),
                     },
                     "cost": info.get("cost").cloned().unwrap_or(Value::Null),
@@ -558,7 +559,13 @@ pub fn normalize_codex_message_with_state(
                 .map(str::to_owned);
             vec![event]
         }
-        "thread/tokenUsage/updated" => vec![with_data("usage.updated", &params, params.clone())],
+        "thread/tokenUsage/updated" => {
+            let mut data = params.clone();
+            if let Some(usage) = codex_request_usage(&params) {
+                data["usage"] = usage;
+            }
+            vec![with_data("usage.updated", &params, data)]
+        }
         "turn/diff/updated" | "item/fileChange/patchUpdated" => {
             vec![with_data("diff.updated", &params, params.clone())]
         }
@@ -641,6 +648,34 @@ pub fn normalize_codex_message_with_state(
             vec![event]
         }
     }
+}
+
+/// The per-request slice of a Codex `thread/tokenUsage/updated` frame.
+///
+/// Codex reports two breakdowns: `total` is the thread's running counter and
+/// `last` is the request that just completed. A ledger row is a per-request
+/// delta, so only `last` belongs in the normalized `usage` object — and it has
+/// to be named here, because `serde_json` runs with `preserve_order` and a
+/// recursive alias search over the raw frame reaches `total` first.
+///
+/// The raw `tokenUsage` object stays on the event beside this, so the running
+/// total and `modelContextWindow` remain readable.
+fn codex_request_usage(params: &Value) -> Option<Value> {
+    let last = params.pointer("/tokenUsage/last")?.as_object()?;
+    let mut usage = serde_json::Map::new();
+    for (wire, normalized) in [
+        ("inputTokens", "input_tokens"),
+        ("outputTokens", "output_tokens"),
+        ("cachedInputTokens", "cache_read_tokens"),
+        ("cacheWriteInputTokens", "cache_write_tokens"),
+        ("reasoningOutputTokens", "reasoning_tokens"),
+        ("totalTokens", "total_tokens"),
+    ] {
+        if let Some(count) = last.get(wire).and_then(Value::as_i64) {
+            usage.insert(normalized.into(), count.into());
+        }
+    }
+    (!usage.is_empty()).then(|| Value::Object(usage))
 }
 
 /// Documented app-server notifications that are transport/control-plane
@@ -1833,6 +1868,75 @@ mod tests {
         }));
         assert!(events.iter().any(|event| event.kind == "turn.completed"));
         assert!(events.iter().any(|event| event.kind == "usage.updated"));
+    }
+
+    #[test]
+    fn codex_token_usage_reports_the_last_request_not_the_running_total() {
+        // Shape and field names come from the app-server's own generated
+        // schema (`codex app-server generate-json-schema`). `total` and `last`
+        // carry deliberately different numbers: a regression to the cumulative
+        // counter fails here rather than silently inflating the ledger.
+        let events = normalize_codex_message(&json!({
+            "method":"thread/tokenUsage/updated",
+            "params":{
+                "threadId":"thread-1",
+                "turnId":"turn-1",
+                "tokenUsage":{
+                    "total":{"totalTokens":900,"inputTokens":800,"cachedInputTokens":700,"cacheWriteInputTokens":50,"outputTokens":100,"reasoningOutputTokens":40},
+                    "last":{"totalTokens":90,"inputTokens":80,"cachedInputTokens":70,"cacheWriteInputTokens":5,"outputTokens":10,"reasoningOutputTokens":4},
+                    "modelContextWindow":272000
+                }
+            }
+        }));
+        assert_eq!(events.len(), 1);
+        let usage = &events[0].data["usage"];
+        assert_eq!(events[0].kind, "usage.updated");
+        assert_eq!(usage["input_tokens"], 80);
+        assert_eq!(usage["output_tokens"], 10);
+        assert_eq!(usage["cache_read_tokens"], 70);
+        assert_eq!(usage["cache_write_tokens"], 5);
+        assert_eq!(usage["reasoning_tokens"], 4);
+        assert_eq!(usage["total_tokens"], 90);
+
+        // The running total and the context window stay reachable beside the
+        // normalized per-request slice.
+        assert_eq!(events[0].data["tokenUsage"]["total"]["inputTokens"], 800);
+        assert_eq!(events[0].data["tokenUsage"]["modelContextWindow"], 272_000);
+        assert_eq!(events[0].data["turnId"], "turn-1");
+    }
+
+    #[test]
+    fn codex_token_usage_without_a_last_breakdown_invents_nothing() {
+        let events = normalize_codex_message(&json!({
+            "method":"thread/tokenUsage/updated",
+            "params":{"threadId":"thread-1","turnId":"turn-1","tokenUsage":{"modelContextWindow":272000}}
+        }));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "usage.updated");
+        assert!(events[0].data.get("usage").is_none());
+    }
+
+    #[test]
+    fn opencode_usage_reports_cache_writes_alongside_reads() {
+        let mut state = OpenCodeStreamState::default();
+        let usage = normalize_opencode_message_with_state(
+            &json!({
+                "type":"message.updated",
+                "properties":{"sessionID":"ses_1","info":{"id":"msg_1","role":"assistant","tokens":{"input":9,"output":2,"cache":{"read":6,"write":3}}}}
+            }),
+            &mut state,
+        );
+        assert_eq!(usage[0].data["usage"]["cached_input_tokens"], 6);
+        assert_eq!(usage[0].data["usage"]["cache_write_tokens"], 3);
+
+        let no_write = normalize_opencode_message_with_state(
+            &json!({
+                "type":"message.updated",
+                "properties":{"sessionID":"ses_2","info":{"id":"msg_2","role":"assistant","tokens":{"input":9,"output":2,"cache":{"read":6}}}}
+            }),
+            &mut state,
+        );
+        assert!(no_write[0].data["usage"]["cache_write_tokens"].is_null());
     }
 
     #[test]
