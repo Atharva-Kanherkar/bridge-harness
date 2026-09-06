@@ -33,16 +33,34 @@ const { query } = sdkEntry
   ? await import(pathToFileURL(sdkEntry).href)
   : await import("@anthropic-ai/claude-agent-sdk");
 
-function fail(message) {
-  process.stdout.write(JSON.stringify({ type: "result", subtype: "error_sidecar", is_error: true, result: message }) + "\n");
-  process.exit(1);
+// A closed pipe means the parent can no longer receive protocol frames. Exit
+// unsuccessfully instead of trying to report another frame to that same pipe.
+process.stdout.on("error", () => process.exit(1));
+
+function writeFrame(frame) {
+  // Await the write callback, not just write()'s return value: even a write
+  // below the high-water mark may still be buffered when process.exit runs.
+  return new Promise((resolve, reject) => {
+    process.stdout.write(JSON.stringify(frame) + "\n", (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+async function fail(message) {
+  try {
+    await writeFrame({ type: "result", subtype: "error_sidecar", is_error: true, result: message });
+  } finally {
+    process.exit(1);
+  }
 }
 
 let config;
 try {
   config = JSON.parse(process.argv[2] ?? process.env.BRIDGE_CLAUDE_CONFIG ?? "{}");
 } catch (error) {
-  fail(`Invalid sidecar config: ${error?.message ?? error}`);
+  await fail(`Invalid sidecar config: ${error?.message ?? error}`);
 }
 
 const { sessionId } = config;
@@ -93,11 +111,11 @@ const run = query({ prompt: input, options });
 if (config.catalog === true) {
   try {
     const models = await run.supportedModels();
-    process.stdout.write(JSON.stringify({ type: "model_catalog", models }) + "\n");
+    await writeFrame({ type: "model_catalog", models });
     run.close();
     process.exit(0);
   } catch (error) {
-    fail(`Claude model catalogue error: ${error?.message ?? error}`);
+    await fail(`Claude model catalogue error: ${error?.message ?? error}`);
   }
 }
 
@@ -124,9 +142,9 @@ rl.on("close", () => input.close());
 // Pump SDK messages straight to stdout as newline JSON.
 try {
   for await (const message of run) {
-    process.stdout.write(JSON.stringify(message) + "\n");
+    await writeFrame(message);
   }
 } catch (error) {
-  fail(`Claude Agent SDK error: ${error?.message ?? error}`);
+  await fail(`Claude Agent SDK error: ${error?.message ?? error}`);
 }
 process.exit(0);
