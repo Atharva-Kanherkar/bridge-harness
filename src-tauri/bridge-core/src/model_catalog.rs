@@ -24,6 +24,55 @@ pub const MAX_CATALOG_ENTRIES: usize = 256;
 pub const MAX_CACHE_BYTES: u64 = 512 * 1024;
 const CACHE_SCHEMA_VERSION: u32 = 1;
 
+/// The context window Bridge assumes for a model it cannot classify. This is
+/// the figure the restoration projection and the context breakdown already
+/// used for every model, so an unknown id changes nothing; only a recognised
+/// family moves off it.
+pub const DEFAULT_CONTEXT_WINDOW_TOKENS: i64 = 128_000;
+
+/// The incoming model's context window in tokens, by family.
+///
+/// Adapters do not yet report a per-model window (OpenCode's discovery sees
+/// one but nothing carries it through `ModelOption`), so this is a static table
+/// keyed on the model id. It exists to size what a cold start injects as
+/// restoration context: too small and the new model forgets the conversation,
+/// too large and the prompt compiler rejects the launch. Unknown ids and a
+/// missing selection fall back to [`DEFAULT_CONTEXT_WINDOW_TOKENS`]; a bare
+/// Claude alias (`opus`, `sonnet`) resolves through the harness.
+pub fn context_window_tokens(harness: &str, model: Option<&str>) -> i64 {
+    let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) else {
+        return DEFAULT_CONTEXT_WINDOW_TOKENS;
+    };
+    let lowered = model.to_ascii_lowercase();
+    // OpenCode ids are `provider/model`; the family lives in the model part.
+    let id = lowered.rsplit('/').next().unwrap_or(&lowered);
+    if id.contains("[1m]") || id.ends_with("-1m") {
+        return 1_000_000;
+    }
+    if id.contains("claude") {
+        return 200_000;
+    }
+    if id.contains("gemini") || id.contains("gpt-4.1") {
+        return 1_000_000;
+    }
+    if id.contains("gpt-4o") {
+        return 128_000;
+    }
+    if id.contains("gpt-5") || id.contains("codex") {
+        return 400_000;
+    }
+    if id.starts_with("o1") || id.starts_with("o3") || id.starts_with("o4") {
+        return 200_000;
+    }
+    if id.contains("grok") {
+        return 256_000;
+    }
+    if harness == "claude" && matches!(id, "opus" | "sonnet" | "haiku") {
+        return 200_000;
+    }
+    DEFAULT_CONTEXT_WINDOW_TOKENS
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CatalogCandidate {
     pub id: String,
@@ -357,6 +406,20 @@ fn read_cache(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_window_tokens_resolves_known_families_and_defaults_conservatively() {
+        assert_eq!(context_window_tokens("claude", Some("claude-opus-4-6")), 200_000);
+        assert_eq!(context_window_tokens("claude", Some("claude-sonnet-4-5[1m]")), 1_000_000);
+        assert_eq!(context_window_tokens("claude", Some("opus")), 200_000);
+        assert_eq!(context_window_tokens("codex", Some("gpt-5-codex")), 400_000);
+        assert_eq!(context_window_tokens("codex", Some("gpt-4o")), 128_000);
+        assert_eq!(context_window_tokens("opencode", Some("google/gemini-2.5-pro")), 1_000_000);
+        assert_eq!(context_window_tokens("codex", Some("o3")), 200_000);
+        assert_eq!(context_window_tokens("cursor", Some("mystery-model")), DEFAULT_CONTEXT_WINDOW_TOKENS);
+        assert_eq!(context_window_tokens("codex", None), DEFAULT_CONTEXT_WINDOW_TOKENS);
+        assert_eq!(context_window_tokens("codex", Some("   ")), DEFAULT_CONTEXT_WINDOW_TOKENS);
+    }
 
     fn candidate(id: &str, priority: i64) -> CatalogCandidate {
         CatalogCandidate::stable(

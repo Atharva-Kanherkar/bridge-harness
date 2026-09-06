@@ -911,13 +911,17 @@ impl BridgeCore {
         }
         let kind: Option<String> = db
             .query_row(
-                "SELECT kind FROM session_entries WHERE session_id=?1 AND sequence > ?2 AND kind IN ('compaction','compaction.failed') ORDER BY sequence DESC LIMIT 1",
+                "SELECT kind FROM session_entries WHERE session_id=?1 AND sequence > ?2 AND kind IN ('compaction','compaction.failed','checkpoint') ORDER BY sequence DESC LIMIT 1",
                 params![request.session_id, request.after_sequence],
                 |row| row.get(0),
             )
             .optional()?;
         match kind.as_deref() {
-            Some("compaction") => Ok(SwitchSummaryOutcome::Summarised),
+            // `checkpoint` alone is a late background landing (the new model had
+            // already spoken, so no boundary moved); paired, it precedes the
+            // `compaction` this query finds first. Either way the request was
+            // answered.
+            Some("compaction") | Some("checkpoint") => Ok(SwitchSummaryOutcome::Summarised),
             _ => Ok(SwitchSummaryOutcome::Failed),
         }
     }

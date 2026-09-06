@@ -2865,6 +2865,7 @@ fn handle_agent_value(
                         checkpoint_prompt_after_turn = Some(prompt);
                     }
                     Ok(outcome @ (compaction_controller::CheckpointOutcome::Completed { .. }
+                    | compaction_controller::CheckpointOutcome::LateCheckpoint { .. }
                     | compaction_controller::CheckpointOutcome::Failed)) => {
                         recover_compaction = matches!(
                             outcome,
@@ -11322,6 +11323,7 @@ mod submit_input_tests {
             tokens_before: 42,
             requested_at: "now".into(),
             first_retained_entry_id: "retained".into(),
+            background: false,
         };
         assert!(!should_recover_compaction(Some(&switching)));
         switching.reason = compaction_controller::CompactionReason::Manual;
