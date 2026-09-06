@@ -85,7 +85,12 @@ process, which is exactly the lifetime of the proxy token it protects.
   actually delivered — and marks it **pending** for the session unless the
   ledger already records that exact `(provider_session_id, digest)` pair.
 - The next turn Bridge sends on that session carries the pending frame and, on
-  success, moves it to delivered.
+  success, moves it to delivered — **by digest**. A sender reads the pending
+  frame, releases the ledger lock, and only then sends, so a relaunch in that
+  window can arm a newer frame for a newer thread. Acknowledging "whatever is
+  pending" would consume that newer frame on the strength of having sent the
+  older one, and the new thread would silently never receive its proxy token or
+  packet. An acknowledgement whose digest no longer matches is dropped.
 - Therefore:
   - **Fresh start** — nothing in the ledger, new thread: delivered. ✓
   - **Bridge restart, native resume** — ledger empty because the process is new,
@@ -110,11 +115,32 @@ process, which is exactly the lifetime of the proxy token it protects.
 because there are now two named things to carry and one of them must not be
 labelled as the other on the wire.
 
-- **Codex** — `turn_start_params` puts each present entry in the existing
-  `additionalContext` map under its own key: `bridge.session` and
-  `bridge.credentials`, each `{"kind":"application","value":…}`. An absent entry
-  emits no key, and `additionalContext` is omitted entirely when both are
-  absent. The user's `input` text is unchanged.
+- **Codex** — the session frame is a **leading `input` text item**; only the
+  per-turn credential context goes in `additionalContext`, under its existing
+  `bridge.credentials` key.
+
+  The issue proposed `additionalContext` for both, and the first draft of this
+  branch did that. The generated app-server schema
+  (`codex app-server generate-json-schema --experimental`, codex-cli 0.153.4)
+  says otherwise: `TurnStartParams` documents **eleven** fields as applying
+  "for this turn **and subsequent turns**" — `model`, `effort`, `cwd`,
+  `approvalPolicy`, `sandboxPolicy`, `permissions`, `personality`, `summary`,
+  `serviceTier`, `environments`, `runtimeWorkspaceRoots` — and
+  `additionalContext` is deliberately not among them. It is described only as
+  "client-provided context fragments keyed by an opaque source identifier",
+  i.e. scoped to the turn that carries them.
+
+  A standing contract delivered there once would therefore be gone by the next
+  turn while the ledger still believed the thread held it, and every later
+  Codex turn without a `[secret:]` marker would run with no proxy token and no
+  memory packet. `input` is an array of `UserInput`, so a leading
+  `{"type":"text"}` item is part of the turn's user message and persists in the
+  thread — the same shape as Claude's content block and OpenCode's part, which
+  is exactly what deliver-once requires. `bridge.credentials` stays where it is:
+  it is re-sent on every turn whose text carries a registered marker, so a
+  turn-scoped fragment is right for it.
+
+  A turn with no context is byte-identical to the pre-#528 wire.
 - **Claude** — gains a real `send_turn_with_context`. `user_turn_frame` puts one
   text block per present context entry **before** the user's text block, then
   the image blocks. This is the "Bridge-authored user frame through the
@@ -147,7 +173,35 @@ labelled as the other on the wire.
   capability contract — and the frame simply stays owed until the next real
   turn.
 
-### 6. Explicitly out of scope
+### 6. Known limitation: ACP acknowledges optimistically
+
+Cursor and Grok dispatch `session.prompt` to their own thread and return `Ok`
+once it is **spawned**, not once the provider accepted the turn. So a prompt
+that fails asynchronously still leaves the ledger believing the thread holds
+the frame, and it is not retried for that ACP session.
+
+This is deliberate rather than overlooked:
+
+- It is the pre-existing semantics of those adapters. `pending_instructions` —
+  the compiled prompt itself — is `take()`n before the spawn and lost the same
+  way on the same failure, and has been since ACP support landed.
+- The residual impact is the **memory packet only**. The capability half is
+  self-healing: `credential_broker::turn_context` independently re-emits the
+  full `instructions()`, proxy token included, on any turn whose text carries a
+  registered `[secret:]` marker — which is precisely the turn where a missing
+  contract would matter.
+- Both available fixes are worse than the bug. Never acknowledging for
+  fire-and-forget providers means re-sending the frame on every ACP turn, so a
+  40-turn conversation carries 40 copies of the packet in its history.
+  Acknowledging on `turn.completed` instead re-introduces finding 3's shape one
+  level up — that arm fires for turns that never carried the frame, including
+  internal checkpoint turns, so it would need per-turn digest bookkeeping.
+
+The real fix is an asynchronous delivery confirmation in the ACP turn model,
+which is a change to how those adapters report turn outcomes and does not
+belong in a prompt-delivery slice.
+
+### 7. Explicitly out of scope
 
 - What goes into `restoration_context`, its 8 KB cap, and the switch summary —
   slice 4 (#529).
@@ -157,7 +211,7 @@ labelled as the other on the wire.
 - Delivering a changed memory packet to an already-hot session.
 - No protocol/wire-schema change, no migration, no frontend change.
 
-### 7. Documentation
+### 8. Documentation
 
 - `testing/codex-issue-81-cache-aware-prompts.md` states that variable content
   "includes … session capability references". That is corrected with a scope
@@ -198,12 +252,15 @@ Rust (`src-tauri/bridge-core`):
   and `session_prompt_injects_restoration_context_like_the_orchestrator` are
   updated for the new signatures; `restoration_context` still rides in the
   variable suffix and still leaves `prefix_hash` untouched.
-- `codex_adapter::tests` — `turn_start_params` carries `bridge.session` and
-  `bridge.credentials` independently, omits absent keys, omits
-  `additionalContext` entirely for an empty context, and leaves `input[0].text`
-  exactly as submitted. The existing
+- `codex_adapter::tests` — the session frame leads `input` and the user's text
+  follows it unedited; `bridge.session` never appears in `additionalContext`;
+  per-turn credentials still do; a blank value is absence; and a context-free
+  turn is byte-identical to the pre-#528 params. The existing
   `codex_receives_the_compiled_stable_prefix_before_variable_context` ordering
   assertions still hold unchanged.
+- `session_context::tests` — a late acknowledgement carrying a stale digest
+  leaves a newer frame owed, and the newer sender's own acknowledgement clears
+  it.
 - `claude_adapter::tests` — `user_turn_frame` with no context still emits
   today's exact frame (the existing
   `a_plain_text_turn_emits_exactly_todays_frame` assertion, unchanged); with

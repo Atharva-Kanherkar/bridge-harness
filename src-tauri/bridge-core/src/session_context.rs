@@ -146,19 +146,31 @@ impl SessionContextLedger {
     }
 
     /// The frame the next turn on this session must carry, if any.
-    pub fn pending(&self, session_id: &str) -> Option<&str> {
+    pub fn pending(&self, session_id: &str) -> Option<SessionContext> {
         self.entries
             .get(session_id)?
             .pending
             .as_ref()
-            .map(|pending| pending.context.text())
+            .map(|pending| pending.context.clone())
     }
 
     /// Called once the turn carrying the frame actually reached the provider.
-    pub fn record_delivered(&mut self, session_id: &str) {
+    ///
+    /// Acknowledges one specific frame, by digest. A caller reads the pending
+    /// frame, releases the lock, and only then sends — so between those two
+    /// points a relaunch can arm a *newer* frame for a *different* thread.
+    /// Acknowledging whatever happens to be pending would consume that newer
+    /// frame on the strength of having sent the older one, and the new thread
+    /// would silently never receive its proxy token or memory packet. A digest
+    /// that no longer matches means the frame this caller sent is stale, so
+    /// the acknowledgement is dropped and the newer one stays owed.
+    pub fn record_delivered(&mut self, session_id: &str, digest: &str) {
         let Some(entry) = self.entries.get_mut(session_id) else {
             return;
         };
+        if entry.pending.as_ref().map(|pending| pending.context.digest()) != Some(digest) {
+            return;
+        }
         if let Some(pending) = entry.pending.take() {
             entry.delivered = Some(Delivered {
                 provider_session_id: pending.provider_session_id,
@@ -229,8 +241,8 @@ mod tests {
         assert!(ledger.pending("chat").is_none());
         let context = build(CAPABILITIES, Some("Prefers tabs")).unwrap();
         ledger.arm("chat", "thread-a", Some(context.clone()));
-        assert_eq!(ledger.pending("chat"), Some(context.text()));
-        ledger.record_delivered("chat");
+        assert_eq!(ledger.pending("chat").as_ref(), Some(&context));
+        ledger.record_delivered("chat", context.digest());
         assert!(ledger.pending("chat").is_none());
     }
 
@@ -239,7 +251,7 @@ mod tests {
         let mut ledger = SessionContextLedger::default();
         let context = build(CAPABILITIES, Some("Prefers tabs")).unwrap();
         ledger.arm("chat", "thread-a", Some(context.clone()));
-        ledger.record_delivered("chat");
+        ledger.record_delivered("chat", context.digest());
 
         // The slice-2 model switch: same process, same provider thread, so the
         // frame is still in the provider's history and still valid.
@@ -248,7 +260,7 @@ mod tests {
 
         // A fresh thread cannot hold it, however unchanged the bytes are.
         ledger.arm("chat", "thread-b", Some(context.clone()));
-        assert_eq!(ledger.pending("chat"), Some(context.text()));
+        assert_eq!(ledger.pending("chat").as_ref(), Some(&context));
     }
 
     #[test]
@@ -259,11 +271,12 @@ mod tests {
             "thread-a",
             build(CAPABILITIES, Some("Prefers tabs")),
         );
-        ledger.record_delivered("chat");
+        let first = build(CAPABILITIES, Some("Prefers tabs")).unwrap();
+        ledger.record_delivered("chat", first.digest());
 
         let rotated = build(OTHER_CAPABILITIES, Some("Prefers tabs")).unwrap();
         ledger.arm("chat", "thread-a", Some(rotated.clone()));
-        assert_eq!(ledger.pending("chat"), Some(rotated.text()));
+        assert_eq!(ledger.pending("chat").as_ref(), Some(&rotated));
     }
 
     #[test]
@@ -275,17 +288,44 @@ mod tests {
         assert!(ledger.pending("chat").is_none());
 
         ledger.arm("chat", "thread-a", Some(context.clone()));
-        ledger.record_delivered("chat");
+        ledger.record_delivered("chat", context.digest());
         ledger.forget("chat");
         // Forgotten means forgotten: the next launch owes the frame again.
         ledger.arm("chat", "thread-a", Some(context.clone()));
-        assert_eq!(ledger.pending("chat"), Some(context.text()));
+        assert_eq!(ledger.pending("chat").as_ref(), Some(&context));
     }
 
     #[test]
     fn record_delivered_without_a_pending_frame_is_a_no_op() {
         let mut ledger = SessionContextLedger::default();
-        ledger.record_delivered("unknown");
+        ledger.record_delivered("unknown", "digest");
         assert!(ledger.pending("unknown").is_none());
+    }
+
+    /// A caller reads the pending frame, releases the lock, then sends. A
+    /// relaunch in that window arms a newer frame for a newer thread, and the
+    /// late acknowledgement must not consume it — otherwise the new thread
+    /// never receives its proxy token or memory packet.
+    #[test]
+    fn a_late_acknowledgement_cannot_consume_a_newer_frame() {
+        let mut ledger = SessionContextLedger::default();
+        let old = build(CAPABILITIES, Some("Prefers tabs")).unwrap();
+        ledger.arm("chat", "thread-a", Some(old.clone()));
+        // The sender snapshots `old` here and releases the lock.
+
+        let new = build(OTHER_CAPABILITIES, Some("Prefers spaces")).unwrap();
+        ledger.arm("chat", "thread-b", Some(new.clone()));
+
+        // The in-flight send finally lands and acknowledges what it sent.
+        ledger.record_delivered("chat", old.digest());
+        assert_eq!(
+            ledger.pending("chat").as_ref(),
+            Some(&new),
+            "the newer frame is still owed"
+        );
+
+        // The newer send acknowledges its own frame and clears it.
+        ledger.record_delivered("chat", new.digest());
+        assert!(ledger.pending("chat").is_none());
     }
 }

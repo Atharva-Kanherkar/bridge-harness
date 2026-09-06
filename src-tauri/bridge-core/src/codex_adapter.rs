@@ -503,20 +503,33 @@ fn turn_start_params(
     context: TurnContext<'_>,
     sandbox_policy: Option<&Value>,
 ) -> Value {
-    let mut params =
-        json!({"threadId":thread_id,"input":[{"type":"text","text":text,"text_elements":[]}]});
-    // One key per present entry, so the session frame is not filed under the
-    // credential name. An absent entry emits no key at all, and a turn with
-    // nothing to add emits no `additionalContext`.
-    let mut additional = serde_json::Map::new();
-    for entry in context.entries() {
-        additional.insert(
-            entry.name.to_owned(),
-            json!({"kind": "application", "value": entry.value}),
-        );
+    // The session frame is a leading `input` item, not `additionalContext`.
+    //
+    // `TurnStartParams` documents eleven fields as applying "for this turn and
+    // subsequent turns"; `additionalContext` is deliberately not one of them —
+    // it is "context fragments" scoped to the turn that carries them. A
+    // standing contract delivered there once would be gone by the next turn,
+    // and the delivery ledger would still believe the thread held it. `input`
+    // items are the turn's user message, so they persist in the thread exactly
+    // like Claude's content blocks and OpenCode's parts, which is what
+    // deliver-once needs.
+    let mut input = Vec::new();
+    if let Some(frame) = context.session.map(str::trim).filter(|f| !f.is_empty()) {
+        input.push(json!({"type":"text","text":frame,"text_elements":[]}));
     }
-    if !additional.is_empty() {
-        params["additionalContext"] = Value::Object(additional);
+    input.push(json!({"type":"text","text":text,"text_elements":[]}));
+    let mut params = json!({"threadId":thread_id,"input":input});
+    // Per-turn credential context keeps its existing home: it is re-sent on
+    // every turn whose text carries a registered marker, so a turn-scoped
+    // fragment is exactly right for it.
+    if let Some(credentials) = context
+        .credentials
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        params["additionalContext"] = json!({
+            "bridge.credentials": {"kind": "application", "value": credentials}
+        });
     }
     if let Some(sandbox_policy) = sandbox_policy {
         params["sandboxPolicy"] = sandbox_policy.clone();
@@ -899,7 +912,19 @@ mod tests {
             },
             None,
         );
-        assert_eq!(params["input"][0]["text"], "verify [secret:sec_reference]");
+        // The session frame leads the turn's own input items, so it is part of
+        // the user message and persists in the thread. The user's words follow
+        // it, unedited.
+        let input = params["input"].as_array().unwrap();
+        assert_eq!(input.len(), 2);
+        assert_eq!(
+            input[0]["text"],
+            "<bridge-session-context schema=\"1\">frame</bridge-session-context>"
+        );
+        assert_eq!(input[0]["type"], "text");
+        assert_eq!(input[1]["text"], "verify [secret:sec_reference]");
+
+        // Per-turn credential context keeps its turn-scoped home.
         assert_eq!(
             params["additionalContext"]["bridge.credentials"]["kind"],
             "application"
@@ -908,20 +933,33 @@ mod tests {
             params["additionalContext"]["bridge.credentials"]["value"],
             "trusted broker capability"
         );
-        // The session frame is its own named entry, not appended to the
-        // credential one: on the wire the two are different claims.
-        assert_eq!(
-            params["additionalContext"]["bridge.session"]["kind"],
-            "application"
-        );
-        assert_eq!(
-            params["additionalContext"]["bridge.session"]["value"],
-            "<bridge-session-context schema=\"1\">frame</bridge-session-context>"
+        assert!(
+            params["additionalContext"].get("bridge.session").is_none(),
+            "a standing contract must not live in a turn-scoped fragment"
         );
     }
 
+    /// `TurnStartParams` marks eleven fields as applying "for this turn and
+    /// subsequent turns". `additionalContext` is not one of them, so anything
+    /// the delivery ledger expects the thread to still hold next turn cannot
+    /// go there.
     #[test]
-    fn turn_request_omits_absent_context_entries_entirely() {
+    fn a_standing_frame_rides_input_while_per_turn_context_rides_additional_context() {
+        let frame_only = turn_start_params(
+            "thread",
+            "hello",
+            TurnContext {
+                session: Some("frame"),
+                credentials: None,
+            },
+            None,
+        );
+        assert_eq!(frame_only["input"].as_array().unwrap().len(), 2);
+        assert!(
+            frame_only.get("additionalContext").is_none(),
+            "no per-turn fragment means no additionalContext at all"
+        );
+
         let credentials_only = turn_start_params(
             "thread",
             "verify",
@@ -931,24 +969,34 @@ mod tests {
             },
             None,
         );
+        let input = credentials_only["input"].as_array().unwrap();
+        assert_eq!(input.len(), 1, "no frame means the user text stands alone");
+        assert_eq!(input[0]["text"], "verify");
         let additional = credentials_only["additionalContext"].as_object().unwrap();
         assert_eq!(additional.len(), 1);
         assert!(additional.contains_key("bridge.credentials"));
+    }
 
-        // A blank value is absence, not an empty claim.
+    #[test]
+    fn a_blank_context_value_is_absence_not_an_empty_claim() {
         let blank = turn_start_params(
             "thread",
             "verify",
             TurnContext {
                 session: Some("   "),
-                credentials: None,
+                credentials: Some("  \n "),
             },
             None,
         );
         assert!(blank.get("additionalContext").is_none());
-        assert!(turn_start_params("thread", "verify", TurnContext::default(), None)
-            .get("additionalContext")
-            .is_none());
+        assert_eq!(blank["input"].as_array().unwrap().len(), 1);
+
+        // A context-free turn is byte-identical to the wire before #528.
+        let plain = turn_start_params("thread", "verify", TurnContext::default(), None);
+        assert_eq!(
+            plain,
+            json!({"threadId":"thread","input":[{"type":"text","text":"verify","text_elements":[]}]})
+        );
     }
 
     #[test]

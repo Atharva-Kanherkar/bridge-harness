@@ -6198,17 +6198,11 @@ pub fn deliver_worker_objective(
     session_id: &str,
     objective: &str,
 ) -> Result<(), BridgeError> {
-    let session_frame = core
-        .session_context
-        .lock()
-        .unwrap()
-        .pending(session_id)
-        .map(str::to_owned);
+    let session_frame = core.session_context.lock().unwrap().pending(session_id);
     let context = adapters::TurnContext {
-        session: session_frame.as_deref(),
+        session: session_frame.as_ref().map(session_context::SessionContext::text),
         credentials: None,
     };
-    let carried = context.session.is_some();
     core.adapters
         .lock()
         .unwrap()
@@ -6217,11 +6211,11 @@ pub fn deliver_worker_objective(
             BridgeError::Invalid("Worker runtime disappeared before objective delivery".into())
         })
         .and_then(|runtime| deliver_sanitized_turn(runtime.as_ref(), objective, context))?;
-    if carried {
+    if let Some(frame) = &session_frame {
         core.session_context
             .lock()
             .unwrap()
-            .record_delivered(session_id);
+            .record_delivered(session_id, frame.digest());
     }
     Ok(())
 }
@@ -8602,12 +8596,7 @@ fn deliver_prepared_input(
     // Read the owed frame and let the ledger lock go before the adapter map is
     // taken. Both delivery seams acquire in this order — ledger, then adapters
     // — and `arm` never reaches for the adapter map, so no pair can invert.
-    let session_frame = state
-        .session_context
-        .lock()
-        .unwrap()
-        .pending(session_id)
-        .map(str::to_owned);
+    let session_frame = state.session_context.lock().unwrap().pending(session_id);
     let adapters = state.adapters.lock().unwrap();
     let runtime = adapters
         .get(session_id)
@@ -8616,7 +8605,7 @@ fn deliver_prepared_input(
         .credential_broker
         .turn_context(session_id, &prepared.outbound);
     let turn_context = adapters::TurnContext {
-        session: session_frame.as_deref(),
+        session: session_frame.as_ref().map(session_context::SessionContext::text),
         credentials: credential_context.as_deref(),
     };
     let has_images = !prepared.images.is_empty();
@@ -8641,20 +8630,21 @@ fn deliver_prepared_input(
     } else {
         deliver_sanitized_turn(runtime.as_ref(), &prepared.provider_text, turn_context)
     };
-    let carried_session_context = turn_context.session.is_some();
     if let Err(error) = delivered {
         drop(adapters);
         record_recoverable_adapter_failure(state, session_id, &error)?;
         return Err(error);
     }
     drop(adapters);
-    // Only now: a frame Bridge failed to hand over is still owed.
-    if carried_session_context {
+    // Only now, and only for the exact frame this turn carried: a frame Bridge
+    // failed to hand over is still owed, and a newer one armed while this send
+    // was in flight is not this send's to acknowledge.
+    if let Some(frame) = &session_frame {
         state
             .session_context
             .lock()
             .unwrap()
-            .record_delivered(session_id);
+            .record_delivered(session_id, frame.digest());
     }
     let db = state.db.lock().unwrap();
     // Claude stream-json does not reliably echo the submitted user turn; persist
