@@ -561,9 +561,13 @@ pub fn normalize_codex_message_with_state(
         }
         "thread/tokenUsage/updated" => {
             let mut data = params.clone();
-            if let Some(usage) = codex_request_usage(&params) {
-                data["usage"] = usage;
-            }
+            // Always shadow the raw frame with an explicit `usage` key, even an
+            // empty one. `UsageReport::from_normalized` falls back to the whole
+            // event when `usage` is absent, and its recursive search would then
+            // reach `tokenUsage.total` — the cumulative counter this normalizer
+            // exists to keep out of the ledger. An empty object resolves to no
+            // figures at all, so no row is written.
+            data["usage"] = codex_request_usage(&params).unwrap_or_else(|| json!({}));
             vec![with_data("usage.updated", &params, data)]
         }
         "turn/diff/updated" | "item/fileChange/patchUpdated" => {
@@ -659,7 +663,9 @@ pub fn normalize_codex_message_with_state(
 /// recursive alias search over the raw frame reaches `total` first.
 ///
 /// The raw `tokenUsage` object stays on the event beside this, so the running
-/// total and `modelContextWindow` remain readable.
+/// total and `modelContextWindow` remain readable. That is also why the caller
+/// must still write an explicit `usage` key when this returns `None`: the raw
+/// object it preserves is precisely what a recursive alias search would find.
 fn codex_request_usage(params: &Value) -> Option<Value> {
     let last = params.pointer("/tokenUsage/last")?.as_object()?;
     let mut usage = serde_json::Map::new();
@@ -1913,7 +1919,10 @@ mod tests {
         }));
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].kind, "usage.updated");
-        assert!(events[0].data.get("usage").is_none());
+        // Explicitly empty rather than absent: an absent `usage` sends
+        // `UsageReport::from_normalized` recursing into the raw frame, where it
+        // would find the cumulative `tokenUsage.total` this case must reject.
+        assert_eq!(events[0].data["usage"], json!({}));
     }
 
     #[test]

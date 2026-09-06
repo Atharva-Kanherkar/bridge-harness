@@ -750,6 +750,13 @@ pub fn record_provider_usage(
     if row.harness.is_none() {
         if let Some((harness, model)) = store::session_harness_and_model(db, session_id)? {
             row.harness = Some(harness);
+            // The model of record is the one Bridge asked for. If the provider
+            // reroutes mid-turn — Codex emits `model/rerouted`, which nothing
+            // persists — this attributes the usage to the requested model. That
+            // is the same attribution `prompt_compilations.model` already gives
+            // every bound row, so the fallback is consistent rather than newly
+            // wrong; correcting it means carrying a per-request serving model,
+            // which is its own change.
             row.model = row.model.or(model);
         }
     }
@@ -1661,6 +1668,36 @@ mod tests {
         // Codex reports no uncached figure of its own; `record_provider_usage`
         // derives it, because `inputTokens` is inclusive of both cache figures.
         assert_eq!(report.uncached_input_tokens, None);
+    }
+
+    #[test]
+    fn a_codex_frame_without_a_last_breakdown_records_nothing() {
+        // The regression this guards: the normalizer preserves the raw frame so
+        // `modelContextWindow` stays readable, and without an explicit `usage`
+        // key the recursive alias search reaches `tokenUsage.total` and books
+        // the cumulative thread counter as if it were one request.
+        let events = crate::agent::normalize_codex_message(&json!({
+            "method":"thread/tokenUsage/updated",
+            "params":{
+                "threadId":"thread-1",
+                "turnId":"turn-1",
+                "tokenUsage":{
+                    "total":{"totalTokens":900,"inputTokens":800,"cachedInputTokens":700,"outputTokens":100},
+                    "modelContextWindow":272000
+                }
+            }
+        }));
+        let data = &events
+            .iter()
+            .find(|event| event.kind == "usage.updated")
+            .unwrap()
+            .data;
+        assert!(UsageReport::from_normalized(data).is_none());
+
+        let db = database();
+        assert!(!record_provider_usage(&db, "w", "parent", Some("turn-1"), "provider.codex", data)
+            .unwrap());
+        assert!(store::usage_ledger(&db, "w", Some("parent")).unwrap().is_empty());
     }
 
     #[test]
