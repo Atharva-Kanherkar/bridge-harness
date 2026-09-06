@@ -3389,6 +3389,24 @@ pub fn record_prompt_compilation(
     Ok(db.last_insert_rowid())
 }
 
+/// The harness and model a session is bound to.
+///
+/// Usage rows fall back to this when no prompt compilation matches their turn,
+/// so a provider row is never written without a harness while the session row
+/// exists.
+pub fn session_harness_and_model(
+    db: &Connection,
+    session_id: &str,
+) -> Result<Option<(String, Option<String>)>, BridgeError> {
+    Ok(db
+        .query_row(
+            "SELECT harness,model FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?)
+}
+
 pub fn latest_prompt_compilation(
     db: &Connection,
     session_id: &str,
