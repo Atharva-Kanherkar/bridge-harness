@@ -2277,7 +2277,7 @@ mod tests {
         model_profiles::save_profiles(&db, &descriptors, &profiles).unwrap();
         let selected = sessions::resolve_orchestrator_selection(&db, &registry).unwrap();
         assert_eq!(selected.adapter_id, expected_provider);
-        assert_eq!(selected.model, expected_model);
+        assert_eq!(selected.model, Some(expected_model));
         assert_eq!(selected.effort, Some(delegation::Effort::High));
         assert_eq!(selected.tier, CapabilityTier::Standard);
     }

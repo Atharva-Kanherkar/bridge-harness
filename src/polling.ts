@@ -1,5 +1,29 @@
 type TimerHandle = ReturnType<typeof setTimeout>;
 
+/** Merge refresh notifications while a read is pending, then fetch once more
+ * for changes that arrived during that read. No overlapping snapshots or lost
+ * final update, even when a worker emits a burst of state changes. */
+export function createCoalescedRefresh(task: () => Promise<void>): () => Promise<void> {
+  let running: Promise<void> | undefined;
+  let requested = false;
+  return () => {
+    requested = true;
+    if (!running) {
+      running = Promise.resolve().then(async () => {
+        try {
+          while (requested) {
+            requested = false;
+            await task();
+          }
+        } finally {
+          running = undefined;
+        }
+      });
+    }
+    return running;
+  };
+}
+
 /**
  * Runs a poll immediately, then schedules the next run only after the current
  * one settles. Slow native work can therefore never build an invoke backlog.

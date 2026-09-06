@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { normalizeAgentToken } from "./agentMention";
+import { createInvokeQueue } from "./invokeQueue";
 import { asWireKind, readWireKind } from "./transcript/wire";
 import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
@@ -71,11 +72,18 @@ const COMMAND_BY_METHOD = Object.fromEntries(
   BRIDGE_METHODS.map(entry => [entry.method, entry.command]),
 ) as Record<BridgeMethod, string>;
 
+// Match daemon_host.rs's connection partitions. Sending the whole UI fan-out
+// at once exhausted its 24-job limit; slow GitHub calls also need to stay out
+// of the lanes used by settings, sessions, and health.
+const generalInvokes = createInvokeQueue(4);
+const githubInvokes = createInvokeQueue(2);
+
 function call<M extends BridgeMethod>(
   method: M,
   ...params: BridgeMethodParams[M] extends undefined ? [] : [BridgeMethodParams[M]]
 ): Promise<BridgeMethodResults[M]> {
-  return invoke(COMMAND_BY_METHOD[method], params[0] as Record<string, unknown> | undefined);
+  const enqueue = method.startsWith("github/") ? githubInvokes : generalInvokes;
+  return enqueue(() => invoke(COMMAND_BY_METHOD[method], params[0] as Record<string, unknown> | undefined));
 }
 
 const subscribe = <T,>(notification: BridgeNotification, handler: (payload: T) => void): Promise<UnlistenFn> =>
