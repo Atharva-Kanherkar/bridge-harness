@@ -607,6 +607,17 @@ impl AdapterRuntime for GrokRuntime {
     }
 
     fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
+        self.send_turn_with_context(text, crate::adapters::TurnContext::default())
+    }
+
+    /// ACP has no system channel: the compiled prompt already reaches the
+    /// agent folded into the first user message. Bridge's per-turn context
+    /// joins that same preamble, which is the only channel there is.
+    fn send_turn_with_context(
+        &self,
+        text: &str,
+        context: crate::adapters::TurnContext<'_>,
+    ) -> Result<(), BridgeError> {
         if self.session.is_closed() {
             return Err(self.closed());
         }
@@ -622,10 +633,16 @@ impl AdapterRuntime for GrokRuntime {
         events
             .send(encode_event(&started))
             .map_err(|_| self.closed())?;
-        let preamble = self.pending_instructions.lock().unwrap().take();
-        let text = match preamble {
-            Some(instructions) => format!("{instructions}\n\n{text}"),
-            None => text.to_owned(),
+        let mut preamble = Vec::new();
+        if let Some(instructions) = self.pending_instructions.lock().unwrap().take() {
+            preamble.push(instructions);
+        }
+        preamble.extend(context.entries().map(|entry| entry.value.to_owned()));
+        let text = if preamble.is_empty() {
+            text.to_owned()
+        } else {
+            preamble.push(text.to_owned());
+            preamble.join("\n\n")
         };
         let session = self.session.clone();
         thread::Builder::new()

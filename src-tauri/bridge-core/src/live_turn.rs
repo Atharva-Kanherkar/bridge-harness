@@ -8173,11 +8173,12 @@ pub fn prepare_turn(
 pub fn deliver_sanitized_turn(
     runtime: &dyn adapters::AdapterRuntime,
     text: &str,
-    application_context: Option<&str>,
+    context: adapters::TurnContext<'_>,
 ) -> Result<(), BridgeError> {
-    match application_context {
-        Some(context) => runtime.send_turn_with_context(text, context),
-        None => runtime.send_turn(text),
+    if context.is_empty() {
+        runtime.send_turn(text)
+    } else {
+        runtime.send_turn_with_context(text, context)
     }
 }
 
@@ -8532,6 +8533,10 @@ fn deliver_prepared_input(
     let credential_context = state
         .credential_broker
         .turn_context(session_id, &prepared.outbound);
+    let turn_context = adapters::TurnContext {
+        session: None,
+        credentials: credential_context.as_deref(),
+    };
     let has_images = !prepared.images.is_empty();
     if has_images && !runtime.supports_images() {
         // Refuse before touching the provider: a capability gap is a routing
@@ -8550,9 +8555,9 @@ fn deliver_prepared_input(
         } else {
             prepared.provider_text.as_str()
         };
-        runtime.send_turn_with_images(provider_text, credential_context.as_deref(), &prepared.images)
+        runtime.send_turn_with_images(provider_text, turn_context, &prepared.images)
     } else {
-        deliver_sanitized_turn(runtime.as_ref(), &prepared.provider_text, credential_context.as_deref())
+        deliver_sanitized_turn(runtime.as_ref(), &prepared.provider_text, turn_context)
     };
     if let Err(error) = delivered {
         drop(adapters);
@@ -10588,7 +10593,7 @@ mod submit_input_tests {
         fn send_turn_with_images(
             &self,
             text: &str,
-            _application_context: Option<&str>,
+            _context: adapters::TurnContext<'_>,
             images: &[bridge_protocol::messages::TurnImage],
         ) -> Result<(), BridgeError> {
             if self.refuse.load(Ordering::SeqCst) {

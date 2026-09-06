@@ -23,6 +23,51 @@ use std::{
     time::Duration,
 };
 
+/// Trusted, application-owned context for one turn: Bridge's own words, never
+/// folded into the visible user message.
+///
+/// Two named things rather than one blob, because they are owed for different
+/// reasons and a provider that can name its context entries must not label one
+/// as the other. `session` is the launch's session-context frame
+/// (`session_context.rs`) — capabilities and memory, delivered in the
+/// conversation tail so the system prompt stays byte-stable across restarts.
+/// `credentials` is the per-turn capability contract, present only when the
+/// visible text carries a `[secret:]` marker registered to this session.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TurnContext<'a> {
+    pub session: Option<&'a str>,
+    pub credentials: Option<&'a str>,
+}
+
+/// One present context entry. `name` is the wire key for providers that carry
+/// named context entries (Codex's `additionalContext`); providers whose only
+/// channel is the message body use `value` alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnContextEntry<'a> {
+    pub name: &'static str,
+    pub value: &'a str,
+}
+
+impl<'a> TurnContext<'a> {
+    /// The entries actually present, in delivery order: the session frame
+    /// first, because it is the standing contract the per-turn note refines.
+    pub fn entries(&self) -> impl Iterator<Item = TurnContextEntry<'a>> {
+        [
+            ("bridge.session", self.session),
+            ("bridge.credentials", self.credentials),
+        ]
+        .into_iter()
+        .filter_map(|(name, value)| {
+            let value = value.map(str::trim).filter(|value| !value.is_empty())?;
+            Some(TurnContextEntry { name, value })
+        })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries().next().is_none()
+    }
+}
+
 pub trait AdapterRuntime: Send {
     fn process_id(&self) -> u32;
     fn provider_session_id(&self) -> &str;
@@ -44,7 +89,7 @@ pub trait AdapterRuntime: Send {
     fn send_turn_with_context(
         &self,
         text: &str,
-        _application_context: &str,
+        _context: TurnContext<'_>,
     ) -> Result<(), BridgeError> {
         self.send_turn(text)
     }
@@ -63,7 +108,7 @@ pub trait AdapterRuntime: Send {
     fn send_turn_with_images(
         &self,
         _text: &str,
-        _application_context: Option<&str>,
+        _context: TurnContext<'_>,
         _images: &[bridge_protocol::messages::TurnImage],
     ) -> Result<(), BridgeError> {
         Err(BridgeError::Invalid(

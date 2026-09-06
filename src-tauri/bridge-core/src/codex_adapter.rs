@@ -1,5 +1,5 @@
 use crate::{
-    adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest},
+    adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest, TurnContext},
     binary,
     context_inventory::{
         AdapterContextInventory, ContextInventoryScope, ContextLifecyclePhase, ContextSegmentClass,
@@ -459,19 +459,10 @@ impl CodexRuntime {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
-    pub fn start_turn(
-        &self,
-        text: &str,
-        application_context: Option<&str>,
-    ) -> Result<(), BridgeError> {
+    pub fn start_turn(&self, text: &str, context: TurnContext<'_>) -> Result<(), BridgeError> {
         self.request(
             "turn/start",
-            turn_start_params(
-                &self.thread_id,
-                text,
-                application_context,
-                self.sandbox_policy.as_ref(),
-            ),
+            turn_start_params(&self.thread_id, text, context, self.sandbox_policy.as_ref()),
         )?;
         crate::context_inventory::record_runtime_inventory(
             &self.context_inventory,
@@ -509,18 +500,23 @@ impl CodexRuntime {
 fn turn_start_params(
     thread_id: &str,
     text: &str,
-    application_context: Option<&str>,
+    context: TurnContext<'_>,
     sandbox_policy: Option<&Value>,
 ) -> Value {
     let mut params =
         json!({"threadId":thread_id,"input":[{"type":"text","text":text,"text_elements":[]}]});
-    if let Some(context) = application_context
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-    {
-        params["additionalContext"] = json!({
-            "bridge.credentials": {"kind": "application", "value": context}
-        });
+    // One key per present entry, so the session frame is not filed under the
+    // credential name. An absent entry emits no key at all, and a turn with
+    // nothing to add emits no `additionalContext`.
+    let mut additional = serde_json::Map::new();
+    for entry in context.entries() {
+        additional.insert(
+            entry.name.to_owned(),
+            json!({"kind": "application", "value": entry.value}),
+        );
+    }
+    if !additional.is_empty() {
+        params["additionalContext"] = Value::Object(additional);
     }
     if let Some(sandbox_policy) = sandbox_policy {
         params["sandboxPolicy"] = sandbox_policy.clone();
@@ -542,14 +538,14 @@ impl AdapterRuntime for CodexRuntime {
         self.context_inventory.lock().unwrap().clone()
     }
     fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
-        self.start_turn(text, None)
+        self.start_turn(text, TurnContext::default())
     }
     fn send_turn_with_context(
         &self,
         text: &str,
-        application_context: &str,
+        context: TurnContext<'_>,
     ) -> Result<(), BridgeError> {
-        self.start_turn(text, Some(application_context))
+        self.start_turn(text, context)
     }
     fn interrupt(&self) -> Result<(), BridgeError> {
         CodexRuntime::interrupt(self)
@@ -897,7 +893,10 @@ mod tests {
         let params = turn_start_params(
             "thread-existing",
             "verify [secret:sec_reference]",
-            Some("trusted broker capability"),
+            TurnContext {
+                session: Some("<bridge-session-context schema=\"1\">frame</bridge-session-context>"),
+                credentials: Some("trusted broker capability"),
+            },
             None,
         );
         assert_eq!(params["input"][0]["text"], "verify [secret:sec_reference]");
@@ -909,6 +908,47 @@ mod tests {
             params["additionalContext"]["bridge.credentials"]["value"],
             "trusted broker capability"
         );
+        // The session frame is its own named entry, not appended to the
+        // credential one: on the wire the two are different claims.
+        assert_eq!(
+            params["additionalContext"]["bridge.session"]["kind"],
+            "application"
+        );
+        assert_eq!(
+            params["additionalContext"]["bridge.session"]["value"],
+            "<bridge-session-context schema=\"1\">frame</bridge-session-context>"
+        );
+    }
+
+    #[test]
+    fn turn_request_omits_absent_context_entries_entirely() {
+        let credentials_only = turn_start_params(
+            "thread",
+            "verify",
+            TurnContext {
+                session: None,
+                credentials: Some("trusted broker capability"),
+            },
+            None,
+        );
+        let additional = credentials_only["additionalContext"].as_object().unwrap();
+        assert_eq!(additional.len(), 1);
+        assert!(additional.contains_key("bridge.credentials"));
+
+        // A blank value is absence, not an empty claim.
+        let blank = turn_start_params(
+            "thread",
+            "verify",
+            TurnContext {
+                session: Some("   "),
+                credentials: None,
+            },
+            None,
+        );
+        assert!(blank.get("additionalContext").is_none());
+        assert!(turn_start_params("thread", "verify", TurnContext::default(), None)
+            .get("additionalContext")
+            .is_none());
     }
 
     #[test]
@@ -918,7 +958,7 @@ mod tests {
             "writableRoots": ["/tmp/bridge-output"],
             "networkAccess": false,
         });
-        let params = turn_start_params("thread", "verify", None, Some(&policy));
+        let params = turn_start_params("thread", "verify", TurnContext::default(), Some(&policy));
         assert_eq!(params["sandboxPolicy"], policy);
         assert_eq!(
             params["sandboxPolicy"]["writableRoots"]
@@ -948,7 +988,10 @@ mod tests {
         let mut runtime = started.runtime;
         let mut reader = started.reader;
         runtime
-            .start_turn("Reply exactly BRIDGE_SMOKE_OK. Do not use tools.", None)
+            .start_turn(
+                "Reply exactly BRIDGE_SMOKE_OK. Do not use tools.",
+                TurnContext::default(),
+            )
             .unwrap();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || loop {
@@ -989,7 +1032,10 @@ mod tests {
     #[ignore = "requires an installed, authenticated Codex binary and persists a provider thread"]
     fn live_codex_thread_survives_process_restart() {
         fn run_turn(started: &mut StartedCodex, prompt: &str) -> String {
-            started.runtime.start_turn(prompt, None).unwrap();
+            started
+                .runtime
+                .start_turn(prompt, TurnContext::default())
+                .unwrap();
             let mut transcript = String::new();
             loop {
                 let mut line = String::new();
