@@ -1381,7 +1381,10 @@ mod tests {
 
     /// A registered, available harness with Standard and Fast models, so
     /// selection logic can run without real provider binaries.
-    struct StubAdapter { catalog_empty: bool }
+    struct StubAdapter {
+        catalog_empty: bool,
+        expected_model: Option<&'static str>,
+    }
     impl adapters::HarnessAdapter for StubAdapter {
         fn as_any(&self) -> &dyn std::any::Any {
             self
@@ -1437,6 +1440,8 @@ mod tests {
             if self.catalog_empty {
                 assert_eq!(request.model, None, "the provider must choose its own default");
                 assert_eq!(request.effort, None, "do not carry another provider's effort");
+            } else if let Some(expected) = self.expected_model {
+                assert_eq!(request.model, Some(expected));
             }
             Err(BridgeError::Adapter("stub adapter cannot start".into()))
         }
@@ -1458,8 +1463,18 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         let mut core = BridgeCore::for_tests(scratch.path());
         let mut registry = adapters::AdapterRegistry::empty();
-        registry.register(Box::new(StubAdapter { catalog_empty: false })).unwrap();
-        registry.register(Box::new(StubAdapter { catalog_empty: true })).unwrap();
+        registry
+            .register(Box::new(StubAdapter {
+                catalog_empty: false,
+                expected_model: None,
+            }))
+            .unwrap();
+        registry
+            .register(Box::new(StubAdapter {
+                catalog_empty: true,
+                expected_model: None,
+            }))
+            .unwrap();
         core.adapter_registry = std::sync::Arc::new(registry);
         (scratch, core)
     }
@@ -1504,6 +1519,68 @@ mod tests {
         crate::api::update_chat_model(&core, &id, &Harness::Cursor, None, None).unwrap();
         let error = crate::live_turn::start_chat(&core, id).unwrap_err();
         assert!(error.to_string().contains("stub adapter cannot start"), "{error}");
+    }
+
+    #[test]
+    fn configured_model_does_not_override_an_undiscovered_provider_default() {
+        for orchestrator in [false, true] {
+            let (_scratch, core) = fixture();
+            let id = if orchestrator {
+                seed_workspace(&core, false);
+                let plan = core.plan_workspace_session("w", false).unwrap();
+                core.persist_workspace_session(plan, None).unwrap();
+                only_session_id(&core)
+            } else {
+                core.create_chat_id(&Harness::Codex, Some("stub-fast"), None)
+                    .unwrap()
+            };
+            {
+                let db = core.db.lock().unwrap();
+                let mut config = agent_config::harness_config(&db, "cursor").unwrap();
+                config.default_model = Some("retired-cursor-model".into());
+                agent_config::save_harness(&db, config).unwrap();
+            }
+            let core = std::sync::Arc::new(core);
+            crate::api::update_chat_model(&core, &id, &Harness::Cursor, None, None).unwrap();
+            // The stub asserts that the adapter receives None, despite the
+            // saved setting, for both a direct chat and the welcome composer.
+            let error = crate::live_turn::start_chat(&core, id).unwrap_err();
+            assert!(
+                error.to_string().contains("stub adapter cannot start"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn configured_model_resolves_against_a_known_catalog_unless_the_session_has_a_pin() {
+        for (stored, configured, expected) in [
+            (None, "stub-fast", "stub-fast"),
+            (Some("stub-standard"), "stub-fast", "stub-standard"),
+            (None, "retired-model", "stub-standard"),
+        ] {
+            let (_scratch, mut core) = fixture();
+            let mut registry = adapters::AdapterRegistry::empty();
+            registry
+                .register(Box::new(StubAdapter {
+                    catalog_empty: false,
+                    expected_model: Some(expected),
+                }))
+                .unwrap();
+            core.adapter_registry = std::sync::Arc::new(registry);
+            {
+                let db = core.db.lock().unwrap();
+                let mut config = agent_config::harness_config(&db, "codex").unwrap();
+                config.default_model = Some(configured.into());
+                agent_config::save_harness(&db, config).unwrap();
+            }
+            let id = core.create_chat_id(&Harness::Codex, stored, None).unwrap();
+            let error = crate::live_turn::start_chat(&std::sync::Arc::new(core), id).unwrap_err();
+            assert!(
+                error.to_string().contains("stub adapter cannot start"),
+                "{error}"
+            );
+        }
     }
 
     #[test]

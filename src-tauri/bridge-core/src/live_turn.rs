@@ -1484,9 +1484,27 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
             }
         })
         .or_else(|| {
-            configured_harness
+            let requested = configured_harness
                 .as_ref()
-                .and_then(|config| config.default_model.clone())
+                .and_then(|config| config.default_model.as_ref())?;
+            // Settings can outlive the discovered catalogue. Only apply their
+            // default when it resolves against the current models; otherwise
+            // leave an unpinned cold start to the provider's own default.
+            let resolution = state
+                .adapter_registry
+                .resolve_pinned_model(adapter_id, requested)
+                .ok()?;
+            if let Some(warning) = resolution.warning {
+                let db = state.db.lock().unwrap();
+                let _ = store::event(
+                    &db,
+                    "capability",
+                    "capability.model_pin_fallback",
+                    &session_id,
+                    &warning,
+                );
+            }
+            Some(resolution.actual_model)
         })
         .or_else(|| {
             state
