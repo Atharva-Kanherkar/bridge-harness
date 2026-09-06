@@ -80,6 +80,12 @@ pub struct BridgeCore {
     /// stall watchdog to detect a live-but-silent worker. Monotonic, in-memory
     /// only — process death is already handled by the reader-thread EOF path.
     pub worker_activity: Mutex<HashMap<String, std::time::Instant>>,
+    /// Sessions where the user clicked Stop and an interrupt is in flight.
+    /// The provider's reaction to that interrupt (an aborted-turn error,
+    /// a broken pipe, a non-zero exit) races the teardown in `stop_session`,
+    /// so the reader thread consults this set to tell "the user asked for
+    /// this" apart from a genuine crash before it renders an error to them.
+    pub user_stop_requested: Mutex<std::collections::HashSet<String>>,
     /// Last heartbeat copied into `worker_runtime.updated_at` for live UI
     /// visibility. Kept separate so frequent streaming frames only write to
     /// SQLite at a bounded cadence.
@@ -289,6 +295,7 @@ impl BridgeCore {
             github_poller: crate::github_poll::GithubPoller::default(),
             worker_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
+            user_stop_requested: Mutex::new(std::collections::HashSet::new()),
             events: EventBus::new(),
             lifecycle_claims: Mutex::new(HashMap::new()),
             workspace_operations: Mutex::new(HashMap::new()),
@@ -399,6 +406,7 @@ impl BridgeCore {
             github_poller: crate::github_poll::GithubPoller::default(),
             worker_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
+            user_stop_requested: Mutex::new(std::collections::HashSet::new()),
             events,
             lifecycle_claims: Mutex::new(HashMap::new()),
             workspace_operations: Mutex::new(HashMap::new()),

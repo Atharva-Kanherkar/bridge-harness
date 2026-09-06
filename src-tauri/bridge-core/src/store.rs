@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 47;
+const LATEST_SCHEMA_VERSION: i64 = 48;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -666,6 +666,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             45 => migration_45_latest_memory_packet_audit(&transaction)?,
             46 => crate::external_import::install_import_foundation(&transaction)?,
             47 => migration_47_model_profile_selection_mode(&transaction)?,
+            48 => migration_48_harness_quota_cooldowns(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -694,6 +695,27 @@ fn migration_47_model_profile_selection_mode(
         "UPDATE model_profiles
          SET selection_mode=CASE WHEN pinned=1 THEN 'pinned' ELSE 'track_standard' END",
         [],
+    )?;
+    Ok(())
+}
+
+/// A harness that just told Bridge it is out of quota is not "unknown" —
+/// `learning_router::harness_capacity` otherwise only sees usage/context from
+/// *live* sessions, so the signal would vanish the moment the failed worker's
+/// session ends. This is the durable record that survives it: a per-workspace
+/// cooldown the router checks in addition to live session state, so the next
+/// delegation in this workspace routes around a harness that just failed for
+/// quota reasons instead of picking it again and hitting the same wall.
+fn migration_48_harness_quota_cooldowns(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS harness_quota_cooldowns (
+            workspace_id TEXT NOT NULL,
+            harness TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            exhausted_at TEXT NOT NULL,
+            cooldown_until TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, harness)
+        );",
     )?;
     Ok(())
 }
@@ -4747,7 +4769,7 @@ mod tests {
              ) VALUES
                  (1,'planner','planner','planning','codex','strong','high',1,'track_standard',0,'now'),
                  (1,'research','research','research','codex','standard','medium',0,'pinned',1,'now');
-             DELETE FROM schema_version WHERE version=47;",
+             DELETE FROM schema_version WHERE version>=47;",
         )
         .unwrap();
         drop(db);
