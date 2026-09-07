@@ -1222,6 +1222,17 @@ fn normalize_claude_system(message: &Value) -> Vec<NormalizedEvent> {
 fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Vec<NormalizedEvent> {
     let event = message.get("event").cloned().unwrap_or_else(|| json!({}));
     let event_type = event.get("type").and_then(Value::as_str).unwrap_or("");
+    // Streams missing message_start still need one identity across block boundaries.
+    let message_id = state
+        .active_message_id
+        .clone()
+        .or_else(|| {
+            message
+                .get("session_id")
+                .and_then(Value::as_str)
+                .map(|session| format!("claude-live-{session}"))
+        })
+        .unwrap_or_else(|| "claude-live".into());
     match event_type {
         "message_start" => {
             if let Some(id) = event
@@ -1237,16 +1248,6 @@ fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Ve
         "content_block_delta" => {
             let delta = event.get("delta").cloned().unwrap_or_else(|| json!({}));
             let delta_type = delta.get("type").and_then(Value::as_str).unwrap_or("");
-            let message_id = state
-                .active_message_id
-                .clone()
-                .or_else(|| {
-                    message
-                        .get("session_id")
-                        .and_then(Value::as_str)
-                        .map(|session| format!("claude-live-{session}"))
-                })
-                .unwrap_or_else(|| "claude-live".into());
             match delta_type {
                 "text_delta" => {
                     let text = delta.get("text").and_then(Value::as_str).unwrap_or("");
@@ -1295,10 +1296,6 @@ fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Ve
             match block.get("type").and_then(Value::as_str).unwrap_or("") {
                 "tool_use" => vec![claude_tool_started(message, &block, state)],
                 "thinking" => {
-                    let message_id = state
-                        .active_message_id
-                        .clone()
-                        .unwrap_or_else(|| "claude-live".into());
                     let id = claude_thinking_id(
                         &message_id,
                         event.get("index").and_then(Value::as_u64).unwrap_or(0),
@@ -1320,9 +1317,8 @@ fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Ve
             }
         }
         "content_block_stop" => {
-            let message_id = state.active_message_id.as_deref().unwrap_or("claude-live");
             let id = claude_thinking_id(
-                message_id,
+                &message_id,
                 event.get("index").and_then(Value::as_u64).unwrap_or(0),
             );
             state
@@ -1334,10 +1330,7 @@ fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Ve
         }
         "message_stop" => {
             // A truncated stream may omit block_stop; retain its text durably.
-            let prefix = format!(
-                "reasoning-{}",
-                state.active_message_id.as_deref().unwrap_or("claude-live")
-            );
+            let prefix = format!("reasoning-{message_id}");
             state
                 .thinking_blocks
                 .iter_mut()
@@ -2024,6 +2017,75 @@ mod tests {
                 &mut state
             )
             .is_empty());
+        }
+    }
+
+    #[test]
+    fn claude_thinking_fallback_identity_matches_across_block_lifecycle() {
+        for session_id in [Some("session-1"), None] {
+            for index in [0, 2] {
+                for initial_text in [None, Some(""), Some("Check ")] {
+                    for stop_type in ["content_block_stop", "message_stop"] {
+                        let mut state = ClaudeStreamState::default();
+                        let wrap = |event: Value| {
+                            let mut message = json!({"type":"stream_event","event":event});
+                            if let Some(session_id) = session_id {
+                                message["session_id"] = json!(session_id);
+                            }
+                            message
+                        };
+                        let mut deltas = Vec::new();
+                        if let Some(text) = initial_text {
+                            deltas.extend(normalize_claude_message_with_state(
+                                &wrap(json!({"type":"content_block_start","index":index,
+                                    "content_block":{"type":"thinking","thinking":text}})),
+                                &mut state,
+                            ));
+                        }
+                        for text in ["the ", "facts."] {
+                            deltas.extend(normalize_claude_message_with_state(
+                                &wrap(json!({"type":"content_block_delta","index":index,
+                                    "delta":{"type":"thinking_delta","thinking":text}})),
+                                &mut state,
+                            ));
+                        }
+                        let message_id = session_id
+                            .map(|id| format!("claude-live-{id}"))
+                            .unwrap_or_else(|| "claude-live".into());
+                        let expected_id = if index == 0 {
+                            format!("reasoning-{message_id}")
+                        } else {
+                            format!("reasoning-{message_id}-block-{index}")
+                        };
+                        for delta in &deltas {
+                            assert_eq!(delta.kind, "reasoning.delta");
+                            assert_eq!(delta.item_id.as_deref(), Some(expected_id.as_str()));
+                        }
+                        let stop = wrap(json!({"type":stop_type,"index":index}));
+                        let completed = normalize_claude_message_with_state(&stop, &mut state);
+                        assert_eq!(
+                            completed.len(), 1,
+                            "{session_id:?}, {index}, {initial_text:?}, {stop_type}"
+                        );
+                        assert_eq!(completed[0].kind, "reasoning.completed");
+                        assert_eq!(completed[0].status.as_deref(), Some("completed"));
+                        assert_eq!(completed[0].item_id.as_deref(), Some(expected_id.as_str()));
+                        assert_eq!(
+                            completed[0].text,
+                            Some(format!("{}the facts.", initial_text.unwrap_or("")))
+                        );
+                        assert_eq!(state.thinking_blocks.len(), 1);
+                        assert!(normalize_claude_message_with_state(&stop, &mut state).is_empty());
+                        let answer = normalize_claude_message_with_state(
+                            &wrap(json!({"type":"content_block_delta","index":index + 1,
+                                "delta":{"type":"text_delta","text":"Answer."}})),
+                            &mut state,
+                        );
+                        assert_eq!(answer[0].kind, "message.delta");
+                        assert_eq!(answer[0].item_id.as_deref(), Some(message_id.as_str()));
+                    }
+                }
+            }
         }
     }
 
