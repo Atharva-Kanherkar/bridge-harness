@@ -1,0 +1,9 @@
+{
+  "name": "bridge-managed-codex",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pinned dependency closure for Bridge's managed codex payload.",
+  "dependencies": {
+    "@openai/codex": "0.153.4"
+  }
+}

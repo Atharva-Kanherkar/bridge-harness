@@ -1,12 +1,32 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { ChevronRight, FolderGit2, FolderOpen, GitBranch, MessageSquarePlus, Package, PanelLeft, Plus, Settings2, Sparkles } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { AnimatePresence, motion } from "framer-motion";
+import { BarChart3, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, Home, Pin, Plus, RotateCw, Search, Settings2, SquarePen, Store, type LucideIcon } from "lucide-react";
+import { WindowNavButtons } from "./WindowNavButtons";
+import { HarnessMark } from "./harnessMarks";
 import type { Session, SessionStatus, Workspace } from "../types";
+import { chordLabel, type CommandId } from "../keymap";
 import { cn } from "@/lib/utils";
+import { MOTION_DURATION, useMotionTransition } from "../motion";
+import { harnessLabel } from "../utils";
+import { SidebarFilterMenu } from "./SidebarFilterMenu";
+import {
+  GROUP_ROW_CAP,
+  NO_PROJECT_GROUP_KEY,
+  agentOptions,
+  chatListTime,
+  chatName,
+  chatTimestamp,
+  filterChats,
+  groupChats,
+  readChatView,
+  statusBucket,
+  writeChatView,
+  type ChatView,
+} from "./sidebarChats";
 
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 400;
 const DEFAULT_WIDTH = 248;
-const COLLAPSED_WIDTH = 68;
 const WIDTH_KEY = "bridge.sidebar.width";
 const COLLAPSED_KEY = "bridge.sidebar.collapsed";
 
@@ -17,113 +37,325 @@ function readWidth(): number {
   return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, value));
 }
 
-function StatusDot({ status }: { status: SessionStatus }) {
-  const color = status === "working" ? "bg-emerald-400" : status === "waiting" ? "bg-amber-400" : status === "ready" ? "bg-sky-400" : status === "failed" ? "bg-red-400" : "bg-neutral-500";
-  return <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", color)} />;
+// A row's status is a single coloured dot, not a word: the one state worth
+// acting on in its own ink. Everything at rest resolves to null, so no dot
+// shows and the subtitle is just the chat's age.
+function rowStatus(status: SessionStatus): { label: string; dot: string } | null {
+  const bucket = statusBucket(status);
+  if (bucket === "active") return { label: "working", dot: "bg-success" };
+  if (bucket === "waiting") return { label: "needs you", dot: "bg-warning" };
+  if (bucket === "failed") return { label: "failed", dot: "bg-destructive" };
+  return null;
 }
 
-function harnessLabel(harness?: string | null): string {
-  if (harness === "claude") return "Claude";
-  if (harness === "codex") return "Codex";
-  if (harness === "opencode") return "OpenCode";
-  return harness ? harness[0].toUpperCase() + harness.slice(1) : "Agent";
-}
-
-function SidebarChatRow({ chat, active, collapsed, onClick }: { chat: Session; active: boolean; collapsed: boolean; onClick: () => void }) {
+function ChatRow({
+  chat,
+  active,
+  indented,
+  time,
+  onClick,
+}: {
+  chat: Session;
+  active: boolean;
+  indented: boolean;
+  time: string | null;
+  onClick: () => void;
+}) {
+  const name = chatName(chat);
+  const detail = `${name} — ${harnessLabel(chat.harness)}${chat.model ? ` · ${chat.model}` : ""}`;
+  const status = rowStatus(chat.status);
   return (
     <button
       type="button"
       onClick={onClick}
-      title={collapsed ? chat.title || chat.label : undefined}
+      title={detail}
       className={cn(
-        "group my-0.5 flex w-full items-center text-left font-sans transition-all duration-200 active:scale-[0.98]",
-        collapsed ? "h-10 justify-center rounded-xl px-0" : "min-h-[36px] gap-2.5 rounded-xl border border-transparent px-2.5 py-1.5",
-        active
-          ? "border-white/[0.07] bg-white/[0.07] text-neutral-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)]"
-          : "text-neutral-400 hover:bg-white/[0.045] hover:text-neutral-200",
+        "flex h-11 w-full items-center gap-2 rounded-[7px] pr-2 text-left font-sans transition-colors active:scale-[0.99]",
+        indented ? "pl-7" : "pl-2",
+        active ? "bg-card" : "hover:bg-card/60",
       )}
     >
-      <StatusDot status={chat.status} />
-      {!collapsed && (
-        <span className="min-w-0 flex-1">
-          <span className="block truncate text-[13px] font-medium leading-tight tracking-[-0.006em]">{chat.title || chat.label}</span>
-          <span className="mt-px block truncate text-[10px] font-normal text-neutral-600">{harnessLabel(chat.harness)}{chat.model ? ` · ${chat.model}` : ""}</span>
+      <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
+        <span className={cn("truncate text-[13px] leading-4 tracking-[-0.008em] text-foreground", active && "font-medium")}>{name}</span>
+        <span className="flex min-w-0 items-center gap-1.5 truncate text-[11px] leading-3.5 tracking-[-0.004em] text-muted-foreground">
+          {status && <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", status.dot)} role="img" aria-label={status.label} />}
+          {time && <span className="shrink-0 tabular-nums text-faint">{time}</span>}
         </span>
-      )}
+      </span>
+      {/* Muted at rest: a column of full-tint marks is the loudest thing in the
+          rail and the chrome stays achromatic. The active row earns its tint. */}
+      <HarnessMark harness={chat.harness} size={13} className={cn("shrink-0", !active && "text-muted-foreground/50")} />
     </button>
   );
 }
 
 function SectionLabel({ children, action }: { children: React.ReactNode; action?: React.ReactNode }) {
   return (
-    <div className="mb-1 flex items-center gap-2 px-2.5 pb-1.5 pt-1">
-      <span className="text-[10px] font-semibold uppercase tracking-[0.16em] text-neutral-600">{children}</span>
-      <span className="h-px flex-1 bg-gradient-to-r from-white/[0.06] to-transparent" />
+    <div className="flex h-7 items-center gap-1.5 px-2">
+      <Folder size={13} strokeWidth={1.6} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+      <span className="text-[12px] font-medium tracking-[-0.004em] text-muted-foreground">{children}</span>
+      {action && <span className="ml-auto flex items-center gap-0.5">{action}</span>}
+    </div>
+  );
+}
+
+function GroupLabel({
+  label,
+  count,
+  folded,
+  active,
+  icon: Icon,
+  onToggle,
+  action,
+}: {
+  label: string;
+  count: number;
+  folded: boolean;
+  active: boolean;
+  icon?: LucideIcon;
+  onToggle: () => void;
+  action?: React.ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "group flex h-7 w-full items-center gap-2 rounded-md pl-2 pr-1 text-left text-[13px] tracking-[-0.008em] text-foreground/90 transition-colors",
+        active ? "bg-accent font-medium text-foreground" : "hover:bg-accent/70 hover:text-foreground",
+      )}
+    >
+      <button
+        type="button"
+        onClick={onToggle}
+        aria-expanded={!folded}
+        title={folded ? `Show ${label}` : `Hide ${label}`}
+        className="flex h-full min-w-0 flex-1 items-center gap-2 text-left"
+      >
+        <ChevronRight
+          size={11}
+          strokeWidth={2}
+          aria-hidden="true"
+          className={cn("shrink-0 text-muted-foreground/60 transition-transform", !folded && "rotate-90")}
+        />
+        {Icon && <Icon size={13} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />}
+        <span className="min-w-0 truncate text-[12px] text-muted-foreground">{label}</span>
+      </button>
+      <span className="ml-auto shrink-0 text-[11px] tabular-nums text-muted-foreground/60">{count}</span>
       {action}
     </div>
   );
 }
 
+function RailIconButton({ label, onClick, children }: { label: string; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+    >
+      {children}
+    </button>
+  );
+}
+
+// The bottom rail is achromatic on purpose: settings, source control, usage,
+// and refresh sit at rest in muted ink and only warm to the foreground on hover
+// or when their screen is the current one.
+function RailBottomButton({
+  label,
+  onClick,
+  active = false,
+  children,
+}: {
+  label: string;
+  onClick: () => void;
+  active?: boolean;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "inline-flex h-8 w-8 items-center justify-center rounded-[7px] transition-colors",
+        active ? "bg-card text-foreground" : "text-muted-foreground hover:bg-card hover:text-foreground",
+      )}
+    >
+      {children}
+    </button>
+  );
+}
+
+function ActionRow({
+  icon: Icon,
+  label,
+  onClick,
+  active = false,
+  disabled = false,
+  chord,
+}: {
+  icon: LucideIcon;
+  label: string;
+  onClick: () => void;
+  active?: boolean;
+  disabled?: boolean;
+  /** Advertise the row's binding in its tooltip, read from the keymap so the
+   *  two cannot disagree. The accessible name stays the plain label. */
+  chord?: CommandId;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      title={chord ? `${label}  ${chordLabel(chord)}` : label}
+      aria-label={label}
+      aria-current={active ? "page" : undefined}
+      className={cn(
+        "flex h-7 w-full items-center gap-2.5 rounded-md px-2 text-[13px] tracking-[-0.008em] transition-colors",
+        active ? "bg-accent font-medium text-foreground" : "text-foreground/85 hover:bg-accent hover:text-foreground",
+        disabled && "cursor-default opacity-50 hover:bg-transparent hover:text-foreground/85",
+      )}
+    >
+      <Icon size={15} strokeWidth={1.5} className="shrink-0 text-muted-foreground" aria-hidden="true" />
+      {label}
+    </button>
+  );
+}
+
 export type BridgeSidebarProps = {
-  standaloneChats: Session[];
+  /** Every top-level session. The rail derives both the project tree and the
+   * history from this one list, so a chat cannot be visible in one and missing
+   * from the other. */
+  chats: Session[];
+  /** Only for `Group by → Project` labels; the tree itself lives on the projects
+   * screen now. */
   workspaces: Workspace[];
-  workspaceChats: (workspaceId: string) => Session[];
   activeSessionId?: string;
+  projectsActive: boolean;
+  memoryActive?: boolean;
   marketplaceActive: boolean;
+  missionControlActive: boolean;
+  workActive?: boolean;
   settingsActive: boolean;
-  expanded: Set<string>;
-  busy: boolean;
+  accountName: string;
+  newChatBusy?: boolean;
+  /** Drawer state below the sm breakpoint, where the rail is off-canvas. */
+  mobileOpen?: boolean;
+  onCloseMobile?: () => void;
   onOpenNewChat: () => void;
+  /** Per-project "+" on a project group header, grouped-by-project only —
+   * skips the picker step since the group already names the workspace. */
+  onNewChatInProject?: (workspaceId: string) => void;
+  onOpenProjects: () => void;
   onOpenMarketplace: () => void;
+  onOpenMissionControl: () => void;
+  onOpenWorkBoard: () => void;
+  /** Account memory. Not workspace-gated: a plain chat reaches it identically. */
+  onOpenMemory: () => void;
   onOpenSettings: () => void;
   onOpenSession: (id: string) => void;
-  onToggleWorkspace: (id: string) => void;
-  onNewWorkspace: () => void;
-  onNewWorkspaceSession: (workspaceId: string) => void;
-  onConnectFolder: (workspaceId: string) => void;
+  /** Hidden, not shrunk: from `sm` up a collapsed rail gives back every pixel
+   * and leaves nothing on screen. When set, the rail uses this state instead of
+   * its own. */
+  collapsed?: boolean;
+  onCollapsedChange?: (collapsed: boolean) => void;
+  /** Panel + history chevrons. Hidden when those controls live on the title bar. */
+  showWindowNav?: boolean;
+  canBack?: boolean;
+  canForward?: boolean;
+  onBack?: () => void;
+  onForward?: () => void;
 };
 
 export function BridgeSidebar({
-  standaloneChats,
+  chats,
   workspaces,
-  workspaceChats,
   activeSessionId,
+  projectsActive,
+  memoryActive = false,
   marketplaceActive,
+  missionControlActive,
   settingsActive,
-  expanded,
-  busy,
+  accountName,
+  newChatBusy = false,
+  mobileOpen = false,
+  onCloseMobile,
   onOpenNewChat,
+  onNewChatInProject,
+  onOpenProjects,
   onOpenMarketplace,
+  onOpenMissionControl,
+  onOpenMemory,
   onOpenSettings,
   onOpenSession,
-  onToggleWorkspace,
-  onNewWorkspace,
-  onNewWorkspaceSession,
-  onConnectFolder,
+  collapsed: collapsedProp,
+  onCollapsedChange,
+  showWindowNav = true,
+  canBack = false,
+  canForward = false,
+  onBack,
+  onForward,
 }: BridgeSidebarProps) {
   const [width, setWidth] = useState(readWidth);
-  const [collapsed, setCollapsed] = useState(() => localStorage.getItem(COLLAPSED_KEY) === "1");
+  const [internalCollapsed, setInternalCollapsed] = useState(() => localStorage.getItem(COLLAPSED_KEY) === "1");
+  const collapsed = collapsedProp ?? internalCollapsed;
+  const setCollapsed = useCallback((next: boolean | ((value: boolean) => boolean)) => {
+    const resolved = typeof next === "function" ? next(collapsed) : next;
+    if (onCollapsedChange) onCollapsedChange(resolved);
+    else setInternalCollapsed(resolved);
+  }, [collapsed, onCollapsedChange]);
   const [resizing, setResizing] = useState(false);
-  const [skipWidthTransition, setSkipWidthTransition] = useState(false);
+  const [view, setView] = useState<ChatView>(readChatView);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [shownInFull, setShownInFull] = useState<Set<string>>(new Set());
+  const [foldedGroups, setFoldedGroups] = useState<Set<string>>(new Set());
+  const [now, setNow] = useState(() => Date.now());
   const widthRef = useRef(width);
   const resizeHandleRef = useRef<HTMLDivElement>(null);
   widthRef.current = width;
 
+  // A hidden rail keeps the width it was last dragged to, so reopening lands
+  // where the user left it rather than back at the default.
   useEffect(() => {
     if (!collapsed) localStorage.setItem(WIDTH_KEY, String(width));
   }, [width, collapsed]);
+
+  // Day headers are relative, so a rail left open past midnight would keep
+  // calling yesterday's chats "Today" until the list next changed.
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   useEffect(() => {
     localStorage.setItem(COLLAPSED_KEY, collapsed ? "1" : "0");
   }, [collapsed]);
 
-  const toggleCollapsed = useCallback(() => {
-    setSkipWidthTransition(true);
-    setCollapsed(value => !value);
-    window.requestAnimationFrame(() => {
-      window.requestAnimationFrame(() => setSkipWidthTransition(false));
-    });
+  const changeView = useCallback((next: ChatView) => {
+    setView(next);
+    writeChatView(next);
+    // A cap and a fold both belong to a group key, and the keys change meaning
+    // with the grouping.
+    setShownInFull(new Set());
+    setFoldedGroups(new Set());
   }, []);
+
+  const toggleCollapsed = useCallback(() => setCollapsed(value => !value), [setCollapsed]);
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setQuery("");
+  }, []);
+
+  // While filtering, the field takes the wide slot and New Chat stays
+  // available beside it. Escape or an empty blur restores the main action.
+  const openSearch = useCallback(() => setSearchOpen(true), []);
 
   const stopResize = useCallback((pointerId?: number) => {
     setResizing(false);
@@ -153,7 +385,7 @@ export function BridgeSidebar({
 
     const onMove = (moveEvent: PointerEvent) => {
       if (moveEvent.pointerId !== pointerId) return;
-      const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, startWidth + moveEvent.clientX - startX));
+      const next = Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, startWidth + (moveEvent.clientX - startX)));
       setWidth(next);
     };
 
@@ -172,178 +404,262 @@ export function BridgeSidebar({
 
   useEffect(() => () => stopResize(), [stopResize]);
 
-  const sidebarWidth = collapsed ? COLLAPSED_WIDTH : width;
-  const animateWidth = !resizing && !skipWidthTransition;
+  const needle = query.trim().toLowerCase();
+  const searching = needle.length > 0;
+
+  const toggleFold = useCallback((key: string) => {
+    setFoldedGroups(current => {
+      const next = new Set(current);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
+  const agents = useMemo(() => agentOptions(chats), [chats]);
+  const workspaceTitle = useMemo(() => {
+    const titles = new Map(workspaces.map(workspace => [workspace.id, workspace.title]));
+    return (id: string | null | undefined) => (id ? titles.get(id) : undefined);
+  }, [workspaces]);
+  const visible = useMemo(
+    () => filterChats(chats, { query, status: view.status, agent: view.agent, workspaceTitle }),
+    [chats, query, view.status, view.agent, workspaceTitle],
+  );
+  const groups = useMemo(
+    () => groupChats(visible, { groupBy: view.groupBy, sortBy: view.sortBy, workspaces, now }),
+    [visible, view.groupBy, view.sortBy, workspaces, now],
+  );
+
+  // Collapsing takes the rail off the screen entirely; the panel controls move
+  // to the canvas' chrome row, which is the only way back in besides ⌘B. The
+  // drawer below `sm` is a second, independent axis, so an open drawer still
+  // shows the whole rail even while the desktop side is put away.
+  const hidden = collapsed && !mobileOpen;
+  const animateWidth = !resizing;
+  const scrimTransition = useMotionTransition(MOTION_DURATION.overlay);
 
   return (
-    <aside
-      className={cn(
-        "relative z-20 hidden shrink-0 flex-col overflow-hidden font-sans antialiased sm:flex",
-        "border-r border-white/[0.055] bg-[#0a0a0d]/55 backdrop-blur-2xl backdrop-saturate-[1.8]",
-        animateWidth ? "transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]" : "transition-none",
+    <>
+      {/* Below sm the rail is an off-canvas drawer, so narrow windows keep
+          their navigation instead of losing it entirely. */}
+      {/* The drawer itself keeps its Tailwind `transition-transform` slide — it
+          stays mounted, so CSS can carry it both ways. The scrim is the half
+          that unmounts, which is why it needs AnimatePresence to fade out at
+          all instead of blinking away. */}
+      <AnimatePresence>
+        {mobileOpen && (
+          <motion.button
+            type="button"
+            className="fixed inset-0 z-30 bg-scrim sm:hidden"
+            onClick={onCloseMobile}
+            aria-label="Close navigation"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={scrimTransition}
+          />
+        )}
+      </AnimatePresence>
+      <aside
+        // `inert` is what makes "hidden" true rather than merely invisible:
+        // nothing inside can be clicked, focused, or read out while the rail is
+        // mid-wipe or fully away. React 18 has no typing for it, so it is
+        // spread in as the plain attribute it is.
+        {...(hidden ? { inert: "" } : {})}
+        aria-hidden={hidden || undefined}
+        className={cn(
+          "z-40 flex shrink-0 flex-col font-sans antialiased",
+          "fixed inset-y-0 left-0 w-[min(84vw,20rem)] transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
+          mobileOpen ? "translate-x-0" : "-translate-x-full",
+          "sm:relative sm:z-20 sm:w-(--sidebar-w) sm:translate-x-0",
+          "u-vibrancy-sidebar bg-sidebar",
+          // Hidden means hidden: no rail, no icons, not even the seam.
+          hidden ? "overflow-hidden" : "border-r border-sidebar-border",
+          animateWidth ? "sm:transition-[width] sm:duration-300 sm:ease-[cubic-bezier(0.22,1,0.36,1)]" : "sm:transition-none",
+        )}
+        style={{
+          "--sidebar-w": `${collapsed ? 0 : width}px`,
+          "--sidebar-panel-w": `${width}px`,
+        } as React.CSSProperties}
+      >
+      {/* The panel keeps its open width while the aside animates to zero, so the
+          rail wipes off the edge instead of reflowing every row on the way out. */}
+      {/* The contents fade as the width goes, so the outgoing header does not
+          sit beside the chrome row's incoming panel button for the whole wipe. */}
+      <div className={cn(
+        "flex w-full min-h-0 flex-1 flex-col sm:w-(--sidebar-panel-w) sm:transition-opacity sm:duration-200",
+        hidden && "sm:opacity-0",
+      )}>
+      {showWindowNav && (
+        <div className="flex h-11 shrink-0 items-center gap-0.5 u-traffic-inset pl-24 pr-1.5" data-tauri-drag-region="deep">
+          <WindowNavButtons
+            spread
+            collapsed={collapsed}
+            onToggleCollapsed={toggleCollapsed}
+            canBack={canBack}
+            canForward={canForward}
+            onBack={onBack ?? (() => {})}
+            onForward={onForward ?? (() => {})}
+          />
+        </div>
       )}
-      style={{ width: sidebarWidth }}
-    >
-      {/* Top light — the frosted-glass light source. */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-white/[0.045] to-transparent" />
-
-      <div className={cn("flex min-h-0 h-full flex-col", collapsed ? "px-2 py-4" : "px-3 py-4")}>
+      <div className={cn("flex min-h-0 flex-1 flex-col overflow-hidden px-2 pb-3", showWindowNav ? "pt-1" : "pt-3")}>
+        {/* New Chat leads the row; Search expands into the wide slot only
+            while filtering, with a compact compose button beside the field. */}
         <div
-          className={cn(
-            "mb-4 grid h-8 shrink-0 items-center",
-            collapsed ? "grid-cols-1 justify-items-start pl-0.5" : "grid-cols-[40px_auto_minmax(0,1fr)] gap-1.5 pl-0",
-          )}
-          data-tauri-drag-region
+          className="mb-1.5 flex shrink-0 items-center gap-1.5"
+          onBlur={event => {
+            // Focusing compose is part of its click. Keep it in place until
+            // the click completes; only dismiss on focus leaving the row.
+            if (!query.trim() && !event.currentTarget.contains(event.relatedTarget)) closeSearch();
+          }}
         >
-          {!collapsed && <div className="h-full" data-tauri-drag-region aria-hidden="true" />}
+          {searchOpen && (
+            <div className="relative h-8 min-w-0 flex-1">
+              <Search size={14} strokeWidth={1.6} aria-hidden="true" className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <input
+                type="text"
+                value={query}
+                autoFocus
+                onChange={event => setQuery(event.target.value)}
+                onKeyDown={event => { if (event.key === "Escape") closeSearch(); }}
+                placeholder="Filter chats and projects…"
+                aria-label="Filter chats and projects"
+                className="h-8 w-full rounded-[7px] border border-ring/50 bg-background pl-8 pr-2.5 text-[13px] text-foreground outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-ring"
+              />
+            </div>
+          )}
           <button
             type="button"
-            onClick={toggleCollapsed}
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-neutral-500 transition-colors hover:bg-white/[0.06] hover:text-neutral-200 active:scale-95"
-            aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            onClick={() => { closeSearch(); onOpenNewChat(); }}
+            disabled={newChatBusy}
+            aria-label="New Chat"
+            title={`New Chat  ${chordLabel("new-chat")}`}
+            className={cn(
+              "inline-flex h-8 items-center gap-2 rounded-[7px] bg-primary text-primary-foreground text-[13px] font-medium transition-colors enabled:hover:bg-primary/90 disabled:cursor-default disabled:opacity-50",
+              searchOpen ? "w-8 shrink-0 justify-center" : "min-w-0 flex-1 px-2.5 text-left",
+            )}
           >
-            <PanelLeft className={cn("h-4 w-4 transition-transform duration-200", collapsed && "rotate-180")} strokeWidth={1.75} />
+            <SquarePen size={15} strokeWidth={1.6} className="shrink-0" aria-hidden="true" />
+            {!searchOpen && <span className="min-w-0 flex-1 truncate">New Chat</span>}
           </button>
-          {!collapsed && (
-            <p className="min-w-0 truncate font-display text-[15px] font-semibold tracking-[-0.01em] text-neutral-100">
-              bridge
+          {!searchOpen && (
+            <button
+              type="button"
+              onClick={openSearch}
+              aria-label="Search"
+              title="Search"
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[7px] border border-border text-muted-foreground transition-colors hover:bg-card hover:text-foreground"
+            >
+              <Search size={15} strokeWidth={1.6} aria-hidden="true" />
+            </button>
+          )}
+        </div>
+
+        <div className="mb-2 shrink-0">
+          <ActionRow icon={Store} label="Marketplace" onClick={onOpenMarketplace} active={marketplaceActive} />
+          {/* The work-board stays off the nav for now. Routing props remain on the
+           * type (and wired in App) so the screens and their data plumbing are
+           * untouched. */}
+          <ActionRow icon={FolderGit2} label="Projects" chord="open-projects" onClick={onOpenProjects} active={projectsActive} />
+          <ActionRow icon={Pin} label="Memory" onClick={onOpenMemory} active={memoryActive} />
+        </div>
+
+        <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
+          <SectionLabel action={
+            <span className="flex items-center gap-0.5">
+              <SidebarFilterMenu view={view} agents={agents} allowProjectGrouping onChange={changeView} />
+              <RailIconButton label="New folder" onClick={onOpenProjects}>
+                <FolderPlus size={13} strokeWidth={1.5} aria-hidden="true" />
+              </RailIconButton>
+            </span>
+          }>
+            Repositories
+          </SectionLabel>
+
+          {groups.map(group => {
+            // A search is already the short list, so capping it would hide the
+            // very rows the query asked for.
+            const capped = !searching && !shownInFull.has(group.key) && group.chats.length > GROUP_ROW_CAP;
+            // Folding needs a header to unfold from.
+            const folded = !!group.label && foldedGroups.has(group.key);
+            const rows = folded ? [] : capped ? group.chats.slice(0, GROUP_ROW_CAP) : group.chats;
+            const isProjectGroup = view.groupBy === "project" && group.key !== NO_PROJECT_GROUP_KEY;
+            const projectIcon = view.groupBy === "project"
+              ? (group.key === NO_PROJECT_GROUP_KEY ? Home : Folder)
+              : undefined;
+            return (
+              <div key={group.key} className="flex flex-col mb-0.5 gap-0.5">
+                {group.label && (
+                  <GroupLabel
+                    label={group.label}
+                    count={group.chats.length}
+                    folded={folded}
+                    active={group.chats.some(chat => chat.id === activeSessionId)}
+                    action={isProjectGroup && onNewChatInProject && (
+                      <button
+                        type="button"
+                        onClick={() => onNewChatInProject(group.key)}
+                        title={`New chat in ${group.label}`}
+                        aria-label={`New chat in ${group.label}`}
+                        className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+                      >
+                        <Plus size={12} strokeWidth={1.7} aria-hidden="true" />
+                      </button>
+                    )}
+                    icon={projectIcon}
+                    onToggle={() => toggleFold(group.key)}
+                  />
+                )}
+                {rows.map(chat => (
+                  <ChatRow
+                    key={chat.id}
+                    chat={chat}
+                    active={chat.id === activeSessionId}
+                    indented={!!group.label}
+                    time={chatListTime(chatTimestamp(chat), now)}
+                    onClick={() => onOpenSession(chat.id)}
+                  />
+                ))}
+                {capped && !folded && (
+                  <button
+                    type="button"
+                    onClick={() => setShownInFull(current => new Set(current).add(group.key))}
+                    className={cn(
+                      "flex h-6 w-full items-center rounded-md text-left text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+                      group.label ? "pl-7" : "px-2",
+                    )}
+                  >
+                    Show {group.chats.length - GROUP_ROW_CAP} more
+                  </button>
+                )}
+              </div>
+            );
+          })}
+          {!visible.length && (
+            <p className="px-2 py-1 text-[11px] leading-relaxed text-muted-foreground/70">
+              {chats.length ? "No chat matches this filter." : "No chats yet. New Chat opens in the repo you were last in."}
             </p>
           )}
         </div>
 
-        <div className="mb-3 shrink-0">
-          <button
-            type="button"
-            onClick={onOpenNewChat}
-            title={collapsed ? "New chat" : undefined}
-            className={cn(
-              "flex items-center justify-center font-medium transition-all active:scale-[0.98]",
-              collapsed
-                ? "mx-auto h-10 w-10 rounded-xl bg-neutral-100 text-neutral-900 hover:bg-white"
-                : "w-full gap-2 rounded-xl bg-neutral-100 px-3 py-2 text-[13px] tracking-[-0.006em] text-neutral-900 shadow-[inset_0_1px_0_rgba(255,255,255,0.5),0_10px_28px_-14px_rgba(0,0,0,0.6)] hover:bg-white",
-            )}
-          >
-            <MessageSquarePlus size={15} strokeWidth={1.75} aria-hidden="true" />
-            {!collapsed && "New chat"}
-          </button>
+        {/* A rail of achromatic icon buttons pinned to the bottom: settings
+            (the account's settings entry), source control, usage, and refresh. */}
+        <div className="mt-1 flex shrink-0 items-center gap-0.5 border-t border-sidebar-border pt-1.5">
+          <RailBottomButton label={`Open settings for ${accountName}`} active={settingsActive} onClick={onOpenSettings}>
+            <Settings2 size={16} strokeWidth={1.6} aria-hidden="true" />
+          </RailBottomButton>
+          <RailBottomButton label="Source control" onClick={onOpenProjects}>
+            <GitBranch size={16} strokeWidth={1.6} aria-hidden="true" />
+          </RailBottomButton>
+          <RailBottomButton label="Usage" active={missionControlActive} onClick={onOpenMissionControl}>
+            <BarChart3 size={16} strokeWidth={1.6} aria-hidden="true" />
+          </RailBottomButton>
+          <RailBottomButton label="Refresh" onClick={() => window.location.reload()}>
+            <RotateCw size={15} strokeWidth={1.6} aria-hidden="true" />
+          </RailBottomButton>
         </div>
-
-        <div className="flex-1 overflow-auto">
-          {!collapsed && <SectionLabel>Chats</SectionLabel>}
-          {standaloneChats.map(chat => (
-            <SidebarChatRow key={chat.id} chat={chat} active={chat.id === activeSessionId} collapsed={collapsed} onClick={() => onOpenSession(chat.id)} />
-          ))}
-          {!standaloneChats.length && !collapsed && <div className="px-2.5 py-2 text-[11px] text-neutral-600">No chats yet.</div>}
-
-          {!collapsed && (
-            <div className="mt-5">
-              <SectionLabel
-                action={
-                  <button type="button" className="rounded-md p-1 text-neutral-600 transition-colors hover:bg-white/[0.06] hover:text-neutral-200" onClick={onNewWorkspace} title="New workspace" aria-label="New workspace">
-                    <Plus size={12} strokeWidth={1.75} aria-hidden="true" />
-                  </button>
-                }
-              >
-                Workspaces
-              </SectionLabel>
-            </div>
-          )}
-
-          {workspaces.map(ws => {
-            const chats = workspaceChats(ws.id);
-            const open = expanded.has(ws.id);
-            if (collapsed) {
-              return (
-                <button
-                  key={ws.id}
-                  type="button"
-                  title={ws.title}
-                  onClick={() => onToggleWorkspace(ws.id)}
-                  className="mx-auto my-1 flex h-10 w-10 items-center justify-center rounded-xl text-neutral-500 transition-all hover:bg-white/[0.06] hover:text-neutral-200"
-                >
-                  <FolderGit2 size={16} strokeWidth={1.5} aria-hidden="true" />
-                </button>
-              );
-            }
-            return (
-              <section key={ws.id} className="mb-0.5">
-                <div className="group/ws flex h-[34px] items-center gap-1 rounded-xl px-2 transition-colors hover:bg-white/[0.045]">
-                  <button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={() => onToggleWorkspace(ws.id)}>
-                    <ChevronRight size={12} strokeWidth={1.75} className={cn("text-neutral-600 transition-transform", open && "rotate-90")} aria-hidden="true" />
-                    <FolderGit2 size={13} strokeWidth={1.5} className="shrink-0 text-neutral-500" aria-hidden="true" />
-                    <span className="min-w-0 flex-1 truncate text-[13px] font-medium tracking-[-0.006em] text-neutral-200">{ws.title}</span>
-                  </button>
-                  <span className="font-mono text-[10px] text-neutral-600 group-hover/ws:hidden">{chats.length || ""}</span>
-                  <button type="button" className="hidden rounded-md p-1 text-neutral-500 transition-colors hover:bg-white/[0.08] hover:text-neutral-200 group-hover/ws:flex" title="New agent" aria-label="New agent" disabled={busy} onClick={() => onNewWorkspaceSession(ws.id)}>
-                    <Plus size={13} strokeWidth={1.75} aria-hidden="true" />
-                  </button>
-                </div>
-                {open && (
-                  <div className="ml-[17px] border-l border-white/[0.06] pl-1.5">
-                    {chats.map(chat => <SidebarChatRow key={chat.id} chat={chat} active={chat.id === activeSessionId} collapsed={false} onClick={() => onOpenSession(chat.id)} />)}
-                    <div className="flex items-center gap-1.5 py-1.5 pl-1">
-                      <button
-                        type="button"
-                        className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-white/[0.06] bg-white/[0.03] px-2.5 text-[11px] font-medium text-neutral-400 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-all hover:border-white/[0.1] hover:bg-white/[0.06] hover:text-neutral-100 active:scale-[0.97] disabled:opacity-40"
-                        disabled={busy}
-                        onClick={() => onNewWorkspaceSession(ws.id)}
-                      >
-                        <Sparkles size={11} strokeWidth={1.75} aria-hidden="true" /> New agent
-                      </button>
-                      {!ws.path && (
-                        <button
-                          type="button"
-                          className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-white/[0.06] bg-white/[0.03] px-2.5 text-[11px] font-medium text-neutral-400 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] transition-all hover:border-white/[0.1] hover:bg-white/[0.06] hover:text-neutral-100 active:scale-[0.97]"
-                          onClick={() => onConnectFolder(ws.id)}
-                        >
-                          <FolderOpen size={11} strokeWidth={1.75} aria-hidden="true" /> Connect folder
-                        </button>
-                      )}
-                    </div>
-                    {ws.path && (
-                      <div className="flex items-center gap-1.5 truncate px-2.5 pb-1.5 font-mono text-[10px] text-neutral-600">
-                        <GitBranch size={10} strokeWidth={1.5} aria-hidden="true" />
-                        {ws.branch ?? "folder"} · {ws.dirtyFiles ? `${ws.dirtyFiles} changed` : "clean"}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </section>
-            );
-          })}
-          {!workspaces.length && !collapsed && <div className="px-2.5 py-2 text-[11px] leading-relaxed text-neutral-600">Group chats and connect a repo with a workspace.</div>}
-        </div>
-
-        <button
-          type="button"
-          onClick={onOpenMarketplace}
-          title={collapsed ? "Marketplace" : undefined}
-          className={cn(
-            "mt-3 flex shrink-0 items-center rounded-xl transition-all",
-            collapsed ? "mx-auto h-10 w-10 justify-center" : "h-9 gap-2.5 border border-transparent px-2.5 text-[12px] font-medium",
-            marketplaceActive
-              ? "border-white/[0.07] bg-white/[0.07] text-neutral-100"
-              : "text-neutral-500 hover:bg-white/[0.045] hover:text-neutral-200",
-          )}
-        >
-          <Package size={15} strokeWidth={1.6} aria-hidden="true" />
-          {!collapsed && "Marketplace"}
-        </button>
-        <button
-          type="button"
-          onClick={onOpenSettings}
-          title={collapsed ? "Settings" : undefined}
-          className={cn(
-            "mt-1 flex shrink-0 items-center rounded-xl transition-all",
-            collapsed ? "mx-auto h-10 w-10 justify-center" : "h-9 gap-2.5 border border-transparent px-2.5 text-[12px] font-medium",
-            settingsActive
-              ? "border-white/[0.07] bg-white/[0.07] text-neutral-100"
-              : "text-neutral-500 hover:bg-white/[0.045] hover:text-neutral-200",
-          )}
-        >
-          <Settings2 size={15} strokeWidth={1.6} aria-hidden="true" />
-          {!collapsed && "Settings"}
-        </button>
+      </div>
       </div>
 
       {!collapsed && (
@@ -354,12 +670,13 @@ export function BridgeSidebar({
           aria-label="Resize sidebar"
           onPointerDown={startResize}
           className={cn(
-            "absolute inset-y-0 right-0 z-30 w-3 cursor-col-resize touch-none select-none",
-            "after:absolute after:inset-y-4 after:right-0 after:w-px after:transition-colors",
-            resizing ? "after:bg-white/[0.25]" : "after:bg-transparent hover:after:bg-white/[0.15]",
+            "absolute inset-y-0 -right-3 z-30 hidden w-3 cursor-col-resize touch-none select-none sm:block",
+            "after:absolute after:inset-y-4 after:left-0 after:w-px after:transition-colors",
+            resizing ? "after:bg-ring/60" : "after:bg-transparent hover:after:bg-border",
           )}
         />
       )}
-    </aside>
+      </aside>
+    </>
   );
 }

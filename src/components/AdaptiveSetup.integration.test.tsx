@@ -8,14 +8,14 @@ import { ModelSetupWizard } from "./ModelSetupWizard";
 import { RouterSettingsDialog } from "./RouterSettingsDialog";
 
 const adapters: AdapterDescriptor[] = [{
-  id: "catalog", label: "Catalog", available: true, version: "1", capabilities: [], unavailableReason: null, defaultModel: "balanced",
+  id: "catalog", label: "Catalog", available: true, authState: "signed_in", version: "1", capabilities: [], unavailableReason: null, defaultModel: "balanced",
   models: [
     { id: "quick", label: "Quick", tier: "fast", defaultForTier: true },
     { id: "balanced", label: "Balanced", tier: "standard", defaultForTier: true },
     { id: "deep", label: "Deep", tier: "strong", defaultForTier: true },
   ],
 }, {
-  id: "offline", label: "Offline", available: false, version: null, capabilities: [], unavailableReason: "not installed", defaultModel: "hidden",
+  id: "offline", label: "Offline", available: false, authState: "unknown", version: null, capabilities: [], unavailableReason: "not installed", defaultModel: "hidden",
   models: [{ id: "hidden", label: "Unsupported", tier: "strong", defaultForTier: true }],
 }];
 
@@ -86,6 +86,224 @@ describe("adaptive setup journeys", () => {
     expect(container.textContent).toContain("insufficient evidence");
     expect(container.textContent).toContain("Cost comparison is unknown");
     expect(container.textContent).toContain("Policy");
+    expect(container.textContent).toContain("not run");
+  });
+
+  it("refetches learning state when a learning job changes", async () => {
+    let notify: (() => void) | undefined;
+    vi.spyOn(bridgeApi, "onLearningJobChanged").mockImplementation(async handler => {
+      notify = handler;
+      return () => undefined;
+    });
+    const learningState = vi.spyOn(bridgeApi, "learningState");
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    expect(learningState).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      notify?.();
+      await flush();
+    });
+    expect(learningState).toHaveBeenCalledTimes(2);
+  });
+
+  it("a slower learning-state read cannot win", async () => {
+    let notify: (() => void) | undefined;
+    vi.spyOn(bridgeApi, "onLearningJobChanged").mockImplementation(async handler => {
+      notify = handler;
+      return () => undefined;
+    });
+    const initial = await bridgeApi.learningState("demo-1");
+    let resolveSlow!: (state: typeof initial) => void;
+    let resolveFast!: (state: typeof initial) => void;
+    vi.spyOn(bridgeApi, "learningState")
+      .mockImplementationOnce(() => Promise.resolve(initial))
+      .mockImplementationOnce(() => new Promise(resolve => { resolveSlow = resolve; }))
+      .mockImplementationOnce(() => new Promise(resolve => { resolveFast = resolve; }));
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    await act(async () => {
+      notify?.();
+      notify?.();
+      await flush();
+    });
+    await act(async () => {
+      resolveFast({ ...initial, activePolicyVersion: 7 });
+      await flush();
+    });
+    await act(async () => {
+      resolveSlow({ ...initial, activePolicyVersion: 3 });
+      await flush();
+    });
+    expect(container.textContent).toContain("Active policy v7");
+    expect(container.textContent).not.toContain("Active policy v3");
+  });
+
+  it("an emptied pass floor cannot commit zero on the way to a number", async () => {
+    const update = vi.spyOn(bridgeApi, "updateRouterPreferences");
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    const field = container.querySelector<HTMLInputElement>('input[type="number"][max="100"]')!;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(field, "");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      field.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+      await flush();
+    });
+    expect(field.value, "blurring an empty field restores the saved floor").toBe("65");
+    await act(async () => {
+      button(container, "Save").click();
+      await flush();
+    });
+    const committed = update.mock.calls.at(-1);
+    expect(committed?.[1]?.minimumPassBps).toBe(6500);
+  });
+
+  it("typing an out-of-range pass floor shows a validation message and disables Save", async () => {
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    const field = container.querySelector<HTMLInputElement>('input[type="number"][max="100"]')!;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(field, "150");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    });
+    expect(container.textContent).toContain("Enter a percentage between 0 and 100.");
+    expect(button(container, "Save").disabled).toBe(true);
+  });
+
+  it("typing a sub-minimum cadence shows a validation message and disables Save", async () => {
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    const cadenceLabel = [...container.querySelectorAll("label")].find(label => label.textContent?.startsWith("Cadence"))!;
+    const field = cadenceLabel.querySelector("input") as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(field, "5");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    });
+    expect(container.textContent).toContain("Cadence must be at least 15 minutes.");
+    expect(button(container, "Save").disabled).toBe(true);
+  });
+
+  it("typing a fractional cadence shows a validation message and disables Save", async () => {
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    const cadenceLabel = [...container.querySelectorAll("label")].find(label => label.textContent?.startsWith("Cadence"))!;
+    const field = cadenceLabel.querySelector("input") as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(field, "15.5");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    });
+    expect(container.textContent).toContain("Cadence must be a whole number of minutes.");
+    expect(button(container, "Save").disabled).toBe(true);
+  });
+
+  it("typing a negative spend ceiling shows a validation message and disables Save", async () => {
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    const ceilingLabel = [...container.querySelectorAll("label")].find(label => label.textContent?.startsWith("Spend ceiling"))!;
+    const field = ceilingLabel.querySelector("input") as HTMLInputElement;
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(field, "-1");
+      field.dispatchEvent(new Event("input", { bubbles: true }));
+      await flush();
+    });
+    expect(container.textContent).toContain("Must be zero or greater.");
+    expect(button(container, "Save").disabled).toBe(true);
+  });
+
+  it("picking a harness clears a previously pinned model", async () => {
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    const select = (label: string) => [...container.querySelectorAll("label")].find(candidate => candidate.textContent?.includes(label))!.querySelector("select") as HTMLSelectElement;
+    const harnessSelect = select("Pin harness");
+    const modelSelect = select("Pin model");
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")!.set!;
+    await act(async () => {
+      setter.call(harnessSelect, "catalog");
+      harnessSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      await flush();
+    });
+    await act(async () => {
+      setter.call(modelSelect, "balanced");
+      modelSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      await flush();
+    });
+    expect(modelSelect.value).toBe("balanced");
+    await act(async () => {
+      setter.call(harnessSelect, "");
+      harnessSelect.dispatchEvent(new Event("change", { bubbles: true }));
+      await flush();
+    });
+    expect(modelSelect.value).toBe("");
+  });
+
+  it("does not rewrite the learning schedule when save has no schedule edits", async () => {
+    const update = vi.spyOn(bridgeApi, "updateLearningSchedule");
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    await act(async () => {
+      button(container, "Save").click();
+      await flush();
+    });
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  it("closing the dialog drops unsaved schedule edits", async () => {
+    const initial = await bridgeApi.learningState("demo-1");
+    vi.spyOn(bridgeApi, "learningState")
+      .mockImplementationOnce(() => Promise.resolve(initial))
+      .mockImplementation(() => new Promise(() => undefined));
+    const render = (open: boolean) => root.render(<RouterSettingsDialog open={open} workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+    await act(async () => { render(true); await flush(); });
+    const checkbox = [...container.querySelectorAll("label")]
+      .find(label => label.textContent?.includes("In-app schedule"))
+      ?.querySelector("input[type=checkbox]") as HTMLInputElement;
+    await act(async () => { checkbox.click(); await flush(); });
+    expect(checkbox.checked).toBe(true);
+    await act(async () => { render(false); await flush(); });
+    await act(async () => { render(true); await flush(); });
+    expect(
+      [...container.querySelectorAll("label")].some(label => label.textContent?.includes("In-app schedule")),
+      "a reopened dialog must show the loading state, not last session's unsaved edits",
+    ).toBe(false);
+  });
+
+  it("offers editable evaluator spend and token ceilings", async () => {
+    await act(async () => {
+      root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    const disabledCeilings = [...container.querySelectorAll("input[type=number]")].filter(input => (input as HTMLInputElement).disabled);
+    expect(disabledCeilings).toHaveLength(0);
+    expect(container.textContent).toContain("Spend ceiling");
+    expect(container.textContent).toContain("Token ceiling");
+    expect(container.textContent).not.toContain("No executor yet");
+    expect(container.textContent).toContain("not Bridge's memory engine");
   });
 
   it("does not create a profile version when settings save without profile edits", async () => {

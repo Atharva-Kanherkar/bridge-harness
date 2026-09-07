@@ -1,16 +1,45 @@
-import { memo, useMemo, useState } from "react";
-import { Check, Copy } from "lucide-react";
-import { highlightCode, normalizeLang } from "./highlight";
+import { createContext, memo, useContext, useEffect, useMemo, useState } from "react";
+import { createPortal } from "react-dom";
+import { Check, Copy, Maximize2, Minimize2 } from "lucide-react";
+import katex from "katex";
+import { COLORIZE_DEBOUNCE_MS, colorizeCode, escapeHtml, normalizeLang } from "./highlight";
+import { DiagramFigure, isValidDiagramSpec, type DiagramSpec } from "./DiagramFigure";
 
 type Block =
   | { kind: "code"; lang: string; body: string }
+  | { kind: "diagram"; spec: string }
+  | { kind: "math"; tex: string }
+  | { kind: "html"; html: string }
   | { kind: "heading"; level: number; text: string }
   | { kind: "list"; ordered: boolean; items: string[] }
   | { kind: "quote"; text: string }
   | { kind: "rule" }
+  | { kind: "table"; header: string[]; rows: string[][] }
   | { kind: "para"; text: string };
 
-function splitBlocks(source: string): Block[] {
+/** Split a `| a | b |` row into trimmed cells, dropping the leading/trailing pipe. */
+function splitTableRow(line: string): string[] {
+  const trimmed = line.trim().replace(/^\|/, "").replace(/\|$/, "");
+  return trimmed.split("|").map(cell => cell.trim());
+}
+
+// A GFM header-separator row: cells of only dashes, with optional `:` alignment markers.
+const TABLE_SEPARATOR = /^\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?$/;
+
+function isTableRow(line: string): boolean {
+  return line.includes("|");
+}
+
+/** Classify a fenced block by its info string into a rich-content block kind. */
+function fencedBlock(lang: string, body: string): Block {
+  const key = lang.trim().toLowerCase();
+  if (key === "diagram") return { kind: "diagram", spec: body };
+  if (key === "math" || key === "latex" || key === "tex") return { kind: "math", tex: body };
+  if (key === "html") return { kind: "html", html: body };
+  return { kind: "code", lang, body };
+}
+
+export function splitBlocks(source: string): Block[] {
   const blocks: Block[] = [];
   const lines = source.replaceAll("\r\n", "\n").split("\n");
   let index = 0;
@@ -24,7 +53,23 @@ function splitBlocks(source: string): Block[] {
       index += 1;
       while (index < lines.length && !lines[index].trim().startsWith("```")) { body.push(lines[index]); index += 1; }
       index += 1;
-      blocks.push({ kind: "code", lang: fence[1] ?? "", body: body.join("\n") });
+      blocks.push(fencedBlock(fence[1] ?? "", body.join("\n")));
+      continue;
+    }
+    if (trimmed.startsWith("$$")) {
+      const single = trimmed.match(/^\$\$(.+?)\$\$$/);
+      if (single) { blocks.push({ kind: "math", tex: single[1].trim() }); index += 1; continue; }
+      const body: string[] = [];
+      const head = trimmed.slice(2);
+      if (head) body.push(head);
+      index += 1;
+      while (index < lines.length && !lines[index].trim().endsWith("$$")) { body.push(lines[index]); index += 1; }
+      if (index < lines.length) {
+        const tail = lines[index].trim().slice(0, -2);
+        if (tail) body.push(tail);
+        index += 1;
+      }
+      blocks.push({ kind: "math", tex: body.join("\n").trim() });
       continue;
     }
     const heading = trimmed.match(/^(#{1,6})\s+(.*)$/);
@@ -34,6 +79,14 @@ function splitBlocks(source: string): Block[] {
       const quote: string[] = [];
       while (index < lines.length && /^>\s?/.test(lines[index].trim())) { quote.push(lines[index].trim().replace(/^>\s?/, "")); index += 1; }
       blocks.push({ kind: "quote", text: quote.join("\n") });
+      continue;
+    }
+    if (isTableRow(trimmed) && index + 1 < lines.length && TABLE_SEPARATOR.test(lines[index + 1].trim()) && isTableRow(lines[index + 1].trim())) {
+      const header = splitTableRow(trimmed);
+      index += 2;
+      const rows: string[][] = [];
+      while (index < lines.length && isTableRow(lines[index].trim())) { rows.push(splitTableRow(lines[index])); index += 1; }
+      blocks.push({ kind: "table", header, rows });
       continue;
     }
     const bullet = /^[-*+]\s+/; const numbered = /^\d+[.)]\s+/;
@@ -56,7 +109,8 @@ function splitBlocks(source: string): Block[] {
     index += 1;
     while (index < lines.length) {
       const current = lines[index].trim();
-      if (!current || current.startsWith("```") || /^(#{1,6})\s+/.test(current) || bullet.test(current) || numbered.test(current) || /^>\s?/.test(current)) break;
+      const startsTable = isTableRow(current) && index + 1 < lines.length && TABLE_SEPARATOR.test(lines[index + 1].trim()) && isTableRow(lines[index + 1].trim());
+      if (!current || current.startsWith("```") || current.startsWith("$$") || /^(#{1,6})\s+/.test(current) || bullet.test(current) || numbered.test(current) || /^>\s?/.test(current) || startsTable) break;
       para.push(current); index += 1;
     }
     blocks.push({ kind: "para", text: para.join("\n") });
@@ -64,36 +118,272 @@ function splitBlocks(source: string): Block[] {
   return blocks;
 }
 
-const INLINE = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]]+\]\([^)\s]+\))/g;
+// ── File links out of prose ────────────────────────────────────────────────
+// A conversation names files constantly — in tool rows, in assistant prose,
+// in the user's own @mentions. When a host provides the workspace's file list
+// and an opener, those names become live links into the Code pane; when it
+// does not (previews, worker feeds), the same text renders inert. Resolution
+// is exact-match against real paths: a dead link is worse than none.
+
+export type FileLinks = {
+  has: (path: string) => boolean;
+  open: (path: string, line?: number) => void;
+};
+
+export const FileLinkContext = createContext<FileLinks | null>(null);
+
+/** A workspace-relative path with at least one directory and an extension,
+ *  optionally suffixed :line. */
+const FILE_REF = /^([\w~@.-]+(?:\/[\w~@.-]+)+)(?::(\d+))?$/;
+
+export function parseFileRef(text: string, links: FileLinks | null): { path: string; line?: number } | undefined {
+  if (!links) return undefined;
+  const match = FILE_REF.exec(text);
+  if (!match || !links.has(match[1])) return undefined;
+  return { path: match[1], line: match[2] === undefined ? undefined : Number(match[2]) };
+}
+
+function InlineCode({ text }: { text: string }) {
+  const links = useContext(FileLinkContext);
+  const ref = parseFileRef(text, links);
+  if (!ref) return <code>{text}</code>;
+  return <button
+    type="button"
+    onClick={() => links!.open(ref.path, ref.line)}
+    aria-label={`Open ${ref.path} in the Code pane`}
+    title={`Open ${ref.path} in the Code pane`}
+    className="rounded transition-colors hover:bg-accent"
+  ><code>{text}</code></button>;
+}
+
+const MENTION = /(@[\w~@./-]+)/g;
+
+/** Plain text with live @mentions — the user-bubble renderer, where full
+ *  markdown would be wrong but a file name should still be a link. */
+export function MentionText({ text }: { text: string }) {
+  return <TextRun text={text} />;
+}
+
+function TextRun({ text }: { text: string }) {
+  const links = useContext(FileLinkContext);
+  if (!links || !text.includes("@")) return <>{text}</>;
+  const parts = text.split(MENTION).filter(part => part !== "");
+  return <>{parts.map((part, index) => {
+    if (part.startsWith("@") && links.has(part.slice(1))) {
+      const path = part.slice(1);
+      return <button
+        key={index}
+        type="button"
+        onClick={() => links.open(path)}
+        aria-label={`Open ${path} in the Code pane`}
+        title={`Open ${path} in the Code pane`}
+        className="rounded text-[var(--color-ring)] underline decoration-dotted underline-offset-2 transition-colors hover:bg-accent"
+      >{part}</button>;
+    }
+    return <span key={index}>{part}</span>;
+  })}</>;
+}
+
+// Inline tokens, in priority order: code span, \(math\), $math$, bold, italic, link.
+// The $…$ pattern requires non-space just inside both delimiters and forbids a
+// trailing digit, so ordinary prose ("costs $5 and $10") is not misread as math.
+const INLINE = /(`[^`]+`|\\\([^\n]*?\\\)|\$(?![\s$])(?:[^\n$]*?[^\s$])?\$(?!\d)|~~[^~\n]+~~|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]]+\]\([^)\s]+\))/g;
+
+/** Render a LaTeX string to KaTeX HTML, or null if it cannot be parsed. */
+export function renderMathToHtml(tex: string, displayMode: boolean): string | null {
+  try {
+    return katex.renderToString(tex, { displayMode, throwOnError: true, trust: false, output: "htmlAndMathml" });
+  } catch {
+    return null;
+  }
+}
+
+function InlineMath({ tex }: { tex: string }) {
+  const html = useMemo(() => renderMathToHtml(tex, false), [tex]);
+  if (html == null) return <code>{tex}</code>;
+  return <span dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+/**
+ * The `dark` class on <html> is the single source of truth for the theme.
+ * The sandboxed iframe renders outside our token scope, so it has to follow
+ * it explicitly instead of inheriting CSS variables.
+ */
+function useDarkTheme(): boolean {
+  const [dark, setDark] = useState(() => typeof document !== "undefined" && document.documentElement.classList.contains("dark"));
+  useEffect(() => {
+    const sync = () => setDark(document.documentElement.classList.contains("dark"));
+    sync();
+    const observer = new MutationObserver(sync);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+    return () => observer.disconnect();
+  }, []);
+  return dark;
+}
+
+/** Shared copy-to-clipboard state for the code/math/mermaid copy affordances. */
+function useCopy(text: string) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    void navigator.clipboard?.writeText(text).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1400); });
+  };
+  return { copied, copy };
+}
+
+function CopyButton({ text, className }: { text: string; className: string }) {
+  const { copied, copy } = useCopy(text);
+  return (
+    <button type="button" className={className} onClick={copy} aria-label={copied ? "Copied" : "Copy"}>
+      {copied ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
+function MathBlock({ tex }: { tex: string }) {
+  const html = useMemo(() => renderMathToHtml(tex, true), [tex]);
+  if (html == null) {
+    return <pre className="my-[0.6em] overflow-x-auto rounded-[0.7rem] border border-destructive/30 bg-destructive/10 px-[0.85em] py-[0.6em] text-destructive"><code>{tex}</code></pre>;
+  }
+  return (
+    <div className="rich-block my-[0.9em]">
+      <CopyButton text={tex} className="rich-block-copy" />
+      <div className="overflow-x-auto py-[0.2em] text-foreground" dangerouslySetInnerHTML={{ __html: html }} />
+    </div>
+  );
+}
 
 function renderInline(text: string): React.ReactNode[] {
   return text.split(INLINE).filter(part => part !== "").map((part, index) => {
-    if (part.startsWith("`") && part.endsWith("`") && part.length > 2) return <code key={index}>{part.slice(1, -1)}</code>;
+    if (part.startsWith("`") && part.endsWith("`") && part.length > 2) return <InlineCode key={index} text={part.slice(1, -1)} />;
+    if (part.startsWith("\\(") && part.endsWith("\\)") && part.length > 4) return <InlineMath key={index} tex={part.slice(2, -2)} />;
+    if (part.startsWith("$") && part.endsWith("$") && part.length > 2) return <InlineMath key={index} tex={part.slice(1, -1)} />;
+    if (part.startsWith("~~") && part.endsWith("~~") && part.length > 4) return <del key={index}>{renderInline(part.slice(2, -2))}</del>;
     if (part.startsWith("**") && part.endsWith("**") && part.length > 4) return <strong key={index}>{renderInline(part.slice(2, -2))}</strong>;
     if (part.startsWith("*") && part.endsWith("*") && part.length > 2) return <em key={index}>{renderInline(part.slice(1, -1))}</em>;
     const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/);
     if (link) return <a key={index} href={link[2]} target="_blank" rel="noreferrer">{renderInline(link[1])}</a>;
-    return <span key={index}>{part}</span>;
+    return <TextRun key={index} text={part} />;
   });
 }
 
 function CodeBlock({ lang, body }: { lang: string; body: string }) {
-  const [copied, setCopied] = useState(false);
-  const highlighted = useMemo(() => highlightCode(body, lang), [body, lang]);
+  // `html` is derived at render time, not reset by an effect: an effect only
+  // runs after commit, so for one real paint a naive `useEffect`-driven reset
+  // would show the *previous* block's coloured HTML under the *new* body.
+  // Comparing the cache against the current props keeps that impossible —
+  // the very first render after a change already falls back to plain.
+  const [cache, setCache] = useState<{ body: string; lang: string; html: string } | null>(null);
+  const html = cache && cache.body === body && cache.lang === lang ? cache.html : escapeHtml(body);
+
+  useEffect(() => {
+    let live = true;
+    // Debounced: see `COLORIZE_DEBOUNCE_MS` — a streaming reply re-renders
+    // this on every delta, and a still-growing fence shouldn't schedule a
+    // tokenization pass for every intermediate length.
+    const timer = window.setTimeout(() => {
+      void colorizeCode(body, lang).then(result => { if (live) setCache({ body, lang, html: result }); });
+    }, COLORIZE_DEBOUNCE_MS);
+    return () => { live = false; window.clearTimeout(timer); };
+  }, [body, lang]);
   const label = normalizeLang(lang) || lang.toLowerCase() || "text";
-  const copy = () => {
-    void navigator.clipboard?.writeText(body).then(() => { setCopied(true); window.setTimeout(() => setCopied(false), 1400); });
-  };
   return (
     <div className="code-block">
       <div className="code-block-header">
         <span className="code-block-lang">{label}</span>
-        <button type="button" className="code-block-copy" onClick={copy}>
-          {copied ? <Check size={12} aria-hidden="true" /> : <Copy size={12} aria-hidden="true" />}
-          {copied ? "Copied" : "Copy"}
+        <CopyButton text={body} className="code-block-copy" />
+      </div>
+      <pre><code className="stx" dangerouslySetInnerHTML={{ __html: html }} /></pre>
+    </div>
+  );
+}
+
+function DiagramBlock({ spec }: { spec: string }) {
+  const parsed = useMemo<DiagramSpec | null>(() => {
+    try {
+      const value: unknown = JSON.parse(spec);
+      return isValidDiagramSpec(value) ? value : null;
+    } catch {
+      return null;
+    }
+  }, [spec]);
+
+  if (!parsed) {
+    return (
+      <div className="my-[0.8em]">
+        <div className="mb-[0.35em] text-xs text-warning">Could not render this diagram — showing its source.</div>
+        <CodeBlock lang="diagram" body={spec} />
+      </div>
+    );
+  }
+  return (
+    <div className="rich-block my-[0.9em]">
+      <CopyButton text={spec} className="rich-block-copy" />
+      <DiagramFigure spec={parsed} />
+    </div>
+  );
+}
+
+// Agent-authored HTML is untrusted. Rendering happens inside a fully sandboxed
+// iframe: sandbox="" grants no capabilities (no scripts, no same-origin), which
+// is the sole isolation boundary because the Tauri webview sets no CSP.
+// The sandboxed document has no stylesheet of its own, so its `color-scheme`
+// is pinned to the active theme — that is what makes the UA's default text
+// legible on the token background in both modes.
+function HtmlBlock({ html }: { html: string }) {
+  const dark = useDarkTheme();
+  const [fullscreen, setFullscreen] = useState(false);
+
+  useEffect(() => {
+    if (!fullscreen) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setFullscreen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [fullscreen]);
+
+  const frame = (
+    <iframe
+      className={`w-full flex-1 border-0 bg-background ${dark ? "[color-scheme:dark]" : "[color-scheme:light]"}`}
+      title="Rendered HTML"
+      sandbox=""
+      referrerPolicy="no-referrer"
+      srcDoc={html}
+    />
+  );
+
+  if (fullscreen) {
+    // Portalled to `document.body`: the transcript row is a Framer Motion
+    // `layout` element that keeps a `transform` on the wrapper, and any non-none
+    // transform on an ancestor becomes the containing block for `position: fixed`.
+    // Nested inline, the overlay would size against the chat bubble, not the
+    // viewport. The portal decouples it from every ancestor transform.
+    return createPortal(
+      <div className="fixed inset-0 z-50 flex flex-col bg-scrim p-4 backdrop-blur-md sm:p-8">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-[0.9rem] border border-border bg-background">
+          <div className="code-block-header">
+            <span className="code-block-lang">html</span>
+            <button type="button" className="code-block-copy" onClick={() => setFullscreen(false)} aria-label="Exit fullscreen" title="Exit fullscreen (Esc)">
+              <Minimize2 size={12} aria-hidden="true" />
+              Close
+            </button>
+          </div>
+          {frame}
+        </div>
+      </div>,
+      document.body,
+    );
+  }
+
+  return (
+    <div className="html-block my-[0.9em]">
+      <div className="code-block-header">
+        <span className="code-block-lang">html</span>
+        <button type="button" className="code-block-copy" onClick={() => setFullscreen(true)} aria-label="Fullscreen" title="Fullscreen">
+          <Maximize2 size={12} aria-hidden="true" />
+          Expand
         </button>
       </div>
-      <pre><code className="hljs" dangerouslySetInnerHTML={{ __html: highlighted }} /></pre>
+      {frame}
     </div>
   );
 }
@@ -103,12 +393,27 @@ export const Markdown = memo(function Markdown({ text, dim }: { text: string; di
     <div className={dim ? "md dim" : "md"}>
       {splitBlocks(text).map((block, index) => {
         if (block.kind === "code") return <CodeBlock key={index} lang={block.lang} body={block.body} />;
+        if (block.kind === "diagram") return <DiagramBlock key={index} spec={block.spec} />;
+        if (block.kind === "math") return <MathBlock key={index} tex={block.tex} />;
+        if (block.kind === "html") return <HtmlBlock key={index} html={block.html} />;
         if (block.kind === "heading") {
           const H = (`h${Math.min(block.level, 4)}`) as keyof JSX.IntrinsicElements;
           return <H key={index}>{renderInline(block.text)}</H>;
         }
         if (block.kind === "rule") return <hr key={index} />;
         if (block.kind === "quote") return <blockquote key={index}>{renderInline(block.text)}</blockquote>;
+        if (block.kind === "table") {
+          return (
+            <table key={index}>
+              <thead><tr>{block.header.map((cell, cellIndex) => <th key={cellIndex}>{renderInline(cell)}</th>)}</tr></thead>
+              <tbody>
+                {block.rows.map((row, rowIndex) => (
+                  <tr key={rowIndex}>{row.map((cell, cellIndex) => <td key={cellIndex}>{renderInline(cell)}</td>)}</tr>
+                ))}
+              </tbody>
+            </table>
+          );
+        }
         if (block.kind === "list") {
           const List = block.ordered ? "ol" : "ul";
           return <List key={index}>{block.items.map((item, itemIndex) => <li key={itemIndex}>{renderInline(item)}</li>)}</List>;

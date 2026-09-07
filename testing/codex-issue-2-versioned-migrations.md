@@ -6,6 +6,7 @@
 - Opening a database built by the pre-migration code copies `bridge.db` to a timestamped backup before applying the first pending migration.
 - Every migration is transactional, idempotent, and leaves foreign-key enforcement enabled.
 - The Phase 1 schema exactly adds `session_entries`, `session_heads`, `task_knowledge`, `worker_leases`, and `usage_ledger` with the constraints and indexes specified in issue #1/#2.
+  - Superseded at schema 31: the memory ledger migration drops `task_knowledge` with no rows copied.
 - Existing `agent_events` are backfilled into a per-session linear parent chain in insertion-sequence order; the head points to the final entry and provider metadata remains in the payload.
 - New normalized agent events dual-write atomically to legacy `agent_events` and forest `session_entries`; compatibility reads remain on `agent_events` in this PR.
 - Store APIs append/query entries, heads, knowledge, leases, and usage rows while retaining one SQLite connection as the writer boundary.
@@ -23,8 +24,8 @@
 
 ## Integration / Functional Tests
 
-- `cargo test --manifest-path src-tauri/Cargo.toml store` passes against temporary on-disk databases.
-- `cargo test --manifest-path src-tauri/Cargo.toml` passes without changing compatibility replay behavior.
+- `cargo test --manifest-path src-tauri/Cargo.toml --workspace store` passes against temporary on-disk databases.
+- `cargo test --manifest-path src-tauri/Cargo.toml --workspace` passes without changing compatibility replay behavior.
 - Failure injected into a transactional migration leaves no partial schema version or partial objects.
 
 ## Smoke Tests
@@ -41,4 +42,4 @@
 
 - N/A for cURL — no HTTP API changes.
 - Inspect a migrated fixture with `sqlite3 bridge.db '.schema'` and confirm schema versions, five new tables, required indexes, backfilled chains, and foreign keys.
-- Confirm `rg 'let _ = connection.execute\("ALTER TABLE' src-tauri/src/store.rs` returns no matches.
+- Confirm `rg 'let _ = connection.execute\("ALTER TABLE' src-tauri/bridge-core/src/store.rs` returns no matches.

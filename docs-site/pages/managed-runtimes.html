@@ -1,0 +1,120 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#212120" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23ececea'/%3E%3Cpath d='M10 8h7.2c4 0 6 1.5 6 4.3 0 1.8-.9 3-2.6 3.7 2.1.6 3.2 1.9 3.2 3.9 0 2.9-2.2 4.6-6.5 4.6H10V8Zm6.8 6.5c1.6 0 2.4-.5 2.4-1.6 0-1-.8-1.5-2.4-1.5h-2.9v3.1h2.9Zm.3 6.5c1.8 0 2.7-.6 2.7-1.7 0-1.2-.9-1.8-2.7-1.8h-3.2V21h3.2Z' fill='%23212120'/%3E%3C/svg%3E" />
+<title>Managed runtimes & the catalog — Bridge Docs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&family=Bricolage+Grotesque:opsz,wght@12..96,200..800&display=swap">
+<link rel="stylesheet" href="../assets/tokens.css">
+</head>
+<body data-page="managed-runtimes">
+
+<button class="menu-btn" id="menuBtn" aria-label="Open navigation"><svg class="icon" style="width:17px;height:17px"><use href="#i-menu"></use></svg></button>
+<div class="scrim" id="scrim"></div>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="content-scroll" id="contentScroll">
+    <div class="content-inner">
+      <div class="page-grid">
+        <div>
+          <p class="eyebrow">agents & runtimes</p>
+          <h1>Managed runtimes & the catalog</h1>
+          <p class="lede">Bridge maintains two independent catalogs: one that mirrors the upstream Agent Client Protocol index for discovery, and one that lists exactly which agents Bridge has tested and supports.</p>
+
+          <div class="prose">
+            <h2 id="h-why-two">Why two catalogs instead of one</h2>
+            <p>Bridge separates discovery from verification because they serve opposite purposes. The upstream ACP registry is descriptive—it says what agents exist and how to fetch them. Bridge's verified catalog is prescriptive—it says which agents Bridge has tested, vetted for safety, and is willing to run.</p>
+            <p>A single catalog conflates two decisions that must remain distinct: "this agent exists" (upstream says so) and "this agent is safe to run here" (Bridge has tested it). Publishing to ACP is an input to Bridge's verification process, never a substitute for it. An agent can appear in the ACP registry without ever appearing in Bridge's catalog, and Bridge's tested support list does not automatically track upstream releases.</p>
+
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>Discovery and verification are separate questions because upstream publication happens at vendor pace and according to vendor judgment; Bridge's testing happens at Bridge pace and according to Bridge's own standards. Treating them as one would mean trusting vendor releases as implicitly verified, which they are not.</p>
+            </div>
+
+            <h2 id="h-acp-registry">The Agent Client Protocol registry</h2>
+            <p>The ACP registry is a read-only mirror of the upstream index published by the Agent Client Protocol project, fetched from a public CDN without authentication. It answers the question: what coding agents are available, how do I fetch them, and which platforms support them?</p>
+            <p>Bridge reads this registry to show users what agents exist and which ones are installable on their machine. If an agent offers an npm package, a PyPI package, and macOS and Linux binaries, the registry entry names all four methods. A user can see that an agent is available even if no build exists for their platform—the catalog is transparent about what is and is not supported.</p>
+
+            <h3>The registry parser is tolerant, not prescriptive</h3>
+            <p>The published ACP schema documents certain fields as required, but the actual registry has entries missing those fields. For example, <code>repository</code> is documented as required yet absent on 6 of 38 upstream entries; <code>website</code> is absent on 7. Rather than reject these entries as invalid, Bridge parses them pragmatically—it follows the data, not the schema. If an entry cannot be installed by any method Bridge understands, it is skipped and counted; one uninstallable entry does not drop the entire catalog.</p>
+
+            <h3>Caching and freshness</h3>
+            <p>The registry is cached locally with its ETag. A second fetch sends the cached tag back; if upstream confirms the copy is current with a 304 response, the cached copy is reused. If the network is unreachable or upstream unavailable, the cached copy is served marked as stale—the caller can say the catalog is old rather than silently showing unchanged data. A fetch failure with no cache is an error.</p>
+
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>The registry cache stores the verbatim upstream document, not a parsed version of it. When Bridge's parser improves later, previous skipped entries automatically reparse on the next read without waiting for a network refresh.</p>
+            </div>
+
+            <h2 id="h-verified-catalog">Bridge's verified catalog</h2>
+            <p>The verified catalog lists agents at exact versions that Bridge has tested and supports. Each entry is authenticated, validated, and installed whole or not at all. Nothing in this catalog could carry an executable, a command, a script, an interpreter, or a credential—everything executable lives in a named integration module compiled into Bridge itself.</p>
+
+            <h3>Verification is structural, not inferred</h3>
+            <p>An entry reaches the verified catalog only through explicit testing. The <code>Verification</code> struct in each entry records which revision of the conformance suite produced the verdict, when it ran, and an opaque reference to the evidence. There is no field where a verdict could be inferred from upstream activity or cached from a previous check—the only way a <code>Verified</code> status exists is if evidence was produced for it. A <code>Pending</code> verdict (queued but not yet run) or a <code>Failed</code> verdict (tried but failed) never loads; an entry carrying either is refused before it reaches the user.</p>
+
+            <h3>Each entry is signed and cannot be rolled back</h3>
+            <p>A snapshot document is authenticated with an Ed25519 detached signature before parsing. The signature is verified over the exact bytes on disk before anything reads them—a document Bridge cannot authenticate is a document it will not parse. Each snapshot carries a monotonic generation number; a snapshot that does not advance the generation is refused, which prevents a replayed older document from reinstating a withdrawn entry.</p>
+            <p>When a snapshot is installed, the exact bytes that verified and the detached signature over them are cached separately. On restart, the cached bytes go through the full authentication and validation path again—a cache that is missing, tampered with, or valid-but-now-refused (a key withdrawn, a Bridge downgrade, an entry this build no longer accepts) loses to the bundled bootstrap, so Bridge always has a catalog.</p>
+
+            <h3>The bootstrap catalog</h3>
+            <p>Bridge ships a compiled-in last-known-good catalog. It is empty of agents by design—the catalog framework exists to make verification structure testable, not to ship real agents in this epic. The bootstrap passes exactly the validation a remote snapshot must pass, so it is a fallback that can actually serve, not a placeholder.</p>
+
+            <h2 id="h-together">How they work together</h2>
+            <p>A user sees the ACP registry in Bridge's UI as "agents available to install from"—it is the scope of what can be discovered. Within that scope, Bridge filters to the verified catalog when deciding which agents are safe to run. The two catalogs answer sequential questions:</p>
+            <ol>
+              <li>Does this agent exist and have a way to fetch it? (ACP registry answers)</li>
+              <li>Has Bridge tested this exact version and does it approve? (Verified catalog answers)</li>
+            </ol>
+            <p>If both answers are yes, the agent can be installed. If the ACP registry lists an agent but the verified catalog has not tested it, that agent remains discoverable but unrunnable—the user sees why and what stands in the way rather than the agent disappearing silently.</p>
+
+            <h2 id="h-runtime-states">Runtime lifecycle and ownership</h2>
+            <p>Bridge manages agent runtimes through ten states: <code>not_installed</code>, <code>installing</code>, <code>installed</code>, <code>ready</code>, <code>running</code>, <code>stopping</code>, <code>uninstalling</code>, <code>external</code>, <code>broken</code>, and <code>repairable</code>. Payload ownership, integration readiness, and process liveness are three independent facts tracked separately.</p>
+            <p>When an agent is installed, Bridge does not trust that the bytes are what it thinks they are. Instead, every installation carries an embedded receipt plus an atomically written active receipt. The receipt records the exact integrity digest of the installed tree—not hashed permission bits (those do not survive every transport), but the logical file tree folded into a SHA-256 hash. If a payload is later modified, the digest no longer matches and the installation reports as drift rather than being handed out to run.</p>
+            <p>An installation id is derived from the agent, version, platform, and integrity without source. This means a relabelled but byte-identical artifact maps onto the same directory and passes its own check, rather than being forced into a new location every time the source URL changes.</p>
+
+            <h3>Resolution order</h3>
+            <p>Every agent resolves its runtime in one order: the executable the user configured explicitly, then a Bridge-managed receipt-bound payload, then a copy bundled with the app, then the system PATH. The first hit wins. A managed payload that has drifted—its receipt no longer matches what is on disk—is not handed out at all; resolution falls back to the user's own copy instead of launching bytes that no longer match their receipt.</p>
+
+            <h3>Removal requires ownership proof</h3>
+            <p>Removal reads and validates the receipt chain, requires every owned path to be a safe relative descendant of the managed root, and removes only that receipt-owned installation plus the active receipt. A corrupt receipt, an unproven directory, a symlinked managed ancestor, or an owned path outside the exact installation all fail closed without deleting anything. Removal additionally refuses while a provider process is alive for that agent—a payload cannot be removed underneath a live process. Stale rows must not make an agent permanently un-removable, so identity is verified against tracked adapter pids and their recorded OS identity rather than assumed.</p>
+
+            <h2 id="h-api">The agents RPC domain</h2>
+            <p>Operations run to completion and their result says what happened—installed, repaired, removed, already current, already absent—plus the post-operation status. There is deliberately no operation id and no progress stream because backgrounding these operations is a future change with a new result shape, not a reinterpretation of this one.</p>
+            <p>Eight conditions get stable error codes in a <code>3000</code> range: unsupported platform, integrity failure, external-not-managed, busy, corrupt receipt, vendor prerequisite missing, uninstall not permitted, and unknown agent. They live in a typed domain error so a client can act on them differently and a UI can say which one happened without parsing prose.</p>
+
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">managed agent RPC methods</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code><span class="tok-fn">agents/list_managed_agents</span>
+<span class="tok-fn">agents/inspect_managed_agent</span>
+<span class="tok-fn">agents/install_managed_agent</span>
+<span class="tok-fn">agents/repair_managed_agent</span>
+<span class="tok-fn">agents/uninstall_managed_agent</span></code></pre></div>
+            </div>
+
+            <p>These methods are deliberately separate from the <code>marketplace</code> domain, which is about plugins running inside an agent. Different lifecycle, different ownership, different failure modes.</p>
+
+            <h2 id="h-user-surface">Settings UI</h2>
+            <p>The managed runtimes surface in Settings → Harnesses → Agent runtimes. One card per integration appears above harness configuration—whether an agent is installed comes before how it behaves once it runs.</p>
+            <p>Removal is offered only when <code>removable</code> is true, the API's own answer to "is this Bridge's to remove". The UI never derives removability from a state string, so a future state it has never heard of cannot open the destructive path.</p>
+            <p>A working user install reads as settled: it says it works, names itself as the user's own, and offers letting Bridge manage its own copy as a quiet opt-in. Removal asks first, and the confirmation names the exact payload—label, version, path—and states what survives: conversation history, vendor configuration, sign-in, and any copy the user installed themselves. Focus lands on the keep action.</p>
+
+            <h2 id="h-no-credentials">No credentials here</h2>
+            <p>Nothing in this subsystem owns a credential. There is no API-key form, OAuth client, credential vault, login dashboard, or logout action. A vendor that needs a login surfaces its own message verbatim under the vendor-prerequisite code, and the agent stays <code>installed</code> rather than being recast as <code>broken</code>—nothing is broken, the user simply has not authenticated with the vendor yet.</p>
+          </div>
+          <div id="pagerMount"></div>
+        </div>
+        <aside class="toc" id="tocMount"></aside>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="../assets/shell.js"></script>
+</body>
+</html>

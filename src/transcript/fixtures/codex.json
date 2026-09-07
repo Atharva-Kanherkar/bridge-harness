@@ -1,0 +1,33 @@
+[
+  { "id": 1, "sequence": 1, "kind": "message.completed", "itemId": "user-1", "role": "user", "status": "completed", "text": "Run the tests and fix the failing case.", "data": {} },
+
+  { "id": 0, "sequence": 0, "kind": "reasoning.delta", "itemId": "reasoning-1", "status": "streaming", "text": "Start with the suite.", "data": {} },
+  { "id": 2, "sequence": 2, "kind": "reasoning.completed", "itemId": "reasoning-1", "status": "completed", "text": "Start with the suite.",
+    "data": { "type": "reasoning", "id": "reasoning-1", "text": "Start with the suite." } },
+
+  { "id": 3, "sequence": 3, "kind": "command.started", "itemId": "cmd-1", "title": "bun test", "status": "inProgress",
+    "data": { "type": "commandExecution", "id": "cmd-1", "command": "bun test", "status": "inProgress" } },
+  { "id": 0, "sequence": 0, "kind": "command.output_delta", "itemId": "cmd-1", "status": "inProgress", "text": "1 failing\n", "data": {} },
+  { "id": 4, "sequence": 4, "kind": "command.completed", "itemId": "cmd-1", "title": "bun test", "status": "completed",
+    "data": { "type": "commandExecution", "id": "cmd-1", "command": "bun test", "status": "completed", "exitCode": 1, "aggregatedOutput": "1 failing\n", "durationMs": 1200 } },
+
+  { "id": 0, "sequence": 0, "kind": "reasoning.delta", "itemId": "reasoning-2", "status": "streaming", "text": "Read the file it points at.", "data": {} },
+  { "id": 5, "sequence": 5, "kind": "reasoning.completed", "itemId": "reasoning-2", "status": "completed", "text": "Read the file it points at.",
+    "data": { "type": "reasoning", "id": "reasoning-2", "text": "Read the file it points at." } },
+
+  { "id": 6, "sequence": 6, "kind": "item.started", "itemId": "read-1", "status": "inProgress",
+    "data": { "type": "readFile", "id": "read-1", "path": "src/lib.rs" } },
+  { "id": 7, "sequence": 7, "kind": "item.completed", "itemId": "read-1", "status": "completed", "text": "fn a() {}\n",
+    "data": { "type": "readFile", "id": "read-1", "path": "src/lib.rs", "durationMs": 40 } },
+
+  { "id": 8, "sequence": 8, "kind": "file_change.started", "itemId": "patch-1", "status": "inProgress",
+    "data": { "type": "fileChange", "id": "patch-1", "changes": [{ "path": "src/lib.rs", "diff": "@@ -1,1 +1,1 @@\n-fn a() {}\n+fn a() { 1 }\n" }] } },
+  { "id": 9, "sequence": 9, "kind": "file_change.completed", "itemId": "patch-1", "status": "completed",
+    "data": { "type": "fileChange", "id": "patch-1", "changes": [{ "path": "src/lib.rs", "diff": "@@ -1,1 +1,1 @@\n-fn a() {}\n+fn a() { 1 }\n" }], "additions": 1, "deletions": 1, "durationMs": 80 } },
+
+  { "id": 0, "sequence": 0, "kind": "message.delta", "itemId": "agent-1", "role": "assistant", "status": "streaming", "text": "Fixed the assertion in src/lib.rs.", "data": {} },
+  { "id": 10, "sequence": 10, "kind": "message.completed", "itemId": "agent-1", "role": "assistant", "status": "completed", "text": "Fixed the assertion in src/lib.rs.",
+    "data": { "type": "agentMessage", "id": "agent-1", "text": "Fixed the assertion in src/lib.rs." } },
+
+  { "id": 0, "sequence": 0, "kind": "turn.completed", "status": "completed", "data": { "turn": { "status": "completed" } } }
+]

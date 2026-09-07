@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#212120" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23ececea'/%3E%3Cpath d='M10 8h7.2c4 0 6 1.5 6 4.3 0 1.8-.9 3-2.6 3.7 2.1.6 3.2 1.9 3.2 3.9 0 2.9-2.2 4.6-6.5 4.6H10V8Zm6.8 6.5c1.6 0 2.4-.5 2.4-1.6 0-1-.8-1.5-2.4-1.5h-2.9v3.1h2.9Zm.3 6.5c1.8 0 2.7-.6 2.7-1.7 0-1.2-.9-1.8-2.7-1.8h-3.2V21h3.2Z' fill='%23212120'/%3E%3C/svg%3E" />
+<title>Policy & delegation — Bridge Docs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&family=Bricolage+Grotesque:opsz,wght@12..96,200..800&display=swap">
+<link rel="stylesheet" href="../assets/tokens.css">
+</head>
+<body data-page="policy">
+
+<button class="menu-btn" id="menuBtn" aria-label="Open navigation"><svg class="icon" style="width:17px;height:17px"><use href="#i-menu"></use></svg></button>
+<div class="scrim" id="scrim"></div>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="content-scroll" id="contentScroll">
+    <div class="content-inner">
+      <div class="page-grid">
+        <div>
+          <p class="eyebrow">core concepts</p>
+          <h1>Policy & delegation</h1>
+          <p class="lede">The policy engine decides whether an agent's request runs, queues, or requires approval before anything starts.</p>
+          <div class="prose">
+
+            <h2 id="h-what-decides">What the policy engine decides</h2>
+            <p>When an agent requests delegation—work that is large enough or risky enough to run in isolation—Rust's policy layer decides what happens next. The request arrives as a typed envelope containing the task family, objective, capability tier, requested write paths, owned-path boundaries, and what the agent already knows about the target. The policy engine returns one auditable decision:</p>
+            <ul>
+              <li><strong>Execute in parent</strong> — run the work in the same session without spawning.</li>
+              <li><strong>Resume a compatible worker</strong> — a previous worker can pick up this objective.</li>
+              <li><strong>Spawn</strong> — create a new isolated session and start the work.</li>
+              <li><strong>Queue</strong> — hold the request until conditions change (resources free, parent completes a turn, human approves).</li>
+              <li><strong>Reject</strong> — the request violates a hard constraint; it cannot run.</li>
+              <li><strong>Require approval</strong> — the request is valid but needs a human to authorize before spawning.</li>
+            </ul>
+            <p>This is not a ranking system. Each request goes through the same sequential gates. Policy is deterministic about structure: topology, concurrency limits, capability tier thresholds, budget tracking, and trusted path provenance. It does not reason about whether an objective is semantically wise or appropriately decomposed—that judgment stays at the boundary where durable user evidence decides.</p>
+
+            <h2 id="h-gates">Sequential policy gates</h2>
+            <p>A request passes through five independent gates in sequence. Each gate checks a single constraint; passing all five leads to spawn, queue, resume, or approval.</p>
+            <figure class="diagram-figure">
+              <svg viewBox="0 0 500 280" role="img" aria-label="Diagram: a request moving left-to-right through five sequential gates labeled Capability Tier, Write Scope, Concurrency, Worktree Isolation, and Approval. Each gate has a pass (arrow forward) and fail (arrow down marked reject/queue/require-approval) path." style="color:var(--fg)">
+                <defs>
+                  <marker id="arrowhead" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                    <polygon points="0 0, 10 3, 0 6" fill="currentColor" />
+                  </marker>
+                  <marker id="arrowhead-fail" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto">
+                    <polygon points="0 0, 10 3, 0 6" fill="var(--ring)" />
+                  </marker>
+                </defs>
+                <!-- Background gates -->
+                <g stroke="currentColor" stroke-width="1" opacity="0.25" fill="none">
+                  <rect x="20" y="40" width="70" height="60" rx="3"></rect>
+                  <rect x="120" y="40" width="70" height="60" rx="3"></rect>
+                  <rect x="220" y="40" width="70" height="60" rx="3"></rect>
+                  <rect x="320" y="40" width="70" height="60" rx="3"></rect>
+                  <rect x="420" y="40" width="70" height="60" rx="3"></rect>
+                </g>
+                <!-- Gate labels -->
+                <g font-family="var(--font-mono)" font-size="11" font-weight="600" fill="currentColor">
+                  <text x="55" y="58" text-anchor="middle">Capability</text>
+                  <text x="55" y="72" text-anchor="middle">Tier</text>
+
+                  <text x="155" y="58" text-anchor="middle">Write</text>
+                  <text x="155" y="72" text-anchor="middle">Scope</text>
+
+                  <text x="255" y="58" text-anchor="middle">Concurrency</text>
+                  <text x="255" y="72" text-anchor="middle">Budget</text>
+
+                  <text x="355" y="58" text-anchor="middle">Worktree</text>
+                  <text x="355" y="72" text-anchor="middle">Isolation</text>
+
+                  <text x="465" y="58" text-anchor="middle">Human</text>
+                  <text x="465" y="72" text-anchor="middle">Approval</text>
+                </g>
+                <!-- Forward flow (pass) -->
+                <g stroke="var(--ring)" stroke-width="2" fill="none" marker-end="url(#arrowhead)">
+                  <line x1="90" y1="70" x2="120" y2="70"></line>
+                  <line x1="190" y1="70" x2="220" y2="70"></line>
+                  <line x1="290" y1="70" x2="320" y2="70"></line>
+                  <line x1="390" y1="70" x2="420" y2="70"></line>
+                </g>
+                <!-- Entry point -->
+                <circle cx="10" cy="70" r="4" fill="var(--ring)"></circle>
+                <line x1="14" y1="70" x2="20" y2="70" stroke="var(--ring)" stroke-width="2" marker-end="url(#arrowhead)"></line>
+                <!-- Reject/queue paths (fail) -->
+                <g stroke="var(--ring)" stroke-width="1.5" fill="none" marker-end="url(#arrowhead-fail)" opacity="0.6" stroke-dasharray="2 2">
+                  <line x1="55" y1="100" x2="55" y2="140"></line>
+                  <line x1="155" y1="100" x2="155" y2="140"></line>
+                  <line x1="255" y1="100" x2="255" y2="140"></line>
+                  <line x1="355" y1="100" x2="355" y2="140"></line>
+                  <line x1="465" y1="100" x2="465" y2="140"></line>
+                </g>
+                <!-- Exit labels -->
+                <g font-family="var(--font-mono)" font-size="10" fill="var(--ring)" opacity="0.7">
+                  <text x="55" y="160" text-anchor="middle">tier too high</text>
+                  <text x="155" y="160" text-anchor="middle">needs auth</text>
+                  <text x="255" y="160" text-anchor="middle">budget full</text>
+                  <text x="355" y="160" text-anchor="middle">conflict</text>
+                  <text x="465" y="160" text-anchor="middle">awaiting</text>
+                </g>
+                <!-- Success exit -->
+                <g stroke="var(--ring)" stroke-width="2" fill="none" marker-end="url(#arrowhead)">
+                  <line x1="465" y1="100" x2="465" y2="140"></line>
+                  <text x="485" y="205" font-family="var(--font-mono)" font-size="10" fill="var(--ring)">spawn/queue/resume</text>
+                  <line x1="465" y1="140" x2="465" y2="200" stroke="var(--ring)" stroke-width="2" marker-end="url(#arrowhead)"></line>
+                </g>
+                <!-- Legend -->
+                <g font-family="var(--font-mono)" font-size="9" fill="currentColor" opacity="0.5">
+                  <text x="20" y="250">Pass path</text>
+                  <text x="20" y="270">(Spawn / Queue / Resume)</text>
+                  <text x="280" y="250">Fail paths lead to reject,</text>
+                  <text x="280" y="270">queue, or require-approval</text>
+                </g>
+              </svg>
+              <figcaption>Each request passes through the same five gates in order. A gate either passes the request forward or routes it down to a terminal outcome. Earlier gates block invalid requests before later ones even run.</figcaption>
+            </figure>
+            <p>The five gates check:</p>
+            <ol>
+              <li><strong>Capability tier.</strong> Does the agent have authorization to run at the requested level? Bridge tracks three tiers: <code>fast</code>, <code>standard</code>, and <code>strong</code>. Tier escalation is terminal after <code>strong</code>.</li>
+              <li><strong>Write scope.</strong> If the request writes, do we have durable evidence the user authorized those exact paths? This is the strictest gate—requests without write authorization pause and require an approval card before spawning.</li>
+              <li><strong>Concurrency budget.</strong> How many workers can run in parallel? Are there spare slots? Bridge enforces per-turn worker counts and capability-unit budgets (24 units per turn by default, with <code>strong</code> workers consuming more).</li>
+              <li><strong>Worktree isolation.</strong> If the request needs a worktree, are there conflicts—overlapping write ownership, active siblings, or resource exhaustion? Overlapping writers queue FIFO; conflicting paths are detected at the path-component level.</li>
+              <li><strong>Approval.</strong> Does the request require human approval that is not yet granted? If so, pause and emit an approval card before spawning.</li>
+            </ol>
+
+            <h2 id="h-cross-harness">Cross-harness projection</h2>
+            <p>Agents may request delegation to a different harness—asking Codex to spawn a Claude worker, or Claude to use OpenCode. Provider reasoning state cannot move between Codex, Claude, and OpenCode because each has its own model and internal reasoning history. Bridge handles this by <em>not</em> moving the state directly. Instead, cross-harness requests are projected: the child receives the evidence from the parent's work so far, but not the raw provider transcript.</p>
+            <p>Policy keeps a cross-harness request queued while its parent has an active turn, releasing it after turn completion, a durable checkpoint, a compaction boundary, or worker-result verification. The session records one of three states:</p>
+            <ul>
+              <li><strong><code>native</code></strong> — same-harness continuation.</li>
+              <li><strong><code>projected_at_boundary</code></strong> — cross-harness, released at a safe point.</li>
+              <li><strong><code>projected_mid_turn</code></strong> — cross-harness request arrived during an active parent turn and had to wait. This is still possible under races and is surfaced as degraded rather than hidden.</li>
+            </ul>
+            <p>This design ensures reasoning state stays tied to the harness that produced it, while allowing agents to delegate work across providers.</p>
+
+            <h2 id="h-blocked-human">Worker approval workflow</h2>
+            <p>When a worker needs approval—either for write scope or another gate—it enters a durable <code>blocked_on_human</code> state. This is not a failure; it is a legitimate pause where the worker waits for a decision.</p>
+            <h3>Mirroring to the parent</h3>
+            <p>A worker's approval card normally appears on the worker's own conversation, which may not be visible if you are focused on the parent. Bridge mirrors the card onto the parent conversation with the worker's label, objective, command, and owned-path scope, so you see the blocker immediately. Resolving the approval from any surface—the parent's mirrored card, the worker's own card, or the mission control detail view—updates both the parent and the worker lifecycle together.</p>
+            <h3>Timeouts and cleanup</h3>
+            <p>A worker waiting for approval has its own deadline separate from the general stall watchdog: <code>WORKER_APPROVAL_TIMEOUT_SECONDS</code> (30 minutes). If no decision arrives by then, the worker is resolved to a terminal <code>blocked</code> result naming the unanswered approval, which releases the parent. The timestamp <code>waiting_since</code> is updated every time a worker enters or leaves the <code>waiting</code> state, so an expired approval cannot leave stale timestamp data behind.</p>
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>A blocked-on-human worker is legitimate pending work. It is never treated as failed or timed out by the general stall watchdog because approval delays are legitimately long—users may be thinking, away, or handling other priorities.</p>
+            </div>
+
+            <h2 id="h-write-authorization">Write scope authorization</h2>
+            <p>Write-capable workers must prove the user authorized the paths they will modify. There are exactly two ways authorization can happen, and no third:</p>
+            <ol>
+              <li><strong>User declares the scope in their message.</strong> A line like <code>Write scope: src/**, docs/**</code> in the user's message authorizes those paths for that turn. The syntax is exact: the line must start with <code>write scope:</code> (case-insensitive), appear outside code fences and block quotes, and list paths comma- or semicolon-separated and repository-relative.</li>
+              <li><strong>User accepts an approval card.</strong> When no declaration covers the requested paths, policy raises an approval card with the exact paths shown. Accepting it authorizes only those paths.</li>
+            </ol>
+            <p>Anything else does not authorize: assistant-proposed <code>ownedPaths</code>, repository exploration, or path mentions in prose. Read-only workers skip authorization entirely because they cannot write.</p>
+            <h3>The practical flow</h3>
+            <p>A cold-start request like "implement X" from a user who has not used the <code>Write scope:</code> syntax will raise an approval card. That is designed behavior, not a failure. The parent receives a structured notice with the remediation reason so neither you nor the orchestrator has to guess. On acceptance, the launch proceeds. On decline or cancel, the worker is never spawned.</p>
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>Bridge normalizes repository-relative declarations and checks them against the real workspace tree. Existing files and directories are eligible. A new file is eligible only when its immediate parent exists. Canonical-path checks reject scopes that escape through symlinks.</p>
+            </div>
+
+            <h2 id="h-shared-writers">Shared writers and worktree isolation</h2>
+            <p>Read-only workers run concurrently without conflict. Write-capable workers follow stricter rules:</p>
+            <ul>
+              <li>A <strong>shared writer</strong> (multiple workers writing in the main worktree) requires non-overlapping ownership. Workers claiming different path sets can run in parallel.</li>
+              <li><strong>Overlapping writers</strong> queue FIFO. Two workers both writing to the same file or directory are serialized; they wait for earlier claims to complete.</li>
+              <li><strong><code>write mode: isolated</code></strong> always creates a child worktree, even for a lone writer. Isolation is a promise about where writes land, not an optimization applied only when contention exists.</li>
+              <li>Every write-capable worker gets a durable repository binding at launch, recording the exact checkout and base revision it runs in. <code>worktree_path</code> is never null after launch.</li>
+              <li>Read-only workers are checked after execution; tracked file changes fail the guard and the worker is downgraded to <code>blocked</code>.</li>
+            </ul>
+
+            <h2 id="h-adopting-output">Adopting isolated worker output</h2>
+            <p>When a worker runs in an isolated worktree, its output is not automatically merged back. Verifying that the worktree is consistent proves nothing about the user's task checkout. Isolated output has an explicit lifecycle:</p>
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">Isolated worker lifecycle</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code>in_place              shared/full writer — nothing to adopt
+
+pending_adoption ─┬─ adopted            fast-forward merge into task worktree
+                  └─ discarded          thrown away
+
+empty                 isolated writer changed nothing</code></pre></div>
+            </div>
+            <p>A parent cannot become ready while any child sits in <code>pending_adoption</code>, so every verified change must be explicitly adopted or discarded. Adoption refuses to run against a dirty or active task worktree and rejects non-fast-forward merges, leaving work pending rather than losing it. Child worktrees are removed only once their row is terminal.</p>
+
+            <h2 id="h-verification">Repository evidence and verification</h2>
+            <p>Before a write-capable worker's result becomes canonical, Bridge checks the work against Git. The result is checked against the actual repository state in the worker's worktree:</p>
+            <ul>
+              <li>Bridge derives HEAD, branch, committed and dirty paths, and a diffstat from the worker's bound checkout.</li>
+              <li>The result's <code>filesChanged</code> is replaced with the derived path list, so a worker cannot suppress required tests by omitting a path, nor invent irrelevant ones.</li>
+              <li>A <code>completed</code> claim is downgraded to <code>blocked</code> if the repository shows no change at all, or if the worker wrote outside its owned-path lease. The reason is explicit evidence-mismatch.</li>
+              <li>Changed-but-unreported paths are recorded as risks and surfaced to you.</li>
+              <li>The derived revision, branch, dirty state, and diffstat are carried into the parent-facing result.</li>
+            </ul>
+            <p>This verification is deterministic and structural. It does not prove an objective is semantically complete or wise—only that the claimed work matches Git reality. Human approval remains the boundary when that proof is absent.</p>
+
+            <h2 id="h-completion-proof">Completion proof and verification gates</h2>
+            <p>Implementation workers open a durable completion contract from the user's acceptance criteria. The contract, deterministic eval plan, check runs, findings, and proof live in SQLite. Bridge runs implementation and verification sequentially, not in parallel.</p>
+            <p>Deterministic build, test, lint, and repository commands become required gates. Bridge executes them: the core check runner takes one pending shell check at a time, runs the command in the worker's exact repository path with no shell expansion, captures bounded output and exit status, and records the verdict. Commands are allowlisted by program name; any other program or shell metacharacters are refused and recorded as <code>blocked</code>.</p>
+            <p>Verification has a deadline: <code>COMPLETION_VERIFY_TIMEOUT_SECONDS</code> (45 minutes). Past it, every required check that never reached a terminal state is recorded <code>blocked</code> with an explicit reason—for semantic checks, that no eligible verifier claimed it. The attempt fails and the parent is released so it can decide next steps. Timed-out gates are marked on the attempt and distinguished from gates Bridge could not build at all; the latter still fails closed and requires an explicit waiver.</p>
+            <p>A skill or plugin can register a verifier manifest describing triggers, required tools, and cross-family requirements. Matching manifests are added to the plan, but they cannot grant themselves capabilities or mint passing evidence.</p>
+
+            <h2 id="h-bypass">Permission bypass</h2>
+            <p>You can configure Bridge to skip approval requests automatically. This is a global setting that applies to every session and workspace. The bypass toggle appears in Settings > Permissions as <strong>Bypass all approvals</strong>.</p>
+            <h3>What bypass does and does not do</h3>
+            <p>With bypass on (<code>bypassAll: true</code>), every regular approval from any provider is resolved <code>accept</code> immediately, through the same function a human click calls. The session, worker lifecycle, mirrored card, and parent notice all behave exactly as they would for a human decision. Auto-approved requests are recorded in a durable audit ledger as <code>approval.auto_allowed</code> entries.</p>
+            <p><strong>Two gates survive bypass and will still raise approvals:</strong></p>
+            <ul>
+              <li><strong>Worker write scope.</strong> Write-path authorization is a structural gate raised by <code>policy.rs</code>, never over a provider control channel, so it cannot be auto-answered. It will still pause the worker and require an explicit approval or a <code>Write scope:</code> declaration.</li>
+              <li><strong>Browser outward effects.</strong> Sensitive browser operations (send message, purchase, publish, enter credentials) are gated separately in <code>browser_bridge.rs</code> with their own audit channel. Bypass does not touch them.</li>
+            </ul>
+            <p>Auto-approval is deferred until after a request is persisted to the database, ensuring every auto-approved action is durable.</p>
+            <h3>Visibility while bypass is on</h3>
+            <p>A persistent badge in the app chrome reads "Approvals bypassed" whenever the policy is on, so the mode is never invisible. Each auto-approved request is shown in the conversation as an <code>approval.resolved</code> entry, identical to a human resolution, and listed in Settings > Permissions under recent auto-approvals. The audit trail is complete and durable.</p>
+            <div class="callout is-warning">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>Bypass is a global convenience setting, not a security override. Write-scope authorization and sensitive browser gates remain enforced. Use bypass when you trust your agents completely within these boundaries.</p>
+            </div>
+
+            <h2 id="h-learning-router">Cost and quality routing</h2>
+            <p>Bridge can learn from worker outcomes to predict which provider and model will work best for each task. The learning router records the complete inventory of candidate harnesses and models, reasons for excluding each, conservative pass-probability estimates, latency predictions, normalized cost, and retry risk.</p>
+            <p>The router starts in <code>shadow</code> mode per workspace. Shadow recommendations are measured while the baseline route continues. Autonomous mode cannot be enabled until the workspace has at least 20 completed shadow outcomes with fewer than 5% no-route selections. Users can pin or exclude harnesses and models, but preferences cannot revive a candidate excluded by availability, platform, permissions, quota, or deterministic policy gates.</p>
+            <p>Learning selects a candidate <em>before</em> the policy gates run, not instead of them. Owned-path provenance, approval, depth, concurrency, worktree, and budget rules in Rust still decide whether the selected route may spawn, resume, queue, or run at all. Failed worker results become outcome labels, not permission to alter safety policy.</p>
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>Replay past decisions without starting a provider by running <code>cargo run --manifest-path src-tauri/Cargo.toml --bin policy-replay -- /path/to/bridge.db --workspace WORKSPACE_ID</code>. Test proposed policy changes against historical requests.</p>
+            </div>
+
+          </div>
+          <div id="pagerMount"></div>
+        </div>
+        <aside class="toc" id="tocMount"></aside>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="../assets/shell.js"></script>
+</body>
+</html>

@@ -34,7 +34,7 @@
 - A fake-upstream integration test asserts that the harness-visible request contains only the opaque reference while the upstream receives the canary in `Authorization: Bearer ...`.
 - Proxy tests reject an unknown reference, a reference owned by another session, a non-`/v1/` path, a caller-supplied authorization header, an unsupported method, an upstream supplied by the caller, and a missing or wrong proxy authorization token.
 - A cleanup test proves clear/replacement removes and zeroizes the in-memory credential entry.
-- Run `cargo test --manifest-path src-tauri/Cargo.toml`.
+- Run `cargo test --manifest-path src-tauri/Cargo.toml --workspace`.
 - Run `bun run build` and `bun run test` as required by `AGENTS.md`.
 - Run `git diff --check`.
 

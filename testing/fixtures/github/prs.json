@@ -1,0 +1,89 @@
+[
+  {
+    "number": 101,
+    "title": "Open and green",
+    "state": "OPEN",
+    "isDraft": false,
+    "author": { "login": "octocat" },
+    "headRefName": "feat/green",
+    "reviewDecision": "APPROVED",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "CLEAN",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "status": "COMPLETED",
+        "conclusion": "SUCCESS"
+      }
+    ],
+    "url": "https://github.com/fixture/project/pull/101"
+  },
+  {
+    "number": 102,
+    "title": "Draft with CI running",
+    "state": "OPEN",
+    "isDraft": true,
+    "author": { "login": "draft-author" },
+    "headRefName": "feat/draft",
+    "reviewDecision": "",
+    "mergeable": "UNKNOWN",
+    "mergeStateStatus": "UNSTABLE",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "status": "IN_PROGRESS",
+        "conclusion": ""
+      }
+    ],
+    "url": "https://github.com/fixture/project/pull/102"
+  },
+  {
+    "number": 103,
+    "title": "Changes requested",
+    "state": "OPEN",
+    "isDraft": false,
+    "author": { "login": "review-author" },
+    "headRefName": "fix/review",
+    "reviewDecision": "CHANGES_REQUESTED",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "BLOCKED",
+    "statusCheckRollup": [],
+    "url": "https://github.com/fixture/project/pull/103"
+  },
+  {
+    "number": 104,
+    "title": "Failing CI",
+    "state": "OPEN",
+    "isDraft": false,
+    "author": { "login": "ci-author" },
+    "headRefName": "fix/ci",
+    "reviewDecision": "REVIEW_REQUIRED",
+    "mergeable": "MERGEABLE",
+    "mergeStateStatus": "UNSTABLE",
+    "statusCheckRollup": [
+      {
+        "__typename": "CheckRun",
+        "status": "COMPLETED",
+        "conclusion": "FAILURE"
+      },
+      {
+        "__typename": "StatusContext",
+        "state": "SUCCESS"
+      }
+    ],
+    "url": "https://github.com/fixture/project/pull/104"
+  },
+  {
+    "number": 105,
+    "title": "Merge conflict",
+    "state": "OPEN",
+    "isDraft": false,
+    "author": null,
+    "headRefName": "fix/conflict",
+    "reviewDecision": "",
+    "mergeable": "CONFLICTING",
+    "mergeStateStatus": "DIRTY",
+    "statusCheckRollup": [],
+    "url": "https://github.com/fixture/project/pull/105"
+  }
+]

@@ -1,0 +1,47 @@
+[
+  { "id": 1, "sequence": 1, "kind": "message.completed", "itemId": "user-1", "role": "user", "status": "completed", "text": "Run the tests and fix the failing case.", "data": {} },
+
+  { "id": 0, "sequence": 0, "kind": "reasoning.delta", "itemId": "thought-1", "text": "Start with the suite.",
+    "data": { "sessionUpdate": "agent_thought_chunk", "messageId": "thought-1", "content": { "type": "text", "text": "Start with the suite." } } },
+  { "id": 2, "sequence": 2, "kind": "reasoning.completed", "itemId": "thought-1", "status": "completed", "text": "Start with the suite.",
+    "data": { "assembledFrom": "reasoning.delta" } },
+
+  { "id": 3, "sequence": 3, "kind": "tool.started", "itemId": "acp-tool-1", "title": "bun test", "status": "inProgress",
+    "data": { "kind": "execute",
+      "update": { "sessionUpdate": "tool_call", "toolCallId": "acp-tool-1", "title": "bun test", "kind": "execute", "status": "in_progress" } } },
+  { "id": 0, "sequence": 0, "kind": "tool.progress", "itemId": "acp-tool-1", "status": "inProgress",
+    "data": { "sessionUpdate": "tool_call_update", "toolCallId": "acp-tool-1", "status": "in_progress",
+      "content": [{ "type": "content", "content": { "type": "text", "text": "1 failing\n" } }] } },
+  { "id": 4, "sequence": 4, "kind": "tool.completed", "itemId": "acp-tool-1", "title": "bun test", "status": "completed",
+    "data": { "sessionUpdate": "tool_call_update", "toolCallId": "acp-tool-1", "status": "completed",
+      "content": [{ "type": "content", "content": { "type": "text", "text": "1 failing\n" } }] } },
+
+  { "id": 0, "sequence": 0, "kind": "reasoning.delta", "itemId": "thought-2", "text": "Read the file it points at.",
+    "data": { "sessionUpdate": "agent_thought_chunk", "messageId": "thought-2", "content": { "type": "text", "text": "Read the file it points at." } } },
+  { "id": 5, "sequence": 5, "kind": "reasoning.completed", "itemId": "thought-2", "status": "completed", "text": "Read the file it points at.",
+    "data": { "assembledFrom": "reasoning.delta" } },
+
+  { "id": 6, "sequence": 6, "kind": "tool.started", "itemId": "acp-tool-2", "title": "Read src/lib.rs", "status": "inProgress",
+    "data": { "kind": "read",
+      "update": { "sessionUpdate": "tool_call", "toolCallId": "acp-tool-2", "title": "Read src/lib.rs", "kind": "read", "status": "in_progress",
+        "locations": [{ "path": "src/lib.rs" }] } } },
+  { "id": 7, "sequence": 7, "kind": "tool.completed", "itemId": "acp-tool-2", "title": "Read src/lib.rs", "status": "completed",
+    "data": { "sessionUpdate": "tool_call_update", "toolCallId": "acp-tool-2", "status": "completed",
+      "locations": [{ "path": "src/lib.rs" }],
+      "content": [{ "type": "content", "content": { "type": "text", "text": "fn a() {}\n" } }] } },
+
+  { "id": 8, "sequence": 8, "kind": "tool.started", "itemId": "acp-tool-3", "title": "Edit src/lib.rs", "status": "inProgress",
+    "data": { "kind": "edit",
+      "update": { "sessionUpdate": "tool_call", "toolCallId": "acp-tool-3", "title": "Edit src/lib.rs", "kind": "edit", "status": "in_progress",
+        "locations": [{ "path": "src/lib.rs" }] } } },
+  { "id": 9, "sequence": 9, "kind": "tool.completed", "itemId": "acp-tool-3", "title": "Edit src/lib.rs", "status": "completed",
+    "data": { "sessionUpdate": "tool_call_update", "toolCallId": "acp-tool-3", "status": "completed",
+      "locations": [{ "path": "src/lib.rs" }],
+      "content": [{ "type": "diff", "path": "src/lib.rs", "oldText": "fn a() {}", "newText": "fn a() { 1 }" }] } },
+
+  { "id": 0, "sequence": 0, "kind": "message.delta", "itemId": "acp-message-1", "role": "assistant", "text": "Fixed the assertion in src/lib.rs.",
+    "data": { "sessionUpdate": "agent_message_chunk", "messageId": "acp-message-1", "content": { "type": "text", "text": "Fixed the assertion in src/lib.rs." } } },
+  { "id": 10, "sequence": 10, "kind": "message.completed", "itemId": "acp-message-1", "role": "assistant", "status": "completed", "text": "Fixed the assertion in src/lib.rs.", "data": {} },
+
+  { "id": 0, "sequence": 0, "kind": "turn.completed", "status": "end_turn", "data": { "stopReason": "end_turn" } }
+]

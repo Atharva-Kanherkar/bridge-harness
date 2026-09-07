@@ -1,0 +1,2 @@
+{"type":"user","uuid":"duplicate","timestamp":"2026-08-01T10:00:00Z","message":{"role":"user","content":"first"}}
+{"type":"assistant","uuid":"duplicate","timestamp":"2026-08-01T10:00:01Z","message":{"role":"assistant","content":"second"}}

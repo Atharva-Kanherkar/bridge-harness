@@ -8,7 +8,7 @@ export function BridgeMark({ size = "md", className }: { size?: "sm" | "md" | "l
   } as const;
 
   return (
-    <p className={cn("font-display tracking-[-0.03em] text-white", sizeClasses[size], className)}>
+    <p className={cn("font-display tracking-[-0.03em] text-foreground", sizeClasses[size], className)}>
       bridge
     </p>
   );

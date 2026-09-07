@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#212120" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23ececea'/%3E%3Cpath d='M10 8h7.2c4 0 6 1.5 6 4.3 0 1.8-.9 3-2.6 3.7 2.1.6 3.2 1.9 3.2 3.9 0 2.9-2.2 4.6-6.5 4.6H10V8Zm6.8 6.5c1.6 0 2.4-.5 2.4-1.6 0-1-.8-1.5-2.4-1.5h-2.9v3.1h2.9Zm.3 6.5c1.8 0 2.7-.6 2.7-1.7 0-1.2-.9-1.8-2.7-1.8h-3.2V21h3.2Z' fill='%23212120'/%3E%3C/svg%3E" />
+<title>Memory & adaptive learning — Bridge Docs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&family=Bricolage+Grotesque:opsz,wght@12..96,200..800&display=swap">
+<link rel="stylesheet" href="../assets/tokens.css">
+</head>
+<body data-page="memory-and-learning">
+
+<button class="menu-btn" id="menuBtn" aria-label="Open navigation"><svg class="icon" style="width:17px;height:17px"><use href="#i-menu"></use></svg></button>
+<div class="scrim" id="scrim"></div>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="content-scroll" id="contentScroll">
+    <div class="content-inner">
+      <div class="page-grid">
+        <div>
+          <p class="eyebrow">work, memory & learning</p>
+          <h1>Memory & adaptive learning</h1>
+          <p class="lede">Bridge separates three distinct systems: explicit user pins that persist across sessions, a learning router that ranks eligible coding agents from workspace history, and full-text search within individual chat sessions.</p>
+          <div class="prose">
+
+            <h2 id="h-account-memory">Account memory ledger</h2>
+            <p>Your explicit pins live in a `memory_records` table under the named scope `account:local`. Unlike routing decisions or session history, account memory is durable and under your direct control — you save and forget pins explicitly, and they're always scoped to your personal workspace account.</p>
+
+            <h3>What gets stored</h3>
+            <p>Each pin has a kind (preference, fact, decision, or constraint), a body, timestamps, and a status (active or deleted). The table stores the scope key (`account:local`), provenance (always `user_explicit` at this release), and an optional source session ID if you pinned something that originated in a chat — but there's no embedding, no time-to-live, no confidence score, and no retrieval audit log yet.</p>
+
+            <h3>How pins get in and out</h3>
+            <p>Save a pin via the Bridge command `/pin <text>` or the protocol method `memory/save_memory_record`. List your pins with `/pins` or `memory/list_memory_records` with `scopeKey` set to `account:local`. Forget a pin with `/unpin <id>` or the protocol method `memory/delete_memory_record` — forgetting creates a tombstone (status changed to deleted) rather than actually deleting the row.</p>
+
+            <p>The system rejects empty, whitespace-only, or credential-shaped bodies. Pins are not automatically injected into every turn — they're available when your workflows need them, not hidden context. The server always writes `account:local`; you cannot specify a different scope on save.</p>
+
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p><code>/pin</code>, <code>/pins</code>, and <code>/unpin</code> are Bridge-handled commands and never auto-switch harness. They are not your provider's <code>/memory</code> — account memory is entirely Bridge-local.</p>
+            </div>
+
+            <h3>Why three systems exist</h3>
+            <p>Account memory solves a different problem than the routing learning system: you want a way to save facts about yourself (workflow preferences, your name, a constraint on tool use) that sticks around across workspaces and sessions, under your control, with no learning inference. If Bridge tried to infer your preferences from patterns, or silently merged routing evidence into this space, it would risk forgetting what you explicitly told it. So account memory is separate, explicit, and never touches the learning router.</p>
+
+
+            <h2 id="h-adaptive-router">Adaptive learning router</h2>
+            <p>Bridge can rank which coding agents (from the set of available providers, models, and effort levels) tend to perform better on tasks in your workspace, based on real outcomes from previous runs. The learning router is workspace-scoped: each of your workspaces learns independently, and direct chats with Claude are opted out of learning. The deterministic policy engine still owns all safety gates — learning can only rank candidates that are already authorized.</p>
+
+            <h3>What learning sees and doesn't see</h3>
+            <p>The router stores versioned role profiles, eligible/excluded agent snapshots, task fingerprints, repository revision, and outcome records (success/unknown, acceptance, retry/intervention, latency, provider cost, token count, confidence). It does not see or learn from memory jobs, direct chats, or your account memory pins. Existing rows from before the routing split are tagged `legacy:global` and are never selected; live routing always scopes to `workspace:{id}`.</p>
+
+            <p>Missing quota or context information is treated as unknown (eligible), not as exhausted. Only a live session in the same workspace can mark an agent QuotaExhausted or ContextExhausted; an old row at 100% usage does not block a fresh routing decision.</p>
+
+            <h3>Modes: Manual, Ask, Automatic</h3>
+            <p>After a learning run evaluates candidates against your workspace's last 5,000 held-out outcomes, it produces a recommendation. How that recommendation gets used is up to you:</p>
+            <ul>
+              <li><strong>Manual</strong> — A recommendation is recorded and you can review it, but it never automatically takes effect.</li>
+              <li><strong>Ask</strong> — Bridge shows you the recommendation and asks for approval before promoting it to the live policy.</li>
+              <li><strong>Automatic</strong> — Bridge promotes the recommendation to a canary policy automatically. If it causes worse outcomes (regression), a rollback is created and activated.</li>
+            </ul>
+
+            <h3>Running learning</h3>
+            <p>Use the Learning router UI in your workspace settings for an immediate local run. Bridge can also be scheduled (in-app or via external trigger) to run learning periodically. If an external scheduler wakes the runner, it receives no evidence database and cannot write the active policy — it's strictly about periodicity. When multiple runs are queued, they iterate one workspace at a time and never mix evidence.</p>
+
+            <p>Each run acquires a durable lease, freezes an evidence high-water mark, runs deterministic evaluations, and aggregates by task fingerprint, profile, provider, model, and effort level. Bounded model evaluations are currently deferred work (no executor yet), so learning reports show zero spend and zero tokens from evaluation.</p>
+
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>The policy engine decides who is allowed to run and where. The learning router ranks only those already-allowed candidates. One system handles safety and scope; the other handles quality and speed.</p>
+            </div>
+
+
+            <h2 id="h-session-recall">Session recall via full-text search</h2>
+            <p>Within a single chat session, you can search your session's entire forest history using full-text search over an FTS5 index. This is per-chat, zero-LLM, and completely separate from account memory or routing learning — it's purely a search tool to find what was said in this specific conversation.</p>
+
+            <h3>How it works</h3>
+            <p>The session forest stores every entry (messages, decisions, tool invocations, forks) in an append-only structure keyed by session ID. An FTS5 index sits over that forest. When you search, the index runs a deterministic text query against that one session's history — no embedding lookup, no external call, no LLM inference. A zero-LLM search means it's instant and consistent: the same query always finds the same matches.</p>
+
+            <h3>Why separate from learning and account memory</h3>
+            <p>Session recall solves search within one conversation. Account memory is about saving personal facts for later. Learning is about ranking agents across workspace history. Blending them would make each worse: a session search might pull in stale account memory; learning would get cluttered with session-specific details; account memory would grow enormous if it had to store every session's searchable content.</p>
+
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>Session recall is not the helper picker, not Bridge's memory engine, and not a workspace-wide index. It's a search tool for one chat at a time.</p>
+            </div>
+
+
+            <h2 id="h-interaction">How these three systems interact</h2>
+            <p>Each system has its own scope and purpose, and they remain independent:</p>
+
+            <ul>
+              <li>Account memory pins are never injected as context automatically and never fed into the learning router. You control when to mention a pin.</li>
+              <li>Learning router decisions are never retroactively changed by your account memory. A new pin doesn't rewrite past routing decisions.</li>
+              <li>Session recall searches only the current chat's forest. It doesn't pull from other sessions' histories or your account memory.</li>
+              <li>The policy engine sits above all three. It decides whether learning can run at all, which providers are available, what scopes you can access, and which candidates qualify to be ranked.</li>
+            </ul>
+
+            <p>If you want a fact to influence future learning runs, you'd need to use Bridge's UI to explicitly mark it as a workspace hint or include it in a project README — account memory is for your own reference, not for steering the router.</p>
+
+          </div>
+          <div id="pagerMount"></div>
+        </div>
+        <aside class="toc" id="tocMount"></aside>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="../assets/shell.js"></script>
+</body>
+</html>

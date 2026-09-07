@@ -1,16 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { availableModelOptions, modelProfilesChanged, profileDraftsFromSetup, recommendedProfileDrafts, resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
+import { advertisedEfforts, availableModelOptions, modelProfilesChanged, normalizedEffort, profileDraftsFromSetup, recommendedProfileDrafts, resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
 import type { AdapterDescriptor, ModelSetupState } from "./types";
 
 const adapters: AdapterDescriptor[] = [{
-  id: "catalog", label: "Catalog", available: true, version: "1", capabilities: [], unavailableReason: null, defaultModel: "balanced",
+  id: "catalog", label: "Catalog", available: true, authState: "signed_in", version: "1", capabilities: [], unavailableReason: null, defaultModel: "balanced",
   models: [
     { id: "quick", label: "Quick", tier: "fast", defaultForTier: true },
     { id: "balanced", label: "Balanced", tier: "standard", defaultForTier: true },
     { id: "deep", label: "Deep", tier: "strong", defaultForTier: true },
   ],
 }, {
-  id: "offline", label: "Offline", available: false, version: null, capabilities: [], unavailableReason: "not installed", defaultModel: "hidden",
+  id: "offline", label: "Offline", available: false, authState: "unknown", version: null, capabilities: [], unavailableReason: "not installed", defaultModel: "hidden",
   models: [{ id: "hidden", label: "Hidden", tier: "strong", defaultForTier: true }],
 }];
 
@@ -25,6 +25,14 @@ describe("model profile catalog helpers", () => {
 
   it("excludes unavailable adapters from advanced choices", () => {
     expect(availableModelOptions(adapters).map(option => option.value)).not.toContain("offline:hidden");
+  });
+
+  it("keeps availability independent from promotion and excludes incompatible models", () => {
+    const catalog = structuredClone(adapters);
+    catalog[0].models.push({ id: "selectable", label: "Selectable", tier: "standard", defaultForTier: false, available: true, compatible: true, lifecycle: "stable", source: "runtime_api" });
+    catalog[0].models.push({ id: "incompatible", label: "Incompatible", tier: "standard", defaultForTier: false, available: true, compatible: false, lifecycle: "stable", source: "runtime_api" });
+    expect(availableModelOptions(catalog).map(option => option.value)).toContain("catalog:selectable");
+    expect(availableModelOptions(catalog).map(option => option.value)).not.toContain("catalog:incompatible");
   });
 
   it("resolves new chats from the persisted Standard profile instead of adapter order", () => {
@@ -55,6 +63,38 @@ describe("model profile catalog helpers", () => {
     alternate.available = false;
     expect(resolveProfileOption("standard_orchestrator", setup, [...adapters, alternate])?.value)
       .toBe("catalog:balanced");
+  });
+
+  it("tracking follows promotion while pinned profiles preserve their model", () => {
+    const drafts = recommendedProfileDrafts(adapters);
+    const setup: ModelSetupState = {
+      complete: true,
+      activeVersion: 1,
+      profiles: drafts.map(profile => ({ ...profile, schemaVersion: 1, version: 1, profileId: profile.purpose, canonicalRole: "planning", createdAt: "now" })),
+    };
+    const refreshed = structuredClone(adapters);
+    refreshed[0].models.find(model => model.id === "balanced")!.defaultForTier = false;
+    refreshed[0].models.push({ id: "balanced-v2", label: "Balanced v2", tier: "standard", defaultForTier: true, available: true, compatible: true, lifecycle: "stable", source: "runtime_api" });
+    // A tracking worker (standard tier) follows the newly promoted default.
+    expect(resolveProfileOption("implementer", setup, refreshed)?.value).toBe("catalog:balanced-v2");
+    // The orchestrator is pinned by default, so it holds its exact model across promotion.
+    expect(resolveProfileOption("standard_orchestrator", setup, refreshed)?.value).toBe("catalog:balanced");
+  });
+
+  it("narrows advertised efforts and treats an empty list as no effort knob", () => {
+    // Unstorable levels are dropped; order and de-duplication are preserved.
+    expect(advertisedEfforts({ supportedEffortLevels: ["low", "high", "ultra", "high"] })).toEqual(["low", "high"]);
+    // Empty / absent means the model has no effort knob — never a fabricated set.
+    expect(advertisedEfforts({ supportedEffortLevels: [] })).toEqual([]);
+    expect(advertisedEfforts(undefined)).toEqual([]);
+  });
+
+  it("normalizes effort when a newly chosen model advertises a disjoint set", () => {
+    const highOnly = { supportedEffortLevels: ["high", "xhigh"] };
+    expect(normalizedEffort("medium", highOnly)).toBe("high"); // disjoint → first advertised
+    expect(normalizedEffort("xhigh", highOnly)).toBe("xhigh");  // already supported → kept
+    // A model with no effort knob leaves the value inert and unchanged.
+    expect(normalizedEffort("medium", { supportedEffortLevels: [] })).toBe("medium");
   });
 
   it("does not trap users in setup when no adapter is available", () => {

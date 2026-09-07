@@ -17,8 +17,21 @@
 //   { sessionId, model, cwd, resume, instructions, writeMode, plugins, mcpServers }
 
 import { createInterface } from "node:readline";
-import { query } from "@anthropic-ai/claude-agent-sdk";
-import { buildOptions } from "./options.mjs";
+import { pathToFileURL } from "node:url";
+import { buildOptions, catalogOptions } from "./options.mjs";
+import { userContentBlocks } from "./input.mjs";
+
+// Which copy of the Agent SDK to load.
+//
+// With a Bridge-managed payload installed, the Rust side sets
+// BRIDGE_CLAUDE_SDK_ENTRY to that installation's `sdk.mjs`. Unset — the default,
+// and the case for every existing install — this resolves the bundled dependency
+// exactly as it did before. ESM ignores NODE_PATH, so an explicit module entry is
+// the only way to redirect a bare specifier.
+const sdkEntry = process.env.BRIDGE_CLAUDE_SDK_ENTRY;
+const { query } = sdkEntry
+  ? await import(pathToFileURL(sdkEntry).href)
+  : await import("@anthropic-ai/claude-agent-sdk");
 
 function fail(message) {
   process.stdout.write(JSON.stringify({ type: "result", subtype: "error_sidecar", is_error: true, result: message }) + "\n");
@@ -61,18 +74,32 @@ function makeInputStream() {
 
 const input = makeInputStream();
 
-function userMessage(text) {
+function userMessage(content) {
   return {
     type: "user",
-    message: { role: "user", content: [{ type: "text", text }] },
+    message: { role: "user", content },
     parent_tool_use_id: null,
     ...(sessionId ? { session_id: sessionId } : {}),
   };
 }
 
-const options = buildOptions(config);
+const options = config.catalog === true ? catalogOptions() : buildOptions(config);
 
 const run = query({ prompt: input, options });
+
+// Catalogue discovery is a short-lived control-plane request. It uses the
+// installed SDK/CLI itself, so new provider releases appear without a Bridge
+// code change. No user turn is submitted and the normal stream pump is skipped.
+if (config.catalog === true) {
+  try {
+    const models = await run.supportedModels();
+    process.stdout.write(JSON.stringify({ type: "model_catalog", models }) + "\n");
+    run.close();
+    process.exit(0);
+  } catch (error) {
+    fail(`Claude model catalogue error: ${error?.message ?? error}`);
+  }
+}
 
 // Control frames from Rust.
 const rl = createInterface({ input: process.stdin });
@@ -82,8 +109,12 @@ rl.on("line", (line) => {
   let frame;
   try { frame = JSON.parse(trimmed); } catch { return; }
   if (frame.type === "user") {
-    const text = frame?.message?.content?.map?.((part) => part?.text ?? "").join("") ?? "";
-    if (text) input.push(userMessage(text));
+    // Forward content blocks as-is: image attachments arrive as
+    // `[{type:"image",source:{...}}, …]` beside the text block. Flattening
+    // here would silently drop them — the exact failure image paste exists
+    // to remove. See input.mjs for the shapes this tolerates.
+    const blocks = userContentBlocks(frame);
+    if (blocks) input.push(userMessage(blocks));
   } else if (frame.type === "control_request" && frame?.request?.subtype === "interrupt") {
     void run.interrupt().catch(() => {});
   }

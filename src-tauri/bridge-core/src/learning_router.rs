@@ -1,0 +1,3072 @@
+//! Cost-and-quality routing that learns from durable worker outcomes.
+//!
+//! The learning layer ranks provider/model candidates, while [`crate::policy`]
+//! remains the non-bypassable authority for permissions, topology, worktrees,
+//! and budgets. Shadow mode is the default so recommendations can be measured
+//! before a workspace explicitly enables autonomous selection.
+
+use crate::{
+    delegation::{
+        DelegationRequest, Effort, TestStatus, WorkerResult, WorkerResultStatus, WorkerRole,
+    },
+    model::{AdapterDescriptor, CapabilityTier},
+    policy::{self, PolicyConfig, RestorationKind},
+    BridgeError,
+};
+use chrono::Utc;
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
+use uuid::Uuid;
+
+pub const ROUTER_SCHEMA_VERSION: u32 = 2;
+pub const MIN_SHADOW_OUTCOMES_FOR_AUTONOMY: i64 = 20;
+pub const LEGACY_GLOBAL_SCOPE: &str = "legacy:global";
+const PRIOR_WEIGHT: i64 = 4;
+
+/// The load-bearing learning constants, named in one place with their
+/// defaults, and readable per workspace from a `learning_tunables` row. A
+/// field outside its documented range falls back to the default — nonsense
+/// is never load-bearing. The confidence floor is deliberately absent: it is
+/// keyed to the named unknown-acceptance bucket, not a number to tune.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LearningTunables {
+    /// Completed shadow outcomes required before autonomous routing. 1..=1000.
+    pub min_shadow_outcomes_for_autonomy: i64,
+    /// Bayesian prior weight in predictions. 1..=100. Zero is not "no prior":
+    /// with no history it leaves nothing to divide by.
+    pub prior_weight: i64,
+    /// Exponential decay half-life for outcome history, in days. 1..=365.
+    pub decay_half_life_days: f64,
+    /// Rows older than this before the newest evidence are not evidence. 7..=730.
+    pub evidence_window_days: i64,
+    /// Canary traffic share, in buckets of 100. 1..=50.
+    pub canary_share_buckets: i64,
+}
+
+impl Default for LearningTunables {
+    fn default() -> Self {
+        Self {
+            min_shadow_outcomes_for_autonomy: MIN_SHADOW_OUTCOMES_FOR_AUTONOMY,
+            prior_weight: PRIOR_WEIGHT,
+            decay_half_life_days: DECAY_HALF_LIFE_DAYS,
+            evidence_window_days: EVIDENCE_WINDOW_DAYS,
+            canary_share_buckets: 20,
+        }
+    }
+}
+
+pub fn tunables(db: &Connection, workspace_id: &str) -> LearningTunables {
+    let defaults = LearningTunables::default();
+    let body: Option<String> = db
+        .query_row(
+            "SELECT body FROM learning_tunables WHERE workspace_id=?1",
+            params![workspace_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .ok()
+        .flatten();
+    let Some(body) = body else { return defaults };
+    let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&body) else {
+        return defaults;
+    };
+    fn in_range_i64(value: Option<&serde_json::Value>, low: i64, high: i64, fallback: i64) -> i64 {
+        value
+            .and_then(serde_json::Value::as_i64)
+            .filter(|value| (low..=high).contains(value))
+            .unwrap_or(fallback)
+    }
+    let half_life = parsed
+        .get("decayHalfLifeDays")
+        .and_then(serde_json::Value::as_f64)
+        .filter(|value| (1.0..=365.0).contains(value))
+        .unwrap_or(defaults.decay_half_life_days);
+    LearningTunables {
+        min_shadow_outcomes_for_autonomy: in_range_i64(
+            parsed.get("minShadowOutcomesForAutonomy"),
+            1,
+            1_000,
+            defaults.min_shadow_outcomes_for_autonomy,
+        ),
+        prior_weight: in_range_i64(parsed.get("priorWeight"), 1, 100, defaults.prior_weight),
+        decay_half_life_days: half_life,
+        evidence_window_days: in_range_i64(
+            parsed.get("evidenceWindowDays"),
+            7,
+            730,
+            defaults.evidence_window_days,
+        ),
+        canary_share_buckets: in_range_i64(
+            parsed.get("canaryShareBuckets"),
+            1,
+            50,
+            defaults.canary_share_buckets,
+        ),
+    }
+}
+/// Decay is anchored to the newest outcome, not the wall clock: an idle
+/// workspace keeps its history, while inside an active one fresh evidence
+/// outweighs stale volume. Providers change models in place; a candidate that
+/// was great in March is not evidence about August.
+/// Outcome confidence is three deterministic buckets, not a score. Only the
+/// test-backed bucket is knowledge; unknown acceptance is named as unknown so
+/// no gate can quietly treat it as known. The bounded evaluator, when it
+/// exists, is the only thing allowed to mint a real number between these.
+pub const CONFIDENCE_TEST_BACKED_BPS: i64 = 9_500;
+pub const CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS: i64 = 7_000;
+pub const CONFIDENCE_NO_SIGNAL_BPS: i64 = 4_000;
+
+/// Which number the learner uses for one outcome.
+///
+/// The three constants are still the floor, and a workspace with no evaluator
+/// keeps exactly the behaviour it had. Where a bounded evaluation completed,
+/// its confidence replaces the middle constant, which is the whole point of
+/// running one. A test-backed outcome is the exception: a passing or failing
+/// test is knowledge, and a judge's opinion of it is not, so no verdict may
+/// move that row in either direction.
+pub const fn resolved_confidence_bps(deterministic_bps: i64, evaluated_bps: Option<i64>) -> i64 {
+    match evaluated_bps {
+        Some(evaluated) if deterministic_bps != CONFIDENCE_TEST_BACKED_BPS => evaluated,
+        _ => deterministic_bps,
+    }
+}
+
+/// The confidence of the newest completed bounded evaluation for a decision.
+/// Queued, running, failed, and skipped evaluations are not evidence and are
+/// invisible here.
+pub fn evaluated_confidence_bps(
+    db: &Connection,
+    decision_id: &str,
+) -> Result<Option<i64>, BridgeError> {
+    db.query_row(
+        "SELECT confidence_bps FROM routing_evaluations
+         WHERE decision_id=?1 AND evaluator_kind='model_based' AND status='completed'
+           AND confidence_bps IS NOT NULL
+         ORDER BY created_at DESC LIMIT 1",
+        params![decision_id],
+        |row| row.get::<_, Option<i64>>(0),
+    )
+    .optional()
+    .map(Option::flatten)
+    .map_err(BridgeError::from)
+}
+
+/// Fold a freshly recorded verdict into the outcome the online histories read.
+/// The deterministic row keeps the constant the outcome earned on its own, so
+/// this stays the same answer however many times it runs.
+pub fn refresh_outcome_confidence(
+    db: &Connection,
+    decision_id: &str,
+) -> Result<(), BridgeError> {
+    let deterministic_bps: Option<i64> = db
+        .query_row(
+            "SELECT confidence_bps FROM routing_evaluations
+             WHERE decision_id=?1 AND evaluator_kind='deterministic'
+             ORDER BY created_at DESC LIMIT 1",
+            params![decision_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    let Some(deterministic_bps) = deterministic_bps else {
+        return Ok(());
+    };
+    let resolved = resolved_confidence_bps(deterministic_bps, evaluated_confidence_bps(db, decision_id)?);
+    db.execute(
+        "UPDATE router_outcomes SET confidence_bps=?2 WHERE decision_id=?1",
+        params![decision_id, resolved],
+    )?;
+    Ok(())
+}
+pub const DECAY_HALF_LIFE_DAYS: f64 = 30.0;
+pub const EVIDENCE_WINDOW_DAYS: i64 = 120;
+
+pub(crate) fn decay_weight(
+    recorded_at: &str,
+    anchor: chrono::DateTime<chrono::Utc>,
+    half_life_days: f64,
+    window_days: i64,
+) -> Option<f64> {
+    let recorded = chrono::DateTime::parse_from_rfc3339(recorded_at)
+        .ok()?
+        .with_timezone(&chrono::Utc);
+    let age_days = (anchor - recorded).num_seconds() as f64 / 86_400.0;
+    if age_days <= 0.0 {
+        return Some(1.0);
+    }
+    if age_days > window_days as f64 {
+        return None;
+    }
+    Some(0.5_f64.powf(age_days / half_life_days))
+}
+/// Sessions that can still report *current* quota/context. Ended, ready, and
+/// idle rows are stale snapshots: missing capacity is unknown, which stays
+/// eligible rather than permanently excluding the harness. This is the same
+/// live set the workspace-status rollup uses in live_turn.rs; the two must
+/// not drift.
+const LIVE_CAPACITY_STATUSES: &str =
+    "'working','waiting','starting','checkpointing','resuming','warm','restored'";
+
+/// Stable learning-policy key for a workspace. Direct chats have no workspace
+/// and must not share a NULL/`legacy:global` bucket.
+pub fn workspace_learning_scope(workspace_id: &str) -> Result<String, BridgeError> {
+    let workspace_id = workspace_id.trim();
+    if workspace_id.is_empty() {
+        return Err(BridgeError::Invalid(
+            "learning scope requires a workspace id".into(),
+        ));
+    }
+    Ok(format!("workspace:{workspace_id}"))
+}
+
+pub fn workspace_id_from_scope(scope: &str) -> Result<&str, BridgeError> {
+    scope
+        .strip_prefix("workspace:")
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| {
+            BridgeError::Invalid(format!("learning scope {scope} is not a workspace scope"))
+        })
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum RouterMode {
+    Disabled,
+    #[default]
+    Shadow,
+    Autonomous,
+}
+
+impl RouterMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Disabled => "disabled",
+            Self::Shadow => "shadow",
+            Self::Autonomous => "autonomous",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RouterPreferences {
+    pub mode: RouterMode,
+    pub minimum_pass_bps: u16,
+    #[serde(default)]
+    pub pinned_harness: Option<String>,
+    #[serde(default)]
+    pub pinned_model: Option<String>,
+    #[serde(default)]
+    pub excluded_harnesses: Vec<String>,
+    #[serde(default)]
+    pub excluded_models: Vec<String>,
+}
+
+impl Default for RouterPreferences {
+    fn default() -> Self {
+        Self {
+            mode: RouterMode::Shadow,
+            minimum_pass_bps: 6_500,
+            pinned_harness: None,
+            pinned_model: None,
+            excluded_harnesses: Vec::new(),
+            excluded_models: Vec::new(),
+        }
+    }
+}
+
+impl RouterPreferences {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.minimum_pass_bps > 10_000 {
+            return Err("minimumPassBps cannot exceed 10000".into());
+        }
+        for (field, value) in [
+            ("pinnedHarness", self.pinned_harness.as_deref()),
+            ("pinnedModel", self.pinned_model.as_deref()),
+        ] {
+            if value.is_some_and(|value| value.trim().is_empty()) {
+                return Err(format!("{field} cannot be empty"));
+            }
+        }
+        if self
+            .excluded_harnesses
+            .iter()
+            .any(|value| value.trim().is_empty())
+            || self
+                .excluded_models
+                .iter()
+                .any(|value| value.trim().is_empty())
+        {
+            return Err("router exclusions cannot contain empty values".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub enum CandidateExclusion {
+    HarnessUnavailable,
+    MissingCapability,
+    UnsupportedPlatform,
+    PermissionCeiling,
+    QuotaExhausted,
+    ContextExhausted,
+    RiskCeiling,
+    BudgetCeiling,
+    UserExcludedHarness,
+    UserExcludedModel,
+    PinMismatch,
+    BelowQualityFloor,
+    SameAsImplementer,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RouteCandidate {
+    pub harness: String,
+    pub model: String,
+    pub tier: CapabilityTier,
+    pub effort: Effort,
+    pub sandbox: String,
+    pub capabilities: Vec<String>,
+    pub available: bool,
+    pub platform_supported: bool,
+    pub permission_eligible: bool,
+    pub quota_available: bool,
+    pub context_available: bool,
+    pub risk_eligible: bool,
+    pub capability_units: i64,
+    pub default_for_tier: bool,
+}
+
+impl RouteCandidate {
+    pub fn key(&self) -> String {
+        format!("{}:{}", self.harness, self.model)
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct HistoricalOutcome {
+    pub samples: i64,
+    pub successes: i64,
+    pub runtime_ms_total: i64,
+    pub normalized_cost_total: i64,
+    pub retries: i64,
+    pub human_interventions: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CandidatePrediction {
+    pub pass_probability_bps: u16,
+    pub latency_ms: i64,
+    pub normalized_quota_cost: i64,
+    pub retry_risk_bps: u16,
+    pub samples: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CandidateEvaluation {
+    pub candidate: RouteCandidate,
+    pub exclusions: Vec<CandidateExclusion>,
+    pub prediction: CandidatePrediction,
+    pub expected_cost_score: i64,
+}
+
+impl CandidateEvaluation {
+    pub fn eligible(&self) -> bool {
+        self.exclusions.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RouterDecision {
+    pub schema_version: u32,
+    pub id: String,
+    pub workspace_id: String,
+    pub parent_session_id: String,
+    pub turn_id: String,
+    #[serde(default)]
+    pub trace_id: Option<String>,
+    pub task_family: String,
+    #[serde(default)]
+    pub task_fingerprint: String,
+    #[serde(default)]
+    pub repository_revision: Option<String>,
+    #[serde(default)]
+    pub profile_version: Option<i64>,
+    #[serde(default)]
+    pub profile_purpose: Option<String>,
+    #[serde(default = "default_policy_version")]
+    pub policy_version: i64,
+    #[serde(default, skip_serializing_if = "serde_json::Value::is_null")]
+    pub catalog_snapshot: serde_json::Value,
+    pub mode: RouterMode,
+    pub manual_override: bool,
+    pub baseline_candidate: Option<String>,
+    pub recommended_candidate: Option<String>,
+    pub executed_candidate: Option<String>,
+    pub explanation: String,
+    pub candidates: Vec<CandidateEvaluation>,
+    #[serde(default)]
+    pub actual_provider: Option<String>,
+    #[serde(default)]
+    pub actual_model: Option<String>,
+    #[serde(default)]
+    pub actual_effort: Option<Effort>,
+    pub created_at: String,
+}
+
+fn default_policy_version() -> i64 {
+    1
+}
+
+/// Serialize a value with object keys in canonical (sorted) order.
+///
+/// `serde_json::Map` keeps insertion order whenever *any* workspace crate
+/// enables serde_json's `preserve_order` — the ACP protocol crate does — and
+/// sorts keys when none does. Bytes built from map iteration are therefore a
+/// build artifact, not a stable identity. Fingerprints and catalog hashes are
+/// lookup keys persisted across upgrades, so they hash canonical bytes: the
+/// sorted order every pre-existing row was hashed under.
+fn canonical_json(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(object) => {
+            let mut entries: Vec<(&String, &serde_json::Value)> = object.iter().collect();
+            entries.sort_by(|(left, _), (right, _)| left.cmp(right));
+            serde_json::Value::Object(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| (key.clone(), canonical_json(value)))
+                    .collect(),
+            )
+        }
+        serde_json::Value::Array(items) => {
+            serde_json::Value::Array(items.iter().map(canonical_json).collect())
+        }
+        other => other.clone(),
+    }
+}
+
+fn task_fingerprint(request: &DelegationRequest) -> String {
+    let body = serde_json::json!({
+        "role": request.role,
+        "acceptanceCriteria": request.acceptance_criteria,
+        "relevantFiles": request.relevant_files,
+        "writeMode": request.write_mode,
+        "capabilityTier": request.capability_tier,
+        "verification": request.verification,
+        "outputContract": request.output_contract,
+    });
+    format!("{:x}", Sha256::digest(canonical_json(&body).to_string().as_bytes()))
+}
+
+fn repository_revision(db: &Connection, session_id: &str) -> Result<Option<String>, BridgeError> {
+    let state = crate::store::repository_state_for_session(db, session_id)?;
+    Ok(state
+        .get("head")
+        .and_then(serde_json::Value::as_str)
+        .map(|head| {
+            format!(
+                "{}:{}",
+                head,
+                state
+                    .get("dirtyHash")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("unknown")
+            )
+        }))
+}
+
+fn active_policy(
+    db: &Connection,
+    workspace_id: &str,
+    fingerprint: &str,
+) -> Result<(i64, BTreeMap<String, String>), BridgeError> {
+    let scope = workspace_learning_scope(workspace_id)?;
+    let Some((mut version, status, predecessor, mut weights)) = db
+        .query_row(
+            "SELECT version,status,predecessor,weights FROM routing_policies
+             WHERE learning_scope=?1 AND status IN ('active','canary')
+             ORDER BY CASE status WHEN 'canary' THEN 0 ELSE 1 END,version DESC LIMIT 1",
+            params![scope],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                    row.get::<_, String>(3)?,
+                ))
+            },
+        )
+        .optional()?
+    else {
+        return Ok((0, BTreeMap::new()));
+    };
+    let canary_share = match workspace_id_from_scope(scope.as_str()) {
+        Ok(workspace_id) => tunables(db, workspace_id).canary_share_buckets as u8,
+        Err(_) => 20,
+    };
+    if status == "canary" && canary_bucket(fingerprint) >= canary_share {
+        if let Some(predecessor) = predecessor {
+            (version, weights) = db.query_row(
+                "SELECT version,weights FROM routing_policies WHERE version=?1 AND learning_scope=?2",
+                params![predecessor, scope],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )?;
+        }
+    }
+    let value: serde_json::Value = serde_json::from_str(&weights).unwrap_or_default();
+    let preferred = value
+        .get("preferredCandidates")
+        .and_then(serde_json::Value::as_object)
+        .map(|entries| {
+            entries
+                .iter()
+                .filter_map(|(key, value)| value.as_str().map(|value| (key.clone(), value.into())))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok((version, preferred))
+}
+
+fn canary_bucket(fingerprint: &str) -> u8 {
+    let digest = Sha256::digest(fingerprint.as_bytes());
+    (u16::from_be_bytes([digest[0], digest[1]]) % 100) as u8
+}
+
+#[derive(Debug, Clone)]
+pub struct RoutedDelegation {
+    pub request: DelegationRequest,
+    pub decision: RouterDecision,
+}
+
+#[derive(Debug, Clone)]
+pub struct EvaluationInput {
+    pub candidates: Vec<RouteCandidate>,
+    pub preferences: RouterPreferences,
+    pub histories: BTreeMap<String, HistoricalOutcome>,
+    pub required_capabilities: Vec<String>,
+    pub remaining_capability_units: i64,
+    pub budget_preference: Option<String>,
+    pub latency_preference: Option<String>,
+    pub prior_weight: i64,
+}
+
+fn tier_prior(tier: CapabilityTier) -> (u16, i64) {
+    match tier {
+        CapabilityTier::Fast => (6_500, 10_000),
+        CapabilityTier::Standard => (7_800, 20_000),
+        CapabilityTier::Strong => (8_600, 30_000),
+    }
+}
+
+fn predict(
+    candidate: &RouteCandidate,
+    history: &HistoricalOutcome,
+    prior_weight: i64,
+) -> CandidatePrediction {
+    let (prior_pass, prior_latency) = tier_prior(candidate.tier);
+    // Never zero. The tunable range already refuses a zero prior, and routing
+    // is not the place to discover that a future caller disagreed.
+    let denominator = (prior_weight + history.samples).max(1);
+    let pass_probability_bps =
+        ((i64::from(prior_pass) * prior_weight + history.successes * 10_000) / denominator) as u16;
+    let latency_ms = (prior_latency * prior_weight + history.runtime_ms_total) / denominator;
+    let prior_cost = candidate.capability_units * 1_000;
+    let normalized_quota_cost =
+        (prior_cost * prior_weight + history.normalized_cost_total) / denominator;
+    let retry_risk_bps = (((10_000 - i64::from(prior_pass)) * prior_weight
+        + history.retries * 10_000)
+        / denominator) as u16;
+    CandidatePrediction {
+        pass_probability_bps,
+        latency_ms,
+        normalized_quota_cost,
+        retry_risk_bps,
+        samples: history.samples,
+    }
+}
+
+pub fn evaluate(input: EvaluationInput) -> Vec<CandidateEvaluation> {
+    let excluded_harnesses = input
+        .preferences
+        .excluded_harnesses
+        .iter()
+        .map(|value| value.to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    let excluded_models = input
+        .preferences
+        .excluded_models
+        .iter()
+        .map(|value| value.to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    let required = input
+        .required_capabilities
+        .iter()
+        .map(|value| value.to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+    let mut evaluations = input
+        .candidates
+        .into_iter()
+        .map(|candidate| {
+            let mut exclusions = BTreeSet::new();
+            if !candidate.available {
+                exclusions.insert(CandidateExclusion::HarnessUnavailable);
+            }
+            let capabilities = candidate
+                .capabilities
+                .iter()
+                .map(|value| value.to_ascii_lowercase())
+                .collect::<BTreeSet<_>>();
+            if !required.is_subset(&capabilities) {
+                exclusions.insert(CandidateExclusion::MissingCapability);
+            }
+            for (eligible, exclusion) in [
+                (
+                    candidate.platform_supported,
+                    CandidateExclusion::UnsupportedPlatform,
+                ),
+                (
+                    candidate.permission_eligible,
+                    CandidateExclusion::PermissionCeiling,
+                ),
+                (
+                    candidate.quota_available,
+                    CandidateExclusion::QuotaExhausted,
+                ),
+                (
+                    candidate.context_available,
+                    CandidateExclusion::ContextExhausted,
+                ),
+                (candidate.risk_eligible, CandidateExclusion::RiskCeiling),
+                (
+                    candidate.capability_units <= input.remaining_capability_units,
+                    CandidateExclusion::BudgetCeiling,
+                ),
+            ] {
+                if !eligible {
+                    exclusions.insert(exclusion);
+                }
+            }
+            if excluded_harnesses.contains(&candidate.harness.to_ascii_lowercase()) {
+                exclusions.insert(CandidateExclusion::UserExcludedHarness);
+            }
+            if excluded_models.contains(&candidate.model.to_ascii_lowercase()) {
+                exclusions.insert(CandidateExclusion::UserExcludedModel);
+            }
+            if input
+                .preferences
+                .pinned_harness
+                .as_ref()
+                .is_some_and(|pin| !candidate.harness.eq_ignore_ascii_case(pin))
+                || input
+                    .preferences
+                    .pinned_model
+                    .as_ref()
+                    .is_some_and(|pin| !candidate.model.eq_ignore_ascii_case(pin))
+            {
+                exclusions.insert(CandidateExclusion::PinMismatch);
+            }
+            let prediction = predict(
+                &candidate,
+                input
+                    .histories
+                    .get(&candidate.key())
+                    .unwrap_or(&HistoricalOutcome::default()),
+                input.prior_weight,
+            );
+            if prediction.pass_probability_bps < input.preferences.minimum_pass_bps {
+                exclusions.insert(CandidateExclusion::BelowQualityFloor);
+            }
+            let pass = i64::from(prediction.pass_probability_bps.max(1));
+            let cost_score = prediction.normalized_quota_cost * 10_000 / pass;
+            let cost_score = match input.budget_preference.as_deref() {
+                Some("economy") => cost_score.saturating_mul(2),
+                Some("quality") => cost_score / 2,
+                _ => cost_score,
+            };
+            let latency_score = match input.latency_preference.as_deref() {
+                Some("fast") => prediction.latency_ms / 100,
+                Some("patient") => prediction.latency_ms / 5_000,
+                _ => prediction.latency_ms / 1_000,
+            };
+            let quality_score = if input.budget_preference.as_deref() == Some("quality") {
+                (10_000 - pass).saturating_mul(10)
+            } else {
+                0
+            };
+            let expected_cost_score =
+                cost_score + latency_score + quality_score + i64::from(prediction.retry_risk_bps);
+            CandidateEvaluation {
+                candidate,
+                exclusions: exclusions.into_iter().collect(),
+                prediction,
+                expected_cost_score,
+            }
+        })
+        .collect::<Vec<_>>();
+    evaluations.sort_by(|left, right| {
+        left.expected_cost_score
+            .cmp(&right.expected_cost_score)
+            .then_with(|| {
+                right
+                    .candidate
+                    .default_for_tier
+                    .cmp(&left.candidate.default_for_tier)
+            })
+            .then_with(|| left.candidate.harness.cmp(&right.candidate.harness))
+            .then_with(|| left.candidate.model.cmp(&right.candidate.model))
+    });
+    evaluations
+}
+
+fn tier_rank(tier: CapabilityTier) -> u8 {
+    match tier {
+        CapabilityTier::Fast => 0,
+        CapabilityTier::Standard => 1,
+        CapabilityTier::Strong => 2,
+    }
+}
+
+pub fn sandbox_mode_for(request: &DelegationRequest) -> crate::model::SandboxMode {
+    use crate::model::SandboxMode;
+    match request.write_mode {
+        crate::delegation::WriteMode::ReadOnly => SandboxMode::ReadOnly,
+        crate::delegation::WriteMode::Shared | crate::delegation::WriteMode::Isolated => {
+            SandboxMode::WorkspaceWrite
+        }
+        crate::delegation::WriteMode::Full => SandboxMode::DangerFullAccess,
+    }
+}
+
+fn sandbox_for(request: &DelegationRequest) -> String {
+    sandbox_mode_for(request).as_str().into()
+}
+
+fn build_candidates(
+    descriptors: &[AdapterDescriptor],
+    request: &DelegationRequest,
+    unavailable_by_harness: &BTreeMap<String, (bool, bool)>,
+) -> Vec<RouteCandidate> {
+    let minimum_rank = tier_rank(request.capability_tier);
+    let sandbox_mode = sandbox_mode_for(request);
+    descriptors
+        .iter()
+        .flat_map(|descriptor| {
+            // A harness that cannot start in the requested sandbox mode is not a
+            // candidate at all: reserving it would create a worker session that
+            // the adapter is guaranteed to reject at startup.
+            let sandbox_supported = descriptor.supports_sandbox(sandbox_mode);
+            descriptor.models.iter().filter_map(move |model| {
+                if tier_rank(model.tier) < minimum_rank {
+                    return None;
+                }
+                let (quota_available, context_available) = unavailable_by_harness
+                    .get(&descriptor.id)
+                    .copied()
+                    .unwrap_or((true, true));
+                Some(RouteCandidate {
+                    harness: descriptor.id.clone(),
+                    model: model.id.clone(),
+                    tier: model.tier,
+                    effort: request.effort,
+                    sandbox: sandbox_for(request),
+                    capabilities: descriptor.capabilities.clone(),
+                    available: descriptor.available,
+                    platform_supported: true,
+                    permission_eligible: sandbox_supported,
+                    quota_available,
+                    context_available,
+                    risk_eligible: true,
+                    capability_units: policy::capability_units(
+                        model.tier,
+                        request.effort,
+                        RestorationKind::Fresh,
+                        false,
+                    ),
+                    default_for_tier: model.default_for_tier,
+                })
+            })
+        })
+        .collect()
+}
+
+fn baseline_key(descriptors: &[AdapterDescriptor], request: &DelegationRequest) -> Option<String> {
+    let harness = request.runtime_harness();
+    let descriptor = descriptors.iter().find(|item| item.id == harness)?;
+    let model = request
+        .model
+        .as_ref()
+        .and_then(|hint| descriptor.models.iter().find(|model| model.id == *hint))
+        .filter(|model| model.tier == request.capability_tier)
+        .or_else(|| {
+            descriptor
+                .models
+                .iter()
+                .find(|model| model.tier == request.capability_tier && model.default_for_tier)
+        })?;
+    Some(format!("{}:{}", descriptor.id, model.id))
+}
+
+fn candidate_for_key<'a>(
+    evaluations: &'a [CandidateEvaluation],
+    key: &str,
+) -> Option<&'a CandidateEvaluation> {
+    evaluations.iter().find(|item| item.candidate.key() == key)
+}
+
+pub fn route(
+    db: &Connection,
+    parent_session_id: &str,
+    turn_id: &str,
+    request: &DelegationRequest,
+    descriptors: &[AdapterDescriptor],
+) -> Result<RoutedDelegation, BridgeError> {
+    let (workspace_id, trace_id): (Option<String>, Option<String>) = db.query_row(
+        "SELECT workspace_id,trace_id FROM sessions WHERE id=?1",
+        params![parent_session_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let workspace_id = workspace_id
+        .map(|id| id.trim().to_owned())
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| {
+            BridgeError::Invalid(
+                "learning router cannot route a session without a workspace; direct chats are excluded from policy learning".into(),
+            )
+        })?;
+    let fingerprint = task_fingerprint(request);
+    let preferences = load_preferences(db, &workspace_id)?;
+    let (policy_version, preferred_candidates) = active_policy(db, &workspace_id, &fingerprint)?;
+    let budget = policy::load_request_budget(db, &workspace_id, turn_id)?;
+    let remaining =
+        PolicyConfig::default().max_capability_units_per_turn - budget.capability_units_used;
+    let resolved_profile = if request.harness.is_none() && request.model.is_none() {
+        crate::model_profiles::resolve_for_role(db, descriptors, request.role)?
+    } else {
+        None
+    };
+    let mut profiled_request = request.clone();
+    if let Some(profile) = &resolved_profile {
+        profiled_request.effort = profile.effort;
+    }
+    let availability = harness_capacity(db, &workspace_id)?;
+    let candidates = build_candidates(descriptors, &profiled_request, &availability);
+    let histories = load_histories(db, &workspace_id, policy::role_name(request.role))?;
+    let workspace_tunables = tunables(db, &workspace_id);
+    let required_capabilities = vec!["tools".into(), "commands".into()];
+    let mut evaluations = evaluate(EvaluationInput {
+        candidates,
+        preferences: preferences.clone(),
+        histories,
+        required_capabilities,
+        remaining_capability_units: remaining,
+        budget_preference: resolved_profile
+            .as_ref()
+            .and_then(|profile| profile.budget_preference.clone()),
+        latency_preference: resolved_profile
+            .as_ref()
+            .and_then(|profile| profile.latency_preference.clone()),
+        prior_weight: workspace_tunables.prior_weight,
+    });
+    let implementer_family: Option<String> = if request.role == WorkerRole::Verification {
+        db.query_row(
+            "SELECT implementer_family FROM eval_attempts WHERE session_id=?1 AND status IN ('verifying','changes_requested') ORDER BY started_at DESC LIMIT 1",
+            params![parent_session_id],
+            |row| row.get(0),
+        ).optional()?.flatten()
+    } else {
+        None
+    };
+    if let Some(implementer_family) = implementer_family.as_deref() {
+        for evaluation in &mut evaluations {
+            if evaluation
+                .candidate
+                .harness
+                .eq_ignore_ascii_case(implementer_family)
+            {
+                evaluation
+                    .exclusions
+                    .push(CandidateExclusion::SameAsImplementer);
+                evaluation.exclusions.sort();
+                evaluation.exclusions.dedup();
+            }
+        }
+    }
+    let profile_locked = resolved_profile
+        .as_ref()
+        .is_some_and(|profile| profile.pinned || !profile.learning_enabled);
+    let profile_baseline = resolved_profile
+        .as_ref()
+        .map(|profile| format!("{}:{}", profile.provider, profile.model))
+        .filter(|key| candidate_for_key(&evaluations, key).is_some());
+    let baseline = profile_baseline.or_else(|| baseline_key(descriptors, request));
+    // Only role families are published as preferences, so only role families
+    // are consulted here. The fingerprint recurs in exactly one situation — a
+    // retry of the same task — and that is where escalation belongs: after a
+    // recorded failure, prefer sideways before spending a tier.
+    let policy_preference = preferred_candidates
+        .get(policy::role_name(request.role))
+        .filter(|key| {
+            candidate_for_key(&evaluations, key).is_some_and(CandidateEvaluation::eligible)
+        })
+        .cloned();
+    // The *latest* outcome for this task, not the latest failure: a later
+    // success means the task is no longer failing, and steering away from a
+    // candidate that has since worked would outlive the reason for it.
+    let failed_candidate: Option<String> = db
+        .query_row(
+            "SELECT o.candidate, o.succeeded
+             FROM router_outcomes o JOIN router_decisions d ON d.id=o.decision_id
+             WHERE d.workspace_id=?1 AND d.task_fingerprint=?2
+             ORDER BY o.rowid DESC LIMIT 1",
+            params![workspace_id, fingerprint],
+            |row| Ok((row.get::<_, String>(0)?, row.get::<_, bool>(1)?)),
+        )
+        .optional()?
+        .and_then(|(candidate, succeeded)| (!succeeded).then_some(candidate));
+    let retry_escalation = failed_candidate
+        .as_deref()
+        .and_then(|key| candidate_for_key(&evaluations, key))
+        .and_then(|failed| next_escalation(&failed.candidate, &evaluations))
+        .map(|candidate| candidate.key());
+    let recommendation = if profile_locked {
+        baseline
+            .as_ref()
+            .filter(|key| {
+                candidate_for_key(&evaluations, key).is_some_and(CandidateEvaluation::eligible)
+            })
+            .cloned()
+    } else {
+        retry_escalation.or(policy_preference).or_else(|| {
+            evaluations
+                .iter()
+                .find(|candidate| candidate.eligible())
+                .map(|candidate| candidate.candidate.key())
+        })
+    };
+    let manual_override = request.harness.is_some() || request.model.is_some();
+    let independent_verification = implementer_family.is_some();
+    let eligible_manual_baseline = baseline.as_deref().filter(|key| {
+        candidate_for_key(&evaluations, key).is_some_and(CandidateEvaluation::eligible)
+    });
+    let executed =
+        if independent_verification && manual_override && eligible_manual_baseline.is_some() {
+            baseline.clone()
+        } else if independent_verification {
+            recommendation.clone()
+        } else if manual_override || profile_locked || preferences.mode != RouterMode::Autonomous {
+            baseline.clone()
+        } else {
+            recommendation.clone()
+        };
+    let explanation = if independent_verification
+        && manual_override
+        && eligible_manual_baseline.is_some()
+    {
+        format!(
+            "Manual different-family verifier {} retained",
+            baseline.as_deref().unwrap_or("unknown")
+        )
+    } else if independent_verification {
+        recommendation.as_ref().map(|candidate| format!("Independent verification requires a different harness family; selected {candidate}"))
+            .unwrap_or_else(|| "No different-family verifier satisfies the deterministic route constraints".into())
+    } else if manual_override {
+        "Manual harness/model override retained and recorded".to_owned()
+    } else if profile_locked {
+        "Pinned or learning-disabled role profile retained as a deterministic route constraint"
+            .to_owned()
+    } else {
+        match preferences.mode {
+            RouterMode::Disabled => "Learning router disabled; baseline route retained".into(),
+            RouterMode::Shadow => match (&recommendation, &baseline) {
+                (Some(recommended), Some(baseline)) if recommended != baseline => format!(
+                    "Shadow recommendation {recommended}; baseline {baseline} retained"
+                ),
+                (Some(recommended), _) => format!("Shadow recommendation matches {recommended}"),
+                (None, _) => "No candidate met the quality and safety constraints; baseline retained in shadow mode".into(),
+            },
+            RouterMode::Autonomous => recommendation
+                .as_ref()
+                .map(|candidate| format!("Autonomous route selected {candidate}"))
+                .unwrap_or_else(|| "No candidate met the quality and safety constraints".into()),
+        }
+    };
+    let mut decision = RouterDecision {
+        schema_version: ROUTER_SCHEMA_VERSION,
+        id: Uuid::new_v4().to_string(),
+        workspace_id: workspace_id.clone(),
+        parent_session_id: parent_session_id.into(),
+        turn_id: turn_id.into(),
+        trace_id,
+        task_family: policy::role_name(request.role).into(),
+        task_fingerprint: fingerprint,
+        repository_revision: repository_revision(db, parent_session_id)?,
+        profile_version: resolved_profile
+            .as_ref()
+            .map(|profile| profile.profile_version),
+        profile_purpose: resolved_profile
+            .as_ref()
+            .map(|profile| profile.purpose.as_str().to_owned()),
+        policy_version,
+        catalog_snapshot: serde_json::to_value(descriptors)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?,
+        mode: preferences.mode,
+        manual_override,
+        baseline_candidate: baseline,
+        recommended_candidate: recommendation,
+        executed_candidate: executed.clone(),
+        explanation,
+        candidates: evaluations,
+        actual_provider: None,
+        actual_model: None,
+        actual_effort: None,
+        created_at: Utc::now().to_rfc3339(),
+    };
+    // Persisted once, at the bottom, after any substitution below has had a
+    // chance to update `executed_candidate` to the candidate that actually
+    // runs. `record_worker_outcome` later reads this column straight from
+    // the table to attribute the worker's outcome — persisting it here, still
+    // showing the original (unusable) pick, let a substituted harness's
+    // result train the wrong candidate's history.
+    let mut routed = request.clone();
+    if let Some(key) = executed {
+        let mut selected = candidate_for_key(&decision.candidates, &key)
+            .cloned()
+            .ok_or_else(|| BridgeError::Invalid(format!("router selected unknown candidate {key}")))?;
+        // A permission ceiling is a hard incompatibility, not a preference. A
+        // manual or pinned route must fail here with something the caller can
+        // act on rather than reserving a worker the adapter will refuse.
+        if selected
+            .exclusions
+            .contains(&CandidateExclusion::PermissionCeiling)
+        {
+            let sandbox = sandbox_mode_for(request);
+            let alternatives = descriptors
+                .iter()
+                .filter(|descriptor| {
+                    descriptor.available
+                        && !descriptor.models.is_empty()
+                        && descriptor.supports_sandbox(sandbox)
+                })
+                .map(|descriptor| descriptor.id.as_str())
+                .collect::<Vec<_>>();
+            persist_decision(db, &decision)?;
+            return Err(BridgeError::Invalid(format!(
+                "{} cannot run a {} worker, so this delegation was not started. {}",
+                selected.candidate.harness,
+                sandbox.as_str(),
+                if alternatives.is_empty() {
+                    "No installed harness supports this sandbox mode; change the write mode or install another harness.".to_owned()
+                } else {
+                    format!(
+                        "Re-delegate with a compatible harness ({}) or change the write mode.",
+                        alternatives.join(", ")
+                    )
+                }
+            )));
+        }
+        // A harness that is not installed, or that Bridge already knows is out
+        // of quota or context, cannot serve this request no matter which
+        // router mode chose it — unlike a cost/quality preference, a caller
+        // cannot override a supply gap by asking nicely. Manual overrides and
+        // locked profiles used to skip straight past this and reserve a
+        // worker the adapter registry would refuse to start; substitute the
+        // best eligible alternative this workspace has installed, and only
+        // fail when there genuinely isn't one, so a single-harness setup gets
+        // a real answer instead of a launch failure two steps later.
+        let hard_supply_gap = selected.exclusions.iter().any(|exclusion| {
+            matches!(
+                exclusion,
+                CandidateExclusion::HarnessUnavailable
+                    | CandidateExclusion::QuotaExhausted
+                    | CandidateExclusion::ContextExhausted
+            )
+        });
+        if hard_supply_gap {
+            if let Some(alternative) = decision
+                .candidates
+                .iter()
+                .find(|candidate| candidate.eligible())
+                .cloned()
+            {
+                let _ = crate::store::event(
+                    db,
+                    "router",
+                    "router.harness_substituted",
+                    parent_session_id,
+                    &format!(
+                        "{} was not usable ({:?}); substituted {} for this delegation",
+                        selected.candidate.key(),
+                        selected.exclusions,
+                        alternative.candidate.key(),
+                    ),
+                );
+                decision.executed_candidate = Some(alternative.candidate.key());
+                selected = alternative;
+            } else {
+                persist_decision(db, &decision)?;
+                return Err(BridgeError::Invalid(format!(
+                    "{} cannot serve this delegation right now ({:?}), and no other installed harness is eligible either. Install another provider, or wait for quota to recover.",
+                    selected.candidate.harness, selected.exclusions,
+                )));
+            }
+        }
+        routed.harness = Some(selected.candidate.harness.clone());
+        routed.model = Some(selected.candidate.model.clone());
+        routed.capability_tier = selected.candidate.tier;
+        routed.effort = selected.candidate.effort;
+    } else if preferences.mode == RouterMode::Autonomous || independent_verification {
+        let sandbox = sandbox_mode_for(request);
+        let sandbox_blocked_every_candidate = !decision.candidates.is_empty()
+            && decision.candidates.iter().all(|candidate| {
+                candidate
+                    .exclusions
+                    .contains(&CandidateExclusion::PermissionCeiling)
+            });
+        persist_decision(db, &decision)?;
+        return Err(BridgeError::Invalid(if sandbox_blocked_every_candidate {
+            format!(
+                "no installed harness can run a {} worker, so this delegation was not started; change the write mode or install a compatible harness",
+                sandbox.as_str()
+            )
+        } else {
+            "learning router found no eligible route under the required constraints".into()
+        }));
+    }
+    persist_decision(db, &decision)?;
+    Ok(RoutedDelegation {
+        request: routed,
+        decision,
+    })
+}
+
+fn harness_capacity(
+    db: &Connection,
+    workspace_id: &str,
+) -> Result<BTreeMap<String, (bool, bool)>, BridgeError> {
+    // Missing or stale observations are unknown, which stays eligible.
+    // Only a live session in this workspace can mark the harness exhausted —
+    // and any one live session at 100 is enough: electing the newest row let
+    // a just-starting session with no reading yet mask a sibling that is
+    // exhausted right now.
+    let sql = format!(
+        "SELECT harness,
+                MIN(CASE WHEN COALESCE(usage_percent,0) < 100 THEN 1 ELSE 0 END),
+                MIN(CASE WHEN COALESCE(context_percent,0) < 100 THEN 1 ELSE 0 END)
+         FROM sessions
+         WHERE workspace_id=?1
+           AND ended_at IS NULL
+           AND status IN ({LIVE_CAPACITY_STATUSES})
+         GROUP BY harness"
+    );
+    let mut statement = db.prepare(&sql)?;
+    let rows = statement.query_map(params![workspace_id], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+        ))
+    })?;
+    let mut result = BTreeMap::new();
+    for row in rows {
+        let (harness, usage_ok, context_ok) = row?;
+        result.insert(harness, (usage_ok == 1, context_ok == 1));
+    }
+    // A quota cooldown outlives the session that earned it — the worker that
+    // hit the rate limit is usually the one about to end — so it is checked
+    // as its own durable source, independent of who else is live right now.
+    let now = Utc::now().to_rfc3339();
+    let mut cooldowns = db.prepare(
+        "SELECT harness FROM harness_quota_cooldowns
+         WHERE workspace_id=?1 AND cooldown_until > ?2",
+    )?;
+    let cooled_down = cooldowns.query_map(params![workspace_id, now], |row| {
+        row.get::<_, String>(0)
+    })?;
+    for harness in cooled_down {
+        let harness = harness?;
+        let entry = result.entry(harness).or_insert((true, true));
+        entry.0 = false;
+    }
+    Ok(result)
+}
+
+/// How long a detected quota/rate-limit signal keeps its harness out of
+/// routing consideration for this workspace. Deliberately short and
+/// conservative: real reset windows vary a lot by provider and plan, and this
+/// is a floor against immediately re-hammering the same wall, not a claim
+/// about exactly when the limit clears.
+const QUOTA_COOLDOWN_MINUTES: i64 = 15;
+
+/// Record that `harness` just told this workspace it is out of quota, so the
+/// next delegation routes around it instead of repeating the same failure.
+/// See [`harness_capacity`] for how this is consulted, and
+/// `worker_retry::is_quota_signal` for what counts as a quota failure rather
+/// than a generic transient one.
+pub fn mark_harness_quota_exhausted(
+    db: &Connection,
+    workspace_id: &str,
+    harness: &str,
+    reason: &str,
+    event_session_id: &str,
+) -> Result<(), BridgeError> {
+    let now = Utc::now();
+    let cooldown_until = now + chrono::Duration::minutes(QUOTA_COOLDOWN_MINUTES);
+    db.execute(
+        "INSERT INTO harness_quota_cooldowns(workspace_id,harness,reason,exhausted_at,cooldown_until)
+         VALUES(?1,?2,?3,?4,?5)
+         ON CONFLICT(workspace_id,harness) DO UPDATE SET
+            reason=excluded.reason,
+            exhausted_at=excluded.exhausted_at,
+            cooldown_until=excluded.cooldown_until",
+        params![
+            workspace_id,
+            harness,
+            reason,
+            now.to_rfc3339(),
+            cooldown_until.to_rfc3339(),
+        ],
+    )?;
+    crate::store::event(
+        db,
+        "router",
+        "router.harness_quota_exhausted",
+        event_session_id,
+        &format!("{harness} marked out of quota ({reason}); routing around it until {cooldown_until}"),
+    )
+}
+
+pub fn load_preferences(
+    db: &Connection,
+    workspace_id: &str,
+) -> Result<RouterPreferences, BridgeError> {
+    let raw: Option<String> = db
+        .query_row(
+            "SELECT preferences FROM router_preferences WHERE workspace_id=?1",
+            params![workspace_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    raw.map(|value| {
+        serde_json::from_str(&value).map_err(|error| BridgeError::Invalid(error.to_string()))
+    })
+    .transpose()
+    .map(|value| value.unwrap_or_default())
+}
+
+pub fn save_preferences(
+    db: &Connection,
+    workspace_id: &str,
+    preferences: &RouterPreferences,
+) -> Result<(), BridgeError> {
+    preferences.validate().map_err(BridgeError::Invalid)?;
+    if preferences.mode == RouterMode::Autonomous {
+        ensure_autonomous_ready(db, workspace_id)?;
+    }
+    let normalized = RouterPreferences {
+        excluded_harnesses: normalized_list(&preferences.excluded_harnesses),
+        excluded_models: normalized_list(&preferences.excluded_models),
+        pinned_harness: preferences
+            .pinned_harness
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_owned),
+        pinned_model: preferences
+            .pinned_model
+            .as_deref()
+            .map(str::trim)
+            .map(str::to_owned),
+        ..preferences.clone()
+    };
+    db.execute(
+        "INSERT INTO router_preferences(workspace_id,mode,preferences,updated_at)
+         VALUES(?1,?2,?3,?4)
+         ON CONFLICT(workspace_id) DO UPDATE SET mode=excluded.mode,preferences=excluded.preferences,updated_at=excluded.updated_at",
+        params![
+            workspace_id,
+            normalized.mode.as_str(),
+            serde_json::to_string(&normalized).map_err(|error| BridgeError::Invalid(error.to_string()))?,
+            Utc::now().to_rfc3339(),
+        ],
+    )?;
+    Ok(())
+}
+
+fn ensure_autonomous_ready(db: &Connection, workspace_id: &str) -> Result<(), BridgeError> {
+    let (outcomes, manual): (i64, i64) = db.query_row(
+        "SELECT COUNT(*),COALESCE(SUM(CASE WHEN d.manual_override OR d.recommended_candidate IS NULL THEN 1 ELSE 0 END),0)
+         FROM router_decisions d JOIN router_outcomes o ON o.decision_id=d.id
+         WHERE d.workspace_id=?1 AND d.mode='shadow'",
+        params![workspace_id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let required = tunables(db, workspace_id).min_shadow_outcomes_for_autonomy;
+    if outcomes < required {
+        return Err(BridgeError::Invalid(format!(
+            "autonomous routing requires at least {required} completed shadow outcomes; found {outcomes}"
+        )));
+    }
+    if manual * 20 >= outcomes {
+        return Err(BridgeError::Invalid(format!(
+            "autonomous routing requires fewer than 5% manual selections in shadow evaluation; found {manual} of {outcomes}"
+        )));
+    }
+    Ok(())
+}
+
+fn normalized_list(values: &[String]) -> Vec<String> {
+    values
+        .iter()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| !value.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+fn persist_decision(db: &Connection, decision: &RouterDecision) -> Result<(), BridgeError> {
+    // The catalog is the fastest-growing bytes in an active workspace, and it
+    // was stored twice per decision: once in its own column and once embedded
+    // in the decision blob. It now lives once per distinct catalog, keyed by
+    // hash; decision rows carry the hash, and the blob omits the snapshot.
+    let catalog_body = canonical_json(&decision.catalog_snapshot).to_string();
+    let catalog_hash = {
+        use sha2::{Digest, Sha256};
+        format!("{:x}", Sha256::digest(catalog_body.as_bytes()))
+    };
+    db.execute(
+        "INSERT OR IGNORE INTO routing_catalogs(hash,snapshot,created_at) VALUES(?1,?2,?3)",
+        params![catalog_hash, catalog_body, decision.created_at],
+    )?;
+    let mut stored = decision.clone();
+    stored.catalog_snapshot = serde_json::Value::Null;
+    db.execute(
+        "INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,trace_id,task_family,task_fingerprint,repository_revision,profile_version,profile_purpose,policy_version,catalog_snapshot,catalog_hash,selection_reason,actual_provider,actual_model,actual_effort,mode,manual_override,baseline_candidate,recommended_candidate,executed_candidate,decision,created_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,'',?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
+        params![
+            decision.id,
+            decision.workspace_id,
+            decision.parent_session_id,
+            decision.turn_id,
+            decision.trace_id,
+            decision.task_family,
+            decision.task_fingerprint,
+            decision.repository_revision,
+            decision.profile_version,
+            decision.profile_purpose,
+            decision.policy_version,
+            catalog_hash,
+            decision.explanation,
+            decision.actual_provider,
+            decision.actual_model,
+            decision.actual_effort.map(Effort::as_str),
+            decision.mode.as_str(),
+            decision.manual_override,
+            decision.baseline_candidate,
+            decision.recommended_candidate,
+            decision.executed_candidate,
+            serde_json::to_string(&stored).map_err(|error| BridgeError::Invalid(error.to_string()))?,
+            decision.created_at,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn record_actual_execution(
+    db: &Connection,
+    decision_id: &str,
+    provider: &str,
+    model: &str,
+    effort: Effort,
+) -> Result<(), BridgeError> {
+    db.execute(
+        "UPDATE router_decisions SET actual_provider=?2,actual_model=?3,actual_effort=?4 WHERE id=?1",
+        params![decision_id, provider, model, effort.as_str()],
+    )?;
+    Ok(())
+}
+
+pub fn bind_worker(
+    db: &Connection,
+    decision_id: &str,
+    child_session_id: &str,
+) -> Result<(), BridgeError> {
+    let now = Utc::now().to_rfc3339();
+    db.execute(
+        "UPDATE router_assignments SET status='superseded',completed_at=?2
+         WHERE child_session_id=?1 AND status='active'",
+        params![child_session_id, now],
+    )?;
+    db.execute(
+        "INSERT INTO router_assignments(decision_id,child_session_id,status,created_at)
+         VALUES(?1,?2,'active',?3)",
+        params![decision_id, child_session_id, now],
+    )?;
+    Ok(())
+}
+
+pub fn record_policy_result(
+    db: &Connection,
+    decision_id: &str,
+    outcome: &policy::PolicyOutcome,
+) -> Result<(), BridgeError> {
+    db.execute(
+        "UPDATE router_decisions SET policy_outcome=?2 WHERE id=?1",
+        params![
+            decision_id,
+            serde_json::to_string(outcome)
+                .map_err(|error| BridgeError::Invalid(error.to_string()))?,
+        ],
+    )?;
+    Ok(())
+}
+
+pub fn record_route_status(
+    db: &Connection,
+    decision_id: &str,
+    status: &str,
+) -> Result<(), BridgeError> {
+    if status.trim().is_empty() {
+        return Err(BridgeError::Invalid(
+            "router route status cannot be empty".into(),
+        ));
+    }
+    db.execute(
+        "UPDATE router_decisions SET route_status=?2 WHERE id=?1",
+        params![decision_id, status],
+    )?;
+    Ok(())
+}
+
+pub fn record_worker_outcome(
+    db: &Connection,
+    child_session_id: &str,
+    result: &WorkerResult,
+) -> Result<(), BridgeError> {
+    let assignment: Option<(String, String, bool)> = db
+        .query_row(
+            "SELECT a.decision_id,d.executed_candidate,d.manual_override
+             FROM router_assignments a JOIN router_decisions d ON d.id=a.decision_id
+             WHERE a.child_session_id=?1 AND a.status='active'
+             ORDER BY a.rowid DESC LIMIT 1",
+            params![child_session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .optional()?;
+    let Some((decision_id, executed_candidate, human_intervention)) = assignment else {
+        return Ok(());
+    };
+    let runtime: (i64, i64) = db.query_row(
+        "SELECT COALESCE(CAST((julianday(COALESCE(ended_at,?2))-julianday(started_at))*86400000 AS INTEGER),0),
+                COALESCE((SELECT retry_count FROM worker_runtime WHERE session_id=?1),0)
+         FROM sessions WHERE id=?1",
+        params![child_session_id, Utc::now().to_rfc3339()],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let fallback_normalized_cost: i64 = db.query_row(
+        "SELECT COALESCE(SUM(capability_units),0) FROM usage_ledger WHERE session_id=?1",
+        params![child_session_id],
+        |row| row.get::<_, i64>(0),
+    )? * 1_000;
+    let cost: Option<(i64, Option<String>)> = db
+        .query_row(
+            "SELECT cost_microusd,cost_source FROM usage_ledger WHERE session_id=?1 AND cost_microusd IS NOT NULL ORDER BY id DESC LIMIT 1",
+            params![child_session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    let total_tokens: Option<i64> = db
+        .query_row(
+            "SELECT COALESCE(input_tokens,0)+COALESCE(output_tokens,0)+COALESCE(cache_read_tokens,0)+COALESCE(cache_write_tokens,0)
+             FROM usage_ledger WHERE session_id=?1 AND (input_tokens IS NOT NULL OR output_tokens IS NOT NULL OR cache_read_tokens IS NOT NULL OR cache_write_tokens IS NOT NULL)
+             ORDER BY id DESC LIMIT 1",
+            params![child_session_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let succeeded = matches!(result.status, WorkerResultStatus::Completed);
+    let success_state = match result.status {
+        WorkerResultStatus::Completed => "success",
+        WorkerResultStatus::Failed => "failure",
+        WorkerResultStatus::Cancelled
+        | WorkerResultStatus::Blocked
+        | WorkerResultStatus::NeedsDelegation
+        // A transport error says nothing about the route that was chosen, so it
+        // must not train the router either way.
+        | WorkerResultStatus::ProtocolInvalid => "unknown",
+    };
+    let has_failed_test = result
+        .tests
+        .iter()
+        .any(|test| test.status == TestStatus::Failed);
+    let has_passed_test = result
+        .tests
+        .iter()
+        .any(|test| test.status == TestStatus::Passed);
+    let acceptance_state = if has_failed_test || result.status == WorkerResultStatus::Failed {
+        "rejected"
+    } else if succeeded && has_passed_test {
+        "accepted"
+    } else {
+        "unknown"
+    };
+    let deterministic_confidence_bps = if has_failed_test || has_passed_test {
+        CONFIDENCE_TEST_BACKED_BPS
+    } else if matches!(
+        result.status,
+        WorkerResultStatus::Completed | WorkerResultStatus::Failed
+    ) {
+        CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS
+    } else {
+        CONFIDENCE_NO_SIGNAL_BPS
+    };
+    let confidence_bps = resolved_confidence_bps(
+        deterministic_confidence_bps,
+        evaluated_confidence_bps(db, &decision_id)?,
+    );
+    let evidence_entry_ids = db
+        .query_row(
+            "SELECT request FROM worker_completion_inputs WHERE child_session_id=?1",
+            params![child_session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .and_then(|request| serde_json::from_str::<DelegationRequest>(&request).ok())
+        .map(|request| request.evidence_ids)
+        .unwrap_or_default();
+    let now = Utc::now().to_rfc3339();
+    db.execute(
+        "INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,runtime_ms,normalized_cost,retry_count,human_intervention,success_state,acceptance_state,cost_microusd,cost_source,confidence_bps,edit_count,override_signal,total_tokens,latency_source,recorded_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19)
+         ON CONFLICT(decision_id) DO UPDATE SET succeeded=excluded.succeeded,status=excluded.status,runtime_ms=excluded.runtime_ms,normalized_cost=excluded.normalized_cost,retry_count=excluded.retry_count,human_intervention=excluded.human_intervention,success_state=excluded.success_state,acceptance_state=excluded.acceptance_state,cost_microusd=excluded.cost_microusd,cost_source=excluded.cost_source,confidence_bps=excluded.confidence_bps,edit_count=excluded.edit_count,override_signal=excluded.override_signal,total_tokens=excluded.total_tokens,latency_source=excluded.latency_source,recorded_at=excluded.recorded_at",
+        params![
+            decision_id,
+            child_session_id,
+            executed_candidate,
+            succeeded,
+            result.status.as_str(),
+            runtime.0,
+            fallback_normalized_cost,
+            runtime.1,
+            human_intervention,
+            success_state,
+            acceptance_state,
+            cost.as_ref().map(|value| value.0),
+            cost.as_ref().and_then(|value| value.1.clone()),
+            confidence_bps,
+            result.files_changed.len() as i64,
+            human_intervention,
+            total_tokens,
+            "session_runtime",
+            now,
+        ],
+    )?;
+    db.execute(
+        "INSERT INTO routing_evaluations(id,decision_id,evaluator_kind,evaluator_version,score_bps,confidence_bps,evidence_entry_ids,bounded_metrics,status,created_at)
+         VALUES(?1,?2,'deterministic','worker-result-v1',?3,?4,?5,?6,'completed',?7)
+         ON CONFLICT(id) DO UPDATE SET score_bps=excluded.score_bps,confidence_bps=excluded.confidence_bps,evidence_entry_ids=excluded.evidence_entry_ids,bounded_metrics=excluded.bounded_metrics,status=excluded.status,created_at=excluded.created_at",
+        params![
+            format!("deterministic:{decision_id}"),
+            decision_id,
+            match success_state { "success" => Some(10_000_i64), "failure" => Some(0_i64), _ => None },
+            deterministic_confidence_bps,
+            serde_json::to_string(&evidence_entry_ids).map_err(|error| BridgeError::Invalid(error.to_string()))?,
+            serde_json::json!({
+                "successState": success_state,
+                "acceptanceState": acceptance_state,
+                "runtimeMs": runtime.0,
+                "retryCount": runtime.1,
+                "editCount": result.files_changed.len(),
+                "overrideSignal": human_intervention,
+                "costReported": cost.is_some(),
+                "tokensReported": total_tokens.is_some(),
+            }).to_string(),
+            now,
+        ],
+    )?;
+    db.execute(
+        "UPDATE router_assignments SET status='completed',completed_at=?2 WHERE decision_id=?1",
+        params![decision_id, now],
+    )?;
+    Ok(())
+}
+
+fn load_histories(
+    db: &Connection,
+    workspace_id: &str,
+    task_family: &str,
+) -> Result<BTreeMap<String, HistoricalOutcome>, BridgeError> {
+    let mut statement = db.prepare(
+        "SELECT o.candidate,o.succeeded,COALESCE(o.runtime_ms,0),COALESCE(o.normalized_cost,0),
+                o.retry_count,o.human_intervention,o.recorded_at
+         FROM router_outcomes o JOIN router_decisions d ON d.id=o.decision_id
+         WHERE d.workspace_id=?1 AND d.task_family=?2",
+    )?;
+    struct OutcomeRow {
+        candidate: String,
+        succeeded: bool,
+        runtime_ms: i64,
+        normalized_cost: i64,
+        retried: bool,
+        human_intervention: bool,
+        recorded_at: String,
+    }
+    let rows: Vec<OutcomeRow> = statement
+        .query_map(params![workspace_id, task_family], |row| {
+            Ok(OutcomeRow {
+                candidate: row.get(0)?,
+                succeeded: row.get(1)?,
+                runtime_ms: row.get(2)?,
+                normalized_cost: row.get(3)?,
+                retried: row.get::<_, i64>(4)? > 0,
+                human_intervention: row.get(5)?,
+                recorded_at: row.get(6)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    // Anchor on the newest parseable timestamp. A row whose timestamp does
+    // not parse counts at full weight — legacy evidence degrades to the old
+    // undecayed behavior instead of vanishing.
+    let anchor = rows
+        .iter()
+        .filter_map(|row| {
+            chrono::DateTime::parse_from_rfc3339(&row.recorded_at)
+                .ok()
+                .map(|value| value.with_timezone(&chrono::Utc))
+        })
+        .max();
+    #[derive(Default)]
+    struct Weighted {
+        samples: f64,
+        successes: f64,
+        runtime_ms_total: f64,
+        normalized_cost_total: f64,
+        retries: f64,
+        human_interventions: f64,
+    }
+    let workspace_tunables = tunables(db, workspace_id);
+    let mut weighted = BTreeMap::<String, Weighted>::new();
+    for row in rows {
+        let weight = match anchor {
+            None => 1.0,
+            Some(anchor) => match chrono::DateTime::parse_from_rfc3339(&row.recorded_at) {
+                Err(_) => 1.0,
+                Ok(_) => match decay_weight(
+                    &row.recorded_at,
+                    anchor,
+                    workspace_tunables.decay_half_life_days,
+                    workspace_tunables.evidence_window_days,
+                ) {
+                    Some(weight) => weight,
+                    None => continue,
+                },
+            },
+        };
+        let entry = weighted.entry(row.candidate).or_default();
+        entry.samples += weight;
+        if row.succeeded {
+            entry.successes += weight;
+        }
+        entry.runtime_ms_total += weight * row.runtime_ms as f64;
+        entry.normalized_cost_total += weight * row.normalized_cost as f64;
+        if row.retried {
+            entry.retries += weight;
+        }
+        if row.human_intervention {
+            entry.human_interventions += weight;
+        }
+    }
+    Ok(weighted
+        .into_iter()
+        .filter(|(_, value)| value.samples.round() as i64 > 0)
+        .map(|(candidate, value)| {
+            (
+                candidate,
+                HistoricalOutcome {
+                    samples: value.samples.round() as i64,
+                    successes: value.successes.round() as i64,
+                    runtime_ms_total: value.runtime_ms_total.round() as i64,
+                    normalized_cost_total: value.normalized_cost_total.round() as i64,
+                    retries: value.retries.round() as i64,
+                    human_interventions: value.human_interventions.round() as i64,
+                },
+            )
+        })
+        .collect())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BenchmarkTask {
+    pub id: String,
+    pub baseline_candidate: Option<String>,
+    pub evaluations: Vec<CandidateEvaluation>,
+    pub actual_passed: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct BenchmarkReport {
+    pub tasks: usize,
+    pub recommendations: usize,
+    pub manual_selections: usize,
+    pub manual_selection_bps: u16,
+    pub baseline_matches: usize,
+    pub actual_passes: usize,
+    pub policy_violations: usize,
+}
+
+pub fn benchmark(tasks: &[BenchmarkTask]) -> BenchmarkReport {
+    let recommendations = tasks
+        .iter()
+        .filter(|task| task.evaluations.iter().any(CandidateEvaluation::eligible))
+        .count();
+    let manual_selections = tasks.len() - recommendations;
+    let baseline_matches = tasks
+        .iter()
+        .filter(|task| {
+            let recommended = task
+                .evaluations
+                .iter()
+                .find(|candidate| candidate.eligible())
+                .map(|candidate| candidate.candidate.key());
+            recommended == task.baseline_candidate
+        })
+        .count();
+    let policy_violations = tasks
+        .iter()
+        .filter(|task| {
+            task.evaluations
+                .iter()
+                .find(|candidate| candidate.eligible())
+                .is_some_and(|candidate| !candidate.exclusions.is_empty())
+        })
+        .count();
+    BenchmarkReport {
+        tasks: tasks.len(),
+        recommendations,
+        manual_selections,
+        manual_selection_bps: if tasks.is_empty() {
+            0
+        } else {
+            (manual_selections * 10_000 / tasks.len()) as u16
+        },
+        baseline_matches,
+        actual_passes: tasks
+            .iter()
+            .filter(|task| task.actual_passed == Some(true))
+            .count(),
+        policy_violations,
+    }
+}
+
+pub fn next_escalation(
+    failed: &RouteCandidate,
+    evaluations: &[CandidateEvaluation],
+) -> Option<RouteCandidate> {
+    // A harness-specific failure is cheapest to test sideways: same tier,
+    // different family, before any tier is spent. Only then up-tier; still
+    // deterministic, still terminal after the strongest tier.
+    let lateral = evaluations
+        .iter()
+        .filter(|item| {
+            item.eligible()
+                && tier_rank(item.candidate.tier) == tier_rank(failed.tier)
+                && !item.candidate.harness.eq_ignore_ascii_case(&failed.harness)
+        })
+        .min_by_key(|item| item.expected_cost_score);
+    if let Some(item) = lateral {
+        return Some(item.candidate.clone());
+    }
+    evaluations
+        .iter()
+        .filter(|item| item.eligible() && tier_rank(item.candidate.tier) > tier_rank(failed.tier))
+        .min_by_key(|item| (tier_rank(item.candidate.tier), item.expected_cost_score))
+        .map(|item| item.candidate.clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        delegation::{OutputContract, SuggestedNextAction, WorkerRole, WriteMode, SCHEMA_VERSION},
+        model::{ModelOption, SandboxMode, UsageLedgerRow, WorkerRuntimeRecord},
+        store,
+    };
+    use serde_json::json;
+    use std::path::Path;
+
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct HeldOutObservation {
+        id: String,
+        recommended: bool,
+        manual: bool,
+        actual_passed: bool,
+        normalized_cost: i64,
+        latency_ms: i64,
+        policy_violation: bool,
+    }
+
+    fn candidate(harness: &str, model: &str, tier: CapabilityTier, units: i64) -> RouteCandidate {
+        RouteCandidate {
+            harness: harness.into(),
+            model: model.into(),
+            tier,
+            effort: Effort::Medium,
+            sandbox: "workspace_write".into(),
+            capabilities: vec!["tools".into(), "commands".into()],
+            available: true,
+            platform_supported: true,
+            permission_eligible: true,
+            quota_available: true,
+            context_available: true,
+            risk_eligible: true,
+            capability_units: units,
+            default_for_tier: true,
+        }
+    }
+
+    fn evaluated(preferences: RouterPreferences) -> Vec<CandidateEvaluation> {
+        evaluated_with(
+            vec![
+                candidate("codex", "fast", CapabilityTier::Fast, 2),
+                candidate("claude", "standard", CapabilityTier::Standard, 4),
+            ],
+            preferences,
+        )
+    }
+
+    fn evaluated_with(
+        candidates: Vec<RouteCandidate>,
+        preferences: RouterPreferences,
+    ) -> Vec<CandidateEvaluation> {
+        evaluate(EvaluationInput {
+            candidates,
+            preferences,
+            histories: BTreeMap::new(),
+            required_capabilities: vec!["tools".into()],
+            remaining_capability_units: 24,
+            budget_preference: None,
+            latency_preference: None,
+            prior_weight: PRIOR_WEIGHT,
+        })
+    }
+
+    fn request() -> DelegationRequest {
+        DelegationRequest {
+            schema_version: SCHEMA_VERSION,
+            role: WorkerRole::Implementation,
+            objective: "Implement the router fixture".into(),
+            acceptance_criteria: vec!["Fixture passes".into()],
+            known_facts: vec![],
+            decisions: vec![],
+            evidence_ids: vec![],
+            relevant_files: vec![],
+            owned_paths: vec![],
+            write_mode: WriteMode::ReadOnly,
+            capability_tier: CapabilityTier::Standard,
+            effort: Effort::Medium,
+            network_access: false,
+            writable_output_paths: vec![],
+            verification: vec!["cargo test".into()],
+            output_contract: OutputContract::ImplementationResult,
+            harness: None,
+            model: None,
+        }
+    }
+
+    fn descriptors() -> Vec<AdapterDescriptor> {
+        [("codex", "codex-standard"), ("claude", "claude-standard")]
+            .into_iter()
+            .map(|(harness, model)| AdapterDescriptor {
+                sandbox_modes: crate::model::SandboxMode::ALL.to_vec(),
+                id: harness.into(),
+                label: harness.into(),
+                available: true,
+                auth_state: crate::model::AuthState::Unknown,
+                version: Some("test".into()),
+                capabilities: vec!["tools".into(), "commands".into()],
+                unavailable_reason: None,
+                models: vec![ModelOption {
+                    id: model.into(),
+                    label: model.into(),
+                    tier: CapabilityTier::Standard,
+                    available: true,
+                    compatible: true,
+                    lifecycle: crate::model::ModelLifecycle::Stable,
+                    source: crate::model::ModelCatalogSource::CuratedFallback,
+                    supported_effort_levels: Vec::new(),
+                    default_for_tier: true,
+                }],
+                default_model: Some(model.into()),
+                model_catalog: crate::model::ModelCatalogDiagnostics::curated(),
+            })
+            .collect()
+    }
+
+    /// Autonomous mode normally requires 20 completed shadow outcomes. These
+    /// tests exercise the sandbox constraint, not the activation gate, so the
+    /// preference row is written directly.
+    fn force_autonomous(db: &Connection, workspace_id: &str) {
+        db.execute(
+            "INSERT INTO router_preferences(workspace_id,mode,preferences,updated_at) VALUES(?1,'autonomous',?2,'now')
+             ON CONFLICT(workspace_id) DO UPDATE SET mode=excluded.mode,preferences=excluded.preferences",
+            params![
+                workspace_id,
+                serde_json::to_string(&RouterPreferences {
+                    mode: RouterMode::Autonomous,
+                    ..RouterPreferences::default()
+                })
+                .unwrap()
+            ],
+        )
+        .unwrap();
+    }
+
+    fn routing_db() -> Connection {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO workspaces(id,title,status,created_at) VALUES('w','Router','idle','now')",
+            [],
+        )
+        .unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('parent','w','codex','Parent','working','reported')", []).unwrap();
+        db
+    }
+
+    fn scored_decision(db: &Connection, id: &str, deterministic_bps: i64) {
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES(?1,'w','codex','Child','completed','reported')",
+            params![format!("{id}-child")],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,task_family,mode,
+                 manual_override,executed_candidate,decision,actual_provider,created_at)
+             VALUES(?1,'w','parent','t','implementation','shadow',0,'codex:gpt','{}','codex','now')",
+            params![id],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,
+                 runtime_ms,normalized_cost,retry_count,human_intervention,success_state,
+                 acceptance_state,confidence_bps,recorded_at)
+             VALUES(?1,?2,'codex:gpt',0,'cancelled',10,0,0,0,'unknown','unknown',?3,'now')",
+            params![id, format!("{id}-child"), deterministic_bps],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO routing_evaluations(id,decision_id,evaluator_kind,evaluator_version,
+                 confidence_bps,evidence_entry_ids,bounded_metrics,status,created_at)
+             VALUES(?1,?2,'deterministic','worker-result-v1',?3,'[]','{}','completed','now')",
+            params![format!("deterministic:{id}"), id, deterministic_bps],
+        )
+        .unwrap();
+    }
+
+    fn model_evaluation(db: &Connection, decision_id: &str, confidence_bps: i64, status: &str) {
+        db.execute(
+            "INSERT INTO routing_evaluations(id,decision_id,evaluator_kind,evaluator_version,
+                 score_bps,confidence_bps,evidence_entry_ids,bounded_metrics,status,created_at)
+             VALUES(?1,?2,'model_based','pinned:claude:judge',6000,?3,'[]','{}',?4,'now')",
+            params![format!("model:{decision_id}"), decision_id, confidence_bps, status],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn confidence_falls_back_to_the_constants_and_never_overrides_a_test() {
+        assert_eq!(
+            resolved_confidence_bps(CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS, None),
+            CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS,
+            "a workspace with no evaluator behaves exactly as it did"
+        );
+        assert_eq!(
+            resolved_confidence_bps(CONFIDENCE_NO_SIGNAL_BPS, Some(8_800)),
+            8_800
+        );
+        assert_eq!(
+            resolved_confidence_bps(CONFIDENCE_TEST_BACKED_BPS, Some(2_000)),
+            CONFIDENCE_TEST_BACKED_BPS,
+            "a judge does not get to lower a result that has a test"
+        );
+        assert_eq!(
+            resolved_confidence_bps(CONFIDENCE_TEST_BACKED_BPS, Some(10_000)),
+            CONFIDENCE_TEST_BACKED_BPS,
+            "nor to raise it"
+        );
+    }
+
+    #[test]
+    fn only_a_completed_evaluation_moves_an_outcomes_confidence() {
+        let db = routing_db();
+        scored_decision(&db, "d1", CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS);
+        for status in ["queued", "running", "failed", "skipped", "not_requested"] {
+            db.execute("DELETE FROM routing_evaluations WHERE evaluator_kind='model_based'", [])
+                .unwrap();
+            model_evaluation(&db, "d1", 1_500, status);
+            assert_eq!(evaluated_confidence_bps(&db, "d1").unwrap(), None, "{status}");
+            refresh_outcome_confidence(&db, "d1").unwrap();
+            assert_eq!(outcome_confidence(&db, "d1"), CONFIDENCE_UNKNOWN_ACCEPTANCE_BPS, "{status}");
+        }
+        db.execute("DELETE FROM routing_evaluations WHERE evaluator_kind='model_based'", [])
+            .unwrap();
+        model_evaluation(&db, "d1", 8_800, "completed");
+        assert_eq!(evaluated_confidence_bps(&db, "d1").unwrap(), Some(8_800));
+        refresh_outcome_confidence(&db, "d1").unwrap();
+        assert_eq!(outcome_confidence(&db, "d1"), 8_800);
+        refresh_outcome_confidence(&db, "d1").unwrap();
+        assert_eq!(outcome_confidence(&db, "d1"), 8_800, "refreshing twice is the same answer");
+    }
+
+    #[test]
+    fn a_test_backed_outcome_keeps_its_confidence_through_a_refresh() {
+        let db = routing_db();
+        scored_decision(&db, "d1", CONFIDENCE_TEST_BACKED_BPS);
+        model_evaluation(&db, "d1", 3_000, "completed");
+        refresh_outcome_confidence(&db, "d1").unwrap();
+        assert_eq!(outcome_confidence(&db, "d1"), CONFIDENCE_TEST_BACKED_BPS);
+    }
+
+    fn outcome_confidence(db: &Connection, decision_id: &str) -> i64 {
+        db.query_row(
+            "SELECT confidence_bps FROM router_outcomes WHERE decision_id=?1",
+            params![decision_id],
+            |row| row.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn lowest_expected_cost_above_quality_floor_wins_deterministically() {
+        let result = evaluated(RouterPreferences::default());
+        assert!(result[0].eligible());
+        assert_eq!(result[0].candidate.key(), "codex:fast");
+    }
+
+    #[test]
+    fn profile_quality_preference_changes_ranking_without_widening_eligibility() {
+        let result = evaluate(EvaluationInput {
+            candidates: vec![
+                candidate("codex", "fast", CapabilityTier::Fast, 2),
+                candidate("claude", "standard", CapabilityTier::Standard, 4),
+            ],
+            preferences: RouterPreferences::default(),
+            histories: BTreeMap::new(),
+            required_capabilities: vec!["tools".into()],
+            remaining_capability_units: 24,
+            budget_preference: Some("quality".into()),
+            latency_preference: Some("patient".into()),
+            prior_weight: PRIOR_WEIGHT,
+        });
+        assert!(result.iter().all(CandidateEvaluation::eligible));
+        assert_eq!(result[0].candidate.key(), "claude:standard");
+    }
+
+    #[test]
+    fn every_constraint_has_a_stable_reason_code() {
+        let mut blocked = candidate("codex", "fast", CapabilityTier::Fast, 30);
+        blocked.available = false;
+        blocked.platform_supported = false;
+        blocked.permission_eligible = false;
+        blocked.quota_available = false;
+        blocked.context_available = false;
+        blocked.risk_eligible = false;
+        blocked.capabilities.clear();
+        let result = evaluate(EvaluationInput {
+            candidates: vec![blocked],
+            preferences: RouterPreferences {
+                excluded_harnesses: vec!["codex".into()],
+                excluded_models: vec!["fast".into()],
+                pinned_harness: Some("claude".into()),
+                minimum_pass_bps: 9_000,
+                ..RouterPreferences::default()
+            },
+            histories: BTreeMap::new(),
+            required_capabilities: vec!["tools".into()],
+            remaining_capability_units: 1,
+            budget_preference: None,
+            latency_preference: None,
+            prior_weight: PRIOR_WEIGHT,
+        });
+        assert_eq!(result[0].exclusions.len(), 12);
+        assert!(!result[0].eligible());
+    }
+
+    #[test]
+    fn outcomes_update_predictions_but_keep_conservative_priors() {
+        let route = candidate("codex", "fast", CapabilityTier::Fast, 2);
+        let history = HistoricalOutcome {
+            samples: 4,
+            successes: 4,
+            runtime_ms_total: 8_000,
+            normalized_cost_total: 4_000,
+            retries: 0,
+            human_interventions: 0,
+        };
+        let learned = predict(&route, &history, PRIOR_WEIGHT);
+        assert!(learned.pass_probability_bps > 6_500);
+        assert!(learned.pass_probability_bps < 10_000);
+        assert!(learned.latency_ms < 10_000);
+    }
+
+    #[test]
+    fn shadow_route_records_alternative_but_preserves_baseline() {
+        let db = routing_db();
+        let routed = route(&db, "parent", "turn", &request(), &descriptors()).unwrap();
+        assert_eq!(routed.decision.mode, RouterMode::Shadow);
+        assert_eq!(
+            routed.decision.baseline_candidate.as_deref(),
+            Some("codex:codex-standard")
+        );
+        assert_eq!(
+            routed.decision.recommended_candidate.as_deref(),
+            Some("claude:claude-standard")
+        );
+        assert_eq!(
+            routed.decision.executed_candidate,
+            routed.decision.baseline_candidate
+        );
+        assert_eq!(routed.request.runtime_harness(), "codex");
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM router_decisions", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        let evidence: (i64, i64, String, String) = db.query_row(
+            "SELECT policy_version,LENGTH(catalog_snapshot),task_fingerprint,selection_reason FROM router_decisions LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).unwrap();
+        assert_eq!(evidence.0, 0);
+        assert_eq!(evidence.1, 0, "the snapshot no longer rides every decision row");
+        assert_eq!(evidence.2.len(), 64);
+        assert!(!evidence.3.is_empty());
+        let (catalog_hash, blob): (String, String) = db
+            .query_row(
+                "SELECT catalog_hash,decision FROM router_decisions LIMIT 1",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(catalog_hash.len(), 64);
+        assert!(
+            !blob.contains("catalogSnapshot"),
+            "the blob stopped embedding the catalog a second time"
+        );
+        let catalogs: i64 = db
+            .query_row("SELECT COUNT(*) FROM routing_catalogs WHERE hash=?1", params![catalog_hash], |row| row.get(0))
+            .unwrap();
+        assert_eq!(catalogs, 1, "the catalog lives once, keyed by its hash");
+    }
+
+    #[test]
+    fn decision_rows_store_a_catalog_hash_not_blobs() {
+        let db = routing_db();
+        route(&db, "parent", "turn-a", &request(), &descriptors()).unwrap();
+        route(&db, "parent", "turn-b", &request(), &descriptors()).unwrap();
+        let catalogs: i64 = db
+            .query_row("SELECT COUNT(*) FROM routing_catalogs", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(catalogs, 1, "two decisions over one catalog store it once");
+        let bytes: i64 = db
+            .query_row(
+                "SELECT COALESCE(SUM(LENGTH(catalog_snapshot)),0) FROM router_decisions",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(bytes, 0);
+    }
+
+    #[test]
+    fn learned_preference_cannot_revive_an_excluded_candidate() {
+        let db = routing_db();
+        db.execute(
+            "UPDATE routing_policies SET weights=?1 WHERE version=1",
+            params![
+                json!({"preferredCandidates":{"implementation":"claude:claude-standard"}})
+                    .to_string()
+            ],
+        )
+        .unwrap();
+        save_preferences(
+            &db,
+            "w",
+            &RouterPreferences {
+                excluded_harnesses: vec!["claude".into()],
+                ..RouterPreferences::default()
+            },
+        )
+        .unwrap();
+        let routed = route(&db, "parent", "turn", &request(), &descriptors()).unwrap();
+        assert_eq!(
+            routed.decision.recommended_candidate.as_deref(),
+            Some("codex:codex-standard")
+        );
+        let claude = routed
+            .decision
+            .candidates
+            .iter()
+            .find(|candidate| candidate.candidate.harness == "claude")
+            .unwrap();
+        assert!(claude
+            .exclusions
+            .contains(&CandidateExclusion::UserExcludedHarness));
+    }
+
+    #[test]
+    fn canary_assignment_is_deterministic_and_bounded_to_twenty_percent() {
+        assert_eq!(canary_bucket("same-task"), canary_bucket("same-task"));
+        let assigned = (0..10_000)
+            .filter(|index| canary_bucket(&format!("task-{index}")) < 20)
+            .count();
+        assert!(
+            (1_800..=2_200).contains(&assigned),
+            "unexpected canary sample {assigned}"
+        );
+    }
+
+    #[test]
+    fn active_completion_gate_forces_a_different_verifier_family_even_in_shadow_mode() {
+        let db = routing_db();
+        db.execute("INSERT INTO completion_contracts(id,workspace_id,session_id,schema_version,acceptance_criteria,markdown_committed,status,created_at,updated_at) VALUES('c','w','parent',1,'[]',0,'active','now','now')", []).unwrap();
+        db.execute("INSERT INTO eval_plans(id,contract_id,schema_version,risk,plan,created_at) VALUES('p','c',1,'high','{}','now')", []).unwrap();
+        db.execute("INSERT INTO eval_attempts(id,plan_id,session_id,repository_head,dirty_digest,repository_path,status,implementer_family,started_at) VALUES('a','p','parent','head','dirty','/tmp','verifying','codex','now')", []).unwrap();
+        let mut verification = request();
+        verification.role = WorkerRole::Verification;
+        let routed = route(&db, "parent", "turn", &verification, &descriptors()).unwrap();
+        assert_eq!(routed.request.runtime_harness(), "claude");
+        assert_eq!(
+            routed.decision.executed_candidate.as_deref(),
+            Some("claude:claude-standard")
+        );
+        let codex = routed
+            .decision
+            .candidates
+            .iter()
+            .find(|candidate| candidate.candidate.harness == "codex")
+            .unwrap();
+        assert!(codex
+            .exclusions
+            .contains(&CandidateExclusion::SameAsImplementer));
+        let mut pinned = verification;
+        pinned.harness = Some("claude".into());
+        pinned.model = Some("claude-standard".into());
+        let routed = route(&db, "parent", "turn-2", &pinned, &descriptors()).unwrap();
+        assert_eq!(
+            routed.decision.executed_candidate.as_deref(),
+            Some("claude:claude-standard")
+        );
+    }
+
+    #[test]
+    fn bound_worker_result_becomes_durable_learning_outcome() {
+        let db = routing_db();
+        let routed = route(&db, "parent", "turn", &request(), &descriptors()).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,started_at) VALUES('child','w','codex','Worker','working','reported','parent','2026-07-16T00:00:00Z')", []).unwrap();
+        store::upsert_worker_runtime(
+            &db,
+            &WorkerRuntimeRecord {
+                session_id: "child".into(),
+                parent_session_id: "parent".into(),
+                lifecycle_state: "working".into(),
+                task_family: "implementation".into(),
+                compatibility_key: "key".into(),
+                result_status: "pending".into(),
+                retry_count: 1,
+                warm_until: None,
+                worktree_path: None,
+                worktree_branch: None,
+                last_result: None,
+                last_activity_at: None,
+                waiting_since: None,
+                waiting_reason: None,
+                progress_summary: None,
+                updated_at: "now".into(),
+            },
+        )
+        .unwrap();
+        store::append_usage_ledger(
+            &db,
+            &UsageLedgerRow {
+                id: 0,
+                workspace_id: "w".into(),
+                session_id: Some("child".into()),
+                turn_id: Some("turn".into()),
+                input_tokens: None,
+                output_tokens: None,
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+                uncached_input_tokens: None,
+                context_percent: None,
+                capability_units: 0,
+                runtime_ms: None,
+                cost_microusd: None,
+                cost_source: None,
+                stable_prefix_id: None,
+                stable_prefix_hash: None,
+                prompt_schema_version: None,
+                prefix_token_estimate: None,
+                harness: None,
+                model: None,
+                role: None,
+                task_family: None,
+                restoration_mode: None,
+                cross_harness_reuse: None,
+                source: "policy.spawn.standard".into(),
+                created_at: "now".into(),
+            },
+        )
+        .unwrap();
+        store::append_usage_ledger(
+            &db,
+            &UsageLedgerRow {
+                id: 0,
+                workspace_id: "w".into(),
+                session_id: Some("child".into()),
+                turn_id: Some("turn".into()),
+                input_tokens: Some(100),
+                output_tokens: Some(20),
+                cache_read_tokens: None,
+                cache_write_tokens: None,
+                uncached_input_tokens: Some(100),
+                context_percent: None,
+                capability_units: 3,
+                runtime_ms: Some(90),
+                cost_microusd: Some(12_345),
+                cost_source: Some("provider_reported".into()),
+                stable_prefix_id: None,
+                stable_prefix_hash: None,
+                prompt_schema_version: None,
+                prefix_token_estimate: None,
+                harness: Some("codex".into()),
+                model: Some("codex-standard".into()),
+                role: Some("implementation".into()),
+                task_family: Some("implementation".into()),
+                restoration_mode: Some("fresh".into()),
+                cross_harness_reuse: Some("not_applicable".into()),
+                source: "usage.updated".into(),
+                created_at: "later".into(),
+            },
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO worker_completion_inputs(child_session_id,request,updated_at) VALUES('child',?1,'now')",
+            params![serde_json::to_string(&request()).unwrap()],
+        ).unwrap();
+        record_actual_execution(
+            &db,
+            &routed.decision.id,
+            "codex",
+            "codex-standard",
+            Effort::Medium,
+        )
+        .unwrap();
+        bind_worker(&db, &routed.decision.id, "child").unwrap();
+        record_worker_outcome(
+            &db,
+            "child",
+            &WorkerResult {
+                schema_version: SCHEMA_VERSION,
+                status: WorkerResultStatus::Completed,
+                summary: "done".into(),
+                files_changed: vec![],
+                tests: vec![],
+                decisions: vec![],
+                risks: vec![],
+                remaining_work: vec![],
+                suggested_next_action: SuggestedNextAction::Finish,
+                suggested_role: None,
+                suggested_task: None,
+            },
+        )
+        .unwrap();
+        let outcome: (bool, i64, i64, Option<i64>, Option<i64>, String, String) = db
+            .query_row(
+                "SELECT succeeded,normalized_cost,retry_count,cost_microusd,total_tokens,success_state,acceptance_state FROM router_outcomes",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            outcome,
+            (
+                true,
+                3_000,
+                1,
+                Some(12_345),
+                Some(120),
+                "success".into(),
+                "unknown".into()
+            )
+        );
+        let evaluation: (String, i64, String) = db.query_row(
+            "SELECT evaluator_kind,confidence_bps,bounded_metrics FROM routing_evaluations WHERE decision_id=?1",
+            params![routed.decision.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!(evaluation.0, "deterministic");
+        assert_eq!(evaluation.1, 7_000);
+        assert!(!evaluation.2.contains("done"));
+        assert_eq!(
+            db.query_row(
+                "SELECT actual_model FROM router_decisions LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "codex-standard"
+        );
+        assert_eq!(
+            load_histories(&db, "w", "implementation").unwrap()["codex:codex-standard"].samples,
+            1
+        );
+    }
+
+    #[test]
+    fn ineligible_pin_fails_closed_and_escalation_is_strictly_bounded() {
+        let mut preferences = RouterPreferences::default();
+        preferences.pinned_model = Some("missing".into());
+        assert!(evaluated(preferences).iter().all(|item| !item.eligible()));
+
+        let result = evaluated(RouterPreferences::default());
+        let mut strong_failed = result[0].candidate.clone();
+        strong_failed.tier = CapabilityTier::Strong;
+        assert!(
+            next_escalation(&strong_failed, &result).is_none(),
+            "terminal after the strongest tier, sideways included"
+        );
+    }
+
+    #[test]
+    fn same_tier_family_switch_is_tried_before_tier_up() {
+        let result = evaluated_with(
+            vec![
+                candidate("codex", "codex-standard", CapabilityTier::Standard, 4),
+                candidate("claude", "claude-standard", CapabilityTier::Standard, 4),
+                candidate("codex", "codex-strong", CapabilityTier::Strong, 8),
+            ],
+            RouterPreferences::default(),
+        );
+        let failed = result
+            .iter()
+            .find(|item| {
+                item.candidate.harness == "codex" && item.candidate.tier == CapabilityTier::Standard
+            })
+            .unwrap()
+            .candidate
+            .clone();
+        let next = next_escalation(&failed, &result).unwrap();
+        assert_eq!(next.harness, "claude", "the cheapest fix for a harness-specific failure");
+        assert_eq!(
+            tier_rank(next.tier),
+            tier_rank(failed.tier),
+            "no tier is spent for a family switch"
+        );
+    }
+
+    #[test]
+    fn a_later_success_clears_the_sideways_steer() {
+        let db = routing_db();
+        let record_outcome = |turn: &str, child: &str, succeeded: bool| {
+            let routed = route(&db, "parent", turn, &request(), &descriptors()).unwrap();
+            let key = routed.decision.executed_candidate.clone().unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id)
+                 VALUES(?1,'w','codex','Worker','completed','reported','parent')",
+                params![child],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,runtime_ms,normalized_cost,retry_count,human_intervention,success_state,acceptance_state,recorded_at)
+                 VALUES(?1,?2,?3,?4,?5,100,1000,0,0,?6,?7,'2026-08-01T00:00:00Z')",
+                params![
+                    routed.decision.id,
+                    child,
+                    key,
+                    succeeded,
+                    if succeeded { "completed" } else { "failed" },
+                    if succeeded { "success" } else { "failure" },
+                    if succeeded { "accepted" } else { "rejected" },
+                ],
+            )
+            .unwrap();
+            key
+        };
+        let failed_key = record_outcome("turn-1", "child-1", false);
+        let after_failure = route(&db, "parent", "turn-2", &request(), &descriptors()).unwrap();
+        assert_ne!(after_failure.decision.recommended_candidate, Some(failed_key.clone()));
+        record_outcome("turn-3", "child-2", true);
+        let after_success = route(&db, "parent", "turn-4", &request(), &descriptors()).unwrap();
+        assert_eq!(
+            after_success.decision.recommended_candidate,
+            Some(failed_key),
+            "the task is no longer failing, so the steer expires with it"
+        );
+    }
+
+    #[test]
+    fn a_retried_task_is_recommended_sideways_after_its_failure() {
+        let db = routing_db();
+        let routed = route(&db, "parent", "turn-1", &request(), &descriptors()).unwrap();
+        let failed_key = routed.decision.executed_candidate.clone().unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id)
+             VALUES('child-retry','w','codex','Worker','failed','reported','parent')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,runtime_ms,normalized_cost,retry_count,human_intervention,success_state,acceptance_state,recorded_at)
+             VALUES(?1,'child-retry',?2,0,'failed',100,1000,0,0,'failure','rejected','2026-08-01T00:00:00Z')",
+            params![routed.decision.id, failed_key],
+        )
+        .unwrap();
+        let retried = route(&db, "parent", "turn-2", &request(), &descriptors()).unwrap();
+        let recommended = retried.decision.recommended_candidate.clone().unwrap();
+        assert_ne!(recommended, failed_key, "the failed candidate is not re-recommended");
+        assert!(
+            recommended.starts_with("claude:"),
+            "sideways before up: got {recommended}"
+        );
+        assert_eq!(
+            retried.decision.executed_candidate, retried.decision.baseline_candidate,
+            "shadow mode records the recommendation without acting on it"
+        );
+    }
+
+    #[test]
+    fn preferences_and_decisions_round_trip_through_idempotent_migration() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO workspaces(id,title,status,created_at) VALUES('w','Router','idle','now')",
+            [],
+        )
+        .unwrap();
+        let preferences = RouterPreferences {
+            mode: RouterMode::Shadow,
+            pinned_harness: Some("claude".into()),
+            excluded_models: vec!["OPUS".into(), "opus".into()],
+            ..RouterPreferences::default()
+        };
+        save_preferences(&db, "w", &preferences).unwrap();
+        let loaded = load_preferences(&db, "w").unwrap();
+        assert_eq!(loaded.mode, RouterMode::Shadow);
+        assert_eq!(loaded.excluded_models, vec!["opus"]);
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM router_preferences", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        let _ = WriteMode::ReadOnly;
+    }
+
+    #[test]
+    fn autonomous_activation_requires_completed_shadow_evidence() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO workspaces(id,title,status,created_at) VALUES('w','Router','idle','now')",
+            [],
+        )
+        .unwrap();
+        let error = save_preferences(
+            &db,
+            "w",
+            &RouterPreferences {
+                mode: RouterMode::Autonomous,
+                ..RouterPreferences::default()
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("completed shadow outcomes"));
+    }
+
+    #[test]
+    fn held_out_fixture_reports_under_five_percent_manual_selection() {
+        let fixture: Vec<HeldOutObservation> = serde_json::from_str(include_str!(
+            "../../../testing/fixtures/router-benchmark-v1.json"
+        ))
+        .unwrap();
+        assert_eq!(fixture.len(), 20);
+        assert!(fixture.iter().all(|row| !row.id.is_empty()));
+        assert!(fixture.iter().all(|row| row.recommended));
+        assert!(fixture.iter().filter(|row| row.manual).count() * 20 < fixture.len());
+        assert!(fixture.iter().all(|row| !row.policy_violation));
+        assert!(fixture.iter().filter(|row| row.actual_passed).count() >= 18);
+        assert!(fixture
+            .iter()
+            .all(|row| row.normalized_cost > 0 && row.latency_ms > 0));
+    }
+
+    /// A harness that cannot start read-only must be excluded before a worker
+    /// session exists, not discovered when its adapter refuses to launch.
+    #[test]
+    fn sandbox_incompatible_harness_is_excluded_with_a_permission_ceiling() {
+        let mut descriptors = descriptors();
+        descriptors[1].sandbox_modes =
+            vec![SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess];
+        let read_only = request();
+        assert_eq!(read_only.write_mode, WriteMode::ReadOnly);
+        let candidates = build_candidates(&descriptors, &read_only, &BTreeMap::new());
+        let claude = candidates
+            .iter()
+            .find(|candidate| candidate.harness == "claude")
+            .unwrap();
+        let codex = candidates
+            .iter()
+            .find(|candidate| candidate.harness == "codex")
+            .unwrap();
+        assert!(!claude.permission_eligible);
+        assert!(codex.permission_eligible);
+
+        let mut writing = read_only.clone();
+        writing.write_mode = WriteMode::Isolated;
+        writing.owned_paths = vec!["src/**".into()];
+        assert!(build_candidates(&descriptors, &writing, &BTreeMap::new())
+            .iter()
+            .all(|candidate| candidate.permission_eligible));
+
+        let evaluated = evaluate(EvaluationInput {
+            candidates,
+            preferences: RouterPreferences::default(),
+            histories: BTreeMap::new(),
+            required_capabilities: vec!["tools".into(), "commands".into()],
+            remaining_capability_units: 24,
+            budget_preference: None,
+            latency_preference: None,
+            prior_weight: PRIOR_WEIGHT,
+        });
+        let claude = evaluated
+            .iter()
+            .find(|item| item.candidate.harness == "claude")
+            .unwrap();
+        assert!(claude
+            .exclusions
+            .contains(&CandidateExclusion::PermissionCeiling));
+        assert!(evaluated
+            .iter()
+            .find(|item| item.candidate.harness == "codex")
+            .unwrap()
+            .eligible());
+    }
+
+    /// Autonomous routing must pick the compatible harness rather than the
+    /// harness that would fail at startup.
+    #[test]
+    fn autonomous_routing_avoids_a_read_only_incompatible_harness() {
+        let db = routing_db();
+        let mut descriptors = descriptors();
+        descriptors[0].sandbox_modes =
+            vec![SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess];
+        force_autonomous(&db, "w");
+        let routed = route(&db, "parent", "turn-sandbox", &request(), &descriptors).unwrap();
+        assert_eq!(routed.request.harness.as_deref(), Some("claude"));
+    }
+
+    /// A manual pin at an incompatible harness must return an actionable
+    /// incompatibility instead of reserving a doomed worker.
+    #[test]
+    fn pinned_incompatible_harness_returns_an_actionable_incompatibility() {
+        let db = routing_db();
+        let mut descriptors = descriptors();
+        descriptors[0].sandbox_modes =
+            vec![SandboxMode::WorkspaceWrite, SandboxMode::DangerFullAccess];
+        let mut pinned = request();
+        pinned.harness = Some("codex".into());
+        pinned.model = Some("codex-standard".into());
+        let error = route(&db, "parent", "turn-pinned", &pinned, &descriptors)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("codex cannot run a read_only worker"),
+            "{error}"
+        );
+        assert!(error.contains("claude"), "{error}");
+    }
+
+    #[test]
+    fn no_compatible_harness_explains_the_sandbox_mode() {
+        let db = routing_db();
+        let descriptors = descriptors()
+            .into_iter()
+            .map(|mut descriptor| {
+                descriptor.sandbox_modes = vec![SandboxMode::WorkspaceWrite];
+                descriptor
+            })
+            .collect::<Vec<_>>();
+        force_autonomous(&db, "w");
+        let error = route(&db, "parent", "turn-none", &request(), &descriptors)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("no installed harness can run a read_only worker"),
+            "{error}"
+        );
+    }
+
+    /// A user with only one harness installed must not have delegations
+    /// silently routed to (and fail on) the one they don't have. A manual
+    /// pin, or the plain default, at an unavailable harness must fall back to
+    /// whichever installed harness is actually eligible — the same as the
+    /// permission-ceiling substitution, but for supply rather than sandbox
+    /// compatibility.
+    #[test]
+    fn an_unavailable_harness_is_substituted_with_the_only_eligible_alternative() {
+        let db = routing_db();
+        let mut descriptors = descriptors();
+        descriptors[0].available = false;
+        descriptors[0].unavailable_reason = Some("codex is not installed".into());
+        let mut pinned = request();
+        pinned.harness = Some("codex".into());
+        let routed = route(&db, "parent", "turn", &pinned, &descriptors).unwrap();
+        assert_eq!(
+            routed.request.harness.as_deref(),
+            Some("claude"),
+            "the only installed harness must be used instead of the unavailable pin"
+        );
+    }
+
+    /// When nothing installed can serve the request, the caller needs an
+    /// actionable answer immediately — not a reservation that fails two steps
+    /// later inside `AdapterRegistry::start`.
+    #[test]
+    fn no_installed_harness_at_all_returns_an_actionable_error() {
+        let db = routing_db();
+        let mut descriptors = descriptors();
+        for descriptor in &mut descriptors {
+            descriptor.available = false;
+        }
+        let error = route(&db, "parent", "turn", &request(), &descriptors)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("cannot serve this delegation right now"),
+            "{error}"
+        );
+        assert!(error.contains("no other installed harness"), "{error}");
+    }
+
+    /// A worker that just reported a rate limit must not have the very next
+    /// delegation routed right back onto the same harness. This is the
+    /// durable half of the fix: the cooldown outlives the failed session, so
+    /// even after it ends the workspace keeps routing around the harness
+    /// until the cooldown clears.
+    #[test]
+    fn a_harness_marked_quota_exhausted_is_routed_around() {
+        let db = routing_db();
+        mark_harness_quota_exhausted(&db, "w", "codex", "429 rate limited", "parent").unwrap();
+        let routed = route(&db, "parent", "turn", &request(), &descriptors()).unwrap();
+        assert_eq!(
+            routed.request.harness.as_deref(),
+            Some("claude"),
+            "codex just reported a rate limit, so the default route must move to claude"
+        );
+    }
+
+    /// `record_worker_outcome` attributes a finished worker's result back to
+    /// whatever `router_decisions.executed_candidate` says ran. If that
+    /// column still named the unavailable baseline after a substitution, a
+    /// successful run on the substitute harness would train the wrong
+    /// candidate's history.
+    #[test]
+    fn a_substituted_harness_is_the_one_persisted_for_outcome_attribution() {
+        let db = routing_db();
+        let mut descriptors = descriptors();
+        descriptors[0].available = false;
+        let mut pinned = request();
+        pinned.harness = Some("codex".into());
+        let routed = route(&db, "parent", "turn", &pinned, &descriptors).unwrap();
+        assert_eq!(routed.request.harness.as_deref(), Some("claude"));
+
+        let persisted: String = db
+            .query_row(
+                "SELECT executed_candidate FROM router_decisions WHERE id=?1",
+                params![routed.decision.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            persisted, "claude:claude-standard",
+            "the persisted decision must name the candidate that actually ran, not the unavailable pin"
+        );
+    }
+
+    #[test]
+    fn direct_chats_fail_closed_instead_of_joining_a_null_learning_scope() {
+        let db = routing_db();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('direct',NULL,'codex','Direct','working','reported')", []).unwrap();
+        let error = route(&db, "direct", "turn", &request(), &descriptors())
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("without a workspace"), "{error}");
+    }
+
+    #[test]
+    fn a_zero_prior_weight_is_refused_and_prediction_never_divides_by_zero() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO learning_tunables(workspace_id, body, updated_at)
+             VALUES('w', '{\"priorWeight\":0}', 'now')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            tunables(&db, "w").prior_weight,
+            LearningTunables::default().prior_weight,
+            "zero is out of range and falls back"
+        );
+        // And the arithmetic answers rather than panicking even if a caller
+        // supplies zero directly with no history to divide by.
+        let result = evaluated_with(
+            vec![candidate("codex", "codex-standard", CapabilityTier::Standard, 4)],
+            RouterPreferences::default(),
+        );
+        let prediction = predict(&result[0].candidate, &HistoricalOutcome::default(), 0);
+        assert_eq!(prediction.pass_probability_bps, 0, "no prior and no evidence is not a crash");
+    }
+
+    #[test]
+    fn tunables_hold_their_defaults_and_clamp_nonsense() {
+        let db = routing_db();
+        assert_eq!(tunables(&db, "w"), LearningTunables::default(), "no row means defaults");
+        db.execute(
+            "INSERT INTO learning_tunables(workspace_id, body, updated_at)
+             VALUES('w', ?1, 'now')",
+            params![r#"{"minShadowOutcomesForAutonomy":5,"priorWeight":9000,"decayHalfLifeDays":7.0,"evidenceWindowDays":30,"canaryShareBuckets":95}"#],
+        )
+        .unwrap();
+        let tuned = tunables(&db, "w");
+        assert_eq!(tuned.min_shadow_outcomes_for_autonomy, 5, "in range applies");
+        assert_eq!(tuned.decay_half_life_days, 7.0);
+        assert_eq!(tuned.evidence_window_days, 30);
+        assert_eq!(
+            tuned.prior_weight,
+            LearningTunables::default().prior_weight,
+            "out of range falls back — nonsense is never load-bearing"
+        );
+        assert_eq!(tuned.canary_share_buckets, LearningTunables::default().canary_share_buckets);
+    }
+
+    #[test]
+    fn a_tuned_evidence_window_narrows_the_history() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO learning_tunables(workspace_id, body, updated_at)
+             VALUES('w', '{\"evidenceWindowDays\":30}', 'now')",
+            [],
+        )
+        .unwrap();
+        let insert = |suffix: &str, recorded_at: &str| {
+            let decision = format!("decision-window-{suffix}");
+            db.execute(
+                "INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,trace_id,task_family,task_fingerprint,profile_version,profile_purpose,actual_provider,actual_model,actual_effort,mode,manual_override,baseline_candidate,recommended_candidate,executed_candidate,decision,created_at)
+                 VALUES(?1,'w','parent',?2,'trace','implementation','fp',1,'implementer','codex','codex-standard','medium','shadow',0,'codex:codex-standard','codex:codex-standard','codex:codex-standard','{}',?3)",
+                params![decision, format!("turn-window-{suffix}"), recorded_at],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id)
+                 VALUES(?1,'w','codex','Worker','completed','reported','parent')",
+                params![format!("child-window-{suffix}")],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,runtime_ms,normalized_cost,retry_count,human_intervention,success_state,acceptance_state,recorded_at)
+                 VALUES(?1,?2,'codex:codex-standard',1,'completed',100,1000,0,0,'success','accepted',?3)",
+                params![decision, format!("child-window-{suffix}"), recorded_at],
+            )
+            .unwrap();
+        };
+        insert("fresh", "2026-08-01T00:00:00Z");
+        insert("sixty", "2026-06-02T00:00:00Z");
+        let history = &load_histories(&db, "w", "implementation").unwrap()["codex:codex-standard"];
+        assert_eq!(history.samples, 1, "a 30-day window drops the 60-day row");
+    }
+
+    #[test]
+    fn stale_history_decays_out_of_the_prediction() {
+        let db = routing_db();
+        let insert = |suffix: &str, succeeded: bool, recorded_at: &str| {
+            let decision = format!("decision-{suffix}");
+            db.execute(
+                "INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,trace_id,task_family,task_fingerprint,profile_version,profile_purpose,actual_provider,actual_model,actual_effort,mode,manual_override,baseline_candidate,recommended_candidate,executed_candidate,decision,created_at)
+                 VALUES(?1,'w','parent',?2,'trace','implementation','fp',1,'implementer','codex','codex-standard','medium','shadow',0,'codex:codex-standard','codex:codex-standard','codex:codex-standard','{}',?3)",
+                params![decision, format!("turn-{suffix}"), recorded_at],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id)
+                 VALUES(?1,'w','codex','Worker','completed','reported','parent')",
+                params![format!("child-{suffix}")],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,runtime_ms,normalized_cost,retry_count,human_intervention,success_state,acceptance_state,recorded_at)
+                 VALUES(?1,?2,'codex:codex-standard',?3,'completed',100,1000,0,0,?4,?5,?6)",
+                params![
+                    decision,
+                    format!("child-{suffix}"),
+                    succeeded,
+                    if succeeded { "success" } else { "failure" },
+                    if succeeded { "accepted" } else { "rejected" },
+                    recorded_at,
+                ],
+            )
+            .unwrap();
+        };
+        for index in 0..8 {
+            insert(&format!("stale-{index}"), false, "2026-06-02T00:00:00Z");
+        }
+        for index in 0..5 {
+            insert(&format!("ancient-{index}"), false, "2026-01-01T00:00:00Z");
+        }
+        for index in 0..3 {
+            insert(&format!("fresh-{index}"), true, "2026-08-01T00:00:00Z");
+        }
+        let history = &load_histories(&db, "w", "implementation").unwrap()["codex:codex-standard"];
+        // 8 failures at 60 days weigh 0.25 each; 5 at 212 days are outside the
+        // window entirely; 3 fresh successes weigh 1.0. Raw counting would say
+        // 3 passes in 16 samples — decayed, fresh evidence carries the day.
+        assert_eq!(history.successes, 3);
+        assert_eq!(history.samples, 5, "8*0.25 + 3, ancient rows gone");
+        assert!(
+            history.successes * 2 > history.samples,
+            "the weighted pass rate flips above one half"
+        );
+    }
+
+    #[test]
+    fn histories_do_not_cross_workspaces() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO workspaces(id,title,status,created_at) VALUES('other','Other','idle','now')",
+            [],
+        )
+        .unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('other-parent','other','codex','Other','working','reported')", []).unwrap();
+        let routed = route(&db, "parent", "turn", &request(), &descriptors()).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id) VALUES('child-w','w','codex','Worker','completed','reported','parent')", []).unwrap();
+        db.execute(
+            "INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,runtime_ms,normalized_cost,retry_count,human_intervention,success_state,acceptance_state,recorded_at)
+             VALUES(?1,'child-w','codex:codex-standard',1,'completed',90,1000,0,0,'success','accepted','now')",
+            params![routed.decision.id],
+        )
+        .unwrap();
+        assert_eq!(
+            load_histories(&db, "w", "implementation").unwrap()["codex:codex-standard"].samples,
+            1
+        );
+        assert!(load_histories(&db, "other", "implementation")
+            .unwrap()
+            .is_empty());
+    }
+
+    fn claude_exclusions(db: &Connection, turn: &str) -> Vec<CandidateExclusion> {
+        route(db, "parent", turn, &request(), &descriptors())
+            .unwrap()
+            .decision
+            .candidates
+            .into_iter()
+            .find(|item| item.candidate.harness == "claude")
+            .unwrap()
+            .exclusions
+    }
+
+    #[test]
+    fn ended_session_at_full_usage_does_not_exhaust_later_routes() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,usage_percent,context_percent,ended_at)
+             VALUES('old-claude','w','claude','Old','completed','reported',100,100,'now')",
+            [],
+        )
+        .unwrap();
+        assert!(harness_capacity(&db, "w").unwrap().get("claude").is_none());
+        let exclusions = claude_exclusions(&db, "turn-stale-quota");
+        assert!(!exclusions.contains(&CandidateExclusion::QuotaExhausted));
+        assert!(!exclusions.contains(&CandidateExclusion::ContextExhausted));
+    }
+
+    #[test]
+    fn ready_session_at_full_usage_is_unknown_not_excluded() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,usage_percent,context_percent)
+             VALUES('ready-claude','w','claude','Ready','ready','reported',100,100)",
+            [],
+        )
+        .unwrap();
+        assert!(harness_capacity(&db, "w").unwrap().get("claude").is_none());
+        let exclusions = claude_exclusions(&db, "turn-ready-quota");
+        assert!(!exclusions.contains(&CandidateExclusion::QuotaExhausted));
+        assert!(!exclusions.contains(&CandidateExclusion::ContextExhausted));
+    }
+
+    #[test]
+    fn a_new_starting_row_does_not_mask_a_live_exhausted_sibling() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,usage_percent,context_percent)
+             VALUES('live-full','w','claude','Live','working','reported',100,100)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source)
+             VALUES('just-starting','w','claude','Starting','starting','estimated')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            harness_capacity(&db, "w").unwrap().get("claude"),
+            Some(&(false, false)),
+            "any live session at 100 exhausts, however new its siblings are"
+        );
+    }
+
+    #[test]
+    fn restored_session_at_full_usage_still_exhausts() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,usage_percent,context_percent)
+             VALUES('restored-claude','w','claude','Restored','restored','reported',100,100)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            harness_capacity(&db, "w").unwrap().get("claude"),
+            Some(&(false, false))
+        );
+    }
+
+    #[test]
+    fn live_session_at_full_usage_still_exhausts() {
+        let db = routing_db();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,usage_percent,context_percent)
+             VALUES('live-claude','w','claude','Live','working','reported',100,100)",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            harness_capacity(&db, "w").unwrap().get("claude"),
+            Some(&(false, false))
+        );
+        let exclusions = claude_exclusions(&db, "turn-live-quota");
+        assert!(exclusions.contains(&CandidateExclusion::QuotaExhausted));
+        assert!(exclusions.contains(&CandidateExclusion::ContextExhausted));
+    }
+}

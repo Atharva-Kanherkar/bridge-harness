@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#212120" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23ececea'/%3E%3Cpath d='M10 8h7.2c4 0 6 1.5 6 4.3 0 1.8-.9 3-2.6 3.7 2.1.6 3.2 1.9 3.2 3.9 0 2.9-2.2 4.6-6.5 4.6H10V8Zm6.8 6.5c1.6 0 2.4-.5 2.4-1.6 0-1-.8-1.5-2.4-1.5h-2.9v3.1h2.9Zm.3 6.5c1.8 0 2.7-.6 2.7-1.7 0-1.2-.9-1.8-2.7-1.8h-3.2V21h3.2Z' fill='%23212120'/%3E%3C/svg%3E" />
+<title>Environment variables — Bridge Docs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&family=Bricolage+Grotesque:opsz,wght@12..96,200..800&display=swap">
+<link rel="stylesheet" href="../assets/tokens.css">
+</head>
+<body data-page="env-vars">
+
+<button class="menu-btn" id="menuBtn" aria-label="Open navigation"><svg class="icon" style="width:17px;height:17px"><use href="#i-menu"></use></svg></button>
+<div class="scrim" id="scrim"></div>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="content-scroll" id="contentScroll">
+    <div class="content-inner">
+      <div class="page-grid">
+        <div>
+          <p class="eyebrow">reference</p>
+          <h1>Environment variables</h1>
+          <p class="lede">Bridge responds to a set of environment variables that control where it stores data, which host backend it uses, and how to locate its bundled components.</p>
+          <div class="prose">
+            <h2 id="h-data-storage">Data storage</h2>
+            <h3>BRIDGE_DATA_DIR</h3>
+            <p><code>BRIDGE_DATA_DIR</code> sets the directory where Bridge stores its SQLite database, session history, and other persistent state. If you run <code>bridged</code> (the daemon) as a command-line tool, you must either pass <code>--data-dir</code> or set this variable; one of the two is required. The desktop app falls back to a platform-specific default (<code>~/Library/Application Support/dev.bridge.deck</code> on macOS, <code>$XDG_DATA_HOME/dev.bridge.deck</code> on Linux) if neither is set.</p>
+            <p>Exactly one owner can hold the data directory at a time — enforced by a file-system lease. If you need two concurrent instances (for example, testing multiple versions in parallel), use separate data directories.</p>
+
+            <h2 id="h-host-selection">Host mode</h2>
+            <h3>BRIDGE_DESKTOP_HOST</h3>
+            <p><code>BRIDGE_DESKTOP_HOST</code> tells the desktop app which host backend to use. Valid values are <code>auto</code> (default), <code>daemon</code>, or <code>embedded</code>.</p>
+            <p><strong>auto:</strong> The app attempts to use a daemon-backed session; if <code>bridged</code> is not reachable, it falls back to the embedded in-process host. Simplest for most users.</p>
+            <p><strong>daemon:</strong> The app requires a running <code>bridged</code> instance and proxies every invoke through the socket. If the daemon is not available, the app exits at startup. This mode is intended for setups that want the performance and isolation characteristics of a separate daemon process.</p>
+            <p><strong>embedded:</strong> The entire runtime runs in-process within the app. No separate daemon is needed. Useful for single-user scenarios or when network proxying overhead is a concern, but the app cannot be backgrounded as cleanly.</p>
+
+            <h2 id="h-component-resolution">Component location</h2>
+            <p>Bridge ships with several bundled binaries and external programs. These variables override the automatic location logic.</p>
+            <h3>BRIDGE_CLAUDE_SIDECAR</h3>
+            <p>Path to the Claude Agent SDK sidecar entry point, typically <code>sidecar/claude-agent/index.mjs</code>. If set, the path must exist. If not set, Bridge searches (in order): next to the main executable (production app bundle), then the in-repo path (development). The sidecar is how Bridge runs Claude Code agents through the Claude Agent SDK in a Node.js process.</p>
+
+            <h3>BRIDGE_BROWSER_EXTENSION</h3>
+            <p>Path to the browser extension folder. If set, this directory is used directly. If not set, Bridge searches (in order): next to the executable in the macOS app-bundle structure, flat layouts at the same level as the binary, then a compile-time fallback for development builds. The browser extension enables native host communication for the Bridge browser integration.</p>
+
+            <h3>BRIDGE_OPENCODE_SIDECAR</h3>
+            <p>Path to the OpenCode sidecar executable. If set, this exact path is used first. If not found or not set, Bridge searches next to the main executable. This is one entry point for managed OpenCode sessions.</p>
+
+            <h3>BRIDGE_BROWSER_HOST</h3>
+            <p>Path to the <code>bridge-browser-host</code> native executable. If set, this path is used. If not found or not set, Bridge searches next to the main executable. This binary is installed as a browser native host manifest for handling browser bridge communication.</p>
+
+            <h3>BRIDGE_DAEMON_BIN</h3>
+            <p>Path to the <code>bridged</code> daemon binary. If set, this path is used to start the daemon. If not set, Bridge searches next to the main executable. Rarely needed because the daemon is usually discovered automatically or the app runs with <code>BRIDGE_DESKTOP_HOST=embedded</code>.</p>
+
+            <h2 id="h-worker-isolation">Worker isolation</h2>
+            <h3>BRIDGE_WORKER_OUTPUT_DIR</h3>
+            <p>When a worker runs in read-only OS isolation (via Seatbelt on macOS), the workspace and parent directories are immutable. <code>BRIDGE_WORKER_OUTPUT_DIR</code> is the only writable location available — Bridge sets this per-worker to an isolated output directory. Workers should write artifacts, logs, and temporary files here rather than trying to mutate the workspace. The policy engine enforces this through the sandbox; users and agent runtimes learn this directory from the environment and can produce outputs that Bridge will later retrieve.</p>
+
+            <h3>BRIDGE_READ_ONLY_NETWORK</h3>
+            <p>Set to <code>deny</code> or <code>denied</code> to deny network access in worker sandboxes during read-only OS isolation. If not set or set to any other value, network access is allowed at the runtime's discretion. This is a blunt knob: it applies to all workers globally, not per-delegation. Most installations leave this unset and control network policy through <a href="policy.html">policy &amp; delegation</a> instead.</p>
+
+            <h2 id="h-process-supervision">Process supervision</h2>
+            <h3>BRIDGE_DISABLE_PARENT_WATCHDOG</h3>
+            <p>The parent watchdog is a background monitor that kills a wrapped child process if the supervisor that spawned it dies (crash, SIGKILL, or unclean exit). This prevents orphaned agent runtimes. Setting <code>BRIDGE_DISABLE_PARENT_WATCHDOG</code> to any value disables this monitor. The watchdog is enabled by default and should not be disabled in production.</p>
+
+            <h3>BRIDGE_SKIP_LEGACY_ORPHAN_SWEEP</h3>
+            <p>On startup, Bridge scans the system for orphaned <code>opencode serve</code> processes that predate the process ledger — accumulated before process-supervision history was tracked in the database. Setting <code>BRIDGE_SKIP_LEGACY_ORPHAN_SWEEP</code> skips this scan. This scan is rare (runs once per system after an upgrade) and can be skipped if your Bridge installation started after process ledger was available. Never set this unless you know you need to.</p>
+
+            <h2 id="h-provider-discovery">Provider discovery</h2>
+            <p>Bridge locates the Codex, Claude Code, and OpenCode command-line tools by checking your <code>PATH</code> environment variable. If a provider CLI is missing, its adapter is marked unavailable instead of blocking startup. To use a provider, ensure the <code>codex</code>, <code>claude</code>, or <code>opencode</code> command is on your <code>PATH</code>, or build Bridge with the vendor runtimes under <code>runtimes/</code>.</p>
+
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>Component location variables are rarely needed — they exist primarily for testing and for deployments where the app bundle layout differs from the standard macOS structure. In normal use, Bridge finds everything automatically.</p>
+            </div>
+
+            <h2 id="h-internal">Internal use only</h2>
+            <p><code>BRIDGE_LOCK_HELPER</code>, <code>BRIDGE_LOCK_HELPER_DIR</code>, and <code>BRIDGE_BROWSER_SOCKET</code> are set internally by Bridge or used during testing. Do not set these yourself.</p>
+
+            <h2 id="h-summary-table">Quick reference</h2>
+            <div class="table-scroll">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Variable</th>
+                    <th>Purpose</th>
+                    <th>When unset</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><code>BRIDGE_DATA_DIR</code></td>
+                    <td>SQLite database and session history storage</td>
+                    <td>Uses platform default (<code>~/Library/Application Support/dev.bridge.deck</code>)</td>
+                  </tr>
+                  <tr>
+                    <td><code>BRIDGE_DESKTOP_HOST</code></td>
+                    <td>Host backend: auto, daemon, or embedded</td>
+                    <td>Defaults to <code>auto</code></td>
+                  </tr>
+                  <tr>
+                    <td><code>BRIDGE_CLAUDE_SIDECAR</code></td>
+                    <td>Claude Agent SDK sidecar location</td>
+                    <td>Searches next to executable, then in-repo path</td>
+                  </tr>
+                  <tr>
+                    <td><code>BRIDGE_BROWSER_EXTENSION</code></td>
+                    <td>Browser extension folder location</td>
+                    <td>Searches app-bundle structure, then compile-time fallback</td>
+                  </tr>
+                  <tr>
+                    <td><code>BRIDGE_OPENCODE_SIDECAR</code></td>
+                    <td>OpenCode sidecar executable location</td>
+                    <td>Searches next to executable</td>
+                  </tr>
+                  <tr>
+                    <td><code>BRIDGE_BROWSER_HOST</code></td>
+                    <td>bridge-browser-host executable location</td>
+                    <td>Searches next to executable</td>
+                  </tr>
+                  <tr>
+                    <td><code>BRIDGE_DAEMON_BIN</code></td>
+                    <td>bridged daemon executable location</td>
+                    <td>Searches next to executable</td>
+                  </tr>
+                  <tr>
+                    <td><code>BRIDGE_WORKER_OUTPUT_DIR</code></td>
+                    <td>Writable directory for sandboxed workers</td>
+                    <td>Set per-worker by the sandbox; not user-configurable</td>
+                  </tr>
+                  <tr>
+                    <td><code>BRIDGE_READ_ONLY_NETWORK</code></td>
+                    <td>Deny network access in read-only isolation</td>
+                    <td>Network access allowed</td>
+                  </tr>
+                  <tr>
+                    <td><code>BRIDGE_DISABLE_PARENT_WATCHDOG</code></td>
+                    <td>Disable orphan-prevention monitor</td>
+                    <td>Watchdog enabled</td>
+                  </tr>
+                  <tr>
+                    <td><code>BRIDGE_SKIP_LEGACY_ORPHAN_SWEEP</code></td>
+                    <td>Skip scan for pre-ledger orphaned processes</td>
+                    <td>Scan runs on startup if needed</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div id="pagerMount"></div>
+        </div>
+        <aside class="toc" id="tocMount"></aside>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="../assets/shell.js"></script>
+</body>
+</html>

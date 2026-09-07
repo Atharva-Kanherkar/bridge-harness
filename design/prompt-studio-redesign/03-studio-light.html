@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Prompt Studio — Studio Light (floating glass)</title>
+<style>
+  :root {
+    --fg: #1f1f1d; --muted: #5d5d57; --faint: #8e8e87;
+    --border: rgba(31,31,29,.1); --strong-border: rgba(31,31,29,.14);
+    --code: #f3f3f1; --code-hl: rgba(31,31,29,.05);
+    --primary: #1f1f1d; --primary-fg: #fafaf9;
+    --ring: #3d6fa5; --warning: #8f5e05; --success: #2f7d4f;
+    --syn-comment: #8e8e87; --syn-keyword: #6b4e9e; --syn-string: #2f6b3d;
+    --syn-number: #8a5a10; --syn-function: #2c5c90; --syn-punct: #5d5d57;
+    --sans: "Geist Variable", "Geist", ui-sans-serif, -apple-system, "SF Pro Text", system-ui, sans-serif;
+    --mono: "Geist Mono Variable", "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    --glass: rgba(255,255,255,.62);
+    --glass-border: rgba(31,31,29,.09);
+    --shadow: 0 24px 60px -18px rgba(0,0,0,.28), 0 4px 12px -6px rgba(0,0,0,.14);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; }
+  body {
+    font-family: var(--sans); color: var(--fg); -webkit-font-smoothing: antialiased;
+    font-size: 13px; line-height: 1.5; overflow: hidden; position: relative;
+    /* Wallpaper tint showing through the vibrancy canvas — in the app this is
+       the real desktop; here a quiet dusk wash stands in. */
+    background:
+      radial-gradient(1200px 700px at 82% -12%, rgba(214,196,166,.5), transparent 58%),
+      radial-gradient(900px 620px at -8% 108%, rgba(180,190,204,.42), transparent 55%),
+      linear-gradient(158deg, #f4f2ec 0%, #ecebe6 48%, #e6e6e2 100%);
+  }
+  ::selection { background: rgba(61,111,165,.24); }
+
+  .glass {
+    background: var(--glass);
+    -webkit-backdrop-filter: blur(24px) saturate(160%);
+    backdrop-filter: blur(24px) saturate(160%);
+    border: 1px solid var(--glass-border);
+    box-shadow: var(--shadow);
+  }
+
+  /* ── Floating top chrome ──────────────────────────── */
+  .chrome {
+    position: fixed; top: 16px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 14px; padding: 7px 8px;
+    border-radius: 999px; z-index: 10; max-width: min(92vw, 760px);
+  }
+  .crumb { display: flex; align-items: baseline; gap: 7px; padding: 0 6px 0 10px; font-size: 12px; color: var(--faint); white-space: nowrap; }
+  .crumb b { font-family: var(--mono); font-weight: 500; font-size: 12.5px; color: var(--fg); }
+  .divider { width: 1px; height: 16px; background: var(--strong-border); }
+  .segmented { display: inline-flex; gap: 2px; padding: 2px; border-radius: 999px; background: rgba(31,31,29,.05); border: 1px solid var(--glass-border); }
+  .seg { font: inherit; font-size: 11.5px; font-weight: 500; color: var(--muted); background: none; border: 0; border-radius: 999px; padding: 3px 11px; cursor: pointer; white-space: nowrap; }
+  .seg:hover { color: var(--fg); }
+  .seg.on { color: var(--fg); background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.14); }
+  .tool { font: inherit; font-size: 11.5px; color: var(--muted); background: none; border: 0; border-radius: 999px; padding: 4px 10px; cursor: pointer; }
+  .tool:hover { color: var(--fg); background: rgba(31,31,29,.06); }
+
+  /* ── Document on canvas ───────────────────────────── */
+  .stage { position: absolute; inset: 72px 372px 84px 0; display: flex; justify-content: center; overflow: hidden; }
+  .doc { width: min(100%, 720px); height: 100%; overflow-y: auto; padding: 8px 28px 40px; }
+  .doc::-webkit-scrollbar { width: 0; }
+  .doc-inner { font-family: var(--mono); font-size: 12.5px; line-height: 1.85; white-space: pre-wrap; }
+  .c { color: var(--syn-comment); font-style: italic; }
+  .k { color: var(--syn-keyword); }
+  .s { color: var(--syn-string); }
+  .n { color: var(--syn-number); }
+  .f { color: var(--syn-function); }
+  .p { color: var(--syn-punct); }
+  .fence {
+    margin: 10px 0; padding: 12px 14px; border-radius: 10px;
+    background: var(--code); border: 1px solid var(--border);
+    font-size: 11.5px; line-height: 1.7; display: block; white-space: pre;
+  }
+
+  .notice {
+    display: flex; align-items: center; gap: 10px; margin: 0 0 14px;
+    padding: 9px 13px; border-radius: 10px; font-size: 12px; color: var(--warning);
+    background: rgba(143,94,5,.07); border: 1px solid rgba(143,94,5,.22);
+  }
+  .notice .fix { margin-left: auto; font-size: 11px; color: var(--ring); background: none; border: 0; cursor: pointer; white-space: nowrap; }
+  .notice .fix:hover { text-decoration: underline; text-underline-offset: 3px; }
+
+  /* ── Floating inspector ───────────────────────────── */
+  .inspector {
+    position: fixed; top: 72px; right: 16px; bottom: 84px; width: 324px;
+    border-radius: 18px; z-index: 10; display: flex; flex-direction: column; overflow: hidden;
+  }
+  .insp-head { display: flex; align-items: center; gap: 8px; padding: 14px 16px 12px; border-bottom: 1px solid var(--border); }
+  .insp-head h3 { font-size: 12.5px; font-weight: 600; letter-spacing: -.01em; }
+  .live { display: flex; align-items: center; gap: 6px; margin-left: auto; font-size: 10px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--success); }
+  .live::before { content: ""; width: 5px; height: 5px; border-radius: 50%; background: var(--success); }
+  .insp-body { flex: 1; overflow-y: auto; padding: 14px 16px 16px; }
+
+  .stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .stat { border: 1px solid var(--border); border-radius: 11px; padding: 9px 4px 8px; text-align: center; background: rgba(255,255,255,.45); }
+  .stat b { display: block; font-family: var(--mono); font-size: 13.5px; font-weight: 500; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+  .stat span { font-size: 9px; letter-spacing: .08em; text-transform: uppercase; color: var(--faint); }
+
+  .section-label { font-size: 10px; font-weight: 600; letter-spacing: .09em; text-transform: uppercase; color: var(--faint); margin: 18px 0 9px; }
+  .layers { display: flex; flex-direction: column; gap: 5px; }
+  .layer { display: flex; align-items: center; gap: 8px; font-size: 11.5px; padding: 7px 10px; border-radius: 9px; border: 1px solid var(--border); background: rgba(255,255,255,.45); }
+  .layer .name { font-family: var(--mono); font-size: 11px; }
+  .layer .bytes { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--faint); font-variant-numeric: tabular-nums; }
+  .layer .src { font-size: 9px; letter-spacing: .05em; text-transform: uppercase; color: var(--faint); }
+  .layer.exact { border-color: rgba(61,111,165,.32); }
+  .layer.exact .src { color: var(--ring); }
+
+  .hist { display: flex; flex-direction: column; }
+  .h-row { display: flex; align-items: center; gap: 10px; padding: 6px 2px; font-size: 12px; color: var(--muted); position: relative; }
+  .h-row::before { content: ""; width: 7px; height: 7px; border-radius: 50%; border: 1.5px solid var(--faint); flex-shrink: 0; }
+  .h-row.save::before { border-color: var(--fg); }
+  .h-row.now::before { background: var(--ring); border-color: var(--ring); }
+  .h-row .when { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--faint); }
+  .h-row button { font-size: 10.5px; color: var(--ring); background: none; border: 0; cursor: pointer; opacity: 0; padding: 0; }
+  .h-row:hover button { opacity: 1; }
+  .h-row button:hover { text-decoration: underline; text-underline-offset: 2px; }
+
+  .cache-note { margin-top: 14px; font-size: 10.5px; line-height: 1.5; color: var(--warning); }
+
+  /* ── Floating status bar ──────────────────────────── */
+  .statusbar {
+    position: fixed; bottom: 16px; left: 50%; transform: translateX(-50%);
+    display: flex; align-items: center; gap: 14px; padding: 7px 8px 7px 16px;
+    border-radius: 999px; z-index: 10; white-space: nowrap;
+  }
+  .sb-item { display: flex; align-items: center; gap: 7px; font-size: 11.5px; color: var(--muted); }
+  .sb-item .mono { font-family: var(--mono); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+  .state-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--warning); }
+  .btn { font: inherit; font-size: 12px; font-weight: 500; padding: 5px 14px; border-radius: 999px; border: 0; cursor: pointer; }
+  .btn.primary { background: var(--primary); color: var(--primary-fg); }
+</style>
+</head>
+<body>
+
+  <!-- floating chrome -->
+  <header class="chrome glass">
+    <div class="crumb">Orchestrator <span style="color:var(--faint)">/</span> <b>bridge_role</b></div>
+    <div class="divider"></div>
+    <div class="segmented">
+      <button class="seg on">bridge_role</button>
+      <button class="seg">delegation_protocol</button>
+    </div>
+    <div class="divider"></div>
+    <button class="tool">Export</button>
+    <button class="tool">Import</button>
+  </header>
+
+  <!-- the document, directly on canvas -->
+  <main class="stage">
+    <div class="doc">
+      <div class="notice">
+        <span>Typed delegation may stop working because <b style="font-family:var(--mono);font-weight:500">bridge-delegate</b> is missing from this draft.</span>
+        <button class="fix">Re-insert marker</button>
+      </div>
+      <div class="doc-inner"><span class="c">&lt;!-- The orchestrator brief. Compiled first in the stable prefix. --&gt;</span>
+<span class="k">You are Bridge's starter orchestrator.</span>
+
+You are a planner and router. Bridge chooses provider runtimes; you
+route only with durable role, capability-tier, and effort vocabulary.
+
+<span class="p">##</span> Operating rules
+<span class="p">-</span> Handle questions and trivial one-shot local actions yourself.
+<span class="p">-</span> Delegate multi-step implementation, fixes, refactors, research,
+  verification, planning, and documentation.
+<span class="p">-</span> Use the cheapest capable tier: <span class="n">fast</span> for narrow low-risk work,
+  <span class="n">standard</span> for ordinary multi-file work, and <span class="n">strong</span> only for
+  high-risk, ambiguous, or unusually difficult work.
+
+<span class="p">##</span> Typed delegation request
+Emit exactly one fenced <span class="f">bridge-delegate</span> JSON object after a short
+sentence naming the role and reason.<span class="fence">{<span class="f">"schemaVersion"</span>: <span class="n">1</span>, <span class="f">"role"</span>: <span class="s">"implementation"</span>, <span class="f">"capabilityTier"</span>: <span class="s">"standard"</span>, …}</span></div>
+    </div>
+  </main>
+
+  <!-- floating inspector -->
+  <aside class="inspector glass">
+    <div class="insp-head">
+      <h3>Compilation</h3>
+      <span class="live">live</span>
+    </div>
+    <div class="insp-body">
+      <div class="stats">
+        <div class="stat"><b>61,204</b><span>bytes</span></div>
+        <div class="stat"><b>15,321</b><span>tok est</span></div>
+        <div class="stat"><b>b7f2c91a</b><span>prefix</span></div>
+      </div>
+
+      <div class="section-label">Provider layers</div>
+      <div class="layers">
+        <div class="layer exact"><span class="name">bridge</span><span class="src">exact</span><span class="bytes">61,204 B</span></div>
+        <div class="layer"><span class="name">claude-agent</span><span class="src">disclosed</span><span class="bytes">21,400 B</span></div>
+        <div class="layer"><span class="name">codex</span><span class="src">est</span><span class="bytes">~13,900 B</span></div>
+        <div class="layer"><span class="name">opencode</span><span class="src">est</span><span class="bytes">~9,200 B</span></div>
+      </div>
+
+      <div class="section-label">History</div>
+      <div class="hist">
+        <div class="h-row now">Draft<span class="when">now</span></div>
+        <div class="h-row save">Save<button>Restore</button><span class="when">14:02</span></div>
+        <div class="h-row save">Save<button>Restore</button><span class="when">Aug 28</span></div>
+        <div class="h-row">Restore<button>Restore</button><span class="when">Aug 25</span></div>
+      </div>
+
+      <p class="cache-note">Prefix changed — the next turn is likely a cache miss on the Bridge prefix. Provider-side cache effects are estimated, not measured.</p>
+    </div>
+  </aside>
+
+  <!-- floating status bar -->
+  <footer class="statusbar glass">
+    <div class="sb-item"><span class="state-dot"></span>Modified</div>
+    <div class="sb-item"><span class="mono">812 tok</span></div>
+    <div class="sb-item"><span class="mono">58,931 B stable</span></div>
+    <div class="sb-item">Unsaved draft</div>
+    <button class="btn primary">Save ⌘S</button>
+  </footer>
+
+</body>
+</html>

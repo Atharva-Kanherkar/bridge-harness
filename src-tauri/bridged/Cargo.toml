@@ -1,0 +1,20 @@
+[package]
+name = "bridged"
+version = { workspace = true }
+description = "The single local owner of Bridge sessions, serving the bridge-protocol contract over a Unix socket"
+authors = ["Bridge"]
+edition = "2021"
+publish = false
+
+[dependencies]
+bridge-core = { path = "../bridge-core" }
+bridge-protocol = { path = "../bridge-protocol" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+uuid = { workspace = true }
+tiny_http = "0.12"
+signal-hook = "0.3"
+
+[dev-dependencies]
+tempfile = { workspace = true }
+rusqlite = { workspace = true }

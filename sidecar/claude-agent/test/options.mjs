@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { buildOptions, permissionOptions } from "../options.mjs";
+import { buildOptions, permissionOptions, sdkEffort } from "../options.mjs";
 
 const base = {
   sessionId: "11111111-1111-4111-8111-111111111111",
@@ -40,6 +40,35 @@ test("query options load explicit Claude plugins and credential-free connectors"
   assert.deepEqual(options.disallowedTools, ["Edit", "Write", "NotebookEdit"]);
 });
 
+test("Claude receives the compiled stable prefix before variable context", () => {
+  const stable = '<bridge-stable-prompt schema="1">stable-provider-contract</bridge-stable-prompt>';
+  const compile = evidence => [stable, `<bridge-variable-context>${evidence}</bridge-variable-context>`].join("\n\n");
+  const first = buildOptions({ ...base, instructions: compile("variable-task-evidence-one"), resume: false }).systemPrompt.append;
+  const second = buildOptions({ ...base, instructions: compile("variable-task-evidence-two"), resume: false }).systemPrompt.append;
+  assert.notEqual(first, second);
+  for (const appended of [first, second]) {
+    assert.ok(appended.startsWith(stable));
+    assert.ok(appended.indexOf("stable-provider-contract") < appended.indexOf("variable-task-evidence"));
+  }
+});
+
+test("routed effort is passed to the SDK natively, low and medium included", () => {
+  for (const level of ["low", "medium", "high", "xhigh", "max"]) {
+    const options = buildOptions({ ...base, resume: false, effort: level });
+    assert.equal(options.effort, level);
+  }
+});
+
+test("effort is normalized and an out-of-set level is dropped rather than sent", () => {
+  assert.equal(buildOptions({ ...base, resume: false, effort: "HIGH " }).effort, "high");
+  // Codex's `ultra` has no Claude equivalent, so it is omitted entirely.
+  assert.equal(buildOptions({ ...base, resume: false, effort: "ultra" }).effort, undefined);
+  assert.equal(buildOptions({ ...base, resume: false, effort: null }).effort, undefined);
+  assert.equal(sdkEffort("xhigh"), "xhigh");
+  assert.equal(sdkEffort("ultra"), null);
+  assert.equal(sdkEffort(undefined), null);
+});
+
 test("read-only mode denies direct write tools without dangerous bypass", () => {
   const options = permissionOptions("ReadOnly");
   assert.equal(options.permissionMode, "dontAsk");
@@ -63,4 +92,10 @@ test("full and default modes intentionally enable permission bypass", () => {
       allowDangerouslySkipPermissions: true,
     });
   }
+});
+
+
+test("catalogue discovery does not start project integrations", async () => {
+  const { catalogOptions } = await import("../options.mjs");
+  assert.deepEqual(catalogOptions(), { settingSources: [], strictMcpConfig: true, mcpServers: {}, plugins: [], tools: [] });
 });

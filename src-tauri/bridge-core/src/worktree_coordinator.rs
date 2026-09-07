@@ -1,0 +1,287 @@
+use crate::{git, store, BridgeError};
+use rusqlite::{params, Connection};
+use std::path::{Path, PathBuf};
+
+pub struct WorktreeCoordinator;
+
+/// The outcome of checking a PR head branch out into a task worktree.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PullRequestCheckout {
+    /// The workspace node registered for the worktree — always a new node (or
+    /// the one a previous checkout registered), never the source workspace.
+    pub workspace_id: String,
+    pub path: PathBuf,
+    pub branch: String,
+    pub reused: bool,
+}
+
+impl WorktreeCoordinator {
+    pub fn prepare_isolated_worker(
+        db: &Connection,
+        namespace_root: &Path,
+        workspace_id: &str,
+        task_worktree: &Path,
+        task_branch: &str,
+        session_id: &str,
+        owned_paths: &[String],
+    ) -> Result<(PathBuf, String), BridgeError> {
+        let active_writers = store::worker_leases(db, workspace_id)?
+            .into_iter()
+            .filter(|lease| lease.session_id != session_id && lease.lease_status == "active")
+            .filter(|lease| lease.write_mode != "read_only")
+            .map(|lease| git::ActiveWriter {
+                session_id: lease.session_id,
+                owned_paths: serde_json::from_value(lease.owned_paths).unwrap_or_default(),
+            })
+            .collect::<Vec<_>>();
+        let branch = format!("{}-worker-{}", task_branch, git::slug(session_id));
+        let worktree = git::create_child_worktree(
+            task_worktree,
+            namespace_root,
+            session_id,
+            &branch,
+            owned_paths,
+            &active_writers,
+        )?;
+        db.execute(
+            "UPDATE worker_runtime SET worktree_path=?2,worktree_branch=?3,updated_at=?4 WHERE session_id=?1",
+            rusqlite::params![session_id, worktree.path.to_string_lossy(), worktree.branch, chrono::Utc::now().to_rfc3339()],
+        )?;
+        Ok((worktree.path, worktree.branch))
+    }
+
+    pub fn child_worktrees_available(namespace_root: &Path) -> bool {
+        namespace_root.parent().is_some()
+    }
+
+    /// Check a PR head branch out into a task worktree of its own and register
+    /// it as a new workspace node. The source workspace is never mutated: the
+    /// worktree is cut beside it under the worktrees namespace, and repeating
+    /// the checkout reuses the node a previous call registered instead of
+    /// stacking duplicates.
+    ///
+    /// Takes the db mutex rather than a held connection so the network fetch
+    /// and worktree creation run outside any database lock.
+    pub fn checkout_pull_request(
+        db: &std::sync::Mutex<Connection>,
+        namespace_root: &Path,
+        source_repo: &Path,
+        remote: &str,
+        number: u64,
+        head_branch: &str,
+        title: &str,
+        project_id: Option<&str>,
+    ) -> Result<PullRequestCheckout, BridgeError> {
+        let slug = {
+            let value = git::slug(head_branch);
+            if value.is_empty() { "branch".to_owned() } else { value }
+        };
+        let path = namespace_root
+            .join("github")
+            .join(format!("pr-{number}-{slug}"));
+        let path_text = path.to_string_lossy().to_string();
+
+        let existing: Option<String> = db.lock().unwrap().query_row(
+            "SELECT id FROM workspaces WHERE path=?1",
+            params![path_text],
+            |row| row.get(0),
+        ).map(Some).or_else(|error| match error {
+            rusqlite::Error::QueryReturnedNoRows => Ok(None),
+            other => Err(BridgeError::from(other)),
+        })?;
+        if let Some(workspace_id) = existing {
+            if !path.is_dir() {
+                // The node survived a reclaimed tree (cache wipe, manual rm):
+                // restore the worktree it names rather than failing the reuse.
+                git::fetch_branch(source_repo, remote, head_branch)?;
+                git::create_worktree_on_branch(source_repo, &path, head_branch, remote)?;
+            }
+            return Ok(PullRequestCheckout {
+                workspace_id,
+                path,
+                branch: head_branch.to_owned(),
+                reused: true,
+            });
+        }
+
+        if path.is_dir() {
+            // A worktree without its workspace row (a crash between the two
+            // steps). Adopt it only if it really is this PR's branch.
+            if git::current_branch(&path).as_deref() != Some(head_branch) {
+                return Err(BridgeError::Invalid(format!(
+                    "{path_text} exists but is not on {head_branch}; remove it and retry"
+                )));
+            }
+        } else {
+            git::fetch_branch(source_repo, remote, head_branch)?;
+            git::create_worktree_on_branch(source_repo, &path, head_branch, remote)?;
+        }
+
+        let workspace_id = uuid::Uuid::new_v4().to_string();
+        let db = db.lock().unwrap();
+        db.execute(
+            "INSERT INTO workspaces(id,project_id,title,branch,path,status,created_at) VALUES(?1,?2,?3,?4,?5,'idle',?6)",
+            params![
+                workspace_id,
+                project_id,
+                format!("PR #{number}: {title}"),
+                head_branch,
+                path_text,
+                chrono::Utc::now().to_rfc3339(),
+            ],
+        )?;
+        store::event(
+            &db,
+            "github",
+            "pr.checked_out",
+            &workspace_id,
+            &format!("Checked out PR #{number} ({head_branch}) into {path_text}"),
+        )?;
+        Ok(PullRequestCheckout {
+            workspace_id,
+            path,
+            branch: head_branch.to_owned(),
+            reused: false,
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+    use std::process::Command;
+    use std::sync::Mutex;
+
+    fn git(cwd: &Path, args: &[&str]) {
+        let output = Command::new("git").current_dir(cwd).args(args).output().unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// The cloned-repository shape the git tests use: a bare `origin` holding
+    /// `main` plus a PR head branch, and a working clone that plays the source
+    /// workspace.
+    fn fixture() -> (tempfile::TempDir, PathBuf) {
+        let fixture = tempfile::tempdir().unwrap();
+        let origin = fixture.path().join("origin.git");
+        let seed = fixture.path().join("seed");
+        std::fs::create_dir(&seed).unwrap();
+        git(&seed, &["init", "-q", "-b", "main"]);
+        git(&seed, &["config", "user.email", "bridge-test@example.invalid"]);
+        git(&seed, &["config", "user.name", "Bridge Test"]);
+        git(&seed, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(seed.join("shared.txt"), "base\n").unwrap();
+        git(&seed, &["add", "."]);
+        git(&seed, &["commit", "-q", "-m", "base"]);
+        git(&seed, &["checkout", "-q", "-b", "feat/pr-head"]);
+        std::fs::write(seed.join("feature.txt"), "pr change\n").unwrap();
+        git(&seed, &["add", "."]);
+        git(&seed, &["commit", "-q", "-m", "pr head"]);
+        git(&seed, &["checkout", "-q", "main"]);
+        git(&seed, &["clone", "-q", "--bare", ".", origin.to_str().unwrap()]);
+        let clone = fixture.path().join("clone");
+        git(fixture.path(), &["clone", "-q", origin.to_str().unwrap(), clone.to_str().unwrap()]);
+        git(&clone, &["config", "user.email", "bridge-test@example.invalid"]);
+        git(&clone, &["config", "user.name", "Bridge Test"]);
+        git(&clone, &["config", "commit.gpgsign", "false"]);
+        (fixture, clone)
+    }
+
+    fn database() -> Mutex<Connection> {
+        Mutex::new(crate::store::open(Path::new(":memory:")).unwrap())
+    }
+
+    #[test]
+    fn checkout_creates_a_worktree_on_the_head_branch_and_a_new_workspace_node() {
+        let (scratch, clone) = fixture();
+        let db = database();
+        let namespace = scratch.path().join("worktrees");
+        let checkout = WorktreeCoordinator::checkout_pull_request(
+            &db, &namespace, &clone, "origin", 341, "feat/pr-head", "Ship the head", None,
+        )
+        .unwrap();
+        assert!(!checkout.reused);
+        assert_eq!(checkout.branch, "feat/pr-head");
+        assert!(checkout.path.starts_with(namespace.join("github")));
+        assert_eq!(git::current_branch(&checkout.path).as_deref(), Some("feat/pr-head"));
+        assert_eq!(
+            std::fs::read_to_string(checkout.path.join("feature.txt")).unwrap(),
+            "pr change\n"
+        );
+        let (title, branch): (String, String) = db.lock().unwrap().query_row(
+            "SELECT title, branch FROM workspaces WHERE id=?1",
+            params![checkout.workspace_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+        assert_eq!(title, "PR #341: Ship the head");
+        assert_eq!(branch, "feat/pr-head");
+    }
+
+    #[test]
+    fn repeating_the_checkout_reuses_the_node_instead_of_duplicating_it() {
+        let (scratch, clone) = fixture();
+        let db = database();
+        let namespace = scratch.path().join("worktrees");
+        let first = WorktreeCoordinator::checkout_pull_request(
+            &db, &namespace, &clone, "origin", 341, "feat/pr-head", "Ship the head", None,
+        )
+        .unwrap();
+        let second = WorktreeCoordinator::checkout_pull_request(
+            &db, &namespace, &clone, "origin", 341, "feat/pr-head", "Ship the head", None,
+        )
+        .unwrap();
+        assert!(second.reused);
+        assert_eq!(second.workspace_id, first.workspace_id);
+        assert_eq!(second.path, first.path);
+        let rows: i64 = db.lock().unwrap().query_row(
+            "SELECT COUNT(*) FROM workspaces",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+        assert_eq!(rows, 1);
+    }
+
+    #[test]
+    fn checkout_never_touches_the_source_worktree() {
+        let (scratch, clone) = fixture();
+        let db = database();
+        std::fs::write(clone.join("shared.txt"), "uncommitted local work\n").unwrap();
+        WorktreeCoordinator::checkout_pull_request(
+            &db, &scratch.path().join("worktrees"), &clone, "origin", 341,
+            "feat/pr-head", "Ship the head", None,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_to_string(clone.join("shared.txt")).unwrap(),
+            "uncommitted local work\n",
+            "the source workspace keeps its dirty state",
+        );
+        assert_eq!(git::current_branch(&clone).as_deref(), Some("main"));
+    }
+
+    #[test]
+    fn a_missing_remote_branch_errors_and_creates_nothing() {
+        let (scratch, clone) = fixture();
+        let db = database();
+        let namespace = scratch.path().join("worktrees");
+        let error = WorktreeCoordinator::checkout_pull_request(
+            &db, &namespace, &clone, "origin", 7, "feat/vanished", "Gone", None,
+        )
+        .unwrap_err();
+        assert!(matches!(error, BridgeError::Git(_)), "unexpected error: {error:?}");
+        assert!(!namespace.join("github").join("pr-7-feat-vanished").exists());
+        let rows: i64 = db.lock().unwrap().query_row(
+            "SELECT COUNT(*) FROM workspaces",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+        assert_eq!(rows, 0);
+    }
+}

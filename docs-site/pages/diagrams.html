@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#212120" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23ececea'/%3E%3Cpath d='M10 8h7.2c4 0 6 1.5 6 4.3 0 1.8-.9 3-2.6 3.7 2.1.6 3.2 1.9 3.2 3.9 0 2.9-2.2 4.6-6.5 4.6H10V8Zm6.8 6.5c1.6 0 2.4-.5 2.4-1.6 0-1-.8-1.5-2.4-1.5h-2.9v3.1h2.9Zm.3 6.5c1.8 0 2.7-.6 2.7-1.7 0-1.2-.9-1.8-2.7-1.8h-3.2V21h3.2Z' fill='%23212120'/%3E%3C/svg%3E" />
+<title>Diagrams — Bridge Docs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&family=Bricolage+Grotesque:opsz,wght@12..96,200..800&display=swap">
+<link rel="stylesheet" href="../assets/tokens.css">
+</head>
+<body data-page="diagrams">
+
+<button class="menu-btn" id="menuBtn" aria-label="Open navigation"><svg class="icon" style="width:17px;height:17px"><use href="#i-menu"></use></svg></button>
+<div class="scrim" id="scrim"></div>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="content-scroll" id="contentScroll">
+    <div class="content-inner">
+      <div class="page-grid">
+        <div>
+          <p class="eyebrow">reference</p>
+          <h1>Diagrams</h1>
+          <p class="lede">Bridge renders its own node/edge diagrams instead of Mermaid — a deliberately narrow format that can't produce illegible output because it has no concept of a generic box.</p>
+
+          <div class="prose">
+            <h2 id="h-why-not-mermaid">Why Bridge has its own diagram format</h2>
+            <p>Bridge replaced Mermaid entirely because the problem Mermaid solves — "draw a box-and-arrow diagram without hand-authoring SVG" — enables a different problem: you can author a diagram spec that is syntactically correct but renders unreadably. A Mermaid flowchart with poorly laid-out nodes, overlapping edges, and labels struck through by lines can be produced without error, leaving the author to debug by trial and error.</p>
+            <p>Bridge's diagram format has no concept of a generic box. It only knows nodes (circles placed on a grid) and edges (lines between them). That narrowness is intentional: a diagram either shows a real mechanism or it doesn't, and if a sentence says it faster, you don't draw it. The renderer is responsible for legibility, not the author. Every diagram is small, because a diagram that's small enough to understand doesn't need 50 nodes.</p>
+
+            <h2 id="h-visual-grammar">The visual language</h2>
+            <p>Bridge diagrams follow a single visual grammar across chat, docs, and PRs. Every mark starts achromatic — <code>currentColor</code>, which repaints for free when the theme flips from light to dark. Exactly one hue exists, Bridge's <code>--ring</code> slate blue, reserved for the single thing the reader should follow (the active branch, the approved path, the path the story hinges on). Never use it decoratively, and never add a second hue.</p>
+
+            <h3>Grid-based placement</h3>
+            <p>Nodes sit on <code>row</code> and <code>col</code> integers. Row 0 is arbitrary; row grows downward. Column 0 is arbitrary; column grows rightward. You place every node deliberately — there is no force-directed layout fighting you.</p>
+
+            <h3>Fork points draw themselves heavier</h3>
+            <p>A node's visual weight is computed from its out-degree (how many edges leave it). Any node with more than one outgoing edge renders at radius 6px instead of 5px, so forks look like forks without a manual flag.</p>
+
+            <h3>Muted branches stay visible</h3>
+            <p>An abandoned branch or a denied path never disappears from the diagram. It renders at 45% opacity with <code>emphasis: "muted"</code>, embodying Bridge's append-only philosophy: nothing is deleted, nothing is rewritten. The forest only grows.</p>
+
+            <h3>Markers carry state, not additional colors</h3>
+            <p>Three marker shapes exist:</p>
+            <ul>
+              <li><code>marker: "checkpoint"</code> — a solid halo ring, 11px radius, marking a verified boundary or confirmed state</li>
+              <li><code>marker: "tip"</code> — a dashed halo ring (stroke-dasharray 2.5 3), marking a live or provisional endpoint</li>
+              <li><code>marker: "continues"</code> — three fading dots below the node, suggesting growth past this point without drawing every stage</li>
+            </ul>
+
+            <h3>Edges tell a story with shape</h3>
+            <p><code>curve: true</code> draws a smooth S-curve to a node in a different column — a branch or a fan-out. Straight lines mean the history is continuing down the same logical path. Combined with <code>emphasis: "active"</code> on the edge, a curved active edge reads as the chosen fork.</p>
+
+            <h2 id="h-diagramspec">The DiagramSpec JSON structure</h2>
+            <p>When you author a diagram for Bridge chat or the React component, you write a JSON spec that describes nodes and edges on a grid:</p>
+
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">json</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code><span class="tok-punct">{</span>
+  <span class="tok-attr">"nodes"</span><span class="tok-punct">:</span> <span class="tok-punct">[</span>
+    <span class="tok-punct">{</span> <span class="tok-attr">"id"</span><span class="tok-punct">:</span> <span class="tok-string">"start"</span><span class="tok-punct">,</span> <span class="tok-attr">"row"</span><span class="tok-punct">:</span> <span class="tok-num">0</span><span class="tok-punct">,</span> <span class="tok-attr">"col"</span><span class="tok-punct">:</span> <span class="tok-num">0</span><span class="tok-punct">,</span> <span class="tok-attr">"label"</span><span class="tok-punct">:</span> <span class="tok-string">"init"</span> <span class="tok-punct">}</span><span class="tok-punct">,</span>
+    <span class="tok-punct">{</span> <span class="tok-attr">"id"</span><span class="tok-punct">:</span> <span class="tok-string">"fork"</span><span class="tok-punct">,</span> <span class="tok-attr">"row"</span><span class="tok-punct">:</span> <span class="tok-num">2</span><span class="tok-punct">,</span> <span class="tok-attr">"col"</span><span class="tok-punct">:</span> <span class="tok-num">0</span><span class="tok-punct">,</span> <span class="tok-attr">"label"</span><span class="tok-punct">:</span> <span class="tok-string">"decision"</span> <span class="tok-punct">}</span><span class="tok-punct">,</span>
+    <span class="tok-punct">{</span> <span class="tok-attr">"id"</span><span class="tok-punct">:</span> <span class="tok-string">"active"</span><span class="tok-punct">,</span> <span class="tok-attr">"row"</span><span class="tok-punct">:</span> <span class="tok-num">4</span><span class="tok-punct">,</span> <span class="tok-attr">"col"</span><span class="tok-punct">:</span> <span class="tok-num">0</span><span class="tok-punct">,</span> <span class="tok-attr">"label"</span><span class="tok-punct">:</span> <span class="tok-string">"chosen path"</span><span class="tok-punct">,</span> <span class="tok-attr">"emphasis"</span><span class="tok-punct">:</span> <span class="tok-string">"active"</span><span class="tok-punct">,</span> <span class="tok-attr">"marker"</span><span class="tok-punct">:</span> <span class="tok-string">"tip"</span> <span class="tok-punct">}</span><span class="tok-punct">,</span>
+    <span class="tok-punct">{</span> <span class="tok-attr">"id"</span><span class="tok-punct">:</span> <span class="tok-string">"abandoned"</span><span class="tok-punct">,</span> <span class="tok-attr">"row"</span><span class="tok-punct">:</span> <span class="tok-num">3</span><span class="tok-punct">,</span> <span class="tok-attr">"col"</span><span class="tok-punct">:</span> <span class="tok-num">-2</span><span class="tok-punct">,</span> <span class="tok-attr">"label"</span><span class="tok-punct">:</span> <span class="tok-string">"rejected"</span><span class="tok-punct">,</span> <span class="tok-attr">"emphasis"</span><span class="tok-punct">:</span> <span class="tok-string">"muted"</span> <span class="tok-punct">}</span>
+  <span class="tok-punct">]</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"edges"</span><span class="tok-punct">:</span> <span class="tok-punct">[</span>
+    <span class="tok-punct">{</span> <span class="tok-attr">"from"</span><span class="tok-punct">:</span> <span class="tok-string">"start"</span><span class="tok-punct">,</span> <span class="tok-attr">"to"</span><span class="tok-punct">:</span> <span class="tok-string">"fork"</span> <span class="tok-punct">}</span><span class="tok-punct">,</span>
+    <span class="tok-punct">{</span> <span class="tok-attr">"from"</span><span class="tok-punct">:</span> <span class="tok-string">"fork"</span><span class="tok-punct">,</span> <span class="tok-attr">"to"</span><span class="tok-punct">:</span> <span class="tok-string">"active"</span><span class="tok-punct">,</span> <span class="tok-attr">"emphasis"</span><span class="tok-punct">:</span> <span class="tok-string">"active"</span> <span class="tok-punct">}</span><span class="tok-punct">,</span>
+    <span class="tok-punct">{</span> <span class="tok-attr">"from"</span><span class="tok-punct">:</span> <span class="tok-string">"fork"</span><span class="tok-punct">,</span> <span class="tok-attr">"to"</span><span class="tok-punct">:</span> <span class="tok-string">"abandoned"</span><span class="tok-punct">,</span> <span class="tok-attr">"curve"</span><span class="tok-punct">:</span> <span class="tok-num">true</span><span class="tok-punct">,</span> <span class="tok-attr">"emphasis"</span><span class="tok-punct">:</span> <span class="tok-string">"muted"</span> <span class="tok-punct">}</span>
+  <span class="tok-punct">]</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"caption"</span><span class="tok-punct">:</span> <span class="tok-string">"The active branch continues while the rejected path fades from view."</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"ariaLabel"</span><span class="tok-punct">:</span> <span class="tok-string">"A diagram showing a fork with an active path and an abandoned path at reduced opacity."</span>
+<span class="tok-punct">}</span></code></pre></div>
+            </div>
+
+            <h3>Node fields</h3>
+            <ul>
+              <li><code>id</code> (string, required) — unique within this spec</li>
+              <li><code>row</code>, <code>col</code> (integers, required) — grid placement</li>
+              <li><code>label?</code> (string) — short label, kept to 1–3 words</li>
+              <li><code>emphasis?</code> (enum: <code>"default" | "muted" | "active"</code>) — visual prominence</li>
+              <li><code>marker?</code> (enum: <code>"none" | "checkpoint" | "tip" | "continues"</code>) — state indicator</li>
+              <li><code>labelSide?</code> (enum: <code>"right" | "below"</code>) — placement preference (the renderer will override to keep it legible)</li>
+            </ul>
+
+            <h3>Edge fields</h3>
+            <ul>
+              <li><code>from</code>, <code>to</code> (strings, required) — node ids (both must exist)</li>
+              <li><code>curve?</code> (boolean) — <code>true</code> draws an S-curve to signal a branch; default is a straight line</li>
+              <li><code>emphasis?</code> (enum) — same values as node emphasis</li>
+            </ul>
+
+            <h3>Top-level fields</h3>
+            <ul>
+              <li><code>caption</code> (string, required) — the single claim this figure supports (rendered as figcaption)</li>
+              <li><code>ariaLabel</code> (string, required) — plain-language equivalent for screen readers</li>
+            </ul>
+
+            <h2 id="h-authoring">Authoring diagrams</h2>
+
+            <h3>In Bridge chat</h3>
+            <p>Wrap the JSON spec in a <code>```diagram</code> fenced code block. The Bridge chat UI parses it and renders it using the <code>DiagramFigure</code> React component. If the JSON is malformed, it falls back to a plain code block; a bad spec never crashes the chat.</p>
+
+            <h3>On the docs site or in a README</h3>
+            <p>Hand-author inline SVG following the exact same visual grammar. See the example below for the mechanics. The key constants are:</p>
+            <ul>
+              <li>56px row spacing (vertical distance between rows)</li>
+              <li>Minimum 66px column spacing, widened per-diagram if a label needs more room</li>
+              <li>Node circles: r="5" for normal nodes, r="6" for heavy (fork) nodes</li>
+              <li>Halo rings: r="11", solid for checkpoint, stroke-dasharray="2.5 3" for tip</li>
+              <li>Labels: 11px font, monospace, either right-side (with a short tick) or centered below</li>
+              <li>Colors: <code>currentColor</code> for neutral marks, <code>var(--ring)</code> for the accent</li>
+            </ul>
+
+            <h2 id="h-rendering-guarantees">What the renderer guarantees</h2>
+            <p>Three structural guarantees exist so an authored spec never needs hand-tuning around collision detection:</p>
+
+            <h3>No same-row collision</h3>
+            <p>Column pitch is not a fixed width. It expands for the entire diagram to whatever its widest label needs. Three labeled nodes at <code>col: 0, 1, 2</code> will never crowd each other, no matter the label lengths. You never need to manually space siblings apart; a short label costs nothing, and one long label among short ones widens the whole grid rather than just the pair that needs it.</p>
+
+            <h3>No label under a crossing edge</h3>
+            <p>A right-side label sits at its node's y-coordinate — exactly where a horizontal edge to a same-row neighbor runs, so the edge would strike through the text. No amount of column spacing rescues that problem on the wrong axis. The renderer automatically drops any label a same-row edge would cross to below the node. In a horizontal chain (nodes connected left-to-right), every label except the last one typically renders below the line — that's correct, not a fallback.</p>
+
+            <h3>Display scale compensates for coordinate-space font size</h3>
+            <p>Labels are drawn at 11px in the SVG's native coordinate space, which reads noticeably smaller than Bridge's prose at 15px. The renderer displays the whole figure at 1.35x so labels land at prose size. You don't need to inflate anything yourself.</p>
+
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>Keep labels to 2–3 words regardless. A label wider than roughly 12 characters signals the node needs a shorter name, not that the system should find more space for it. The renderer caps truncation at 18 characters with an ellipsis as a hard backstop.</p>
+            </div>
+
+            <h2 id="h-example">Worked example: a policy fork</h2>
+            <p>A policy decision branches into a permitted path and a denied path. The permitted path continues with a checkpoint; the denied path mutes.</p>
+
+            <figure class="diagram-figure">
+              <svg viewBox="0 0 320 340" role="img" aria-label="A policy check forks into a permitted path marked active with a checkpoint, and a denied path shown at reduced opacity.">
+                <g fill="none" stroke="currentColor" stroke-width="1.75">
+                  <line x1="80" y1="32" x2="80" y2="88"></line>
+                </g>
+                <g fill="none" stroke="var(--ring)" stroke-width="1.75">
+                  <line x1="80" y1="88" x2="80" y2="144"></line>
+                  <line x1="80" y1="144" x2="80" y2="200"></line>
+                </g>
+                <g fill="none" stroke="currentColor" stroke-width="1.75" opacity="0.45">
+                  <path d="M80,88 C80,116 160,116 160,144"></path>
+                </g>
+                <circle cx="80" cy="32" r="5" fill="currentColor"></circle>
+                <circle cx="80" cy="88" r="6" fill="currentColor"></circle>
+                <circle cx="80" cy="144" r="6" fill="var(--ring)"></circle>
+                <circle cx="80" cy="144" r="11" fill="none" stroke="var(--ring)" stroke-width="1.5" opacity="0.55"></circle>
+                <circle cx="80" cy="200" r="6" fill="var(--ring)"></circle>
+                <circle cx="80" cy="200" r="11" fill="none" stroke="var(--ring)" stroke-width="1.5" stroke-dasharray="2.5 3" opacity="0.6"></circle>
+                <circle cx="160" cy="144" r="5" fill="currentColor" opacity="0.45"></circle>
+                <g style="font-family:var(--font-mono); font-size:11px;">
+                  <line x1="88" y1="32" x2="100" y2="32" stroke="currentColor" stroke-width="1.5" opacity="0.5"></line>
+                  <text x="106" y="35.5" fill="currentColor">policy check</text>
+                  <line x1="88" y1="88" x2="100" y2="88" stroke="currentColor" stroke-width="1.5" opacity="0.5"></line>
+                  <text x="106" y="91.5" fill="currentColor">fork point</text>
+                  <text x="80" y="166" text-anchor="middle" fill="var(--ring)" opacity="0.6">approved</text>
+                  <text x="80" y="222" text-anchor="middle" fill="var(--ring)">active tip</text>
+                  <text x="160" y="166" text-anchor="middle" fill="currentColor" opacity="0.6">denied</text>
+                </g>
+              </svg>
+              <figcaption>A policy check produces a fork. The approved path (right) continues downward with a checkpoint at the boundary and an active tip; the denied path (left) renders muted at 45% opacity, showing it was considered but not taken.</figcaption>
+            </figure>
+
+            <p>This example demonstrates every major feature: a fork point (out-degree 2, renders at r="6"), curved edge for the branch-away (the denied path), muted emphasis on the abandoned path, checkpoints and tips marking important boundaries, and the active branch using the <code>--ring</code> accent. The whole mechanism fits in 3–4 rows and 2 columns because small is the point.</p>
+
+          </div>
+          <div id="pagerMount"></div>
+        </div>
+        <aside class="toc" id="tocMount"></aside>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="../assets/shell.js"></script>
+</body>
+</html>

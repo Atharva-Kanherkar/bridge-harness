@@ -41,5 +41,10 @@ Always run `bun run build` and `bun run test` before opening or merging a PR; bo
 - **Icons:** `lucide-react`. Keep unused icon imports out (the build is strict).
 - **Fonts:** Geist Variable (`font-sans`) for body, Bricolage Grotesque Variable (`font-display`) for headings, Geist Mono Variable (`font-mono`) for code — loaded via `@fontsource-variable/*` in `main.tsx` and wired through `@theme` tokens.
 - **Glass:** macOS-style frosted glass comes from the `.u-glass` (panels), `.u-glass-popover` (menus/toasts/dialogs), `.u-glass-soft` (cards/rows/inputs), and `.u-segmented` / `.u-segmented-item` (segmented controls) classes in `src/index.css`. Prefer them over hand-rolled `bg-white/[0.0x] backdrop-blur-*` combinations.
+- **Transcript:** the conversation surface behaves the same for every agent, and [`docs/transcript-behavior-contract.md`](docs/transcript-behavior-contract.md) says exactly how: one thinking component, grouping invariants, stream-state meanings, and a harness id that is display and never behavior.
 - **Tests:** colocated `*.test.ts(x)` run under Vitest. Add coverage for logic in `utils`, `conversation`, `observability`, and `usage`.
 - **Commits:** Conventional Commits (`feat:`, `fix:`, `refactor:`, `chore:`). Describe the change; don't cite issue/PR numbers in code or messages.
+
+## Memory surface
+
+Memory has exactly **one** surface: the Memory screen (`src/components/MemoryDialog.tsx`), a canvas view beside the sidebar like Projects, rendered in the app's normal Graphite & Paper chrome with the same tokens as every other screen. Do not build a second memory UI, a separate dark-only memory surface, or a parallel token family for it — that was tried (the "Memory Core" constellation) and removed. Analytics (recall stats, packet budget, consolidation log) live inside its Activity tab, achromatic like the rest of the chrome.

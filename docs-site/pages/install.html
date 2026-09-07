@@ -1,0 +1,182 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#212120" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23ececea'/%3E%3Cpath d='M10 8h7.2c4 0 6 1.5 6 4.3 0 1.8-.9 3-2.6 3.7 2.1.6 3.2 1.9 3.2 3.9 0 2.9-2.2 4.6-6.5 4.6H10V8Zm6.8 6.5c1.6 0 2.4-.5 2.4-1.6 0-1-.8-1.5-2.4-1.5h-2.9v3.1h2.9Zm.3 6.5c1.8 0 2.7-.6 2.7-1.7 0-1.2-.9-1.8-2.7-1.8h-3.2V21h3.2Z' fill='%23212120'/%3E%3C/svg%3E" />
+<title>Install & first run — Bridge Docs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&family=Bricolage+Grotesque:opsz,wght@12..96,200..800&display=swap">
+<link rel="stylesheet" href="../assets/tokens.css">
+</head>
+<body data-page="install">
+
+<button class="menu-btn" id="menuBtn" aria-label="Open navigation"><svg class="icon" style="width:17px;height:17px"><use href="#i-menu"></use></svg></button>
+<div class="scrim" id="scrim"></div>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="content-scroll" id="contentScroll">
+    <div class="content-inner">
+      <div class="page-grid">
+        <div>
+          <p class="eyebrow">getting started</p>
+          <h1>Install & first run</h1>
+          <p class="lede">Bridge starts with one command, but staying up reliably depends on understanding what actually owns your data directory afterward, and the two macOS quirks that otherwise make a working install look broken.</p>
+          <div class="prose">
+
+            <h2 id="prerequisites">Prerequisites</h2>
+            <p>Bridge is packaged for macOS only today. The machine that runs it needs:</p>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Requirement</th><th>Version</th><th>Why</th></tr></thead>
+                <tbody>
+                  <tr><td>macOS</td><td>12 or later</td><td>Bridge ships only as a macOS <code>.app</code> bundle today</td></tr>
+                  <tr><td>Bun</td><td>&mdash;</td><td>Installs dependencies for the root app and the sidecar workspace, and runs every <code>bun run</code> script</td></tr>
+                  <tr><td>Node.js</td><td>18 or newer</td><td>Runs the Claude Code sidecar process &mdash; the Agent SDK runs in a Node process, not <code>claude -p</code></td></tr>
+                  <tr><td>Rust toolchain</td><td>stable, with Cargo</td><td>Builds <code>bridge-core</code>, <code>bridged</code>, <code>bridge-client</code>, <code>bridge-protocol</code>, and the Tauri shell</td></tr>
+                  <tr><td>Git</td><td>with worktree support</td><td>Bridge isolates every task in its own worktree</td></tr>
+                  <tr><td>Provider CLIs</td><td>optional: <code>codex</code>, <code>claude</code>, <code>opencode</code></td><td>Missing binaries just show that adapter as unavailable</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p>Provider CLIs are optional at the binary level: Bridge resolves them from <code>PATH</code> and common local install locations, and the app still starts when one is missing. The Claude Code sidecar is stricter about one thing &mdash; it needs Node.js resolvable on <code>PATH</code> to run at all &mdash; while the sidecar script itself is located via <code>BRIDGE_CLAUDE_SIDECAR</code> first, then a copy next to the Bridge executable, then the in-repo path.</p>
+
+            <h2 id="running-bridge">Two ways to run it</h2>
+            <p>Clone the repository and install once. This pulls dependencies for both the root app and the <code>sidecar/claude-agent</code> workspace:</p>
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">bash</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code>git clone https://github.com/Atharva-Kanherkar/bridge-harness.git
+cd bridge-harness
+bun install</code></pre></div>
+            </div>
+            <p>From there, <code>bun run</code> starts one of two genuinely different things:</p>
+            <div class="tree-row cols-2">
+              <div class="tree-card"><h3><code>bun run dev</code></h3><p>Vite only, served at <code>http://127.0.0.1:1420</code>. Outside Tauri, <code>src/api.ts</code> serves local mock data instead of a real backend &mdash; this is what most component tests and pure frontend iteration exercise.</p></div>
+              <div class="tree-card"><h3><code>bun run tauri dev</code></h3><p>The full desktop app: Rust shell, SQLite stores, real provider adapters, Git worktrees, and the PTY terminal. The only mode that actually supervises a Codex, Claude Code, or OpenCode session.</p></div>
+            </div>
+            <p>Only the second one exercises anything the rest of this page covers &mdash; the daemon, the ownership lease, and the macOS checks all live on the Rust side that <code>bun run dev</code> never starts.</p>
+
+            <h3>If a provider shows unavailable</h3>
+            <p>Bridge starts even when a provider binary is missing; that adapter just reports unavailable until its binary and credentials exist. Confirm the same environment that launches the app can actually see them:</p>
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">bash</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code>command -v codex
+command -v claude
+command -v opencode
+node --version
+rustc --version</code></pre></div>
+            </div>
+
+            <h3>Before you open a PR</h3>
+            <p><code>bun run build</code> and <code>bun run test</code> must both be green. For faster iteration, narrow either suite instead of re-running everything:</p>
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">bash</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code>bun run check              <span class="tok-comment"># tsc -b + cargo check --workspace</span>
+bun run test               <span class="tok-comment"># sidecar node:test + vitest run + cargo test --workspace</span>
+bun run build              <span class="tok-comment"># tsc -b && vite build</span>
+
+bunx vitest run src/components/WorkView.test.tsx
+cargo test --manifest-path src-tauri/Cargo.toml -p bridge-core policy::</code></pre></div>
+            </div>
+
+            <h2 id="daemon-client-model">The daemon-client model</h2>
+            <p>By default the desktop app hosts no runtime of its own &mdash; it is a client of <code>bridged</code>, the daemon that owns a data directory's sessions, SQLite stores, PTYs, and provider processes. On startup the app attaches to a <code>bridged</code> already serving its data directory, or starts the bundled binary and waits for it to come up (stdout and stderr land in <code>&lt;data_dir&gt;/bridged.log</code>). From then on, every Tauri invoke is proxied to the daemon as the JSON-RPC method it maps to, and every daemon notification is re-emitted to the webview under an unchanged name and payload &mdash; the frontend cannot tell which host it is talking to, and <code>src/api.ts</code>'s <code>call()</code>/<code>subscribe()</code> look identical either way.</p>
+
+            <div class="crate-strip">
+              <span class="crate-chip">Tauri shell</span>
+              <svg class="icon crate-arrow" style="width:13px;height:13px"><use href="#i-chevron"></use></svg>
+              <span class="crate-chip">bridge-client</span>
+              <svg class="icon crate-arrow" style="width:13px;height:13px"><use href="#i-chevron"></use></svg>
+              <span class="crate-chip">bridged</span>
+              <svg class="icon crate-arrow" style="width:13px;height:13px"><use href="#i-chevron"></use></svg>
+              <span class="crate-chip">bridge-core</span>
+            </div>
+
+            <p><code>BRIDGE_DESKTOP_HOST</code> picks which of three hosts wins that attach-or-start attempt:</p>
+            <div class="tree-row">
+              <div class="tree-card"><h3>auto (default)</h3><p>Attach to a running <code>bridged</code>; if none answers, start the bundled binary and wait up to 30 seconds; if that also fails, fall back to running the runtime in-process.</p></div>
+              <div class="tree-card"><h3>daemon</h3><p>The same attach-or-start attempt, but a failure is fatal instead of falling back &mdash; the protocol documentation calls this the &ldquo;acceptance configuration&rdquo;: proof the daemon path actually works, not a quiet slide into the old runtime.</p></div>
+              <div class="tree-card"><h3>embedded</h3><p>Skips <code>bridged</code> entirely and runs <code>bridge-core</code> in-process, exactly as the app did before the daemon existed. Kept only for the migration; the lease means it is never concurrent with a daemon on the same data directory.</p></div>
+            </div>
+            <p>Auto's fallback exists for what its own source calls &ldquo;the migration promise&rdquo;: a machine where the daemon cannot run should still get a working app, just on the older path.</p>
+
+            <h3>Exactly one owner per data directory</h3>
+            <p>Whichever host wins, it first acquires an exclusive OS file lease on <code>&lt;data_dir&gt;/owner.lock</code> (<code>bridge_core::ownership</code>) before the runtime boots. The lease is advisory and tied to the process holding it &mdash; nothing releases it explicitly, so a <code>kill -9</code> drops it with the process, and the next owner's boot-time recovery handles whatever the dead owner left rather than running any stale-lock cleanup. The lock file also carries the winning owner's identity as JSON &mdash; kind (<code>daemon</code> or <code>embedded</code>), pid, version, start time &mdash; so a process that loses the race is told exactly who holds the directory instead of a bare &ldquo;resource busy&rdquo;:</p>
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">text</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code>a bridged daemon (pid 4821, version 0.9.0, started 2026-08-24T09:12:03Z) already owns
+the Bridge data directory /Users/you/Library/Application Support/dev.bridge.deck &mdash;
+stop it first, or point this process at a different --data-dir</code></pre></div>
+            </div>
+            <p>This is a hard constraint on purpose, not a missing feature: a second simultaneous owner would race turn commits against the same SQLite stores and orphan the first owner's supervised provider processes. Ruling that out at the lease means the session forest, worktree coordination, and PTY lifecycle can all assume single-writer access instead of defending against a second writer everywhere they touch disk.</p>
+            <p>In practice, this is the error you hit if you point two <code>bun run tauri dev</code> instances, or a manually started <code>bridged</code> and a running desktop app, at the same data directory. The desktop app resolves its own data directory automatically &mdash; the OS-standard per-app location, <code>~/Library/Application Support/&lt;bundle id&gt;</code> on macOS. <code>BRIDGE_DATA_DIR</code> and <code>--data-dir</code> matter when you are driving <code>bridged</code> or the <code>bridge exec</code> CLI client directly instead of through the app, and <code>BRIDGE_DAEMON_BIN</code> overrides which daemon binary the app starts when auto or daemon mode needs to start one at all.</p>
+            <p>A running <code>bridged</code> also exposes <code>/healthz</code> and <code>/readyz</code> over plain HTTP &mdash; <code>127.0.0.1:4318</code> by default, disabled with <code>--health-addr none</code> &mdash; the one plain-HTTP surface on an otherwise Unix-socket protocol, meant for external process monitors rather than the app itself.</p>
+
+            <h2 id="macos-permission-prompts">Troubleshooting repeated macOS permission prompts</h2>
+            <p>macOS gates <code>~/Desktop</code>, <code>~/Documents</code>, and <code>~/Downloads</code> behind per-app consent (TCC). The first time Bridge, or an agent process it supervises, touches a file inside one of those folders, macOS shows a &ldquo;Bridge would like to access&hellip;&rdquo; prompt &mdash; and a prompt that is denied, or simply never answered, turns into silent file-access failures later with no further prompt to explain them. Two macOS-specific conditions produce exactly that symptom while nothing in Bridge itself is wrong, so <code>health/health</code> detects both and explains them instead of leaving you to guess.</p>
+            <p>The health response already reports adapter availability and the exact database, telemetry, and snapshot paths on disk; it now also carries a <code>warnings</code> array &mdash; always present, empty when nothing is wrong, so a protocol 0.6+ client is unaffected and an older daemon's response without the field still deserializes. Each entry looks like this:</p>
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">json</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code><span class="tok-punct">{</span>
+  <span class="tok-attr">"id"</span><span class="tok-punct">:</span> <span class="tok-string">"macos-tcc-protected-path"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"title"</span><span class="tok-punct">:</span> <span class="tok-string">"Project folders sit inside macOS-protected locations"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"detail"</span><span class="tok-punct">:</span> <span class="tok-string">"These registered folders are inside ~/Desktop, ~/Documents, or ~/Downloads, which macOS gates behind per-app file-access consent&hellip;"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"paths"</span><span class="tok-punct">:</span> <span class="tok-punct">[</span><span class="tok-string">"/Users/you/Documents/bridge-harness"</span><span class="tok-punct">]</span>
+<span class="tok-punct">}</span></code></pre></div>
+            </div>
+            <p>The full <code>detail</code> text &mdash; elided above &mdash; always names the repeated-prompt symptom and points at this exact section by name; that is a tested invariant of both warnings, not incidental wording. In the app, each warning renders as its own alert in the health banner: title, detail, and a monospace list of the offending paths. The banner renders nothing at all when the array is empty.</p>
+            <div class="table-scroll">
+              <table>
+                <thead><tr><th>Warning id</th><th>Triggers when</th><th>The fix</th></tr></thead>
+                <tbody>
+                  <tr><td><code>macos-tcc-protected-path</code></td><td>A registered project or workspace path sits inside <code>~/Desktop</code>, <code>~/Documents</code>, or <code>~/Downloads</code></td><td>Move the repo somewhere unprotected such as <code>~/Code</code>, or grant Bridge Full Disk Access in System Settings &rarr; Privacy &amp; Security</td></tr>
+                  <tr><td><code>macos-adhoc-signature</code></td><td><code>codesign</code> on the running binary reports an ad-hoc or missing signature</td><td>Sign development builds with a stable identity, or expect to re-approve access after every rebuild</td></tr>
+                </tbody>
+              </table>
+            </div>
+
+            <h3>The protected-folder boundary is exact</h3>
+            <p>The check is component-wise, not a string prefix. It matches the protected folder itself and any path beneath it &mdash; <code>~/Documents</code> and <code>~/Documents/repos/bridge</code> both count &mdash; and rejects a sibling, a folder merely prefixed with the same name (<code>~/DesktopBackup</code>), a folder with that name deeper in the tree (<code>~/Code/Documents</code> &mdash; a protected name only counts directly under home), and any relative path, since a relative path can never match an absolute home directory. Offending paths from every registered project and workspace are aggregated into a single warning, sorted and deduplicated, rather than one warning per path.</p>
+
+            <h3>Ad-hoc signing resets on every rebuild</h3>
+            <p><code>bun run tauri dev</code> and <code>bun run tauri build --debug</code> both produce ad-hoc signed binaries by default, and an ad-hoc identity is regenerated on every build. macOS keys the access grants it hands out for Desktop, Documents, and Downloads to that identity, so a rebuild silently invalidates all of them and the prompts return &mdash; indistinguishable, from inside the app, from a fresh install. Bridge runs <code>codesign --display --verbose</code> against its own running executable and classifies the result: a real <code>Authority=</code> chain or a non-empty <code>TeamIdentifier</code> reads as stable; <code>Signature=adhoc</code> &mdash; including linker-signed builds, whose <code>CodeDirectory</code> flags still contain <code>(adhoc</code> &mdash; or no signature at all does not.</p>
+
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>Classification is deliberately conservative: <code>codesign</code> output the parser cannot interpret is classified unknown and never produces a warning. A wrong &ldquo;your build is broken&rdquo; banner costs more trust than an occasional missed one.</p>
+            </div>
+
+            <p>Sign development builds with a stable identity &mdash; set <code>signingIdentity</code> in the Tauri bundle configuration, or re-sign the built app with an Apple Development certificate &mdash; to keep access grants across rebuilds. If prompts keep reappearing after that, stale per-app decisions can be cleared before relaunching:</p>
+            <div class="code-block">
+              <div class="code-block-head"><span class="code-block-lang">bash</span>
+                <button class="code-copy"><svg class="icon icon-copy" style="width:12px;height:12px"><use href="#i-copy"></use></svg><svg class="icon icon-check" style="width:12px;height:12px"><use href="#i-check"></use></svg><span class="copy-label">Copy</span></button>
+              </div>
+              <div class="code-scroll"><pre><code>tccutil reset SystemPolicyDocumentsFolder &lt;bundle-id&gt;
+tccutil reset SystemPolicyDesktopFolder &lt;bundle-id&gt;
+tccutil reset SystemPolicyDownloadsFolder &lt;bundle-id&gt;</code></pre></div>
+            </div>
+            <p>Both checks are inert on any non-macOS host &mdash; <code>warnings</code> just stays an empty array there, never absent.</p>
+
+          </div>
+          <div id="pagerMount"></div>
+        </div>
+        <aside class="toc" id="tocMount"></aside>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="../assets/shell.js"></script>
+</body>
+</html>

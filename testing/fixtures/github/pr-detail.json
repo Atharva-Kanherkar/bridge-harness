@@ -1,0 +1,37 @@
+{
+  "number": 103,
+  "title": "Changes requested",
+  "body": "Please review the typed GitHub surface.",
+  "state": "OPEN",
+  "isDraft": false,
+  "author": { "login": "review-author" },
+  "headRefName": "fix/review",
+  "headRefOid": "current-head-sha",
+  "baseRefName": "main",
+  "reviewDecision": "CHANGES_REQUESTED",
+  "mergeable": "CONFLICTING",
+  "mergeStateStatus": "DIRTY",
+  "statusCheckRollup": [
+    {
+      "__typename": "CheckRun",
+      "status": "COMPLETED",
+      "conclusion": "FAILURE"
+    }
+  ],
+  "comments": [
+    {
+      "id": "IC_kwDO_fixture",
+      "author": { "login": "maintainer" },
+      "body": "Top-level PR conversation comment.",
+      "createdAt": "2026-08-28T12:00:00Z",
+      "url": "https://github.com/fixture/project/pull/103#issuecomment-1"
+    }
+  ],
+  "labels": [
+    { "name": "bug", "color": "d73a4a", "description": "Something is broken" }
+  ],
+  "additions": 18,
+  "deletions": 4,
+  "changedFiles": 2,
+  "url": "https://github.com/fixture/project/pull/103"
+}

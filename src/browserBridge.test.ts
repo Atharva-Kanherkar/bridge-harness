@@ -87,13 +87,13 @@ describe("authenticated browser bridge artifacts", () => {
   });
 
   it("exposes a session and lease scoped agent browser tool through application context", () => {
-    const supervisor = read("src-tauri/src/browser_bridge.rs");
-    const host = read("src-tauri/src/lib.rs");
+    const supervisor = read("src-tauri/bridge-core/src/browser_bridge.rs");
+    const host = read("src-tauri/bridge-core/src/live_turn.rs");
     expect(supervisor).toContain("pub fn capability_context(&self, session_id: &str, runtime_pid: u32)");
     expect(supervisor).toContain("capability.lease_id != lease.id");
     expect(supervisor).toContain("lease.status != \"active\"");
     expect(supervisor).toContain("Bridge authenticated-browser capability: AVAILABLE");
-    expect(host).toContain("state.browser_bridge.capability_context(&session_id, runtime.process_id())");
+    expect(host).toContain("state.browser_bridge.capability_context(session_id, runtime.process_id())");
   });
 
   it("labels web content as untrusted and emits stable DOM deltas", () => {

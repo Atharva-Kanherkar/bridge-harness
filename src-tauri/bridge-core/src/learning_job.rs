@@ -1,0 +1,3087 @@
+use crate::{learning_router, routing_evaluation, routing_policy, BridgeError};
+use chrono::{DateTime, Duration, Utc};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
+
+pub const DEFAULT_JOB_ID: &str = "default";
+pub const MIN_EVIDENCE_SAMPLES: i64 = routing_policy::MIN_EVIDENCE_SAMPLES;
+const LEASE_MINUTES: i64 = 15;
+const CODEX_SCHEDULED_TASK_PROMPT: &str =
+    include_str!("../../../docs/prompts/codex-learning-scheduled-task.md");
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LearningTriggerKind {
+    Manual,
+    InApp,
+    Codex,
+    Claude,
+    OpenCode,
+}
+
+impl LearningTriggerKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::InApp => "in_app",
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+            Self::OpenCode => "opencode",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum LearningRunStatus {
+    Queued,
+    Running,
+    Completed,
+    Failed,
+    Cancelled,
+    Noop,
+}
+
+impl LearningRunStatus {
+    fn from_str(value: &str) -> Result<Self, BridgeError> {
+        match value {
+            "queued" => Ok(Self::Queued),
+            "running" => Ok(Self::Running),
+            "completed" => Ok(Self::Completed),
+            "failed" => Ok(Self::Failed),
+            "cancelled" => Ok(Self::Cancelled),
+            "noop" => Ok(Self::Noop),
+            _ => Err(BridgeError::Invalid(format!(
+                "unknown learning run status {value}"
+            ))),
+        }
+    }
+
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Queued => "queued",
+            Self::Running => "running",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Cancelled => "cancelled",
+            Self::Noop => "noop",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LearningReport {
+    pub reason: String,
+    pub evidence_boundary: i64,
+    pub evidence_count: i64,
+    pub base_policy_version: i64,
+    pub candidate_policy_version: Option<i64>,
+    pub quality_bps: Option<i64>,
+    pub average_cost_microusd: Option<i64>,
+    pub average_latency_ms: Option<i64>,
+    pub retry_rate_bps: Option<i64>,
+    pub intervention_rate_bps: Option<i64>,
+    pub average_confidence_bps: Option<i64>,
+    pub cost_complete: bool,
+    pub evaluated_spend_microusd: i64,
+    pub evaluated_tokens: i64,
+    #[serde(default = "default_evaluation_execution")]
+    pub evaluation_execution: String,
+    pub replay_passed: Option<bool>,
+    pub promotion_status: String,
+    pub policy_diff: serde_json::Value,
+    pub recommendation_only: bool,
+}
+
+fn default_evaluation_execution() -> String {
+    "not_run".into()
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LearningRun {
+    pub id: String,
+    pub job_id: String,
+    pub trigger_kind: LearningTriggerKind,
+    pub idempotency_key: String,
+    pub evidence_boundary: i64,
+    pub base_policy_version: i64,
+    pub status: LearningRunStatus,
+    pub report: Option<LearningReport>,
+    pub candidate_policy_version: Option<i64>,
+    pub cancellation_requested: bool,
+    pub lease_expires_at: Option<String>,
+    pub replay_passed: Option<bool>,
+    pub promotion_status: String,
+    pub duplicate: bool,
+    pub created_at: String,
+    pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LearningSchedule {
+    pub job_id: String,
+    pub enabled: bool,
+    pub cadence_minutes: i64,
+    pub next_run_at: Option<String>,
+    pub run_budget_microusd: i64,
+    pub run_budget_tokens: i64,
+    pub mode: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct LearningState {
+    pub schedule: LearningSchedule,
+    pub latest_run: Option<LearningRun>,
+    pub active_policy_version: i64,
+    pub canary_policy_version: Option<i64>,
+    /// Predecessor of the live (canary, else active) policy in this workspace.
+    /// None when there is no live policy or the live policy has no predecessor.
+    #[serde(default)]
+    pub rollback_target_version: Option<i64>,
+}
+
+fn active_policy_version(db: &Connection, scope: &str) -> Result<i64, BridgeError> {
+    Ok(db
+        .query_row(
+            "SELECT version FROM routing_policies
+             WHERE learning_scope=?1 AND status IN ('active','canary')
+             ORDER BY CASE status WHEN 'canary' THEN 0 ELSE 1 END,version DESC LIMIT 1",
+            params![scope],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(0))
+}
+
+fn rollback_target_version(db: &Connection, scope: &str) -> Result<Option<i64>, BridgeError> {
+    let predecessor: Option<Option<i64>> = db
+        .query_row(
+            "SELECT predecessor FROM routing_policies
+             WHERE learning_scope=?1 AND status IN ('active','canary')
+             ORDER BY CASE status WHEN 'canary' THEN 0 ELSE 1 END,version DESC LIMIT 1",
+            params![scope],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(predecessor.flatten().filter(|version| *version > 0))
+}
+
+fn scope_cursor(db: &Connection, scope: &str) -> Result<i64, BridgeError> {
+    Ok(db
+        .query_row(
+            "SELECT last_evidence_boundary FROM learning_scope_cursors WHERE learning_scope=?1",
+            params![scope],
+            |row| row.get(0),
+        )
+        .optional()?
+        .unwrap_or(0))
+}
+
+fn workspaces_with_outcomes(db: &Connection) -> Result<Vec<String>, BridgeError> {
+    let mut statement = db.prepare(
+        "SELECT DISTINCT d.workspace_id
+         FROM router_decisions d JOIN router_outcomes o ON o.decision_id=d.id
+         ORDER BY d.workspace_id",
+    )?;
+    let rows = statement.query_map([], |row| row.get(0))?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(BridgeError::from)
+}
+
+/// The scope's own evidence high-water mark. A global rowid here would mint a
+/// fresh idempotency key for every workspace whenever any one of them recorded
+/// an outcome, spawning a noop run per idle workspace on every sweep.
+fn evidence_boundary(db: &Connection, workspace_id: &str) -> Result<i64, BridgeError> {
+    Ok(db.query_row(
+        "SELECT COALESCE(MAX(o.rowid),0) FROM router_outcomes o
+         JOIN router_decisions d ON d.id=o.decision_id WHERE d.workspace_id=?1",
+        params![workspace_id],
+        |row| row.get(0),
+    )?)
+}
+
+fn record_trigger_event(
+    db: &Connection,
+    run_id: Option<&str>,
+    trigger_kind: LearningTriggerKind,
+    registration_id: Option<&str>,
+    result: &str,
+    reason: Option<&str>,
+) -> Result<(), BridgeError> {
+    db.execute(
+        "INSERT INTO learning_trigger_events(id,run_id,trigger_kind,registration_id,result,reason,created_at) VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        params![Uuid::new_v4().to_string(), run_id, trigger_kind.as_str(), registration_id, result, reason, Utc::now().to_rfc3339()],
+    )?;
+    Ok(())
+}
+
+#[derive(Debug, Default)]
+struct EvidenceSummary {
+    count: i64,
+    known_outcomes: i64,
+    successes: i64,
+    runtime_total: i64,
+    runtime_reported: i64,
+    cost_total: i64,
+    cost_reported: i64,
+    retries: i64,
+    interventions: i64,
+    confidence_total: i64,
+    confidence_reported: i64,
+}
+
+impl EvidenceSummary {
+    fn load(db: &Connection, workspace_id: &str, boundary: i64) -> Result<Self, BridgeError> {
+        db.query_row(
+            "SELECT COUNT(*),
+                    COALESCE(SUM(CASE WHEN o.success_state IN ('success','failure') THEN 1 ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN o.success_state='success' THEN 1 ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN o.runtime_ms IS NOT NULL THEN o.runtime_ms ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN o.runtime_ms IS NOT NULL THEN 1 ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN o.cost_microusd IS NOT NULL THEN o.cost_microusd ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN o.cost_microusd IS NOT NULL THEN 1 ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN o.retry_count>0 THEN 1 ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN o.human_intervention THEN 1 ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN o.confidence_bps IS NOT NULL THEN o.confidence_bps ELSE 0 END),0),
+                    COALESCE(SUM(CASE WHEN o.confidence_bps IS NOT NULL THEN 1 ELSE 0 END),0)
+             FROM router_outcomes o JOIN router_decisions d ON d.id=o.decision_id
+             WHERE d.workspace_id=?1 AND o.rowid<=?2",
+            params![workspace_id, boundary],
+            |row| {
+                Ok(Self {
+                    count: row.get(0)?,
+                    known_outcomes: row.get(1)?,
+                    successes: row.get(2)?,
+                    runtime_total: row.get(3)?,
+                    runtime_reported: row.get(4)?,
+                    cost_total: row.get(5)?,
+                    cost_reported: row.get(6)?,
+                    retries: row.get(7)?,
+                    interventions: row.get(8)?,
+                    confidence_total: row.get(9)?,
+                    confidence_reported: row.get(10)?,
+                })
+            },
+        )
+        .map_err(BridgeError::from)
+    }
+
+    fn quality_bps(&self) -> Option<i64> {
+        (self.known_outcomes > 0).then(|| self.successes * 10_000 / self.known_outcomes)
+    }
+
+    fn cost_per_success(&self) -> Option<i64> {
+        (self.count > 0 && self.cost_reported == self.count && self.successes > 0)
+            .then(|| self.cost_total / self.successes)
+    }
+}
+
+fn active_policy_weights(db: &Connection, version: i64) -> Result<serde_json::Value, BridgeError> {
+    if version <= 0 {
+        return Ok(json!({}));
+    }
+    let weights: String = db.query_row(
+        "SELECT weights FROM routing_policies WHERE version=?1",
+        params![version],
+        |row| row.get(0),
+    )?;
+    serde_json::from_str(&weights).map_err(|error| BridgeError::Invalid(error.to_string()))
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ModelEvaluationSummary {
+    queued: i64,
+    reused_existing: i64,
+}
+
+impl ModelEvaluationSummary {
+    fn execution_status(&self) -> &'static str {
+        if self.queued > 0 {
+            "queued"
+        } else if self.reused_existing > 0 {
+            "reused_existing_evidence"
+        } else {
+            "deterministic_only"
+        }
+    }
+}
+
+/// Every outcome in this snapshot whose own result said nothing gets a
+/// `model_based` evaluation row, and the ones a judge can actually reach get a
+/// queued run behind it.
+///
+/// Three outcomes, and the row's status is the difference between them. A
+/// decision already carrying a completed independent verifier keeps that
+/// evidence and is not re-judged. A decision with an eligible cross-family
+/// evaluator is `queued`, and the executor settles it later. A decision with no
+/// eligible evaluator is `not_requested` — an absent judge is an absent
+/// opinion, never a low score.
+fn record_model_evaluations(
+    db: &Connection,
+    learning_run_id: &str,
+    workspace_id: &str,
+    previous_boundary: i64,
+    boundary: i64,
+) -> Result<ModelEvaluationSummary, BridgeError> {
+    let mut summary = ModelEvaluationSummary::default();
+    let evaluator_profiles = routing_evaluation::eligible_evaluators(db, workspace_id)?;
+    let mut statement = db.prepare(
+        "SELECT d.id,d.parent_session_id,d.actual_provider,o.runtime_ms,o.cost_microusd,o.retry_count,o.edit_count,o.override_signal,
+                COALESCE((SELECT evidence_entry_ids FROM routing_evaluations e WHERE e.decision_id=d.id AND e.evaluator_kind='deterministic' ORDER BY e.created_at DESC LIMIT 1),'[]')
+         FROM router_outcomes o JOIN router_decisions d ON d.id=o.decision_id
+         WHERE o.rowid>?1 AND o.rowid<=?2 AND d.workspace_id=?3 AND o.success_state='unknown'",
+    )?;
+    let rows = statement
+        .query_map(params![previous_boundary, boundary, workspace_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+                row.get::<_, i64>(3)?,
+                row.get::<_, Option<i64>>(4)?,
+                row.get::<_, i64>(5)?,
+                row.get::<_, i64>(6)?,
+                row.get::<_, bool>(7)?,
+                row.get::<_, String>(8)?,
+            ))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    drop(statement);
+    for (
+        decision_id,
+        parent_session_id,
+        actual_provider,
+        runtime_ms,
+        cost,
+        retries,
+        edits,
+        override_signal,
+        deterministic_evidence_ids,
+    ) in rows
+    {
+        let completed_eval: Option<(String, String, Option<String>, String)> = db
+            .query_row(
+                "SELECT c.status,c.verifier_family,c.output_digest,c.artifact_refs
+             FROM eval_attempts a JOIN eval_check_runs c ON c.attempt_id=a.id
+             WHERE a.session_id=?1 AND c.kind IN ('scrutiny','user_testing')
+               AND c.status IN ('passed','failed') AND c.verifier_family IS NOT NULL
+               AND (?2 IS NULL OR LOWER(c.verifier_family)<>LOWER(?2))
+             ORDER BY c.completed_at DESC,c.rowid DESC LIMIT 1",
+                params![parent_session_id, actual_provider],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()?;
+        let evaluator =
+            routing_evaluation::cross_family(&evaluator_profiles, actual_provider.as_deref());
+        let evaluation_id = format!("model:{learning_run_id}:{decision_id}");
+        // An earlier learning run's evaluation may still be open for this
+        // decision — a failed run does not consume evidence, so a retry
+        // re-reads the window. That queued run is still the decision's
+        // answer-in-progress: minting a second `model_based` row here would
+        // leave one stranded at 'queued' forever, because settlement mirrors
+        // only the run's own evaluation id.
+        if completed_eval.is_none()
+            && evaluator.is_some()
+            && routing_evaluation::has_open_run(db, &decision_id)?
+        {
+            summary.queued += 1;
+            continue;
+        }
+        let (evaluator_version, status, score_bps, confidence_bps, evidence_ids, source, enqueue) =
+            if let Some((check_status, verifier_family, output_digest, artifact_refs)) =
+                completed_eval
+            {
+                let mut ids =
+                    serde_json::from_str::<Vec<String>>(&artifact_refs).unwrap_or_default();
+                if let Some(digest) = output_digest {
+                    ids.push(format!("digest:{digest}"));
+                }
+                (
+                    format!("independent:{verifier_family}:completion-v1"),
+                    routing_evaluation::STATUS_COMPLETED,
+                    Some(if check_status == "passed" {
+                        10_000_i64
+                    } else {
+                        0_i64
+                    }),
+                    Some(9_000_i64),
+                    serde_json::to_string(&ids)
+                        .map_err(|error| BridgeError::Invalid(error.to_string()))?,
+                    "independent_completion_verifier",
+                    None,
+                )
+            } else if let Some(profile) = evaluator {
+                (
+                    profile.evaluator_version.clone(),
+                    routing_evaluation::STATUS_QUEUED,
+                    None,
+                    None,
+                    deterministic_evidence_ids,
+                    "bounded_model_eval",
+                    Some(profile),
+                )
+            } else {
+                (
+                    "none".into(),
+                    routing_evaluation::STATUS_NOT_REQUESTED,
+                    None,
+                    None,
+                    deterministic_evidence_ids,
+                    "unavailable",
+                    None,
+                )
+            };
+        db.execute(
+            "INSERT INTO routing_evaluations(id,learning_run_id,decision_id,evaluator_kind,evaluator_version,score_bps,confidence_bps,evidence_entry_ids,bounded_metrics,status,created_at)
+             VALUES(?1,?2,?3,'model_based',?4,?5,?6,?7,?8,?9,?10)
+             ON CONFLICT(id) DO UPDATE SET evaluator_version=excluded.evaluator_version,score_bps=excluded.score_bps,confidence_bps=excluded.confidence_bps,evidence_entry_ids=excluded.evidence_entry_ids,bounded_metrics=excluded.bounded_metrics,status=excluded.status,created_at=excluded.created_at",
+            params![
+                evaluation_id,
+                learning_run_id,
+                decision_id,
+                evaluator_version,
+                score_bps,
+                confidence_bps,
+                evidence_ids,
+                json!({
+                    "runtimeMs": runtime_ms,
+                    "costMicrousd": cost,
+                    "retryCount": retries,
+                    "editCount": edits,
+                    "overrideSignal": override_signal,
+                    "toolAccess": "none",
+                    "transcriptIncluded": false,
+                    "source": source,
+                }).to_string(),
+                status,
+                Utc::now().to_rfc3339(),
+            ],
+        )?;
+        match (status, enqueue) {
+            (routing_evaluation::STATUS_QUEUED, Some(profile)) => {
+                if routing_evaluation::enqueue(
+                    db,
+                    learning_run_id,
+                    &decision_id,
+                    workspace_id,
+                    &evaluation_id,
+                    profile,
+                    Utc::now(),
+                )? {
+                    summary.queued += 1;
+                }
+            }
+            (routing_evaluation::STATUS_COMPLETED, _) => {
+                // The reused verifier row is completed evidence right now, so
+                // the outcome's confidence must follow it the same way a fresh
+                // verdict's would — the replay and the online histories read
+                // the same number or the replay promotes on evidence the
+                // online path rejects.
+                learning_router::refresh_outcome_confidence(db, &decision_id)?;
+                summary.reused_existing += 1;
+            }
+            _ => {}
+        }
+    }
+    Ok(summary)
+}
+
+/// Fold settled evaluation spend back into the learning run that queued it.
+///
+/// The report is written while its evaluations are still queued, so the honest
+/// numbers only exist later. Recomputing from the run rows rather than
+/// incrementing keeps this idempotent however many times an executor calls it.
+pub fn refresh_evaluated_usage(
+    db: &Connection,
+    learning_run_id: &str,
+) -> Result<(), BridgeError> {
+    let usage = routing_evaluation::observed_usage(db, learning_run_id)?;
+    let stored: Option<Option<String>> = db
+        .query_row(
+            "SELECT report FROM learning_job_runs WHERE id=?1",
+            params![learning_run_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let Some(stored) = stored else {
+        return Ok(());
+    };
+    let report = stored
+        .as_deref()
+        .map(serde_json::from_str::<LearningReport>)
+        .transpose()
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?
+        .map(|mut report| {
+            report.evaluated_spend_microusd = usage.spend_microusd;
+            report.evaluated_tokens = usage.tokens;
+            // "executed" is a claim that a judgement was reached. A run whose
+            // evaluations all failed or were skipped settled without one, and
+            // saying it executed is the exact untruth this module exists to
+            // retire.
+            if report.evaluation_execution == "queued" && usage.open == 0 {
+                if usage.completed > 0 {
+                    report.evaluation_execution = "executed".into();
+                } else if usage.settled > 0 {
+                    report.evaluation_execution = "evaluation_failed".into();
+                }
+            }
+            serde_json::to_string(&report)
+        })
+        .transpose()
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    db.execute(
+        "UPDATE learning_job_runs SET evaluated_spend_microusd=?2,evaluated_tokens=?3,report=COALESCE(?4,report) WHERE id=?1",
+        params![learning_run_id, usage.spend_microusd, usage.tokens, report],
+    )?;
+    Ok(())
+}
+
+fn fail_run(db: &Connection, id: &str, error: &BridgeError) -> Result<LearningRun, BridgeError> {
+    let (boundary, base_policy_version, candidate_policy_version, scope): (i64, i64, Option<i64>, String) = db.query_row(
+        "SELECT evidence_boundary,base_policy_version,candidate_policy_version,learning_scope FROM learning_job_runs WHERE id=?1",
+        params![id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    let summary = learning_router::workspace_id_from_scope(&scope)
+        .ok()
+        .and_then(|workspace_id| EvidenceSummary::load(db, workspace_id, boundary).ok())
+        .unwrap_or_default();
+    let usage = routing_evaluation::observed_usage(db, id).unwrap_or_default();
+    let report = LearningReport {
+        reason: error.to_string(),
+        evidence_boundary: boundary,
+        evidence_count: summary.count,
+        base_policy_version,
+        candidate_policy_version: None,
+        quality_bps: None,
+        average_cost_microusd: None,
+        average_latency_ms: None,
+        retry_rate_bps: None,
+        intervention_rate_bps: None,
+        average_confidence_bps: None,
+        cost_complete: false,
+        evaluated_spend_microusd: usage.spend_microusd,
+        evaluated_tokens: usage.tokens,
+        evaluation_execution: "not_run".into(),
+        replay_passed: None,
+        promotion_status: "failed".into(),
+        policy_diff: json!({}),
+        recommendation_only: true,
+    };
+    let transaction = db.unchecked_transaction()?;
+    if let Some(candidate) = candidate_policy_version {
+        transaction.execute(
+            "UPDATE routing_policies SET status='abandoned' WHERE version=?1 AND status='candidate'",
+            params![candidate],
+        )?;
+    }
+    transaction.execute(
+        "UPDATE learning_job_runs SET status='failed',report=?2,lease_owner=NULL,lease_expires_at=NULL,promotion_status='failed',completed_at=?3 WHERE id=?1",
+        params![id, serde_json::to_string(&report).map_err(|error| BridgeError::Invalid(error.to_string()))?, Utc::now().to_rfc3339()],
+    )?;
+    transaction.commit()?;
+    load_run(db, id)?.ok_or_else(|| BridgeError::Invalid("failed learning run disappeared".into()))
+}
+
+fn persist_candidate_policy(
+    db: &Connection,
+    run_id: &str,
+    base_version: i64,
+    boundary: i64,
+    candidate: &routing_policy::CandidatePolicy,
+) -> Result<i64, BridgeError> {
+    let replay_json = serde_json::to_string(&candidate.replay)
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    let scope: String = db.query_row(
+        "SELECT learning_scope FROM learning_job_runs WHERE id=?1",
+        params![run_id],
+        |row| row.get(0),
+    )?;
+    let predecessor: Option<i64> = (base_version > 0).then_some(base_version);
+    let transaction = db.unchecked_transaction()?;
+    let next_version: i64 = transaction.query_row(
+        "SELECT COALESCE(MAX(version),0)+1 FROM routing_policies",
+        [],
+        |row| row.get(0),
+    )?;
+    transaction.execute(
+        "INSERT INTO routing_policies(version,status,predecessor,learning_scope,weights,thresholds,replay_report,created_reason,created_at)
+         VALUES(?1,'candidate',?2,?3,?4,?5,?6,?7,?8)",
+        params![next_version, predecessor, scope, candidate.weights.to_string(), candidate.thresholds.to_string(), replay_json, format!("learning candidate from frozen evidence boundary {boundary}"), Utc::now().to_rfc3339()],
+    )?;
+    let linked = transaction.execute(
+        "UPDATE learning_job_runs SET candidate_policy_version=?2 WHERE id=?1 AND status='running'",
+        params![run_id, next_version],
+    )?;
+    if linked != 1 {
+        return Err(BridgeError::Invalid(
+            "candidate policy could not be linked to its running learning job".into(),
+        ));
+    }
+    transaction.commit()?;
+    Ok(next_version)
+}
+
+pub fn run_learning(
+    db: &Connection,
+    trigger_kind: LearningTriggerKind,
+    workspace_id: &str,
+) -> Result<LearningRun, BridgeError> {
+    let scope = learning_router::workspace_learning_scope(workspace_id)?;
+    settle_canary(db, &scope)?;
+    let boundary = evidence_boundary(db, workspace_id)?;
+    let base_version = active_policy_version(db, &scope)?;
+    let key = format!("{DEFAULT_JOB_ID}:{scope}:{boundary}:{base_version}");
+    let now = Utc::now();
+    let lease_owner = Uuid::new_v4().to_string();
+    if let Some(mut active) = load_active_run(db)? {
+        if active.idempotency_key != key {
+            let lease_expired = active
+                .lease_expires_at
+                .as_deref()
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .is_some_and(|expires| expires <= now);
+            if lease_expired {
+                let previous_expiry = active.lease_expires_at.clone().ok_or_else(|| {
+                    BridgeError::Invalid("expired learning lease lost its expiry boundary".into())
+                })?;
+                let acquired = db.execute(
+                    "UPDATE learning_job_runs SET lease_owner=?2,lease_expires_at=?3
+                     WHERE id=?1 AND status='running' AND lease_expires_at=?4",
+                    params![
+                        active.id,
+                        lease_owner,
+                        (now + Duration::minutes(LEASE_MINUTES)).to_rfc3339(),
+                        previous_expiry
+                    ],
+                )?;
+                if acquired == 1 {
+                    record_trigger_event(
+                        db,
+                        Some(&active.id),
+                        trigger_kind,
+                        None,
+                        "lease_recovered",
+                        Some("the prior durable lease expired; the frozen snapshot was resumed before newer evidence"),
+                    )?;
+                    return process_run(
+                        db,
+                        &active.id,
+                        active.evidence_boundary,
+                        active.base_policy_version,
+                    )
+                    .or_else(|error| fail_run(db, &active.id, &error));
+                }
+                active = load_active_run(db)?.ok_or_else(|| {
+                    BridgeError::Invalid("recovered learning lease disappeared".into())
+                })?;
+            }
+            record_trigger_event(
+                db,
+                Some(&active.id),
+                trigger_kind,
+                None,
+                "duplicate_noop",
+                Some("another snapshot is already protected by the durable job lease"),
+            )?;
+            active.duplicate = true;
+            return Ok(active);
+        }
+    }
+    if let Some(mut existing) = load_run_by_key(db, &key)? {
+        let lease_expired = existing.status == LearningRunStatus::Running
+            && existing
+                .lease_expires_at
+                .as_deref()
+                .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+                .is_some_and(|expires| expires <= now);
+        if lease_expired {
+            let previous_expiry = existing.lease_expires_at.clone().ok_or_else(|| {
+                BridgeError::Invalid("expired learning lease lost its expiry boundary".into())
+            })?;
+            let acquired = db.execute(
+                "UPDATE learning_job_runs SET lease_owner=?2,lease_expires_at=?3
+                 WHERE id=?1 AND status='running' AND lease_expires_at=?4",
+                params![
+                    existing.id,
+                    lease_owner,
+                    (now + Duration::minutes(LEASE_MINUTES)).to_rfc3339(),
+                    previous_expiry
+                ],
+            )?;
+            if acquired == 0 {
+                let mut winner = load_run_by_key(db, &key)?.ok_or_else(|| {
+                    BridgeError::Invalid("recovered learning lease disappeared".into())
+                })?;
+                record_trigger_event(
+                    db,
+                    Some(&winner.id),
+                    trigger_kind,
+                    None,
+                    "duplicate_noop",
+                    Some("another trigger recovered the expired durable lease"),
+                )?;
+                winner.duplicate = true;
+                return Ok(winner);
+            }
+            record_trigger_event(
+                db,
+                Some(&existing.id),
+                trigger_kind,
+                None,
+                "lease_recovered",
+                Some("the prior durable lease expired; the frozen snapshot was resumed"),
+            )?;
+            return process_run(db, &existing.id, boundary, base_version)
+                .or_else(|error| fail_run(db, &existing.id, &error));
+        }
+        record_trigger_event(
+            db,
+            Some(&existing.id),
+            trigger_kind,
+            None,
+            "duplicate_noop",
+            Some("the snapshot idempotency key already exists"),
+        )?;
+        existing.duplicate = true;
+        return Ok(existing);
+    }
+
+    let id = Uuid::new_v4().to_string();
+    let created_at = now.to_rfc3339();
+    let inserted = db.execute(
+        "INSERT OR IGNORE INTO learning_job_runs(id,job_id,learning_scope,trigger_kind,idempotency_key,evidence_boundary,base_policy_version,status,lease_owner,lease_expires_at,snapshot_frozen_at,created_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,'running',?8,?9,?10,?10)",
+        params![id, DEFAULT_JOB_ID, scope, trigger_kind.as_str(), key, boundary, base_version, lease_owner, (now + Duration::minutes(LEASE_MINUTES)).to_rfc3339(), created_at],
+    )?;
+    if inserted == 0 {
+        let mut existing = match load_run_by_key(db, &key)? {
+            Some(existing) => existing,
+            None => load_active_run(db)?
+                .ok_or_else(|| BridgeError::Invalid("learning run lease claim was lost".into()))?,
+        };
+        record_trigger_event(
+            db,
+            Some(&existing.id),
+            trigger_kind,
+            None,
+            "duplicate_noop",
+            Some("a concurrent trigger acquired the durable lease"),
+        )?;
+        existing.duplicate = true;
+        return Ok(existing);
+    }
+    record_trigger_event(
+        db,
+        Some(&id),
+        trigger_kind,
+        None,
+        "acquired",
+        Some("durable lease acquired and evidence snapshot frozen"),
+    )?;
+    process_run(db, &id, boundary, base_version).or_else(|error| fail_run(db, &id, &error))
+}
+
+/// Sequential per-workspace learning. The global one-active-lease index forbids concurrent runs.
+pub fn run_learning_all_workspaces(
+    db: &Connection,
+    trigger_kind: LearningTriggerKind,
+) -> Result<Option<LearningRun>, BridgeError> {
+    let mut last = None;
+    for workspace_id in workspaces_with_outcomes(db)? {
+        last = Some(run_learning(db, trigger_kind, &workspace_id)?);
+    }
+    Ok(last)
+}
+
+fn process_run(
+    db: &Connection,
+    id: &str,
+    boundary: i64,
+    base_version: i64,
+) -> Result<LearningRun, BridgeError> {
+    let scope: String = db.query_row(
+        "SELECT learning_scope FROM learning_job_runs WHERE id=?1",
+        params![id],
+        |row| row.get(0),
+    )?;
+    let workspace_id = learning_router::workspace_id_from_scope(&scope)?;
+    let schedule = load_schedule(db)?;
+    let summary = EvidenceSummary::load(db, &workspace_id, boundary)?;
+    let previous_boundary = scope_cursor(db, &scope)?;
+    let new_evidence_count: i64 = db.query_row(
+        "SELECT COUNT(*) FROM router_outcomes o JOIN router_decisions d ON d.id=o.decision_id
+         WHERE d.workspace_id=?1 AND o.rowid>?2 AND o.rowid<=?3",
+        params![workspace_id, previous_boundary, boundary],
+        |row| row.get(0),
+    )?;
+    let mut candidate_policy_version = None;
+    let mut replay_passed = None;
+    let mut promotion_status = "not_requested".to_owned();
+    let mut policy_diff = json!({});
+    let mut consumed_evidence = false;
+    let mut evaluation_execution = "not_run".to_owned();
+    let canary_pending = schedule.mode == "automatic"
+        && db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM routing_policies WHERE learning_scope=?1 AND status='canary')",
+            params![scope],
+            |row| row.get::<_, bool>(0),
+        )?;
+    let (status, reason) = if schedule.run_budget_microusd <= 0 || schedule.run_budget_tokens <= 0 {
+        (
+            LearningRunStatus::Noop,
+            "learning spend/token budget exhausted".to_owned(),
+        )
+    } else if canary_pending {
+        (
+            LearningRunStatus::Noop,
+            "guarded canary is still collecting outcomes; no second automatic promotion was created".to_owned(),
+        )
+    } else if summary.count < MIN_EVIDENCE_SAMPLES {
+        (
+            LearningRunStatus::Noop,
+            format!(
+                "insufficient evidence: {}/{MIN_EVIDENCE_SAMPLES} outcomes",
+                summary.count
+            ),
+        )
+    } else if new_evidence_count < MIN_EVIDENCE_SAMPLES {
+        (
+            LearningRunStatus::Noop,
+            format!("insufficient new evidence: {new_evidence_count}/{MIN_EVIDENCE_SAMPLES} outcomes since boundary {previous_boundary}"),
+        )
+    } else {
+        let evaluation_summary =
+            record_model_evaluations(db, id, &workspace_id, previous_boundary, boundary)?;
+        evaluation_execution = evaluation_summary.execution_status().into();
+        consumed_evidence = true;
+        let base_weights = active_policy_weights(db, base_version)?;
+        match routing_policy::build_candidate(db, workspace_id, boundary, &base_weights)? {
+            None => (LearningRunStatus::Noop, "insufficient value: no supported policy change met the sample and confidence thresholds".into()),
+            Some(candidate) if !candidate.replay.passed => {
+                replay_passed = Some(false);
+                policy_diff = serde_json::to_value(&candidate.replay).map_err(|error| BridgeError::Invalid(error.to_string()))?;
+                (LearningRunStatus::Noop, format!("held-out replay rejected the candidate: {}", candidate.replay.reasons.join("; ")))
+            }
+            Some(candidate) => {
+                replay_passed = Some(true);
+                let next_version = persist_candidate_policy(db, id, base_version, boundary, &candidate)?;
+                candidate_policy_version = Some(next_version);
+                policy_diff = json!({
+                    "weights": candidate.weights,
+                    "thresholds": candidate.thresholds,
+                    "replay": candidate.replay,
+                    "evidenceGroups": candidate.evidence_groups,
+                    "guardrails": "deterministic_eligibility_unchanged",
+                });
+                match schedule.mode.as_str() {
+                    "manual" => promotion_status = "recommended".into(),
+                    "ask" => promotion_status = "awaiting_approval".into(),
+                    "automatic" => {
+                        let cancellation_requested: bool = db.query_row(
+                            "SELECT cancellation_requested FROM learning_job_runs WHERE id=?1",
+                            params![id],
+                            |row| row.get(0),
+                        )?;
+                        if cancellation_requested {
+                            return cancel_run(db, id);
+                        }
+                        promote_candidate(db, id, next_version, "automatic", true)?;
+                        promotion_status = "canary".into();
+                    }
+                    _ => return Err(BridgeError::Invalid("unsupported learning mode".into())),
+                }
+                (LearningRunStatus::Completed, match schedule.mode.as_str() {
+                    "manual" => "candidate policy recommended",
+                    "ask" => "candidate policy awaits approval",
+                    "automatic" => "candidate policy promoted to guarded canary",
+                    _ => unreachable!(),
+                }.into())
+            }
+        }
+    };
+    let evaluated_usage = routing_evaluation::observed_usage(db, id)?;
+    let report = LearningReport {
+        reason,
+        evidence_boundary: boundary,
+        evidence_count: summary.count,
+        base_policy_version: base_version,
+        candidate_policy_version,
+        quality_bps: summary.quality_bps(),
+        average_cost_microusd: summary.cost_per_success(),
+        average_latency_ms: (summary.runtime_reported > 0)
+            .then(|| summary.runtime_total / summary.runtime_reported),
+        retry_rate_bps: (summary.count > 0).then(|| summary.retries * 10_000 / summary.count),
+        intervention_rate_bps: (summary.count > 0)
+            .then(|| summary.interventions * 10_000 / summary.count),
+        average_confidence_bps: (summary.confidence_reported > 0)
+            .then(|| summary.confidence_total / summary.confidence_reported),
+        cost_complete: summary.count > 0 && summary.cost_reported == summary.count,
+        evaluated_spend_microusd: evaluated_usage.spend_microusd,
+        evaluated_tokens: evaluated_usage.tokens,
+        evaluation_execution,
+        replay_passed,
+        promotion_status: promotion_status.clone(),
+        policy_diff,
+        recommendation_only: schedule.mode != "automatic",
+    };
+    let completed_at = Utc::now().to_rfc3339();
+    let transaction = db.unchecked_transaction()?;
+    transaction.execute(
+        "UPDATE learning_job_runs SET status=?2,report=?3,candidate_policy_version=?4,evaluated_spend_microusd=?8,evaluated_tokens=?9,replay_passed=?5,promotion_status=?6,lease_owner=NULL,lease_expires_at=NULL,completed_at=?7 WHERE id=?1",
+        params![id, status.as_str(), serde_json::to_string(&report).map_err(|error| BridgeError::Invalid(error.to_string()))?, candidate_policy_version, replay_passed, promotion_status, completed_at, evaluated_usage.spend_microusd, evaluated_usage.tokens],
+    )?;
+    if consumed_evidence {
+        transaction.execute(
+            "INSERT INTO learning_scope_cursors(learning_scope,last_evidence_boundary,updated_at)
+             VALUES(?1,?2,?3)
+             ON CONFLICT(learning_scope) DO UPDATE SET
+               last_evidence_boundary=MAX(learning_scope_cursors.last_evidence_boundary,excluded.last_evidence_boundary),
+               updated_at=excluded.updated_at",
+            params![scope, boundary, completed_at],
+        )?;
+        transaction.execute(
+            "UPDATE learning_jobs SET last_evidence_boundary=MAX(last_evidence_boundary,?2),updated_at=?3 WHERE id=?1",
+            params![DEFAULT_JOB_ID, boundary, completed_at],
+        )?;
+    }
+    transaction.commit()?;
+    load_run(db, &id)?.ok_or_else(|| BridgeError::Invalid("learning run disappeared".into()))
+}
+
+fn map_run(row: &rusqlite::Row<'_>) -> rusqlite::Result<LearningRun> {
+    let trigger = match row.get::<_, String>(2)?.as_str() {
+        "manual" => LearningTriggerKind::Manual,
+        "in_app" => LearningTriggerKind::InApp,
+        "codex" => LearningTriggerKind::Codex,
+        "claude" => LearningTriggerKind::Claude,
+        "opencode" => LearningTriggerKind::OpenCode,
+        value => {
+            return Err(rusqlite::Error::FromSqlConversionFailure(
+                2,
+                rusqlite::types::Type::Text,
+                format!("unknown trigger {value}").into(),
+            ))
+        }
+    };
+    let status_value = row.get::<_, String>(6)?;
+    let status = LearningRunStatus::from_str(&status_value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(6, rusqlite::types::Type::Text, Box::new(error))
+    })?;
+    let report = row
+        .get::<_, Option<String>>(7)?
+        .map(|value| serde_json::from_str(&value))
+        .transpose()
+        .map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                7,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?;
+    Ok(LearningRun {
+        id: row.get(0)?,
+        job_id: row.get(1)?,
+        trigger_kind: trigger,
+        idempotency_key: row.get(3)?,
+        evidence_boundary: row.get(4)?,
+        base_policy_version: row.get(5)?,
+        status,
+        report,
+        candidate_policy_version: row.get(8)?,
+        cancellation_requested: row.get(9)?,
+        lease_expires_at: row.get(10)?,
+        replay_passed: row.get(11)?,
+        promotion_status: row.get(12)?,
+        duplicate: false,
+        created_at: row.get(13)?,
+        completed_at: row.get(14)?,
+    })
+}
+
+pub fn load_run(db: &Connection, id: &str) -> Result<Option<LearningRun>, BridgeError> {
+    Ok(db.query_row(
+        "SELECT id,job_id,trigger_kind,idempotency_key,evidence_boundary,base_policy_version,status,report,candidate_policy_version,cancellation_requested,lease_expires_at,replay_passed,promotion_status,created_at,completed_at FROM learning_job_runs WHERE id=?1",
+        params![id],
+        map_run,
+    ).optional()?)
+}
+
+fn load_run_by_key(db: &Connection, key: &str) -> Result<Option<LearningRun>, BridgeError> {
+    Ok(db.query_row(
+        "SELECT id,job_id,trigger_kind,idempotency_key,evidence_boundary,base_policy_version,status,report,candidate_policy_version,cancellation_requested,lease_expires_at,replay_passed,promotion_status,created_at,completed_at FROM learning_job_runs WHERE idempotency_key=?1",
+        params![key],
+        map_run,
+    ).optional()?)
+}
+
+fn load_active_run(db: &Connection) -> Result<Option<LearningRun>, BridgeError> {
+    Ok(db.query_row(
+        "SELECT id,job_id,trigger_kind,idempotency_key,evidence_boundary,base_policy_version,status,report,candidate_policy_version,cancellation_requested,lease_expires_at,replay_passed,promotion_status,created_at,completed_at
+         FROM learning_job_runs WHERE job_id=?1 AND status IN ('queued','running') ORDER BY created_at LIMIT 1",
+        params![DEFAULT_JOB_ID],
+        map_run,
+    ).optional()?)
+}
+
+pub fn cancel_run(db: &Connection, id: &str) -> Result<LearningRun, BridgeError> {
+    let transaction = db.unchecked_transaction()?;
+    let candidate: Option<i64> = transaction
+        .query_row(
+            "SELECT candidate_policy_version FROM learning_job_runs
+             WHERE id=?1 AND (status IN ('queued','running') OR promotion_status IN ('recommended','awaiting_approval'))",
+            params![id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    let updated = transaction.execute(
+        "UPDATE learning_job_runs SET cancellation_requested=1,status='cancelled',promotion_status='cancelled',lease_owner=NULL,lease_expires_at=NULL,completed_at=?2
+         WHERE id=?1 AND (status IN ('queued','running') OR promotion_status IN ('recommended','awaiting_approval'))",
+        params![id, Utc::now().to_rfc3339()],
+    )?;
+    if updated == 1 {
+        if let Some(candidate) = candidate {
+            transaction.execute(
+                "UPDATE routing_policies SET status='abandoned' WHERE version=?1 AND status='candidate'",
+                params![candidate],
+            )?;
+        }
+        transaction.commit()?;
+    }
+    load_run(db, id)?.ok_or_else(|| BridgeError::Invalid(format!("learning run {id} not found")))
+}
+
+fn promote_candidate(
+    db: &Connection,
+    run_id: &str,
+    candidate_version: i64,
+    actor: &str,
+    canary: bool,
+) -> Result<(), BridgeError> {
+    let transaction = db.unchecked_transaction()?;
+    let scope: String = transaction.query_row(
+        "SELECT learning_scope FROM learning_job_runs WHERE id=?1",
+        params![run_id],
+        |row| row.get(0),
+    )?;
+    let current: Option<(i64, String)> = transaction
+        .query_row(
+            "SELECT version,status FROM routing_policies
+             WHERE learning_scope=?1 AND status IN ('active','canary')
+             ORDER BY CASE status WHEN 'canary' THEN 0 ELSE 1 END,version DESC LIMIT 1",
+            params![scope],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    if current
+        .as_ref()
+        .is_some_and(|(_, status)| status == "canary")
+    {
+        return Err(BridgeError::Invalid(
+            "an existing canary must settle or roll back before another policy can promote".into(),
+        ));
+    }
+    let (predecessor, replay): (Option<i64>, Option<String>) = transaction.query_row(
+        "SELECT predecessor,replay_report FROM routing_policies WHERE version=?1 AND status='candidate' AND learning_scope=?2",
+        params![candidate_version, scope],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let current_version = current.map(|(version, _)| version);
+    if predecessor != current_version {
+        return Err(BridgeError::Invalid(
+            "candidate predecessor is stale; run learning again against the active policy".into(),
+        ));
+    }
+    let cancellation_requested: bool = transaction.query_row(
+        "SELECT cancellation_requested FROM learning_job_runs WHERE id=?1",
+        params![run_id],
+        |row| row.get(0),
+    )?;
+    if cancellation_requested {
+        return Err(BridgeError::Invalid(
+            "cancelled learning runs cannot promote policies".into(),
+        ));
+    }
+    let boundary: i64 = transaction.query_row(
+        "SELECT evidence_boundary FROM learning_job_runs WHERE id=?1",
+        params![run_id],
+        |row| row.get(0),
+    )?;
+    let now = Utc::now().to_rfc3339();
+    if let Some(current_version) = current_version {
+        transaction.execute(
+            "UPDATE routing_policies SET status='archived' WHERE version=?1 AND learning_scope=?2",
+            params![current_version, scope],
+        )?;
+    }
+    let next_status = if canary { "canary" } else { "active" };
+    transaction.execute(
+        "UPDATE routing_policies SET status=?2,promoted_at=?3,activation_boundary=?4 WHERE version=?1 AND learning_scope=?5",
+        params![candidate_version, next_status, now, boundary, scope],
+    )?;
+    let from_version = current_version.unwrap_or(candidate_version);
+    transaction.execute(
+        "INSERT INTO routing_policy_promotions(id,from_version,to_version,learning_run_id,learning_scope,action,actor,explanation,replay_report,created_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+        params![Uuid::new_v4().to_string(), from_version, candidate_version, run_id, scope, if canary { "canary_started" } else { "promoted" }, actor, if canary { "held-out replay passed; guarded canary started" } else { "held-out replay passed and the user approved promotion" }, replay, now],
+    )?;
+    transaction.execute(
+        "UPDATE learning_job_runs SET promotion_status=?2 WHERE id=?1",
+        params![run_id, if canary { "canary" } else { "promoted" }],
+    )?;
+    transaction.commit()?;
+    Ok(())
+}
+
+pub fn approve_run(db: &Connection, id: &str) -> Result<LearningRun, BridgeError> {
+    let schedule = load_schedule(db)?;
+    if schedule.mode != "ask" {
+        return Err(BridgeError::Invalid(
+            "policy approval is available only while learning mode is Ask".into(),
+        ));
+    }
+    let run = load_run(db, id)?
+        .ok_or_else(|| BridgeError::Invalid(format!("learning run {id} not found")))?;
+    if run.status != LearningRunStatus::Completed
+        || run.replay_passed != Some(true)
+        || run.promotion_status != "awaiting_approval"
+        || run.cancellation_requested
+    {
+        return Err(BridgeError::Invalid(
+            "only a completed, replay-approved, non-cancelled Ask candidate can be promoted".into(),
+        ));
+    }
+    let candidate = run
+        .candidate_policy_version
+        .ok_or_else(|| BridgeError::Invalid("learning run has no candidate policy".into()))?;
+    promote_candidate(db, id, candidate, "user_approval", false)?;
+    db.execute(
+        "UPDATE learning_job_runs SET promotion_status='promoted' WHERE id=?1",
+        params![id],
+    )?;
+    load_run(db, id)?
+        .ok_or_else(|| BridgeError::Invalid("approved learning run disappeared".into()))
+}
+
+fn rollback_policy_internal(
+    db: &Connection,
+    scope: &str,
+    target_version: i64,
+    actor: &str,
+    explanation: &str,
+    learning_run_id: Option<&str>,
+) -> Result<i64, BridgeError> {
+    if explanation.trim().is_empty() {
+        return Err(BridgeError::Invalid(
+            "rollback explanation cannot be empty".into(),
+        ));
+    }
+    let transaction = db.unchecked_transaction()?;
+    let target_scope: String = transaction.query_row(
+        "SELECT learning_scope FROM routing_policies WHERE version=?1",
+        params![target_version],
+        |row| row.get(0),
+    )?;
+    if target_scope != scope {
+        return Err(BridgeError::Invalid(
+            "rollback target is not in this workspace learning scope".into(),
+        ));
+    }
+    let current: i64 = transaction.query_row(
+        "SELECT version FROM routing_policies WHERE learning_scope=?1 AND status IN ('active','canary') LIMIT 1",
+        params![scope],
+        |row| row.get(0),
+    )?;
+    if current == target_version {
+        return Err(BridgeError::Invalid(
+            "target policy is already active".into(),
+        ));
+    }
+    let (target_status, weights, thresholds, replay): (String, String, String, Option<String>) =
+        transaction.query_row(
+            "SELECT status,weights,thresholds,replay_report FROM routing_policies WHERE version=?1",
+            params![target_version],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?;
+    if !matches!(target_status.as_str(), "archived" | "rolled_back") {
+        return Err(BridgeError::Invalid(
+            "rollback target must be a previously active policy version".into(),
+        ));
+    }
+    let next_version: i64 = transaction.query_row(
+        "SELECT COALESCE(MAX(version),0)+1 FROM routing_policies",
+        [],
+        |row| row.get(0),
+    )?;
+    let now = Utc::now().to_rfc3339();
+    transaction.execute(
+        "UPDATE routing_policies SET status=CASE WHEN status='canary' THEN 'rolled_back' ELSE 'archived' END WHERE version=?1 AND learning_scope=?2",
+        params![current, scope],
+    )?;
+    transaction.execute(
+        "INSERT INTO routing_policies(version,status,predecessor,rollback_of,learning_scope,weights,thresholds,replay_report,created_reason,created_at,promoted_at,activation_boundary)
+         VALUES(?1,'active',?2,?3,?4,?5,?6,?7,?8,?9,?9,(SELECT COALESCE(MAX(rowid),0) FROM router_outcomes))",
+        params![next_version, current, target_version, scope, weights, thresholds, replay, format!("rollback to policy v{target_version}: {}", explanation.trim()), now],
+    )?;
+    transaction.execute(
+        "INSERT INTO routing_policy_promotions(id,from_version,to_version,learning_run_id,learning_scope,action,actor,explanation,replay_report,created_at)
+         VALUES(?1,?2,?3,?4,?5,'rollback',?6,?7,?8,?9)",
+        params![Uuid::new_v4().to_string(), current, next_version, learning_run_id, scope, actor, explanation.trim(), replay, now],
+    )?;
+    transaction.commit()?;
+    Ok(next_version)
+}
+
+pub fn rollback_policy(
+    db: &Connection,
+    workspace_id: &str,
+    target_version: i64,
+    explanation: &str,
+) -> Result<i64, BridgeError> {
+    let scope = learning_router::workspace_learning_scope(workspace_id)?;
+    rollback_policy_internal(db, &scope, target_version, "user", explanation, None)
+}
+
+fn settle_canary(db: &Connection, scope: &str) -> Result<(), BridgeError> {
+    let canary: Option<(i64, Option<i64>, i64, String)> = db
+        .query_row(
+            "SELECT version,predecessor,COALESCE(activation_boundary,0),replay_report FROM routing_policies WHERE learning_scope=?1 AND status='canary' LIMIT 1",
+            params![scope],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let Some((version, predecessor, boundary, replay_json)) = canary else {
+        return Ok(());
+    };
+    let (count, known, successes, cost_total, cost_reported, latency_total, retries, interventions): (i64, i64, i64, i64, i64, i64, i64, i64) = db.query_row(
+        "SELECT COUNT(*),
+                COALESCE(SUM(CASE WHEN o.success_state IN ('success','failure') THEN 1 ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN o.success_state='success' THEN 1 ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN o.cost_microusd IS NOT NULL THEN o.cost_microusd ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN o.cost_microusd IS NOT NULL THEN 1 ELSE 0 END),0),
+                COALESCE(SUM(o.runtime_ms),0),
+                COALESCE(SUM(CASE WHEN o.retry_count>0 THEN 1 ELSE 0 END),0),
+                COALESCE(SUM(CASE WHEN o.human_intervention THEN 1 ELSE 0 END),0)
+         FROM router_outcomes o JOIN router_decisions d ON d.id=o.decision_id
+         WHERE o.rowid>?1 AND d.policy_version=?2 AND d.mode='autonomous' AND d.executed_candidate=d.recommended_candidate",
+        params![boundary, version],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?)),
+    )?;
+    if count < MIN_EVIDENCE_SAMPLES {
+        return Ok(());
+    }
+    let expected: routing_policy::PolicyReplayReport = serde_json::from_str(&replay_json)
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    let quality = (known == count && known > 0).then(|| successes * 10_000 / known);
+    let cost = (cost_reported == count && successes > 0).then(|| cost_total / successes);
+    let latency = (count > 0).then(|| latency_total / count);
+    let retry = retries * 10_000 / count;
+    let intervention = interventions * 10_000 / count;
+    let regressed = quality
+        .zip(expected.candidate.quality_bps)
+        .is_some_and(|(actual, expected)| actual + 500 < expected)
+        || cost
+            .zip(expected.candidate.cost_per_success_microusd)
+            .is_some_and(|(actual, expected)| actual * 10_000 > expected * 11_000)
+        || latency
+            .zip(expected.candidate.average_latency_ms)
+            .is_some_and(|(actual, expected)| actual * 10_000 > expected * 12_000)
+        || expected
+            .candidate
+            .retry_rate_bps
+            .is_some_and(|expected| retry > expected + 500)
+        || expected
+            .candidate
+            .intervention_rate_bps
+            .is_some_and(|expected| intervention > expected + 500);
+    let required_metrics_available = expected
+        .candidate
+        .quality_bps
+        .is_none_or(|_| quality.is_some())
+        && expected
+            .candidate
+            .cost_per_success_microusd
+            .is_none_or(|_| cost.is_some())
+        && expected
+            .candidate
+            .average_latency_ms
+            .is_none_or(|_| latency.is_some());
+    if !regressed && !required_metrics_available {
+        return Ok(());
+    }
+    if regressed {
+        if let Some(predecessor) = predecessor.filter(|version| *version > 0) {
+            rollback_policy_internal(
+                db,
+                scope,
+                predecessor,
+                "canary_guardrail",
+                "automatic canary regressed against held-out replay guardrails",
+                None,
+            )?;
+        } else {
+            let transaction = db.unchecked_transaction()?;
+            transaction.execute(
+                "UPDATE routing_policies SET status='rolled_back' WHERE version=?1 AND status='canary' AND learning_scope=?2",
+                params![version, scope],
+            )?;
+            transaction.execute(
+                "INSERT INTO routing_policy_promotions(id,from_version,to_version,learning_scope,action,actor,explanation,replay_report,created_at)
+                 VALUES(?1,?2,?2,?3,'rollback','canary_guardrail','automatic canary regressed against held-out replay guardrails and had no predecessor policy',?4,?5)",
+                params![Uuid::new_v4().to_string(), version, scope, replay_json, Utc::now().to_rfc3339()],
+            )?;
+            transaction.commit()?;
+        }
+    } else {
+        let transaction = db.unchecked_transaction()?;
+        transaction.execute(
+            "UPDATE routing_policies SET status='active' WHERE version=?1 AND status='canary' AND learning_scope=?2",
+            params![version, scope],
+        )?;
+        transaction.execute(
+            "INSERT INTO routing_policy_promotions(id,from_version,to_version,learning_scope,action,actor,explanation,replay_report,created_at)
+             VALUES(?1,?2,?2,?3,'canary_completed','canary_guardrail','canary evidence satisfied every regression guardrail',?4,?5)",
+            params![Uuid::new_v4().to_string(), version, scope, replay_json, Utc::now().to_rfc3339()],
+        )?;
+        transaction.commit()?;
+    }
+    Ok(())
+}
+
+pub fn load_schedule(db: &Connection) -> Result<LearningSchedule, BridgeError> {
+    Ok(db.query_row(
+        "SELECT id,enabled,cadence_minutes,next_run_at,run_budget_microusd,run_budget_tokens,mode FROM learning_jobs WHERE id=?1",
+        params![DEFAULT_JOB_ID],
+        |row| Ok(LearningSchedule { job_id: row.get(0)?, enabled: row.get(1)?, cadence_minutes: row.get(2)?, next_run_at: row.get(3)?, run_budget_microusd: row.get(4)?, run_budget_tokens: row.get(5)?, mode: row.get(6)? }),
+    )?)
+}
+
+pub fn update_schedule(
+    db: &Connection,
+    schedule: &LearningSchedule,
+) -> Result<LearningSchedule, BridgeError> {
+    if schedule.job_id != DEFAULT_JOB_ID
+        || schedule.cadence_minutes < 15
+        || schedule.run_budget_microusd < 0
+        || schedule.run_budget_tokens < 0
+    {
+        return Err(BridgeError::Invalid("learning schedule requires the default job, cadence >= 15 minutes, and non-negative spend/token budgets".into()));
+    }
+    if !matches!(schedule.mode.as_str(), "manual" | "ask" | "automatic") {
+        return Err(BridgeError::Invalid(
+            "learning mode must be manual, ask, or automatic".into(),
+        ));
+    }
+    // While the job is already enabled the runner owns next_run_at, and the
+    // scheduler advances it on its own connection — a read-then-write here
+    // would race it. The transition check lives inside the UPDATE, where
+    // `enabled` still names the stored row, so a client next_run_at applies
+    // only on the disabled-to-enabled edge and the runner's value survives a
+    // stale dialog snapshot atomically.
+    let requested_next_run_at = match (&schedule.next_run_at, schedule.enabled) {
+        (Some(next), true) => {
+            DateTime::parse_from_rfc3339(next)
+                .map_err(|_| BridgeError::Invalid("nextRunAt must be RFC3339".into()))?;
+            next.clone()
+        }
+        _ => (Utc::now() + Duration::minutes(schedule.cadence_minutes)).to_rfc3339(),
+    };
+    db.execute(
+        "UPDATE learning_jobs SET enabled=?2,cadence_minutes=?3,
+            next_run_at=CASE WHEN ?2 AND NOT enabled THEN ?4 ELSE next_run_at END,
+            run_budget_microusd=?5,run_budget_tokens=?6,mode=?7,updated_at=?8 WHERE id=?1",
+        params![DEFAULT_JOB_ID, schedule.enabled, schedule.cadence_minutes, requested_next_run_at, schedule.run_budget_microusd, schedule.run_budget_tokens, schedule.mode, Utc::now().to_rfc3339()],
+    )?;
+    load_schedule(db)
+}
+
+pub fn learning_state(db: &Connection, workspace_id: &str) -> Result<LearningState, BridgeError> {
+    let scope = learning_router::workspace_learning_scope(workspace_id)?;
+    let latest_run = db.query_row(
+        "SELECT id,job_id,trigger_kind,idempotency_key,evidence_boundary,base_policy_version,status,report,candidate_policy_version,cancellation_requested,lease_expires_at,replay_passed,promotion_status,created_at,completed_at FROM learning_job_runs WHERE learning_scope=?1 ORDER BY created_at DESC,rowid DESC LIMIT 1",
+        params![scope],
+        map_run,
+    ).optional()?;
+    Ok(LearningState {
+        schedule: load_schedule(db)?,
+        latest_run,
+        active_policy_version: active_policy_version(db, &scope)?,
+        canary_policy_version: db
+            .query_row(
+                "SELECT version FROM routing_policies WHERE learning_scope=?1 AND status='canary' LIMIT 1",
+                params![scope],
+                |row| row.get(0),
+            )
+            .optional()?,
+        rollback_target_version: rollback_target_version(db, &scope)?,
+    })
+}
+
+pub fn run_due(db: &Connection, now: DateTime<Utc>) -> Result<Option<LearningRun>, BridgeError> {
+    let schedule = load_schedule(db)?;
+    if !schedule.enabled {
+        return Ok(None);
+    }
+    let app_idle: bool = db.query_row(
+        "SELECT NOT EXISTS(SELECT 1 FROM sessions WHERE status IN ('working','waiting'))",
+        [],
+        |row| row.get(0),
+    )?;
+    if !app_idle {
+        return Ok(None);
+    }
+    let due = schedule
+        .next_run_at
+        .as_deref()
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .is_some_and(|value| value <= now);
+    if !due {
+        return Ok(None);
+    }
+    let next = now + Duration::minutes(schedule.cadence_minutes);
+    db.execute(
+        "UPDATE learning_jobs SET next_run_at=?2,updated_at=?3 WHERE id=?1",
+        params![DEFAULT_JOB_ID, next.to_rfc3339(), now.to_rfc3339()],
+    )?;
+    run_learning_all_workspaces(db, LearningTriggerKind::InApp)
+}
+
+pub fn register_trigger(
+    db: &Connection,
+    kind: LearningTriggerKind,
+    registration_id: &str,
+    credential_ref: Option<&str>,
+) -> Result<(), BridgeError> {
+    register_trigger_with_expiry(db, kind, registration_id, credential_ref, None)
+}
+
+pub fn register_trigger_with_expiry(
+    db: &Connection,
+    kind: LearningTriggerKind,
+    registration_id: &str,
+    credential_ref: Option<&str>,
+    expires_at: Option<&str>,
+) -> Result<(), BridgeError> {
+    if !matches!(
+        kind,
+        LearningTriggerKind::Codex | LearningTriggerKind::Claude | LearningTriggerKind::OpenCode
+    ) {
+        return Err(BridgeError::Invalid(
+            "only Codex, Claude, and OpenCode require trigger registrations".into(),
+        ));
+    }
+    if registration_id.trim().is_empty() {
+        return Err(BridgeError::Invalid(
+            "trigger registration id cannot be empty".into(),
+        ));
+    }
+    if credential_ref.is_some_and(|value| {
+        let lower = value.to_ascii_lowercase();
+        !(lower.starts_with("credential://")
+            || lower.starts_with("keychain:")
+            || lower.starts_with("secret-ref:"))
+    }) {
+        return Err(BridgeError::Invalid(
+            "trigger credentials must be stored as credential references, never raw secrets".into(),
+        ));
+    }
+    if let Some(expires_at) = expires_at {
+        DateTime::parse_from_rfc3339(expires_at)
+            .map_err(|_| BridgeError::Invalid("trigger expiry must be RFC3339".into()))?;
+    }
+    let enabled = !db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM learning_triggers WHERE enabled=1 AND kind IN ('codex','claude','opencode'))",
+        [],
+        |row| row.get::<_, bool>(0),
+    )? || db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM learning_triggers WHERE kind=?1 AND registration_id=?2 AND enabled=1)",
+        params![kind.as_str(), registration_id.trim()],
+        |row| row.get::<_, bool>(0),
+    )?;
+    let auth_digest = credential_ref.map(|reference| {
+        format!(
+            "{:x}",
+            Sha256::digest(
+                format!("{}:{}:{reference}", kind.as_str(), registration_id.trim()).as_bytes()
+            )
+        )
+    });
+    let now = Utc::now().to_rfc3339();
+    db.execute(
+        "INSERT INTO learning_triggers(id,job_id,kind,registration_id,credential_ref,auth_digest,enabled,expires_at,experimental,created_at,updated_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?10)
+         ON CONFLICT(kind,registration_id) DO UPDATE SET credential_ref=excluded.credential_ref,auth_digest=excluded.auth_digest,expires_at=excluded.expires_at,experimental=excluded.experimental,updated_at=excluded.updated_at",
+        params![Uuid::new_v4().to_string(), DEFAULT_JOB_ID, kind.as_str(), registration_id.trim(), credential_ref, auth_digest, enabled, expires_at, kind == LearningTriggerKind::Claude, now],
+    )?;
+    Ok(())
+}
+
+pub fn enable_trigger(
+    db: &Connection,
+    kind: LearningTriggerKind,
+    registration_id: &str,
+) -> Result<(), BridgeError> {
+    if !matches!(
+        kind,
+        LearningTriggerKind::Codex | LearningTriggerKind::Claude | LearningTriggerKind::OpenCode
+    ) {
+        return Err(BridgeError::Invalid(
+            "only external trigger adapters can be enabled".into(),
+        ));
+    }
+    let transaction = db.unchecked_transaction()?;
+    transaction.execute(
+        "UPDATE learning_triggers SET enabled=0,updated_at=?1 WHERE kind IN ('codex','claude','opencode')",
+        params![Utc::now().to_rfc3339()],
+    )?;
+    let updated = transaction.execute(
+        "UPDATE learning_triggers SET enabled=1,updated_at=?3 WHERE kind=?1 AND registration_id=?2",
+        params![kind.as_str(), registration_id, Utc::now().to_rfc3339()],
+    )?;
+    if updated != 1 {
+        return Err(BridgeError::Invalid(
+            "external trigger registration does not exist".into(),
+        ));
+    }
+    transaction.commit()?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalTriggerResult {
+    pub accepted: bool,
+    pub reason: String,
+    pub run: Option<LearningRun>,
+}
+
+pub fn trigger_instructions(
+    kind: LearningTriggerKind,
+    database_path: &str,
+    registration_id: &str,
+) -> Result<String, BridgeError> {
+    if registration_id.trim().is_empty() || database_path.trim().is_empty() {
+        return Err(BridgeError::Invalid(
+            "trigger instructions require a database path and registration id".into(),
+        ));
+    }
+    match kind {
+        LearningTriggerKind::Codex => Ok(CODEX_SCHEDULED_TASK_PROMPT
+            .replace("{{BRIDGE_DATABASE}}", database_path.trim())
+            .replace("{{REGISTRATION_ID}}", registration_id.trim())),
+        LearningTriggerKind::Claude => Ok(format!(
+            "Run `bridge learning run --database \"{}\" --trigger claude:{}` as a local Claude Desktop scheduled task. Treat it as a wake-up only. Do not upload Bridge's SQLite/WAL files or promote policy. Cloud Routine support is experimental and requires a future Bridge-owned authenticated endpoint.",
+            database_path.trim(),
+            registration_id.trim()
+        )),
+        LearningTriggerKind::OpenCode => Ok(format!(
+            "Run `bridge learning run --database \"{}\" --trigger opencode:{}` as a local OpenCode scheduled command. Treat it as a wake-up only. Do not upload Bridge's SQLite/WAL files or promote policy.",
+            database_path.trim(),
+            registration_id.trim()
+        )),
+        LearningTriggerKind::Manual | LearningTriggerKind::InApp => Err(BridgeError::Invalid(
+            "only external providers have scheduled-task instructions".into(),
+        )),
+    }
+}
+
+fn run_external_trigger(
+    db: &Connection,
+    kind: LearningTriggerKind,
+    registration_id: &str,
+    credential_ref: Option<&str>,
+) -> Result<ExternalTriggerResult, BridgeError> {
+    let registration: Option<(bool, Option<String>, Option<String>, Option<String>)> = db
+        .query_row(
+            "SELECT enabled,expires_at,auth_digest,credential_ref FROM learning_triggers WHERE kind=?1 AND registration_id=?2",
+            params![kind.as_str(), registration_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let reject = |result: &str, reason: &str| -> Result<ExternalTriggerResult, BridgeError> {
+        record_trigger_event(db, None, kind, Some(registration_id), result, Some(reason))?;
+        Ok(ExternalTriggerResult {
+            accepted: false,
+            reason: reason.into(),
+            run: None,
+        })
+    };
+    let Some((enabled, expires_at, expected_digest, _stored_reference)) = registration else {
+        return reject(
+            "unauthorized_noop",
+            "external trigger registration does not exist",
+        );
+    };
+    if !enabled {
+        return reject("disabled_noop", "external trigger registration is disabled");
+    }
+    if expires_at
+        .as_deref()
+        .and_then(|value| DateTime::parse_from_rfc3339(value).ok())
+        .is_some_and(|expires| expires <= Utc::now())
+    {
+        return reject("expired_noop", "external trigger registration expired");
+    }
+    let supplied_digest = credential_ref.map(|reference| {
+        format!(
+            "{:x}",
+            Sha256::digest(format!("{}:{registration_id}:{reference}", kind.as_str()).as_bytes())
+        )
+    });
+    if expected_digest != supplied_digest {
+        return reject(
+            "unauthorized_noop",
+            "external trigger credential reference did not match",
+        );
+    }
+    let run = run_learning_all_workspaces(db, kind)?;
+    let Some(run) = run else {
+        record_trigger_event(
+            db,
+            None,
+            kind,
+            Some(registration_id),
+            "accepted",
+            Some("registered external wake-up accepted; no workspace had routing outcomes"),
+        )?;
+        return Ok(ExternalTriggerResult {
+            accepted: true,
+            reason: "no workspace evidence".into(),
+            run: None,
+        });
+    };
+    record_trigger_event(
+        db,
+        Some(&run.id),
+        kind,
+        Some(registration_id),
+        if run.duplicate {
+            "duplicate_noop"
+        } else {
+            "accepted"
+        },
+        Some(if run.duplicate {
+            "snapshot already claimed"
+        } else {
+            "registered external wake-up accepted"
+        }),
+    )?;
+    Ok(ExternalTriggerResult {
+        accepted: true,
+        reason: if run.duplicate {
+            "snapshot already claimed".into()
+        } else {
+            "registered external wake-up accepted".into()
+        },
+        run: Some(run),
+    })
+}
+
+pub fn run_database(
+    database_path: &std::path::Path,
+    trigger: &str,
+    credential_ref: Option<&str>,
+) -> Result<ExternalTriggerResult, BridgeError> {
+    let (kind, registration_id) = parse_trigger(trigger)?;
+    if !database_path.is_file() {
+        return Err(BridgeError::Invalid(format!(
+            "Bridge database does not exist: {}",
+            database_path.display()
+        )));
+    }
+    let db = open_existing_database(database_path)?;
+    if let Some(registration_id) = registration_id {
+        run_external_trigger(&db, kind, &registration_id, credential_ref)
+    } else if credential_ref.is_some() {
+        Err(BridgeError::Invalid(
+            "credential references are accepted only for Codex, Claude, or OpenCode triggers"
+                .into(),
+        ))
+    } else {
+        let run = run_learning_all_workspaces(&db, kind)?;
+        Ok(ExternalTriggerResult {
+            accepted: true,
+            reason: if run.is_some() {
+                "local learning trigger accepted".into()
+            } else {
+                "no workspace evidence".into()
+            },
+            run,
+        })
+    }
+}
+
+fn open_existing_database(database_path: &std::path::Path) -> Result<Connection, BridgeError> {
+    let db = Connection::open(database_path)?;
+    db.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;")?;
+    Ok(db)
+}
+
+pub fn run_local_database(
+    database_path: &std::path::Path,
+    trigger_kind: LearningTriggerKind,
+    workspace_id: &str,
+) -> Result<LearningRun, BridgeError> {
+    if !database_path.is_file() {
+        return Err(BridgeError::Invalid(format!(
+            "Bridge database does not exist: {}",
+            database_path.display()
+        )));
+    }
+    run_learning(
+        &open_existing_database(database_path)?,
+        trigger_kind,
+        workspace_id,
+    )
+}
+
+pub fn run_due_database(
+    database_path: &std::path::Path,
+    now: DateTime<Utc>,
+) -> Result<Option<LearningRun>, BridgeError> {
+    if !database_path.is_file() {
+        return Ok(None);
+    }
+    run_due(&open_existing_database(database_path)?, now)
+}
+
+fn parse_trigger(value: &str) -> Result<(LearningTriggerKind, Option<String>), BridgeError> {
+    let trimmed = value.trim();
+    if trimmed == "manual" {
+        return Ok((LearningTriggerKind::Manual, None));
+    }
+    if trimmed == "in-app" || trimmed == "in_app" {
+        return Ok((LearningTriggerKind::InApp, None));
+    }
+    for (prefix, kind) in [
+        ("codex:", LearningTriggerKind::Codex),
+        ("claude:", LearningTriggerKind::Claude),
+        ("opencode:", LearningTriggerKind::OpenCode),
+    ] {
+        if let Some(registration_id) = trimmed.strip_prefix(prefix) {
+            if registration_id.trim().is_empty() {
+                break;
+            }
+            return Ok((kind, Some(registration_id.trim().to_owned())));
+        }
+    }
+    Err(BridgeError::Invalid(
+        "trigger must be manual, in-app, codex:<registration-id>, claude:<registration-id>, or opencode:<registration-id>"
+            .into(),
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        delegation::Effort,
+        learning_router::{
+            CandidateEvaluation, CandidateExclusion, CandidatePrediction, RouteCandidate,
+            RouterDecision, RouterMode,
+        },
+        model::CapabilityTier,
+        store,
+    };
+
+    fn database() -> Connection {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/learning','now')", []).unwrap();
+        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Pune','Learning','bridge/learning','/tmp/learning-w','idle','now')", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('parent','w','codex','Parent','idle','reported')", []).unwrap();
+        db
+    }
+
+    fn candidate(model: &str) -> CandidateEvaluation {
+        CandidateEvaluation {
+            candidate: RouteCandidate {
+                harness: "codex".into(),
+                model: model.into(),
+                tier: CapabilityTier::Standard,
+                effort: Effort::Medium,
+                sandbox: "workspace_write".into(),
+                capabilities: vec!["tools".into(), "commands".into()],
+                available: true,
+                platform_supported: true,
+                permission_eligible: true,
+                quota_available: true,
+                context_available: true,
+                risk_eligible: true,
+                capability_units: 2,
+                default_for_tier: model == "a",
+            },
+            exclusions: vec![],
+            prediction: CandidatePrediction {
+                pass_probability_bps: 8_000,
+                latency_ms: 100,
+                normalized_quota_cost: 100,
+                retry_risk_bps: 1_000,
+                samples: 2,
+            },
+            expected_cost_score: 100,
+        }
+    }
+
+    fn add_outcome(
+        db: &Connection,
+        index: i64,
+        model: &str,
+        success: bool,
+        cost: Option<i64>,
+        policy_version: i64,
+    ) {
+        add_outcome_in(
+            db,
+            "w",
+            "parent",
+            index,
+            model,
+            success,
+            cost,
+            policy_version,
+        );
+    }
+
+    fn add_outcome_in(
+        db: &Connection,
+        workspace_id: &str,
+        parent_session_id: &str,
+        index: i64,
+        model: &str,
+        success: bool,
+        cost: Option<i64>,
+        policy_version: i64,
+    ) {
+        let suffix = if workspace_id == "w" {
+            index.to_string()
+        } else {
+            format!("{workspace_id}-{index}")
+        };
+        let child = format!("child-{suffix}");
+        let decision = format!("decision-{suffix}");
+        let candidate_key = format!("codex:{model}");
+        let body = RouterDecision {
+            schema_version: crate::learning_router::ROUTER_SCHEMA_VERSION,
+            id: decision.clone(),
+            workspace_id: workspace_id.into(),
+            parent_session_id: parent_session_id.into(),
+            turn_id: format!("turn-{suffix}"),
+            trace_id: Some("trace-learning".into()),
+            task_family: "implementation".into(),
+            task_fingerprint: "repeated-implementation".into(),
+            repository_revision: Some("head:clean".into()),
+            profile_version: Some(1),
+            profile_purpose: Some("implementer".into()),
+            policy_version,
+            catalog_snapshot: json!({"codex":["a","b"]}),
+            mode: if policy_version > 1 {
+                RouterMode::Autonomous
+            } else {
+                RouterMode::Shadow
+            },
+            manual_override: false,
+            baseline_candidate: Some(candidate_key.clone()),
+            recommended_candidate: Some(candidate_key.clone()),
+            executed_candidate: Some(candidate_key.clone()),
+            explanation: "fixture".into(),
+            candidates: vec![candidate("a"), candidate("b")],
+            actual_provider: Some("codex".into()),
+            actual_model: Some(model.into()),
+            actual_effort: Some(Effort::Medium),
+            created_at: "now".into(),
+        };
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id) VALUES(?1,?2,'codex','Child','completed','reported',?3)", params![child, workspace_id, parent_session_id]).unwrap();
+        db.execute("INSERT INTO router_decisions(id,workspace_id,parent_session_id,turn_id,trace_id,task_family,task_fingerprint,profile_version,profile_purpose,policy_version,actual_provider,actual_model,actual_effort,mode,manual_override,baseline_candidate,recommended_candidate,executed_candidate,decision,created_at) VALUES(?1,?2,?3,?4,'trace-learning','implementation','repeated-implementation',1,'implementer',?5,'codex',?6,'medium',?7,0,?8,?8,?8,?9,'now')", params![decision, workspace_id, parent_session_id, format!("turn-{suffix}"), policy_version, model, if policy_version > 1 { "autonomous" } else { "shadow" }, candidate_key, serde_json::to_string(&body).unwrap()]).unwrap();
+        db.execute("INSERT INTO router_outcomes(decision_id,child_session_id,candidate,succeeded,status,runtime_ms,normalized_cost,retry_count,human_intervention,success_state,acceptance_state,cost_microusd,cost_source,confidence_bps,recorded_at) VALUES(?1,?2,?3,?4,?5,?6,1000,0,0,?7,?8,?9,?10,9000,'now')", params![decision, child, candidate_key, success, if success { "completed" } else { "failed" }, if model == "b" { 100 } else { 200 }, if success { "success" } else { "failure" }, if success { "accepted" } else { "rejected" }, cost, cost.map(|_| "provider_reported")]).unwrap();
+    }
+
+    fn add_workspace(db: &Connection, id: &str) {
+        db.execute(
+            "INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES(?1,'p','Pune',?1,?1,?2,'idle','now')",
+            params![id, format!("/tmp/{id}")],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES(?1,?2,'codex','Parent','idle','reported')",
+            params![format!("{id}-parent"), id],
+        )
+        .unwrap();
+    }
+
+    fn add_improving_fixture(db: &Connection, policy_version: i64) {
+        for (index, model, success) in [
+            (0, "a", false),
+            (1, "a", false),
+            (2, "b", true),
+            (3, "b", true),
+            (4, "a", false),
+            (5, "a", false),
+            (6, "b", true),
+            (7, "b", true),
+            (8, "b", true),
+            (9, "a", false),
+        ] {
+            add_outcome(
+                db,
+                index,
+                model,
+                success,
+                Some(if model == "b" { 100 } else { 200 }),
+                policy_version,
+            );
+        }
+    }
+
+    fn set_mode(db: &Connection, mode: &str) {
+        let mut schedule = load_schedule(db).unwrap();
+        schedule.mode = mode.into();
+        update_schedule(db, &schedule).unwrap();
+    }
+
+    #[test]
+    fn another_workspaces_evidence_does_not_mint_a_new_run_key() {
+        let db = database();
+        add_workspace(&db, "other");
+        add_outcome(&db, 0, "a", true, Some(100), 1);
+        let first = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        for index in 0..3 {
+            add_outcome_in(&db, "other", "other-parent", index, "b", true, Some(100), 1);
+        }
+        let second = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        assert_eq!(first.id, second.id);
+        assert!(
+            second.duplicate,
+            "an idle workspace must not get a fresh noop run because another desk recorded outcomes"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM learning_job_runs WHERE learning_scope='workspace:w'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn duplicate_triggers_share_one_snapshot_run() {
+        let db = database();
+        let first = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        let second = run_learning(&db, LearningTriggerKind::Codex, "w").unwrap();
+        assert_eq!(first.id, second.id);
+        assert!(second.duplicate);
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM learning_job_runs", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM learning_trigger_events", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            2
+        );
+    }
+
+    #[test]
+    fn one_job_lease_blocks_a_competing_newer_snapshot() {
+        let db = database();
+        db.execute(
+            "INSERT INTO learning_job_runs(id,job_id,trigger_kind,idempotency_key,evidence_boundary,base_policy_version,status,lease_owner,lease_expires_at,snapshot_frozen_at,created_at)
+             VALUES('active','default','manual','default:0:1',0,1,'running','owner',?1,'now','now')",
+            params![(Utc::now() + Duration::minutes(5)).to_rfc3339()],
+        )
+        .unwrap();
+        add_outcome(&db, 1, "a", false, Some(100), 1);
+        let duplicate = run_learning(&db, LearningTriggerKind::Codex, "w").unwrap();
+        assert_eq!(duplicate.id, "active");
+        assert!(duplicate.duplicate);
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM learning_job_runs", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn insufficient_evidence_is_auditable_noop() {
+        let db = database();
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        assert_eq!(run.status, LearningRunStatus::Noop);
+        assert!(run.report.unwrap().reason.contains("insufficient evidence"));
+    }
+
+    #[test]
+    fn recommendation_mode_never_promotes() {
+        let db = database();
+        add_improving_fixture(&db, 1);
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        assert_eq!(run.status, LearningRunStatus::Completed, "{:?}", run.report);
+        assert!(run.candidate_policy_version.is_some());
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM routing_policies WHERE status='active'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM routing_policies WHERE status='candidate'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn budget_and_secret_guards_are_deterministic() {
+        let db = database();
+        let mut schedule = load_schedule(&db).unwrap();
+        schedule.run_budget_microusd = 0;
+        update_schedule(&db, &schedule).unwrap();
+        assert_eq!(
+            run_learning(&db, LearningTriggerKind::Manual, "w")
+                .unwrap()
+                .status,
+            LearningRunStatus::Noop
+        );
+        assert!(register_trigger(
+            &db,
+            LearningTriggerKind::Claude,
+            "routine",
+            Some("Bearer raw-secret")
+        )
+        .is_err());
+        register_trigger(
+            &db,
+            LearningTriggerKind::Claude,
+            "routine",
+            Some("keychain:bridge/claude-routine"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn due_schedule_catches_up_once() {
+        let db = database();
+        let now = Utc::now();
+        let schedule = LearningSchedule {
+            job_id: DEFAULT_JOB_ID.into(),
+            enabled: true,
+            cadence_minutes: 60,
+            next_run_at: Some((now - Duration::days(3)).to_rfc3339()),
+            run_budget_microusd: 10_000,
+            run_budget_tokens: 10_000,
+            mode: "manual".into(),
+        };
+        update_schedule(&db, &schedule).unwrap();
+        db.execute("UPDATE sessions SET status='working' WHERE id='parent'", [])
+            .unwrap();
+        add_outcome(&db, 1, "a", false, Some(100), 1);
+        assert!(run_due(&db, now).unwrap().is_none());
+        db.execute("UPDATE sessions SET status='idle' WHERE id='parent'", [])
+            .unwrap();
+        assert!(run_due(&db, now).unwrap().is_some());
+        assert!(run_due(&db, now).unwrap().is_none());
+        let next = DateTime::parse_from_rfc3339(
+            load_schedule(&db).unwrap().next_run_at.as_deref().unwrap(),
+        )
+        .unwrap();
+        assert!(next > now);
+    }
+
+    #[test]
+    fn update_schedule_does_not_rewind_next_run_at_while_enabled() {
+        let db = database();
+        let now = Utc::now();
+        let future = now + Duration::hours(12);
+        update_schedule(
+            &db,
+            &LearningSchedule {
+                job_id: DEFAULT_JOB_ID.into(),
+                enabled: true,
+                cadence_minutes: 60,
+                next_run_at: Some(future.to_rfc3339()),
+                run_budget_microusd: 10_000,
+                run_budget_tokens: 10_000,
+                mode: "manual".into(),
+            },
+        )
+        .unwrap();
+        let mut stale = load_schedule(&db).unwrap();
+        stale.next_run_at = Some((now - Duration::days(1)).to_rfc3339());
+        stale.mode = "ask".into();
+        update_schedule(&db, &stale).unwrap();
+        let stored = load_schedule(&db).unwrap();
+        assert_eq!(stored.mode, "ask");
+        let expected = future.to_rfc3339();
+        assert_eq!(stored.next_run_at.as_deref(), Some(expected.as_str()));
+    }
+
+    #[test]
+    fn a_runner_advance_survives_a_stale_dialog_save() {
+        let db = database();
+        let mut schedule = load_schedule(&db).unwrap();
+        schedule.enabled = true;
+        let stale = update_schedule(&db, &schedule).unwrap();
+        let advanced = (Utc::now() + Duration::hours(6)).to_rfc3339();
+        db.execute(
+            "UPDATE learning_jobs SET next_run_at=?1 WHERE id='default'",
+            params![advanced],
+        )
+        .unwrap();
+        let mut resave = stale;
+        resave.mode = "ask".into();
+        let stored = update_schedule(&db, &resave).unwrap();
+        assert_eq!(stored.mode, "ask");
+        assert_eq!(stored.next_run_at.as_deref(), Some(advanced.as_str()));
+    }
+
+    #[test]
+    fn enabling_schedule_accepts_client_next_run_at() {
+        let db = database();
+        let future = Utc::now() + Duration::days(1);
+        let expected = future.to_rfc3339();
+        let mut schedule = load_schedule(&db).unwrap();
+        assert!(!schedule.enabled);
+        schedule.enabled = true;
+        schedule.next_run_at = Some(expected.clone());
+        update_schedule(&db, &schedule).unwrap();
+        assert_eq!(
+            load_schedule(&db).unwrap().next_run_at.as_deref(),
+            Some(expected.as_str())
+        );
+    }
+
+    #[test]
+    fn subsequent_runs_require_an_incremental_evidence_batch() {
+        let db = database();
+        add_improving_fixture(&db, 1);
+        assert_eq!(
+            run_learning(&db, LearningTriggerKind::Manual, "w")
+                .unwrap()
+                .status,
+            LearningRunStatus::Completed
+        );
+        add_outcome(&db, 100, "b", true, Some(100), 1);
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        assert_eq!(run.status, LearningRunStatus::Noop);
+        assert!(run
+            .report
+            .unwrap()
+            .reason
+            .contains("insufficient new evidence: 1/5"));
+        for index in 101..105 {
+            add_outcome(&db, index, "b", true, Some(100), 1);
+        }
+        let accumulated = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        assert_eq!(accumulated.status, LearningRunStatus::Completed);
+        assert_eq!(
+            db.query_row(
+                "SELECT last_evidence_boundary FROM learning_jobs WHERE id='default'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            accumulated.evidence_boundary
+        );
+    }
+
+    #[test]
+    fn external_trigger_parser_requires_narrow_registration_ids() {
+        assert_eq!(
+            parse_trigger("codex:daily-learning").unwrap(),
+            (LearningTriggerKind::Codex, Some("daily-learning".into()))
+        );
+        assert_eq!(
+            parse_trigger("claude:desktop-task").unwrap(),
+            (LearningTriggerKind::Claude, Some("desktop-task".into()))
+        );
+        assert!(parse_trigger("codex:").is_err());
+        assert!(parse_trigger("provider:free-form").is_err());
+        let prompt = trigger_instructions(
+            LearningTriggerKind::Codex,
+            "/tmp/bridge.db",
+            "daily-learning",
+        )
+        .unwrap();
+        assert!(prompt.contains(
+            "bridge learning run --database \"/tmp/bridge.db\" --trigger codex:daily-learning"
+        ));
+        assert!(prompt.contains("wake-up trigger only"));
+        assert!(!prompt.contains("{{"));
+    }
+
+    #[test]
+    fn external_trigger_does_not_run_desktop_recovery_side_effects() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        {
+            let db = store::open(&path).unwrap();
+            db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/external-learning','now')", []).unwrap();
+            db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Pune','Learning','bridge/learning','/tmp/external-learning-w','working','now')", []).unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('active','w','codex','Active','working','reported')", []).unwrap();
+            register_trigger(&db, LearningTriggerKind::Codex, "scheduled", None).unwrap();
+        }
+        assert!(
+            run_database(&path, "codex:scheduled", None)
+                .unwrap()
+                .accepted
+        );
+        let db = Connection::open(path).unwrap();
+        assert_eq!(
+            db.query_row("SELECT status FROM sessions WHERE id='active'", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap(),
+            "working"
+        );
+    }
+
+    #[test]
+    fn locked_database_fails_without_partial_external_run() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        let mut owner = store::open(&path).unwrap();
+        register_trigger(&owner, LearningTriggerKind::Codex, "locked", None).unwrap();
+        let lock = owner.transaction().unwrap();
+        lock.execute(
+            "UPDATE learning_jobs SET updated_at='locked' WHERE id='default'",
+            [],
+        )
+        .unwrap();
+        let contender = Connection::open(&path).unwrap();
+        contender
+            .busy_timeout(std::time::Duration::from_millis(5))
+            .unwrap();
+        assert!(
+            run_external_trigger(&contender, LearningTriggerKind::Codex, "locked", None).is_err()
+        );
+        lock.rollback().unwrap();
+        assert_eq!(
+            owner
+                .query_row("SELECT COUNT(*) FROM learning_job_runs", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn cost_per_success_requires_complete_provider_costs() {
+        let complete = database();
+        add_improving_fixture(&complete, 1);
+        let report = run_learning(&complete, LearningTriggerKind::Manual, "w")
+            .unwrap()
+            .report
+            .unwrap();
+        assert!(report.cost_complete);
+        assert_eq!(report.average_cost_microusd, Some(300));
+
+        let incomplete = database();
+        add_improving_fixture(&incomplete, 1);
+        incomplete
+            .execute(
+                "UPDATE router_outcomes SET cost_microusd=NULL,cost_source=NULL WHERE rowid=1",
+                [],
+            )
+            .unwrap();
+        let report = run_learning(&incomplete, LearningTriggerKind::Manual, "w")
+            .unwrap()
+            .report
+            .unwrap();
+        assert!(!report.cost_complete);
+        assert_eq!(report.average_cost_microusd, None);
+    }
+
+    #[test]
+    fn lease_expiry_and_trigger_auth_are_auditable() {
+        let db = database();
+        let now = Utc::now();
+        db.execute(
+            "INSERT INTO learning_job_runs(id,job_id,learning_scope,trigger_kind,idempotency_key,evidence_boundary,base_policy_version,status,lease_owner,lease_expires_at,snapshot_frozen_at,created_at)
+             VALUES('stale','default','workspace:w','manual','default:0:1',0,1,'running','old-owner',?1,?2,?2)",
+            params![(now - Duration::minutes(1)).to_rfc3339(), (now - Duration::minutes(20)).to_rfc3339()],
+        )
+        .unwrap();
+        add_outcome(&db, 99, "a", false, Some(100), 1);
+        let recovered = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        assert_eq!(recovered.id, "stale");
+        assert_eq!(recovered.evidence_boundary, 0);
+        assert_eq!(recovered.status, LearningRunStatus::Noop);
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM learning_trigger_events WHERE result='lease_recovered'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .unwrap(),
+            1
+        );
+
+        let auth = database();
+        let missing =
+            run_external_trigger(&auth, LearningTriggerKind::Codex, "missing", None).unwrap();
+        assert!(!missing.accepted);
+        register_trigger_with_expiry(
+            &auth,
+            LearningTriggerKind::Codex,
+            "expired",
+            None,
+            Some(&(Utc::now() - Duration::minutes(1)).to_rfc3339()),
+        )
+        .unwrap();
+        assert!(
+            !run_external_trigger(&auth, LearningTriggerKind::Codex, "expired", None)
+                .unwrap()
+                .accepted
+        );
+
+        let credentialed = database();
+        register_trigger(
+            &credentialed,
+            LearningTriggerKind::Codex,
+            "daily",
+            Some("keychain:bridge/codex-daily"),
+        )
+        .unwrap();
+        assert!(
+            !run_external_trigger(
+                &credentialed,
+                LearningTriggerKind::Codex,
+                "daily",
+                Some("keychain:bridge/wrong"),
+            )
+            .unwrap()
+            .accepted
+        );
+        assert!(
+            run_external_trigger(
+                &credentialed,
+                LearningTriggerKind::Codex,
+                "daily",
+                Some("keychain:bridge/codex-daily"),
+            )
+            .unwrap()
+            .accepted
+        );
+        assert_eq!(
+            credentialed.query_row(
+                "SELECT COUNT(*) FROM session_entries WHERE payload LIKE '%keychain:bridge/codex-daily%'",
+                [],
+                |row| row.get::<_, i64>(0),
+            ).unwrap(),
+            0
+        );
+
+        register_trigger(&credentialed, LearningTriggerKind::Claude, "desktop", None).unwrap();
+        let enabled: (bool, bool) = credentialed
+            .query_row(
+                "SELECT
+                    EXISTS(SELECT 1 FROM learning_triggers WHERE kind='codex' AND enabled=1),
+                    EXISTS(SELECT 1 FROM learning_triggers WHERE kind='claude' AND enabled=1)",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(enabled, (true, false));
+        enable_trigger(&credentialed, LearningTriggerKind::Claude, "desktop").unwrap();
+        let enabled: (bool, bool) = credentialed.query_row(
+            "SELECT EXISTS(SELECT 1 FROM learning_triggers WHERE kind='codex' AND enabled=1),EXISTS(SELECT 1 FROM learning_triggers WHERE kind='claude' AND enabled=1)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(enabled, (false, true));
+    }
+
+    #[test]
+    fn ask_requires_approval_and_promotion_rollback_are_versioned() {
+        let db = database();
+        set_mode(&db, "ask");
+        add_improving_fixture(&db, 1);
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        assert_eq!(run.promotion_status, "awaiting_approval");
+        assert_eq!(active_policy_version(&db, "workspace:w").unwrap(), 0);
+        let approved = approve_run(&db, &run.id).unwrap();
+        assert_eq!(approved.promotion_status, "promoted");
+        assert_eq!(active_policy_version(&db, "workspace:w").unwrap(), 2);
+        assert!(
+            rollback_policy(&db, "w", 1, "fixture regression").is_err(),
+            "legacy:global v1 must not be a rollback target for a workspace"
+        );
+        db.execute(
+            "UPDATE routing_policies SET status='archived' WHERE version=2 AND learning_scope='workspace:w'",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO routing_policies(version,status,predecessor,learning_scope,weights,thresholds,created_reason,created_at,promoted_at)
+             VALUES(3,'active',2,'workspace:w','{}','{}','successor','now','now')",
+            [],
+        )
+        .unwrap();
+        let rollback = rollback_policy(&db, "w", 2, "fixture regression").unwrap();
+        assert_eq!(rollback, 4);
+        assert_eq!(active_policy_version(&db, "workspace:w").unwrap(), 4);
+        assert_eq!(
+            db.query_row(
+                "SELECT predecessor,rollback_of FROM routing_policies WHERE version=4",
+                [],
+                |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+            )
+            .unwrap(),
+            (3, 2)
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM routing_policies WHERE status='active' AND learning_scope='workspace:w'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn cancellation_before_ask_promotion_abandons_candidate() {
+        let db = database();
+        set_mode(&db, "ask");
+        add_improving_fixture(&db, 1);
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        let cancelled = cancel_run(&db, &run.id).unwrap();
+        assert_eq!(cancelled.status, LearningRunStatus::Cancelled);
+        assert!(approve_run(&db, &run.id).is_err());
+        assert_eq!(active_policy_version(&db, "workspace:w").unwrap(), 0);
+        assert_eq!(
+            db.query_row(
+                "SELECT status FROM routing_policies WHERE version=2",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "abandoned"
+        );
+    }
+
+    #[test]
+    fn automatic_canary_rolls_back_on_regression() {
+        let db = database();
+        set_mode(&db, "automatic");
+        add_improving_fixture(&db, 1);
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        assert_eq!(run.promotion_status, "canary");
+        assert_eq!(
+            db.query_row(
+                "SELECT status FROM routing_policies WHERE version=2",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "canary"
+        );
+        for index in 100..105 {
+            add_outcome(&db, index, "b", false, Some(2_000), 2);
+        }
+        settle_canary(&db, "workspace:w").unwrap();
+        assert_eq!(active_policy_version(&db, "workspace:w").unwrap(), 0);
+        assert_eq!(
+            db.query_row(
+                "SELECT status FROM routing_policies WHERE version=2",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "rolled_back"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM routing_policies WHERE rollback_of IS NOT NULL AND learning_scope='workspace:w'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn automatic_canary_becomes_active_only_after_green_outcomes() {
+        let db = database();
+        set_mode(&db, "automatic");
+        add_improving_fixture(&db, 1);
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        assert_eq!(run.promotion_status, "canary");
+        for index in 100..105 {
+            add_outcome(&db, index, "b", true, Some(100), 2);
+        }
+        settle_canary(&db, "workspace:w").unwrap();
+        assert_eq!(active_policy_version(&db, "workspace:w").unwrap(), 2);
+        assert_eq!(
+            db.query_row(
+                "SELECT status FROM routing_policies WHERE version=2",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "active"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM routing_policy_promotions WHERE action='canary_completed'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn automatic_canary_holds_when_required_cost_is_unknown() {
+        let db = database();
+        set_mode(&db, "automatic");
+        add_improving_fixture(&db, 1);
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        assert_eq!(run.promotion_status, "canary");
+        for index in 100..105 {
+            add_outcome(&db, index, "b", true, None, 2);
+        }
+        settle_canary(&db, "workspace:w").unwrap();
+        assert_eq!(active_policy_version(&db, "workspace:w").unwrap(), 2);
+        assert_eq!(
+            db.query_row(
+                "SELECT status FROM routing_policies WHERE version=2",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "canary"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM routing_policies WHERE rollback_of IS NOT NULL",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn failed_run_abandons_its_linked_candidate_atomically() {
+        let db = database();
+        db.execute(
+            "INSERT INTO routing_policies(version,status,predecessor,learning_scope,weights,thresholds,created_reason,created_at)
+             VALUES(2,'candidate',1,'workspace:w','{}','{}','fixture','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO learning_job_runs(id,job_id,learning_scope,trigger_kind,idempotency_key,evidence_boundary,base_policy_version,status,snapshot_frozen_at,candidate_policy_version,created_at)
+             VALUES('failed-fixture','default','workspace:w','manual','default:0:1',0,1,'running','now',2,'now')",
+            [],
+        )
+        .unwrap();
+        let failed = fail_run(
+            &db,
+            "failed-fixture",
+            &BridgeError::Invalid("injected failure".into()),
+        )
+        .unwrap();
+        assert_eq!(failed.status, LearningRunStatus::Failed);
+        assert_eq!(
+            db.query_row(
+                "SELECT status FROM routing_policies WHERE version=2",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "abandoned"
+        );
+    }
+
+    #[test]
+    fn automatic_mode_never_stacks_canary_promotions() {
+        let db = database();
+        set_mode(&db, "automatic");
+        add_improving_fixture(&db, 1);
+        let first = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        assert_eq!(first.promotion_status, "canary");
+        add_outcome(&db, 100, "b", true, Some(100), 2);
+        let second = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        assert_eq!(second.status, LearningRunStatus::Noop);
+        assert!(second
+            .report
+            .unwrap()
+            .reason
+            .contains("still collecting outcomes"));
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM routing_policies WHERE status='canary'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM routing_policies WHERE status='candidate'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn replay_preserves_observed_rates_instead_of_synthetic_majorities() {
+        let db = database();
+        add_improving_fixture(&db, 1);
+        db.execute(
+            "UPDATE router_outcomes SET succeeded=0,status='failed',success_state='failure',acceptance_state='rejected' WHERE decision_id='decision-8'",
+            [],
+        )
+        .unwrap();
+        let candidate = routing_policy::build_candidate(&db, "w", 10, &json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(candidate.replay.candidate.quality_bps, Some(8_000));
+        assert!(candidate.replay.quality_guard_passed);
+    }
+
+    #[test]
+    fn replay_fixtures_cover_cost_regression_and_unavailable_models() {
+        let cost_db = database();
+        for (index, model, success, cost) in [
+            (0, "a", false, 100),
+            (1, "a", false, 100),
+            (2, "b", true, 1_000),
+            (3, "b", true, 1_000),
+            (4, "a", true, 100),
+            (5, "a", false, 100),
+            (6, "b", true, 1_000),
+            (7, "b", true, 1_000),
+            (8, "b", true, 1_000),
+            (9, "a", true, 100),
+        ] {
+            add_outcome(&cost_db, index, model, success, Some(cost), 1);
+        }
+        let cost_candidate = routing_policy::build_candidate(&cost_db, "w", 10, &json!({}))
+            .unwrap()
+            .unwrap();
+        assert!(!cost_candidate.replay.cost_guard_passed);
+        assert!(!cost_candidate.replay.passed);
+
+        let unavailable_db = database();
+        add_improving_fixture(&unavailable_db, 1);
+        for decision_id in ["decision-4", "decision-9"] {
+            let body: String = unavailable_db
+                .query_row(
+                    "SELECT decision FROM router_decisions WHERE id=?1",
+                    params![decision_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            let mut decision: RouterDecision = serde_json::from_str(&body).unwrap();
+            decision.candidates[1]
+                .exclusions
+                .push(CandidateExclusion::HarnessUnavailable);
+            unavailable_db
+                .execute(
+                    "UPDATE router_decisions SET decision=?2 WHERE id=?1",
+                    params![decision_id, serde_json::to_string(&decision).unwrap()],
+                )
+                .unwrap();
+        }
+        let unavailable = routing_policy::build_candidate(&unavailable_db, "w", 10, &json!({}))
+            .unwrap()
+            .unwrap();
+        assert_eq!(unavailable.replay.unavailable_selections, 2);
+        assert!(!unavailable.replay.passed);
+    }
+
+    fn add_evaluator_profile(db: &Connection, provider: &str) {
+        db.execute(
+            "INSERT OR REPLACE INTO model_setup_state(id,active_version,updated_at) VALUES('default',1,'now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO model_profiles(version,purpose,canonical_role,provider,model,effort,pinned,learning_enabled,created_at)
+             VALUES(1,'evaluator','verification',?1,'independent-evaluator','high',0,1,'now')",
+            params![provider],
+        ).unwrap();
+    }
+
+    fn unknown_first_outcome(db: &Connection) {
+        db.execute(
+            "UPDATE router_outcomes SET success_state='unknown',confidence_bps=4000 WHERE rowid=1",
+            [],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn insufficient_deterministic_evidence_queues_a_bounded_model_evaluation() {
+        let db = database();
+        add_improving_fixture(&db, 1);
+        unknown_first_outcome(&db);
+        add_evaluator_profile(&db, "claude");
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        let evaluation: (String, String, String, String) = db.query_row(
+            "SELECT evaluator_version,status,bounded_metrics,decision_id FROM routing_evaluations WHERE learning_run_id=?1 AND evaluator_kind='model_based'",
+            params![run.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).unwrap();
+        assert!(evaluation.0.contains("claude:independent-evaluator"));
+        assert_eq!(evaluation.1, "queued", "a queued evaluation is a run, not a note");
+        assert!(evaluation.2.contains("\"toolAccess\":\"none\""));
+        assert!(evaluation.2.contains("\"transcriptIncluded\":false"));
+        assert!(!evaluation.2.contains("fixture"));
+        let queued: (String, String, String) = db
+            .query_row(
+                "SELECT status,harness,evaluation_id FROM routing_evaluation_runs WHERE decision_id=?1",
+                params![evaluation.3],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(queued.0, "queued");
+        assert_eq!(queued.1, "claude", "the judge is never the family that did the work");
+        assert_eq!(queued.2, format!("model:{}:{}", run.id, evaluation.3));
+        assert_eq!(run.report.as_ref().unwrap().evaluation_execution, "queued");
+    }
+
+    #[test]
+    fn a_same_family_or_absent_evaluator_is_not_requested_rather_than_queued() {
+        for provider in ["codex", "opencode"] {
+            let db = database();
+            add_improving_fixture(&db, 1);
+            unknown_first_outcome(&db);
+            add_evaluator_profile(&db, provider);
+            let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+            let status: String = db.query_row(
+                "SELECT status FROM routing_evaluations WHERE learning_run_id=?1 AND evaluator_kind='model_based'",
+                params![run.id],
+                |row| row.get(0),
+            ).unwrap();
+            assert_eq!(status, "not_requested", "{provider} cannot judge codex work");
+            assert_eq!(
+                db.query_row("SELECT COUNT(*) FROM routing_evaluation_runs", [], |row| row
+                    .get::<_, i64>(0))
+                    .unwrap(),
+                0,
+                "{provider} must not queue a run it can never execute"
+            );
+        }
+    }
+
+    #[test]
+    fn evaluation_turned_off_leaves_the_workspace_exactly_as_it_was() {
+        let db = database();
+        add_improving_fixture(&db, 1);
+        unknown_first_outcome(&db);
+        add_evaluator_profile(&db, "claude");
+        crate::routing_evaluation::update_settings(&db, "w", "off", None, None).unwrap();
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        let report = run.report.as_ref().unwrap();
+        assert_eq!(report.evaluation_execution, "deterministic_only");
+        assert_eq!(report.evaluated_spend_microusd, 0);
+        assert_eq!(report.evaluated_tokens, 0);
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM routing_evaluation_runs", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn a_settled_evaluation_replaces_the_reports_zeroes_with_what_it_spent() {
+        let db = database();
+        add_improving_fixture(&db, 1);
+        unknown_first_outcome(&db);
+        add_evaluator_profile(&db, "claude");
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        assert_eq!(run.report.as_ref().unwrap().evaluated_spend_microusd, 0);
+        let claimed = crate::routing_evaluation::claim_due(&db, Utc::now()).unwrap().unwrap();
+        assert!(crate::routing_evaluation::settle(
+            &db,
+            &claimed.run_id,
+            &claimed.lease_owner,
+            "completed",
+            Some("judged"),
+            Some("digest"),
+            Some(6_000),
+            Some(8_200),
+            2_400,
+            5_100,
+            Utc::now(),
+        )
+        .unwrap());
+        refresh_evaluated_usage(&db, &run.id).unwrap();
+        let reloaded = load_run(&db, &run.id).unwrap().unwrap();
+        let report = reloaded.report.as_ref().unwrap();
+        assert_eq!(report.evaluated_spend_microusd, 5_100);
+        assert_eq!(report.evaluated_tokens, 2_400);
+        assert_eq!(report.evaluation_execution, "executed");
+        let (spend, tokens): (i64, i64) = db
+            .query_row(
+                "SELECT evaluated_spend_microusd,evaluated_tokens FROM learning_job_runs WHERE id=?1",
+                params![run.id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!((spend, tokens), (5_100, 2_400));
+    }
+
+    #[test]
+    fn a_queued_evaluation_promotes_nothing_that_no_evaluator_would_not_have() {
+        let with_judge = database();
+        add_improving_fixture(&with_judge, 1);
+        unknown_first_outcome(&with_judge);
+        add_evaluator_profile(&with_judge, "claude");
+        let queued = run_learning(&with_judge, LearningTriggerKind::Manual, "w").unwrap();
+
+        let without_judge = database();
+        add_improving_fixture(&without_judge, 1);
+        unknown_first_outcome(&without_judge);
+        let bare = run_learning(&without_judge, LearningTriggerKind::Manual, "w").unwrap();
+
+        assert_eq!(queued.status, bare.status);
+        assert_eq!(queued.promotion_status, bare.promotion_status);
+        assert_eq!(queued.replay_passed, bare.replay_passed);
+        assert_eq!(
+            queued.report.as_ref().unwrap().reason,
+            bare.report.as_ref().unwrap().reason,
+            "a verdict that has not been reached is not evidence"
+        );
+    }
+
+    #[test]
+    fn typed_independent_verifier_closes_model_eval_without_transcript_or_tools() {
+        let db = database();
+        add_improving_fixture(&db, 1);
+        db.execute(
+            "UPDATE router_outcomes SET success_state='unknown',confidence_bps=4000 WHERE rowid=1",
+            [],
+        )
+        .unwrap();
+        db.execute("INSERT INTO completion_contracts(id,workspace_id,session_id,schema_version,acceptance_criteria,markdown_committed,status,created_at,updated_at) VALUES('contract','w','parent',1,'[]',0,'verified','now','now')", []).unwrap();
+        db.execute("INSERT INTO eval_plans(id,contract_id,schema_version,risk,plan,created_at) VALUES('plan','contract',1,'high','{}','now')", []).unwrap();
+        db.execute("INSERT INTO eval_attempts(id,plan_id,session_id,repository_head,dirty_digest,repository_path,status,implementer_family,started_at,completed_at) VALUES('attempt','plan','parent','head','clean','/tmp','verified','codex','now','now')", []).unwrap();
+        db.execute("INSERT INTO eval_check_runs(id,attempt_id,check_id,kind,required,status,executor,verifier_family,output_digest,artifact_refs,started_at,completed_at) VALUES('check','attempt','scrutiny','scrutiny',1,'passed','bridge.worker_result','claude','abc123','[\"proof:check\"]','now','now')", []).unwrap();
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        let evaluation: (String, String, Option<i64>, Option<i64>, String, String) = db.query_row(
+            "SELECT evaluator_version,status,score_bps,confidence_bps,evidence_entry_ids,bounded_metrics FROM routing_evaluations WHERE learning_run_id=?1 AND evaluator_kind='model_based'",
+            params![run.id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+        ).unwrap();
+        assert_eq!(evaluation.0, "independent:claude:completion-v1");
+        assert_eq!(evaluation.1, "completed");
+        assert_eq!(evaluation.2, Some(10_000));
+        assert_eq!(evaluation.3, Some(9_000));
+        assert!(evaluation.4.contains("proof:check"));
+        assert!(evaluation.4.contains("digest:abc123"));
+        assert!(evaluation.5.contains("\"toolAccess\":\"none\""));
+        assert!(!evaluation.5.contains("detail"));
+    }
+
+    #[test]
+    fn unscoped_run_learning_is_rejected() {
+        let db = database();
+        assert!(run_learning(&db, LearningTriggerKind::Manual, "").is_err());
+        assert!(run_learning(&db, LearningTriggerKind::Manual, "   ").is_err());
+    }
+
+    #[test]
+    fn legacy_global_policy_is_not_selected_after_migration() {
+        let db = database();
+        let scope: String = db
+            .query_row(
+                "SELECT learning_scope FROM routing_policies WHERE version=1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(scope, "legacy:global");
+        assert_eq!(active_policy_version(&db, "workspace:w").unwrap(), 0);
+    }
+
+    #[test]
+    fn policy_learned_in_a_is_not_active_in_b() {
+        let db = database();
+        add_workspace(&db, "other");
+        set_mode(&db, "ask");
+        add_improving_fixture(&db, 1);
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        approve_run(&db, &run.id).unwrap();
+        assert_eq!(active_policy_version(&db, "workspace:w").unwrap(), 2);
+        assert_eq!(active_policy_version(&db, "workspace:other").unwrap(), 0);
+        assert_eq!(
+            learning_state(&db, "other").unwrap().active_policy_version,
+            0
+        );
+    }
+
+    #[test]
+    fn canary_in_a_does_not_apply_to_b() {
+        let db = database();
+        add_workspace(&db, "other");
+        set_mode(&db, "automatic");
+        add_improving_fixture(&db, 1);
+        let run = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        assert_eq!(run.promotion_status, "canary");
+        assert_eq!(active_policy_version(&db, "workspace:w").unwrap(), 2);
+        assert_eq!(active_policy_version(&db, "workspace:other").unwrap(), 0);
+    }
+
+    #[test]
+    fn rollback_in_a_does_not_move_b() {
+        let db = database();
+        add_workspace(&db, "other");
+        set_mode(&db, "ask");
+        add_improving_fixture(&db, 1);
+        let first = run_learning(&db, LearningTriggerKind::Manual, "w").unwrap();
+        approve_run(&db, &first.id).unwrap();
+        db.execute(
+            "INSERT INTO routing_policies(version,status,learning_scope,weights,thresholds,created_reason,created_at)
+             VALUES(99,'active','workspace:other','{}','{}','other desk','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE routing_policies SET status='archived' WHERE version=2 AND learning_scope='workspace:w'",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO routing_policies(version,status,predecessor,learning_scope,weights,thresholds,created_reason,created_at)
+             VALUES(3,'active',2,'workspace:w','{}','{}','successor','now')",
+            [],
+        )
+        .unwrap();
+        rollback_policy(&db, "w", 2, "keep other workspace still").unwrap();
+        assert_eq!(active_policy_version(&db, "workspace:other").unwrap(), 99);
+    }
+
+    #[test]
+    fn rollback_target_is_live_predecessor_not_latest_run_base() {
+        let db = database();
+        let empty = learning_state(&db, "w").unwrap();
+        assert_eq!(empty.active_policy_version, 0);
+        assert_eq!(empty.rollback_target_version, None);
+
+        db.execute(
+            "INSERT INTO routing_policies(version,status,learning_scope,weights,thresholds,created_reason,created_at)
+             VALUES(4,'archived','workspace:w','{}','{}','prior','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO routing_policies(version,status,predecessor,learning_scope,weights,thresholds,created_reason,created_at)
+             VALUES(5,'active',4,'workspace:w','{}','{}','live','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO learning_job_runs(id,job_id,trigger_kind,idempotency_key,evidence_boundary,base_policy_version,status,learning_scope,snapshot_frozen_at,created_at)
+             VALUES('later','default','manual','default:workspace:w:0:5',0,5,'noop','workspace:w','now','now')",
+            [],
+        )
+        .unwrap();
+        let state = learning_state(&db, "w").unwrap();
+        assert_eq!(state.active_policy_version, 5);
+        assert_eq!(state.latest_run.as_ref().unwrap().base_policy_version, 5);
+        assert_eq!(state.rollback_target_version, Some(4));
+    }
+
+    #[test]
+    fn scheduled_run_does_not_mix_workspace_evidence() {
+        let db = database();
+        add_workspace(&db, "other");
+        add_improving_fixture(&db, 1);
+        for index in 0..5 {
+            add_outcome_in(&db, "other", "other-parent", index, "a", true, Some(50), 1);
+        }
+        let now = Utc::now();
+        update_schedule(
+            &db,
+            &LearningSchedule {
+                job_id: DEFAULT_JOB_ID.into(),
+                enabled: true,
+                cadence_minutes: 60,
+                next_run_at: Some((now - Duration::minutes(1)).to_rfc3339()),
+                run_budget_microusd: 10_000,
+                run_budget_tokens: 10_000,
+                mode: "manual".into(),
+            },
+        )
+        .unwrap();
+        assert!(run_due(&db, now).unwrap().is_some());
+        let scopes: Vec<String> = db
+            .prepare(
+                "SELECT DISTINCT learning_scope FROM learning_job_runs ORDER BY learning_scope",
+            )
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        assert_eq!(
+            scopes,
+            vec!["workspace:other".to_owned(), "workspace:w".to_owned()]
+        );
+    }
+
+    #[test]
+    fn scoped_evidence_window_is_not_diluted_by_other_workspaces() {
+        let db = database();
+        add_workspace(&db, "other");
+        for index in 0..5 {
+            add_outcome_in(&db, "other", "other-parent", index, "b", true, Some(100), 1);
+        }
+        for index in 0..5_000 {
+            add_outcome(&db, index, "a", false, Some(200), 1);
+        }
+        let other =
+            routing_policy::load_evidence(&db, "other", evidence_boundary(&db, "other").unwrap())
+                .unwrap();
+        assert_eq!(
+            other.len(),
+            5,
+            "a small workspace must keep its own last 5 outcomes instead of a global rowid window"
+        );
+        assert!(
+            other.iter().all(|row| row.candidate == "codex:b"),
+            "the surviving rows must be the small workspace's own outcomes, not the newest rows from a busier one"
+        );
+        let flooded =
+            routing_policy::load_evidence(&db, "w", evidence_boundary(&db, "w").unwrap()).unwrap();
+        assert_eq!(flooded.len(), 5_000);
+        assert!(
+            flooded.iter().all(|row| row.candidate == "codex:a"),
+            "a busy workspace must not absorb another workspace's outcomes"
+        );
+    }
+}

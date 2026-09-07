@@ -1,0 +1,35 @@
+[
+  {
+    "name": "queued",
+    "state": "PENDING",
+    "bucket": "pending",
+    "link": "https://github.com/fixture/project/actions/runs/1",
+    "workflow": "CI",
+    "startedAt": "2026-08-28T10:00:00Z",
+    "completedAt": null,
+    "event": "push",
+    "description": "Waiting for a runner"
+  },
+  {
+    "name": "build",
+    "state": "SUCCESS",
+    "bucket": "pass",
+    "link": "https://github.com/fixture/project/actions/runs/2",
+    "workflow": "CI",
+    "startedAt": "2026-08-28T10:01:00Z",
+    "completedAt": "2026-08-28T10:02:00Z",
+    "event": "push",
+    "description": "Build completed"
+  },
+  {
+    "name": "test",
+    "state": "FAILURE",
+    "bucket": "fail",
+    "link": "https://github.com/fixture/project/actions/runs/3",
+    "workflow": "CI",
+    "startedAt": "2026-08-28T10:01:00Z",
+    "completedAt": "2026-08-28T10:03:00Z",
+    "event": "push",
+    "description": "Tests failed"
+  }
+]

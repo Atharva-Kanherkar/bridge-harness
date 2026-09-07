@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#212120" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23ececea'/%3E%3Cpath d='M10 8h7.2c4 0 6 1.5 6 4.3 0 1.8-.9 3-2.6 3.7 2.1.6 3.2 1.9 3.2 3.9 0 2.9-2.2 4.6-6.5 4.6H10V8Zm6.8 6.5c1.6 0 2.4-.5 2.4-1.6 0-1-.8-1.5-2.4-1.5h-2.9v3.1h2.9Zm.3 6.5c1.8 0 2.7-.6 2.7-1.7 0-1.2-.9-1.8-2.7-1.8h-3.2V21h3.2Z' fill='%23212120'/%3E%3C/svg%3E" />
+<title>Authenticated browser bridge — Bridge Docs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&family=Bricolage+Grotesque:opsz,wght@12..96,200..800&display=swap">
+<link rel="stylesheet" href="../assets/tokens.css">
+</head>
+<body data-page="browser-bridge">
+
+<button class="menu-btn" id="menuBtn" aria-label="Open navigation"><svg class="icon" style="width:17px;height:17px"><use href="#i-menu"></use></svg></button>
+<div class="scrim" id="scrim"></div>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="content-scroll" id="contentScroll">
+    <div class="content-inner">
+      <div class="page-grid">
+        <div>
+          <p class="eyebrow">extensibility</p>
+          <h1>Authenticated browser bridge</h1>
+          <p class="lede">Bridge can supervise one user-approved tab from your normal logged-in browser, letting agents handle workflows that require your existing credentials, personal state, or real-time collaboration — without Bridge ever copying, storing, or persisting browser data.</p>
+
+          <div class="prose">
+            <h2 id="h-why">Why use the authenticated tab</h2>
+            <p>A fresh headless browser starts clean: no cookies, no logged-in sessions, no passkeys, no file upload context. That's the right tool for most work—isolated, fast, repeatable. But some workflows cannot be automated headlessly because they require human-only affordances or state Bridge has no way to recreate:</p>
+            <ul>
+              <li><strong>Passkeys and hardware security keys.</strong> The browser's WebAuthn API talks to the OS credential store and hardware authenticators; Bridge cannot forge or proxy those interactions. If a site requires passkey auth, you hand over your approved tab.</li>
+              <li><strong>CAPTCHA and challenge flows.</strong> Computer use can screenshot and attempt to solve, but many CAPTCHAs are designed to reject non-human patterns. Handed to your browser, they integrate with your device's trust history and human context.</li>
+              <li><strong>Personal logged-in state.</strong> Your browser holds sessions to dozens of internal tools, personal SaaS accounts, and authenticated APIs. Rather than orchestrate credential entry (and never store them), Bridge can use what's already there.</li>
+              <li><strong>Real-time visible collaboration.</strong> If you're watching the agent work and want to click or navigate parallel to it, both share the same tab state. The agent sees what you just changed; you see what it just typed. No synchronization lag.</li>
+            </ul>
+            <p>When the task fits, this beats asking the agent to solve authentication cold or requiring you to pre-stage credentials.</p>
+
+            <h2 id="h-routing">Browser routing and when Bridge chooses each</h2>
+            <p>Bridge evaluates workflows in a strict priority order. It does not try every option—it stops at the first one that fits:</p>
+            <ol>
+              <li><strong>Structured MCP or API.</strong> If the system exposes a programmatic interface (Slack API, GitHub, Notion), use it. Fast, reliable, no UI.</li>
+              <li><strong>Your attached authenticated tab.</strong> If you've registered a tab in Bridge and the task fits (same domain, no credential barriers), use it. Your credentials, your state.</li>
+              <li><strong>Local headless browser.</strong> Fire up Playwright or similar, run locally, isolated. Faster than remote and appropriate for untrusted sites, automated tests, and parallel work.</li>
+              <li><strong>Optional remote browser provider.</strong> If you've configured remote infrastructure (for geo-locking, proxy requirements, or unattended concurrency), route there.</li>
+              <li><strong>Screenshot-first computer use.</strong> Fall back to computer use, the slowest but most general approach. Works anywhere the tab can navigate.</li>
+            </ol>
+            <p>Automated tests, untrusted sites, and isolated QA route to headless first. Geo-requirements or unattended work route to remote. This order ensures Bridge picks the fastest, most direct path without burdening you with credential management.</p>
+
+            <h2 id="h-setup-chrome">Setting up your browser</h2>
+            <h3>Chrome</h3>
+            <p>The Bridge desktop app includes the native host and extension binaries. To activate:</p>
+            <ol>
+              <li>Build or run Bridge. The Tauri build bundles <code>bridge-browser-host</code> automatically.</li>
+              <li>Open a task and choose <strong>Browser</strong> → <strong>Register native host</strong>. Bridge writes the Chrome native-messaging manifest to the system.</li>
+              <li>Go to <code>chrome://extensions</code>, enable <strong>Developer mode</strong>, and choose <strong>Load unpacked</strong>. Use the extension path shown by Bridge.</li>
+              <li>Click <strong>Find tabs</strong>, select one HTTP(S) tab, and grant <strong>Interact</strong> only when clicking or typing is needed.</li>
+            </ol>
+            <p>The extension ID is pinned in <code>browser-extension/manifest.json</code>; native messaging accepts only that origin. The tab displays a badge while a lease is active. A lease expires after 30 minutes, at task completion, when you manually detach, when the tab closes, or when you navigate outside the granted domain.</p>
+
+            <h3>Safari</h3>
+            <p>Safari Web Extension support shares the same semantic actions, leases, approvals, and safety rules as Chrome. The implementation lives in <code>safari-extension/</code>. Build it with <code>bun run prepare:safari-extension</code>, which invokes Apple's converter and creates an Xcode wrapper under <code>.generated/</code>. Safari does not expose Chrome DevTools or tab-capture capabilities; otherwise the feature parity is complete.</p>
+
+            <h2 id="h-safety">Safety boundaries and recovery</h2>
+            <p>Read-only is the default. You grant <strong>Interact</strong> capability only when the agent truly needs to click, type, scroll, or navigate.</p>
+            <p>Dangerous side effects—submitting a form, sending a message, deleting data, purchasing, publishing, or entering credentials—require explicit approval. When the agent attempts one, Bridge pauses the surface and shows you a plain-language summary. You must click to proceed.</p>
+            <p>Three field types are permanently blocked from auto-fill: password inputs, payment/card fields, and one-time-code inputs (like 2FA codes). If the agent encounters one, it must hand over control with <strong>Take over</strong> or <strong>Open tab</strong>, letting you type it yourself. This prevents credential leakage even if the extension is compromised.</p>
+            <p>Browser Surface also watches for suspicious instruction-like page text in DOM content and pauses if it detects an attempt to inject commands disguised as content. Sensitive page regions (payment forms, credential entry zones) are redacted before screenshots are delivered to Bridge. Command IDs are retained in <code>chrome.storage.session</code>, so if you reconnect after a detach, the surface resends a stored result instead of repeating a side effect.</p>
+            <p>Network and console inspection is opt-in and attaches only to your leased tab, never shared or cached.</p>
+
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>Bridge does not copy profiles, export cookies, or persist a continuous recording of your tab. The browser itself remains the credential boundary. Extension permissions are read-only by default; you approve interaction and dangerous changes case by case.</p>
+            </div>
+
+            <h2 id="h-metrics">Metrics and benchmarks</h2>
+            <p>Bridge records per-site aggregate counts: success, failure, latency, DOM-token usage, screenshot frequency, interventions, approvals, and duplicate side-effect detections. It does not store page text in these metrics. This data helps you understand where agents struggle and which domains benefit from which strategy (authenticated tab vs headless vs computer use).</p>
+            <p>For researchers and comparative work, <code>testing/fixtures/browser-bridge-benchmark-v1.json</code> defines the evidence schema for authenticated tab, Playwright MCP, Browser Use, and computer use implementations. <code>src/browserBenchmark.ts</code> validates that all scenarios have comparable evidence and rejects incomplete runs.</p>
+
+          </div>
+          <div id="pagerMount"></div>
+        </div>
+        <aside class="toc" id="tocMount"></aside>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="../assets/shell.js"></script>
+</body>
+</html>

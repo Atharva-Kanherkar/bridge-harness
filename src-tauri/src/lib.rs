@@ -1,275 +1,395 @@
-mod adapters;
-mod agent;
-mod agent_config;
-mod binary;
-mod browser_bridge;
-mod claude_adapter;
-mod compaction_controller;
-mod context;
-mod codex_adapter;
-mod opencode_adapter;
-mod credential_broker;
-mod delegation;
-pub mod completion;
-mod git;
-mod handoff;
-pub mod learning_router;
-pub mod learning_job;
-pub mod model_profiles;
-mod model;
-mod marketplace;
-mod orchestrator;
-mod policy;
-pub mod policy_replay;
-pub mod router_replay;
-pub mod routing_policy;
-mod policy_coordinator;
-mod restoration;
-mod secret_interception;
-mod session_forest;
-mod session_supervisor;
-mod skill_marketplace;
-mod slash;
-mod store;
-mod worker_guard;
-mod worker_lifecycle;
-mod worker_pool;
-mod worktree_coordinator;
-
-use chrono::Utc;
-use model::*;
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
-use rusqlite::{params, Connection, OptionalExtension};
-use serde::Serialize;
-use serde_json::Value;
-use std::{
-    collections::HashMap,
-    io::{BufRead, Read, Write},
-    path::{Path, PathBuf},
-    sync::{Arc, Mutex},
-    thread,
-    time::Duration,
+pub use bridge_core::{
+    completion, learning_job, learning_router, model_profiles, policy_replay, router_replay,
+    routing_policy,
 };
-use tauri::{AppHandle, Emitter, Manager, State};
-use thiserror::Error;
-use uuid::Uuid;
 
-#[derive(Debug, Error)]
-pub enum BridgeError {
-    #[error("{0}")]
-    Invalid(String),
-    #[error("Git: {0}")]
-    Git(String),
-    #[error("Database: {0}")]
-    Db(#[from] rusqlite::Error),
-    #[error("I/O: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("Adapter: {0}")]
-    Adapter(String),
-    #[error("PTY: {0}")]
-    Pty(String),
-}
-impl Serialize for BridgeError {
-    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-    where
-        S: serde::Serializer,
-    {
-        serializer.serialize_str(&self.to_string())
-    }
-}
+pub mod agent_batch;
+pub mod daemon_host;
+pub mod menu;
+pub mod window_chrome;
 
-struct RuntimeSession {
-    writer: Box<dyn Write + Send>,
-    master: Box<dyn MasterPty + Send>,
-    child: Box<dyn Child + Send + Sync>,
-}
-struct AppState {
-    db: Mutex<Connection>,
-    telemetry_db: Mutex<Connection>,
-    runtimes: Mutex<HashMap<String, RuntimeSession>>,
-    adapters: Mutex<HashMap<String, Box<dyn adapters::AdapterRuntime>>>,
-    adapter_registry: Arc<adapters::AdapterRegistry>,
-    delegations: Mutex<DelegationState>,
-    worktrees: PathBuf,
-    database_path: PathBuf,
-    telemetry_database_path: PathBuf,
-    snapshot_dir: PathBuf,
-    skill_store: PathBuf,
-    skill_consents: Arc<Mutex<HashMap<String, skill_marketplace::SkillConsent>>>,
-    credential_broker: Arc<credential_broker::CredentialBroker>,
-    browser_bridge: Arc<browser_bridge::BrowserBridgeSupervisor>,
-}
+use bridge_core::api;
+use bridge_core::managed_agents;
+use bridge_core::live_turn;
+use bridge_core::work_observation;
+use bridge_core::model::*;
+use bridge_core::{
+    agent_config, automations, browser_bridge, marketplace, opencode_adapter,
+    prompt_studio, secret_interception, skill_marketplace, slash,
+};
+use bridge_protocol::messages::{self as wire, CarrySessionHandoffResult, PromptTargetChoice};
+use bridge_core::{start_health_server, BootConfig, BridgeCore, BridgeError};
+use std::{
+    path::PathBuf,
+    sync::Arc,
+};
+use tauri::{AppHandle, Emitter, Listener, Manager, State};
 
-/// Bookkeeping for the multi-agent delegation tree.
-#[derive(Default)]
-struct DelegationState {
-    /// Tracks the single same-session repair allowed for malformed worker output.
-    result_repairs: delegation::ResultRepairTracker,
-    /// Last observed provider turn per session, retained until the next turn
-    /// so late usage events keep the originating user-request budget key.
-    last_turn_by_session: HashMap<String, String>,
-    /// Read-only worker session → tracked Git state captured before process start.
-    read_only_baselines: HashMap<String, worker_guard::ReadOnlyBaseline>,
-}
+// Every command below delegates to `bridge_core::api` — the host-agnostic body
+// of each protocol method, shared with the `bridged` daemon. The shell's only
+// concerns are Tauri argument decoding and blocking-pool placement: anything
+// that can touch Git, processes, PTYs, or the network runs via
+// `spawn_blocking` so native work never lands on the macOS UI thread.
 
-#[derive(Serialize)]
-struct Health {
-    ok: bool,
-    version: &'static str,
-    harnesses: HashMap<&'static str, bool>,
-    database: String,
-    telemetry_database: String,
-    snapshot_directory: String,
-    adapters: Vec<AdapterDescriptor>,
+/// Run a blocking api call on the blocking pool with a labeled failure.
+async fn blocking<T, F>(task_label: &'static str, work: F) -> Result<T, BridgeError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, BridgeError> + Send + 'static,
+{
+    tauri::async_runtime::spawn_blocking(work)
+        .await
+        .map_err(|error| BridgeError::Invalid(format!("{task_label} task failed: {error}")))?
 }
 
 #[tauri::command]
-async fn health(state: State<'_, AppState>) -> Result<Health, BridgeError> {
-    let adapters = state.adapter_registry.descriptors();
-    let opencode_available = adapters
-        .iter()
-        .find(|adapter| adapter.id == "opencode")
-        .is_some_and(|adapter| adapter.available);
-    Ok(Health {
-        ok: true,
-        version: env!("CARGO_PKG_VERSION"),
-        harnesses: HashMap::from([
-            ("claude", binary::resolve("claude").is_some()),
-            ("codex", binary::resolve("codex").is_some()),
-            ("opencode", opencode_available),
-            ("shell", true),
-        ]),
-        database: state.database_path.to_string_lossy().into(),
-        telemetry_database: state.telemetry_database_path.to_string_lossy().into(),
-        snapshot_directory: state.snapshot_dir.to_string_lossy().into(),
-        adapters,
+async fn health(state: State<'_, Arc<BridgeCore>>) -> Result<api::Health, BridgeError> {
+    api::health(state.inner())
+}
+
+#[tauri::command]
+async fn discover_external_import(
+    provider: String,
+    approved_roots: Vec<String>,
+    selected_export: Option<String>,
+    source_version: Option<String>,
+    schema_version: Option<String>,
+    format_versions: std::collections::BTreeMap<String, String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::ExternalImportDiscovery, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Discover external import", move || {
+        api::discover_external_import(
+            &core,
+            &wire::DiscoverExternalImportParams {
+                provider,
+                approved_roots,
+                selected_export,
+                source_version,
+                schema_version,
+                format_versions,
+            },
+        )
     })
+    .await
 }
 
 #[tauri::command]
-async fn browser_bridge_state(state: State<'_, AppState>) -> Result<browser_bridge::BrowserBridgeSnapshot, BridgeError> {
-    Ok(state.browser_bridge.state_snapshot())
+async fn preview_external_import(
+    discovery_id: String,
+    artifact_ids: Vec<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::ExternalImportPreview, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Preview external import", move || {
+        api::preview_external_import(
+            &core,
+            &wire::PreviewExternalImportParams {
+                discovery_id,
+                artifact_ids,
+            },
+        )
+    })
+    .await
 }
 
 #[tauri::command]
-async fn browser_frame(after_revision: u64, state: State<'_, AppState>) -> Result<Option<browser_bridge::BrowserFrame>, BridgeError> {
-    Ok(state.browser_bridge.frame(after_revision))
+async fn commit_external_import(
+    discovery_id: String,
+    plan: wire::ExternalImportPlan,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::ExternalImportCommit, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Commit external import", move || {
+        api::commit_external_import(
+            &core,
+            &wire::CommitExternalImportParams { discovery_id, plan },
+        )
+    })
+    .await
 }
 
 #[tauri::command]
-async fn install_browser_native_host(state: State<'_, AppState>) -> Result<String, BridgeError> {
-    let supervisor = Arc::clone(&state.browser_bridge);
-    tauri::async_runtime::spawn_blocking(move || {
-        let executable = std::env::var_os("BRIDGE_BROWSER_HOST")
-            .map(PathBuf::from)
-            .or_else(|| std::env::current_exe().ok().and_then(|path| path.parent().and_then(find_browser_host)))
-            .ok_or_else(|| BridgeError::Invalid("Could not locate bridge-browser-host".into()))?;
-        if !executable.exists() {
-            return Err(BridgeError::Invalid(format!("Native host executable is missing at {}. Build the bridge-browser-host binary first.", executable.display())));
-        }
-        supervisor.install_native_host(&executable).map(|path| path.to_string_lossy().into_owned())
-    }).await.map_err(|error| BridgeError::Invalid(format!("Native host registration task failed: {error}")))?
-}
-
-fn find_browser_host(directory: &Path) -> Option<PathBuf> {
-    let direct = directory.join("bridge-browser-host");
-    if direct.exists() { return Some(direct); }
-    std::fs::read_dir(directory).ok()?.filter_map(Result::ok).map(|entry| entry.path())
-        .find(|path| path.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.starts_with("bridge-browser-host-")))
+async fn github_status(workspace_id: String, refresh: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubStatusResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub status", move || api::github_status(&core, &workspace_id, refresh)).await
 }
 
 #[tauri::command]
-async fn browser_action(request: browser_bridge::BrowserActionRequest, state: State<'_, AppState>) -> Result<String, BridgeError> {
-    state.browser_bridge.issue(request)
+async fn github_prs(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubPullRequestsResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub pull-request list", move || api::github_prs(&core, &workspace_id)).await
 }
 
 #[tauri::command]
-async fn set_browser_permission(permission: String, state: State<'_, AppState>) -> Result<(), BridgeError> {
-    state.browser_bridge.set_permission(&permission)
+async fn github_pr(workspace_id: String, number: u64, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubPullRequestResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub pull request", move || api::github_pr(&core, &workspace_id, number)).await
 }
 
 #[tauri::command]
-async fn resolve_browser_approval(approval_id: String, allow: bool, state: State<'_, AppState>) -> Result<(), BridgeError> {
-    state.browser_bridge.resolve_approval(&approval_id, allow)
+async fn github_checks(workspace_id: String, number: u64, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubChecksResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub checks", move || api::github_checks(&core, &workspace_id, number)).await
 }
 
 #[tauri::command]
-async fn takeover_browser(state: State<'_, AppState>) -> Result<(), BridgeError> {
-    state.browser_bridge.takeover()
+async fn github_issues(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubIssuesResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub issue list", move || api::github_issues(&core, &workspace_id)).await
 }
 
 #[tauri::command]
-async fn detach_browser(state: State<'_, AppState>) -> Result<String, BridgeError> {
-    state.browser_bridge.detach()
+async fn github_issue(workspace_id: String, number: u64, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubIssueResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub issue", move || api::github_issue(&core, &workspace_id, number)).await
 }
 
 #[tauri::command]
-async fn route_browser(request: browser_bridge::BrowserRouteRequest) -> browser_bridge::BrowserRouteDecision {
-    browser_bridge::route_browser(request)
+async fn github_repository(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubRepositoryResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub repository", move || api::github_repository(&core, &workspace_id)).await
+}
+
+#[tauri::command]
+async fn github_merge_config(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubMergeConfigResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub merge config", move || api::github_merge_config(&core, &workspace_id)).await
+}
+
+#[tauri::command]
+async fn github_act(workspace_id: String, action: wire::GithubAction, confirmed: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubActResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub action", move || api::github_act(&core, &workspace_id, action, confirmed)).await
+}
+
+#[tauri::command]
+async fn github_review(workspace_id: String, number: u64, harness: String, session_id: Option<String>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubReviewResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub PR review", move || api::github_review(&core, &workspace_id, number, &harness, session_id)).await
+}
+
+#[tauri::command]
+async fn github_checkout(workspace_id: String, number: u64, state: State<'_, Arc<BridgeCore>>) -> Result<wire::GithubCheckoutResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("GitHub PR checkout", move || api::github_checkout(&core, &workspace_id, number)).await
+}
+
+#[tauri::command]
+async fn browser_bridge_state(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<browser_bridge::BrowserBridgeSnapshot, BridgeError> {
+    api::browser_bridge_state(state.inner())
+}
+
+#[tauri::command]
+async fn browser_frame(
+    state: State<'_, Arc<BridgeCore>>,
+    after_revision: u64,
+) -> Result<Option<browser_bridge::BrowserFrame>, BridgeError> {
+    api::browser_frame(state.inner(), after_revision)
+}
+
+#[tauri::command]
+async fn install_browser_native_host(state: State<'_, Arc<BridgeCore>>) -> Result<String, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Native host registration", move || api::install_browser_native_host(&core)).await
+}
+
+#[tauri::command]
+async fn browser_action(
+    request: browser_bridge::BrowserActionRequest,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<String, BridgeError> {
+    api::browser_action(state.inner(), request)
+}
+
+#[tauri::command]
+async fn set_browser_permission(
+    permission: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
+    api::set_browser_permission(state.inner(), &permission)
+}
+
+#[tauri::command]
+async fn resolve_browser_approval(
+    approval_id: String,
+    allow: bool,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
+    api::resolve_browser_approval(state.inner(), &approval_id, allow)
+}
+
+#[tauri::command]
+async fn takeover_browser(state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
+    api::takeover_browser(state.inner())
+}
+
+#[tauri::command]
+async fn detach_browser(state: State<'_, Arc<BridgeCore>>) -> Result<String, BridgeError> {
+    api::detach_browser(state.inner())
+}
+
+#[tauri::command]
+async fn route_browser(
+    request: browser_bridge::BrowserRouteRequest,
+) -> browser_bridge::BrowserRouteDecision {
+    api::route_browser(request)
 }
 
 #[tauri::command]
 async fn browser_skills() -> Vec<browser_bridge::BrowserSkill> {
-    browser_bridge::bundled_skills()
+    api::browser_skills()
 }
 
 #[tauri::command]
-async fn configure_remote_browser(config: Option<browser_bridge::RemoteBrowserConfig>, state: State<'_, AppState>) -> Result<(), BridgeError> {
-    let supervisor = Arc::clone(&state.browser_bridge);
-    tauri::async_runtime::spawn_blocking(move || supervisor.configure_remote(config))
-        .await
-        .map_err(|error| BridgeError::Invalid(format!("Remote browser configuration task failed: {error}")))?
+async fn configure_remote_browser(
+    config: Option<browser_bridge::RemoteBrowserConfig>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
+    let core = state.inner().clone();
+    blocking("Remote browser configuration", move || {
+        api::configure_remote_browser(&core, config)
+    })
+    .await
 }
 
 #[tauri::command]
-async fn start_remote_browser(initial_url: String, state: State<'_, AppState>) -> Result<Value, BridgeError> {
-    let supervisor = Arc::clone(&state.browser_bridge);
-    tauri::async_runtime::spawn_blocking(move || supervisor.start_remote_session(&initial_url))
-        .await
-        .map_err(|error| BridgeError::Invalid(format!("Remote browser task failed: {error}")))?
+async fn start_remote_browser(
+    initial_url: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<serde_json::Value, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Remote browser", move || api::start_remote_browser(&core, &initial_url)).await
 }
 
 #[tauri::command]
 async fn marketplace_catalog() -> marketplace::MarketplaceCatalog {
-    marketplace::catalog()
+    api::marketplace_catalog()
 }
 
 #[tauri::command]
-async fn marketplace_app_auth_states() -> Result<Vec<marketplace::MarketplaceAppAuthState>, BridgeError> {
-    marketplace::app_auth_states()
-}
-
-fn user_home() -> PathBuf {
-    std::env::var_os("HOME")
-        .or_else(|| std::env::var_os("USERPROFILE"))
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-}
-
-async fn live_available_capabilities(state: &AppState) -> std::collections::HashSet<String> {
-    let mut capabilities = state.adapter_registry.descriptors().into_iter().filter(|descriptor| descriptor.available).flat_map(|descriptor| descriptor.capabilities).collect::<std::collections::HashSet<_>>();
-    let home = user_home();
-    let store = state.skill_store.clone();
-    if let Ok(Ok(skills)) = tauri::async_runtime::spawn_blocking(move || skill_marketplace::available_capabilities(&home, &store)).await {
-        capabilities.extend(skills);
-    }
-    capabilities
+async fn marketplace_app_auth_states(
+) -> Result<Vec<marketplace::MarketplaceAppAuthState>, BridgeError> {
+    api::marketplace_app_auth_states()
 }
 
 #[tauri::command]
-async fn skill_catalog(state: State<'_, AppState>) -> Result<skill_marketplace::SkillCatalog, BridgeError> {
-    let home = user_home();
-    let store = state.skill_store.clone();
-    tauri::async_runtime::spawn_blocking(move || skill_marketplace::catalog(&home, &store)).await
-        .map_err(|error| BridgeError::Invalid(format!("Skill discovery task failed: {error}")))?
+async fn get_work_board(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::WorkBoard, BridgeError> {
+    api::get_work_board(state.inner())
 }
 
 #[tauri::command]
-async fn skill_suggestions(query: String, provider: skill_marketplace::SkillProvider, state: State<'_, AppState>) -> Result<Vec<skill_marketplace::CapabilitySuggestion>, BridgeError> {
-    let home = user_home();
-    let store = state.skill_store.clone();
-    tauri::async_runtime::spawn_blocking(move || skill_marketplace::suggestions(&query, provider, &home, &store)).await
-        .map_err(|error| BridgeError::Invalid(format!("Skill suggestion task failed: {error}")))?
+async fn task_action(
+    state: State<'_, Arc<BridgeCore>>,
+    task_id: String,
+    action: bridge_protocol::messages::WorkTaskActionKind,
+    snoozed_until: Option<String>,
+) -> Result<(), BridgeError> {
+    api::work_task_action(
+        state.inner(),
+        &bridge_protocol::messages::TaskActionParams { task_id, action, snoozed_until },
+    )
+}
+
+#[tauri::command]
+async fn task_pin(
+    state: State<'_, Arc<BridgeCore>>,
+    task_id: String,
+    pinned: bool,
+) -> Result<(), BridgeError> {
+    api::work_task_pin(
+        state.inner(),
+        &bridge_protocol::messages::TaskPinParams { task_id, pinned },
+    )
+}
+
+#[tauri::command]
+async fn task_prepare_session(
+    state: State<'_, Arc<BridgeCore>>,
+    task_id: String,
+    harness: bridge_protocol::messages::HarnessId,
+    model: Option<String>,
+) -> Result<bridge_protocol::messages::WorkTaskDraft, BridgeError> {
+    api::work_task_prepare_session(
+        state.inner(),
+        &bridge_protocol::messages::TaskPrepareSessionParams { task_id, harness, model },
+    )
+}
+
+#[tauri::command]
+async fn task_open_evidence(
+    state: State<'_, Arc<BridgeCore>>,
+    task_id: String,
+) -> Result<bridge_protocol::messages::WorkEvidenceTarget, BridgeError> {
+    api::work_task_open_evidence(
+        state.inner(),
+        &bridge_protocol::messages::TaskOpenEvidenceParams { task_id },
+    )
+}
+
+#[tauri::command]
+async fn read_settings(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::WorkSettingsSnapshot, BridgeError> {
+    api::read_work_settings(state.inner())
+}
+
+#[tauri::command]
+async fn write_settings(
+    state: State<'_, Arc<BridgeCore>>,
+    settings: bridge_protocol::messages::WorkSettings,
+) -> Result<bridge_protocol::messages::WorkSettingsSnapshot, BridgeError> {
+    api::write_work_settings(
+        state.inner(),
+        &bridge_protocol::messages::WriteSettingsParams { settings },
+    )
+}
+
+#[tauri::command]
+async fn briefing_options(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::WorkBriefingOptions, BridgeError> {
+    Ok(api::work_briefing_options(state.inner()))
+}
+
+#[tauri::command]
+async fn run_briefing(
+    state: State<'_, Arc<BridgeCore>>,
+    trigger: bridge_protocol::messages::WorkBriefTrigger,
+) -> Result<bridge_protocol::messages::WorkBriefReceipt, BridgeError> {
+    api::run_work_briefing(
+        state.inner(),
+        &bridge_protocol::messages::RunBriefingParams { trigger },
+    )
+}
+
+#[tauri::command]
+async fn cancel_briefing(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::WorkBriefReceipt, BridgeError> {
+    api::cancel_work_briefing(state.inner())
+}
+
+#[tauri::command]
+async fn skill_catalog(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<skill_marketplace::SkillCatalog, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Skill discovery", move || api::skill_catalog(&core)).await
+}
+
+#[tauri::command]
+async fn skill_suggestions(
+    query: String,
+    provider: skill_marketplace::SkillProvider,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Vec<skill_marketplace::CapabilitySuggestion>, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Skill suggestion", move || api::skill_suggestions(&core, &query, provider)).await
 }
 
 #[tauri::command]
@@ -277,29 +397,98 @@ async fn preview_skill_change(
     skill_id: String,
     action: skill_marketplace::SkillAction,
     targets: Vec<skill_marketplace::SkillProvider>,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<skill_marketplace::SkillPreview, BridgeError> {
-    let home = user_home();
-    let store = state.skill_store.clone();
-    let consents = Arc::clone(&state.skill_consents);
-    tauri::async_runtime::spawn_blocking(move || skill_marketplace::preview(&skill_id, action, &targets, &home, &store, consents.as_ref())).await
-        .map_err(|error| BridgeError::Invalid(format!("Skill preview task failed: {error}")))?
+    let core = state.inner().clone();
+    blocking("Skill preview", move || {
+        api::preview_skill_change(&core, &skill_id, action, &targets)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn execute_skill_change(
     confirmation_id: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<Vec<skill_marketplace::SkillActionResult>, BridgeError> {
-    let home = user_home();
-    let store = state.skill_store.clone();
-    let consents = Arc::clone(&state.skill_consents);
-    let results = tauri::async_runtime::spawn_blocking(move || skill_marketplace::execute(&confirmation_id, &home, &store, consents.as_ref()))
-        .await
-        .map_err(|error| BridgeError::Invalid(format!("Skill installer task failed: {error}")))??;
-    let _ = app.emit("state-changed", ());
-    Ok(results)
+    let core = state.inner().clone();
+    blocking("Skill installer", move || api::execute_skill_change(&core, &confirmation_id)).await
+}
+
+#[tauri::command]
+async fn automation_catalog(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<automations::AutomationCatalog, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Automation discovery", move || api::automation_catalog(&core)).await
+}
+
+#[tauri::command]
+async fn save_automation(
+    provider: automations::AutomationProvider,
+    id: Option<String>,
+    prompt: String,
+    schedule_expression: String,
+    recurring: bool,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<automations::AutomationSaveResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Automation update", move || {
+        api::save_automation(&core, provider, id.as_deref(), &prompt, &schedule_expression, recurring)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn execute_automation_action(
+    provider: automations::AutomationProvider,
+    id: String,
+    action: automations::AutomationAction,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<automations::AutomationActionResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Automation update", move || {
+        api::execute_automation_action(&core, provider, &id, action)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn list_managed_agents(
+) -> Result<bridge_protocol::messages::ManagedAgentList, managed_agents::ManagedAgentError> {
+    api::list_managed_agents()
+}
+
+#[tauri::command]
+async fn inspect_managed_agent(
+    agent_id: String,
+) -> Result<bridge_protocol::messages::ManagedAgentInspection, managed_agents::ManagedAgentError> {
+    api::inspect_managed_agent(&agent_id)
+}
+
+#[tauri::command]
+async fn install_managed_agent(
+    agent_id: String,
+) -> Result<bridge_protocol::messages::ManagedAgentOperationResult, managed_agents::ManagedAgentError>
+{
+    api::install_managed_agent(&agent_id)
+}
+
+#[tauri::command]
+async fn repair_managed_agent(
+    agent_id: String,
+) -> Result<bridge_protocol::messages::ManagedAgentOperationResult, managed_agents::ManagedAgentError>
+{
+    api::repair_managed_agent(&agent_id)
+}
+
+#[tauri::command]
+async fn uninstall_managed_agent(
+    agent_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ManagedAgentOperationResult, managed_agents::ManagedAgentError>
+{
+    api::uninstall_managed_agent(state.inner(), &agent_id)
 }
 
 #[tauri::command]
@@ -309,116 +498,59 @@ async fn marketplace_action(
     marketplace: Option<String>,
     action: marketplace::MarketplaceAction,
 ) -> Result<marketplace::MarketplaceActionResult, BridgeError> {
-    marketplace::execute_action(provider, &plugin_id, marketplace.as_deref(), action)
+    api::marketplace_action(provider, &plugin_id, marketplace.as_deref(), action)
 }
+
 #[tauri::command]
-async fn get_state(state: State<'_, AppState>) -> Result<BridgeState, BridgeError> {
-    store::state(&state.db.lock().unwrap())
-}
-
-fn session_forest_snapshot(
-    db: &Connection,
-    session_id: &str,
-) -> Result<SessionForestSnapshot, BridgeError> {
-    let current_state = store::repository_state_for_session(db, session_id)?;
-    session_forest_snapshot_with_repository_state(db, session_id, current_state)
-}
-
-fn session_forest_snapshot_with_repository_state(
-    db: &Connection,
-    session_id: &str,
-    current_state: serde_json::Value,
-) -> Result<SessionForestSnapshot, BridgeError> {
-    let workspace_id: String = db.query_row(
-        "SELECT workspace_id FROM sessions WHERE id=?1",
-        params![session_id],
-        |row| row.get(0),
-    )?;
-    let config = policy::PolicyConfig::default();
-    let entries = store::session_entries(db, session_id)?;
-    let head = store::session_head(db, session_id)?;
-    let selected_state = head.as_ref().and_then(|head| head.active_entry_id.as_deref())
-        .and_then(|id| entries.iter().find(|entry| entry.id == id))
-        .and_then(|entry| entry.payload.get("_bridgeRepoState"))
-        .cloned();
-    let comparable = |value: &serde_json::Value| value.get("status").and_then(serde_json::Value::as_str) != Some("unavailable");
-    let divergence_status = match selected_state.as_ref() {
-        Some(selected) if comparable(selected) && comparable(&current_state) && selected == &current_state => "aligned",
-        Some(selected) if comparable(selected) && comparable(&current_state) => "diverged",
-        _ => "unknown",
-    };
-    Ok(SessionForestSnapshot {
-        session_id: session_id.to_owned(),
-        entries,
-        head,
-        leaves: session_forest::SessionForest::new(db)
-            .branch_leaves(session_id)
-            .map_err(|error| BridgeError::Invalid(error.to_string()))?,
-        worker_leases: store::worker_leases(db, &workspace_id)?,
-        worker_runtimes: store::worker_runtimes(db, &workspace_id)?,
-        worker_queue: store::worker_queue_requests(db, &workspace_id)?,
-        usage: store::usage_ledger(db, &workspace_id, None)?,
-        reasons: store::workspace_reason_events(db, &workspace_id)?,
-        policy_limits: PolicyLimits {
-            max_workers_per_turn: config.max_workers_per_turn as i64,
-            max_strong_workers_per_turn: config.max_strong_workers_per_turn as i64,
-            max_capability_units_per_turn: config.max_capability_units_per_turn,
-        },
-        repository_divergence: RepositoryDivergence {
-            status: divergence_status.into(),
-            selected_state,
-            current_state,
-        },
-        completion: completion::latest_summary(db, session_id)?,
-    })
+async fn get_state(state: State<'_, Arc<BridgeCore>>) -> Result<BridgeState, BridgeError> {
+    api::get_state(state.inner())
 }
 
 #[tauri::command]
 async fn get_session_forest(
     session_id: String,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<SessionForestSnapshot, BridgeError> {
     // Git may be slow on large repositories or during index contention. Never
     // run it on the macOS event loop or while holding the global SQLite lock.
-    let repository_path = {
-        let db = state.db.lock().unwrap();
-        store::repository_path_for_session(&db, &session_id)?
-    };
-    let repository_state = match repository_path {
-        Some(path) => tauri::async_runtime::spawn_blocking(move || {
-            store::repository_state_for_path(&path)
-        })
-        .await
-        .map_err(|error| BridgeError::Invalid(format!("Repository refresh task failed: {error}")))?,
-        None => serde_json::json!({"status":"unavailable"}),
-    };
-    let db = state.db.lock().unwrap();
-    session_forest_snapshot_with_repository_state(&db, &session_id, repository_state)
+    let core = state.inner().clone();
+    blocking("Repository refresh", move || api::get_session_forest(&core, &session_id)).await
 }
 
-fn completion_repository_stamp(
-    db: &Connection,
-    session_id: &str,
-) -> Result<completion::RepositoryStamp, BridgeError> {
-    let state = store::repository_state_for_session(db, session_id)?;
-    let head = state.get("head").and_then(serde_json::Value::as_str).ok_or_else(|| BridgeError::Invalid("completion proof requires a Git repository HEAD".into()))?;
-    let dirty = state.get("dirtyHash").and_then(serde_json::Value::as_str).ok_or_else(|| BridgeError::Invalid("completion proof requires a deterministic dirty-tree digest".into()))?;
-    Ok(completion::RepositoryStamp { head: head.into(), dirty_digest: dirty.into() })
+#[tauri::command]
+async fn get_session_forest_digest(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<api::ForestDigest, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Forest digest", move || {
+        api::get_session_forest_digest(&core, &session_id)
+    })
+    .await
 }
 
-fn completion_attempt_repository(
-    db: &Connection,
-    attempt_id: &str,
-) -> Result<(String, completion::RepositoryStamp), BridgeError> {
-    let (session_id, repository_path, stored_head, stored_dirty): (String, String, String, String) = db.query_row(
-        "SELECT session_id,repository_path,repository_head,dirty_digest FROM eval_attempts WHERE id=?1",
-        params![attempt_id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-    )?;
-    let state = store::repository_state_for_path(std::path::Path::new(&repository_path));
-    let head = state.get("head").and_then(serde_json::Value::as_str).unwrap_or(&stored_head);
-    let dirty = state.get("dirtyHash").and_then(serde_json::Value::as_str).unwrap_or(&stored_dirty);
-    Ok((session_id, completion::RepositoryStamp { head: head.into(), dirty_digest: dirty.into() }))
+#[tauri::command]
+async fn get_context_breakdown(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<api::ContextBreakdownResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Context breakdown", move || {
+        api::get_context_breakdown(&core, &session_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_context_breakdown_digest(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<api::ContextBreakdownDigestResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Context breakdown digest", move || {
+        api::get_context_breakdown_digest(&core, &session_id)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -429,60 +561,30 @@ async fn create_completion_plan(
     repository_commands: Vec<String>,
     markdown_projection: Option<String>,
     markdown_committed: bool,
-    app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<completion::CompletionSummary, BridgeError> {
-    let (workspace_id, implementer_family): (String, Option<String>) = {
-        let db = state.db.lock().unwrap();
-        let workspace_id = db.query_row("SELECT workspace_id FROM sessions WHERE id=?1", params![session_id], |row| row.get(0))?;
-        let implementer_family = db.query_row(
-            "SELECT s.harness FROM worker_runtime r JOIN worker_leases l ON l.session_id=r.session_id JOIN sessions s ON s.id=r.session_id WHERE r.parent_session_id=?1 AND l.role='implementation' ORDER BY r.updated_at DESC LIMIT 1",
-            params![session_id],
-            |row| row.get(0),
-        ).optional()?;
-        (workspace_id, implementer_family)
-    };
-    let contract = completion::CompletionContract {
-        id: Uuid::new_v4().to_string(),
-        workspace_id,
-        session_id: session_id.clone(),
-        schema_version: completion::COMPLETION_SCHEMA_VERSION,
-        acceptance_criteria: acceptance_criteria.clone(),
-        markdown_projection,
-        markdown_committed,
-    };
-    let available_capabilities = live_available_capabilities(&state).await;
-    let change_labels = completion::labels_for_paths(&changed_paths);
-    let db = state.db.lock().unwrap();
-    let plan = completion::plan_with_registered_manifests(&db, completion::PlanInput {
-        contract_id: contract.id.clone(),
-        acceptance_criteria,
-        changed_paths,
-        repository_commands,
-    }, &change_labels, &available_capabilities)?;
-    let repository_path: String = db.query_row("SELECT COALESCE(s.cwd,w.path) FROM sessions s JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1", params![session_id], |row| row.get(0))?;
-    let repository = completion_repository_stamp(&db, &session_id)?;
-    completion::create_flow(&db, &contract, &plan, &session_id, &repository_path, &repository, implementer_family.as_deref())?;
-    let summary = completion::latest_summary(&db, &session_id)?.ok_or_else(|| BridgeError::Invalid("completion plan was not persisted".into()))?;
-    let _ = app.emit("state-changed", ());
-    Ok(summary)
+    let core = state.inner().clone();
+    blocking("Completion planning", move || {
+        api::create_completion_plan(
+            &core,
+            &session_id,
+            acceptance_criteria,
+            changed_paths,
+            repository_commands,
+            markdown_projection,
+            markdown_committed,
+        )
+    })
+    .await
 }
 
 #[tauri::command]
 async fn record_completion_check(
     attempt_id: String,
     run: completion::CheckRun,
-    app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<completion::CompletionSummary, BridgeError> {
-    let db = state.db.lock().unwrap();
-    let (session_id, repository) = completion_attempt_repository(&db, &attempt_id)?;
-    completion::record_check(&db, &attempt_id, &run)?;
-    completion::finalize(&db, &attempt_id, &repository)?;
-    completion::reconcile_parent_readiness(&db, &session_id)?;
-    let summary = completion::latest_summary(&db, &session_id)?.ok_or_else(|| BridgeError::Invalid("completion summary disappeared".into()))?;
-    let _ = app.emit("state-changed", ());
-    Ok(summary)
+    api::record_completion_check(state.inner(), &attempt_id, &run)
 }
 
 #[tauri::command]
@@ -490,158 +592,212 @@ async fn waive_completion(
     attempt_id: String,
     check_ids: Vec<String>,
     reason: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<completion::CompletionSummary, BridgeError> {
-    let db = state.db.lock().unwrap();
-    let (session_id, repository) = completion_attempt_repository(&db, &attempt_id)?;
-    completion::waive(&db, &attempt_id, &check_ids, &reason, "local_user", &repository)?;
-    completion::finalize(&db, &attempt_id, &repository)?;
-    completion::reconcile_parent_readiness(&db, &session_id)?;
-    let summary = completion::latest_summary(&db, &session_id)?.ok_or_else(|| BridgeError::Invalid("completion summary disappeared".into()))?;
-    let _ = app.emit("state-changed", ());
-    Ok(summary)
+    api::waive_completion(state.inner(), &attempt_id, &check_ids, &reason)
+}
+
+#[tauri::command]
+async fn workspace_base_divergence(
+    session_id: String,
+    fetch: bool,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::git::BaseBranchDivergence, BridgeError> {
+    api::workspace_base_divergence(state.inner(), &session_id, fetch)
+}
+
+#[tauri::command]
+async fn refresh_workspace_base(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::git::BaseBranchDivergence, BridgeError> {
+    api::refresh_workspace_base(state.inner(), &session_id)
+}
+
+#[tauri::command]
+async fn pending_worker_adoptions(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Vec<bridge_core::worker_adoption::WorkerRepositoryBinding>, BridgeError> {
+    api::pending_worker_adoptions(state.inner(), &session_id)
+}
+
+#[tauri::command]
+async fn adopt_worker_worktree(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::worker_adoption::WorkerRepositoryBinding, BridgeError> {
+    api::adopt_worker_worktree(state.inner(), &session_id)
+}
+
+#[tauri::command]
+async fn discard_worker_worktree(
+    session_id: String,
+    reason: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::worker_adoption::WorkerRepositoryBinding, BridgeError> {
+    api::discard_worker_worktree(state.inner(), &session_id, &reason)
 }
 
 #[tauri::command]
 async fn register_verifier_manifest(
     source: String,
     manifest: completion::VerifierManifest,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    completion::register_verifier_manifest(&state.db.lock().unwrap(), &source, &manifest)
+    api::register_verifier_manifest(state.inner(), &source, &manifest)
 }
 
 #[tauri::command]
 async fn verifier_candidates(
     change_labels: Vec<String>,
     available_capabilities: Vec<String>,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<Vec<completion::VerifierCandidate>, BridgeError> {
-    completion::verifier_candidates(
-        &state.db.lock().unwrap(),
-        &change_labels,
-        &available_capabilities.into_iter().collect(),
-    )
+    api::verifier_candidates(state.inner(), &change_labels, available_capabilities)
 }
 
 #[tauri::command]
 async fn get_router_preferences(
     workspace_id: String,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<learning_router::RouterPreferences, BridgeError> {
-    learning_router::load_preferences(&state.db.lock().unwrap(), &workspace_id)
+    api::get_router_preferences(state.inner(), &workspace_id)
 }
 
 #[tauri::command]
 async fn update_router_preferences(
     workspace_id: String,
     preferences: learning_router::RouterPreferences,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<learning_router::RouterPreferences, BridgeError> {
-    let db = state.db.lock().unwrap();
-    learning_router::save_preferences(&db, &workspace_id, &preferences)?;
-    learning_router::load_preferences(&db, &workspace_id)
+    api::update_router_preferences(state.inner(), &workspace_id, &preferences)
+}
+
+#[tauri::command]
+async fn get_routing_evaluations(
+    workspace_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::RoutingEvaluationsResult, BridgeError> {
+    api::get_routing_evaluations(state.inner(), &workspace_id)
+}
+
+#[tauri::command]
+async fn get_evaluation_settings(
+    workspace_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::RoutingEvaluationSettings, BridgeError> {
+    api::get_evaluation_settings(state.inner(), &workspace_id)
+}
+
+#[tauri::command]
+async fn update_evaluation_settings(
+    workspace_id: String,
+    mode: String,
+    harness: Option<String>,
+    model: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::RoutingEvaluationSettings, BridgeError> {
+    api::update_evaluation_settings(
+        state.inner(),
+        &workspace_id,
+        &mode,
+        harness.as_deref(),
+        model.as_deref(),
+    )
 }
 
 #[tauri::command]
 async fn get_model_setup(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<model_profiles::ModelSetupState, BridgeError> {
-    model_profiles::setup_state(&state.db.lock().unwrap())
+    api::get_model_setup(state.inner())
 }
 
 #[tauri::command]
 async fn recommended_model_profiles(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<Vec<model_profiles::ModelProfileDraft>, BridgeError> {
-    model_profiles::recommended_profiles(&state.adapter_registry.descriptors())
+    api::recommended_model_profiles(state.inner())
 }
 
 #[tauri::command]
 async fn save_model_profiles(
     profiles: Vec<model_profiles::ModelProfileDraft>,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<model_profiles::ModelSetupState, BridgeError> {
-    model_profiles::save_profiles(
-        &state.db.lock().unwrap(),
-        &state.adapter_registry.descriptors(),
-        &profiles,
-    )
+    api::save_model_profiles(state.inner(), &profiles)
 }
 
 #[tauri::command]
 async fn reset_model_profiles(
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<model_profiles::ModelSetupState, BridgeError> {
-    model_profiles::reset_profiles(
-        &state.db.lock().unwrap(),
-        &state.adapter_registry.descriptors(),
+    api::reset_model_profiles(state.inner())
+}
+
+#[tauri::command]
+async fn get_suggestion_settings(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::SuggestionSettingsSnapshot, BridgeError> {
+    api::get_suggestion_settings(state.inner())
+}
+
+#[tauri::command]
+async fn save_suggestion_settings(
+    state: State<'_, Arc<BridgeCore>>,
+    settings: bridge_protocol::messages::SuggestionSettings,
+) -> Result<bridge_protocol::messages::SuggestionSettingsSnapshot, BridgeError> {
+    api::save_suggestion_settings(
+        state.inner(),
+        &bridge_protocol::messages::SaveSuggestionSettingsParams { settings },
     )
 }
 
 #[tauri::command]
-async fn get_config_state(state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
-    agent_config::state(&state.db.lock().unwrap())
+async fn suggest_completion(
+    state: State<'_, Arc<BridgeCore>>,
+    text: String,
+) -> Result<bridge_protocol::messages::SuggestCompletionResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Inline suggestion", move || {
+        api::suggest_completion(&core, &bridge_protocol::messages::SuggestCompletionParams { text })
+    })
+    .await
 }
 
 #[tauri::command]
-async fn save_harness_config(config: agent_config::HarnessConfig, state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
-    let opencode_settings = (config.id == "opencode")
-        .then(|| agent_config::opencode_settings(Some(&config)))
-        .transpose()?;
-    let next = agent_config::save_harness(&state.db.lock().unwrap(), config)?;
-    if let Some(settings) = opencode_settings {
-        let registry = state.adapter_registry.clone();
-        let directory = opencode_directory(None)?;
-        let _ = tauri::async_runtime::spawn_blocking(move || {
-            registry.refresh_opencode(settings, &directory)
-        })
-        .await;
-    }
-    Ok(next)
+async fn get_config_state(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<agent_config::ConfigState, BridgeError> {
+    api::get_config_state(state.inner())
 }
 
 #[tauri::command]
-async fn reset_harness_config(id: String, state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
-    let next = agent_config::reset_harness(&state.db.lock().unwrap(), &id)?;
-    if id == "opencode" {
-        let registry = state.adapter_registry.clone();
-        let directory = opencode_directory(None)?;
-        let _ = tauri::async_runtime::spawn_blocking(move || {
-            registry.refresh_opencode(opencode_adapter::OpenCodeSettings::default(), &directory)
-        })
-        .await;
-    }
-    Ok(next)
+async fn save_harness_config(
+    config: agent_config::HarnessConfig,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<agent_config::ConfigState, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Harness configuration", move || api::save_harness_config(&core, config)).await
 }
 
-fn opencode_directory(directory: Option<String>) -> Result<String, BridgeError> {
-    let path = directory
-        .map(|value| PathBuf::from(value.trim()))
-        .filter(|path| !path.as_os_str().is_empty())
-        .map(Ok)
-        .unwrap_or_else(std::env::current_dir)?;
-    if !path.is_dir() {
-        return Err(BridgeError::Invalid(format!(
-            "OpenCode directory does not exist: {}",
-            path.display()
-        )));
-    }
-    Ok(path.to_string_lossy().into_owned())
+#[tauri::command]
+async fn reset_harness_config(
+    id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<agent_config::ConfigState, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Harness reset", move || api::reset_harness_config(&core, &id)).await
 }
 
 #[tauri::command]
 async fn refresh_opencode_catalog(
     directory: Option<String>,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
-    let directory = opencode_directory(directory)?;
-    let registry = state.adapter_registry.clone();
-    let settings = registry.opencode_settings()?;
-    tauri::async_runtime::spawn_blocking(move || registry.refresh_opencode(settings, &directory))
-        .await
-        .map_err(|error| BridgeError::Adapter(format!("OpenCode discovery task failed: {error}")))?
+    let core = state.inner().clone();
+    blocking("OpenCode discovery", move || api::refresh_opencode_catalog(&core, directory)).await
 }
 
 #[tauri::command]
@@ -649,107 +805,182 @@ async fn set_opencode_provider_api_key(
     provider_id: String,
     api_key: String,
     directory: Option<String>,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
-    let directory = opencode_directory(directory)?;
-    let registry = state.adapter_registry.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        registry.set_opencode_provider_api_key(&directory, &provider_id, &api_key)
+    let core = state.inner().clone();
+    blocking("OpenCode authentication", move || {
+        api::set_opencode_provider_api_key(&core, &provider_id, &api_key, directory)
     })
     .await
-    .map_err(|error| BridgeError::Adapter(format!("OpenCode authentication task failed: {error}")))?
 }
 
 #[tauri::command]
 async fn remove_opencode_provider_auth(
     provider_id: String,
     directory: Option<String>,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<opencode_adapter::OpenCodeCatalog, BridgeError> {
-    let directory = opencode_directory(directory)?;
-    let registry = state.adapter_registry.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        registry.remove_opencode_provider_auth(&directory, &provider_id)
+    let core = state.inner().clone();
+    blocking("OpenCode authentication", move || {
+        api::remove_opencode_provider_auth(&core, &provider_id, directory)
     })
     .await
-    .map_err(|error| BridgeError::Adapter(format!("OpenCode authentication task failed: {error}")))?
 }
 
 #[tauri::command]
-async fn save_agent_config(agent: agent_config::AgentDefinition, state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
-    agent_config::save_agent(&state.db.lock().unwrap(), agent)
+async fn save_agent_config(
+    agent: agent_config::AgentDefinition,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<agent_config::ConfigState, BridgeError> {
+    api::save_agent_config(state.inner(), agent)
 }
 
 #[tauri::command]
-async fn delete_agent_config(id: String, state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
-    agent_config::delete_agent(&state.db.lock().unwrap(), &id)
+async fn delete_agent_config(
+    id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<agent_config::ConfigState, BridgeError> {
+    api::delete_agent_config(state.inner(), &id)
 }
 
 #[tauri::command]
-async fn set_default_agent(id: String, state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
-    agent_config::set_default(&state.db.lock().unwrap(), &id)
+async fn set_default_agent(
+    id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<agent_config::ConfigState, BridgeError> {
+    api::set_default_agent(state.inner(), &id)
 }
 
 #[tauri::command]
-async fn reset_all_config(state: State<'_, AppState>) -> Result<agent_config::ConfigState, BridgeError> {
-    let next = agent_config::reset_all(&state.db.lock().unwrap())?;
-    let registry = state.adapter_registry.clone();
-    let directory = opencode_directory(None)?;
-    let _ = tauri::async_runtime::spawn_blocking(move || {
-        registry.refresh_opencode(opencode_adapter::OpenCodeSettings::default(), &directory)
+async fn save_permission_policy(
+    policy: agent_config::PermissionPolicy,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<agent_config::ConfigState, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Permission policy save", move || {
+        api::save_permission_policy(&core, policy)
     })
-    .await;
-    Ok(next)
+    .await
+}
+
+#[tauri::command]
+async fn reset_all_config(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<agent_config::ConfigState, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Configuration reset", move || api::reset_all_config(&core)).await
+}
+
+#[tauri::command]
+async fn get_prompt_stack(
+    target: PromptTargetChoice,
+    depth: Option<i64>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<prompt_studio::PromptStackView, BridgeError> {
+    let core = state.inner().clone();
+    let target = api::prompt_target(target);
+    blocking("Prompt stack read", move || {
+        api::get_prompt_stack(&core, target, depth)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn save_prompt_section(
+    target: PromptTargetChoice,
+    section_id: String,
+    text: String,
+    depth: Option<i64>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<prompt_studio::PromptSectionMutation, BridgeError> {
+    let core = state.inner().clone();
+    let target = api::prompt_target(target);
+    blocking("Prompt section save", move || {
+        api::save_prompt_section(&core, target, &section_id, &text, depth)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn reset_prompt_section(
+    target: PromptTargetChoice,
+    section_id: String,
+    depth: Option<i64>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<prompt_studio::PromptSectionMutation, BridgeError> {
+    let core = state.inner().clone();
+    let target = api::prompt_target(target);
+    blocking("Prompt section reset", move || {
+        api::reset_prompt_section(&core, target, &section_id, depth)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn restore_prompt_revision(
+    target: PromptTargetChoice,
+    section_id: String,
+    revision_id: i64,
+    depth: Option<i64>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<prompt_studio::PromptSectionMutation, BridgeError> {
+    let core = state.inner().clone();
+    let target = api::prompt_target(target);
+    blocking("Prompt revision restore", move || {
+        api::restore_prompt_revision(&core, target, &section_id, revision_id, depth)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn preview_compiled_prompt(
+    target: PromptTargetChoice,
+    depth: Option<i64>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<prompt_studio::CompiledPromptPreview, BridgeError> {
+    let core = state.inner().clone();
+    let target = api::prompt_target(target);
+    blocking("Compiled prompt preview", move || {
+        api::preview_compiled_prompt(&core, target, depth)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn get_learning_state(
-    state: State<'_, AppState>,
+    workspace_id: String,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<learning_job::LearningState, BridgeError> {
-    learning_job::learning_state(&state.db.lock().unwrap())
+    api::get_learning_state(state.inner(), &workspace_id)
 }
 
 #[tauri::command]
 async fn run_learning(
     trigger_kind: learning_job::LearningTriggerKind,
-    app: AppHandle,
-    state: State<'_, AppState>,
+    workspace_id: String,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<learning_job::LearningRun, BridgeError> {
-    if matches!(
-        trigger_kind,
-        learning_job::LearningTriggerKind::Codex | learning_job::LearningTriggerKind::Claude | learning_job::LearningTriggerKind::OpenCode
-    ) {
-        return Err(BridgeError::Invalid(
-            "external learning triggers must use a registered narrow command".into(),
-        ));
-    }
-    let database_path = state.database_path.clone();
-    let run = tauri::async_runtime::spawn_blocking(move || {
-        learning_job::run_local_database(&database_path, trigger_kind)
+    let core = state.inner().clone();
+    blocking("Learning", move || {
+        api::run_learning(&core, trigger_kind, &workspace_id)
     })
     .await
-    .map_err(|error| BridgeError::Invalid(format!("Learning task failed: {error}")))??;
-    let _ = app.emit("learning-job-changed", &run);
-    Ok(run)
 }
 
 #[tauri::command]
 async fn cancel_learning_run(
     run_id: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<learning_job::LearningRun, BridgeError> {
-    let run = learning_job::cancel_run(&state.db.lock().unwrap(), &run_id)?;
-    let _ = app.emit("learning-job-changed", &run);
-    Ok(run)
+    api::cancel_learning_run(state.inner(), &run_id)
 }
 
 #[tauri::command]
 async fn update_learning_schedule(
     schedule: learning_job::LearningSchedule,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<learning_job::LearningSchedule, BridgeError> {
-    learning_job::update_schedule(&state.db.lock().unwrap(), &schedule)
+    api::update_learning_schedule(state.inner(), &schedule)
 }
 
 #[tauri::command]
@@ -758,10 +989,10 @@ async fn register_learning_trigger(
     registration_id: String,
     credential_ref: Option<String>,
     expires_at: Option<String>,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    learning_job::register_trigger_with_expiry(
-        &state.db.lock().unwrap(),
+    api::register_learning_trigger(
+        state.inner(),
         kind,
         &registration_id,
         credential_ref.as_deref(),
@@ -775,131 +1006,57 @@ async fn get_learning_trigger_instructions(
     database_path: String,
     registration_id: String,
 ) -> Result<String, BridgeError> {
-    learning_job::trigger_instructions(kind, &database_path, &registration_id)
+    api::get_learning_trigger_instructions(kind, &database_path, &registration_id)
 }
 
 #[tauri::command]
 async fn enable_learning_trigger(
     kind: learning_job::LearningTriggerKind,
     registration_id: String,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    learning_job::enable_trigger(&state.db.lock().unwrap(), kind, &registration_id)
+    api::enable_learning_trigger(state.inner(), kind, &registration_id)
 }
 
 #[tauri::command]
 async fn approve_learning_run(
     run_id: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<learning_job::LearningRun, BridgeError> {
-    let run = learning_job::approve_run(&state.db.lock().unwrap(), &run_id)?;
-    let _ = app.emit("learning-job-changed", &run);
-    Ok(run)
+    api::approve_learning_run(state.inner(), &run_id)
 }
 
 #[tauri::command]
 async fn rollback_routing_policy(
+    workspace_id: String,
     target_version: i64,
     explanation: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<learning_job::LearningState, BridgeError> {
-    learning_job::rollback_policy(&state.db.lock().unwrap(), target_version, &explanation)?;
-    let result = learning_job::learning_state(&state.db.lock().unwrap())?;
-    let _ = app.emit("learning-job-changed", &result);
-    Ok(result)
+    api::rollback_routing_policy(state.inner(), &workspace_id, target_version, &explanation)
 }
 
 #[tauri::command]
 async fn activate_session_entry(
     session_id: String,
     entry_id: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<SessionForestSnapshot, BridgeError> {
-    let db = state.db.lock().unwrap();
-    let snapshot = activate_session_entry_records(&db, &session_id, &entry_id)?;
-    let _ = app.emit("state-changed", ());
-    Ok(snapshot)
-}
-
-fn activate_session_entry_records(
-    db: &Connection,
-    session_id: &str,
-    entry_id: &str,
-) -> Result<SessionForestSnapshot, BridgeError> {
-    session_forest::SessionForest::new(db)
-        .move_head(session_id, Some(entry_id))
-        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-    store::event(
-        db,
-        "session-forest",
-        "session.head_moved",
-        session_id,
-        &format!("Conversation head moved to {entry_id}; files were not changed"),
-    )?;
-    session_forest_snapshot(db, session_id)
+    api::activate_session_entry(state.inner(), &session_id, &entry_id)
 }
 
 #[tauri::command]
-async fn add_project(path: String, state: State<'_, AppState>) -> Result<BridgeState, BridgeError> {
-    let clean = git::validate_repo(Path::new(&path))?;
-    let name = Path::new(&clean)
-        .file_name()
-        .and_then(|x| x.to_str())
-        .unwrap_or("Repository")
-        .to_string();
-    let id = Uuid::new_v4().to_string();
-    let db = state.db.lock().unwrap();
-    db.execute(
-        "INSERT OR IGNORE INTO projects(id,name,path,created_at) VALUES(?1,?2,?3,?4)",
-        params![id, name, clean, Utc::now().to_rfc3339()],
-    )?;
-    store::event(
-        &db,
-        "project",
-        "project.added",
-        &id,
-        &format!("Added {name}"),
-    )?;
-    store::state(&db)
-}
-
-/// Scratch working directory for a chat that has no connected folder/repo.
-fn chat_scratch_dir(state: &AppState, session_id: &str) -> PathBuf {
-    state
-        .database_path
-        .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("chats")
-        .join(session_id)
-}
-
-fn chat_label(title: Option<&str>) -> String {
-    title
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .unwrap_or("New chat")
-        .to_string()
+async fn add_project(path: String, state: State<'_, Arc<BridgeCore>>) -> Result<BridgeState, BridgeError> {
+    api::add_project(state.inner(), &path)
 }
 
 /// Create a repo-less workspace. A folder/git repo can be connected later.
 #[tauri::command]
-async fn create_workspace(title: String, state: State<'_, AppState>) -> Result<BridgeState, BridgeError> {
-    let name = title.trim();
-    if name.is_empty() {
-        return Err(BridgeError::Invalid("Workspace name is required".into()));
-    }
-    let id = Uuid::new_v4().to_string();
-    let db = state.db.lock().unwrap();
-    db.execute(
-        "INSERT INTO workspaces(id,title,status,created_at) VALUES(?1,?2,'idle',?3)",
-        params![id, name, Utc::now().to_rfc3339()],
-    )?;
-    store::event(&db, "supervisor", "workspace.created", &id, &format!("Created workspace {name}"))?;
-    store::state(&db)
+async fn create_workspace(
+    title: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<BridgeState, BridgeError> {
+    api::create_workspace(state.inner(), &title)
 }
 
 /// Create a standalone direct chat (no workspace). Runs in a private scratch dir.
@@ -908,167 +1065,104 @@ async fn create_chat(
     harness: Harness,
     model: Option<String>,
     title: Option<String>,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
-    let adapter_id = store::harness_name(&harness);
-    let id = Uuid::new_v4().to_string();
-    let cwd = chat_scratch_dir(state.inner(), &id);
-    let label = chat_label(title.as_deref());
-    let db = state.db.lock().unwrap();
-    db.execute(
-        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth) VALUES(?1,NULL,?2,?3,'idle','estimated',?4,'direct',?5,?6,0)",
-        params![id, adapter_id, label, model, title, cwd.to_string_lossy()],
-    )?;
-    store::event(&db, "chat", "chat.created", &id, &format!("Created chat {label}"))?;
-    store::state(&db)
+    api::create_chat(state.inner(), &harness, model.as_deref(), title.as_deref())
+}
+
+/// Create a direct chat and return the exact identity committed by this call.
+#[tauri::command]
+async fn create_chat_id(
+    harness: Harness,
+    model: Option<String>,
+    title: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::CreateChatIdResult, BridgeError> {
+    api::create_chat_id(state.inner(), &harness, model.as_deref(), title.as_deref())
+}
+
+/// Create a source-scoped aside and return the exact session id that was
+/// committed with its handoff, so the caller never has to infer it from state.
+#[tauri::command]
+async fn create_aside_chat(
+    source_session_id: String,
+    harness: Harness,
+    model: Option<String>,
+    title: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::CreateAsideChatResult, BridgeError> {
+    api::create_aside_chat(
+        state.inner(),
+        &source_session_id,
+        &harness,
+        model.as_deref(),
+        title.as_deref(),
+    )
 }
 
 /// Create an orchestrator session inside a workspace (the classic Bridge agent
 /// that plans and delegates to workers). Multiple are allowed per workspace.
-#[derive(Debug, Clone)]
-struct OrchestratorSelection {
-    adapter_id: String,
-    model: String,
-    tier: CapabilityTier,
-    effort: Option<delegation::Effort>,
-    label: String,
-}
-
-fn resolve_orchestrator_selection(
-    db: &Connection,
-    registry: &adapters::AdapterRegistry,
-) -> Result<OrchestratorSelection, BridgeError> {
-    let descriptors = registry.descriptors();
-    let configured_agent = agent_config::default_orchestrator(db);
-    if let Some(agent) = configured_agent.as_ref() {
-        if agent.enabled && matches!(agent.harness.as_str(), "codex" | "claude" | "opencode") {
-            let harness_config = agent_config::harness_config(db, &agent.harness);
-            let preferred_model = agent.model.as_deref().filter(|value| !value.trim().is_empty())
-                .or_else(|| harness_config.as_ref().and_then(|config| config.default_model.as_deref()).filter(|value| !value.trim().is_empty()));
-            if harness_config.is_some() {
-                if let Ok(resolution) = registry.resolve_model(&agent.harness, CapabilityTier::Standard, preferred_model) {
-                    return Ok(OrchestratorSelection {
-                        adapter_id: agent.harness.clone(),
-                        model: resolution.actual_model,
-                        tier: CapabilityTier::Standard,
-                        effort: harness_config.and_then(|config| config.effort).or(Some(agent.effort)),
-                        label: agent.name.clone(),
-                    });
-                }
-            }
-        }
-    }
-    if let Some(profile) = model_profiles::resolve_profile(
-        db,
-        &descriptors,
-        model_profiles::ProfilePurpose::StandardOrchestrator,
-    )?.filter(|profile| agent_config::is_harness_enabled(db, &profile.provider)) {
-        let resolution = registry.resolve_model(
-            &profile.provider,
-            profile.tier,
-            Some(&profile.model),
-        )?;
-        return Ok(OrchestratorSelection {
-            adapter_id: profile.provider,
-            model: resolution.actual_model,
-            tier: profile.tier,
-            effort: configured_agent.as_ref()
-                .filter(|agent| !agent.is_built_in || !agent.updated_at.is_empty())
-                .map(|agent| agent.effort)
-                .or(Some(profile.effort)),
-            label: configured_agent.as_ref().map(|agent| agent.name.clone()).unwrap_or_else(|| orchestrator::SESSION_LABEL.into()),
-        });
-    }
-    for descriptor in descriptors.iter().filter(|descriptor| descriptor.available && agent_config::is_harness_enabled(db, &descriptor.id)) {
-        if let Ok(resolution) = registry.resolve_model(&descriptor.id, orchestrator::TIER, None) {
-            return Ok(OrchestratorSelection {
-                adapter_id: descriptor.id.clone(),
-                model: resolution.actual_model,
-                tier: orchestrator::TIER,
-                effort: None,
-                label: orchestrator::SESSION_LABEL.into(),
-            });
-        }
-    }
-    Err(BridgeError::Invalid(
-        "no available adapter can resolve the Standard orchestrator profile".into(),
-    ))
-}
-
 #[tauri::command]
 async fn create_workspace_session(
     workspace_id: String,
-    state: State<'_, AppState>,
+    create_worktree: Option<bool>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
-    let id = Uuid::new_v4().to_string();
-    let db = state.db.lock().unwrap();
-    let selection = resolve_orchestrator_selection(&db, &state.adapter_registry)?;
-    let ws_path: Option<String> = db
-        .query_row("SELECT path FROM workspaces WHERE id=?1", params![workspace_id], |r| {
-            r.get::<_, Option<String>>(0)
-        })
-        .ok()
-        .flatten();
-    let cwd = ws_path.unwrap_or_else(|| chat_scratch_dir(state.inner(), &id).to_string_lossy().to_string());
-    db.execute(
-        "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,requested_tier,effort,kind,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,?6,?7,'orchestrator',?8,0)",
-        params![id, workspace_id, selection.adapter_id, selection.label, selection.model, selection.tier.as_str(), selection.effort.map(|effort| effort.as_str()), cwd],
-    )?;
-    store::event(&db, "supervisor", "session.created", &id, "New agent session")?;
-    store::state(&db)
+    // Worktree creation shells out to Git; keep it on the blocking pool.
+    let core = state.inner().clone();
+    blocking("Worktree creation", move || {
+        api::create_workspace_session(&core, &workspace_id, create_worktree.unwrap_or(false))
+    })
+    .await
 }
 
-/// Change a direct chat's harness/model. Stops any running adapter so the next
-/// message starts a fresh provider session with the new model.
+/// Change a root chat's provider/model. Stops any running adapter so the next
+/// message starts a fresh provider session with the explicit user selection.
 #[tauri::command]
 async fn update_chat_model(
     session_id: String,
     harness: Harness,
     model: Option<String>,
-    app: AppHandle,
-    state: State<'_, AppState>,
+    effort: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
-    let adapter_id = store::harness_name(&harness);
-    let stop_session_id = session_id.clone();
-    tauri::async_runtime::spawn_blocking(move || {
-        let state = app.state::<AppState>();
-        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&stop_session_id) {
-            runtime.stop(adapters::ShutdownReason::Replaced);
-        };
+    // Stopping the old adapter can block on process teardown; run the whole
+    // claim -> teardown -> commit window on the blocking pool.
+    let core = state.inner().clone();
+    blocking("Adapter shutdown", move || {
+        api::update_chat_model(&core, &session_id, &harness, model.as_deref(), effort.as_deref())
     })
     .await
-    .map_err(|error| BridgeError::Adapter(format!("Adapter shutdown task failed: {error}")))?;
-    session_supervisor::SessionSupervisor::clear_adapter_process(&state.db.lock().unwrap(), &session_id)?;
-    let db = state.db.lock().unwrap();
-    db.execute(
-        "UPDATE sessions SET harness=?2,model=?3,provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND kind='direct'",
-        params![session_id, adapter_id, model],
-    )?;
-    store::state(&db)
 }
 
-#[derive(serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct SlashCommandResolve {
-    name: String,
-    harness: String,
-    kind: String,
-    /// When true, the frontend should switch the direct chat to `harness` before sending.
-    switch_harness: bool,
+#[tauri::command]
+async fn refresh_model_catalogs(state: State<'_, Arc<BridgeCore>>) -> Result<api::Health, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Model catalogue refresh", move || api::refresh_model_catalogs(&core)).await
+}
+
+/// Carry a source chat's projected context into another chat as a durable
+/// handoff brief (`$harness` shortcut). Best-effort; reports what happened.
+#[tauri::command]
+async fn carry_session_handoff(
+    target_session_id: String,
+    source_session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<CarrySessionHandoffResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Handoff carry", move || {
+        api::carry_session_handoff(&core, &target_session_id, &source_session_id)
+    })
+    .await
 }
 
 /// Enumerate slash commands + skills from every signed-in provider, so the UI
 /// can offer a labeled `/` menu.
 #[tauri::command]
-async fn list_slash_commands(state: State<'_, AppState>) -> Result<Vec<slash::SlashCommand>, BridgeError> {
-    let available: std::collections::HashSet<String> = state
-        .adapter_registry
-        .descriptors()
-        .into_iter()
-        .filter(|descriptor| descriptor.available)
-        .map(|descriptor| descriptor.id)
-        .collect();
-    Ok(slash::list_commands(&available))
+async fn list_slash_commands(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Vec<slash::SlashCommand>, BridgeError> {
+    api::list_slash_commands(state.inner())
 }
 
 /// Resolve a composer `/command` against the catalog so the UI can auto-switch
@@ -1077,61 +1171,9 @@ async fn list_slash_commands(state: State<'_, AppState>) -> Result<Vec<slash::Sl
 async fn resolve_slash_command(
     text: String,
     session_id: String,
-    state: State<'_, AppState>,
-) -> Result<Option<SlashCommandResolve>, BridgeError> {
-    let trimmed = text.trim();
-    let Some(rest) = trimmed.strip_prefix('/') else {
-        return Ok(None);
-    };
-    let name = rest
-        .split_whitespace()
-        .next()
-        .filter(|value| !value.is_empty())
-        .ok_or_else(|| BridgeError::Invalid("Empty slash command".into()))?;
-    let available: std::collections::HashSet<String> = state
-        .adapter_registry
-        .descriptors()
-        .into_iter()
-        .filter(|descriptor| descriptor.available)
-        .map(|descriptor| descriptor.id)
-        .collect();
-    let (kind, session_harness): (String, String) = {
-        let db = state.db.lock().unwrap();
-        db.query_row(
-            "SELECT kind, harness FROM sessions WHERE id=?1",
-            params![session_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?
-    };
-    let catalog = slash::list_commands(&available);
-    let matches: Vec<_> = catalog
-        .iter()
-        .filter(|command| command.name.eq_ignore_ascii_case(name))
-        .collect();
-    if matches.is_empty() {
-        return Ok(None);
-    }
-    let chosen = matches
-        .iter()
-        .find(|command| command.harness == session_harness)
-        .or_else(|| {
-            // Prefer the command's own harness when the name is unique to one provider.
-            if matches.len() == 1 {
-                matches.first()
-            } else {
-                None
-            }
-        })
-        .or_else(|| matches.first())
-        .map(|command| (*command).clone())
-        .expect("matches non-empty");
-    let switch_harness = kind == "direct" && chosen.harness != session_harness;
-    Ok(Some(SlashCommandResolve {
-        name: chosen.name.clone(),
-        harness: chosen.harness.clone(),
-        kind: chosen.kind.clone(),
-        switch_harness,
-    }))
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Option<api::SlashCommandResolve>, BridgeError> {
+    api::resolve_slash_command(state.inner(), &text, &session_id)
 }
 
 /// Attach a folder (optionally a git repo) to a workspace as its working directory.
@@ -1139,378 +1181,37 @@ async fn resolve_slash_command(
 async fn connect_workspace_folder(
     workspace_id: String,
     path: String,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
-    let folder = Path::new(&path);
-    if !folder.is_dir() {
-        return Err(BridgeError::Invalid("That folder no longer exists".into()));
-    }
-    let db = state.db.lock().unwrap();
-    let (resolved_path, project_id, branch) = match git::validate_repo(folder) {
-        Ok(root) => {
-            let name = Path::new(&root)
-                .file_name()
-                .and_then(|value| value.to_str())
-                .unwrap_or("Repository")
-                .to_string();
-            db.execute(
-                "INSERT OR IGNORE INTO projects(id,name,path,created_at) VALUES(?1,?2,?3,?4)",
-                params![Uuid::new_v4().to_string(), name, root, Utc::now().to_rfc3339()],
-            )?;
-            let project_id: Option<String> = db
-                .query_row("SELECT id FROM projects WHERE path=?1", params![root], |r| r.get(0))
-                .ok();
-            (root.clone(), project_id, git::current_branch(folder))
-        }
-        Err(_) => (folder.to_string_lossy().to_string(), None, None),
-    };
-    db.execute(
-        "UPDATE workspaces SET path=?2,project_id=?3,branch=?4 WHERE id=?1",
-        params![workspace_id, resolved_path, project_id, branch],
-    )?;
-    store::event(&db, "supervisor", "workspace.connected", &workspace_id, &format!("Connected {resolved_path}"))?;
-    store::state(&db)
+    api::connect_workspace_folder(state.inner(), &workspace_id, &path)
+}
+
+#[tauri::command]
+async fn clone_workspace_repo(url: String, destination: Option<String>, state: State<'_, Arc<BridgeCore>>) -> Result<BridgeState, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Repository clone", move || api::clone_workspace_repo(&core, &url, destination.as_deref())).await
+}
+
+#[tauri::command]
+async fn search_github_repos(query: String) -> Result<bridge_protocol::messages::SearchGithubReposResult, BridgeError> {
+    blocking("GitHub repository search", move || api::search_github_repos(&query)).await
+}
+
+#[tauri::command]
+async fn locate_workspace_folders(query: String, search_roots: Vec<String>) -> Result<bridge_protocol::messages::LocateWorkspaceFoldersResult, BridgeError> {
+    blocking("Project folder search", move || api::locate_workspace_folders(&query, &search_roots)).await
 }
 
 #[tauri::command]
 async fn start_session(
     workspace_id: String,
-    _harness: Option<Harness>,
-    _model: Option<String>,
-    app: AppHandle,
-    state: State<'_, AppState>,
+    harness: Option<Harness>,
+    model: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
-    // The persisted Standard orchestrator profile owns the default provider,
-    // model, tier, and effort. Resolution still happens against live inventory.
-    let selection = {
-        let db = state.db.lock().unwrap();
-        resolve_orchestrator_selection(&db, &state.adapter_registry)?
-    };
-    let adapter_id = selection.adapter_id.as_str();
-    let session_label = selection.label.as_str();
-    let chosen_model = Some(selection.model.clone());
-    let chosen_effort = selection.effort;
-    let chosen_effort_name = chosen_effort.map(|effort| effort.as_str());
-    let db = state.db.lock().unwrap();
-    let path: Option<String> = db.query_row(
-        "SELECT path FROM workspaces WHERE id=?1",
-        params![workspace_id],
-        |r| r.get::<_, Option<String>>(0),
-    )?;
-    let existing: Option<(String, Option<String>)> = db.query_row(
-        "SELECT id,provider_session_id FROM sessions WHERE workspace_id=?1 AND harness=?2 AND status IN ('idle','stopped','failed','ready','working','waiting') ORDER BY rowid DESC LIMIT 1",
-        params![workspace_id, adapter_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    ).ok();
-    let session_id = existing
-        .as_ref()
-        .map(|(id, _)| id.clone())
-        .unwrap_or_else(|| Uuid::new_v4().to_string());
-    let stored_provider_id = existing
-        .as_ref()
-        .and_then(|(_, provider_id)| provider_id.clone());
-    let checkpoint_context = if existing.is_some() {
-        restoration::checkpoint_context(&db, &session_id)?
-    } else {
-        None
-    };
-    drop(db);
-    let path = path.filter(|value| !value.is_empty()).unwrap_or_else(|| chat_scratch_dir(state.inner(), &session_id).to_string_lossy().to_string());
-    std::fs::create_dir_all(&path)?;
-    let process_is_hot = state.adapters.lock().unwrap().contains_key(&session_id);
-    if process_is_hot {
-        let current_model: Option<String> = state
-            .db
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT model FROM sessions WHERE id=?1",
-                params![session_id],
-                |r| r.get(0),
-            )
-            .ok()
-            .flatten();
-        if current_model.as_deref() == chosen_model.as_deref() {
-            let db = state.db.lock().unwrap();
-            restoration::set_head_state(
-                &db,
-                &session_id,
-                RestorationMode::Hot,
-                if stored_provider_id.is_some() {
-                    ResumeEligibility::Native
-                } else {
-                    ResumeEligibility::CheckpointRestored
-                },
-                stored_provider_id.as_deref(),
-            )?;
-            handoff::record_fidelity(&db, &session_id, ContinuationFidelity::Native)?;
-            return store::state(&db);
-        }
-        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
-            runtime.stop(adapters::ShutdownReason::Replaced);
-        }
-        record_shutdown_reason(
-            &state.db.lock().unwrap(),
-            &session_id,
-            adapters::ShutdownReason::Replaced,
-        )?;
-    }
-
-    // The orchestrator is depth 0. It gets the routing briefing plus the shared
-    // delegation protocol so it can spawn workers itself.
-    let configured_prompt = agent_config::orchestrator_prompt(&state.db.lock().unwrap(), adapter_id);
-    let orchestrator_instructions = format!(
-        "{}\n\n{}{}\n\n{}",
-        orchestrator::briefing(),
-        delegation::protocol(0),
-        if configured_prompt.is_empty() { String::new() } else { format!("\n\n{configured_prompt}") },
-        state.credential_broker.instructions(&session_id),
-    );
-    let plan = restoration::select_plan(
-        false,
-        stored_provider_id.as_deref(),
-        state.adapter_registry.supports_native_resume(adapter_id),
-        checkpoint_context.is_some(),
-    );
-    let start_fresh = |instructions: &str| {
-        state.adapter_registry.start(
-            adapter_id,
-            adapters::StartRequest {
-                cwd: &path,
-                model: chosen_model.as_deref(),
-                effort: chosen_effort_name,
-                instructions: Some(instructions),
-                write_mode: None,
-            },
-        )
-    };
-    let checkpoint_instructions = checkpoint_context
-        .as_ref()
-        .map(|context| format!("{orchestrator_instructions}\n\n{context}"));
-    let (mut started, restoration_mode, resume_eligibility) = match plan {
-        restoration::RestorationPlan::Native => {
-            let provider_id = stored_provider_id
-                .as_deref()
-                .expect("native plan has provider id");
-            match state.adapter_registry.resume(
-                adapter_id,
-                adapters::ResumeRequest {
-                    provider_session_id: provider_id,
-                    cwd: &path,
-                    model: chosen_model.as_deref(),
-                    effort: chosen_effort_name,
-                    instructions: Some(orchestrator_instructions.as_str()),
-                    write_mode: None,
-                },
-            ) {
-                Ok(started) => (started, RestorationMode::Native, ResumeEligibility::Native),
-                Err(error) => {
-                    let db = state.db.lock().unwrap();
-                    restoration::record_resume_failed(&db, &session_id, &error.to_string())?;
-                    drop(db);
-                    match restoration::fallback_after_failure(
-                        restoration::RestorationPlan::Native,
-                        checkpoint_instructions.is_some(),
-                    ) {
-                        Some(restoration::RestorationPlan::CheckpointRestored) => {
-                            match start_fresh(
-                                checkpoint_instructions
-                                    .as_deref()
-                                    .expect("checkpoint fallback has stored context"),
-                            ) {
-                                Ok(started) => (
-                                    started,
-                                    RestorationMode::CheckpointRestored,
-                                    ResumeEligibility::CheckpointRestored,
-                                ),
-                                Err(error) => {
-                                    let db = state.db.lock().unwrap();
-                                    restoration::record_checkpoint_restore_failed(
-                                        &db,
-                                        &session_id,
-                                        &error.to_string(),
-                                    )?;
-                                    drop(db);
-                                    (
-                                        start_fresh(&orchestrator_instructions)?,
-                                        RestorationMode::Fresh,
-                                        ResumeEligibility::Fresh,
-                                    )
-                                }
-                            }
-                        }
-                        Some(restoration::RestorationPlan::Fresh) => (
-                            start_fresh(&orchestrator_instructions)?,
-                            RestorationMode::Fresh,
-                            ResumeEligibility::Fresh,
-                        ),
-                        _ => unreachable!("native failure has a deterministic fallback"),
-                    }
-                }
-            }
-        }
-        restoration::RestorationPlan::CheckpointRestored => {
-            match start_fresh(
-                checkpoint_instructions
-                    .as_deref()
-                    .expect("checkpoint plan has stored context"),
-            ) {
-                Ok(started) => (
-                    started,
-                    RestorationMode::CheckpointRestored,
-                    ResumeEligibility::CheckpointRestored,
-                ),
-                Err(error) => {
-                    debug_assert_eq!(
-                        restoration::fallback_after_failure(
-                            restoration::RestorationPlan::CheckpointRestored,
-                            true,
-                        ),
-                        Some(restoration::RestorationPlan::Fresh)
-                    );
-                    let db = state.db.lock().unwrap();
-                    restoration::record_checkpoint_restore_failed(
-                        &db,
-                        &session_id,
-                        &error.to_string(),
-                    )?;
-                    drop(db);
-                    (
-                        start_fresh(&orchestrator_instructions)?,
-                        RestorationMode::Fresh,
-                        ResumeEligibility::Fresh,
-                    )
-                }
-            }
-        }
-        restoration::RestorationPlan::Fresh => (
-            start_fresh(&orchestrator_instructions)?,
-            RestorationMode::Fresh,
-            ResumeEligibility::Fresh,
-        ),
-        restoration::RestorationPlan::Hot => unreachable!("hot sessions returned above"),
-    };
-    let thread_id = started.runtime.provider_session_id().to_owned();
-    let current_turn = started.runtime.current_turn();
-    let process_id = started.runtime.process_id();
-    let reader = started.reader;
-    let started_at = Utc::now().to_rfc3339();
-    let db = state.db.lock().unwrap();
-    if existing.is_some() {
-        db.execute(
-            "UPDATE sessions SET harness=?2,status='working',started_at=?3,ended_at=NULL,provider_session_id=?4,active_turn_id=NULL,metric_source='reported',model=?5,requested_tier=?6,effort=?7,label=?8,depth=0,parent_session_id=NULL,trace_id=COALESCE(trace_id,lower(hex(randomblob(16)))) WHERE id=?1",
-            params![
-                session_id,
-                adapter_id,
-                started_at,
-                thread_id,
-                chosen_model,
-                selection.tier.as_str(),
-                chosen_effort_name,
-                session_label
-            ],
-        )?;
-    } else {
-        db.execute(
-            "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,provider_session_id,model,requested_tier,effort,depth,trace_id) VALUES(?1,?2,?3,?4,'working',?5,'reported',?6,?7,?8,?9,0,?10)",
-            params![
-                session_id,
-                workspace_id,
-                adapter_id,
-                session_label,
-                started_at,
-                thread_id,
-                chosen_model,
-                selection.tier.as_str(),
-                chosen_effort_name,
-                Uuid::new_v4().simple().to_string()
-            ],
-        )?;
-    }
-    if let Err(error) = session_supervisor::SessionSupervisor::track_adapter_process(
-        &db,
-        &session_id,
-        process_id,
-    ) {
-        drop(db);
-        started.runtime.stop(adapters::ShutdownReason::Failed);
-        return Err(error);
-    }
-    restoration::set_head_state(
-        &db,
-        &session_id,
-        restoration_mode,
-        resume_eligibility,
-        Some(&thread_id),
-    )?;
-    let continuation_fidelity = match restoration_mode {
-        RestorationMode::Hot | RestorationMode::Native => ContinuationFidelity::Native,
-        RestorationMode::CheckpointRestored => ContinuationFidelity::ProjectedAtBoundary,
-        RestorationMode::Fresh if existing.is_some() => ContinuationFidelity::ProjectedMidTurn,
-        RestorationMode::Fresh => ContinuationFidelity::Native,
-    };
-    handoff::record_fidelity(&db, &session_id, continuation_fidelity)?;
-    db.execute(
-        "UPDATE workspaces SET status='working' WHERE id=?1",
-        params![workspace_id],
-    )?;
-    store::event(
-        &db,
-        "adapter",
-        "session.started",
-        &session_id,
-        &format!(
-            "Started {session_label} on {} with {} restoration",
-            chosen_model.as_deref().unwrap_or("default"),
-            restoration_mode.as_str()
-        ),
-    )?;
-    if adapter_id == orchestrator::HARNESS {
-        let context = agent::NormalizedEvent {
-            kind: "session.context".into(),
-            item_id: Some("orchestrator-briefing".into()),
-            role: Some("system".into()),
-            status: Some("ready".into()),
-            title: Some("Orchestrator routing policy".into()),
-            text: Some(orchestrator::briefing()),
-            data: serde_json::json!({
-                "source": "capability-policy",
-                "requestedTier": orchestrator::TIER,
-                "runtimeModel": chosen_model
-            }),
-        };
-        let _ = store::session_event(
-            &db,
-            &session_id,
-            &context,
-            &serde_json::json!({"adapter": adapter_id, "hidden": true}),
-        );
-    }
-    for message in &started.startup_messages {
-        persist_agent_value(
-            &db,
-            &state.adapter_registry,
-            adapter_id,
-            &session_id,
-            message,
-        )?;
-    }
-    drop(db);
-    state
-        .adapters
-        .lock()
-        .unwrap()
-        .insert(session_id.clone(), started.runtime);
-
-    spawn_reader_thread(
-        app.clone(),
-        session_id.clone(),
-        started_at,
-        current_turn,
-        reader,
-    );
-    let _ = app.emit("state-changed", ());
-    store::state(&state.db.lock().unwrap())
+    let core = state.inner().clone();
+    blocking("Session start", move || api::start_session(&core, workspace_id, harness, model))
+        .await
 }
 
 /// Start (or hot-return) a session by id. A `direct` chat runs the stored
@@ -1519,2887 +1220,434 @@ async fn start_session(
 #[tauri::command]
 async fn start_chat(
     session_id: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
-    let (harness, kind, model, cwd_col, workspace_id, provider_id, effort): (
-        String,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    ) = {
-        let db = state.db.lock().unwrap();
-        db.query_row(
-            "SELECT harness,kind,model,cwd,workspace_id,provider_session_id,effort FROM sessions WHERE id=?1",
-            params![session_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
-        )?
-    };
-    if state.adapters.lock().unwrap().contains_key(&session_id) {
-        return store::state(&state.db.lock().unwrap());
-    }
-    let is_orchestrator = kind == "orchestrator";
-    let cwd = match cwd_col.filter(|value| !value.is_empty()) {
-        Some(value) => value,
-        None => {
-            let workspace_path = workspace_id.as_ref().and_then(|workspace| {
-                state
-                    .db
-                    .lock()
-                    .unwrap()
-                    .query_row(
-                        "SELECT path FROM workspaces WHERE id=?1",
-                        params![workspace],
-                        |r| r.get::<_, Option<String>>(0),
-                    )
-                    .ok()
-                    .flatten()
-            });
-            workspace_path
-                .unwrap_or_else(|| chat_scratch_dir(state.inner(), &session_id).to_string_lossy().to_string())
-        }
-    };
-    std::fs::create_dir_all(&cwd)?;
-    let adapter_id: &str = harness.as_str();
-    if !agent_config::is_harness_enabled(&state.db.lock().unwrap(), adapter_id) {
-        return Err(BridgeError::Invalid(format!("{adapter_id} is disabled in Settings")));
-    }
-    let tier = if is_orchestrator { orchestrator::TIER } else { CapabilityTier::Fast };
-    let configured_harness = agent_config::harness_config(&state.db.lock().unwrap(), adapter_id);
-    let chosen_model = model.as_ref().filter(|value| !value.is_empty()).cloned()
-        .or_else(|| configured_harness.as_ref().and_then(|config| config.default_model.clone()))
-        .or_else(|| state.adapter_registry.resolve_model(adapter_id, tier, None).ok().map(|resolution| resolution.actual_model));
-    let proxy_instructions = state.credential_broker.instructions(&session_id);
-    let configured_prompt = if is_orchestrator {
-        agent_config::orchestrator_prompt(&state.db.lock().unwrap(), adapter_id)
-    } else {
-        agent_config::session_prompt(&state.db.lock().unwrap(), adapter_id)
-    };
-    let orchestrator_instructions = if is_orchestrator {
-        format!("{}\n\n{}{}\n\n{}", orchestrator::briefing(), delegation::protocol(0), if configured_prompt.is_empty() { String::new() } else { format!("\n\n{configured_prompt}") }, proxy_instructions)
-    } else {
-        format!("{}{}", if configured_prompt.is_empty() { String::new() } else { format!("{configured_prompt}\n\n") }, proxy_instructions)
-    };
-    let configured_effort = configured_harness
-        .and_then(|config| config.effort)
-        .map(|value| value.as_str().to_owned());
-    let chosen_effort = effort
-        .filter(|value| !value.is_empty())
-        .or(configured_effort);
-    let resumable = provider_id
-        .filter(|value| !value.is_empty())
-        .filter(|_| state.adapter_registry.supports_native_resume(adapter_id));
-    let registry = state.adapter_registry.clone();
-    let launch_adapter_id = adapter_id.to_owned();
-    let launch_cwd = cwd.clone();
-    let launch_model = chosen_model.clone();
-    let (mut started, mode, eligibility) = tauri::async_runtime::spawn_blocking(move || {
-        match resumable {
-            Some(provider) => match registry.resume(
-                &launch_adapter_id,
-                adapters::ResumeRequest {
-                    provider_session_id: &provider,
-                    cwd: &launch_cwd,
-                    model: launch_model.as_deref(),
-                    effort: chosen_effort.as_deref(),
-                    instructions: Some(&orchestrator_instructions),
-                    write_mode: None,
-                },
-            ) {
-                Ok(started) => Ok((
-                    started,
-                    RestorationMode::Native,
-                    ResumeEligibility::Native,
-                )),
-                Err(_) => registry.start(
-                    &launch_adapter_id,
-                    adapters::StartRequest {
-                        cwd: &launch_cwd,
-                        model: launch_model.as_deref(),
-                        effort: chosen_effort.as_deref(),
-                        instructions: Some(&orchestrator_instructions),
-                        write_mode: None,
-                    },
-                )
-                .map(|started| {
-                    (
-                        started,
-                        RestorationMode::Fresh,
-                        ResumeEligibility::Fresh,
-                    )
-                }),
-            },
-            None => registry
-                .start(
-                    &launch_adapter_id,
-                    adapters::StartRequest {
-                        cwd: &launch_cwd,
-                        model: launch_model.as_deref(),
-                        effort: chosen_effort.as_deref(),
-                        instructions: Some(&orchestrator_instructions),
-                        write_mode: None,
-                    },
-                )
-                .map(|started| {
-                    (
-                        started,
-                        RestorationMode::Fresh,
-                        ResumeEligibility::Fresh,
-                    )
-                }),
-        }
+    let core = state.inner().clone();
+    blocking("Chat start", move || api::start_chat(&core, session_id)).await
+}
+
+#[tauri::command]
+async fn start_provider_login(
+    provider: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<api::ProviderLogin, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Provider login", move || {
+        api::start_provider_login(&core, &provider)
     })
     .await
-    .map_err(|error| BridgeError::Adapter(format!("Adapter startup task failed: {error}")))??;
-    let thread_id = started.runtime.provider_session_id().to_owned();
-    let current_turn = started.runtime.current_turn();
-    let process_id = started.runtime.process_id();
-    let reader = started.reader;
-    let started_at = Utc::now().to_rfc3339();
-    {
-        let db = state.db.lock().unwrap();
-        if is_orchestrator {
-            db.execute(
-                "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5,harness=?6,requested_tier=?7,label=?8,depth=0 WHERE id=?1",
-                params![session_id, started_at, thread_id, chosen_model, cwd, adapter_id, tier.as_str(), orchestrator::SESSION_LABEL],
-            )?;
-        } else {
-            db.execute(
-                "UPDATE sessions SET status='working',started_at=?2,ended_at=NULL,provider_session_id=?3,active_turn_id=NULL,metric_source='reported',model=?4,cwd=?5 WHERE id=?1",
-                params![session_id, started_at, thread_id, chosen_model, cwd],
-            )?;
-        }
-        if let Err(error) = session_supervisor::SessionSupervisor::track_adapter_process(&db, &session_id, process_id) {
-            drop(db);
-            started.runtime.stop(adapters::ShutdownReason::Failed);
-            return Err(error);
-        }
-        restoration::set_head_state(&db, &session_id, mode, eligibility, Some(&thread_id))?;
-        if let Some(workspace) = &workspace_id {
-            let _ = db.execute(
-                "UPDATE workspaces SET status='working' WHERE id=?1",
-                params![workspace],
-            );
-        }
-        store::event(
-            &db,
-            "adapter",
-            "session.started",
-            &session_id,
-            &format!("Started {} on {}", if is_orchestrator { "orchestrator" } else { "chat" }, chosen_model.as_deref().unwrap_or("default")),
-        )?;
-        if is_orchestrator {
-            let context = agent::NormalizedEvent {
-                kind: "session.context".into(),
-                item_id: Some("orchestrator-briefing".into()),
-                role: Some("system".into()),
-                status: Some("ready".into()),
-                title: Some("Orchestrator routing policy".into()),
-                text: Some(orchestrator::briefing()),
-                data: serde_json::json!({"source": "capability-policy", "requestedTier": tier, "runtimeModel": chosen_model}),
-            };
-            let _ = store::session_event(&db, &session_id, &context, &serde_json::json!({"adapter": adapter_id, "hidden": true}));
-        }
-        for message in &started.startup_messages {
-            persist_agent_value(&db, &state.adapter_registry, adapter_id, &session_id, message)?;
-        }
-    }
-    state
-        .adapters
-        .lock()
-        .unwrap()
-        .insert(session_id.clone(), started.runtime);
-    spawn_reader_thread(app.clone(), session_id.clone(), started_at, current_turn, reader);
-    let _ = app.emit("state-changed", ());
-    store::state(&state.db.lock().unwrap())
-}
-
-/// Drive one structured session's stdout: normalize every frame, then on exit
-/// mark the session stopped and unblock any parent that was waiting on it.
-fn spawn_reader_thread(
-    app: AppHandle,
-    session_id: String,
-    launch_started_at: String,
-    current_turn: Arc<Mutex<Option<String>>>,
-    mut reader: Box<dyn BufRead + Send>,
-) {
-    thread::spawn(move || {
-        loop {
-            let mut line = String::new();
-            match reader.read_line(&mut line) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) {
-                        handle_agent_value(&app, &session_id, &current_turn, &value);
-                    }
-                }
-            }
-        }
-        let state = app.state::<AppState>();
-        let is_current_launch = state
-            .db
-            .lock()
-            .unwrap()
-            .query_row(
-                "SELECT started_at=?2 FROM sessions WHERE id=?1",
-                params![session_id, launch_started_at],
-                |row| row.get::<_, bool>(0),
-            )
-            .unwrap_or(false);
-        if !is_current_launch {
-            return;
-        }
-        state.adapters.lock().unwrap().remove(&session_id);
-        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
-            &state.db.lock().unwrap(),
-            &session_id,
-        );
-        notify_parent_on_worker_exit(&app, &session_id);
-        let db = state.db.lock().unwrap();
-        let is_worker = store::worker_runtime(&db, &session_id)
-            .ok()
-            .flatten()
-            .is_some();
-        let workspace: Option<String> = db
-            .query_row(
-                "SELECT workspace_id FROM sessions WHERE id=?1",
-                params![session_id],
-                |r| r.get(0),
-            )
-            .ok();
-        if !is_worker {
-            let _ = db.execute("UPDATE sessions SET status='stopped',ended_at=?2,active_turn_id=NULL WHERE id=?1 AND status IN ('working','waiting')", params![session_id,Utc::now().to_rfc3339()]);
-        }
-        if let Some(workspace) = workspace {
-            let _=db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'stopped' END WHERE id=?1",params![workspace]);
-        }
-        drop(db);
-        let _ = app.emit("state-changed", ());
-    });
-}
-
-fn persist_agent_value(
-    db: &Connection,
-    registry: &adapters::AdapterRegistry,
-    adapter_id: &str,
-    session_id: &str,
-    value: &serde_json::Value,
-) -> Result<Vec<AgentEvent>, BridgeError> {
-    let normalized = registry.normalize(adapter_id, value);
-    normalized
-        .iter()
-        .map(|event| {
-            store::session_event(
-                db,
-                session_id,
-                event,
-                &serde_json::json!({"adapter":adapter_id,"method":value.get("method")}),
-            )
-        })
-        .collect()
-}
-
-fn agent_event_changes_bridge_state(event: &agent::NormalizedEvent) -> bool {
-    matches!(
-        event.kind.as_str(),
-        "turn.started" | "turn.completed" | "approval.requested" | "usage.updated"
-    ) || (event.kind == "error" && event.status.as_deref() == Some("failed"))
-}
-
-fn handle_agent_value(
-    app: &AppHandle,
-    session_id: &str,
-    current_turn: &Arc<Mutex<Option<String>>>,
-    value: &serde_json::Value,
-) {
-    // Codex account rate-limit frames (the reply to `account/rateLimits/read`
-    // and its rolling push) are subscription telemetry, not conversation. Route
-    // them straight to the ambient usage channel without persisting.
-    if let Some(rate_limits) = codex_rate_limits_from_frame(value) {
-        emit_account_usage(app, "codex", rate_limits);
-        return;
-    }
-    let state = app.state::<AppState>();
-    let mut pending_directives: Vec<(delegation::DelegationRequest, String)> = Vec::new();
-    let mut pending_ui_events: Vec<AgentEvent> = Vec::new();
-    let mut pending_telemetry: Vec<store::TelemetrySpan> = Vec::new();
-    let mut turn_completed = false;
-    let mut checkpoint_prompt_after_turn: Option<String> = None;
-    let mut checkpoint_response_seen = false;
-    let mut checkpoint_turn_handled = false;
-    let mut finish_checkpointing = false;
-    let mut finish_requested_shutdown = false;
-    let mut recover_compaction = false;
-    let bridge_state_changed;
-
-    {
-        let db = state.db.lock().unwrap();
-        let session_context: Option<(Option<String>, String, i64, Option<String>, String, String)> = db
-            .query_row(
-                "SELECT workspace_id,harness,COALESCE(depth,0),active_turn_id,kind,COALESCE(trace_id,id) FROM sessions WHERE id=?1",
-                params![session_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
-            )
-            .ok();
-        let Some((workspace_id, adapter_id, own_depth, stored_turn_id, session_kind, trace_id)) =
-            session_context
-        else {
-            return;
-        };
-        // Direct chats are single-agent: no worker delegation and no auto-compaction.
-        let is_direct = session_kind == "direct";
-        let observed_turn_id = current_turn
-            .lock()
-            .unwrap()
-            .clone()
-            .or(stored_turn_id)
-            .or_else(|| {
-                state
-                    .delegations
-                    .lock()
-                    .unwrap()
-                    .last_turn_by_session
-                    .get(session_id)
-                    .cloned()
-            });
-        let normalized = state.adapter_registry.normalize(&adapter_id, value);
-        bridge_state_changed = normalized.iter().any(agent_event_changes_bridge_state);
-        for event in &normalized {
-            match event.kind.as_str() {
-                "turn.started" => {
-                    let turn_id = event
-                        .data
-                        .pointer("/turn/id")
-                        .or_else(|| event.data.get("turnId"))
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_owned);
-                    *current_turn.lock().unwrap() = turn_id.clone();
-                    if let Some(turn_id) = &turn_id {
-                        state
-                            .delegations
-                            .lock()
-                            .unwrap()
-                            .last_turn_by_session
-                            .insert(session_id.into(), turn_id.clone());
-                    }
-                    let checkpointing = db
-                        .query_row(
-                            "SELECT status='checkpointing' FROM sessions WHERE id=?1",
-                            params![session_id],
-                            |row| row.get::<_, bool>(0),
-                        )
-                        .unwrap_or(false);
-                    let _ = if checkpointing {
-                        db.execute(
-                            "UPDATE sessions SET active_turn_id=?2 WHERE id=?1",
-                            params![session_id, turn_id],
-                        )
-                    } else {
-                        db.execute(
-                            "UPDATE sessions SET status='working',active_turn_id=?2 WHERE id=?1",
-                            params![session_id, turn_id],
-                        )
-                    };
-                }
-                "turn.completed" => {
-                    turn_completed = true;
-                    *current_turn.lock().unwrap() = None;
-                    let checkpointing_worker = own_depth > 0
-                        && store::worker_runtime(&db, session_id)
-                            .ok()
-                            .flatten()
-                            .is_some_and(|runtime| runtime.lifecycle_state == "checkpointing");
-                    if !checkpointing_worker {
-                        let _ = db.execute(
-                            "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id=?1",
-                            params![session_id],
-                        );
-                    }
-                    if let Some(workspace_id) = &workspace_id {
-                        let _ = db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'ready' END WHERE id=?1",params![workspace_id]);
-                    }
-                }
-                "approval.requested" => {
-                    if own_depth > 0 {
-                        let _ = session_supervisor::SessionSupervisor::transition(
-                            &db,
-                            session_id,
-                            worker_lifecycle::WorkerLifecycleState::Waiting,
-                            Some("approval_requested"),
-                        );
-                    } else {
-                        let _ = db.execute(
-                            "UPDATE sessions SET status='waiting' WHERE id=?1",
-                            params![session_id],
-                        );
-                    }
-                    if let Some(workspace_id) = &workspace_id {
-                        let _ = db.execute(
-                            "UPDATE workspaces SET status='waiting' WHERE id=?1",
-                            params![workspace_id],
-                        );
-                    }
-                }
-                "usage.updated" => {
-                    let scope = workspace_id.as_deref().unwrap_or(session_id);
-                    let _ = policy::record_provider_usage(
-                        &db,
-                        scope,
-                        session_id,
-                        observed_turn_id.as_deref(),
-                        &format!("provider.{adapter_id}"),
-                        &event.data,
-                    );
-                }
-                "error" if event.status.as_deref() == Some("failed") => {
-                    if own_depth > 0 {
-                        let lifecycle = store::worker_runtime(&db, session_id)
-                            .ok()
-                            .flatten()
-                            .map(|runtime| runtime.lifecycle_state);
-                        if lifecycle.as_deref() == Some("waiting") {
-                            let _ = session_supervisor::SessionSupervisor::transition(
-                                &db,
-                                session_id,
-                                worker_lifecycle::WorkerLifecycleState::Working,
-                                Some("approval_aborted_by_error"),
-                            );
-                        }
-                        let _ = session_supervisor::SessionSupervisor::transition(
-                            &db,
-                            session_id,
-                            worker_lifecycle::WorkerLifecycleState::Failed,
-                            Some("provider_error"),
-                        );
-                    } else {
-                        let _ = db.execute(
-                            "UPDATE sessions SET status='failed' WHERE id=?1",
-                            params![session_id],
-                        );
-                    }
-                    if let Some(workspace_id) = &workspace_id {
-                        let _ = db.execute(
-                            "UPDATE workspaces SET status='failed' WHERE id=?1",
-                            params![workspace_id],
-                        );
-                    }
-                }
-                _ => {}
-            }
-        }
-        for mut normalized_event in normalized {
-            // A completed assistant message may carry delegation directives.
-            // Spawn the workers (after the lock is released) and strip the raw
-            // directive block so the conversation shows prose, not machine JSON.
-            if !is_direct
-                && normalized_event.kind == "message.completed"
-                && normalized_event.role.as_deref() == Some("assistant")
-            {
-                if let Some(text) = normalized_event.text.clone() {
-                    match delegation::parse_delegation_requests(&text) {
-                        delegation::ParseOutcome::Parsed(requests) => {
-                            let item_id = normalized_event.item_id.clone().unwrap_or_default();
-                            let is_new = store::claim_delegation_receipt(
-                                &db,
-                                session_id,
-                                &item_id,
-                            )
-                            .unwrap_or(false);
-                            let mut accepted_count = 0;
-                            if is_new {
-                                accepted_count = requests.len();
-                                let turn_id = observed_turn_id
-                                    .clone()
-                                    .or_else(|| normalized_event.item_id.clone())
-                                    .unwrap_or_else(|| format!("turn-{}", Uuid::new_v4()));
-                                pending_directives.extend(
-                                    requests
-                                        .into_iter()
-                                        .map(|request| (request, turn_id.clone())),
-                                );
-                            }
-                            let stripped = delegation::strip_directives(&text);
-                            normalized_event.text = Some(if stripped.is_empty() {
-                                if accepted_count > 0 {
-                                    "_Delegating to a worker…_".to_owned()
-                                } else {
-                                    "_Delegation request already processed._".to_owned()
-                                }
-                            } else {
-                                stripped
-                            });
-                        }
-                        delegation::ParseOutcome::Invalid { reason, .. } => {
-                            let _ = store::event(
-                                &db,
-                                "delegation",
-                                "delegation.request.invalid",
-                                session_id,
-                                &reason,
-                            );
-                            let stripped = delegation::strip_directives(&text);
-                            normalized_event.text = Some(if stripped.is_empty() {
-                                format!("_Invalid delegation request: {reason}_")
-                            } else {
-                                stripped
-                            });
-                        }
-                        delegation::ParseOutcome::Absent => {}
-                    }
-                }
-            }
-            if let Ok(event) = store::session_event(
-                &db,
-                session_id,
-                &normalized_event,
-                &serde_json::json!({"adapter":adapter_id,"method":value.get("method")}),
-            ) {
-                pending_telemetry.push(store::telemetry_span(
-                    &trace_id,
-                    session_id,
-                    &adapter_id,
-                    &normalized_event,
-                    &event.created_at,
-                ));
-                pending_ui_events.push(event);
-            }
-            let pending_compaction = compaction_controller::CompactionController::pending(
-                &db,
-                session_id,
-            )
-            .ok()
-            .flatten();
-            if normalized_event.kind == "message.completed"
-                && normalized_event.role.as_deref() == Some("assistant")
-                && pending_compaction.is_some()
-            {
-                checkpoint_response_seen = true;
-                checkpoint_turn_handled = true;
-                let output = normalized_event.text.as_deref().unwrap_or_default();
-                match compaction_controller::CompactionController::handle_output(
-                    &db,
-                    session_id,
-                    output,
-                ) {
-                    Ok(compaction_controller::CheckpointOutcome::Repair { prompt }) => {
-                        checkpoint_prompt_after_turn = Some(prompt);
-                    }
-                    Ok(compaction_controller::CheckpointOutcome::Completed { .. }) => {
-                        finish_checkpointing = own_depth > 0;
-                        finish_requested_shutdown = pending_compaction.is_some_and(|pending| {
-                            pending.reason
-                                == compaction_controller::CompactionReason::BeforeShutdown
-                        });
-                    }
-                    Ok(compaction_controller::CheckpointOutcome::Failed) => {
-                        recover_compaction = true;
-                        finish_checkpointing = own_depth > 0;
-                        finish_requested_shutdown = pending_compaction.is_some_and(|pending| {
-                            pending.reason
-                                == compaction_controller::CompactionReason::BeforeShutdown
-                        });
-                    }
-                    Ok(compaction_controller::CheckpointOutcome::NotPending) | Err(_) => {}
-                }
-            }
-        }
-        if turn_completed && checkpoint_prompt_after_turn.is_none() {
-            if let Ok(Some(pending)) =
-                compaction_controller::CompactionController::pending(&db, session_id)
-            {
-                if pending.attempt == 1 {
-                    checkpoint_turn_handled = true;
-                    checkpoint_prompt_after_turn = Some(
-                        compaction_controller::CompactionController::checkpoint_prompt(
-                            session_id,
-                            &pending,
-                            Some("repair the invalid checkpoint response"),
-                        ),
-                    );
-                }
-            }
-        }
-        if turn_completed
-            && checkpoint_prompt_after_turn.is_none()
-            && !checkpoint_response_seen
-            && own_depth == 0
-            && !is_direct
-        {
-            if let Ok(Some(prompt)) = begin_pressure_compaction(&db, session_id) {
-                checkpoint_prompt_after_turn = Some(prompt);
-            }
-        }
-    }
-
-    // Telemetry is deliberately flushed only after the correctness database
-    // lock and all semantic transactions are complete. A telemetry failure is
-    // best-effort and cannot roll back durable local history.
-    if !pending_telemetry.is_empty() {
-        if let Ok(telemetry) = state.telemetry_db.try_lock() {
-            let _ = store::append_telemetry_batch(&telemetry, &pending_telemetry);
-        }
-    }
-
-    if turn_completed {
-        if let Some(prompt) = checkpoint_prompt_after_turn {
-            if let Err(error) = send_internal_checkpoint_turn(app, session_id, &prompt) {
-                let db = state.db.lock().unwrap();
-                let pending = compaction_controller::CompactionController::pending(&db, session_id)
-                    .ok()
-                    .flatten();
-                let attempt = pending.as_ref().map_or(0, |pending| pending.attempt);
-                let shutdown = pending.is_some_and(|pending| {
-                    pending.reason == compaction_controller::CompactionReason::BeforeShutdown
-                });
-                let _ = compaction_controller::CompactionController::record_failure(
-                    &db,
-                    session_id,
-                    &format!("checkpoint turn could not start: {error}"),
-                    attempt,
-                );
-                finish_checkpointing = true;
-                finish_requested_shutdown = shutdown;
-            }
-        }
-    }
-    if finish_checkpointing {
-        finish_worker_checkpoint(app, session_id, adapters::ShutdownReason::Completed);
-    }
-    if recover_compaction {
-        let _ = run_compaction_recovery(app, session_id);
-    }
-    if finish_requested_shutdown {
-        finish_orchestrator_shutdown(app, session_id, adapters::ShutdownReason::UserStopped);
-    }
-
-    for (directive, turn_id) in &pending_directives {
-        let _ = launch_worker(app, session_id, turn_id, directive, true);
-    }
-    // When this session's own turn ends and it is not waiting on any child
-    // worker, hand its result up to its parent (no-op if it has no parent).
-    if turn_completed && !checkpoint_response_seen && !checkpoint_turn_handled {
-        let idle = store::outstanding_children(&state.db.lock().unwrap(), session_id)
-            .unwrap_or(0)
-            == 0;
-        if idle {
-            forward_turn_result(app, session_id);
-        }
-    }
-    for event in pending_ui_events {
-        let _ = app.emit("agent-event", event);
-    }
-    if bridge_state_changed {
-        let _ = app.emit("state-changed", ());
-    }
-}
-
-fn begin_pressure_compaction(
-    db: &Connection,
-    session_id: &str,
-) -> Result<Option<String>, BridgeError> {
-    let context_percent = db
-        .query_row(
-            "SELECT CAST(context_percent AS REAL) FROM usage_ledger WHERE session_id=?1 AND context_percent IS NOT NULL ORDER BY id DESC LIMIT 1",
-            params![session_id],
-            |row| row.get::<_, f64>(0),
-        )
-        .ok();
-    let branch = session_forest::SessionForest::new(db)
-        .active_branch(session_id)
-        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-    let last_boundary = branch
-        .iter()
-        .rposition(|entry| entry.kind == "compaction")
-        .map_or(0, |index| index + 1);
-    let meaningful = branch[last_boundary..].iter().any(|entry| {
-        matches!(
-            entry.kind.as_str(),
-            "user.message" | "assistant.message" | "worker.result" | "tool.completed"
-        )
-    });
-    let trigger = compaction_controller::TriggerState {
-        reason: compaction_controller::CompactionReason::ContextPressure,
-        context_percent,
-        projected_tokens_with_reserve: None,
-        context_window_tokens: None,
-        has_valid_typed_result: false,
-        one_shot_worker: false,
-        tool_call_active: false,
-        approval_active: false,
-        has_meaningful_new_work: meaningful,
-        wall_clock_only: false,
-    };
-    let Ok(reason) = compaction_controller::decide(&trigger) else {
-        return Ok(None);
-    };
-    let tokens = compaction_controller::active_token_estimate(db, session_id)?;
-    compaction_controller::CompactionController::begin(db, session_id, reason, tokens)
-}
-
-fn send_internal_checkpoint_turn(
-    app: &AppHandle,
-    session_id: &str,
-    prompt: &str,
-) -> Result<(), BridgeError> {
-    let state = app.state::<AppState>();
-    let adapters = state.adapters.lock().unwrap();
-    let runtime = adapters
-        .get(session_id)
-        .ok_or_else(|| BridgeError::Invalid("checkpoint agent process is not running".into()))?;
-    runtime.send_turn(prompt)?;
-    drop(adapters);
-    store::event(
-        &state.db.lock().unwrap(),
-        "compaction",
-        "checkpoint.turn_started",
-        session_id,
-        "Checkpoint-only structured turn started",
-    )?;
-    Ok(())
-}
-
-fn finish_worker_checkpoint(app: &AppHandle, session_id: &str, reason: adapters::ShutdownReason) {
-    let state = app.state::<AppState>();
-    let should_stop = {
-        let db = state.db.lock().unwrap();
-        let checkpointing = store::worker_runtime(&db, session_id)
-            .ok()
-            .flatten()
-            .is_some_and(|runtime| runtime.lifecycle_state == "checkpointing");
-        if checkpointing {
-            let _ = session_supervisor::SessionSupervisor::transition(
-                &db,
-                session_id,
-                worker_lifecycle::WorkerLifecycleState::Stopped,
-                Some("checkpoint_turn_finished"),
-            );
-            let _ = db.execute(
-                "UPDATE worker_leases SET lease_status='checkpointed',updated_at=?2 WHERE session_id=?1",
-                params![session_id, Utc::now().to_rfc3339()],
-            );
-        }
-        checkpointing
-    };
-    if should_stop {
-        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(session_id) {
-            runtime.stop(reason);
-        }
-        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
-            &state.db.lock().unwrap(),
-            session_id,
-        );
-    }
-}
-
-fn finish_orchestrator_shutdown(
-    app: &AppHandle,
-    session_id: &str,
-    reason: adapters::ShutdownReason,
-) {
-    let state = app.state::<AppState>();
-    if let Some(mut runtime) = state.adapters.lock().unwrap().remove(session_id) {
-        runtime.stop(reason);
-    }
-    let db = state.db.lock().unwrap();
-    let workspace_id = db
-        .query_row(
-            "SELECT workspace_id FROM sessions WHERE id=?1",
-            params![session_id],
-            |row| row.get::<_, String>(0),
-        )
-        .ok();
-    let _ = record_shutdown_reason(&db, session_id, reason);
-    let _ = db.execute(
-        "UPDATE sessions SET status='stopped',ended_at=?2,active_turn_id=NULL WHERE id=?1",
-        params![session_id, Utc::now().to_rfc3339()],
-    );
-    if let Some(workspace_id) = workspace_id {
-        let _ = db.execute(
-            "UPDATE workspaces SET status='stopped' WHERE id=?1",
-            params![workspace_id],
-        );
-    }
-    let _ = app.emit("state-changed", ());
-}
-
-fn run_compaction_recovery(app: &AppHandle, session_id: &str) -> Result<(), BridgeError> {
-    let state = app.state::<AppState>();
-    let workspace_path: String = {
-        let db = state.db.lock().unwrap();
-        db.query_row(
-            "SELECT w.path FROM sessions s JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
-            params![session_id],
-            |row| row.get(0),
-        )?
-    };
-    let git_status = worker_guard::tracked_status(Path::new(&workspace_path)).unwrap_or_default();
-    compaction_controller::CompactionController::reconstruct_from_normalized_events_and_git(
-        &state.db.lock().unwrap(),
-        session_id,
-        &git_status,
-    )?;
-    Ok(())
-}
-
-/// Spawn a child worker session in the parent's workspace and hand it its task.
-struct WorkerLaunchReservation {
-    session_id: String,
-    workspace_id: String,
-    depth: i64,
-    path: String,
-    branch: String,
-    actual_model: String,
-    outcome: policy::PolicyOutcome,
-    reuse_existing: bool,
-}
-
-enum WorkerReservationOutcome {
-    Reserved(WorkerLaunchReservation),
-    Queued,
-    Blocked,
-}
-
-enum WorkerLaunchOutcome {
-    Launched(String),
-    Queued,
-    Failed,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum WorkerActivation {
-    Fresh,
-    Native,
-    CheckpointRestored,
-}
-
-fn record_model_resolution_warning(
-    db: &Connection,
-    parent_session_id: &str,
-    resolution: &adapters::ModelResolution,
-) -> Result<(), BridgeError> {
-    if let Some(warning) = &resolution.warning {
-        store::event(
-            db,
-            "capability",
-            "capability.model_fallback",
-            parent_session_id,
-            warning,
-        )?;
-    }
-    Ok(())
-}
-
-fn reserve_worker_launch_outcome(
-    db: &Connection,
-    parent_session_id: &str,
-    turn_id: &str,
-    directive: &delegation::DelegationRequest,
-    actual_model: &str,
-    queue_on_block: bool,
-    router_decision_id: Option<&str>,
-) -> Result<WorkerReservationOutcome, BridgeError> {
-    let route = policy_coordinator::PolicyCoordinator::decide_worker_route(
-        db,
-        parent_session_id,
-        turn_id,
-        directive,
-        true,
-    )?;
-    let policy_coordinator::WorkerRouteContext {
-        workspace_id,
-        parent_depth,
-        path,
-        branch,
-        outcome,
-    } = route;
-    if let Some(decision_id) = router_decision_id {
-        learning_router::record_policy_result(db, decision_id, &outcome)?;
-    }
-    let handoff = handoff::assess(db, parent_session_id, &directive.runtime_harness())?;
-    if queue_on_block && handoff.cross_harness && !handoff.at_phase_boundary {
-        worker_pool::WorkerPool::enqueue(
-            db,
-            parent_session_id,
-            &workspace_id,
-            turn_id,
-            directive,
-            actual_model,
-        )?;
-        store::event(
-            db,
-            "handoff",
-            "handoff.deferred_for_phase_boundary",
-            parent_session_id,
-            &format!(
-                "Deferred {} to {} until the active turn reaches a phase boundary",
-                handoff.source_harness, handoff.target_harness
-            ),
-        )?;
-        return Ok(WorkerReservationOutcome::Queued);
-    }
-    match &outcome.decision {
-        policy::RouteDecision::Queue => {
-            if queue_on_block {
-                worker_pool::WorkerPool::enqueue(
-                    db,
-                    parent_session_id,
-                    &workspace_id,
-                    turn_id,
-                    directive,
-                    actual_model,
-                )?;
-            }
-            return Ok(if queue_on_block {
-                WorkerReservationOutcome::Queued
-            } else {
-                WorkerReservationOutcome::Blocked
-            });
-        }
-        policy::RouteDecision::ResumeWorker { session_id } => {
-            let runtime = store::worker_runtime(db, session_id)?
-                .ok_or_else(|| BridgeError::Invalid(format!("warm worker {session_id} has no runtime record")))?;
-            let worker_path = runtime.worktree_path.unwrap_or_else(|| path.clone());
-            let worker_branch = runtime.worktree_branch.unwrap_or_else(|| branch.clone());
-            return Ok(WorkerReservationOutcome::Reserved(WorkerLaunchReservation {
-                session_id: session_id.clone(),
-                workspace_id,
-                depth: parent_depth + 1,
-                path: worker_path,
-                branch: worker_branch,
-                actual_model: actual_model.into(),
-                outcome,
-                reuse_existing: true,
-            }));
-        }
-        policy::RouteDecision::SpawnWorker(_) => {}
-        policy::RouteDecision::RequireUserApproval => {
-            db.execute(
-                "UPDATE sessions SET status='waiting' WHERE id=?1",
-                params![parent_session_id],
-            )?;
-            db.execute(
-                "UPDATE workspaces SET status='waiting' WHERE id=?1",
-                params![workspace_id],
-            )?;
-            return Ok(WorkerReservationOutcome::Blocked);
-        }
-        _ => return Ok(WorkerReservationOutcome::Blocked),
-    }
-
-    let session_id = Uuid::new_v4().to_string();
-    let depth = parent_depth + 1;
-    let harness = directive.runtime_harness();
-    let effort = directive.effort.as_str();
-    let now = Utc::now().to_rfc3339();
-    let transaction = db.unchecked_transaction()?;
-    transaction.execute(
-        "INSERT INTO sessions(id,workspace_id,harness,label,status,started_at,metric_source,model,requested_tier,effort,parent_session_id,depth) VALUES(?1,?2,?3,?4,'starting',?5,'reported',?6,?7,?8,?9,?10)",
-        params![
-            session_id,
-            workspace_id,
-            harness,
-            directive.label(),
-            now,
-            actual_model,
-            directive.capability_tier.as_str(),
-            effort,
-            parent_session_id,
-            depth,
-        ],
-    )?;
-    let compatibility_key =
-        worker_pool::WorkerCompatibilityKey::for_request(&workspace_id, directive)?.encode()?;
-    store::upsert_worker_lease(
-        &transaction,
-        &WorkerLease {
-            session_id: session_id.clone(),
-            workspace_id: workspace_id.clone(),
-            role: policy::role_name(directive.role).into(),
-            capability_tier: policy::tier_name(directive.capability_tier).into(),
-            task_family: policy::role_name(directive.role).into(),
-            owned_paths: serde_json::json!(directive.owned_paths),
-            write_mode: policy::write_mode_name(directive.write_mode).into(),
-            lease_status: "active".into(),
-            expires_at: None,
-            created_at: now.clone(),
-            updated_at: now,
-        },
-    )?;
-    store::upsert_worker_runtime(
-        &transaction,
-        &WorkerRuntimeRecord {
-            session_id: session_id.clone(),
-            parent_session_id: parent_session_id.to_owned(),
-            lifecycle_state: "starting".into(),
-            task_family: worker_pool::task_family(directive),
-            compatibility_key,
-            result_status: "pending".into(),
-            retry_count: 0,
-            warm_until: None,
-            worktree_path: None,
-            worktree_branch: None,
-            last_result: None,
-            updated_at: Utc::now().to_rfc3339(),
-        },
-    )?;
-    policy::record_spawn_usage(
-        &transaction,
-        &workspace_id,
-        &session_id,
-        turn_id,
-        &outcome,
-        directive.capability_tier,
-    )?;
-    let outbox_created_at = Utc::now().to_rfc3339();
-    store::enqueue_outbox(
-        &transaction,
-        &OutboxMessage {
-            id: Uuid::new_v4().to_string(),
-            destination: "integration".into(),
-            event_type: "worker.spawned".into(),
-            payload: serde_json::json!({
-                "sessionId": session_id,
-                "parentSessionId": parent_session_id,
-                "turnId": turn_id,
-            }),
-            idempotency_key: format!("worker-spawn:{parent_session_id}:{turn_id}:{session_id}"),
-            status: "pending".into(),
-            attempt_count: 0,
-            next_attempt_at: outbox_created_at.clone(),
-            last_error: None,
-            created_at: outbox_created_at,
-            delivered_at: None,
-        },
-    )?;
-    transaction.commit()?;
-    Ok(WorkerReservationOutcome::Reserved(WorkerLaunchReservation {
-        session_id,
-        workspace_id,
-        depth,
-        path,
-        branch,
-        actual_model: actual_model.into(),
-        outcome,
-        reuse_existing: false,
-    }))
-}
-
-#[cfg(test)]
-fn reserve_worker_launch(
-    db: &Connection,
-    parent_session_id: &str,
-    turn_id: &str,
-    directive: &delegation::DelegationRequest,
-    actual_model: &str,
-    queue_on_block: bool,
-) -> Result<Option<WorkerLaunchReservation>, BridgeError> {
-    Ok(match reserve_worker_launch_outcome(
-        db,
-        parent_session_id,
-        turn_id,
-        directive,
-        actual_model,
-        queue_on_block,
-        None,
-    )? {
-        WorkerReservationOutcome::Reserved(reservation) => Some(reservation),
-        WorkerReservationOutcome::Queued | WorkerReservationOutcome::Blocked => None,
-    })
-}
-
-fn launch_worker_outcome(
-    app: &AppHandle,
-    parent_session_id: &str,
-    turn_id: &str,
-    directive: &delegation::DelegationRequest,
-    queue_on_block: bool,
-) -> WorkerLaunchOutcome {
-    let state = app.state::<AppState>();
-    let routed = {
-        let db = state.db.lock().unwrap();
-        learning_router::route(
-            &db,
-            parent_session_id,
-            turn_id,
-            directive,
-            &state.adapter_registry.descriptors(),
-        )
-    };
-    let routed = match routed {
-        Ok(routed) => routed,
-        Err(error) => {
-            let db = state.db.lock().unwrap();
-            let _ = store::event(
-                &db,
-                "router",
-                "router.no_eligible_route",
-                parent_session_id,
-                &error.to_string(),
-            );
-            return WorkerLaunchOutcome::Failed;
-        }
-    };
-    let directive = &routed.request;
-    let harness = directive.runtime_harness();
-    if !agent_config::is_harness_enabled(&state.db.lock().unwrap(), &harness) {
-        let db = state.db.lock().unwrap();
-        let _ = learning_router::record_route_status(&db, &routed.decision.id, "harness_disabled");
-        let _ = store::event(&db, "capability", "capability.harness_disabled", parent_session_id, &format!("{harness} is disabled in Settings"));
-        drop(db);
-        let _ = app.emit("state-changed", ());
-        return WorkerLaunchOutcome::Failed;
-    }
-    let resolution = match state.adapter_registry.resolve_model(
-        &harness,
-        directive.capability_tier,
-        directive.model.as_deref(),
-    ) {
-        Ok(resolution) => resolution,
-        Err(error) => {
-            let db = state.db.lock().unwrap();
-            let _ = learning_router::record_route_status(
-                &db,
-                &routed.decision.id,
-                "model_resolution_failed",
-            );
-            let _ = store::event(
-                &db,
-                "capability",
-                "capability.resolution_failed",
-                parent_session_id,
-                &error.to_string(),
-            );
-            drop(db);
-            let _ = app.emit("state-changed", ());
-            return WorkerLaunchOutcome::Failed;
-        }
-    };
-    let reservation = {
-        let db = state.db.lock().unwrap();
-        let _ = record_model_resolution_warning(&db, parent_session_id, &resolution);
-        record_actual_execution_best_effort(
-            &db,
-            &routed.decision.id,
-            &harness,
-            &resolution.actual_model,
-            directive.effort,
-            parent_session_id,
-        );
-        reserve_worker_launch_outcome(
-            &db,
-            parent_session_id,
-            turn_id,
-            directive,
-            &resolution.actual_model,
-            queue_on_block,
-            Some(&routed.decision.id),
-        )
-    };
-    let mut reservation = match reservation {
-        Ok(WorkerReservationOutcome::Reserved(reservation)) => reservation,
-        Ok(WorkerReservationOutcome::Queued) => {
-            let _ = learning_router::record_route_status(
-                &state.db.lock().unwrap(),
-                &routed.decision.id,
-                "queued",
-            );
-            let _ = app.emit("state-changed", ());
-            return WorkerLaunchOutcome::Queued;
-        }
-        Ok(WorkerReservationOutcome::Blocked) => {
-            let _ = learning_router::record_route_status(
-                &state.db.lock().unwrap(),
-                &routed.decision.id,
-                "policy_blocked",
-            );
-            let _ = app.emit("state-changed", ());
-            return WorkerLaunchOutcome::Failed;
-        }
-        Err(error) => {
-            let db = state.db.lock().unwrap();
-            let _ = learning_router::record_route_status(
-                &db,
-                &routed.decision.id,
-                "policy_failed",
-            );
-            let _ = store::event(
-                &db,
-                "policy",
-                "policy.decision_failed",
-                parent_session_id,
-                &error.to_string(),
-            );
-            drop(db);
-            let _ = app.emit("state-changed", ());
-            return WorkerLaunchOutcome::Failed;
-        }
-    };
-    if let Err(error) = learning_router::bind_worker(
-        &state.db.lock().unwrap(),
-        &routed.decision.id,
-        &reservation.session_id,
-    ) {
-        fail_reserved_worker(
-            app,
-            &reservation.session_id,
-            &directive.label(),
-            &format!("Could not bind learning-router outcome: {error}"),
-        );
-        return WorkerLaunchOutcome::Failed;
-    }
-    let _ = learning_router::record_route_status(
-        &state.db.lock().unwrap(),
-        &routed.decision.id,
-        "reserved",
-    );
-    let completion_input = serde_json::to_string(directive)
-        .map_err(|error| BridgeError::Invalid(format!("Could not serialize worker completion input: {error}")))
-        .and_then(|serialized| state.db.lock().unwrap().execute(
-            "INSERT INTO worker_completion_inputs(child_session_id,request,updated_at) VALUES(?1,?2,?3) ON CONFLICT(child_session_id) DO UPDATE SET request=excluded.request,updated_at=excluded.updated_at",
-            params![reservation.session_id, serialized, Utc::now().to_rfc3339()],
-        ).map(|_| ()).map_err(BridgeError::from));
-    if let Err(error) = completion_input {
-        fail_reserved_worker(app, &reservation.session_id, &directive.label(), &error.to_string());
-        return WorkerLaunchOutcome::Failed;
-    }
-    if directive.role == delegation::WorkerRole::Verification {
-        let verification_path: Result<String, BridgeError> = state.db.lock().unwrap().query_row(
-            "SELECT repository_path FROM eval_attempts WHERE session_id=?1 AND status IN ('verifying','changes_requested','failed') ORDER BY started_at DESC,rowid DESC LIMIT 1",
-            params![parent_session_id],
-            |row| row.get(0),
-        ).map_err(BridgeError::from);
-        match verification_path {
-            Ok(path) => {
-                reservation.path = path.clone();
-                let _ = state.db.lock().unwrap().execute(
-                    "UPDATE worker_runtime SET worktree_path=?2,updated_at=?3 WHERE session_id=?1",
-                    params![reservation.session_id, path, Utc::now().to_rfc3339()],
-                );
-            }
-            Err(error) => {
-                fail_reserved_worker(app, &reservation.session_id, &directive.label(), &format!("Could not bind verifier to the implementation revision: {error}"));
-                return WorkerLaunchOutcome::Failed;
-            }
-        }
-    }
-    let requires_child_worktree = matches!(
-        &reservation.outcome.decision,
-        policy::RouteDecision::SpawnWorker(spec) if spec.requires_child_worktree
-    );
-    if requires_child_worktree {
-        match worktree_coordinator::WorktreeCoordinator::prepare_isolated_worker(
-            &state.db.lock().unwrap(),
-            &state.worktrees.join("workers"),
-            &reservation.workspace_id,
-            Path::new(&reservation.path),
-            &reservation.branch,
-            &reservation.session_id,
-            &directive.owned_paths,
-        ) {
-            Ok((path, branch)) => {
-                reservation.path = path.to_string_lossy().into_owned();
-                reservation.branch = branch;
-            }
-            Err(error) => {
-                let db = state.db.lock().unwrap();
-                let transaction = match db.unchecked_transaction() {
-                    Ok(transaction) => transaction,
-                    Err(_) => return WorkerLaunchOutcome::Failed,
-                };
-                let _ = transaction.execute("DELETE FROM worker_runtime WHERE session_id=?1", params![reservation.session_id]);
-                let _ = transaction.execute("DELETE FROM worker_leases WHERE session_id=?1", params![reservation.session_id]);
-                let _ = transaction.execute("DELETE FROM sessions WHERE id=?1", params![reservation.session_id]);
-                let _ = transaction.commit();
-                let queued = queue_on_block
-                    && worker_pool::WorkerPool::enqueue(&db, parent_session_id, &reservation.workspace_id, turn_id, directive, &reservation.actual_model).is_ok();
-                let _ = store::event(&db, "worktree", "worker.worktree_queued", parent_session_id, &error.to_string());
-                let _ = learning_router::record_route_status(
-                    &db,
-                    &routed.decision.id,
-                    if queued { "queued" } else { "worktree_failed" },
-                );
-                let _ = app.emit("state-changed", ());
-                return if queued {
-                    WorkerLaunchOutcome::Queued
-                } else {
-                    WorkerLaunchOutcome::Failed
-                };
-            }
-        }
-    }
-    let model = reservation.actual_model.clone();
-    let effort = directive.effort.as_str().to_owned();
-    let label = directive.label();
-    let evidence = match session_supervisor::SessionSupervisor::worker_evidence(
-        &state.db.lock().unwrap(),
-        parent_session_id,
-        &directive.evidence_ids,
-    ) {
-        Ok(evidence) => evidence,
-        Err(error) => {
-            fail_reserved_worker(
-                app,
-                &reservation.session_id,
-                &label,
-                &format!("Could not resolve worker evidence: {error}"),
-            );
-            return WorkerLaunchOutcome::Failed;
-        }
-    };
-    let role = directive.role.as_str();
-    let configured_prompt = agent_config::prompt_suffix(&state.db.lock().unwrap(), &harness, role);
-    let instructions = format!(
-        "{}{}\n\n{}",
-        delegation::worker_briefing(directive, reservation.depth, &reservation.branch, &evidence),
-        if configured_prompt.is_empty() { String::new() } else { format!("\n\n{configured_prompt}") },
-        state.credential_broker.instructions(&reservation.session_id)
-    );
-
-    if reservation.reuse_existing
-        && state.adapters.lock().unwrap().contains_key(&reservation.session_id)
-    {
-        let current = store::worker_runtime(&state.db.lock().unwrap(), &reservation.session_id)
-            .ok()
-            .flatten()
-            .map(|runtime| runtime.lifecycle_state);
-        let transition_result = match current.as_deref() {
-            Some("warm") => session_supervisor::SessionSupervisor::transition(
-                &state.db.lock().unwrap(),
-                &reservation.session_id,
-                worker_lifecycle::WorkerLifecycleState::Working,
-                Some("compatible_hot_task"),
-            ),
-            Some("stopped") => session_supervisor::SessionSupervisor::transition(
-                &state.db.lock().unwrap(),
-                &reservation.session_id,
-                worker_lifecycle::WorkerLifecycleState::Resuming,
-                Some("compatible_hot_task"),
-            )
-            .and_then(|_| session_supervisor::SessionSupervisor::transition(
-                &state.db.lock().unwrap(),
-                &reservation.session_id,
-                worker_lifecycle::WorkerLifecycleState::Working,
-                Some("hot_process_reused"),
-            )),
-            _ => Err(BridgeError::Invalid("compatible hot worker is not reusable".into())),
-        };
-        if transition_result.is_ok()
-            && worker_pool::WorkerPool::activate_reused_worker(
-                &state.db.lock().unwrap(),
-                &reservation.session_id,
-                &reservation.workspace_id,
-                directive,
-            )
-            .is_ok()
-        {
-            let provider_session_id = state
-                .adapters
-                .lock()
-                .unwrap()
-                .get(&reservation.session_id)
-                .map(|runtime| runtime.provider_session_id().to_owned());
-            let _ = restoration::set_head_state(
-                &state.db.lock().unwrap(),
-                &reservation.session_id,
-                RestorationMode::Hot,
-                ResumeEligibility::Native,
-                provider_session_id.as_deref(),
-            );
-            let _ = handoff::record_fidelity(
-                &state.db.lock().unwrap(),
-                &reservation.session_id,
-                ContinuationFidelity::Native,
-            );
-            if let Some(runtime) = state.adapters.lock().unwrap().get(&reservation.session_id) {
-                if runtime.send_turn(&instructions).is_ok() {
-                    let _ = learning_router::record_route_status(
-                        &state.db.lock().unwrap(),
-                        &routed.decision.id,
-                        "launched",
-                    );
-                    let _ = app.emit("state-changed", ());
-                    return WorkerLaunchOutcome::Launched(reservation.session_id);
-                }
-            }
-        }
-        let _ = store::event(&state.db.lock().unwrap(), "worker-pool", "worker.hot_resume_failed", &reservation.session_id, "Could not reactivate compatible hot worker");
-        return WorkerLaunchOutcome::Failed;
-    }
-
-    if directive.write_mode == delegation::WriteMode::ReadOnly {
-        match worker_guard::ReadOnlyBaseline::capture(&reservation.path) {
-            Ok(baseline) => {
-                state
-                    .delegations
-                    .lock()
-                    .unwrap()
-                    .read_only_baselines
-                    .insert(reservation.session_id.clone(), baseline);
-            }
-            Err(error) => {
-                fail_reserved_worker(
-                    app,
-                    &reservation.session_id,
-                    &label,
-                    &format!("Could not capture tracked-file baseline: {error}"),
-                );
-                return WorkerLaunchOutcome::Failed;
-            }
-        }
-    }
-
-    let activation = if reservation.reuse_existing {
-        if session_supervisor::SessionSupervisor::transition(
-            &state.db.lock().unwrap(),
-            &reservation.session_id,
-            worker_lifecycle::WorkerLifecycleState::Resuming,
-            Some("compatible_cold_task"),
-        )
-        .is_err()
-        {
-            return WorkerLaunchOutcome::Failed;
-        }
-        let provider_id: Option<String> = state.db.lock().unwrap().query_row(
-            "SELECT provider_session_id FROM sessions WHERE id=?1",
-            params![reservation.session_id],
-            |row| row.get(0),
-        ).ok().flatten();
-        let checkpoint = restoration::checkpoint_context(
-            &state.db.lock().unwrap(),
-            &reservation.session_id,
-        ).ok().flatten();
-        let resumed = provider_id.as_deref().filter(|_| state.adapter_registry.supports_native_resume(&harness)).map(|provider_session_id| {
-            state.adapter_registry.resume(&harness, adapters::ResumeRequest {
-                provider_session_id,
-                cwd: &reservation.path,
-                model: Some(model.as_str()),
-                effort: Some(&effort),
-                instructions: Some(instructions.as_str()),
-                write_mode: Some(directive.write_mode),
-            })
-        }).transpose();
-        match resumed {
-            Ok(Some(started)) => Ok((started, WorkerActivation::Native)),
-            Err(error) => {
-                let _ = restoration::record_resume_failed(&state.db.lock().unwrap(), &reservation.session_id, &error.to_string());
-                let restored_instructions = format!("{instructions}\n\n{}", checkpoint.unwrap_or_else(|| "Bridge checkpoint-restoration context: prior typed worker result is stored in the session forest.".into()));
-                state.adapter_registry.start(&harness, adapters::StartRequest {
-                    cwd: &reservation.path,
-                    model: Some(model.as_str()),
-                    effort: Some(&effort),
-                    instructions: Some(restored_instructions.as_str()),
-                    write_mode: Some(directive.write_mode),
-                }).map(|started| (started, WorkerActivation::CheckpointRestored))
-            }
-            Ok(None) => {
-                let restored_instructions = format!("{instructions}\n\n{}", checkpoint.unwrap_or_else(|| "Bridge checkpoint-restoration context: prior typed worker result is stored in the session forest.".into()));
-                state.adapter_registry.start(&harness, adapters::StartRequest {
-                    cwd: &reservation.path,
-                    model: Some(model.as_str()),
-                    effort: Some(&effort),
-                    instructions: Some(restored_instructions.as_str()),
-                    write_mode: Some(directive.write_mode),
-                }).map(|started| (started, WorkerActivation::CheckpointRestored))
-            }
-        }
-    } else {
-        state.adapter_registry.start(
-            &harness,
-            adapters::StartRequest {
-                cwd: &reservation.path,
-                model: Some(model.as_str()),
-                effort: Some(&effort),
-                instructions: Some(instructions.as_str()),
-                write_mode: Some(directive.write_mode),
-            },
-        ).map(|started| (started, WorkerActivation::Fresh))
-    };
-    let (started, activation) = match activation {
-        Ok(started) => started,
-        Err(error) => {
-            state
-                .delegations
-                .lock()
-                .unwrap()
-                .read_only_baselines
-                .remove(&reservation.session_id);
-            fail_reserved_worker(
-                app,
-                &reservation.session_id,
-                &label,
-                &format!("Could not start provider process: {error}"),
-            );
-            return WorkerLaunchOutcome::Failed;
-        }
-    };
-    let session_id = reservation.session_id;
-    let thread_id = started.runtime.provider_session_id().to_owned();
-    let current_turn = started.runtime.current_turn();
-    let reader = started.reader;
-    let startup_messages = started.startup_messages;
-    let mut runtime = started.runtime;
-    let started_at = Utc::now().to_rfc3339();
-
-    if let Err(error) = session_supervisor::SessionSupervisor::track_adapter_process(
-        &state.db.lock().unwrap(),
-        &session_id,
-        runtime.process_id(),
-    ) {
-        runtime.stop(adapters::ShutdownReason::Failed);
-        fail_reserved_worker(app, &session_id, &label, &format!("Could not track provider process: {error}"));
-        return WorkerLaunchOutcome::Failed;
-    }
-
-    let transition_result = match activation {
-        WorkerActivation::Fresh | WorkerActivation::Native => {
-            session_supervisor::SessionSupervisor::transition(
-                &state.db.lock().unwrap(),
-                &session_id,
-                worker_lifecycle::WorkerLifecycleState::Working,
-                Some(if activation == WorkerActivation::Native { "native_resumed" } else { "provider_started" }),
-            ).map(|_| ())
-        }
-        WorkerActivation::CheckpointRestored => {
-            session_supervisor::SessionSupervisor::transition(
-                &state.db.lock().unwrap(),
-                &session_id,
-                worker_lifecycle::WorkerLifecycleState::Restored,
-                Some("checkpoint_fallback"),
-            ).and_then(|_| session_supervisor::SessionSupervisor::transition(
-                &state.db.lock().unwrap(),
-                &session_id,
-                worker_lifecycle::WorkerLifecycleState::Working,
-                Some("checkpoint_restored"),
-            )).map(|_| ())
-        }
-    };
-    if let Err(error) = transition_result {
-        runtime.stop(adapters::ShutdownReason::Failed);
-        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(&state.db.lock().unwrap(), &session_id);
-        let _ = store::event(
-            &state.db.lock().unwrap(),
-            "supervisor",
-            "worker.transition_failed",
-            &session_id,
-            &error.to_string(),
-        );
-        return WorkerLaunchOutcome::Failed;
-    }
-    let (restoration_mode, resume_eligibility) = match activation {
-        WorkerActivation::Fresh => (RestorationMode::Fresh, ResumeEligibility::Fresh),
-        WorkerActivation::Native => (RestorationMode::Native, ResumeEligibility::Native),
-        WorkerActivation::CheckpointRestored => (
-            RestorationMode::CheckpointRestored,
-            ResumeEligibility::CheckpointRestored,
-        ),
-    };
-    let continuation_fidelity = match activation {
-        WorkerActivation::Native => ContinuationFidelity::Native,
-        WorkerActivation::CheckpointRestored => ContinuationFidelity::ProjectedAtBoundary,
-        WorkerActivation::Fresh => handoff::assess(
-            &state.db.lock().unwrap(),
-            parent_session_id,
-            &harness,
-        )
-        .map(|assessment| handoff::fidelity_for_projection(&assessment))
-        .unwrap_or(ContinuationFidelity::ProjectedMidTurn),
-    };
-    if restoration::set_head_state(
-        &state.db.lock().unwrap(),
-        &session_id,
-        restoration_mode,
-        resume_eligibility,
-        Some(&thread_id),
-    )
-    .is_err()
-    {
-        runtime.stop(adapters::ShutdownReason::Failed);
-        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(&state.db.lock().unwrap(), &session_id);
-        return WorkerLaunchOutcome::Failed;
-    }
-    if handoff::record_fidelity(
-        &state.db.lock().unwrap(),
-        &session_id,
-        continuation_fidelity,
-    )
-    .is_err()
-    {
-        runtime.stop(adapters::ShutdownReason::Failed);
-        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(&state.db.lock().unwrap(), &session_id);
-        return WorkerLaunchOutcome::Failed;
-    }
-
-    {
-        let db = state.db.lock().unwrap();
-        let _ = db.execute(
-            "UPDATE sessions SET status='working',started_at=?2,provider_session_id=?3,label=?4,model=?5,effort=?6 WHERE id=?1",
-            params![
-                session_id,
-                started_at,
-                thread_id,
-                label,
-                model,
-                effort,
-            ],
-        );
-        let _ = db.execute(
-            "UPDATE workspaces SET status='working' WHERE id=?1",
-            params![reservation.workspace_id],
-        );
-        for message in &startup_messages {
-            let _ = persist_agent_value(&db, &state.adapter_registry, &harness, &session_id, message);
-        }
-        let spawn_event = agent::NormalizedEvent {
-            kind: if reservation.reuse_existing { "delegation.resumed".into() } else { "delegation.spawned".into() },
-            item_id: Some(format!("spawn-{session_id}")),
-            role: Some("system".into()),
-            status: Some("working".into()),
-            title: Some(if reservation.reuse_existing { format!("Resumed {label}") } else { format!("Delegated to {label}") }),
-            text: Some(directive.objective.clone()),
-            data: serde_json::json!({
-                "childSessionId": session_id,
-                "request": directive,
-                "harness": harness,
-                "requestedTier": directive.capability_tier,
-                "model": model,
-                "modelLabel": delegation::model_display(&model),
-                "effort": effort,
-                "depth": reservation.depth,
-                "turnId": turn_id,
-                "policy": reservation.outcome,
-                "restorationMode": restoration_mode,
-                "continuationFidelity": continuation_fidelity,
-            }),
-        };
-        if let Ok(stored) =
-            store::session_event(&db, parent_session_id, &spawn_event, &serde_json::json!({"delegation": true}))
-        {
-            let _ = app.emit("agent-event", stored);
-        }
-        let _ = store::event(
-            &db,
-            "delegation",
-            if reservation.reuse_existing { "worker.resumed" } else { "worker.spawned" },
-            parent_session_id,
-            &format!(
-                "{} {label} (effort {})",
-                if reservation.reuse_existing { "Resumed" } else { "Spawned" },
-                effort
-            ),
-        );
-    }
-
-    if reservation.reuse_existing
-        && worker_pool::WorkerPool::activate_reused_worker(
-            &state.db.lock().unwrap(),
-            &session_id,
-            &reservation.workspace_id,
-            directive,
-        )
-        .is_err()
-    {
-        return WorkerLaunchOutcome::Failed;
-    }
-    state
-        .adapters
-        .lock()
-        .unwrap()
-        .insert(session_id.clone(), runtime);
-    spawn_reader_thread(
-        app.clone(),
-        session_id.clone(),
-        started_at,
-        current_turn,
-        reader,
-    );
-    if let Err(error) = deliver_worker_objective(
-        &state.adapters,
-        &session_id,
-        &directive.objective,
-    ) {
-        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
-            runtime.stop(adapters::ShutdownReason::Failed);
-        }
-        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(&state.db.lock().unwrap(), &session_id);
-        fail_reserved_worker(
-            app,
-            &session_id,
-            &label,
-            &format!("Could not deliver worker objective: {error}"),
-        );
-        return WorkerLaunchOutcome::Failed;
-    }
-    let _ = app.emit("state-changed", ());
-    let _ = learning_router::record_route_status(
-        &state.db.lock().unwrap(),
-        &routed.decision.id,
-        "launched",
-    );
-    WorkerLaunchOutcome::Launched(session_id)
-}
-
-fn record_actual_execution_best_effort(
-    db: &Connection,
-    decision_id: &str,
-    harness: &str,
-    model: &str,
-    effort: delegation::Effort,
-    parent_session_id: &str,
-) {
-    if let Err(error) = learning_router::record_actual_execution(
-        db,
-        decision_id,
-        harness,
-        model,
-        effort,
-    ) {
-        let _ = learning_router::record_route_status(
-            db,
-            decision_id,
-            "actual_resolution_record_failed",
-        );
-        let _ = store::event(
-            db,
-            "router",
-            "router.actual_resolution_record_failed",
-            parent_session_id,
-            &error.to_string(),
-        );
-    }
-}
-
-fn deliver_worker_objective(
-    adapters: &Mutex<HashMap<String, Box<dyn adapters::AdapterRuntime>>>,
-    session_id: &str,
-    objective: &str,
-) -> Result<(), BridgeError> {
-    adapters
-        .lock()
-        .unwrap()
-        .get(session_id)
-        .ok_or_else(|| {
-            BridgeError::Invalid("Worker runtime disappeared before objective delivery".into())
-        })?
-        .send_turn(objective)
-}
-
-fn launch_worker(
-    app: &AppHandle,
-    parent_session_id: &str,
-    turn_id: &str,
-    directive: &delegation::DelegationRequest,
-    queue_on_block: bool,
-) -> Option<String> {
-    match launch_worker_outcome(
-        app,
-        parent_session_id,
-        turn_id,
-        directive,
-        queue_on_block,
-    ) {
-        WorkerLaunchOutcome::Launched(session_id) => Some(session_id),
-        WorkerLaunchOutcome::Queued | WorkerLaunchOutcome::Failed => None,
-    }
-}
-
-fn fail_reserved_worker(app: &AppHandle, session_id: &str, label: &str, reason: &str) {
-    let state = app.state::<AppState>();
-    if prepare_worker_failure_settlement(&state.db.lock().unwrap(), session_id).is_err() {
-        return;
-    }
-    let result = delegation::WorkerResult {
-        schema_version: delegation::SCHEMA_VERSION,
-        status: delegation::WorkerResultStatus::Failed,
-        summary: format!("{label} could not start: {reason}"),
-        files_changed: vec![],
-        tests: vec![],
-        decisions: vec![],
-        risks: vec![reason.to_owned()],
-        remaining_work: vec!["Retry or delegate the task differently".into()],
-        suggested_next_action: delegation::SuggestedNextAction::Finish,
-        suggested_role: None,
-        suggested_task: None,
-    };
-    if settle_worker_after_result(app, session_id, &result).unwrap_or(false) {
-        report_to_parent(app, session_id, &result);
-    }
-}
-
-fn prepare_worker_failure_settlement(
-    db: &Connection,
-    session_id: &str,
-) -> Result<(), BridgeError> {
-    let current: String = db.query_row(
-        "SELECT lifecycle_state FROM worker_runtime WHERE session_id=?1",
-        params![session_id],
-        |row| row.get(0),
-    )?;
-    if current == "working" {
-        return Ok(());
-    }
-    session_supervisor::SessionSupervisor::transition(
-        db,
-        session_id,
-        worker_lifecycle::WorkerLifecycleState::Working,
-        Some("startup_failed_before_process"),
-    )
-    .map(|_| ())
-}
-
-/// Frame a finished worker's final message and send it up to its parent.
-fn forward_turn_result(app: &AppHandle, child_session_id: &str) {
-    let state = app.state::<AppState>();
-    let meta: Option<(Option<String>, String, String, Option<String>, Option<String>)> = {
-        let db = state.db.lock().unwrap();
-        db.query_row(
-            "SELECT parent_session_id,label,harness,model,effort FROM sessions WHERE id=?1",
-            params![child_session_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-        )
-        .ok()
-    };
-    let Some((parent, label, harness, model, effort)) = meta else {
-        return;
-    };
-    if parent.is_none() {
-        return;
-    }
-    let raw_output: Option<String> = {
-        let db = state.db.lock().unwrap();
-        db.query_row(
-            "SELECT json_extract(payload,'$.text') FROM session_entries
-             WHERE session_id=?1 AND kind='message.completed'
-               AND json_extract(payload,'$.role')='assistant'
-               AND COALESCE(json_extract(payload,'$.text'),'')<>''
-             ORDER BY sequence DESC LIMIT 1",
-            params![child_session_id],
-            |r| r.get(0),
-        )
-        .ok()
-    };
-    let raw_output =
-        raw_output.unwrap_or_else(|| "(worker finished without a text summary)".to_owned());
-    let result = match {
-        let db = state.db.lock().unwrap();
-        let mut delegations = state.delegations.lock().unwrap();
-        process_worker_result_output(
-            &db,
-            &mut delegations.result_repairs,
-            child_session_id,
-            &raw_output,
-            |prompt| {
-                state
-                    .adapters
-                    .lock()
-                    .unwrap()
-                    .get(child_session_id)
-                    .is_some_and(|runtime| runtime.send_turn(prompt).is_ok())
-            },
-        )
-    } {
-        Ok(result) => result,
-        Err(error) => {
-            let db = state.db.lock().unwrap();
-            let _ = store::event(
-                &db,
-                "delegation",
-                "worker.result.processing_failed",
-                child_session_id,
-                &error.to_string(),
-            );
-            return;
-        }
-    };
-    let Some(result) = result else {
-        let _ = app.emit("state-changed", ());
-        return;
-    };
-    verify_read_only_worker(app, child_session_id);
-    let _ = (label, harness, model, effort);
-    match settle_worker_after_result(app, child_session_id, &result) {
-        Ok(true) => {}
-        Ok(false) => return,
-        Err(error) => {
-            let _ = store::event(&state.db.lock().unwrap(), "supervisor", "worker.settle_failed", child_session_id, &error.to_string());
-            return;
-        }
-    }
-    report_to_parent(app, child_session_id, &result);
-    let terminal = state
-        .db
-        .lock()
-        .unwrap()
-        .query_row(
-            "SELECT lifecycle_state IN ('completed','cancelled') FROM worker_runtime WHERE session_id=?1",
-            params![child_session_id],
-            |row| row.get::<_, bool>(0),
-        )
-        .unwrap_or(false);
-    if terminal {
-        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(child_session_id) {
-            runtime.stop(adapters::ShutdownReason::Completed);
-        }
-        let _ = session_supervisor::SessionSupervisor::clear_adapter_process(
-            &state.db.lock().unwrap(),
-            child_session_id,
-        );
-    }
-}
-
-fn process_worker_result_output(
-    db: &Connection,
-    tracker: &mut delegation::ResultRepairTracker,
-    child_session_id: &str,
-    raw_output: &str,
-    send_same_session_repair: impl FnOnce(&str) -> bool,
-) -> Result<Option<delegation::WorkerResult>, BridgeError> {
-    match tracker.process(
-        child_session_id,
-        raw_output,
-        send_same_session_repair,
-    ) {
-        delegation::WorkerOutputAction::Structured(result) => Ok(Some(result)),
-        delegation::WorkerOutputAction::AwaitingRepair { reason } => {
-            store::event(
-                db,
-                "delegation",
-                "worker.result.repair_requested",
-                child_session_id,
-                &reason,
-            )?;
-            Ok(None)
-        }
-        delegation::WorkerOutputAction::Unstructured { raw: _, reason } => {
-            store::event(
-                db,
-                "delegation",
-                "worker.result.unstructured",
-                child_session_id,
-                &reason,
-            )?;
-            Ok(Some(delegation::WorkerResult {
-                schema_version: delegation::SCHEMA_VERSION,
-                status: delegation::WorkerResultStatus::Failed,
-                summary: format!("Unstructured worker result after repair failure: {reason}"),
-                files_changed: vec![],
-                tests: vec![],
-                decisions: vec![],
-                risks: vec!["The raw worker response was excluded from parent context".into()],
-                remaining_work: vec!["Review the worker transcript manually".into()],
-                suggested_next_action: delegation::SuggestedNextAction::Finish,
-                suggested_role: None,
-                suggested_task: None,
-            }))
-        }
-    }
-}
-
-fn settle_worker_after_result(
-    app: &AppHandle,
-    child_session_id: &str,
-    result: &delegation::WorkerResult,
-) -> Result<bool, BridgeError> {
-    let state = app.state::<AppState>();
-    let current = state
-        .db
-        .lock()
-        .unwrap()
-        .query_row(
-            "SELECT lifecycle_state FROM worker_runtime WHERE session_id=?1",
-            params![child_session_id],
-            |row| row.get::<_, String>(0),
-        )
-        .ok();
-    if current.as_deref() == Some("failed")
-        && matches!(
-            result.status,
-            delegation::WorkerResultStatus::Failed | delegation::WorkerResultStatus::Blocked
-        )
-    {
-        session_supervisor::SessionSupervisor::transition(
-            &state.db.lock().unwrap(),
-            child_session_id,
-            worker_lifecycle::WorkerLifecycleState::Completed,
-            Some("terminal_failure_reported"),
-        )?;
-        return Ok(true);
-    }
-    if current.as_deref() != Some("working") {
-        return Ok(true);
-    }
-    if result.is_retryable() {
-        let retry_count = store::worker_runtime(&state.db.lock().unwrap(), child_session_id)?
-            .map(|runtime| runtime.retry_count)
-            .unwrap_or(1);
-        let can_retry_hot = worker_pool::should_retry(
-            result,
-            retry_count,
-            state.adapters.lock().unwrap().contains_key(child_session_id),
-        );
-        if can_retry_hot {
-            session_supervisor::SessionSupervisor::transition(
-                &state.db.lock().unwrap(),
-                child_session_id,
-                worker_lifecycle::WorkerLifecycleState::Failed,
-                Some("typed_failure"),
-            )?;
-            state.db.lock().unwrap().execute(
-                "UPDATE worker_runtime SET retry_count=1,updated_at=?2 WHERE session_id=?1",
-                params![child_session_id, Utc::now().to_rfc3339()],
-            )?;
-            session_supervisor::SessionSupervisor::transition(
-                &state.db.lock().unwrap(),
-                child_session_id,
-                worker_lifecycle::WorkerLifecycleState::Resuming,
-                Some("automatic_retry"),
-            )?;
-            session_supervisor::SessionSupervisor::transition(
-                &state.db.lock().unwrap(),
-                child_session_id,
-                worker_lifecycle::WorkerLifecycleState::Working,
-                Some("same_process_retry"),
-            )?;
-            let sent = state.adapters.lock().unwrap().get(child_session_id).is_some_and(|runtime| {
-                runtime.send_turn("Retry the same assigned task once. Address the failure, rerun verification, and return a typed worker result.").is_ok()
-            });
-            if sent {
-                return Ok(false);
-            }
-            session_supervisor::SessionSupervisor::transition(
-                &state.db.lock().unwrap(),
-                child_session_id,
-                worker_lifecycle::WorkerLifecycleState::Failed,
-                Some("retry_delivery_failed"),
-            )?;
-            session_supervisor::SessionSupervisor::transition(
-                &state.db.lock().unwrap(),
-                child_session_id,
-                worker_lifecycle::WorkerLifecycleState::Completed,
-                Some("terminal_failure_reported"),
-            )?;
-            return Ok(true);
-        }
-    }
-    let (next, warm_until) = match result.status {
-        delegation::WorkerResultStatus::Completed
-        | delegation::WorkerResultStatus::NeedsDelegation => {
-            let attributes: Option<(String, String, String)> = state
-                .db
-                .lock()
-                .unwrap()
-                .query_row(
-                    "SELECT role,capability_tier,write_mode FROM worker_leases WHERE session_id=?1",
-                    params![child_session_id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-                )
-                .ok();
-            match attributes.map(|(role, tier, mode)| {
-                worker_pool::retention_action_for_attributes(&role, &tier, &mode, Utc::now())
-            }) {
-                Some(worker_pool::RetentionAction::KeepWarmUntil(until)) => {
-                    (worker_lifecycle::WorkerLifecycleState::Warm, Some(until.to_rfc3339()))
-                }
-                _ => (worker_lifecycle::WorkerLifecycleState::Completed, None),
-            }
-        }
-        delegation::WorkerResultStatus::Cancelled => (
-            worker_lifecycle::WorkerLifecycleState::Cancelled,
-            None,
-        ),
-        delegation::WorkerResultStatus::Failed | delegation::WorkerResultStatus::Blocked => {
-            (worker_lifecycle::WorkerLifecycleState::Failed, None)
-        }
-    };
-    session_supervisor::SessionSupervisor::transition(
-        &state.db.lock().unwrap(),
-        child_session_id,
-        next,
-        Some("typed_result"),
-    )?;
-    if matches!(
-        result.status,
-        delegation::WorkerResultStatus::Failed | delegation::WorkerResultStatus::Blocked
-    ) {
-        session_supervisor::SessionSupervisor::transition(
-            &state.db.lock().unwrap(),
-            child_session_id,
-            worker_lifecycle::WorkerLifecycleState::Completed,
-            Some("terminal_failure_reported"),
-        )?;
-    }
-    if let Some(warm_until) = warm_until {
-        state.db.lock().unwrap().execute(
-            "UPDATE worker_runtime SET warm_until=?2 WHERE session_id=?1",
-            params![child_session_id, warm_until],
-        )?;
-    }
-    Ok(true)
-}
-
-/// If a worker process exits before ever reporting, tell its parent so the
-/// parent is not left waiting on a child that will never answer.
-fn notify_parent_on_worker_exit(app: &AppHandle, child_session_id: &str) {
-    let state = app.state::<AppState>();
-    verify_read_only_worker(app, child_session_id);
-    let already = store::worker_runtime(&state.db.lock().unwrap(), child_session_id)
-        .ok()
-        .flatten()
-        .is_some_and(|runtime| runtime.result_status == "reported");
-    if already {
-        return;
-    }
-    let meta: Option<(Option<String>, String)> = {
-        let db = state.db.lock().unwrap();
-        db.query_row(
-            "SELECT parent_session_id,label FROM sessions WHERE id=?1",
-            params![child_session_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .ok()
-    };
-    let Some((Some(_parent), label)) = meta else {
-        return;
-    };
-    let result = delegation::WorkerResult {
-        schema_version: delegation::SCHEMA_VERSION,
-        status: delegation::WorkerResultStatus::Failed,
-        summary: format!("{label} ended without reporting a result"),
-        files_changed: vec![],
-        tests: vec![],
-        decisions: vec![],
-        risks: vec!["Worker process exited before a typed result was produced".into()],
-        remaining_work: vec!["Retry or delegate the task differently".into()],
-        suggested_next_action: delegation::SuggestedNextAction::Finish,
-        suggested_role: None,
-        suggested_task: None,
-    };
-    match settle_worker_after_result(app, child_session_id, &result) {
-        Ok(true) => {}
-        Ok(false) => return,
-        Err(error) => {
-            let _ = store::event(&state.db.lock().unwrap(), "supervisor", "worker.settle_failed", child_session_id, &error.to_string());
-            return;
-        }
-    }
-    report_to_parent(app, child_session_id, &result);
-}
-
-fn verify_read_only_worker(app: &AppHandle, child_session_id: &str) {
-    let state = app.state::<AppState>();
-    let baseline = state
-        .delegations
-        .lock()
-        .unwrap()
-        .read_only_baselines
-        .remove(child_session_id);
-    let Some(baseline) = baseline else {
-        return;
-    };
-    let db = state.db.lock().unwrap();
-    if let Err(error) = worker_guard::verify_and_record(&db, child_session_id, &baseline) {
-        let _ = store::event(
-            &db,
-            "sandbox",
-            "worker.read_only_verification_failed",
-            child_session_id,
-            &error.to_string(),
-        );
-    }
-}
-
-/// Deliver a framed message from a child to its parent session: send it into the
-/// parent's live turn stream and drop a marker card into the parent's transcript.
-fn report_to_parent(
-    app: &AppHandle,
-    child_session_id: &str,
-    result: &delegation::WorkerResult,
-) {
-    let state = app.state::<AppState>();
-    let report = {
-        let db = state.db.lock().unwrap();
-        session_supervisor::SessionSupervisor::record_result(&db, child_session_id, result)
-            .ok()
-            .flatten()
-    };
-    let Some(report) = report else {
-        return;
-    };
-    let app = app.clone();
-    let child_session_id = child_session_id.to_owned();
-    let result = result.clone();
-    tauri::async_runtime::spawn(async move {
-    let state = app.state::<AppState>();
-    let available_capabilities = live_available_capabilities(&state).await;
-    let completion_result = {
-        let db = state.db.lock().unwrap();
-        completion::create_from_worker_result(&db, &child_session_id, &result, &available_capabilities)
-    };
-    let completion = match completion_result {
-        Ok(summary) => summary,
-        Err(error) => {
-            let db = state.db.lock().unwrap();
-            let _ = store::event(
-                &db,
-                "completion",
-                "completion.plan_failed",
-                &child_session_id,
-                &error.to_string(),
-            );
-            completion::record_gate_error(&db, &child_session_id, &error.to_string()).ok().flatten()
-        }
-    };
-    {
-        let db = state.db.lock().unwrap();
-        let _ = completion::reconcile_parent_readiness(&db, &report.parent_session_id);
-    }
-    let routing_notice = serde_json::json!({
-        "type": "bridge-worker-evidence",
-        "evidenceId": report.evidence_id,
-        "status": result.status.as_str(),
-        "summary": result.summary,
-        "completion": completion,
-        "instruction": "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical. If completion is verifying or changes_requested, route the next required verification sequentially; do not claim the task is done."
-    })
-    .to_string();
-    let delivered = match state
-        .adapters
-        .lock()
-        .unwrap()
-        .get(&report.parent_session_id)
-    {
-        Some(runtime) => runtime.send_turn(&routing_notice).is_ok(),
-        None => false,
-    };
-    {
-        let db = state.db.lock().unwrap();
-        let result_event = agent::NormalizedEvent {
-            kind: "delegation.result".into(),
-            item_id: Some(format!("result-{}", Uuid::new_v4())),
-            role: Some("system".into()),
-            status: Some("completed".into()),
-            title: Some("Worker result".into()),
-            text: Some(result.summary.clone()),
-            data: serde_json::json!({"childSessionId": child_session_id, "evidenceId": report.evidence_id, "delivered": delivered, "status": result.status.as_str()}),
-        };
-        if let Ok(stored) =
-            store::session_event(&db, &report.parent_session_id, &result_event, &serde_json::json!({"delegation": true}))
-        {
-            let _ = app.emit("agent-event", stored);
-        }
-        if delivered {
-            let _ = db.execute(
-                "UPDATE sessions SET status='working' WHERE id=?1 AND ended_at IS NULL",
-                params![report.parent_session_id],
-            );
-        }
-    }
-    let workspace_id = state
-        .db
-        .lock()
-        .unwrap()
-        .query_row(
-            "SELECT workspace_id FROM sessions WHERE id=?1",
-            params![child_session_id],
-            |row| row.get::<_, String>(0),
-        )
-        .ok();
-    let _ = app.emit("state-changed", ());
-    if let Some(workspace_id) = workspace_id {
-        dispatch_next_queued_worker(&app, &workspace_id);
-    }
-    });
-}
-
-fn dispatch_next_queued_worker(app: &AppHandle, workspace_id: &str) {
-    let state = app.state::<AppState>();
-    let queued = worker_pool::WorkerPool::claim_next_queued(
-        &state.db.lock().unwrap(),
-        workspace_id,
-    )
-    .ok()
-    .flatten();
-    let Some(queued) = queued else {
-        return;
-    };
-    let directive: delegation::DelegationRequest = match serde_json::from_value(queued.request) {
-        Ok(directive) => directive,
-        Err(error) => {
-            let db = state.db.lock().unwrap();
-            let _ = store::update_worker_queue(&db, &queued.id, "rejected", None);
-            let _ = store::event(&db, "worker-pool", "worker.queue.invalid", &queued.id, &error.to_string());
-            return;
-        }
-    };
-    let launched = launch_worker(
-        app,
-        &queued.parent_session_id,
-        &queued.turn_id,
-        &directive,
-        false,
-    );
-    let db = state.db.lock().unwrap();
-    let _ = if let Some(session_id) = launched.as_deref() {
-        store::update_worker_queue(&db, &queued.id, "dispatched", Some(session_id))
-    } else {
-        store::update_worker_queue(&db, &queued.id, "rejected", None)
-    };
-}
-
-fn maintain_worker_pool(app: &AppHandle) {
-    let state = app.state::<AppState>();
-    let expired = worker_pool::WorkerPool::warm_workers_due(
-        &state.db.lock().unwrap(),
-        Utc::now(),
-    )
-    .unwrap_or_default();
-    for session_id in expired {
-        let prompt = {
-            let db = state.db.lock().unwrap();
-            let tokens = compaction_controller::active_token_estimate(&db, &session_id)
-                .unwrap_or_default();
-            let prompt = compaction_controller::CompactionController::begin(
-                &db,
-                &session_id,
-                compaction_controller::CompactionReason::BeforeSuspend,
-                tokens,
-            )
-            .ok()
-            .flatten();
-            if prompt.is_some() {
-                let _ = session_supervisor::SessionSupervisor::transition(
-                    &db,
-                    &session_id,
-                    worker_lifecycle::WorkerLifecycleState::Checkpointing,
-                    Some("warm_idle_timeout"),
-                );
-                let _ = db.execute(
-                    "UPDATE worker_runtime SET warm_until=NULL WHERE session_id=?1",
-                    params![session_id],
-                );
-            }
-            prompt
-        };
-        if let Some(prompt) = prompt {
-            if let Err(error) = send_internal_checkpoint_turn(app, &session_id, &prompt) {
-                let _ = compaction_controller::CompactionController::record_failure(
-                    &state.db.lock().unwrap(),
-                    &session_id,
-                    &format!("checkpoint turn could not start: {error}"),
-                    0,
-                );
-                finish_worker_checkpoint(app, &session_id, adapters::ShutdownReason::Failed);
-            }
-        }
-    }
-    let timed_out = {
-        let db = state.db.lock().unwrap();
-        let mut statement = match db.prepare(
-            "SELECT session_id FROM worker_runtime WHERE lifecycle_state='checkpointing' ORDER BY session_id",
-        ) {
-            Ok(statement) => statement,
-            Err(_) => return,
-        };
-        let result = match statement.query_map([], |row| row.get::<_, String>(0)) {
-            Ok(rows) => rows
-                .filter_map(Result::ok)
-                .filter(|session_id| {
-                    compaction_controller::CompactionController::pending(&db, session_id)
-                        .ok()
-                        .flatten()
-                        .and_then(|pending| chrono::DateTime::parse_from_rfc3339(&pending.requested_at).ok())
-                        .is_some_and(|requested| {
-                            Utc::now().signed_duration_since(requested.with_timezone(&Utc)).num_seconds()
-                                >= compaction_controller::CHECKPOINT_TIMEOUT_SECONDS
-                        })
-                })
-                .collect::<Vec<_>>(),
-            Err(_) => Vec::new(),
-        };
-        result
-    };
-    for session_id in timed_out {
-        let _ = compaction_controller::CompactionController::record_failure(
-            &state.db.lock().unwrap(),
-            &session_id,
-            "checkpoint turn timed out; suspension continued",
-            1,
-        );
-        finish_worker_checkpoint(app, &session_id, adapters::ShutdownReason::Failed);
-    }
-    let shutdown_timeouts = {
-        let db = state.db.lock().unwrap();
-        let mut statement = match db.prepare(
-            "SELECT id FROM sessions WHERE status='checkpointing' AND parent_session_id IS NULL ORDER BY id",
-        ) {
-            Ok(statement) => statement,
-            Err(_) => return,
-        };
-        let result = match statement.query_map([], |row| row.get::<_, String>(0)) {
-            Ok(rows) => rows
-                .filter_map(Result::ok)
-                .filter(|session_id| {
-                    compaction_controller::CompactionController::pending(&db, session_id)
-                        .ok()
-                        .flatten()
-                        .filter(|pending| {
-                            pending.reason
-                                == compaction_controller::CompactionReason::BeforeShutdown
-                        })
-                        .and_then(|pending| chrono::DateTime::parse_from_rfc3339(&pending.requested_at).ok())
-                        .is_some_and(|requested| {
-                            Utc::now().signed_duration_since(requested.with_timezone(&Utc)).num_seconds()
-                                >= compaction_controller::CHECKPOINT_TIMEOUT_SECONDS
-                        })
-                })
-                .collect::<Vec<_>>(),
-            Err(_) => Vec::new(),
-        };
-        result
-    };
-    for session_id in shutdown_timeouts {
-        let _ = compaction_controller::CompactionController::record_failure(
-            &state.db.lock().unwrap(),
-            &session_id,
-            "shutdown checkpoint timed out; termination continued",
-            1,
-        );
-        finish_orchestrator_shutdown(app, &session_id, adapters::ShutdownReason::UserStopped);
-    }
-    let workspaces = {
-        let db = state.db.lock().unwrap();
-        if worker_pool::WorkerPool::maintain_queue(&db, Utc::now()).is_err() {
-            return;
-        }
-        let mut statement = match db.prepare(
-            "SELECT workspace_id FROM worker_queue WHERE queue_status='queued' GROUP BY workspace_id ORDER BY MIN(sequence),workspace_id",
-        ) {
-            Ok(statement) => statement,
-            Err(_) => return,
-        };
-        let workspaces = match statement.query_map([], |row| row.get::<_, String>(0)) {
-            Ok(rows) => rows.filter_map(Result::ok).collect::<Vec<_>>(),
-            Err(_) => return,
-        };
-        workspaces
-    };
-    for workspace_id in workspaces {
-        dispatch_next_queued_worker(app, &workspace_id);
-    }
-}
-
-fn start_worker_maintenance(app: AppHandle) {
-    thread::spawn(move || loop {
-        thread::sleep(Duration::from_secs(1));
-        maintain_worker_pool(&app);
-    });
-}
-
-fn start_learning_maintenance(app: AppHandle) {
-    thread::spawn(move || loop {
-        let ran = {
-            let state = app.state::<AppState>();
-            let database_path = state.database_path.clone();
-            let result = learning_job::run_due_database(&database_path, Utc::now())
-                .ok()
-                .flatten();
-            result
-        };
-        if let Some(run) = ran {
-            let _ = app.emit("learning-job-changed", run);
-        }
-        thread::sleep(Duration::from_secs(60));
-    });
-}
-
-const HISTORY_SNAPSHOT_INTERVAL: Duration = Duration::from_secs(15 * 60);
-
-fn start_history_snapshot_maintenance(app: AppHandle) {
-    thread::spawn(move || loop {
-        thread::sleep(HISTORY_SNAPSHOT_INTERVAL);
-        let state = app.state::<AppState>();
-        if let Ok(db) = Connection::open_with_flags(
-            &state.database_path,
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY
-                | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        ) {
-            let _ = store::export_history_snapshot(&db, &state.snapshot_dir);
-        }
-    });
 }
 
 #[tauri::command]
 async fn open_terminal(
     workspace_id: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
+    terminal_id: String,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    let runtime_id = format!("terminal:{workspace_id}");
-    if state.runtimes.lock().unwrap().contains_key(&runtime_id) {
-        return Ok(());
-    }
-    let db = state.db.lock().unwrap();
-    let path: String = db.query_row(
-        "SELECT path FROM workspaces WHERE id=?1",
-        params![workspace_id],
-        |r| r.get(0),
-    )?;
-    drop(db);
-    let pair = native_pty_system()
-        .openpty(PtySize {
-            rows: 32,
-            cols: 120,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| BridgeError::Pty(e.to_string()))?;
-    let mut command = CommandBuilder::new("zsh");
-    command.args(["-l"]);
-    command.cwd(&path);
-    command.env("TERM", "xterm-256color");
-    command.env("BRIDGE_WORKSPACE_ID", &workspace_id);
-    let child = pair
-        .slave
-        .spawn_command(command)
-        .map_err(|e| BridgeError::Pty(e.to_string()))?;
-    drop(pair.slave);
-    let mut reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| BridgeError::Pty(e.to_string()))?;
-    let writer = pair
-        .master
-        .take_writer()
-        .map_err(|e| BridgeError::Pty(e.to_string()))?;
-    state.runtimes.lock().unwrap().insert(
-        runtime_id.clone(),
-        RuntimeSession {
-            writer,
-            master: pair.master,
-            child,
-        },
-    );
-    let app_reader = app.clone();
-    let workspace_reader = workspace_id.clone();
-    let runtime_reader = runtime_id.clone();
-    thread::spawn(move || {
-        let mut buf = [0u8; 8192];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    let data = String::from_utf8_lossy(&buf[..n]).into_owned();
-                    let _ = app_reader.emit(
-                        "session-output",
-                        TerminalChunk {
-                            session_id: workspace_reader.clone(),
-                            data,
-                        },
-                    );
-                }
-            }
-        }
-        let state = app_reader.state::<AppState>();
-        state.runtimes.lock().unwrap().remove(&runtime_reader);
-    });
-    Ok(())
+    let core = state.inner().clone();
+    blocking("Terminal open", move || {
+        api::open_terminal(&core, &workspace_id, &terminal_id)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn write_terminal(
     workspace_id: String,
+    terminal_id: String,
     data: String,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    let mut sessions = state.runtimes.lock().unwrap();
-    let runtime = sessions
-        .get_mut(&format!("terminal:{workspace_id}"))
-        .ok_or_else(|| BridgeError::Invalid("Workspace terminal is not open".into()))?;
-    runtime.writer.write_all(data.as_bytes())?;
-    runtime.writer.flush()?;
-    Ok(())
+    api::write_terminal(state.inner(), &workspace_id, &terminal_id, &data)
 }
 
 #[tauri::command]
-async fn prepare_turn(session_id: String, text: String, state: State<'_, AppState>) -> Result<secret_interception::SanitizedTurn, BridgeError> {
-    if text.trim().is_empty() {
-        return Err(BridgeError::Invalid("Message cannot be empty".into()));
-    }
-    let exists: bool = state.db.lock().unwrap().query_row(
-        "SELECT EXISTS(SELECT 1 FROM sessions WHERE id=?1)",
-        params![session_id],
-        |row| row.get(0),
-    )?;
-    if !exists {
-        return Err(BridgeError::Invalid("Chat session does not exist".into()));
-    }
-    let intercepted = secret_interception::intercept(&text);
-    state.credential_broker.register(&session_id, intercepted.captured);
-    Ok(intercepted.sanitized)
-}
-
-fn deliver_sanitized_turn(
-    runtime: &dyn adapters::AdapterRuntime,
-    text: &str,
-    application_context: Option<&str>,
+async fn close_terminal(
+    workspace_id: String,
+    terminal_id: String,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    match application_context {
-        Some(context) => runtime.send_turn_with_context(text, context),
-        None => runtime.send_turn(text),
-    }
-}
-
-fn persist_submitted_user_turn(
-    db: &Connection,
-    session_id: &str,
-    adapter_id: &str,
-    display_text: &str,
-) -> Result<Option<AgentEvent>, BridgeError> {
-    if adapter_id == "codex" {
-        return Ok(None);
-    }
-    let user_event = agent::NormalizedEvent {
-        kind: "message.completed".into(),
-        item_id: Some(format!("user-{}", Uuid::new_v4())),
-        role: Some("user".into()),
-        status: Some("completed".into()),
-        title: None,
-        text: Some(display_text.into()),
-        data: serde_json::json!({}),
-    };
-    store::session_event(
-        db,
-        session_id,
-        &user_event,
-        &serde_json::json!({"adapter": adapter_id}),
-    )
-    .map(Some)
+    let core = state.inner().clone();
+    blocking("Terminal close", move || {
+        api::close_terminal(&core, &workspace_id, &terminal_id)
+    })
+    .await
 }
 
 #[tauri::command]
-async fn send_turn(session_id: String, text: String, app: AppHandle, state: State<'_, AppState>) -> Result<(), BridgeError> {
-    if text.trim().is_empty() {
-        return Err(BridgeError::Invalid("Message cannot be empty".into()));
-    }
-    if store::worker_runtime(&state.db.lock().unwrap(), &session_id)?.is_some() {
-        return Err(BridgeError::Invalid(
-            "Worker turns are scheduled through the policy-controlled worker pool".into(),
-        ));
-    }
-
-    // Sanitize the user-authored text before slash expansion, adapter transport,
-    // optimistic UI projection, or durable conversation history can observe it.
-    let intercepted = secret_interception::intercept(&text);
-    state.credential_broker.register(&session_id, intercepted.captured);
-    let sanitized_input = intercepted.sanitized;
-    let available: std::collections::HashSet<String> = state
-        .adapter_registry
-        .descriptors()
-        .into_iter()
-        .filter(|descriptor| descriptor.available)
-        .map(|descriptor| descriptor.id)
-        .collect();
-    let session_harness: String = state.db.lock().unwrap().query_row(
-        "SELECT harness FROM sessions WHERE id=?1",
-        params![session_id],
-        |row| row.get(0),
-    )?;
-
-    let outbound = match slash::dispatch(&sanitized_input.text, &session_harness, &available) {
-        slash::SlashDispatch::Usage => {
-            refresh_account_usage(app.clone(), state.clone()).await?;
-            emit_local_assistant(
-                &app,
-                &state,
-                &session_id,
-                &session_harness,
-                "Refreshed account usage. Check the meter in the title bar.",
-            )?;
-            return Ok(());
-        }
-        slash::SlashDispatch::Compact { .. } => {
-            compact_session(session_id.clone(), app.clone(), state.clone()).await?;
-            return Ok(());
-        }
-        slash::SlashDispatch::Clear => {
-            state.credential_broker.clear_session(&session_id);
-            state.browser_bridge.revoke_session(&session_id);
-            if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
-                runtime.stop(adapters::ShutdownReason::UserStopped);
-            }
-            let db = state.db.lock().unwrap();
-            session_supervisor::SessionSupervisor::clear_adapter_process(&db, &session_id)?;
-            db.execute(
-                "UPDATE sessions SET provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1",
-                params![session_id],
-            )?;
-            emit_local_assistant(
-                &app,
-                &state,
-                &session_id,
-                &session_harness,
-                "Cleared this chat’s provider session. Send a message to start fresh.",
-            )?;
-            let _ = app.emit("state-changed", ());
-            return Ok(());
-        }
-        slash::SlashDispatch::Unsupported { name, harness } => {
-            emit_local_assistant(
-                &app,
-                &state,
-                &session_id,
-                &session_harness,
-                &format!("`/{name}` is a {harness} terminal UI command and isn’t available inside Bridge yet."),
-            )?;
-            return Ok(());
-        }
-        slash::SlashDispatch::Expand { text } => text,
-        slash::SlashDispatch::Forward { text } => text,
-    };
-
-    let adapters = state.adapters.lock().unwrap();
-    let runtime = adapters
-        .get(&session_id)
-        .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
-    let credential_context = state.credential_broker.turn_context(&session_id, &outbound);
-    let browser_context = state.browser_bridge.capability_context(&session_id, runtime.process_id());
-    let application_context = [credential_context.as_deref(), browser_context.as_deref()]
-        .into_iter()
-        .flatten()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    if let Err(error) = deliver_sanitized_turn(
-        runtime.as_ref(),
-        &outbound,
-        (!application_context.is_empty()).then_some(application_context.as_str()),
-    ) {
-        drop(adapters);
-        record_recoverable_adapter_failure(&state, &session_id, &error)?;
-        return Err(error);
-    }
-    drop(adapters);
-    let db = state.db.lock().unwrap();
-    let adapter_id: String = db.query_row(
-        "SELECT harness FROM sessions WHERE id=?1",
-        params![session_id],
-        |r| r.get(0),
-    )?;
-    // Claude stream-json does not reliably echo the submitted user turn; persist it locally.
-    // Prefer the original slash text for the transcript when we expanded a skill/prompt.
-    let display_text = if outbound != sanitized_input.text {
-        sanitized_input.text
-    } else {
-        outbound.clone()
-    };
-    if let Some(event) =
-        persist_submitted_user_turn(&db, &session_id, &adapter_id, &display_text)?
-    {
-        let _ = app.emit("agent-event", event);
-    }
-    let _ = db.execute(
-        "UPDATE sessions SET status='working' WHERE id=?1",
-        params![session_id],
-    );
-    let _ = app.emit("state-changed", ());
-    Ok(())
+async fn list_terminals(
+    workspace_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Vec<String>, BridgeError> {
+    Ok(api::list_terminals(state.inner(), &workspace_id))
 }
 
-fn record_recoverable_adapter_failure(state: &State<'_, AppState>, session_id: &str, error: &BridgeError) -> Result<(), BridgeError> {
-    let db = state.db.lock().unwrap();
-    db.execute("UPDATE sessions SET status='failed',active_turn_id=NULL,ended_at=?2 WHERE id=?1", params![session_id, Utc::now().to_rfc3339()])?;
-    store::event(&db, "adapter", "adapter.request_failed", session_id, &error.to_string())?;
-    Ok(())
+#[tauri::command]
+async fn prepare_turn(
+    session_id: String,
+    text: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<secret_interception::SanitizedTurn, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Turn preparation", move || api::prepare_turn(&core, session_id, text)).await
 }
 
-fn emit_local_assistant(
-    app: &AppHandle,
-    state: &State<'_, AppState>,
-    session_id: &str,
-    adapter_id: &str,
-    text: &str,
+#[tauri::command]
+async fn send_turn(
+    session_id: String,
+    text: String,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    let db = state.db.lock().unwrap();
-    let event = store::session_event(
-        &db,
-        session_id,
-        &agent::NormalizedEvent {
-            kind: "message.completed".into(),
-            item_id: Some(format!("bridge-{}", Uuid::new_v4())),
-            role: Some("assistant".into()),
-            status: Some("completed".into()),
-            title: None,
-            text: Some(text.into()),
-            data: serde_json::json!({ "bridgeLocal": true }),
-        },
-        &serde_json::json!({ "adapter": adapter_id }),
-    )?;
-    let _ = app.emit("agent-event", event);
-    Ok(())
+    let core = state.inner().clone();
+    blocking("Turn delivery", move || api::send_turn(&core, session_id, text)).await
+}
+
+/// The active-turn input contract. Unlike `send_turn`, this one is safe to call
+/// while the agent is working: Bridge decides between starting a turn, steering
+/// the live one, and durably queueing, and reports which it did.
+#[tauri::command]
+async fn submit_input(
+    session_id: String,
+    text: String,
+    attachments: Option<Vec<bridge_protocol::messages::TurnImage>>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::SubmitInputResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Input submission", move || {
+        api::submit_input_with_attachments(&core, session_id, text, attachments.unwrap_or_default())
+    })
+    .await
+}
+
+/// Directly reserve a configured specialist worker. The browser supplies only
+/// the token and objective; every execution characteristic is host-resolved.
+#[tauri::command]
+async fn dispatch_agent_shortcut(
+    session_id: String,
+    token: String,
+    objective: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::DispatchAgentShortcutResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Agent shortcut dispatch", move || {
+        api::dispatch_agent_shortcut(&core, session_id, token, objective)
+    })
+    .await
+}
+
+/// List the current chat's workspace files for the composer's `@file`
+/// autocomplete. Returns an empty list for chats with no connected folder.
+#[tauri::command]
+async fn list_workspace_files(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Vec<String>, BridgeError> {
+    // Listing is pure filesystem work; keep it off the async runtime.
+    let core = state.inner().clone();
+    blocking("Workspace file listing", move || api::list_workspace_files(&core, &session_id))
+        .await
+}
+
+/// List a workspace's files for the editor's tree and file palette.
+#[tauri::command]
+async fn list_workspace_tree(
+    workspace_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Vec<String>, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workspace tree listing", move || {
+        api::list_workspace_tree(&core, &workspace_id)
+    })
+    .await
+}
+
+/// Read one workspace file for the editor.
+#[tauri::command]
+async fn read_workspace_file(
+    workspace_id: String,
+    path: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::workspace_files::FileContents, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workspace file read", move || {
+        api::read_workspace_file(&core, &workspace_id, &path)
+    })
+    .await
+}
+
+/// Write one workspace file. Fails rather than clobbering when the bytes on
+/// disk are no longer the ones the editor read — an agent may share this tree.
+#[tauri::command]
+async fn write_workspace_file(
+    workspace_id: String,
+    path: String,
+    content: String,
+    base_sha256: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::workspace_files::WriteOutcome, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workspace file write", move || {
+        api::write_workspace_file(&core, &workspace_id, &path, &content, base_sha256.as_deref())
+    })
+    .await
 }
 
 #[tauri::command]
 async fn compact_session(
     session_id: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    let prompt = {
-        let db = state.db.lock().unwrap();
-        let status: String = db.query_row(
-            "SELECT status FROM sessions WHERE id=?1",
-            params![session_id],
-            |row| row.get(0),
-        )?;
-        if matches!(status.as_str(), "working" | "waiting" | "checkpointing") {
-            return Err(BridgeError::Invalid(
-                "Compaction waits until the active tool, approval, or turn finishes".into(),
-            ));
-        }
-        let branch = session_forest::SessionForest::new(&db)
-            .active_branch(&session_id)
-            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-        let meaningful = branch.iter().any(|entry| {
-            matches!(
-                entry.kind.as_str(),
-                "user.message" | "assistant.message" | "worker.result" | "tool.completed"
-            )
-        });
-        compaction_controller::decide(&compaction_controller::TriggerState {
-            reason: compaction_controller::CompactionReason::Manual,
-            context_percent: None,
-            projected_tokens_with_reserve: None,
-            context_window_tokens: None,
-            has_valid_typed_result: false,
-            one_shot_worker: false,
-            tool_call_active: false,
-            approval_active: false,
-            has_meaningful_new_work: meaningful,
-            wall_clock_only: false,
-        })
-        .map_err(|reason| BridgeError::Invalid(format!("Compaction suppressed: {reason:?}")))?;
-        let tokens = compaction_controller::active_token_estimate(&db, &session_id)?;
-        compaction_controller::CompactionController::begin(
-            &db,
-            &session_id,
-            compaction_controller::CompactionReason::Manual,
-            tokens,
-        )?
-        .ok_or_else(|| BridgeError::Invalid("Compaction is already pending".into()))?
-    };
-    send_internal_checkpoint_turn(&app, &session_id, &prompt)
+    api::compact_session(state.inner(), &session_id)
 }
 
 #[tauri::command]
-async fn interrupt_turn(session_id: String, state: State<'_, AppState>) -> Result<(), BridgeError> {
-    let adapters = state.adapters.lock().unwrap();
-    let runtime = adapters
-        .get(&session_id)
-        .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
-    runtime.interrupt()
+async fn search_session_entries(
+    session_id: String,
+    query: String,
+    limit: Option<u32>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::SearchSessionEntriesResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Session recall", move || {
+        api::search_session_entries(&core, &session_id, &query, limit)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn save_memory_record(
+    body: String,
+    kind: Option<String>,
+    session_id: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Save memory record", move || {
+        api::save_memory_record(&core, &body, kind.as_deref(), session_id.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn list_memory_records(
+    scope_key: String,
+    status: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ListMemoryRecordsResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("List memory records", move || {
+        api::list_memory_records(&core, &scope_key, status.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn delete_memory_record(
+    record_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Delete memory record", move || {
+        api::delete_memory_record(&core, &record_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_memory_injection(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryInjectionSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get memory injection", move || api::get_memory_injection(&core)).await
+}
+
+#[tauri::command]
+async fn set_memory_injection(
+    enabled: bool,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryInjectionSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Set memory injection", move || {
+        api::set_memory_injection(&core, enabled)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_packet_audit(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryPacketAudit, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get packet audit", move || {
+        api::get_packet_audit(&core, &session_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_memory_capabilities(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryCapabilities, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get memory capabilities", move || {
+        api::get_memory_capabilities(&core)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn supersede_memory_record(
+    record_id: String,
+    body: String,
+    kind: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Supersede memory record", move || {
+        api::supersede_memory_record(&core, &record_id, &body, kind.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn approve_memory_record(
+    record_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Approve memory record", move || {
+        api::approve_memory_record(&core, &record_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn reject_memory_record(
+    record_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryRecord, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Reject memory record", move || {
+        api::reject_memory_record(&core, &record_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_extraction_settings(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryExtractionSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get extraction settings", move || {
+        api::get_extraction_settings(&core)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn update_extraction_settings(
+    mode: String,
+    harness: Option<String>,
+    model: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryExtractionSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Update extraction settings", move || {
+        api::update_extraction_settings(&core, &mode, harness.as_deref(), model.as_deref())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_consolidation_settings(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryConsolidationSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Get consolidation settings", move || {
+        api::get_consolidation_settings(&core)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn update_consolidation_settings(
+    mode: String,
+    harness: Option<String>,
+    model: Option<String>,
+    max_records: Option<i64>,
+    allow_removal: Option<bool>,
+    debounce_seconds: Option<i64>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::MemoryConsolidationSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Update consolidation settings", move || {
+        api::update_consolidation_settings(
+            &core,
+            &mode,
+            harness.as_deref(),
+            model.as_deref(),
+            max_records,
+            allow_removal,
+            debounce_seconds,
+        )
+    })
+    .await
+}
+
+#[tauri::command]
+async fn list_memory_records_as_of(
+    scope_key: String,
+    at: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ListMemoryRecordsResult, BridgeError> {
+    let core = state.inner().clone();
+    blocking("List memory records as of", move || {
+        api::list_memory_records_as_of(&core, &scope_key, &at)
+    })
+    .await
+}
+
+/// Replay durable session events after a cursor — the recovery half of the
+/// notify-then-replay event contract.
+#[tauri::command]
+async fn replay_session_events(
+    session_id: String,
+    after_sequence: i64,
+    limit: Option<u32>,
+    tail: Option<bool>,
+    app: AppHandle,
+) -> Result<Vec<AgentEvent>, BridgeError> {
+    blocking("Session replay", move || {
+        api::replay_session_events(
+            &app.state::<Arc<BridgeCore>>(),
+            &session_id,
+            after_sequence,
+            limit,
+            tail,
+        )
+    })
+    .await
+}
+
+/// Re-dispatch a finished worker's objective at the user's request. Bridge no
+/// longer takes this turn on its own for a cause it cannot show has changed, so
+/// the decision belongs to whoever can see why the worker failed.
+#[tauri::command]
+async fn retry_worker_task(
+    child_session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
+    let core = state.inner().clone();
+    blocking("Worker retry", move || {
+        api::retry_worker_task(&core, &child_session_id)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn interrupt_turn(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
+    api::interrupt_turn(state.inner(), &session_id)
 }
 
 /// Refresh subscription usage for every provider, independent of which session
@@ -4407,61 +1655,10 @@ async fn interrupt_turn(session_id: String, state: State<'_, AppState>) -> Resul
 /// command; Codex is asked on a live session and answers on its event stream.
 /// Both results are broadcast on the `account-usage` channel.
 #[tauri::command]
-async fn refresh_account_usage(app: AppHandle, state: State<'_, AppState>) -> Result<(), BridgeError> {
-    // Claude: a global, read-only account query — no running session required.
-    if binary::resolve("claude").is_some() {
-        let app = app.clone();
-        thread::spawn(move || {
-            let cwd = std::env::temp_dir();
-            let cwd = cwd.to_string_lossy();
-            if let Some(data) = claude_adapter::read_usage_snapshot(cwd.as_ref()) {
-                if let Some(rate_limits) = data.get("rateLimits") {
-                    emit_account_usage(&app, "claude", rate_limits.clone());
-                }
-            }
-        });
-    }
-    // Codex: rate limits are account-wide, so a single running session answers
-    // for the whole account. Its reply routes back through handle_agent_value.
-    let codex_sessions: Vec<String> = {
-        let db = state.db.lock().unwrap();
-        let mut statement =
-            db.prepare("SELECT id FROM sessions WHERE harness='codex' AND ended_at IS NULL")?;
-        let ids = statement
-            .query_map([], |row| row.get::<_, String>(0))?
-            .filter_map(Result::ok)
-            .collect::<Vec<_>>();
-        ids
-    };
-    let adapters = state.adapters.lock().unwrap();
-    for session_id in codex_sessions {
-        if let Some(runtime) = adapters.get(&session_id) {
-            let _ = runtime.read_usage();
-            break;
-        }
-    }
-    Ok(())
-}
-
-/// Rate-limit snapshot carried by a Codex account frame, if this is one.
-fn codex_rate_limits_from_frame(value: &serde_json::Value) -> Option<serde_json::Value> {
-    if let Some(rate_limits) = value.pointer("/result/rateLimits") {
-        return Some(rate_limits.clone());
-    }
-    if value.get("method").and_then(|m| m.as_str()) == Some("account/rateLimits/updated") {
-        if let Some(rate_limits) = value.pointer("/params/rateLimits") {
-            return Some(rate_limits.clone());
-        }
-    }
-    None
-}
-
-/// Broadcast a provider's subscription usage to the UI's ambient meter.
-fn emit_account_usage(app: &AppHandle, provider: &str, rate_limits: serde_json::Value) {
-    let _ = app.emit(
-        "account-usage",
-        serde_json::json!({ "provider": provider, "rateLimits": rate_limits }),
-    );
+async fn refresh_account_usage(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
+    api::refresh_account_usage(state.inner())
 }
 
 #[tauri::command]
@@ -4469,678 +1666,347 @@ async fn resolve_approval(
     session_id: String,
     event_id: i64,
     decision: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<(), BridgeError> {
-    if !matches!(
-        decision.as_str(),
-        "accept" | "acceptForSession" | "decline" | "cancel"
-    ) {
-        return Err(BridgeError::Invalid("Unsupported approval decision".into()));
-    }
-    let db = state.db.lock().unwrap();
-    let (data, adapter_id): (String, String) = db.query_row(
-        "SELECT e.payload,s.harness FROM session_entries e
-         JOIN sessions s ON s.id=e.session_id
-         WHERE e.session_id=?1 AND e.sequence=?2 AND e.kind='approval.requested'",
-        params![session_id, event_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-    let data: serde_json::Value = serde_json::from_str(&data)
-        .map_err(|e| BridgeError::Invalid(format!("Approval metadata is invalid: {e}")))?;
-    if data.get("approvalType").and_then(serde_json::Value::as_str) == Some("delegation_path_scope")
-    {
-        let launch =
-            resolve_policy_delegation_approval(&db, &session_id, event_id, &decision, &data)?;
-        drop(db);
-        if let Some((turn_id, request)) = launch {
-            match launch_worker_outcome(&app, &session_id, &turn_id, &request, true) {
-                WorkerLaunchOutcome::Launched(_) | WorkerLaunchOutcome::Queued => {}
-                WorkerLaunchOutcome::Failed => {
-                    let db = state.db.lock().unwrap();
-                    record_approved_launch_failure(&db, &session_id, &turn_id, &request)?;
-                    let _ = app.emit("state-changed", ());
-                    return Err(BridgeError::Invalid(
-                        "Write scope was approved, but the worker could not launch; the delegation may be retried for this turn".into(),
-                    ));
-                }
-            }
-        }
-        let _ = app.emit("state-changed", ());
-        return Ok(());
-    }
-    let request_id = data
-        .get("requestId")
-        .cloned()
-        .ok_or_else(|| BridgeError::Invalid("Approval has no adapter request id".into()))?;
-    let is_worker = store::worker_runtime(&db, &session_id)?.is_some();
-    if is_worker {
-        session_supervisor::SessionSupervisor::transition(
-            &db,
-            &session_id,
-            worker_lifecycle::WorkerLifecycleState::Working,
-            Some("approval_resolved"),
-        )?;
-    }
-    drop(db);
-    let adapters = state.adapters.lock().unwrap();
-    let runtime = adapters
-        .get(&session_id)
-        .ok_or_else(|| BridgeError::Invalid("Structured adapter session is not running".into()))?;
-    if let Err(error) = runtime.respond(request_id, &decision) {
-        drop(adapters);
-        if is_worker {
-            let _ = session_supervisor::SessionSupervisor::transition(
-                &state.db.lock().unwrap(),
-                &session_id,
-                worker_lifecycle::WorkerLifecycleState::Waiting,
-                Some("approval_delivery_failed"),
-            );
-        }
-        return Err(error);
-    }
-    drop(adapters);
-    let mut normalized = agent::NormalizedEvent {
-        kind: "approval.resolved".into(),
-        item_id: None,
-        role: None,
-        status: Some(decision.clone()),
-        title: Some("Approval resolved".into()),
-        text: None,
-        data: serde_json::json!({"requestEventId":event_id,"decision":decision}),
-    };
-    normalized.item_id = data
-        .get("itemId")
-        .and_then(serde_json::Value::as_str)
-        .map(str::to_owned);
-    let db = state.db.lock().unwrap();
-    let event = store::session_event(
-        &db,
+    option_id: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::InteractionResolutionResult, BridgeError> {
+    api::resolve_approval(
+        state.inner(),
         &session_id,
-        &normalized,
-        &serde_json::json!({"adapter":adapter_id}),
-    )?;
-    if !is_worker {
-        db.execute(
-            "UPDATE sessions SET status='working' WHERE id=?1",
-            params![session_id],
-        )?;
-    }
-    db.execute(
-        "UPDATE workspaces SET status=CASE
-            WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status='waiting') THEN 'waiting'
-            WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status='working') THEN 'working'
-            ELSE 'ready' END
-         WHERE id=(SELECT workspace_id FROM sessions WHERE id=?1)",
-        params![session_id],
-    )?;
-    let _ = app.emit("agent-event", event);
-    let _ = app.emit("state-changed", ());
-    Ok(())
+        event_id,
+        &decision,
+        option_id.as_deref(),
+    )
 }
 
-fn record_approved_launch_failure(
-    db: &Connection,
-    session_id: &str,
-    turn_id: &str,
-    request: &delegation::DelegationRequest,
-) -> Result<(), BridgeError> {
-    session_forest::SessionForest::new(db)
-        .append(
-            session_id,
-            session_forest::EntryKind::DelegationRejected,
-            serde_json::json!({
-                "requestId": turn_id,
-                "turnId": turn_id,
-                "status": "failed",
-                "reason": "approved_launch_failed",
-                "title": "Approved delegation could not launch",
-                "text": "The approved same-turn scope remains available if the delegation is retried.",
-                "request": request,
-            }),
-        )
-        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-    store::event(
-        db,
-        "policy",
-        "policy.approved_launch_failed",
-        session_id,
-        turn_id,
-    )?;
-    Ok(())
-}
-
-fn resolve_policy_delegation_approval(
-    db: &Connection,
-    session_id: &str,
+#[tauri::command]
+async fn resolve_question(
+    session_id: String,
     event_id: i64,
-    decision: &str,
-    payload: &serde_json::Value,
-) -> Result<Option<(String, delegation::DelegationRequest)>, BridgeError> {
-    if decision == "acceptForSession" {
-        return Err(BridgeError::Invalid(
-            "Delegation path scope can only be approved for this turn".into(),
-        ));
-    }
-    let branch = session_forest::SessionForest::new(db)
-        .active_branch(session_id)
-        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-    let approval_id = payload
-        .get("approvalId")
-        .and_then(serde_json::Value::as_str)
-        .ok_or_else(|| BridgeError::Invalid("Policy approval has no approval id".into()))?;
-    let request_entry = branch
-        .iter()
-        .find(|entry| {
-            entry.sequence == event_id
-                && entry.kind == "approval.requested"
-                && entry.payload["approvalId"] == approval_id
-        })
-        .ok_or_else(|| {
-            BridgeError::Invalid("Approval is no longer on the active conversation branch".into())
-        })?;
-    if branch.iter().any(|entry| {
-        entry.kind == "approval.resolved" && entry.payload["approvalId"] == approval_id
-    }) {
-        return Err(BridgeError::Invalid("Approval was already resolved".into()));
-    }
-    let request: delegation::DelegationRequest =
-        serde_json::from_value(payload.get("request").cloned().ok_or_else(|| {
-            BridgeError::Invalid("Policy approval has no delegation request".into())
-        })?)
-        .map_err(|error| {
-            BridgeError::Invalid(format!("Policy approval request is invalid: {error}"))
-        })?;
-    request.validate().map_err(BridgeError::Invalid)?;
-    let turn_id = payload
-        .get("turnId")
-        .and_then(serde_json::Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| BridgeError::Invalid("Policy approval has no parent turn".into()))?
-        .to_owned();
-    session_forest::SessionForest::new(db)
-        .append(
-            session_id,
-            session_forest::EntryKind::ApprovalResolved,
-            serde_json::json!({
-                "approvalId": approval_id,
-                "approvalType": "delegation_path_scope",
-                "requestEventId": event_id,
-                "requestEntryId": request_entry.id,
-                "turnId": turn_id,
-                "decision": decision,
-                "approvedOwnedPaths": request.owned_paths,
-            }),
-        )
-        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-    db.execute(
-        "UPDATE sessions SET status='working' WHERE id=?1 AND status='waiting'",
-        params![session_id],
-    )?;
-    db.execute(
-        "UPDATE workspaces SET status=CASE
-            WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status='waiting') THEN 'waiting'
-            WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status='working') THEN 'working'
-            ELSE 'ready' END
-         WHERE id=(SELECT workspace_id FROM sessions WHERE id=?1)",
-        params![session_id],
-    )?;
-    Ok(matches!(decision, "accept" | "acceptForSession").then_some((turn_id, request)))
+    action: wire::QuestionAction,
+    answers: std::collections::BTreeMap<String, Vec<String>>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::InteractionResolutionResult, BridgeError> {
+    let action = match action {
+        wire::QuestionAction::Answer => "answer",
+        wire::QuestionAction::Decline => "decline",
+        wire::QuestionAction::Cancel => "cancel",
+    };
+    api::resolve_question(state.inner(), &session_id, event_id, action, answers)
 }
 
 #[tauri::command]
 async fn resize_terminal(
     workspace_id: String,
+    terminal_id: String,
     rows: u16,
     cols: u16,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    if let Some(runtime) = state
-        .runtimes
-        .lock()
-        .unwrap()
-        .get_mut(&format!("terminal:{workspace_id}"))
-    {
-        runtime
-            .master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| BridgeError::Pty(e.to_string()))?
-    }
-    Ok(())
+    api::resize_terminal(state.inner(), &workspace_id, &terminal_id, rows, cols)
 }
+
 #[tauri::command]
 async fn stop_session(
     session_id: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
-    state.browser_bridge.revoke_session(&session_id);
-    let is_worker = state
-        .db
-        .lock()
-        .unwrap()
-        .query_row(
-            "SELECT parent_session_id IS NOT NULL FROM sessions WHERE id=?1",
-            params![session_id],
-            |row| row.get::<_, bool>(0),
-        )?;
-    if is_worker {
-        if let Some(runtime) = state.adapters.lock().unwrap().get(&session_id) {
-            let _ = runtime.interrupt();
-        }
-        let result = delegation::WorkerResult {
-            schema_version: delegation::SCHEMA_VERSION,
-            status: delegation::WorkerResultStatus::Cancelled,
-            summary: "Worker cancelled by user".into(),
-            files_changed: vec![],
-            tests: vec![],
-            decisions: vec![],
-            risks: vec![],
-            remaining_work: vec!["Cancelled work was not completed".into()],
-            suggested_next_action: delegation::SuggestedNextAction::Finish,
-            suggested_role: None,
-            suggested_task: None,
-        };
-        if !settle_worker_after_result(&app, &session_id, &result)? {
-            return Err(BridgeError::Invalid("cancelled worker cannot be retried".into()));
-        }
-        report_to_parent(&app, &session_id, &result);
-        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
-            runtime.stop(adapters::ShutdownReason::UserCancelled);
-        }
-        let db = state.db.lock().unwrap();
-        session_supervisor::SessionSupervisor::clear_adapter_process(&db, &session_id)?;
-        let workspace_id: String = db.query_row(
-            "SELECT workspace_id FROM sessions WHERE id=?1",
-            params![session_id],
-            |row| row.get(0),
-        )?;
-        db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('starting','working','waiting','warm','checkpointing','resuming','restored')) THEN 'working' ELSE 'ready' END WHERE id=?1",params![workspace_id])?;
-        let _ = app.emit("state-changed", ());
-        return store::state(&db);
-    }
-    let has_process = state.adapters.lock().unwrap().contains_key(&session_id);
-    let shutdown_prompt = {
-        let db = state.db.lock().unwrap();
-        let status: String = db.query_row(
-            "SELECT status FROM sessions WHERE id=?1",
-            params![session_id],
-            |row| row.get(0),
-        )?;
-        let branch = session_forest::SessionForest::new(&db)
-            .active_branch(&session_id)
-            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-        let meaningful = branch.iter().any(|entry| {
-            matches!(
-                entry.kind.as_str(),
-                "user.message" | "assistant.message" | "worker.result" | "tool.completed"
-            )
-        });
-        if has_process
-            && meaningful
-            && !matches!(status.as_str(), "working" | "waiting" | "checkpointing")
-        {
-            let tokens = compaction_controller::active_token_estimate(&db, &session_id)?;
-            compaction_controller::CompactionController::begin(
-                &db,
-                &session_id,
-                compaction_controller::CompactionReason::BeforeShutdown,
-                tokens,
-            )?
-        } else {
-            None
-        }
-    };
-    if let Some(prompt) = shutdown_prompt {
-        match send_internal_checkpoint_turn(&app, &session_id, &prompt) {
-            Ok(()) => {
-                let db = state.db.lock().unwrap();
-                db.execute(
-                    "UPDATE sessions SET status='checkpointing' WHERE id=?1",
-                    params![session_id],
-                )?;
-                let _ = app.emit("state-changed", ());
-                return store::state(&db);
-            }
-            Err(error) => {
-                let _ = compaction_controller::CompactionController::record_failure(
-                    &state.db.lock().unwrap(),
-                    &session_id,
-                    &format!("shutdown checkpoint could not start: {error}"),
-                    0,
-                );
-            }
-        }
-    }
-    if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
-        runtime.stop(adapters::ShutdownReason::UserStopped);
-    }
-    record_shutdown_reason(
-        &state.db.lock().unwrap(),
-        &session_id,
-        adapters::ShutdownReason::UserStopped,
-    )?;
-    if let Some(mut runtime) = state.runtimes.lock().unwrap().remove(&session_id) {
-        runtime
-            .child
-            .kill()
-            .map_err(|e| BridgeError::Pty(e.to_string()))?;
-        let _ = runtime.child.wait();
-    }
-    let db = state.db.lock().unwrap();
-    let workspace_id: String = db.query_row(
-        "SELECT workspace_id FROM sessions WHERE id=?1",
-        params![session_id],
-        |r| r.get(0),
-    )?;
-    db.execute(
-        "UPDATE sessions SET status='stopped',ended_at=?2 WHERE id=?1",
-        params![session_id, Utc::now().to_rfc3339()],
-    )?;
-    db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting')) THEN 'working' ELSE 'stopped' END WHERE id=?1",params![workspace_id])?;
-    store::event(
-        &db,
-        "supervisor",
-        "session.stopped",
-        &session_id,
-        "Session stopped by user",
-    )?;
-    let _ = app.emit("state-changed", ());
-    store::state(&db)
+    let core = state.inner().clone();
+    blocking("Session stop", move || api::stop_session(&core, session_id)).await
 }
 
-fn record_shutdown_reason(
-    db: &Connection,
-    session_id: &str,
-    reason: adapters::ShutdownReason,
-) -> Result<(), BridgeError> {
-    session_supervisor::SessionSupervisor::clear_adapter_process(db, session_id)?;
-    session_forest::SessionForest::new(db)
-        .append(
-            session_id,
-            session_forest::EntryKind::SessionStatus,
-            serde_json::json!({"status":"stopped","reason":reason.as_str()}),
-        )
-        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-    store::event(
-        db,
-        "adapter",
-        "session.shutdown",
-        session_id,
-        reason.as_str(),
-    )
-}
 #[tauri::command]
 async fn refresh_workspace(
     workspace_id: String,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
-    // Resolve the path under the lock, but leave Git entirely outside it so a
-    // slow status scan cannot delay message submission or streaming writes.
-    let path: String = {
-        let db = state.db.lock().unwrap();
-        db.query_row(
-            "SELECT path FROM workspaces WHERE id=?1",
-            params![workspace_id],
-            |r| r.get(0),
-        )?
-    };
-    let (dirty, adds, dels) = tauri::async_runtime::spawn_blocking(move || {
-        git::stats(Path::new(&path))
+    // Git status scans run entirely off the async runtime so a slow scan
+    // cannot delay message submission or streaming writes.
+    let core = state.inner().clone();
+    blocking("Workspace refresh", move || api::refresh_workspace(&core, &workspace_id)).await
+}
+
+#[tauri::command]
+async fn list_workspace_branches(
+    workspace_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::git::WorkspaceBranches, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workspace branch list", move || {
+        api::list_workspace_branches(&core, &workspace_id)
     })
     .await
-    .map_err(|error| BridgeError::Invalid(format!("Workspace refresh task failed: {error}")))??;
-    let db = state.db.lock().unwrap();
-    db.execute(
-        "UPDATE workspaces SET dirty_files=?2,additions=?3,deletions=?4 WHERE id=?1",
-        params![workspace_id, dirty, adds, dels],
-    )?;
-    store::state(&db)
+}
+
+#[tauri::command]
+async fn checkout_workspace_branch(
+    workspace_id: String,
+    branch: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<BridgeState, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Workspace branch checkout", move || {
+        api::checkout_workspace_branch(&core, &workspace_id, &branch)
+    })
+    .await
 }
 
 #[tauri::command]
 async fn archive_workspace(
     workspace_id: String,
-    app: AppHandle,
-    state: State<'_, AppState>,
+    state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
-    let db = state.db.lock().unwrap();
-    let (path, repo): (String, String) = db.query_row(
-        "SELECT w.path,p.path FROM workspaces w JOIN projects p ON p.id=w.project_id WHERE w.id=?1",
-        params![workspace_id],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    )?;
-    let active: i64 = db.query_row(
-        "SELECT COUNT(*) FROM sessions WHERE workspace_id=?1 AND status IN ('working','waiting','ready') AND ended_at IS NULL",
-        params![workspace_id],
-        |r| r.get(0),
-    )?;
-    if active > 0 {
-        return Err(BridgeError::Invalid(
-            "Stop every running session before archiving this workspace".into(),
-        ));
-    }
-    let (dirty, _, _) = git::stats(Path::new(&path))?;
-    if dirty > 0 {
-        return Err(BridgeError::Invalid(format!(
-            "Workspace has {dirty} uncommitted file(s). Commit or discard them before archiving"
-        )));
-    }
-    archive_workspace_records(&db, &workspace_id, || {
-        git::remove_worktree(Path::new(&repo), Path::new(&path))
-    })?;
-    store::event(
-        &db,
-        "supervisor",
-        "workspace.archived",
-        &workspace_id,
-        "Archived clean workspace; branch preserved",
-    )?;
-    let _ = app.emit("state-changed", ());
-    store::state(&db)
+    api::archive_workspace(state.inner(), &workspace_id)
 }
 
-fn archive_workspace_records(
-    db: &Connection,
-    workspace_id: &str,
-    remove_worktree: impl FnOnce() -> Result<(), BridgeError>,
-) -> Result<(), BridgeError> {
-    let transaction = db.unchecked_transaction()?;
-    transaction.execute(
-        "DELETE FROM task_knowledge WHERE workspace_id=?1",
-        params![workspace_id],
-    )?;
-    transaction.execute(
-        "DELETE FROM worker_leases WHERE workspace_id=?1",
-        params![workspace_id],
-    )?;
-    transaction.execute(
-        "DELETE FROM session_heads WHERE session_id IN (SELECT id FROM sessions WHERE workspace_id=?1)",
-        params![workspace_id],
-    )?;
-    transaction.execute(
-        "DELETE FROM session_entries WHERE session_id IN (SELECT id FROM sessions WHERE workspace_id=?1)",
-        params![workspace_id],
-    )?;
-    transaction.execute(
-        "DELETE FROM usage_ledger WHERE workspace_id=?1",
-        params![workspace_id],
-    )?;
-    transaction.execute(
-        "DELETE FROM sessions WHERE workspace_id=?1",
-        params![workspace_id],
-    )?;
-    transaction.execute(
-        "DELETE FROM workspaces WHERE id=?1",
-        params![workspace_id],
-    )?;
-    remove_worktree()?;
-    transaction.commit()?;
+#[tauri::command]
+async fn workspace_changes(
+    workspace_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::git::WorkspaceChangeset, BridgeError> {
+    // Diffing runs entirely off the async runtime, same as refresh_workspace:
+    // a slow scan on a large repository must not delay message submission or
+    // streaming writes.
+    let core = state.inner().clone();
+    blocking("Workspace changes", move || {
+        api::workspace_changes(&core, &workspace_id)
+    })
+    .await
+}
+
+/// Which runtime host this app process runs behind, decided once in setup.
+/// The invoke handler reads it on every command: embedded commands run the
+/// `bridge_core::api` bodies in-process; daemon mode proxies the same wire
+/// contract to `bridged` and the webview cannot tell the difference.
+pub enum HostMode {
+    Embedded,
+    Daemon(Arc<DaemonHostRuntime>),
+}
+
+pub struct DaemonHostRuntime {
+    proxy: Arc<daemon_host::DaemonProxy>,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    supervisor: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
+}
+
+impl DaemonHostRuntime {
+    fn shutdown(&self) {
+        self.stop.store(true, std::sync::atomic::Ordering::SeqCst);
+        self.proxy.disconnect();
+        if let Some(supervisor) = self.supervisor.lock().unwrap().take() {
+            let _ = supervisor.join();
+        }
+    }
+}
+
+impl Drop for DaemonHostRuntime {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+fn select_host(
+    app: &tauri::App,
+    host: &std::sync::OnceLock<HostMode>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(window) = app.get_webview_window("main") {
+        let window = window.as_ref().window();
+        window_chrome::position_traffic_lights(&window);
+        window_chrome::apply_wallpaper_tint(&window);
+        window_chrome::sync_fullscreen_chrome(&window);
+    }
+    let handle = app.handle().clone();
+    let _ = app.listen("bridge-layout-fullscreen", move |event| {
+        let fullscreen = window_chrome::parse_layout_fullscreen_payload(event.payload());
+        let main_handle = handle.clone();
+        let _ = handle.run_on_main_thread(move || {
+            window_chrome::set_layout_fullscreen(fullscreen);
+            if let Some(window) = main_handle.get_webview_window("main") {
+                window_chrome::sync_fullscreen_chrome(&window.as_ref().window());
+            }
+        });
+    });
+    let data = app.path().app_data_dir()?;
+    let bundled_extension = app.path().resource_dir()?.join("browser-extension");
+    let extension_path = if bundled_extension.exists() {
+        bundled_extension
+    } else {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../browser-extension")
+    };
+    let mode = match daemon_host::host_preference()? {
+        daemon_host::HostPreference::EmbeddedOnly => {
+            setup_embedded(app, data, extension_path)?;
+            HostMode::Embedded
+        }
+        preference => match start_daemon_host(app.handle().clone(), data.clone(), extension_path.clone()) {
+            Ok(proxy) => HostMode::Daemon(proxy),
+            // Auto keeps the migration promise: a machine where the daemon
+            // cannot run still gets a working app on the embedded runtime.
+            Err(error) if preference == daemon_host::HostPreference::Auto => {
+                eprintln!("bridge: daemon host unavailable ({error}); running embedded");
+                setup_embedded(app, data, extension_path)?;
+                HostMode::Embedded
+            }
+            Err(error) => {
+                eprintln!("bridge: {error}");
+                return Err(error.into());
+            }
+        },
+    };
+    let _ = host.set(mode);
     Ok(())
 }
 
-fn start_health_server(database: PathBuf, adapters: Vec<AdapterDescriptor>, credential_broker: Arc<credential_broker::CredentialBroker>) {
-    thread::spawn(move || {
-        let Ok(server) = tiny_http::Server::http("127.0.0.1:4317") else {
-            return;
-        };
-        for request in server.incoming_requests() {
-            if request.url() == "/health" {
-                let body =
-                    serde_json::json!({
-                        "ok": true,
-                        "version": env!("CARGO_PKG_VERSION"),
-                        "database": database,
-                        "adapters": adapters,
-                        "harnesses": {
-                            "claude": binary::resolve("claude").is_some(),
-                            "codex": binary::resolve("codex").is_some(),
-                            "opencode": binary::resolve("opencode").is_some(),
-                            "shell": true
-                        }
-                    }).to_string();
-                let mut response = tiny_http::Response::from_string(body).with_status_code(200);
-                if let Ok(header) = tiny_http::Header::from_bytes("Content-Type", "application/json") {
-                    response.add_header(header);
+/// Attach to (or start) a `bridged` serving the app's data directory, then
+/// hand the connection to a supervisor thread that keeps it alive for the
+/// process lifetime and forwards every daemon notification to the webview
+/// with unchanged names and payloads.
+fn start_daemon_host(
+    app: AppHandle,
+    data_dir: PathBuf,
+    browser_extension: PathBuf,
+) -> Result<Arc<DaemonHostRuntime>, String> {
+    let mut launcher = daemon_host::Launcher::new(
+        data_dir,
+        browser_extension,
+        daemon_host::find_bridged_binary(),
+    );
+    let clients = launcher.ensure()?;
+    eprintln!("bridge: attached to bridged (desktop runs as a daemon client)");
+    let proxy = Arc::new(daemon_host::DaemonProxy::default());
+    let supervisor_proxy = proxy.clone();
+    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let supervisor_stop = stop.clone();
+    // One IPC message per flush window rather than one per frame. A hundred-
+    // step turn is roughly four hundred frames, and the webview woke for each.
+    let batcher = agent_batch::AgentEventBatcher::spawn(
+        agent_batch::FLUSH_WINDOW,
+        agent_batch::MAX_BATCH,
+        move |kind, payload| {
+            let _ = app.emit(kind, payload);
+        },
+    );
+    let supervisor = std::thread::Builder::new()
+        .name("daemon-host-supervisor".into())
+        .spawn(move || {
+            daemon_host::supervise(
+                &supervisor_proxy,
+                launcher,
+                Some(clients),
+                &supervisor_stop,
+                |kind, payload| batcher.emit(kind, payload),
+            );
+        })
+        .map_err(|error| format!("could not start the daemon supervisor: {error}"))?;
+    Ok(Arc::new(DaemonHostRuntime {
+        proxy,
+        stop,
+        supervisor: std::sync::Mutex::new(Some(supervisor)),
+    }))
+}
+
+/// The in-process runtime, unchanged from before the daemon existed. Still
+/// the fallback while the migration is in flight; never runs concurrently
+/// with a daemon on the same data directory (the lease enforces that).
+fn setup_embedded(
+    app: &tauri::App,
+    data: PathBuf,
+    extension_path: PathBuf,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Embedded mode is one of the two allowed owners of a data
+    // directory (the other is the bridged daemon), never both at
+    // once. Acquire the exclusive lease before touching any store;
+    // the lease lives as managed state until the process exits.
+    let lease = bridge_core::ownership::DataDirLease::acquire(
+        &data,
+        bridge_core::ownership::OwnerKind::Embedded,
+    )
+    .map_err(|error| {
+        eprintln!("bridge: {error}");
+        Box::<dyn std::error::Error>::from(error.to_string())
+    })?;
+    app.manage(lease);
+    // The Tauri compatibility adapter: subscribe BEFORE boot so
+    // boot-time events (adapter discovery) cannot be missed, then
+    // forward every core event to the webview with unchanged names
+    // and payloads.
+    let events = bridge_core::events::EventBus::new();
+    let mut receiver = events.subscribe();
+    let forwarder = app.handle().clone();
+    // Same coalescing as the daemon path: the batcher is the only thing
+    // between the bus and the webview, so both hosts deliver a turn the same
+    // way.
+    let batcher = agent_batch::AgentEventBatcher::spawn(
+        agent_batch::FLUSH_WINDOW,
+        agent_batch::MAX_BATCH,
+        move |kind, payload| {
+            let _ = forwarder.emit(kind, payload);
+        },
+    );
+    std::thread::Builder::new()
+        .name("core-event-forwarder".into())
+        .spawn(move || loop {
+            match receiver.blocking_recv() {
+                Ok(event) => batcher.emit(event.kind().as_str(), event.payload()),
+                // The compatibility UI already reconciles durable
+                // history from the session forest. Skip stale live
+                // frames here; daemon clients use cursor replay.
+                Err(bridge_core::events::ReceiveError::Lagged(_)) => {
+                    for event in receiver.reconciliation_events() {
+                        batcher.emit(event.kind().as_str(), event.payload());
+                    }
+                    continue;
                 }
-                let _ = request.respond(response);
-                continue;
+                Err(bridge_core::events::ReceiveError::Closed) => break,
             }
-            if let Some(route) = request.url().strip_prefix(credential_broker::PROXY_PREFIX) {
-                // Handle each proxy call on its own thread so a slow (or
-                // deliberately slow-drip) upstream request cannot block /health
-                // liveness or serialize other agents behind the single accept loop.
-                let route = route.to_owned();
-                let method = request.method().as_str().to_owned();
-                let token = request
-                    .headers()
-                    .iter()
-                    .find(|header| header.field.equiv(credential_broker::PROXY_AUTH_HEADER))
-                    .map(|header| header.value.as_str().to_owned())
-                    .unwrap_or_default();
-                let headers: Vec<(String, String)> = request.headers().iter().map(|header| (header.field.to_string(), header.value.as_str().to_owned())).collect();
-                let broker = credential_broker.clone();
-                thread::spawn(move || {
-                    let mut request = request;
-                    let mut parts = route.splitn(3, '/');
-                    let session_id = parts.next().unwrap_or_default().to_owned();
-                    let reference = parts.next().unwrap_or_default().to_owned();
-                    let path_and_query = format!("/{}", parts.next().unwrap_or_default());
-                    let mut body = Vec::new();
-                    let result = request.as_reader()
-                        .take((credential_broker::MAX_BODY_BYTES + 1) as u64)
-                        .read_to_end(&mut body)
-                        .map_err(BridgeError::Io)
-                        .and_then(|_| broker.proxy(credential_broker::ProxyRequest {
-                            session_id,
-                            reference,
-                            method,
-                            path_and_query,
-                            headers,
-                            token,
-                            body,
-                        }));
-                    let response = match result {
-                        Ok(proxied) => {
-                            let mut response = tiny_http::Response::from_data(proxied.body).with_status_code(proxied.status);
-                            if let Some(header) = proxied.content_type.and_then(|value| tiny_http::Header::from_bytes("Content-Type", value).ok()) {
-                                response.add_header(header);
-                            }
-                            response
-                        }
-                        Err(error) => {
-                            let body = serde_json::json!({"ok": false, "error": error.to_string()}).to_string();
-                            tiny_http::Response::from_string(body).with_status_code(400)
-                        }
-                    };
-                    let _ = request.respond(response);
-                });
-                continue;
-            }
-            let body = serde_json::json!({"ok": false, "error": "not found"}).to_string();
-            let mut response = tiny_http::Response::from_string(body).with_status_code(404);
-            if let Ok(header) = tiny_http::Header::from_bytes("Content-Type", "application/json") {
-                response.add_header(header);
-            }
-            let _ = request.respond(response);
-        }
-    });
+        })?;
+    let core = BridgeCore::boot(BootConfig {
+        data_dir: data,
+        browser_extension_path: extension_path,
+        events: Some(events),
+    })
+    .map_err(Box::<dyn std::error::Error>::from)?;
+    start_health_server(
+        core.database_path.clone(),
+        core.adapter_registry.descriptors(),
+        core.credential_broker.clone(),
+    );
+    let core = Arc::new(core);
+    app.manage(core.clone());
+    live_turn::start_worker_maintenance(core.clone());
+    live_turn::start_completion_check_maintenance(core.clone());
+    work_observation::start_work_fact_maintenance(core.clone());
+    live_turn::start_learning_maintenance(core.clone());
+    bridge_core::work_briefing_live::start_briefing_maintenance(core.clone());
+    bridge_core::github_poll::start_github_poll_maintenance(core.clone());
+    bridge_core::memory_extraction_live::start_extraction_maintenance(core.clone());
+    bridge_core::routing_evaluation_live::start_evaluation_maintenance(core.clone());
+    bridge_core::memory_consolidation_live::start_consolidation_maintenance(core.clone());
+    live_turn::start_queued_input_maintenance(core.clone());
+    live_turn::start_history_snapshot_maintenance(core);
+    Ok(())
 }
 
 pub fn run() {
-    tauri::Builder::default()
-        .plugin(tauri_plugin_dialog::init())
-        .setup(|app| {
-            let data = app.path().app_data_dir()?;
-            let db_path = data.join("bridge.db");
-            let telemetry_db_path = data.join("bridge-telemetry.db");
-            let snapshot_dir = data.join("history-snapshots");
-            let connection =
-                store::open(&db_path).map_err(|e| Box::<dyn std::error::Error>::from(e))?;
-            let telemetry_connection = store::open_telemetry(&telemetry_db_path)
-                .map_err(|e| Box::<dyn std::error::Error>::from(e))?;
-            session_supervisor::SessionSupervisor::recover_tracked_adapter_processes(&connection)
-                .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
-            session_supervisor::SessionSupervisor::recover_orphaned_workers(&connection)
-                .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
-            session_supervisor::SessionSupervisor::reconcile_workspace_statuses(&connection)
-                .map_err(|error| Box::<dyn std::error::Error>::from(error))?;
-            let _ = store::export_history_snapshot(&connection, &snapshot_dir);
-            let opencode_config = agent_config::state(&connection)?
-                .harnesses
-                .into_iter()
-                .find(|config| config.id == "opencode");
-            let opencode_settings = agent_config::opencode_settings(opencode_config.as_ref())?;
-            let discovery_handle = app.handle().clone();
-            let adapter_registry = Arc::new(
-                adapters::AdapterRegistry::built_in_with_opencode_notify(
-                    opencode_settings,
-                    Some(Box::new(move || {
-                        // OpenCode discovery finishes after the frontend's initial
-                        // health fetch; tell it to re-read adapter availability.
-                        let _ = discovery_handle.emit("adapters-changed", ());
-                    })),
-                )
-                .map_err(Box::<dyn std::error::Error>::from)?,
-            );
-            let credential_broker = Arc::new(credential_broker::CredentialBroker::openai()
-                .map_err(|error| Box::<dyn std::error::Error>::from(error))?);
-            let bundled_extension = app.path().resource_dir()?.join("browser-extension");
-            let extension_path = if bundled_extension.exists() {
-                bundled_extension
-            } else {
-                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../browser-extension")
-            };
-            let browser_bridge = browser_bridge::BrowserBridgeSupervisor::start(extension_path, data.join("browser-site-metrics.json"));
-            start_health_server(db_path.clone(), adapter_registry.descriptors(), credential_broker.clone());
-            app.manage(AppState {
-                db: Mutex::new(connection),
-                telemetry_db: Mutex::new(telemetry_connection),
-                runtimes: Mutex::new(HashMap::new()),
-                adapters: Mutex::new(HashMap::new()),
-                adapter_registry,
-                delegations: Mutex::new(DelegationState::default()),
-                worktrees: data.join("worktrees"),
-                database_path: db_path,
-                telemetry_database_path: telemetry_db_path,
-                snapshot_dir,
-                skill_store: data.join("skills"),
-                skill_consents: Arc::new(Mutex::new(HashMap::new())),
-                credential_broker,
-                browser_bridge,
-            });
-            start_worker_maintenance(app.handle().clone());
-            start_learning_maintenance(app.handle().clone());
-            start_history_snapshot_maintenance(app.handle().clone());
-            Ok(())
-        })
-        .invoke_handler(tauri::generate_handler![
+    let host: Arc<std::sync::OnceLock<HostMode>> = Arc::new(std::sync::OnceLock::new());
+    let setup_slot = host.clone();
+    let exit_host = host.clone();
+    let embedded_commands: Box<dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync> =
+        Box::new(tauri::generate_handler![
             health,
+            discover_external_import,
+            preview_external_import,
+            commit_external_import,
+            github_status,
+            github_prs,
+            github_pr,
+            github_checks,
+            github_issues,
+            github_issue,
+            github_repository,
+            github_merge_config,
+            github_act,
+            github_review,
+            github_checkout,
             browser_bridge_state,
             browser_frame,
             install_browser_native_host,
@@ -5155,16 +2021,43 @@ pub fn run() {
             start_remote_browser,
             marketplace_catalog,
             marketplace_app_auth_states,
+            list_managed_agents,
+            inspect_managed_agent,
+            install_managed_agent,
+            repair_managed_agent,
+            uninstall_managed_agent,
             marketplace_action,
+            get_work_board,
+            task_action,
+            task_pin,
+            task_prepare_session,
+            task_open_evidence,
+            read_settings,
+            write_settings,
+            briefing_options,
+            run_briefing,
+            cancel_briefing,
             skill_catalog,
             skill_suggestions,
             preview_skill_change,
             execute_skill_change,
+            automation_catalog,
+            save_automation,
+            execute_automation_action,
             get_state,
             get_session_forest,
+            get_session_forest_digest,
+            get_context_breakdown,
+            get_context_breakdown_digest,
+            replay_session_events,
             create_completion_plan,
             record_completion_check,
             waive_completion,
+            workspace_base_divergence,
+            refresh_workspace_base,
+            pending_worker_adoptions,
+            adopt_worker_worktree,
+            discard_worker_worktree,
             register_verifier_manifest,
             verifier_candidates,
             get_router_preferences,
@@ -5173,6 +2066,9 @@ pub fn run() {
             recommended_model_profiles,
             save_model_profiles,
             reset_model_profiles,
+            get_suggestion_settings,
+            save_suggestion_settings,
+            suggest_completion,
             get_config_state,
             save_harness_config,
             reset_harness_config,
@@ -5183,6 +2079,12 @@ pub fn run() {
             delete_agent_config,
             set_default_agent,
             reset_all_config,
+            save_permission_policy,
+            get_prompt_stack,
+            save_prompt_section,
+            reset_prompt_section,
+            restore_prompt_revision,
+            preview_compiled_prompt,
             get_learning_state,
             run_learning,
             cancel_learning_run,
@@ -5192,13 +2094,23 @@ pub fn run() {
             enable_learning_trigger,
             approve_learning_run,
             rollback_routing_policy,
+            get_routing_evaluations,
+            get_evaluation_settings,
+            update_evaluation_settings,
             activate_session_entry,
             add_project,
             create_workspace,
             create_chat,
+            create_chat_id,
+            create_aside_chat,
             create_workspace_session,
             connect_workspace_folder,
+            clone_workspace_repo,
+            search_github_repos,
+            locate_workspace_folders,
             update_chat_model,
+            refresh_model_catalogs,
+            carry_session_handoff,
             list_slash_commands,
             resolve_slash_command,
             start_session,
@@ -5206,28 +2118,158 @@ pub fn run() {
             open_terminal,
             write_terminal,
             resize_terminal,
+            close_terminal,
+            list_terminals,
             prepare_turn,
             send_turn,
+            submit_input,
+            dispatch_agent_shortcut,
+            list_workspace_files,
+            list_workspace_tree,
+            read_workspace_file,
+            write_workspace_file,
             compact_session,
+            search_session_entries,
+            save_memory_record,
+            list_memory_records,
+            delete_memory_record,
+            get_memory_capabilities,
+            supersede_memory_record,
+            approve_memory_record,
+            reject_memory_record,
+            get_extraction_settings,
+            update_extraction_settings,
+            get_memory_injection,
+            set_memory_injection,
+            get_packet_audit,
+            list_memory_records_as_of,
+            get_consolidation_settings,
+            update_consolidation_settings,
             interrupt_turn,
+            retry_worker_task,
             refresh_account_usage,
             resolve_approval,
+            resolve_question,
+            start_provider_login,
             stop_session,
             refresh_workspace,
-            archive_workspace
-        ])
-        .run(tauri::generate_context!())
+            list_workspace_branches,
+            checkout_workspace_branch,
+            archive_workspace,
+            workspace_changes
+        ]);
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_shell::init())
+        .menu(|handle| menu::build(handle))
+        .on_menu_event(menu::dispatch)
+        .setup(move |app| select_host(app, &setup_slot))
+        .on_window_event(|window, event| {
+            // macOS rebuilds the titlebar on these and forgets the button
+            // placement; putting it back here keeps the corner stable.
+            if matches!(
+                event,
+                tauri::WindowEvent::Resized(_)
+                    | tauri::WindowEvent::Focused(_)
+                    | tauri::WindowEvent::ThemeChanged(_)
+            ) {
+                window_chrome::position_traffic_lights(window);
+                window_chrome::sync_fullscreen_chrome(window);
+            }
+            if matches!(event, tauri::WindowEvent::ThemeChanged(_)) {
+                window_chrome::apply_wallpaper_tint(window);
+            }
+        })
+        .invoke_handler(move |invoke| {
+            match host.get() {
+                Some(HostMode::Daemon(runtime)) => {
+                    daemon_host::proxy_invoke(runtime.proxy.clone(), invoke)
+                }
+                Some(HostMode::Embedded) => embedded_commands(invoke),
+                // Invokes cannot arrive before setup finishes; refuse rather
+                // than panic if that assumption ever breaks.
+                None => {
+                    invoke.resolver.reject("Bridge is still starting");
+                    true
+                }
+            }
+        })
+        .build(tauri::generate_context!())
         .expect("Bridge failed to start")
+        .run(move |_app, event| {
+            if matches!(event, tauri::RunEvent::Exit) {
+                if let Some(HostMode::Daemon(runtime)) = exit_host.get() {
+                    runtime.shutdown();
+                }
+            }
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bridge_core::live_turn::{
+        agent_event_changes_bridge_state, begin_pressure_compaction, cross_harness_reuse_marker,
+        deliver_sanitized_turn, deliver_worker_objective, persist_prompt_compilation,
+        persist_submitted_user_turn, prepare_worker_failure_settlement,
+        process_worker_result_output, record_actual_execution_best_effort,
+        record_model_resolution_warning, reserve_worker_launch, reserve_worker_launch_outcome,
+        resolve_policy_delegation_approval, WorkerReservationOutcome, HISTORY_SNAPSHOT_INTERVAL,
+    };
+    use bridge_core::workspaces;
+    use bridge_core::{
+        adapters, agent, compaction_controller, delegation, git, policy, prompt_compiler,
+        session_forest, session_supervisor, sessions, store, worker_lifecycle,
+    };
+    use rusqlite::{params, Connection};
+    use std::collections::HashMap;
+    use std::path::Path;
+    use std::process::Command;
+    use std::sync::Mutex;
+    use std::time::Duration;
+
+    #[test]
+    fn daemon_runtime_shutdown_stops_and_joins_its_supervisor() {
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_stop = stop.clone();
+        let supervisor = std::thread::spawn(move || {
+            while !worker_stop.load(std::sync::atomic::Ordering::SeqCst) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let runtime = DaemonHostRuntime {
+            proxy: Arc::new(daemon_host::DaemonProxy::default()),
+            stop,
+            supervisor: std::sync::Mutex::new(Some(supervisor)),
+        };
+        runtime.shutdown();
+        assert!(runtime.stop.load(std::sync::atomic::Ordering::SeqCst));
+        assert!(runtime.supervisor.lock().unwrap().is_none());
+    }
 
     #[test]
     fn orchestrator_start_uses_the_persisted_standard_profile() {
-        let registry = adapters::AdapterRegistry::built_in().unwrap();
-        let descriptors = registry.descriptors();
+        struct CatalogSnapshot(AdapterDescriptor);
+        impl adapters::HarnessAdapter for CatalogSnapshot {
+            fn as_any(&self) -> &dyn std::any::Any { self }
+            fn descriptor(&self) -> AdapterDescriptor { self.0.clone() }
+            fn start(&self, _: adapters::StartRequest<'_>) -> Result<adapters::StartedAdapter, BridgeError> {
+                unreachable!("profile selection must not start an adapter")
+            }
+            fn resume(&self, _: adapters::ResumeRequest<'_>) -> Result<adapters::StartedAdapter, BridgeError> {
+                unreachable!("profile selection must not resume an adapter")
+            }
+            fn supports_native_resume(&self) -> bool { false }
+            fn normalize(&self, _: &serde_json::Value) -> Vec<agent::NormalizedEvent> { Vec::new() }
+        }
+
+        // Discovery can replace fallback aliases while profiles are being saved.
+        // This test exercises persistence against one consistent catalogue.
+        let descriptors = adapters::AdapterRegistry::built_in().unwrap().descriptors();
+        let mut registry = adapters::AdapterRegistry::empty();
+        for descriptor in &descriptors {
+            registry.register(Box::new(CatalogSnapshot(descriptor.clone()))).unwrap();
+        }
         let Ok(mut profiles) = model_profiles::recommended_profiles(&descriptors) else {
             // Provider-binary availability is environment-owned. Catalog/profile
             // resolution itself is covered with a deterministic fake catalog.
@@ -5242,11 +2284,106 @@ mod tests {
         let expected_model = expected.model.clone();
         let db = store::open(Path::new(":memory:")).unwrap();
         model_profiles::save_profiles(&db, &descriptors, &profiles).unwrap();
-        let selected = resolve_orchestrator_selection(&db, &registry).unwrap();
+        let selected = sessions::resolve_orchestrator_selection(&db, &registry).unwrap();
         assert_eq!(selected.adapter_id, expected_provider);
-        assert_eq!(selected.model, expected_model);
+        assert_eq!(selected.model, Some(expected_model));
         assert_eq!(selected.effort, Some(delegation::Effort::High));
         assert_eq!(selected.tier, CapabilityTier::Standard);
+    }
+
+    #[test]
+    fn checkpoint_prompt_records_cross_harness_compatibility_without_prompt_contents() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        db.execute("INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/cache-test','now')", []).unwrap();
+        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Kyoto','Cache','bridge/cache','/tmp/cache-test','idle','now')", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('parent','w','codex','Parent','working','reported')", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id) VALUES('child','w','claude','Child','working','reported','parent')", []).unwrap();
+        assert_eq!(
+            cross_harness_reuse_marker(&db, "parent", "codex"),
+            "same_harness"
+        );
+        assert_eq!(
+            cross_harness_reuse_marker(&db, "parent", "claude"),
+            "incompatible"
+        );
+        assert_eq!(
+            cross_harness_reuse_marker(&db, "missing", "claude"),
+            "not_applicable"
+        );
+
+        let prompt = prompt_compiler::PromptCompiler::new("worker:verification")
+            .stable_section("contract", "Verify the task")
+            .variable_section("restoration_context", "checkpoint evidence")
+            .compile()
+            .unwrap();
+        persist_prompt_compilation(
+            &db,
+            "child",
+            "claude",
+            Some("sonnet"),
+            "worker:verification",
+            "verification",
+            RestorationMode::CheckpointRestored,
+            cross_harness_reuse_marker(&db, "parent", "claude"),
+            &prompt,
+        )
+        .unwrap();
+        let stored = store::latest_prompt_compilation(&db, "child")
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.restoration_mode, "checkpoint_restored");
+        assert_eq!(stored.cross_harness_reuse, "incompatible");
+        assert_eq!(stored.prefix_hash, prompt.metadata.prefix_hash);
+        assert!(!serde_json::to_string(&stored)
+            .unwrap()
+            .contains("Verify the task"));
+        assert!(!serde_json::to_string(&stored)
+            .unwrap()
+            .contains("checkpoint evidence"));
+    }
+
+    #[test]
+    fn orchestrator_worktree_is_created_from_the_connected_repository_head() {
+        let fixture = tempfile::tempdir().unwrap();
+        let repo = fixture.path().join("repository");
+        std::fs::create_dir(&repo).unwrap();
+        let run_git = |args: &[&str]| {
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(&repo)
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "git failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+        };
+        run_git(&["init", "-q"]);
+        run_git(&["config", "user.email", "bridge-test@example.invalid"]);
+        run_git(&["config", "user.name", "Bridge Test"]);
+        run_git(&["config", "commit.gpgsign", "false"]);
+        std::fs::write(repo.join("README.md"), "base\n").unwrap();
+        run_git(&["add", "."]);
+        run_git(&["commit", "-m", "fixture", "-q"]);
+
+        let created = sessions::prepare_orchestrator_worktree(
+            &fixture.path().join("managed-worktrees"),
+            "Payments / API",
+            &repo,
+            "12345678-abcd",
+        )
+        .unwrap();
+
+        assert_eq!(created.branch, "bridge/payments-api-12345678");
+        assert_eq!(
+            std::fs::read_to_string(created.path.join("README.md")).unwrap(),
+            "base\n"
+        );
+        assert_eq!(
+            git::current_branch(&created.path).as_deref(),
+            Some(created.branch.as_str())
+        );
     }
 
     #[test]
@@ -5256,14 +2393,402 @@ mod tests {
             !source.contains("#[tauri::command]\nfn "),
             "Tauri commands must be async so native work never runs on the macOS UI thread"
         );
-        assert!(source.contains("learning_job::run_local_database(&database_path, trigger_kind)"));
-        let locked_learning_call = [
-            "learning_job::run_learning(",
-            "&state.db.lock().unwrap()",
-            ", trigger_kind)",
-        ]
-        .concat();
-        assert!(!source.contains(&locked_learning_call));
+        // Method bodies live in bridge_core::api (shared with the daemon);
+        // the shell adds transport wiring only. A command that does not call
+        // through the api seam means logic leaked back into the shell.
+        let command_region = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("lib.rs has a test module");
+        let attribute = format!("#[tauri::{}]", "command"); // dodge this literal
+        let stray: Vec<&str> = command_region
+            .split(&attribute)
+            .skip(1)
+            .filter(|body| !body.contains("api::"))
+            .map(|body| body.trim_start().lines().next().unwrap_or_default())
+            .collect();
+        assert!(stray.is_empty(), "commands not delegating to bridge_core::api: {stray:?}");
+    }
+
+    #[test]
+    fn the_shell_never_emits_a_literal_event_name() {
+        // Every notification flows through the core event bus; the setup
+        // forwarder (which emits `event.kind().as_str()`) is the only code
+        // that touches Tauri's event system. A literal event name in an
+        // emit call means someone bypassed the bus — and broke the durable
+        // replay contract for that event.
+        let source = include_str!("lib.rs");
+        assert_eq!(
+            source.matches(".emit(\"").count(),
+            0,
+            "publish CoreEvent on state.events instead of emitting directly"
+        );
+    }
+
+    #[test]
+    fn the_protocol_contract_matches_the_registered_command_surface() {
+        let source = include_str!("lib.rs");
+        let start = source.find("generate_handler![").expect("command registry")
+            + "generate_handler![".len();
+        let end = start + source[start..].find(']').expect("registry end");
+        let commands: Vec<&str> = source[start..end]
+            .split(',')
+            .map(str::trim)
+            .filter(|entry| !entry.is_empty())
+            .collect();
+        assert!(!commands.is_empty());
+        let command_set: std::collections::HashSet<&str> = commands.iter().copied().collect();
+        assert_eq!(
+            command_set.len(),
+            commands.len(),
+            "generate_handler![...] contains duplicate commands"
+        );
+        for command in &commands {
+            assert!(
+                bridge_protocol::MethodName::from_command(command).is_some(),
+                "command {command} is registered with Tauri but missing from the \
+                 bridge-protocol method registry"
+            );
+        }
+        assert_eq!(
+            command_set,
+            bridge_protocol::MethodName::ALL
+                .iter()
+                .map(|method| method.command_name())
+                .collect(),
+            "bridge-protocol declares methods for commands that are not registered; \
+             the registry and generate_handler![...] must stay 1:1"
+        );
+    }
+
+    #[test]
+    fn every_command_signature_matches_its_contracted_params() {
+        // The contract's params structs are hand-written mirrors of these
+        // signatures. Compare both wire names and JSON-relevant Rust types so
+        // a rename or retype fails here rather than in daemon dispatch.
+        let source = include_str!("lib.rs");
+        for method in bridge_protocol::MethodName::ALL.iter().copied() {
+            let command = command_arguments(source, method.command_name());
+            let contract = bridge_protocol::TypedMethod::params_schema_fields(method);
+            match (command, contract) {
+                (None, None) => {}
+                (Some(command), Some(contract)) => {
+                    let command_names: Vec<&str> = command
+                        .iter()
+                        .map(|argument| argument.name.as_str())
+                        .collect();
+                    let contract_names: Vec<&str> =
+                        contract.iter().map(|(name, _)| name.as_str()).collect();
+                    assert_eq!(
+                        command_names,
+                        contract_names,
+                        "{} takes different arguments than its contract names",
+                        method.as_str()
+                    );
+                    for (argument, (_, schema)) in command.iter().zip(contract.iter()) {
+                        assert_eq!(
+                            rust_parameter_shape(method, &argument.name, &argument.kind),
+                            schema_parameter_shape(schema),
+                            "{} parameter {} has a different type from its contract",
+                            method.as_str(),
+                            argument.name
+                        );
+                    }
+                }
+                (command, contract) => panic!(
+                    "{} parameterlessness drifted: command={command:?}, contract={contract:?}",
+                    method.as_str()
+                ),
+            }
+        }
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct CommandArgument {
+        name: String,
+        kind: String,
+    }
+
+    /// The non-injected arguments a Tauri command accepts, sorted by their
+    /// camelCase wire names. Whitespace is removed from Rust types so multiline
+    /// signatures compare consistently.
+    fn command_arguments(source: &str, command: &str) -> Option<Vec<CommandArgument>> {
+        let needle = format!("async fn {command}(");
+        let start = source
+            .find(&needle)
+            .unwrap_or_else(|| panic!("no async fn named {command} in the shell"))
+            + needle.len();
+        // Split the parameter list on top-level commas: generic arguments
+        // (`State<'_, Arc<BridgeCore>>`) carry commas of their own.
+        let mut depth = 0usize;
+        let mut parameters: Vec<String> = Vec::new();
+        let mut current = String::new();
+        for character in source[start..].chars() {
+            match character {
+                ')' if depth == 0 => break,
+                ',' if depth == 0 => parameters.push(std::mem::take(&mut current)),
+                _ => {
+                    match character {
+                        '(' | '<' => depth += 1,
+                        ')' | '>' => depth -= 1,
+                        _ => {}
+                    }
+                    current.push(character);
+                }
+            }
+        }
+        parameters.push(current);
+
+        let mut arguments: Vec<CommandArgument> = parameters
+            .iter()
+            .filter_map(|parameter| {
+                let (name, kind) = parameter.split_once(':')?;
+                let kind: String = kind
+                    .chars()
+                    .filter(|character| !character.is_whitespace())
+                    .collect();
+                // Tauri injects these; a client never sends them.
+                if kind.contains("State<") || kind.contains("AppHandle") {
+                    return None;
+                }
+                Some(CommandArgument {
+                    name: camel_case(name.trim()),
+                    kind,
+                })
+            })
+            .collect();
+        arguments.sort_by(|left, right| left.name.cmp(&right.name));
+        (!arguments.is_empty()).then_some(arguments)
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    enum ParameterShape {
+        String,
+        Boolean,
+        Integer(String),
+        Number,
+        Reference(String),
+        Array(Box<ParameterShape>),
+        Map(Box<ParameterShape>),
+        Optional(Box<ParameterShape>),
+    }
+
+    fn rust_parameter_shape(
+        method: bridge_protocol::MethodName,
+        field: &str,
+        kind: &str,
+    ) -> ParameterShape {
+        if let Some(inner) = generic_inner(kind, "Option") {
+            return ParameterShape::Optional(Box::new(rust_parameter_shape(method, field, inner)));
+        }
+        if let Some(inner) = generic_inner(kind, "Vec") {
+            return ParameterShape::Array(Box::new(rust_parameter_shape(method, field, inner)));
+        }
+        if let Some((key, value)) = generic_pair(kind, "std::collections::BTreeMap") {
+            assert_eq!(key.trim(), "String", "JSON map keys must be strings");
+            return ParameterShape::Map(Box::new(rust_parameter_shape(
+                method,
+                field,
+                value.trim(),
+            )));
+        }
+
+        let leaf = kind.rsplit("::").next().unwrap_or(kind);
+        match leaf {
+            "String" => match (method, field) {
+                (bridge_protocol::MethodName::ResolveApproval, "decision") => {
+                    ParameterShape::Reference("ApprovalDecision".into())
+                }
+                (bridge_protocol::MethodName::SetBrowserPermission, "permission") => {
+                    ParameterShape::Reference("BrowserPermission".into())
+                }
+                _ => ParameterShape::String,
+            },
+            "bool" => ParameterShape::Boolean,
+            "i64" | "u16" | "u32" | "u64" => ParameterShape::Integer(
+                match leaf {
+                    "i64" => "int64",
+                    "u16" => "uint16",
+                    "u32" => "uint32",
+                    "u64" => "uint64",
+                    _ => unreachable!(),
+                }
+                .into(),
+            ),
+            "f64" => ParameterShape::Number,
+            "Harness" => ParameterShape::Reference("HarnessId".into()),
+            "LearningTriggerKind"
+                if field == "kind"
+                    && matches!(
+                        method,
+                        bridge_protocol::MethodName::RegisterLearningTrigger
+                            | bridge_protocol::MethodName::GetLearningTriggerInstructions
+                            | bridge_protocol::MethodName::EnableLearningTrigger
+                    ) =>
+            {
+                ParameterShape::Reference("ExternalLearningTriggerKind".into())
+            }
+            "LearningTriggerKind" if method == bridge_protocol::MethodName::RunLearning => {
+                ParameterShape::Reference("LocalLearningTriggerKind".into())
+            }
+            reference => ParameterShape::Reference(reference.into()),
+        }
+    }
+
+    fn generic_inner<'a>(kind: &'a str, container: &str) -> Option<&'a str> {
+        kind.strip_prefix(container)?
+            .strip_prefix('<')?
+            .strip_suffix('>')
+    }
+
+    fn generic_pair<'a>(kind: &'a str, container: &str) -> Option<(&'a str, &'a str)> {
+        generic_inner(kind, container)?.split_once(',')
+    }
+
+    fn schema_parameter_shape(schema: &serde_json::Value) -> ParameterShape {
+        if let Some(reference) = schema.get("$ref").and_then(serde_json::Value::as_str) {
+            return ParameterShape::Reference(reference.rsplit('/').next().unwrap().into());
+        }
+        if let Some(parts) = schema.get("allOf").and_then(serde_json::Value::as_array) {
+            assert_eq!(parts.len(), 1, "unsupported allOf params schema: {schema}");
+            return schema_parameter_shape(&parts[0]);
+        }
+        if let Some(options) = schema.get("anyOf").and_then(serde_json::Value::as_array) {
+            let non_null: Vec<&serde_json::Value> = options
+                .iter()
+                .filter(|option| {
+                    option.get("type").and_then(serde_json::Value::as_str) != Some("null")
+                })
+                .collect();
+            assert_eq!(
+                non_null.len(),
+                1,
+                "unsupported anyOf params schema: {schema}"
+            );
+            return ParameterShape::Optional(Box::new(schema_parameter_shape(non_null[0])));
+        }
+
+        match schema.get("type") {
+            Some(serde_json::Value::String(kind)) => schema_type_shape(kind, schema),
+            Some(serde_json::Value::Array(kinds)) => {
+                let non_null: Vec<&str> = kinds
+                    .iter()
+                    .filter_map(serde_json::Value::as_str)
+                    .filter(|kind| *kind != "null")
+                    .collect();
+                assert_eq!(
+                    non_null.len(),
+                    1,
+                    "unsupported union params schema: {schema}"
+                );
+                ParameterShape::Optional(Box::new(schema_type_shape(non_null[0], schema)))
+            }
+            _ => panic!("unsupported params schema: {schema}"),
+        }
+    }
+
+    fn schema_type_shape(kind: &str, schema: &serde_json::Value) -> ParameterShape {
+        match kind {
+            "string" => ParameterShape::String,
+            "boolean" => ParameterShape::Boolean,
+            "integer" => ParameterShape::Integer(
+                schema
+                    .get("format")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or("integer")
+                    .into(),
+            ),
+            "number" => ParameterShape::Number,
+            "array" => ParameterShape::Array(Box::new(schema_parameter_shape(
+                schema
+                    .get("items")
+                    .expect("array params schemas declare items"),
+            ))),
+            "object" => ParameterShape::Map(Box::new(schema_parameter_shape(
+                schema
+                    .get("additionalProperties")
+                    .expect("map params schemas declare additionalProperties"),
+            ))),
+            _ => panic!("unsupported params type {kind}: {schema}"),
+        }
+    }
+
+    #[test]
+    fn signature_type_comparison_covers_scalars_collections_and_narrowed_enums() {
+        use bridge_protocol::MethodName;
+
+        assert_eq!(
+            rust_parameter_shape(MethodName::ReplaySessionEvents, "limit", "Option<u32>"),
+            ParameterShape::Optional(Box::new(ParameterShape::Integer("uint32".into())))
+        );
+        assert_eq!(
+            rust_parameter_shape(MethodName::ResizeTerminal, "rows", "u16"),
+            ParameterShape::Integer("uint16".into())
+        );
+        assert_eq!(
+            rust_parameter_shape(MethodName::ReplaySessionEvents, "after", "i64"),
+            ParameterShape::Integer("int64".into())
+        );
+        assert_eq!(
+            rust_parameter_shape(MethodName::SaveAgentConfig, "args", "Vec<String>"),
+            ParameterShape::Array(Box::new(ParameterShape::String))
+        );
+        assert_eq!(
+            rust_parameter_shape(
+                MethodName::ResolveQuestion,
+                "answers",
+                "std::collections::BTreeMap<String, Vec<String>>"
+            ),
+            ParameterShape::Map(Box::new(ParameterShape::Array(Box::new(
+                ParameterShape::String
+            ))))
+        );
+        assert_eq!(
+            rust_parameter_shape(
+                MethodName::SaveModelProfiles,
+                "profiles",
+                "Vec<model_profiles::ModelProfileDraft>"
+            ),
+            ParameterShape::Array(Box::new(ParameterShape::Reference(
+                "ModelProfileDraft".into()
+            )))
+        );
+        assert_eq!(
+            rust_parameter_shape(MethodName::ResolveApproval, "decision", "String"),
+            ParameterShape::Reference("ApprovalDecision".into())
+        );
+        assert_eq!(
+            rust_parameter_shape(
+                MethodName::RegisterLearningTrigger,
+                "kind",
+                "learning_job::LearningTriggerKind"
+            ),
+            ParameterShape::Reference("ExternalLearningTriggerKind".into())
+        );
+        assert_eq!(
+            rust_parameter_shape(
+                MethodName::RunLearning,
+                "triggerKind",
+                "learning_job::LearningTriggerKind"
+            ),
+            ParameterShape::Reference("LocalLearningTriggerKind".into())
+        );
+    }
+
+    fn camel_case(snake: &str) -> String {
+        let mut out = String::with_capacity(snake.len());
+        let mut capitalize = false;
+        for character in snake.chars() {
+            if character == '_' {
+                capitalize = true;
+            } else if capitalize {
+                out.push(character.to_ascii_uppercase());
+                capitalize = false;
+            } else {
+                out.push(character);
+            }
+        }
+        out
     }
 
     #[test]
@@ -5284,29 +2809,57 @@ mod tests {
     }
 
     impl adapters::AdapterRuntime for RecordingRuntime {
-        fn process_id(&self) -> u32 { 0 }
-        fn provider_session_id(&self) -> &str { "recording" }
-        fn current_turn(&self) -> Arc<Mutex<Option<String>>> { Arc::new(Mutex::new(None)) }
+        fn process_id(&self) -> u32 {
+            0
+        }
+        fn provider_session_id(&self) -> &str {
+            "recording"
+        }
+        fn current_turn(&self) -> Arc<Mutex<Option<String>>> {
+            Arc::new(Mutex::new(None))
+        }
         fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
             self.sent.lock().unwrap().push(text.into());
             Ok(())
         }
-        fn interrupt(&self) -> Result<(), BridgeError> { Ok(()) }
-        fn respond(&self, _request_id: serde_json::Value, _decision: &str) -> Result<(), BridgeError> { Ok(()) }
+        fn interrupt(&self) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn respond(
+            &self,
+            _request_id: serde_json::Value,
+            _decision: &str,
+        ) -> Result<(), BridgeError> {
+            Ok(())
+        }
         fn stop(&mut self, _reason: adapters::ShutdownReason) {}
     }
 
     struct RejectingRuntime;
 
     impl adapters::AdapterRuntime for RejectingRuntime {
-        fn process_id(&self) -> u32 { 0 }
-        fn provider_session_id(&self) -> &str { "rejecting" }
-        fn current_turn(&self) -> Arc<Mutex<Option<String>>> { Arc::new(Mutex::new(None)) }
+        fn process_id(&self) -> u32 {
+            0
+        }
+        fn provider_session_id(&self) -> &str {
+            "rejecting"
+        }
+        fn current_turn(&self) -> Arc<Mutex<Option<String>>> {
+            Arc::new(Mutex::new(None))
+        }
         fn send_turn(&self, _text: &str) -> Result<(), BridgeError> {
             Err(BridgeError::Invalid("delivery rejected".into()))
         }
-        fn interrupt(&self) -> Result<(), BridgeError> { Ok(()) }
-        fn respond(&self, _request_id: serde_json::Value, _decision: &str) -> Result<(), BridgeError> { Ok(()) }
+        fn interrupt(&self) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn respond(
+            &self,
+            _request_id: serde_json::Value,
+            _decision: &str,
+        ) -> Result<(), BridgeError> {
+            Ok(())
+        }
         fn stop(&mut self, _reason: adapters::ShutdownReason) {}
     }
 
@@ -5324,6 +2877,8 @@ mod tests {
             write_mode: delegation::WriteMode::Isolated,
             capability_tier: delegation::CapabilityTier::Standard,
             effort: delegation::Effort::Medium,
+            network_access: false,
+            writable_output_paths: vec![],
             verification: vec!["cargo test".into()],
             output_contract: delegation::OutputContract::ImplementationResult,
             harness: Some("codex".into()),
@@ -5333,12 +2888,21 @@ mod tests {
 
     #[test]
     fn worker_objective_delivery_failure_is_not_reported_as_launched() {
-        let adapters = Mutex::new(HashMap::from([(
+        let scratch = tempfile::tempdir().unwrap();
+        let core = Arc::new(
+            BridgeCore::boot(BootConfig {
+                data_dir: scratch.path().to_path_buf(),
+                browser_extension_path: scratch.path().join("no-extension"),
+                events: None,
+            })
+            .unwrap(),
+        );
+        core.adapters.lock().unwrap().insert(
             "worker".into(),
             Box::new(RejectingRuntime) as Box<dyn adapters::AdapterRuntime>,
-        )]));
-        assert!(deliver_worker_objective(&adapters, "worker", "do work").is_err());
-        assert!(deliver_worker_objective(&adapters, "missing", "do work").is_err());
+        );
+        assert!(deliver_worker_objective(&core, "worker", "do work").is_err());
+        assert!(deliver_worker_objective(&core, "missing", "do work").is_err());
     }
 
     #[test]
@@ -5348,7 +2912,7 @@ mod tests {
         let sent = Arc::new(Mutex::new(Vec::new()));
         let runtime = RecordingRuntime { sent: sent.clone() };
 
-        deliver_sanitized_turn(&runtime, &prepared.text, None).unwrap();
+        deliver_sanitized_turn(&runtime, &prepared.text, adapters::TurnContext::default()).unwrap();
 
         let delivered = sent.lock().unwrap().first().cloned().unwrap();
         assert!(!delivered.contains(canary));
@@ -5374,10 +2938,22 @@ mod tests {
         ] {
             assert!(agent_event_changes_bridge_state(&event(kind, None)));
         }
-        assert!(agent_event_changes_bridge_state(&event("error", Some("failed"))));
-        assert!(!agent_event_changes_bridge_state(&event("message.delta", Some("streaming"))));
-        assert!(!agent_event_changes_bridge_state(&event("tool.completed", Some("completed"))));
-        assert!(!agent_event_changes_bridge_state(&event("provider.unknown", None)));
+        assert!(agent_event_changes_bridge_state(&event(
+            "error",
+            Some("failed")
+        )));
+        assert!(!agent_event_changes_bridge_state(&event(
+            "message.delta",
+            Some("streaming")
+        )));
+        assert!(!agent_event_changes_bridge_state(&event(
+            "tool.completed",
+            Some("completed")
+        )));
+        assert!(!agent_event_changes_bridge_state(&event(
+            "provider.unknown",
+            None
+        )));
     }
 
     #[test]
@@ -5400,8 +2976,8 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        let serialized = serde_json::to_string(&store::session_entries(&db, "secret-chat").unwrap())
-            .unwrap();
+        let serialized =
+            serde_json::to_string(&store::session_entries(&db, "secret-chat").unwrap()).unwrap();
         assert!(!serialized.contains(canary));
         assert!(serialized.contains("[secret:sec_"));
     }
@@ -5449,12 +3025,8 @@ mod tests {
             suggested_role: None,
             suggested_task: None,
         };
-        session_supervisor::SessionSupervisor::record_result(
-            &db,
-            &reservation.session_id,
-            &result,
-        )
-        .unwrap();
+        session_supervisor::SessionSupervisor::record_result(&db, &reservation.session_id, &result)
+            .unwrap();
         assert_eq!(
             db.query_row(
                 "SELECT lease_status FROM worker_leases WHERE session_id=?1",
@@ -5498,15 +3070,16 @@ mod tests {
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('s','w','codex','Codex','stopped','reported')", []).unwrap();
         db.execute("INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at) VALUES('e1','s',NULL,1,'user.message','{\"text\":\"one\"}','now'),('e2','s','e1',2,'assistant.message','{\"text\":\"two\"}','now')", []).unwrap();
         db.execute("INSERT INTO session_heads(session_id,active_entry_id,restoration_mode,latest_checkpoint_entry_id,updated_at) VALUES('s','e2','fresh','e1','now')", []).unwrap();
-        db.execute("INSERT INTO task_knowledge(id,workspace_id,session_id,kind,body,source_entry_id,created_at) VALUES('k','w','s','decision','Keep history','e1','now')", []).unwrap();
         db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,write_mode,lease_status,created_at,updated_at) VALUES('s','w','implementation','standard','shared','expired','now','now')", []).unwrap();
         db.execute("INSERT INTO usage_ledger(workspace_id,session_id,turn_id,capability_units,source,created_at) VALUES('w','s','turn',3,'test','now')", []).unwrap();
         db
     }
 
     fn count(db: &Connection, table: &str) -> i64 {
-        db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| row.get(0))
-            .unwrap()
+        db.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+            row.get(0)
+        })
+        .unwrap()
     }
 
     #[test]
@@ -5559,9 +3132,8 @@ mod tests {
     #[test]
     fn archive_workspace_records_cleans_every_dependent_table() {
         let db = archive_fixture();
-        archive_workspace_records(&db, "w", || Ok(())).unwrap();
+        workspaces::archive_workspace_records(&db, "w", 0, || Ok(())).unwrap();
         for table in [
-            "task_knowledge",
             "worker_leases",
             "session_heads",
             "session_entries",
@@ -5584,22 +3156,34 @@ mod tests {
         let db = archive_fixture();
         let before_entries = store::session_entries(&db, "s").unwrap();
         let before_workspace_path: String = db
-            .query_row("SELECT path FROM workspaces WHERE id='w'", [], |row| row.get(0))
+            .query_row("SELECT path FROM workspaces WHERE id='w'", [], |row| {
+                row.get(0)
+            })
             .unwrap();
-        let initial = session_forest_snapshot(&db, "s").unwrap();
+        let initial = sessions::session_forest_snapshot(&db, "s").unwrap();
         assert_eq!(initial.repository_divergence.status, "unknown");
         assert_eq!(initial.head.unwrap().active_entry_id.as_deref(), Some("e2"));
         assert_eq!(initial.entries.len(), 2);
-        assert_eq!(initial.leaves.iter().map(|entry| entry.id.as_str()).collect::<Vec<_>>(), vec!["e2"]);
+        assert_eq!(
+            initial
+                .leaves
+                .iter()
+                .map(|entry| entry.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["e2"]
+        );
         assert_eq!(initial.worker_leases.len(), 1);
         assert_eq!(initial.usage.len(), 1);
 
-        let rewound = activate_session_entry_records(&db, "s", "e1").unwrap();
+        let rewound = sessions::activate_session_entry_records(&db, "s", "e1").unwrap();
         assert_eq!(rewound.head.unwrap().active_entry_id.as_deref(), Some("e1"));
         assert_eq!(store::session_entries(&db, "s").unwrap(), before_entries);
         assert_eq!(
-            db.query_row("SELECT path FROM workspaces WHERE id='w'", [], |row| row.get::<_, String>(0))
-                .unwrap(),
+            db.query_row("SELECT path FROM workspaces WHERE id='w'", [], |row| row
+                .get::<_, String>(
+                0
+            ))
+            .unwrap(),
             before_workspace_path
         );
         assert!(rewound.reasons.iter().any(|event| {
@@ -5618,11 +3202,16 @@ mod tests {
                 .current_dir(repository)
                 .output()
                 .unwrap();
-            assert!(output.status.success(), "git {arguments:?}: {}", String::from_utf8_lossy(&output.stderr));
+            assert!(
+                output.status.success(),
+                "git {arguments:?}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
         };
         git(&["init", "--quiet"]);
         git(&["config", "user.email", "bridge@example.invalid"]);
         git(&["config", "user.name", "Bridge Test"]);
+        git(&["config", "commit.gpgsign", "false"]);
         std::fs::write(repository.join("tracked.txt"), "first\n").unwrap();
         git(&["add", "tracked.txt"]);
         git(&["commit", "--quiet", "-m", "initial"]);
@@ -5642,33 +3231,58 @@ mod tests {
         db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('s','w','codex','Codex','working','reported')", []).unwrap();
 
         let clean = session_forest::SessionForest::new(&db)
-            .append("s", session_forest::EntryKind::UserMessage, serde_json::json!({"text":"clean"}))
+            .append(
+                "s",
+                session_forest::EntryKind::UserMessage,
+                serde_json::json!({"text":"clean"}),
+            )
             .unwrap();
         assert_eq!(clean.payload["_bridgeRepoState"]["status"], "clean");
-        assert_eq!(session_forest_snapshot(&db, "s").unwrap().repository_divergence.status, "aligned");
+        assert_eq!(
+            sessions::session_forest_snapshot(&db, "s")
+                .unwrap()
+                .repository_divergence
+                .status,
+            "aligned"
+        );
 
         std::fs::write(repository.join("tracked.txt"), "changed\n").unwrap();
         let dirty = session_forest::SessionForest::new(&db)
-            .append("s", session_forest::EntryKind::AssistantMessage, serde_json::json!({"text":"dirty"}))
+            .append(
+                "s",
+                session_forest::EntryKind::AssistantMessage,
+                serde_json::json!({"text":"dirty"}),
+            )
             .unwrap();
         assert_eq!(dirty.payload["_bridgeRepoState"]["status"], "dirty");
-        assert_ne!(clean.payload["_bridgeRepoState"], dirty.payload["_bridgeRepoState"]);
-        assert_eq!(session_forest_snapshot(&db, "s").unwrap().repository_divergence.status, "aligned");
+        assert_ne!(
+            clean.payload["_bridgeRepoState"],
+            dirty.payload["_bridgeRepoState"]
+        );
+        assert_eq!(
+            sessions::session_forest_snapshot(&db, "s")
+                .unwrap()
+                .repository_divergence
+                .status,
+            "aligned"
+        );
 
-        let rewound = activate_session_entry_records(&db, "s", &clean.id).unwrap();
+        let rewound = sessions::activate_session_entry_records(&db, "s", &clean.id).unwrap();
         assert_eq!(rewound.repository_divergence.status, "diverged");
-        assert_eq!(std::fs::read_to_string(repository.join("tracked.txt")).unwrap(), "changed\n");
+        assert_eq!(
+            std::fs::read_to_string(repository.join("tracked.txt")).unwrap(),
+            "changed\n"
+        );
     }
 
     #[test]
     fn archive_workspace_records_rolls_back_when_worktree_removal_fails() {
         let db = archive_fixture();
-        let result = archive_workspace_records(&db, "w", || {
+        let result = workspaces::archive_workspace_records(&db, "w", 0, || {
             Err(BridgeError::Git("injected removal failure".into()))
         });
         assert!(matches!(result, Err(BridgeError::Git(_))));
         for table in [
-            "task_knowledge",
             "worker_leases",
             "session_heads",
             "session_entries",
@@ -5696,14 +3310,15 @@ mod tests {
         )
         .unwrap();
         assert_eq!(first, None);
+        // Two rows, in order: the audit fact, and the recovery turn it cost.
+        // The second is what makes a repair turn visible as a repair turn
+        // rather than as anonymous agent activity.
         assert_eq!(
-            db.query_row(
-                "SELECT kind FROM events ORDER BY id DESC LIMIT 1",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap(),
-            "worker.result.repair_requested"
+            event_kinds(&db),
+            vec![
+                "worker.result.repair_requested".to_owned(),
+                bridge_core::worker_retry::RECOVERY_REPAIR.to_owned(),
+            ]
         );
 
         let fallback = process_worker_result_output(
@@ -5715,18 +3330,39 @@ mod tests {
         )
         .unwrap()
         .unwrap();
-        assert!(fallback.summary.contains("Unstructured worker result"));
-        assert!(!fallback.summary.contains("invalid first output"));
-        assert!(!fallback.summary.contains("invalid repair output"));
+        // Transport, not task outcome — and the worker's own words survive.
+        // Reporting this as `failed` with the prose stripped is what turned a
+        // bad fence into a failed task and then into another paid retry.
         assert_eq!(
-            db.query_row(
-                "SELECT kind FROM events ORDER BY id DESC LIMIT 1",
-                [],
-                |row| row.get::<_, String>(0),
-            )
-            .unwrap(),
-            "worker.result.unstructured"
+            fallback.status,
+            bridge_core::delegation::WorkerResultStatus::ProtocolInvalid
         );
+        assert!(!fallback.is_retryable());
+        assert!(fallback.summary.contains("could not be read"));
+        assert!(fallback.summary.contains("invalid first output"));
+        assert!(fallback.summary.contains("invalid repair output"));
+        // The fallback is a classification, not another paid turn, so nothing
+        // new is charged to the recovery ledger.
+        assert_eq!(
+            event_kinds(&db),
+            vec![
+                "worker.result.repair_requested".to_owned(),
+                bridge_core::worker_retry::RECOVERY_REPAIR.to_owned(),
+                "worker.result.unstructured".to_owned(),
+            ]
+        );
+    }
+
+    fn event_kinds(db: &rusqlite::Connection) -> Vec<String> {
+        let mut statement = db
+            .prepare("SELECT kind FROM events ORDER BY id")
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        rows
     }
 
     #[test]
@@ -5798,7 +3434,11 @@ mod tests {
     #[test]
     fn policy_defers_cross_harness_reservation_until_phase_boundary() {
         let db = policy_fixture();
-        db.execute("UPDATE sessions SET active_turn_id='turn-cross' WHERE id='parent'", []).unwrap();
+        db.execute(
+            "UPDATE sessions SET active_turn_id='turn-cross' WHERE id='parent'",
+            [],
+        )
+        .unwrap();
         let mut request = policy_request(&["src/auth/**"]);
         request.harness = Some("claude".into());
         let outcome = reserve_worker_launch_outcome(
@@ -5812,9 +3452,30 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(outcome, WorkerReservationOutcome::Queued));
-        assert_eq!(db.query_row("SELECT COUNT(*) FROM sessions WHERE parent_session_id='parent'", [], |row| row.get::<_,i64>(0)).unwrap(), 0);
-        assert_eq!(db.query_row("SELECT queue_status FROM worker_queue", [], |row| row.get::<_,String>(0)).unwrap(), "queued");
-        assert_eq!(db.query_row("SELECT kind FROM events ORDER BY id DESC LIMIT 1", [], |row| row.get::<_,String>(0)).unwrap(), "handoff.deferred_for_phase_boundary");
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM sessions WHERE parent_session_id='parent'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row("SELECT queue_status FROM worker_queue", [], |row| row
+                .get::<_, String>(0))
+                .unwrap(),
+            "queued"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT kind FROM events ORDER BY id DESC LIMIT 1",
+                [],
+                |row| row.get::<_, String>(0)
+            )
+            .unwrap(),
+            "handoff.deferred_for_phase_boundary"
+        );
     }
 
     #[test]
@@ -5839,16 +3500,21 @@ mod tests {
         .unwrap()
         .is_none());
         assert_eq!(
-            db.query_row("SELECT status FROM sessions WHERE id='parent'", [], |row| row.get::<_,String>(0)).unwrap(),
+            db.query_row("SELECT status FROM sessions WHERE id='parent'", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap(),
             "waiting"
         );
         assert_eq!(
-            db.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get::<_, i64>(0))
+            db.query_row("SELECT COUNT(*) FROM sessions", [], |row| row
+                .get::<_, i64>(0))
                 .unwrap(),
             1
         );
         assert_eq!(
-            db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row.get::<_, i64>(0))
+            db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row
+                .get::<_, i64>(0))
                 .unwrap(),
             0
         );
@@ -5867,25 +3533,29 @@ mod tests {
             .last()
             .unwrap();
         assert_eq!(approval.kind, "approval.requested");
-        let (turn_id, approved_request) = resolve_policy_delegation_approval(
+        let resolved = resolve_policy_delegation_approval(
             &db,
             "parent",
             approval.sequence,
             "accept",
             &approval.payload,
         )
-        .unwrap()
         .unwrap();
+        assert!(resolved.accepted);
+        assert_eq!(resolved.approval_id, approval.payload["approvalId"]);
         assert_eq!(
-            db.query_row("SELECT status FROM sessions WHERE id='parent'", [], |row| row.get::<_,String>(0)).unwrap(),
+            db.query_row("SELECT status FROM sessions WHERE id='parent'", [], |row| {
+                row.get::<_, String>(0)
+            })
+            .unwrap(),
             "working"
         );
-        assert_eq!(turn_id, "turn-approval");
+        assert_eq!(resolved.turn_id, "turn-approval");
         assert!(reserve_worker_launch(
             &db,
             "parent",
-            &turn_id,
-            &approved_request,
+            &resolved.turn_id,
+            &resolved.request,
             "gpt-5.6-terra",
             true,
         )
@@ -5899,6 +3569,161 @@ mod tests {
             &approval.payload,
         )
         .is_err());
+    }
+
+    /// Cold start, no-approval variant: an ordinary "implement X" request where
+    /// the user *did* declare a write scope goes straight through, with no
+    /// approval card and no rejection entry.
+    #[test]
+    fn cold_start_write_delegation_with_a_declared_scope_launches_without_approval() {
+        let db = policy_fixture();
+        let outcome = reserve_worker_launch_outcome(
+            &db,
+            "parent",
+            "turn-cold-declared",
+            &policy_request(&["src/**"]),
+            "gpt-5.6-terra",
+            true,
+            None,
+        )
+        .unwrap();
+
+        let WorkerReservationOutcome::Reserved(reservation) = outcome else {
+            panic!("a declared write scope must authorize the launch outright");
+        };
+        assert_eq!(reservation.depth, 1);
+        // `isolated` always needs its own worktree, even as the only writer.
+        assert!(matches!(
+            &reservation.outcome.decision,
+            policy::RouteDecision::SpawnWorker(spec) if spec.requires_child_worktree
+        ));
+        let kinds = store::session_entries(&db, "parent")
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.kind)
+            .collect::<Vec<_>>();
+        assert!(kinds.contains(&"delegation.approved".to_owned()));
+        assert!(!kinds.contains(&"approval.requested".to_owned()));
+        assert!(!kinds.contains(&"delegation.rejected".to_owned()));
+    }
+
+    /// Cold start, approval-required variant: the ordinary product flow, where the
+    /// user never learned the `Write scope:` syntax. The launch must be reported as
+    /// approval-pending — never as a failure — and must complete after acceptance.
+    #[test]
+    fn cold_start_write_delegation_without_a_declared_scope_awaits_approval_then_launches() {
+        let db = policy_fixture();
+        // Provenance trusts only the *latest* durable user message, so a later
+        // ordinary request supersedes the fixture's declaration — exactly the
+        // normal product flow, where the user never learned the syntax.
+        session_forest::SessionForest::new(&db)
+            .append(
+                "parent",
+                session_forest::EntryKind::UserMessage,
+                serde_json::json!({
+                    "text": "Please render Mermaid, math, and sandboxed HTML inline in chat and open a PR"
+                }),
+            )
+            .unwrap();
+        let request = policy_request(&["src/**"]);
+
+        let outcome = reserve_worker_launch_outcome(
+            &db,
+            "parent",
+            "turn-cold",
+            &request,
+            "gpt-5.6-terra",
+            true,
+            None,
+        )
+        .unwrap();
+
+        let WorkerReservationOutcome::AwaitingApproval(pending) = outcome else {
+            panic!("an agent-authored write scope must raise an approval, not launch or fail");
+        };
+        assert_eq!(
+            pending.reason,
+            policy::RouteReason::OwnedPathProvenanceRequired
+        );
+        // Nothing terminal was recorded and nothing was consumed.
+        let entries = store::session_entries(&db, "parent").unwrap();
+        assert!(entries.iter().all(|entry| entry.kind != "delegation.rejected"));
+        let approval = entries.into_iter().last().unwrap();
+        assert_eq!(approval.kind, "approval.requested");
+        assert_eq!(approval.payload["approvalId"], pending.approval_id);
+        // The card carries the machine-readable reason and its remediation, so
+        // neither the user nor the orchestrator has to guess the cause.
+        assert_eq!(approval.payload["reason"], "owned_path_provenance_required");
+        assert!(approval.payload["remediation"]
+            .as_str()
+            .unwrap()
+            .contains("Write scope:"));
+        assert!(approval.payload["text"]
+            .as_str()
+            .unwrap()
+            .contains("owned_path_provenance_required"));
+        assert_eq!(approval.payload["requestedOwnedPaths"][0], "src/**");
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+
+        // A repeat of the same delegation re-reports the pending approval rather
+        // than stacking cards or failing — this is what stopped the orchestrator
+        // from producing duplicate implementation workers.
+        let repeated = reserve_worker_launch_outcome(
+            &db,
+            "parent",
+            "turn-cold",
+            &request,
+            "gpt-5.6-terra",
+            true,
+            None,
+        )
+        .unwrap();
+        let WorkerReservationOutcome::AwaitingApproval(repeat_pending) = repeated else {
+            panic!("a repeated approval-pending launch stays approval-pending");
+        };
+        assert_eq!(repeat_pending.approval_id, pending.approval_id);
+        assert_eq!(
+            store::session_entries(&db, "parent")
+                .unwrap()
+                .iter()
+                .filter(|entry| entry.kind == "approval.requested")
+                .count(),
+            1
+        );
+
+        let resolved = resolve_policy_delegation_approval(
+            &db,
+            "parent",
+            approval.sequence,
+            "accept",
+            &approval.payload,
+        )
+        .unwrap();
+        assert!(resolved.accepted);
+        assert_eq!(resolved.turn_id, "turn-cold");
+
+        let launched = reserve_worker_launch_outcome(
+            &db,
+            "parent",
+            &resolved.turn_id,
+            &resolved.request,
+            "gpt-5.6-terra",
+            true,
+            None,
+        )
+        .unwrap();
+        assert!(matches!(launched, WorkerReservationOutcome::Reserved(_)));
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
     }
 
     #[test]
@@ -5926,7 +3751,7 @@ mod tests {
             .into_iter()
             .last()
             .unwrap();
-        assert!(resolve_policy_delegation_approval(
+        assert!(!resolve_policy_delegation_approval(
             &db,
             "parent",
             approval.sequence,
@@ -5934,14 +3759,16 @@ mod tests {
             &approval.payload,
         )
         .unwrap()
-        .is_none());
+        .accepted);
         assert_eq!(
-            db.query_row("SELECT COUNT(*) FROM sessions", [], |row| row.get::<_, i64>(0))
+            db.query_row("SELECT COUNT(*) FROM sessions", [], |row| row
+                .get::<_, i64>(0))
                 .unwrap(),
             1
         );
         assert_eq!(
-            db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row.get::<_, i64>(0))
+            db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row
+                .get::<_, i64>(0))
                 .unwrap(),
             0
         );
@@ -5977,24 +3804,10 @@ mod tests {
             )
             .unwrap();
         let request = policy_request(&["src/auth/**"]);
-        reserve_worker_launch(
-            &db,
-            "parent",
-            "turn-stale",
-            &request,
-            "gpt-5.6-terra",
-            true,
-        )
-        .unwrap();
-        reserve_worker_launch(
-            &db,
-            "parent",
-            "turn-stale",
-            &request,
-            "gpt-5.6-terra",
-            true,
-        )
-        .unwrap();
+        reserve_worker_launch(&db, "parent", "turn-stale", &request, "gpt-5.6-terra", true)
+            .unwrap();
+        reserve_worker_launch(&db, "parent", "turn-stale", &request, "gpt-5.6-terra", true)
+            .unwrap();
         let entries = store::session_entries(&db, "parent").unwrap();
         let approvals = entries
             .iter()
@@ -6019,7 +3832,8 @@ mod tests {
         )
         .is_err());
         assert_eq!(
-            db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row.get::<_, i64>(0))
+            db.query_row("SELECT COUNT(*) FROM worker_leases", [], |row| row
+                .get::<_, i64>(0))
                 .unwrap(),
             0
         );
@@ -6029,7 +3843,7 @@ mod tests {
     fn approved_launch_failure_is_durable_and_retryable_for_the_turn() {
         let db = policy_fixture();
         let request = policy_request(&["src/auth/**"]);
-        record_approved_launch_failure(&db, "parent", "turn-retry", &request).unwrap();
+        live_turn::record_approved_launch_failure(&db, "parent", "turn-retry", &request).unwrap();
         let entries = session_forest::SessionForest::new(&db)
             .active_branch("parent")
             .unwrap();
@@ -6054,7 +3868,11 @@ mod tests {
                 Some("not-an-advertised-model"),
             )
             .unwrap();
-        assert_eq!(resolution.actual_model, "gpt-5.6-terra");
+        // The exact id is not asserted: with the Codex CLI present, live
+        // discovery can promote the provider's own default over the curated one.
+        // What must hold is that an unknown hint falls back to *some* Standard
+        // model and records a warning naming both the hint and that fallback.
+        assert!(resolution.warning.is_some());
         record_model_resolution_warning(&db, "parent", &resolution).unwrap();
         let (kind, body): (String, String) = db
             .query_row(
@@ -6065,7 +3883,7 @@ mod tests {
             .unwrap();
         assert_eq!(kind, "capability.model_fallback");
         assert!(body.contains("not-an-advertised-model"));
-        assert!(body.contains("gpt-5.6-terra"));
+        assert!(body.contains(&resolution.actual_model));
     }
 
     #[test]
@@ -6105,12 +3923,15 @@ mod tests {
             .unwrap();
             assert!(index < 3);
         }
-        assert!(reserve_worker_launch(&db, "parent", "turn-1", &request, "gpt-5.6-terra", true)
-            .unwrap()
-            .is_none());
-        let next_turn = reserve_worker_launch(&db, "parent", "turn-2", &request, "gpt-5.6-terra", true)
-            .unwrap()
-            .expect("new turn should reset request counters");
+        assert!(
+            reserve_worker_launch(&db, "parent", "turn-1", &request, "gpt-5.6-terra", true)
+                .unwrap()
+                .is_none()
+        );
+        let next_turn =
+            reserve_worker_launch(&db, "parent", "turn-2", &request, "gpt-5.6-terra", true)
+                .unwrap()
+                .expect("new turn should reset request counters");
         assert!(matches!(
             next_turn.outcome.decision,
             policy::RouteDecision::SpawnWorker(_)

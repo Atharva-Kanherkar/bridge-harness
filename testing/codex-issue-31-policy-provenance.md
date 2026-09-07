@@ -37,7 +37,7 @@
 
 ## Smoke Tests
 
-- `cargo test --manifest-path src-tauri/Cargo.toml policy`
+- `cargo test --manifest-path src-tauri/Cargo.toml --workspace policy`
 - `npm test`
 - `npm run check`
 

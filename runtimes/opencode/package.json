@@ -1,0 +1,9 @@
+{
+  "name": "bridge-managed-opencode",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pinned dependency closure for Bridge's managed opencode payload.",
+  "dependencies": {
+    "opencode-ai": "1.18.29"
+  }
+}

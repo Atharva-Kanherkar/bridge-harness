@@ -37,8 +37,8 @@ const NotionLogo = ({ size = 13 }: { size?: number }) => (
 );
 const BridgeMark = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden>
-    <path d="M3 17c0-5 4-9 9-9s9 4 9 9" stroke="#9a9aa2" strokeWidth="2" strokeLinecap="round"/>
-    <path d="M3 17h18" stroke="#9a9aa2" strokeWidth="2" strokeLinecap="round"/>
+    <path d="M3 17c0-5 4-9 9-9s9 4 9 9" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+    <path d="M3 17h18" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
   </svg>
 );
 
@@ -61,7 +61,7 @@ const NEEDS_YOU: FeedItem[] = [
 ];
 
 const FYI: Array<{ glyph: React.ReactNode; text: string; when: string }> = [
-  { glyph: <GitHubLogo size={13} fill="#9a9aa2"/>, text: "Nightly CI flaked once on main, auto-retried, passed", when: "3:11 AM" },
+  { glyph: <GitHubLogo size={13} fill="currentColor"/>, text: "Nightly CI flaked once on main, auto-retried, passed", when: "3:11 AM" },
   { glyph: <SlackLogo size={12}/>, text: "#design signed off the composer spacing — no action needed", when: "9:42 PM" },
   { glyph: <GmailLogo size={13}/>, text: "Stripe invoice paid, receipt archived", when: "8:15 PM" },
   { glyph: <CalendarLogo size={13}/>, text: "Clear afternoon — nothing between standup and the 4:30 call", when: "today" },
@@ -92,7 +92,7 @@ export function WelcomeScreen({ onDismiss }: { onDismiss: () => void }) {
       <div className="home-sync">
         <span className="glyph"><GmailLogo size={12}/></span>
         <span className="glyph"><SlackLogo size={11}/></span>
-        <span className="glyph"><GitHubLogo size={12} fill="#b9b9c0"/></span>
+        <span className="glyph"><GitHubLogo size={12} fill="currentColor"/></span>
         <span className="glyph"><CalendarLogo size={12}/></span>
         <i/><small>synced 2m ago</small>
       </div>

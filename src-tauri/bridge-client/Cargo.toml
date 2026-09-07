@@ -1,0 +1,23 @@
+[package]
+name = "bridge-client"
+version = { workspace = true }
+description = "Protocol client for the bridged daemon, and the bridge CLI (exec one-shots for CI, learning runs)"
+authors = ["Bridge"]
+edition = "2021"
+publish = false
+default-run = "bridge"
+
+[[bin]]
+name = "bridge"
+path = "src/bin/bridge.rs"
+
+[dependencies]
+bridge-core = { path = "../bridge-core" }
+bridge-protocol = { path = "../bridge-protocol" }
+bridged = { path = "../bridged" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+rusqlite = { workspace = true }

@@ -1,0 +1,149 @@
+{
+  "schemaVersion": 1,
+  "agents": [
+    {
+      "id": "claude",
+      "label": "Claude Code",
+      "transport": "claude_agent_sdk_sidecar",
+      "runtimeSource": "@anthropic-ai/claude-agent-sdk via Bridge Node sidecar",
+      "credentialOwner": "vendor",
+      "nativeResume": "when_runtime_available",
+      "capabilities": [
+        "messages",
+        "streaming",
+        "reasoning",
+        "tools",
+        "commands",
+        "file_changes",
+        "approvals",
+        "usage",
+        "interrupt",
+        "briefings",
+        "steering"
+      ],
+      "sandboxModes": [
+        "read_only",
+        "workspace_write",
+        "danger_full_access"
+      ],
+      "modelSource": "runtime_catalog",
+      "modelIds": [],
+      "defaultModelId": "sonnet"
+    },
+    {
+      "id": "codex",
+      "label": "Codex",
+      "transport": "codex_app_server_stdio",
+      "runtimeSource": "codex app-server --listen stdio://",
+      "credentialOwner": "vendor",
+      "nativeResume": "when_protocol_advertises",
+      "capabilities": [
+        "messages",
+        "streaming",
+        "reasoning",
+        "plans",
+        "tools",
+        "commands",
+        "file_changes",
+        "approvals",
+        "usage",
+        "history",
+        "interrupt",
+        "briefings"
+      ],
+      "sandboxModes": [
+        "read_only",
+        "workspace_write",
+        "danger_full_access"
+      ],
+      "modelSource": "runtime_catalog",
+      "modelIds": [],
+      "defaultModelId": "gpt-5.6-luna"
+    },
+    {
+      "id": "cursor",
+      "label": "Cursor",
+      "transport": "cursor_agent_acp_stdio",
+      "runtimeSource": "cursor-agent acp",
+      "credentialOwner": "vendor",
+      "nativeResume": "when_session_advertises",
+      "capabilities": [
+        "messages",
+        "streaming",
+        "reasoning",
+        "plans",
+        "tools",
+        "commands",
+        "file_changes",
+        "approvals",
+        "usage",
+        "history",
+        "interrupt"
+      ],
+      "sandboxModes": [
+        "workspace_write",
+        "danger_full_access"
+      ],
+      "modelSource": "runtime_catalog",
+      "modelIds": [],
+      "defaultModelId": null
+    },
+    {
+      "id": "grok",
+      "label": "Grok Build",
+      "transport": "grok_agent_acp_stdio",
+      "runtimeSource": "grok agent --no-leader stdio",
+      "credentialOwner": "vendor",
+      "nativeResume": "when_session_advertises",
+      "capabilities": [
+        "messages",
+        "streaming",
+        "reasoning",
+        "plans",
+        "tools",
+        "commands",
+        "file_changes",
+        "approvals",
+        "usage",
+        "history",
+        "interrupt"
+      ],
+      "sandboxModes": [
+        "workspace_write",
+        "danger_full_access"
+      ],
+      "modelSource": "runtime_catalog",
+      "modelIds": [],
+      "defaultModelId": null
+    },
+    {
+      "id": "opencode",
+      "label": "OpenCode",
+      "transport": "opencode_authenticated_loopback_http",
+      "runtimeSource": "opencode serve --hostname 127.0.0.1 --port <bridge-port>",
+      "credentialOwner": "vendor",
+      "nativeResume": "when_catalog_discovered",
+      "capabilities": [
+        "messages",
+        "streaming",
+        "reasoning",
+        "plans",
+        "tools",
+        "commands",
+        "file_changes",
+        "approvals",
+        "usage",
+        "history",
+        "interrupt",
+        "briefings"
+      ],
+      "sandboxModes": [
+        "workspace_write",
+        "danger_full_access"
+      ],
+      "modelSource": "runtime_catalog",
+      "modelIds": [],
+      "defaultModelId": null
+    }
+  ]
+}

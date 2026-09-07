@@ -2,10 +2,16 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* ── Graphite & Paper ───────────────────────────────────────────────────────
+   Bridge hosts Codex, Claude Code, and OpenCode side by side, so its chrome
+   stays achromatic and color is reserved for meaning: agent status, diffs,
+   and approvals. Elevation is a lightness ladder — sidebar < canvas < card <
+   popover — not borders, blur, or shadows. */
+
 @theme inline {
-    --font-family-display: "Bricolage Grotesque Variable", "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+    --font-family-display: "Geist Variable", "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
     --font-family-sans: "Geist Variable", "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
-    --font-display: "Bricolage Grotesque Variable", "Geist Variable", ui-sans-serif, system-ui, sans-serif;
+    --font-display: "Geist Variable", "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
     --font-heading: var(--font-display);
     --font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     --font-sans: "Geist Variable", "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
@@ -35,6 +41,10 @@
     --color-card-foreground: var(--card-foreground);
     --color-card: var(--card);
     --color-border: var(--border);
+    --color-border-card: var(--border-card, var(--border));
+    --color-body: var(--body, var(--foreground));
+    --color-faint: var(--faint, var(--muted-foreground));
+    --color-faint-2: var(--faint-2, var(--muted-foreground));
     --color-background: var(--background);
     --color-accent-foreground: var(--accent-foreground);
     --color-accent: var(--accent);
@@ -45,6 +55,13 @@
     --color-info-foreground: var(--info-foreground);
     --color-info: var(--info);
     --color-destructive-foreground: var(--destructive-foreground);
+    --color-scrim: var(--scrim);
+    /* Harness tints. Only ever worn by a harness's own mark while its session
+       starts — transient, and identifying rather than decorative, which is why
+       the achromatic ladder above stays achromatic. */
+    --color-harness-claude: var(--harness-claude);
+    --color-harness-codex: var(--harness-codex);
+    --color-harness-opencode: var(--harness-opencode);
     --radius-sm: calc(var(--radius) * 0.6);
     --radius-md: calc(var(--radius) * 0.8);
     --radius-lg: var(--radius);
@@ -52,190 +69,411 @@
     --radius-2xl: calc(var(--radius) * 1.8);
     --radius-3xl: calc(var(--radius) * 2.2);
     --radius-4xl: calc(var(--radius) * 2.6);
+    /* Nested chrome shares a corner center with the window: inner = outer − inset. */
+    --radius-window: var(--window-radius);
+    --radius-window-control: calc(var(--window-radius) - var(--window-control-inset));
 }
 
+/* ── Light · paper ────────────────────────────────────────────────────────── */
 :root {
-    --destructive-foreground: var(--color-neutral-900);
-    --info: var(--color-neutral-200);
-    --info-foreground: var(--color-neutral-900);
-    --success: var(--color-neutral-200);
-    --success-foreground: var(--color-neutral-900);
-    --warning: var(--color-neutral-200);
-    --warning-foreground: var(--color-neutral-900);
-    --accent: --alpha(var(--color-black) / 4%);
-    --accent-foreground: var(--color-neutral-800);
-    --background: var(--color-white);
-    --border: --alpha(var(--color-black) / 8%);
-    --card: var(--color-white);
-    --card-foreground: var(--color-neutral-800);
-    --destructive: var(--color-neutral-200);
-    --foreground: var(--color-neutral-800);
-    --input: --alpha(var(--color-black) / 10%);
-    --muted: --alpha(var(--color-black) / 4%);
-    --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-black));
-    --popover: var(--color-white);
-    --popover-foreground: var(--color-neutral-800);
-    --primary: var(--color-neutral-800);
-    --primary-foreground: var(--color-neutral-50);
-    --ring: var(--color-neutral-400);
-    --secondary: --alpha(var(--color-black) / 4%);
-    --secondary-foreground: var(--color-neutral-800);
-    --code: var(--color-white);
-    --code-foreground: var(--foreground);
-    --code-highlight: --alpha(var(--color-black) / 4%);
-    --radius: 1.5rem;
-    --sidebar: var(--color-neutral-50);
-    --sidebar-accent: --alpha(var(--color-black) / 4%);
-    --sidebar-accent-foreground: var(--color-neutral-800);
-    --sidebar-border: --alpha(var(--color-black) / 6%);
-    --sidebar-foreground: color-mix(in srgb, var(--color-neutral-800) 64%, var(--sidebar));
-    --sidebar-primary: var(--color-neutral-800);
-    --sidebar-primary-foreground: var(--color-neutral-50);
-    --sidebar-ring: var(--color-neutral-400);
+    color-scheme: light;
+
+    /* The ladder */
+    --sidebar: #f3f3f1;
+    --background: #fafaf9;
+    --card: #ffffff;
+    --popover: #ffffff;
+
+    /* Text */
+    --foreground: #1f1f1d;
+    --card-foreground: #1f1f1d;
+    --popover-foreground: #1f1f1d;
+    --muted-foreground: #5d5d57;
+
+    /* Structure */
+    --border: #e7e7e4;
+    --input: #d6d6d1;
+    --muted: #f0f0ee;
+    --secondary: #f0f0ee;
+    --secondary-foreground: #1f1f1d;
+    --accent: color-mix(in srgb, #1f1f1d 5%, transparent);
+    --accent-foreground: #1f1f1d;
+
+    /* Primary is an inversion, not a hue */
+    --primary: #1f1f1d;
+    --primary-foreground: #fafaf9;
+
+    /* Slate signal — focus, links, selection. Interaction plumbing, not brand */
+    --ring: #3d6fa5;
+
+    /* Scrim always darkens, in both modes — never a tint of --foreground. */
+    --scrim: rgb(31 31 29 / 0.38);
+
+    /* Meaning — status, diffs, approvals */
+    --success: #2f7d4f;
+    --success-foreground: #fafaf9;
+    --warning: #8f5e05;
+    --warning-foreground: #fafaf9;
+    --info: #3d6fa5;
+    --info-foreground: #fafaf9;
+    --destructive: #be3d3d;
+    --destructive-foreground: #fafaf9;
+
+    /* Harness marks — one hue each, read against paper */
+    --harness-claude: #b8542f;
+    --harness-codex: #0f8f6f;
+    --harness-opencode: #6a5acd;
+
+    /* Cursor draws its own five facets rather than taking a Bridge hue. Paper
+       runs the ladder inverted so the mark keeps its shape against light. */
+    --cursor-facet-darkest: #b5b5b5;
+    --cursor-facet-mid: #909090;
+    --cursor-facet-light: #707070;
+    --cursor-facet-lighter: #303030;
+    --cursor-facet-lightest: #121212;
+
+    /* Appearance preview swatches: the literal sidebar and canvas each mode
+       renders. Fixed in both themes on purpose, because the Paper tile has to
+       look like paper while Graphite is the one switched on. */
+    --preview-paper-sidebar: #f3f3f1;
+    --preview-paper-canvas: #fafaf9;
+    --preview-graphite-sidebar: #000000;
+    --preview-graphite-canvas: #0f0f0f;
+
+    /* Code */
+    --code: #f3f3f1;
+    --code-foreground: #1f1f1d;
+    --code-highlight: color-mix(in srgb, #1f1f1d 5%, transparent);
+
+    /* Syntax — restrained, tuned for paper */
+    --syn-comment: #8e8e87;
+    --syn-keyword: #6b4e9e;
+    --syn-string: #2f6b3d;
+    --syn-number: #8a5a10;
+    --syn-function: #2c5c90;
+    --syn-type: #8a4a78;
+    --syn-tag: #2a6480;
+    --syn-punct: #5d5d57;
+
+    --radius: 0.75rem;
+
+    /* macOS Tahoe titlebar-only windows. 16pt is the measured community fallback
+       (toolbar windows are larger). Trailing titlebar chrome is inset by the
+       same amount on both axes so its top-right arc is concentric with the window. */
+    --window-radius: 16px;
+    --window-control-inset: 6px;
+
+    --sidebar-foreground: #5d5d57;
+    --sidebar-accent: color-mix(in srgb, #1f1f1d 5%, transparent);
+    --sidebar-accent-foreground: #1f1f1d;
+    --sidebar-border: #e2e2de;
+    --sidebar-primary: #1f1f1d;
+    --sidebar-primary-foreground: #fafaf9;
+    --sidebar-ring: #3d6fa5;
 }
 
+/* ── Dark · graphite ──────────────────────────────────────────────────────── */
 .dark {
-    --destructive-foreground: var(--color-neutral-100);
-    --info: var(--color-neutral-800);
-    --info-foreground: var(--color-neutral-100);
-    --success: var(--color-neutral-800);
-    --success-foreground: var(--color-neutral-100);
-    --warning: var(--color-neutral-800);
-    --warning-foreground: var(--color-neutral-100);
-    --accent: --alpha(var(--color-white) / 4%);
-    --accent-foreground: var(--color-neutral-100);
-    --background: color-mix(in srgb, var(--color-neutral-950) 95%, var(--color-black));
-    --border: --alpha(var(--color-white) / 10%);
-    --card: color-mix(in srgb, var(--background) 98%, var(--color-black));
-    --card-foreground: var(--color-neutral-100);
-    --destructive: var(--color-neutral-800);
-    --foreground: var(--color-neutral-100);
-    --input: --alpha(var(--color-white) / 15%);
-    --muted: --alpha(var(--color-white) / 4%);
-    --muted-foreground: color-mix(in srgb, var(--color-neutral-500) 90%, var(--color-white));
-    --popover: color-mix(in srgb, var(--background) 98%, var(--color-black));
-    --popover-foreground: var(--color-neutral-100);
-    --primary: var(--color-neutral-100);
-    --primary-foreground: var(--color-neutral-900);
-    --ring: var(--color-neutral-500);
-    --secondary: --alpha(var(--color-white) / 8%);
-    --secondary-foreground: var(--color-neutral-100);
-    --code: color-mix(in srgb, var(--background) 98%, var(--color-black));
-    --code-foreground: var(--foreground);
-    --code-highlight: --alpha(var(--color-white) / 8%);
-    --sidebar: color-mix(in srgb, var(--color-neutral-800) 62%, var(--color-neutral-950));
-    --sidebar-accent: --alpha(var(--color-white) / 7%);
-    --sidebar-accent-foreground: var(--color-neutral-100);
-    --sidebar-border: --alpha(var(--color-white) / 8%);
-    --sidebar-foreground: color-mix(in srgb, var(--color-neutral-100) 72%, var(--sidebar));
-    --sidebar-primary: var(--color-neutral-100);
-    --sidebar-primary-foreground: var(--color-neutral-900);
-    --sidebar-ring: var(--color-neutral-400);
+    color-scheme: dark;
+
+    /* Pure-black shell — the ground is true black; raised surfaces lift off it
+       in neutral greys. Color lives only in harness marks and status ink. */
+    --sidebar: #000000;
+    --background: #000000;
+    --card: #0f0f0f;
+    --popover: #161616;
+
+    --foreground: #e4e4e4;
+    --card-foreground: #e4e4e4;
+    --popover-foreground: #e4e4e4;
+    /* Body copy sits a step under --foreground; muted is the row subtitle ink. */
+    --body: #c9c9c9;
+    --muted-foreground: #8b8b8b;
+    /* Faint ink for times, counts and paths. */
+    --faint: #6b6b6b;
+    --faint-2: #4a4a4a;
+
+    --border: #1e1e1e;
+    /* Hairline lifts to #242424 on cards/inputs where it needs to read. */
+    --border-card: #242424;
+    --input: #242424;
+    --muted: #1c1c1c;
+    --secondary: #161616;
+    --secondary-foreground: #e4e4e4;
+    --accent: color-mix(in srgb, #e4e4e4 6%, transparent);
+    --accent-foreground: #e4e4e4;
+
+    --primary: #e4e4e4;
+    --primary-foreground: #000000;
+
+    --ring: #6a9bcc;
+    --scrim: rgb(0 0 0 / 0.62);
+
+    --success: #5db872;
+    --success-foreground: #14210f;
+    --warning: #d4a957;
+    --warning-foreground: #211a0c;
+    --info: #6a9bcc;
+    --info-foreground: #0d1520;
+    --destructive: #e5695e;
+    --destructive-foreground: #210f0d;
+
+    /* Harness marks — lifted for graphite, like the meaning colours above */
+    --harness-claude: #d97757;
+    --harness-codex: #4bc39c;
+    --harness-opencode: #9b8cf0;
+
+    /* Cursor's own greys, as the vendor draws them. */
+    --cursor-facet-darkest: #4a4a4a;
+    --cursor-facet-mid: #6f6f6f;
+    --cursor-facet-light: #8f8f8f;
+    --cursor-facet-lighter: #cfcfcf;
+    --cursor-facet-lightest: #ededed;
+
+    --code: #0a0a0a;
+    --code-foreground: #ececea;
+    --code-highlight: color-mix(in srgb, #ececea 7%, transparent);
+
+    --syn-comment: #78786f;
+    --syn-keyword: #b9a0dc;
+    --syn-string: #86c08a;
+    --syn-number: #ddb877;
+    --syn-function: #86abdc;
+    --syn-type: #d6a0c8;
+    --syn-tag: #8fbfd8;
+    --syn-punct: #9a9a94;
+
+    --sidebar-foreground: #8b8b8b;
+    --sidebar-accent: color-mix(in srgb, #e4e4e4 6%, transparent);
+    --sidebar-accent-foreground: #e4e4e4;
+    --sidebar-border: #161616;
+    --sidebar-primary: #e4e4e4;
+    --sidebar-primary-foreground: #000000;
+    --sidebar-ring: #6a9bcc;
+}
+
+/* ── Dark · vibrancy skin (cursor-style translucency) ─────────────────────────
+   Pure black cannot host the AppKit wallpaper wash — a color-mix of #000 and
+   transparent is still black. The translucent shell needs a near-black ground
+   to lift the material into a warm, cursor-like haze, so the vibrancy skin
+   restores the graphite near-blacks the opaque shell dropped. Higher specificity
+   than `.dark` alone (class + attribute) and declared after it, so it wins only
+   when the user opts into this skin; graphite stays pure black. */
+.dark[data-skin="vibrancy"] {
+    --sidebar: #0d0d0d;
+    --background: #111111;
+    --card: #161616;
+    --popover: #1a1a1a;
+    --primary-foreground: #111111;
+    --code: #0e0e0d;
+    --sidebar-border: #171717;
+    --sidebar-primary-foreground: #111111;
+}
+
+/* Unlayered so this beats `:root { --window-radius: 16px }`. Fullscreen is a
+   flush rectangle; chip radius stays 10pt because there is no window arc to
+   stay concentric with. */
+html[data-fullscreen],
+html[data-flush-window] {
+    --window-radius: 0px;
+    --radius-window: 0px;
+    --radius-window-control: 10px;
+}
+
+/* Traffic-light inset (`pl-24`) is only real in a windowed Tauri frame.
+   Vite, and native macOS fullscreen (lights auto-hide), sit the panel on
+   the left edge. Unlayered so this beats the utility. */
+html:not([data-tauri]) .u-traffic-inset,
+html[data-native-fullscreen] .u-traffic-inset {
+    padding-left: 0.5rem;
 }
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border;
     }
   html {
     @apply font-sans;
-    color-scheme: dark;
-    background: transparent;
+    background: var(--color-background);
     }
-  /* Translucent base so the native macOS vibrancy material shows through as
-     frosted glass. Falls back to a dark tint when there is no vibrancy. */
   body {
     @apply relative isolate font-sans antialiased;
-    background: transparent;
-    color: rgb(232 232 234);
+    accent-color: var(--color-primary);
+    background: var(--color-background);
+    color: var(--color-foreground);
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+    }
+  /* Desktop-only: let AppKit's Sidebar material (and wallpaper tint) show
+     through. Vite in Chrome never sets data-tauri, so it stays opaque. */
+  html[data-tauri],
+  html[data-tauri] body,
+  html[data-tauri] #root {
+    background: transparent;
     }
   code, kbd, samp, pre {
     font-family: var(--font-mono);
     }
   ::selection {
-    background: color-mix(in srgb, var(--color-foreground) 22%, transparent);
+    background: color-mix(in srgb, var(--color-ring) 26%, transparent);
+    }
+  /* One focus treatment everywhere: 2px slate ring, 2px offset, both modes. */
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
     }
 }
 
-/* ── macOS glass system ─────────────────────────────────────────────────────
-   Three elevations of frosted glass. All share: a translucent fill, heavy
-   backdrop blur + saturation (the macOS "vibrancy" recipe), a 1px hairline
-   edge, and an inset top-light that reads as a light source from above. */
+/* ── Surface system ─────────────────────────────────────────────────────────
+   Two tiers only. Resting surfaces are opaque and quiet; floating surfaces
+   get a shadow because they genuinely sit above the page. Nothing blurs.
+   The `u-glass*` names are retained as aliases so existing markup keeps
+   working while it migrates to the `u-surface` / `u-overlay` vocabulary. */
 
-/* Floating panels, popovers, menus, dialogs, toasts. */
-.u-glass {
-  background: color-mix(in srgb, var(--color-card) 42%, transparent);
-  -webkit-backdrop-filter: blur(32px) saturate(190%);
-  backdrop-filter: blur(32px) saturate(190%);
-  border: 1px solid color-mix(in srgb, var(--color-foreground) 9%, transparent);
-  box-shadow:
-    0 24px 60px -20px rgba(0, 0, 0, 0.6),
-    0 2px 8px -2px rgba(0, 0, 0, 0.25),
-    inset 0 1px 0 0 color-mix(in srgb, var(--color-foreground) 10%, transparent);
+@layer components {
+  /* Resting: cards, rows, tiles, inputs, the sidebar rail. */
+  .u-surface,
+  .u-glass-soft {
+    background: var(--color-card);
+    border: 1px solid var(--color-border);
+  }
+
+  /* Floating: menus, popovers, dialogs, toasts. */
+  .u-overlay,
+  .u-glass {
+    background: var(--color-popover);
+    border: 1px solid var(--color-border);
+    box-shadow:
+      0 16px 40px -18px color-mix(in srgb, #000 45%, transparent),
+      0 2px 8px -4px color-mix(in srgb, #000 22%, transparent);
+  }
+
+  .u-overlay-strong,
+  .u-glass-popover {
+    background: var(--color-popover);
+    border: 1px solid var(--color-border);
+    box-shadow:
+      0 24px 60px -18px color-mix(in srgb, #000 55%, transparent),
+      0 4px 12px -6px color-mix(in srgb, #000 28%, transparent);
+  }
+
+  /* Liquid glass: a floating layer that refracts what sits beneath it. Same
+     popover token family, thinned so the blur has something to chew on. */
+  .u-glass-liquid {
+    background: color-mix(in srgb, var(--color-popover) 76%, transparent);
+    -webkit-backdrop-filter: blur(24px) saturate(160%);
+    backdrop-filter: blur(24px) saturate(160%);
+    border: 1px solid color-mix(in srgb, var(--color-border) 75%, transparent);
+    box-shadow:
+      inset 0 1px 0 color-mix(in srgb, var(--color-foreground) 7%, transparent),
+      0 24px 60px -18px color-mix(in srgb, #000 55%, transparent),
+      0 4px 12px -6px color-mix(in srgb, #000 28%, transparent);
+  }
+
+  /* Unavailable context material: present in the window, uncountable by Bridge. */
+  .ctx-hatch {
+    background: repeating-linear-gradient(
+      -45deg,
+      color-mix(in srgb, var(--color-destructive) 32%, transparent) 0 3px,
+      transparent 3px 7px
+    );
+  }
+
+  /* macOS segmented control (Plugins / Skills, Public / Personal, …). */
+  .u-segmented {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    border-radius: 10px;
+    background: var(--color-muted);
+    border: 1px solid var(--color-border);
+  }
+  .u-segmented-item {
+    border-radius: 8px;
+    padding: 3px 12px;
+    font-size: 11.5px;
+    font-weight: 500;
+    letter-spacing: -0.006em;
+    color: var(--color-muted-foreground);
+    transition: color 150ms ease, background 150ms ease, box-shadow 150ms ease;
+  }
+  .u-segmented-item:hover:not([data-active="true"]) {
+    color: var(--color-foreground);
+  }
+  .u-segmented-item[data-active="true"] {
+    color: var(--color-foreground);
+    background: var(--color-card);
+    box-shadow: 0 1px 2px color-mix(in srgb, #000 18%, transparent);
+  }
+
+  .u-hairline-t {
+    border-top: 1px solid var(--color-border);
+  }
+
+  /* Apple squircles where the engine supports them. Unsupported browsers keep
+     circular arcs; those still share a center when the radius follows the inset. */
+  .rounded-window,
+  .rounded-window-control {
+    corner-shape: squircle;
+  }
 }
 
-/* Heavy overlay glass — popovers and menus floating above content. */
-.u-glass-popover {
-  background: color-mix(in srgb, var(--color-neutral-950) 68%, transparent);
-  -webkit-backdrop-filter: blur(36px) saturate(200%);
-  backdrop-filter: blur(36px) saturate(200%);
-  border: 1px solid color-mix(in srgb, var(--color-foreground) 10%, transparent);
-  box-shadow:
-    0 28px 70px -18px rgba(0, 0, 0, 0.7),
-    0 4px 12px -4px rgba(0, 0, 0, 0.3),
-    inset 0 1px 0 0 color-mix(in srgb, var(--color-foreground) 11%, transparent);
+/* Desktop-only: native Sidebar material sits behind the webview, and only the
+   rail lets it through. The rail keeps a light token wash over the material —
+   high fills multiply the wallpaper wash away (90% left 10% of an already
+   subtle signal and read as solid), while a bare material reads too raw. The
+   canvas stays solid: against a near-black ground even a few percent of the
+   material lifts it to a grey haze. These live in utilities so they beat
+   `bg-sidebar` / `bg-background`. Vite in Chrome never sets data-tauri, so it
+   stays fully opaque. */
+@layer utilities {
+  /* Pure-black shell: no AppKit material bleeds through. The wallpaper wash was
+     the "brown tint" — a warm desktop tinted the translucent grounds. Both the
+     rail and the canvas are now fully opaque, so the ground is exactly its
+     token, never the wallpaper behind the window. */
+  html[data-tauri] .u-app-shell {
+    background: var(--color-background);
+  }
+  html[data-tauri] .u-vibrancy-sidebar {
+    background-color: var(--color-sidebar);
+  }
+  html[data-tauri] .u-vibrancy-canvas {
+    background-color: var(--color-background);
+  }
+
+  /* Vibrancy skin: the cursor-style translucent shell. The webview is
+     transparent over an NSVisualEffectView, so dropping the grounds to a
+     color-mix against transparent lets AppKit's material — and the desktop
+     wallpaper tint — wash through. Sidebar keeps more material (60%) than the
+     canvas (82% ground) so the reading surface stays legible. These carry an
+     extra attribute over the opaque defaults above, so they win only under this
+     skin; graphite keeps the solid grounds. Chrome (no data-tauri) has no
+     material behind it and stays opaque regardless.
+
+     Mode-agnostic on purpose (this restores the original pre-graphite
+     behaviour). Dark needs the near-black `.dark[data-skin=vibrancy]` lift
+     because a color-mix of pure black against transparent is still black and
+     shows no tint; light needs no such compensation — the paper ground
+     (#fafaf9) is already a high-luminance frost base that the wallpaper tints
+     cleanly. */
+  html[data-tauri][data-skin="vibrancy"] .u-app-shell {
+    background: transparent;
+  }
+  html[data-tauri][data-skin="vibrancy"] .u-vibrancy-sidebar {
+    background-color: color-mix(in srgb, var(--color-sidebar) 60%, transparent);
+  }
+  html[data-tauri][data-skin="vibrancy"] .u-vibrancy-canvas {
+    background-color: color-mix(in srgb, var(--color-background) 82%, transparent);
+  }
 }
 
-/* Resting surfaces — cards, rows, inputs, the sidebar rail. Quiet, no drop shadow. */
-.u-glass-soft {
-  background: color-mix(in srgb, var(--color-foreground) 3.5%, transparent);
-  -webkit-backdrop-filter: blur(24px) saturate(170%);
-  backdrop-filter: blur(24px) saturate(170%);
-  border: 1px solid color-mix(in srgb, var(--color-foreground) 6.5%, transparent);
-  box-shadow: inset 0 1px 0 0 color-mix(in srgb, var(--color-foreground) 5%, transparent);
-}
-
-/* macOS segmented control (Plugins / Skills, Public / Personal, …). */
-.u-segmented {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  padding: 2px;
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--color-foreground) 5%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-foreground) 6%, transparent);
-}
-.u-segmented-item {
-  border-radius: 8px;
-  padding: 3px 12px;
-  font-size: 11.5px;
-  font-weight: 500;
-  letter-spacing: -0.006em;
-  color: var(--color-neutral-500);
-  transition: color 150ms ease, background 150ms ease, box-shadow 150ms ease;
-}
-.u-segmented-item:hover:not([data-active="true"]) {
-  color: var(--color-neutral-300);
-}
-.u-segmented-item[data-active="true"] {
-  color: var(--color-neutral-100);
-  background: color-mix(in srgb, var(--color-foreground) 10%, transparent);
-  box-shadow:
-    0 1px 3px rgba(0, 0, 0, 0.35),
-    inset 0 1px 0 0 color-mix(in srgb, var(--color-foreground) 9%, transparent);
-}
-
-.u-hairline-t {
-  box-shadow: inset 0 1px 0 0 color-mix(in srgb, var(--color-foreground) 9%, transparent);
-}
 
 /* ── Scrollbars: thin, transient, macOS-style ─────────────────────────────── */
 * {
   scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--color-foreground) 14%, transparent) transparent;
+  scrollbar-color: color-mix(in srgb, var(--color-foreground) 18%, transparent) transparent;
 }
 ::-webkit-scrollbar {
   width: 8px;
@@ -245,13 +483,13 @@
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: color-mix(in srgb, var(--color-foreground) 13%, transparent);
+  background: color-mix(in srgb, var(--color-foreground) 17%, transparent);
   border-radius: 999px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: color-mix(in srgb, var(--color-foreground) 24%, transparent);
+  background: color-mix(in srgb, var(--color-foreground) 28%, transparent);
   border: 2px solid transparent;
   background-clip: padding-box;
 }
@@ -259,78 +497,124 @@
   background: transparent;
 }
 
+/* ── Motion ─────────────────────────────────────────────────────────────────
+   Entrances are short and directional; nothing loops except live-state hints. */
+
 @keyframes home-rise {
   from { opacity: 0; transform: translateY(8px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
 .animate-home-rise {
-  animation: home-rise 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: home-rise 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-/* Sweeping highlight used for "Thinking…" text while the agent works. */
-@keyframes shimmer {
-  0% { background-position: 200% 0; }
-  100% { background-position: -200% 0; }
-}
-
-/* Soft breathing dot that replaces the old loading spinners. */
+/* Soft breathing dot used instead of loading spinners. */
 @keyframes thinking-pulse {
   0%, 100% { opacity: 0.3; transform: scale(0.72); }
   50% { opacity: 1; transform: scale(1); }
 }
 
-/* ── Skillware visual system ──────────────────────────────────────────────
-   Space background, chat entrance motion, and the dependency-free markdown
-   renderer. Ported from skillware's globals.css. `font-display` is provided
-   by the --font-display theme token above (Tailwind generates the utility),
-   so no bespoke class is needed. */
+/* The transcript's 6px rise and its 40ms stagger now live in `src/motion.ts`,
+   because a CSS animation replays on every remount and cannot be told "only the
+   row that just arrived" — which is the one thing a transcript needs. The curve
+   and the cadence are unchanged; `BRIDGE_EASE` and `MOTION_STAGGER` carry them. */
 
-.space-dark {
-  color-scheme: dark;
-  background: #050507;
-}
-
-@keyframes space-drift-a {
-  from { transform: translate(0, 0) scale(1); }
-  to { transform: translate(3rem, -2rem) scale(1.08); }
-}
-
-@keyframes space-drift-b {
-  from { transform: translate(0, 0) scale(1); }
-  to { transform: translate(-2rem, 3rem) scale(1.05); }
-}
-
-@keyframes star-twinkle {
-  0% { opacity: var(--star-opacity, 0.3); transform: scale(1); }
-  100% { opacity: calc(var(--star-opacity, 0.3) * 1.8); transform: scale(1.2); }
-}
-
-@keyframes chat-message-enter {
-  from { opacity: 0; transform: translateY(6px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.chat-message-enter {
-  animation: chat-message-enter 0.3s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-.chat-message-enter:nth-child(1) { animation-delay: 0ms; }
-.chat-message-enter:nth-child(2) { animation-delay: 40ms; }
-.chat-message-enter:nth-child(3) { animation-delay: 80ms; }
-.chat-message-enter:nth-child(4) { animation-delay: 120ms; }
-.chat-message-enter:nth-child(5) { animation-delay: 160ms; }
-
+/* Sweeping highlight while the agent is working but nothing has streamed yet. */
 @keyframes thinking-shimmer {
-  0% { background-position: -200% 0; opacity: 0.3; }
-  50% { opacity: 0.6; }
-  100% { background-position: 200% 0; opacity: 0.3; }
+  0% { background-position: -200% 0; opacity: 0.35; }
+  50% { opacity: 0.7; }
+  100% { background-position: 200% 0; opacity: 0.35; }
 }
 
 .thinking-shimmer {
-  background: linear-gradient(90deg, rgba(255,255,255,0) 0%, rgba(255,255,255,0.25) 50%, rgba(255,255,255,0) 100%);
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--color-foreground) 32%, transparent) 50%,
+    transparent 100%
+  );
   background-size: 200% 100%;
   animation: thinking-shimmer 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* The startup mark: the harness's own glyph, breathing while Bridge waits on
+   it. These are vendor marks, so they never rotate or deform — opacity is the
+   only channel that moves. The breathe is the same 2s cadence the shimmer and
+   the in-progress pulse keep. `@media (prefers-reduced-motion)` at the bottom
+   of this file freezes it. */
+@keyframes harness-breathe {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.harness-mark-live {
+  animation: harness-breathe 2s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* Text that shimmers while something is in flight. Now one caller: the startup
+   narration row, which is session-level and says what Bridge is waiting on
+   before any item exists. The transcript's own thinking mark is
+   `.thinking-shimmer` above, and it is the only animation an item-level row
+   uses to say "there is more of this coming" (see
+   `docs/transcript-behavior-contract.md`). */
+.text-shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-muted-foreground) 0%,
+    var(--color-foreground) 50%,
+    var(--color-muted-foreground) 100%
+  );
+  background-size: 200% 100%;
+  background-clip: text;
+  color: transparent;
+  animation: text-shimmer-sweep 2s linear infinite;
+}
+
+/* The thinking-effort slider's change feedback: the thumb pops, a halo in the
+   harness tint blooms and fades, the single label rises in. All transform and
+   opacity; the footer box itself never moves. */
+@keyframes effort-thumb {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.35); }
+  100% { transform: scale(1); }
+}
+
+@keyframes effort-halo {
+  0% { opacity: 0.55; transform: scale(0.6); }
+  100% { opacity: 0; transform: scale(1.6); }
+}
+
+@keyframes effort-label {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-effort-thumb { animation: effort-thumb 0.36s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+.animate-effort-halo { animation: effort-halo 0.5s ease-out both; }
+.animate-effort-label { animation: effort-label 0.18s cubic-bezier(0.16, 1, 0.3, 1) both; }
+
+@keyframes text-shimmer-sweep {
+  from { background-position: -200% 0; }
+  to { background-position: 200% 0; }
+}
+
+/* The boot splash: static markup in index.html, painted before any JS runs,
+   so the window never shows a blank frame while the webview boots and React
+   hydrates (#370). `dismissBootSplash` (src/bootSplash.ts) adds `.boot-splash-hide`
+   once the app has actually painted, then removes the node once the fade ends. */
+@keyframes boot-splash-in {
+  from { opacity: 0; filter: blur(6px); transform: scale(0.97); }
+  to { opacity: 1; filter: blur(0); transform: scale(1); }
+}
+
+.boot-splash-mark {
+  animation: boot-splash-in 900ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.boot-splash-hide {
+  opacity: 0;
+  transition: opacity 220ms ease;
 }
 
 @keyframes page-mount {
@@ -339,7 +623,7 @@
 }
 
 .animate-page-mount {
-  animation: page-mount 0.35s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: page-mount 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
 @keyframes page-enter {
@@ -348,7 +632,28 @@
 }
 
 .animate-page-enter {
-  animation: page-enter 0.4s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation: page-enter 0.36s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+/* The live accent bar on a working Mission Control tile. */
+@keyframes mission-pulse {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
+.mission-live-accent {
+  animation: mission-pulse 2.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 @supports (padding: max(0px)) {
@@ -357,11 +662,14 @@
   }
 }
 
+/* ── Markdown ───────────────────────────────────────────────────────────────
+   The agent's prose sits directly on the canvas — no bubble, no card. */
+
 .md {
   font-size: 15px;
   line-height: 1.7;
   letter-spacing: -0.006em;
-  color: #dcdcde;
+  color: var(--color-foreground);
 }
 
 .md > :first-child { margin-top: 0; }
@@ -372,7 +680,7 @@
   font-weight: 600;
   line-height: 1.3;
   letter-spacing: -0.014em;
-  color: #f7f7f8;
+  color: var(--color-foreground);
 }
 .md h1 { font-size: 1.35em; }
 .md h2 { font-size: 1.2em; }
@@ -381,29 +689,50 @@
 .md ul { list-style: disc; }
 .md ol { list-style: decimal; }
 .md li { margin: 0.25em 0; }
-.md li::marker { color: #737373; }
-.md a { color: #93c5fd; text-decoration: underline; text-underline-offset: 2px; }
-.md a:hover { color: #bfdbfe; }
-.md strong { color: #f5f5f5; font-weight: 600; }
+.md li::marker { color: var(--color-muted-foreground); }
+.md a {
+  color: var(--color-ring);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.md a:hover { color: color-mix(in srgb, var(--color-ring) 78%, var(--color-foreground)); }
+.md strong { color: var(--color-foreground); font-weight: 600; }
 .md blockquote {
   margin: 0.7em 0;
   padding: 0.1em 0 0.1em 1em;
-  border-left: 2px solid rgba(255, 255, 255, 0.15);
-  color: #a3a3a3;
+  border-left: 2px solid var(--color-border);
+  color: var(--color-muted-foreground);
 }
 .md hr {
   margin: 1.2em 0;
   border: 0;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid var(--color-border);
 }
+.md table {
+  width: 100%;
+  margin: 0.8em 0;
+  border-collapse: collapse;
+  font-size: 0.92em;
+}
+.md th, .md td {
+  border: 1px solid var(--color-border);
+  padding: 0.35em 0.6em;
+  text-align: left;
+}
+.md th { background: var(--color-muted); font-weight: 600; }
+
+.md.dim {
+  opacity: 0.7;
+}
+
+/* ── Code ───────────────────────────────────────────────────────────────── */
 
 .code-block {
   margin: 0.8em 0;
   overflow: hidden;
-  border-radius: 0.9rem;
-  border: 1px solid rgba(255, 255, 255, 0.07);
-  background: rgba(0, 0, 0, 0.42);
-  box-shadow: inset 0 1px 0 0 rgba(255, 255, 255, 0.04);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-code);
 }
 
 .code-block-header {
@@ -411,15 +740,15 @@
   align-items: center;
   justify-content: space-between;
   padding: 0.35rem 0.5rem 0.35rem 0.85rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.055);
-  background: rgba(255, 255, 255, 0.025);
+  border-bottom: 1px solid var(--color-border);
+  background: var(--color-code-highlight);
 }
 
 .code-block-lang {
   font-size: 11px;
   letter-spacing: 0.04em;
   text-transform: lowercase;
-  color: #737373;
+  color: var(--color-muted-foreground);
 }
 
 .code-block-copy {
@@ -427,15 +756,15 @@
   align-items: center;
   gap: 0.3rem;
   font-size: 11px;
-  color: #a3a3a3;
+  color: var(--color-muted-foreground);
   padding: 0.15rem 0.45rem;
   border-radius: 0.35rem;
-  transition: all 0.15s ease;
+  transition: color 0.15s ease, background 0.15s ease;
 }
 
 .code-block-copy:hover {
-  color: #e5e5e5;
-  background: rgba(255, 255, 255, 0.06);
+  color: var(--color-foreground);
+  background: var(--color-accent);
 }
 
 .code-block pre {
@@ -448,7 +777,7 @@
   font-family: var(--font-mono);
   font-size: 13px;
   line-height: 1.65;
-  color: #e8e8ea;
+  color: var(--code-foreground);
   background: none;
   padding: 0;
 }
@@ -458,107 +787,273 @@
   font-size: 0.85em;
   padding: 0.14em 0.42em;
   border-radius: 0.4rem;
-  background: rgba(255, 255, 255, 0.07);
-  border: 1px solid rgba(255, 255, 255, 0.055);
-  color: #ececee;
+  background: var(--color-code-highlight);
+  border: 1px solid var(--color-border);
+  color: var(--color-foreground);
 }
 
-.md.dim {
-  opacity: 0.7;
+/* ── Math / Mermaid copy affordance ────────────────────────────────────────
+   These blocks have no header like code does, so the copy button floats in
+   the corner and only asserts itself on hover/focus. */
+
+.rich-block {
+  position: relative;
 }
 
-/* ── Syntax highlighting: a quiet macOS palette tuned for the glass UI ────── */
-.hljs {
-  color: #e8e8ea;
+.rich-block-copy {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.35rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 11px;
+  color: var(--color-muted-foreground);
+  padding: 0.15rem 0.45rem;
+  border-radius: 0.35rem;
+  background: var(--color-code-highlight);
+  border: 1px solid var(--color-border);
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.rich-block:hover .rich-block-copy,
+.rich-block-copy:focus-visible {
+  opacity: 1;
+}
+
+.rich-block-copy:hover {
+  color: var(--color-foreground);
+  background: var(--color-accent);
+}
+
+/* ── HTML block ─────────────────────────────────────────────────────────── */
+
+.html-block {
+  overflow: hidden;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  background: var(--color-code);
+}
+
+.html-block iframe {
+  display: block;
+  height: 22rem;
+}
+
+/* ── Syntax highlighting ────────────────────────────────────────────────── */
+/* Class names emitted by `highlight.ts`'s scope classifier (Shiki tokens
+   bucketed by TextMate scope, not Shiki's own theme colours) — kept
+   deliberately generic (not `shiki-*`) because the classifier, not the
+   library, owns this taxonomy. */
+.stx {
+  color: var(--code-foreground);
   background: transparent;
 }
-.hljs-comment,
-.hljs-quote {
-  color: #63636b;
+.stx-comment {
+  color: var(--syn-comment);
   font-style: italic;
 }
-.hljs-keyword,
-.hljs-selector-tag,
-.hljs-meta .hljs-keyword,
-.hljs-doctag {
-  color: #c4b5fd;
+.stx-keyword {
+  color: var(--syn-keyword);
 }
-.hljs-string,
-.hljs-regexp,
-.hljs-meta .hljs-string {
-  color: #6ee7b7;
+.stx-string {
+  color: var(--syn-string);
 }
-.hljs-number,
-.hljs-literal {
-  color: #fcd34d;
+.stx-number {
+  color: var(--syn-number);
 }
-.hljs-title,
-.hljs-title.function_,
-.hljs-section {
-  color: #93c5fd;
+.stx-function {
+  color: var(--syn-function);
 }
-.hljs-title.class_,
-.hljs-type,
-.hljs-built_in {
-  color: #f0abfc;
+.stx-type {
+  color: var(--syn-type);
 }
-.hljs-name,
-.hljs-tag,
-.hljs-selector-class,
-.hljs-selector-id {
-  color: #7dd3fc;
+.stx-tag {
+  color: var(--syn-tag);
 }
-.hljs-attr,
-.hljs-attribute,
-.hljs-variable,
-.hljs-template-variable,
-.hljs-selector-attr {
-  color: #e8e8ea;
+.stx-params {
+  color: var(--color-muted-foreground);
 }
-.hljs-params {
-  color: #d4d4d8;
+.stx-punct {
+  color: var(--syn-punct);
 }
-.hljs-punctuation,
-.hljs-operator {
-  color: #a1a1aa;
-}
-.hljs-symbol,
-.hljs-bullet,
-.hljs-link {
-  color: #f9a8d4;
-}
-.hljs-emphasis {
+.stx-emphasis {
   font-style: italic;
 }
-.hljs-strong {
+.stx-strong {
   font-weight: 600;
 }
-.hljs-addition {
-  color: #6ee7b7;
-  background: rgba(52, 211, 153, 0.09);
+.stx-addition {
+  color: var(--color-success);
+  background: color-mix(in srgb, var(--color-success) 12%, transparent);
 }
-.hljs-deletion {
-  color: #fca5a5;
-  background: rgba(248, 113, 113, 0.09);
+.stx-deletion {
+  color: var(--color-destructive);
+  background: color-mix(in srgb, var(--color-destructive) 11%, transparent);
 }
 
-/* Unified-diff rendering for tool outputs and file patches. */
-.diff-view {
+
+/* ── Code editor ─────────────────────────────────────────────────────────────
+   CodeMirror ships its own class names, so it is one of the few things
+   utilities cannot express. It is themed here from the same `--syn-*` tokens
+   the diff viewer and markdown code blocks use, via `classHighlighter`'s
+   `tok-*` classes — one palette for every piece of code in the app. */
+.cm-editor {
+  height: 100%;
+  background: var(--color-code);
+  color: var(--code-foreground);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: 12.5px;
   line-height: 1.65;
-  white-space: pre-wrap;
-  word-break: break-word;
 }
-.diff-view .hljs-addition,
-.diff-view .hljs-deletion {
-  display: block;
-  margin: 0 -0.85rem;
-  padding: 0 0.85rem;
+.cm-editor.cm-focused {
+  outline: none;
 }
-.diff-view .hljs-addition {
-  border-left: 2px solid rgba(52, 211, 153, 0.5);
+.cm-editor .cm-scroller {
+  font-family: inherit;
+  line-height: inherit;
+  /* Momentum scrolling over a repaint-heavy surface; without this the gutter
+     visibly lags the text on a trackpad flick. */
+  overscroll-behavior: contain;
 }
-.diff-view .hljs-deletion {
-  border-left: 2px solid rgba(248, 113, 113, 0.5);
+.cm-editor .cm-content {
+  padding: 8px 0 12px;
+  caret-color: var(--color-foreground);
 }
+/* The full-tab editor keeps a screenful of slack below the last line, so the
+   line you are working on can sit mid-screen. Inline editors size to their
+   content instead, and would just render a hole. */
+.cm-roomy .cm-content {
+  padding-bottom: 40vh;
+}
+/* An editor embedded in a scrolling page: as tall as the file, then it
+   scrolls internally rather than swallowing the page. */
+.cm-fit .cm-editor {
+  height: auto;
+}
+.cm-fit .cm-scroller {
+  max-height: 60vh;
+}
+.cm-editor .cm-line {
+  padding: 0 10px 0 6px;
+}
+.cm-editor .cm-gutters {
+  background: var(--color-code);
+  border-right: 1px solid var(--color-border);
+  color: color-mix(in srgb, var(--color-muted-foreground) 55%, transparent);
+  font-size: 11px;
+}
+.cm-editor .cm-lineNumbers .cm-gutterElement {
+  padding: 0 10px 0 14px;
+  font-variant-numeric: tabular-nums;
+}
+.cm-editor .cm-foldGutter .cm-gutterElement {
+  padding: 0 4px;
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.cm-editor:hover .cm-foldGutter .cm-gutterElement {
+  opacity: 1;
+}
+.cm-editor .cm-activeLine {
+  background: var(--color-code-highlight);
+}
+.cm-editor .cm-activeLineGutter {
+  background: var(--color-code-highlight);
+  color: var(--color-foreground);
+}
+.cm-editor .cm-cursor,
+.cm-editor .cm-dropCursor {
+  border-left-color: var(--color-foreground);
+  border-left-width: 2px;
+}
+.cm-editor .cm-selectionBackground,
+.cm-editor .cm-content ::selection {
+  background: color-mix(in srgb, var(--color-info) 26%, transparent);
+}
+.cm-editor.cm-focused .cm-selectionBackground {
+  background: color-mix(in srgb, var(--color-info) 34%, transparent);
+}
+.cm-editor .cm-selectionMatch {
+  background: color-mix(in srgb, var(--color-info) 16%, transparent);
+}
+.cm-editor .cm-matchingBracket,
+.cm-editor.cm-focused .cm-matchingBracket {
+  background: color-mix(in srgb, var(--color-info) 22%, transparent);
+  outline: none;
+}
+.cm-editor .cm-nonmatchingBracket {
+  background: color-mix(in srgb, var(--color-destructive) 22%, transparent);
+}
+.cm-editor .cm-specialChar {
+  color: var(--color-destructive);
+}
+.cm-editor .cm-foldPlaceholder {
+  background: var(--color-code-highlight);
+  border: 1px solid var(--color-border);
+  border-radius: 0.3rem;
+  color: var(--color-muted-foreground);
+  padding: 0 0.35em;
+}
+/* Find/replace panel: CodeMirror's own markup, dressed in app tokens. */
+.cm-editor .cm-panels {
+  background: var(--color-popover);
+  color: var(--color-foreground);
+  border-bottom: 1px solid var(--color-border);
+}
+.cm-editor .cm-panel.cm-search {
+  padding: 6px 8px;
+  font-family: var(--font-sans);
+  font-size: 11.5px;
+}
+.cm-editor .cm-panel.cm-search input,
+.cm-editor .cm-panel.cm-search button {
+  background: var(--color-code);
+  border: 1px solid var(--color-border);
+  border-radius: 0.4rem;
+  color: var(--color-foreground);
+  font-family: inherit;
+  font-size: inherit;
+  padding: 2px 6px;
+  margin-right: 4px;
+}
+.cm-editor .cm-panel.cm-search button:hover {
+  background: var(--color-accent);
+}
+.cm-editor .cm-panel.cm-search label {
+  color: var(--color-muted-foreground);
+}
+.cm-editor .cm-panel.cm-search [name="close"] {
+  border: none;
+  background: transparent;
+  color: var(--color-muted-foreground);
+}
+.cm-editor .cm-searchMatch {
+  background: color-mix(in srgb, var(--color-warning) 30%, transparent);
+}
+.cm-editor .cm-searchMatch-selected {
+  background: color-mix(in srgb, var(--color-warning) 55%, transparent);
+}
+
+/* Syntax tokens — the same ramp as `.stx-*` above, keyed to
+   `@lezer/highlight`'s standard class names. */
+.tok-comment { color: var(--syn-comment); font-style: italic; }
+.tok-keyword, .tok-modifier, .tok-controlKeyword, .tok-operatorKeyword,
+.tok-definitionKeyword, .tok-moduleKeyword { color: var(--syn-keyword); }
+.tok-string, .tok-string2, .tok-regexp, .tok-character, .tok-special { color: var(--syn-string); }
+.tok-number, .tok-bool, .tok-null, .tok-atom, .tok-unit { color: var(--syn-number); }
+.tok-function, .tok-macroName { color: var(--syn-function); }
+.tok-typeName, .tok-className, .tok-namespace, .tok-standard { color: var(--syn-type); }
+.tok-tagName, .tok-angleBracket { color: var(--syn-tag); }
+.tok-attributeName, .tok-propertyName, .tok-labelName { color: var(--code-foreground); }
+.tok-variableName, .tok-definition { color: var(--code-foreground); }
+.tok-operator, .tok-punctuation, .tok-separator, .tok-derefOperator,
+.tok-squareBracket, .tok-brace, .tok-paren { color: var(--syn-punct); }
+.tok-meta, .tok-processingInstruction, .tok-documentMeta { color: var(--color-muted-foreground); }
+.tok-link, .tok-url { color: var(--syn-type); text-decoration: underline; }
+.tok-heading { color: var(--syn-function); font-weight: 600; }
+.tok-emphasis { font-style: italic; }
+.tok-strong { font-weight: 600; }
+.tok-strikethrough { text-decoration: line-through; }
+.tok-invalid { color: var(--color-destructive); }

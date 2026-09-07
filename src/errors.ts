@@ -19,6 +19,41 @@ const USAGE_LIMIT = /(rate[\s_-]?limit|usage[\s_-]?limit|\bquota\b|out of (?:usa
 const AUTH = /(unauthorized|\b401\b|\b403\b|not (?:logged|signed) in|authentication failed|invalid api key|expired (?:token|credentials)|please (?:log|sign) ?in|logged out|re-?authenticate)/i;
 const NETWORK = /(econnrefused|etimedout|timed out|network error|dns|offline|failed to fetch|connection (?:refused|reset|closed)|unreachable|socket hang up)/i;
 
+/** The human-readable text of anything thrown across the Tauri boundary. */
+export function errorMessage(value: unknown): string {
+  const message = envelopeMessage(value);
+  if (message) return message;
+  return value instanceof Error ? value.message : String(value);
+}
+
+// Daemon-host mode wraps every command error in a JSON envelope —
+// {"code":1001,"kind":"git","message":"…"} (daemon_host.rs host_error_envelope) —
+// which reached cards and toasts verbatim. The `message` field is the human
+// text; the envelope around it is not.
+function envelopeMessage(value: unknown): string | undefined {
+  const candidate = typeof value === "string" ? parseEnvelope(value) : value;
+  if (
+    candidate !== null &&
+    typeof candidate === "object" &&
+    !Array.isArray(candidate) &&
+    typeof (candidate as { message?: unknown }).message === "string"
+  ) {
+    const message = (candidate as { message: string }).message.trim();
+    if (message) return message;
+  }
+  return undefined;
+}
+
+function parseEnvelope(raw: string): unknown {
+  const trimmed = raw.trim();
+  if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) return undefined;
+  try {
+    return JSON.parse(trimmed) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
 export function classifyErrorKind(raw: string | undefined | null): ErrorKind {
   const text = raw ?? "";
   if (USAGE_LIMIT.test(text)) return "usage-limit";

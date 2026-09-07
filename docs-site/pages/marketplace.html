@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#212120" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23ececea'/%3E%3Cpath d='M10 8h7.2c4 0 6 1.5 6 4.3 0 1.8-.9 3-2.6 3.7 2.1.6 3.2 1.9 3.2 3.9 0 2.9-2.2 4.6-6.5 4.6H10V8Zm6.8 6.5c1.6 0 2.4-.5 2.4-1.6 0-1-.8-1.5-2.4-1.5h-2.9v3.1h2.9Zm.3 6.5c1.8 0 2.7-.6 2.7-1.7 0-1.2-.9-1.8-2.7-1.8h-3.2V21h3.2Z' fill='%23212120'/%3E%3C/svg%3E" />
+<title>Marketplace & automations — Bridge Docs</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@100..900&family=Geist+Mono:wght@100..900&family=Bricolage+Grotesque:opsz,wght@12..96,200..800&display=swap">
+<link rel="stylesheet" href="../assets/tokens.css">
+</head>
+<body data-page="marketplace">
+
+<button class="menu-btn" id="menuBtn" aria-label="Open navigation"><svg class="icon" style="width:17px;height:17px"><use href="#i-menu"></use></svg></button>
+<div class="scrim" id="scrim"></div>
+
+<div class="shell">
+  <aside class="sidebar" id="sidebar"></aside>
+  <div class="content-scroll" id="contentScroll">
+    <div class="content-inner">
+      <div class="page-grid">
+        <div>
+          <p class="eyebrow">extensibility</p>
+          <h1>Marketplace & automations</h1>
+          <p class="lede">Bridge surfaces two separate catalogs: installable plugins and skills from verified marketplaces, and native scheduled jobs that Claude Code and Codex already keep on disk.</p>
+          <div class="prose">
+
+            <h2 id="marketplace">Marketplace & skills</h2>
+            <p>Bridge asks Codex and Claude for their current plugin and skill catalogs, merging both into one browsable list. This is not a proxy marketplace &mdash; Bridge invokes the provider's own CLI to query what's available, handle installation, and manage authentication. The providers themselves own the catalog content and the distribution logic.</p>
+
+            <h3>Plugins and connectors</h3>
+            <p>A plugin is a provider-specific package that brings tools and context into an agent's scope. Codex plugins live in its local app-server; Claude plugins use Model Context Protocol (MCP) connectors for standardized tool definition and lifecycle.</p>
+            <p>Bridge reads the catalog by running <code>plugin list --available --json</code> on each provider's CLI. For each plugin, the catalog tracks installed state, enabled state, authentication requirement, and available actions. Codex distinguishes between update-only and install/uninstall (those are managed through the app-server handshake); Claude supports the full set including enable and disable.</p>
+
+            <h3>Actions and authentication</h3>
+            <p>The marketplace catalog for each provider reports which actions are currently available: install, update, enable, disable, uninstall, authenticate. For Codex, the actual install and uninstall actions are blocked through Bridge &mdash; the user must authorize them through the Codex app-server UI. Claude allows Bridge to invoke these directly through its CLI.</p>
+            <p>Authentication varies by provider and connector type. Codex MCP connectors use <code>codex mcp login</code>. Claude MCP connectors use <code>claude mcp login</code>. Codex app connectors (provider-specific) open an authorization URL in the system browser. All sensitive details (tokens, URLs with query parameters) are sanitized before any error message surfaces.</p>
+
+            <h3>Skills</h3>
+            <p>Skills are packaged automation routines &mdash; small, purpose-built prompts that agents invoke when they match the task at hand. Bridge maintains a pinned catalog of 60 community skills, each locked to a specific Git commit hash and published through GitHub repositories. Personal skills are files that live in each agent's skill directory and are never managed by Bridge.</p>
+            <p>When you install a community skill, Bridge writes a receipt into its own store (<code>~/.bridge/receipts/</code>). This receipt tracks which version is installed, enabling rollback to a previous version or uninstall with confidence that only Bridge-managed copies are removed. If a skill with the same slug already exists as a personal skill (unmanaged by Bridge), installation is refused to prevent accidental overwrites.</p>
+            <p>Skill installation is executed through <code>npx skills@1.5.19 add</code>, which places the skill files in the appropriate agent-specific directory. Each provider looks for skills in its standard location: Claude Code in <code>~/.claude/skills/</code>, Codex in <code>~/.agents/skills/</code> or the legacy <code>~/.codex/skills/</code>, OpenCode in <code>~/.config/opencode/skills/</code> plus the Agent Skills standard roots.</p>
+
+            <div class="callout">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>Bridge's skill catalog is immutable and pinned by commit hash. Every skill entry is verified to have legitimate permissions and risk metadata. Personal skills are discovered but never modified, giving you full control over what gets executed in that namespace.</p>
+            </div>
+
+            <h2 id="automations">Automations</h2>
+            <p>Bridge reads the scheduled jobs that Claude Code and Codex natively maintain, showing them in a unified view with minimal mutation capabilities. This is not a scheduling system &mdash; Bridge is a read-mostly catalog. Each provider owns its own storage, execution, and scheduling logic. Bridge only aggregates the view and applies the few safe edits each provider's format supports.</p>
+
+            <h3>Provider support</h3>
+            <p>Claude Code stores tasks in <code>~/.claude/scheduled_tasks.json</code>, a JSON file that Claude Code's own reader maintains. Each task carries a 5-field cron expression (local-time cron), a prompt, creation timestamp, and last-fired timestamp. The format has no paused state: tasks are either present and active, or deleted. Bridge can delete individual tasks but cannot pause or resume them.</p>
+            <p>Codex stores automations in SQLite databases under <code>~/.codex/sqlite/</code>. The app has shipped multiple database names across release channels; Bridge discovers the live automation schema by checking for required columns rather than guessing filenames. Each automation carries an rrule expression (recurrence rule subset), status field (ACTIVE or PAUSED), and historical run records. Bridge can pause, resume, or delete automations, and renders the last 20 run records per automation.</p>
+            <p>OpenCode has no automations feature; Bridge reports it as unavailable so the UI can say so explicitly rather than guessing.</p>
+
+            <h3>What Bridge does and does not do</h3>
+            <p>Bridge does not execute automations. It does not modify schedule times or recurrence expressions. It does not alter the prompts or model selection. It reads the native catalog, parses it with fault tolerance (unparseable Claude entries are skipped, not fatal), and exposes a unified read view. The only mutations are delete (both providers) and pause/resume (Codex only).</p>
+            <p>Automation runs are advisory. For Codex, Bridge renders the thread ID, status, title, summary, and creation timestamp from the run history table. These are read-only: Bridge does not re-trigger, replay, or modify runs. They are shown for context and audit purposes.</p>
+
+            <h3>Schedule phrasing</h3>
+            <p>Bridge attempts best-effort human phrasing for schedule expressions: "Daily at 09:00", "Weekdays at 14:30", "Every 6 hours". For Claude, it parses the 5-field cron format. For Codex, it parses the rrule subset (FREQ, INTERVAL, BYHOUR, BYMINUTE, BYDAY). Anything irregular falls back to the raw expression.</p>
+
+            <h3>Availability and errors</h3>
+            <p>The automations catalog always returns successfully, even when stores are absent or corrupted. Each provider in the response carries an <code>available</code> flag and a <code>detail</code> field. If Claude Code has never created a schedule file, it reports as available with "No scheduled tasks yet". If Codex has no database, it reports as unavailable with the reason. Corrupted JSON or schema mismatches surface in the detail field, letting the UI decide how to present the problem without Bridge crashing the session.</p>
+
+            <div class="callout is-success">
+              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
+              <p>Bridge treats automations as read-mostly. The native providers own the full lifecycle, storage, and execution. Bridge's role is unified discovery, best-effort human phrasing, and minimal safe edits.</p>
+            </div>
+
+          </div>
+          <div id="pagerMount"></div>
+        </div>
+        <aside class="toc" id="tocMount"></aside>
+      </div>
+    </div>
+  </div>
+</div>
+<script src="../assets/shell.js"></script>
+</body>
+</html>

@@ -1,0 +1,629 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bridge sidebar redesign</title>
+<style>
+:root{
+  --sidebar:#f3f3f1; --background:#fafaf9; --card:#ffffff; --popover:#ffffff;
+  --foreground:#1f1f1d; --muted-foreground:#5d5d57;
+  --border:#e7e7e4; --sidebar-border:#e2e2de; --muted:#f0f0ee;
+  --accent:color-mix(in srgb,#1f1f1d 5%,transparent);
+  --primary:#1f1f1d; --primary-foreground:#fafaf9; --ring:#3d6fa5;
+  --success:#2f7d4f; --warning:#8f5e05; --info:#3d6fa5; --destructive:#be3d3d;
+  --radius:12px;
+}
+html.dark{
+  --sidebar:#121211; --background:#171716; --card:#1f1f1e; --popover:#262624;
+  --foreground:#ececea; --muted-foreground:#a8a8a3;
+  --border:#232321; --sidebar-border:#1e1e1c; --muted:#212120;
+  --accent:color-mix(in srgb,#ececea 6%,transparent);
+  --primary:#ececea; --primary-foreground:#171716; --ring:#6a9bcc;
+  --success:#5db872; --warning:#d4a957; --info:#6a9bcc; --destructive:#e5695e;
+}
+*{box-sizing:border-box}
+body{
+  margin:0; background:var(--background); color:var(--foreground);
+  font-family:"Geist Variable",Inter,ui-sans-serif,system-ui,-apple-system,sans-serif;
+  -webkit-font-smoothing:antialiased; letter-spacing:-0.006em;
+}
+.wrap{max-width:1300px;margin:0 auto;padding:32px 24px 72px}
+h1{font-size:19px;font-weight:600;letter-spacing:-0.02em;margin:0 0 4px}
+.sub{color:var(--muted-foreground);font-size:13px;margin:0 0 24px;line-height:1.6}
+.topbar{display:flex;align-items:center;gap:10px;margin-bottom:24px;flex-wrap:wrap}
+.tbtn{
+  height:28px;padding:0 10px;border-radius:8px;border:1px solid var(--border);
+  background:var(--card);color:var(--muted-foreground);font:inherit;font-size:12px;cursor:pointer;
+}
+.tbtn:hover{color:var(--foreground)}
+.tbtn[aria-pressed="true"]{background:var(--primary);color:var(--primary-foreground);border-color:transparent}
+
+.board{display:flex;gap:24px;align-items:flex-start;flex-wrap:nowrap;overflow-x:auto;padding-bottom:10px}
+.board > .col{flex:0 0 auto}
+.col{display:flex;flex-direction:column;gap:10px}
+.caption{font-size:11px;font-weight:600;color:var(--muted-foreground);letter-spacing:0.02em;padding-left:2px}
+.caption em{font-style:normal;font-weight:400;opacity:.7}
+
+/* frame that stands in for the app window */
+.frame{
+  display:flex;height:660px;border:1px solid var(--border);border-radius:14px;overflow:hidden;
+  background:var(--background);
+}
+.rail{width:248px;flex:0 0 248px;background:var(--sidebar);border-right:1px solid var(--sidebar-border);display:flex;flex-direction:column;overflow:hidden}
+.stage{flex:1;min-width:120px;background:var(--background)}
+.dot{width:6px;height:6px;border-radius:999px;flex:0 0 6px}
+.d-working{background:var(--success)}
+.d-waiting{background:var(--warning)}
+.d-failed{background:var(--destructive)}
+.d-ready{background:var(--info)}
+.d-idle{background:color-mix(in srgb,var(--muted-foreground) 30%,transparent)}
+.scroll{flex:1;overflow-y:auto;overscroll-behavior:contain}
+.scroll::-webkit-scrollbar{width:8px}
+.scroll::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--muted-foreground) 26%,transparent);border-radius:8px}
+.ico{display:block}
+
+/* ───────────── OLD RAIL ───────────── */
+.old{padding:16px 12px;display:flex;flex-direction:column;height:100%}
+.old .brand{display:flex;align-items:center;gap:6px;height:32px;margin-bottom:16px;padding-left:40px}
+.old .brand span{font-size:15px;font-weight:600;letter-spacing:-0.01em}
+.old .newchat{
+  display:flex;align-items:center;justify-content:center;gap:8px;width:100%;
+  border-radius:12px;background:var(--primary);color:var(--primary-foreground);
+  padding:8px 12px;font-size:13px;font-weight:500;border:0;margin-bottom:12px;
+}
+.old .wpanel{border:1px solid var(--border);background:var(--card);border-radius:10px;overflow:hidden;margin-bottom:16px}
+.old .wpanel .wh{display:flex;align-items:center;gap:8px;padding:5px 10px;border-bottom:1px solid var(--border)}
+.old .wpanel .wh b{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.12em;color:var(--muted-foreground)}
+.old .wpanel .wh i{font-style:normal;font-size:9px;font-family:ui-monospace,monospace;color:color-mix(in srgb,var(--muted-foreground) 70%,transparent)}
+.old .wpanel .wh u{margin-left:auto;text-decoration:none;font-size:9px;color:var(--warning)}
+.old .wrow{padding:8px 10px}
+.old .wrow .l1{display:flex;align-items:center;gap:8px}
+.old .wrow .l1 b{font-size:11px;font-weight:500;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.old .wrow .l1 s{text-decoration:none;font-size:8px;font-weight:600;letter-spacing:0.06em;color:var(--warning)}
+.old .wrow .l2{margin-left:20px;margin-top:2px;font-size:9px;color:color-mix(in srgb,var(--muted-foreground) 70%,transparent);display:flex;gap:6px}
+.old .wrow .l3{margin-left:20px;margin-top:4px;font-size:9.5px;line-height:1.35;color:var(--muted-foreground);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.old .seclabel{display:flex;align-items:center;gap:8px;padding:4px 10px 6px}
+.old .seclabel span{font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:0.16em;color:color-mix(in srgb,var(--muted-foreground) 70%,transparent)}
+.old .seclabel .rule{height:1px;flex:1;background:linear-gradient(to right,var(--border),transparent)}
+.old .row{
+  display:flex;align-items:center;gap:10px;width:100%;min-height:36px;margin:2px 0;
+  padding:6px 10px;border-radius:12px;border:1px solid transparent;background:none;color:var(--muted-foreground);text-align:left;
+}
+.old .row.active{border-color:var(--border);background:var(--card);color:var(--foreground);box-shadow:inset 2px 0 0 var(--ring)}
+.old .row .t{display:block;font-size:13px;font-weight:500;line-height:1.15;color:inherit;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.old .row .m{display:block;margin-top:1px;font-size:10px;color:color-mix(in srgb,var(--muted-foreground) 70%,transparent);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.old .foot{margin-top:12px;display:flex;flex-direction:column;gap:4px}
+.old .foot div{display:flex;align-items:center;gap:10px;height:36px;padding:0 10px;border-radius:12px;font-size:12px;font-weight:500;color:var(--muted-foreground)}
+
+/* ───────────── NEW RAIL ───────────── */
+.new{display:flex;flex-direction:column;height:100%;padding:10px 8px 8px}
+.new .brand{display:flex;align-items:center;gap:6px;height:30px;margin-bottom:10px;padding-left:38px}
+.new .brand span{font-size:14px;font-weight:600;letter-spacing:-0.012em}
+.new .brand .sp{margin-left:auto;display:flex;gap:2px}
+.iconbtn{
+  width:24px;height:24px;border-radius:6px;border:0;background:none;color:var(--muted-foreground);
+  display:grid;place-items:center;cursor:pointer;
+}
+.iconbtn:hover{background:var(--accent);color:var(--foreground)}
+.iconbtn[aria-pressed="true"]{background:var(--accent);color:var(--foreground)}
+.new .newchat{
+  display:flex;align-items:center;gap:8px;width:100%;height:32px;padding:0 10px;
+  border-radius:8px;background:var(--primary);color:var(--primary-foreground);
+  font:inherit;font-size:13px;font-weight:500;border:0;cursor:pointer;margin-bottom:8px;
+}
+.searchwrap{margin-bottom:8px;position:relative}
+.searchwrap svg{position:absolute;left:8px;top:7px;color:var(--muted-foreground)}
+.searchwrap input{
+  width:100%;height:28px;border-radius:8px;border:1px solid var(--border);background:var(--background);
+  color:var(--foreground);font:inherit;font-size:12.5px;padding:0 8px 0 26px;outline:none;
+}
+.searchwrap input:focus{border-color:var(--ring)}
+.searchwrap input::placeholder{color:color-mix(in srgb,var(--muted-foreground) 75%,transparent)}
+
+/* compact worker strip */
+.wstrip{border:1px solid var(--border);background:var(--card);border-radius:8px;overflow:hidden;margin-bottom:10px}
+.wstrip .head{display:flex;align-items:center;gap:6px;width:100%;height:26px;padding:0 8px;background:none;border:0;color:inherit;font:inherit;cursor:pointer}
+.wstrip .head b{font-size:11px;font-weight:500;color:var(--foreground)}
+.wstrip .head .count{font-size:10px;font-family:ui-monospace,monospace;color:var(--muted-foreground)}
+.wstrip .head .pill{margin-left:auto;display:flex;align-items:center;gap:5px;font-size:10px;color:var(--muted-foreground)}
+.wstrip .head .pill .g{color:var(--success)}
+.wstrip .head .pill .y{color:var(--warning)}
+.wstrip .body{border-top:1px solid var(--border)}
+.wstrip .wrow{display:flex;align-items:center;gap:7px;height:26px;padding:0 8px}
+.wstrip .wrow + .wrow{border-top:1px solid var(--border)}
+.wstrip .wrow b{font-size:12px;font-weight:400;color:var(--foreground);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.wstrip .wrow .st{font-size:10px;color:var(--warning);white-space:nowrap}
+.wstrip .wrow .ago{font-size:10px;font-family:ui-monospace,monospace;color:var(--muted-foreground)}
+
+.grouphead{
+  position:sticky;top:0;z-index:2;background:var(--sidebar);
+  display:flex;align-items:center;gap:8px;height:24px;padding:0 8px;margin-top:8px;
+}
+.grouphead:first-child{margin-top:0}
+.grouphead span{font-size:11px;font-weight:500;color:color-mix(in srgb,var(--muted-foreground) 82%,transparent)}
+.grouphead .n{margin-left:auto;font-size:10px;font-family:ui-monospace,monospace;color:color-mix(in srgb,var(--muted-foreground) 60%,transparent)}
+.sectionhead{display:flex;align-items:center;gap:6px;height:26px;padding:0 8px;margin-top:6px}
+.sectionhead span{font-size:11px;font-weight:600;color:var(--muted-foreground)}
+.sectionhead .sp{margin-left:auto;display:flex;gap:2px}
+
+.nrow{
+  display:flex;align-items:center;gap:8px;width:100%;height:28px;padding:0 8px;
+  border-radius:6px;border:0;background:none;color:var(--muted-foreground);font:inherit;
+  font-size:13px;text-align:left;cursor:pointer;
+}
+.nrow:hover{background:var(--accent);color:var(--foreground)}
+.nrow .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nrow.active{background:var(--accent);color:var(--foreground);font-weight:500}
+.nrow .meta{font-size:10px;font-family:ui-monospace,monospace;color:var(--muted-foreground);white-space:nowrap}
+.showmore{
+  display:block;width:100%;text-align:left;padding:4px 8px 6px;border:0;background:none;
+  color:var(--muted-foreground);font:inherit;font-size:11.5px;cursor:pointer;
+}
+.showmore:hover{color:var(--foreground)}
+.empty{padding:6px 8px;font-size:11.5px;color:color-mix(in srgb,var(--muted-foreground) 80%,transparent)}
+
+.tree .twig{display:flex;align-items:center;gap:6px;width:100%;height:28px;padding:0 8px;border-radius:6px;border:0;background:none;color:var(--foreground);font:inherit;font-size:13px;text-align:left;cursor:pointer}
+.tree .twig:hover{background:var(--accent)}
+.tree .twig .chev{color:var(--muted-foreground);transition:transform .15s}
+.tree .twig[aria-expanded="true"] .chev{transform:rotate(90deg)}
+.tree .twig .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tree .twig .n{font-size:10px;font-family:ui-monospace,monospace;color:color-mix(in srgb,var(--muted-foreground) 65%,transparent)}
+.tree .kids{margin-left:15px;padding-left:6px;border-left:1px solid var(--border)}
+.tree .branchline{display:flex;align-items:center;gap:5px;padding:2px 8px 6px;font-size:10px;font-family:ui-monospace,monospace;color:color-mix(in srgb,var(--muted-foreground) 70%,transparent)}
+.nfoot{margin-top:8px;padding-top:8px;border-top:1px solid var(--sidebar-border);display:flex;flex-direction:column;gap:2px}
+.nfoot button{display:flex;align-items:center;gap:8px;height:28px;padding:0 8px;border-radius:6px;border:0;background:none;color:var(--muted-foreground);font:inherit;font-size:12.5px;cursor:pointer;text-align:left}
+.nfoot button:hover{background:var(--accent);color:var(--foreground)}
+
+/* group-by popover */
+.menuhost{position:relative}
+.menu{
+  position:fixed;z-index:60;width:186px;padding:4px;
+  border:1px solid var(--border);background:var(--popover);border-radius:10px;
+  box-shadow:0 12px 28px rgb(0 0 0 / .22);
+}
+.menu .mlabel{font-size:10px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;color:color-mix(in srgb,var(--muted-foreground) 75%,transparent);padding:5px 8px 3px}
+.menu button{display:flex;align-items:center;gap:8px;width:100%;height:28px;padding:0 8px;border-radius:6px;border:0;background:none;color:var(--foreground);font:inherit;font-size:12.5px;cursor:pointer;text-align:left}
+.menu button:hover{background:var(--accent)}
+.menu button .k{margin-left:auto;font-size:10px;font-family:ui-monospace,monospace;color:var(--muted-foreground)}
+.menu button[aria-checked="true"] .tick{opacity:1}
+.menu button .tick{opacity:0;color:var(--foreground)}
+.hidden{display:none!important}
+
+/* collapsed rail variant */
+.railmini{width:68px;flex:0 0 68px;background:var(--sidebar);border-right:1px solid var(--sidebar-border);padding:10px 8px;display:flex;flex-direction:column;gap:6px;align-items:center}
+.railmini .sq{width:36px;height:36px;border-radius:8px;display:grid;place-items:center;color:var(--muted-foreground)}
+.railmini .sq.fill{background:var(--primary);color:var(--primary-foreground)}
+.railmini .sq.card{border:1px solid var(--border);background:var(--card);position:relative}
+.railmini .sq.card .badge{position:absolute;right:3px;bottom:2px;font-size:8px;font-family:ui-monospace,monospace;color:var(--foreground)}
+.railmini .sep{width:24px;height:1px;background:var(--sidebar-border);margin:2px 0}
+
+/* notes */
+.notes{margin-top:40px;display:grid;grid-template-columns:repeat(auto-fit,minmax(268px,1fr));gap:14px}
+.note{border:1px solid var(--border);background:var(--card);border-radius:12px;padding:14px 16px}
+.note h3{margin:0 0 8px;font-size:12.5px;font-weight:600}
+.note ul{margin:0;padding-left:16px}
+.note li{font-size:12.5px;line-height:1.65;color:var(--muted-foreground);margin-bottom:4px}
+.note li b{color:var(--foreground);font-weight:500}
+.legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:10px;font-size:11.5px;color:var(--muted-foreground)}
+.legend i{font-style:normal;display:inline-flex;align-items:center;gap:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>bridge sidebar — redesign</h1>
+  <p class="sub">
+    Left is what ships today. Right is the proposal: one line per chat, day headers, a grouping menu, and a filter —
+    the Claude Code / Codex pattern, on Graphite &amp; Paper tokens. The right rail is live: search it, switch grouping, expand a project.
+  </p>
+
+  <div class="topbar">
+    <button class="tbtn" id="theme" aria-pressed="true">Dark</button>
+    <button class="tbtn" id="fill" aria-pressed="true">Busy history (38 chats)</button>
+    <span style="font-size:11.5px;color:var(--muted-foreground)">Mockup uses system fonts; the app ships Geist Variable.</span>
+  </div>
+
+  <div class="board">
+    <!-- ─────────── CURRENT ─────────── -->
+    <div class="col">
+      <div class="caption">Now <em>— 36px two-line rows, 7 type styles, no dates, no filter</em></div>
+      <div class="frame" style="width:420px">
+        <div class="rail">
+          <div class="old">
+            <div class="brand"><span>bridge</span></div>
+            <button class="newchat">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/><path d="M12 8v6M9 11h6"/></svg>
+              New chat
+            </button>
+            <div class="wpanel">
+              <div class="wh">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" style="color:var(--muted-foreground)"><rect x="3" y="8" width="18" height="12" rx="2"/><path d="M12 8V4M8 14h.01M16 14h.01"/></svg>
+                <b>Live workers</b><i>1</i><u>1 waiting</u>
+              </div>
+              <div class="wrow">
+                <div class="l1">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--warning)"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+                  <b>Implementation · standard</b><s>NEEDS DELEGATION</s>
+                </div>
+                <div class="l2"><span>implementation</span><span>↻ retry 1</span><span style="margin-left:auto;font-family:ui-monospace,monospace">7h ago</span></div>
+                <div class="l3">Implemented GFM table + strikethrough support, math/mermaid copy buttons, and an HTML fullscreen toggle in src/components/Markdown.tsx…</div>
+              </div>
+            </div>
+            <div class="seclabel"><span>Chats</span><span class="rule"></span></div>
+            <div class="scroll" id="oldlist"></div>
+            <div class="foot">
+              <div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m7.5 4.27 9 5.15M21 8l-9 5-9-5 9-5zM3 8v8l9 5 9-5V8"/></svg>Marketplace</div>
+              <div><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M20 7h-9M14 17H5M17 14a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM7 4a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg>Settings</div>
+            </div>
+          </div>
+        </div>
+        <div class="stage"></div>
+      </div>
+    </div>
+
+    <!-- ─────────── PROPOSED ─────────── -->
+    <div class="col">
+      <div class="caption">Proposed <em>— 28px single-line rows, day headers, 4 type styles, filter + grouping</em></div>
+      <div class="frame" style="width:420px">
+        <div class="rail">
+          <div class="new">
+            <div class="brand">
+              <span>bridge</span>
+              <span class="sp">
+                <button class="iconbtn" id="searchtoggle" aria-pressed="false" title="Search chats">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+                </button>
+              </span>
+            </div>
+            <button class="newchat">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><path d="M12 5v14M5 12h14"/></svg>
+              New chat
+            </button>
+
+            <div class="searchwrap hidden" id="searchwrap">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+              <input id="q" type="text" placeholder="Filter chats and projects…">
+            </div>
+
+            <div class="wstrip" id="wstrip">
+              <button class="head" id="whead" aria-expanded="true">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" style="color:var(--muted-foreground)"><rect x="3" y="8" width="18" height="12" rx="2"/><path d="M12 8V4M8 14h.01M16 14h.01"/></svg>
+                <b>Workers</b><span class="count">1</span>
+                <span class="pill"><span class="y">1 waiting</span>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="chev"><path d="m6 9 6 6 6-6"/></svg>
+                </span>
+              </button>
+              <div class="body" id="wbody">
+                <div class="wrow">
+                  <span class="dot d-waiting"></span>
+                  <b>Implementation · standard</b>
+                  <span class="st">delegate</span>
+                  <span class="ago">7h</span>
+                </div>
+              </div>
+            </div>
+
+            <div class="scroll" id="newscroll"></div>
+
+            <div class="nfoot">
+              <button><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="m7.5 4.27 9 5.15M21 8l-9 5-9-5 9-5zM3 8v8l9 5 9-5V8"/></svg>Marketplace</button>
+              <button><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M20 7h-9M14 17H5M17 14a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM7 4a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/></svg>Settings</button>
+            </div>
+          </div>
+        </div>
+        <div class="stage"></div>
+      </div>
+      <div class="legend">
+        <i><span class="dot d-working"></span>working</i>
+        <i><span class="dot d-waiting"></span>waiting</i>
+        <i><span class="dot d-failed"></span>failed</i>
+        <i><span class="dot d-ready"></span>ready</i>
+        <i><span class="dot d-idle"></span>idle</i>
+      </div>
+    </div>
+
+    <!-- ─────────── COLLAPSED ─────────── -->
+    <div class="col">
+      <div class="caption">Collapsed rail <em>— 68px, unchanged behaviour</em></div>
+      <div class="frame" style="width:210px">
+        <div class="railmini">
+          <div class="sq"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M9 3v18"/></svg></div>
+          <div class="sq fill"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 5v14M5 12h14"/></svg></div>
+          <div class="sq card"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="3" y="8" width="18" height="12" rx="2"/><path d="M12 8V4M8 14h.01M16 14h.01"/></svg><span class="badge">1</span></div>
+          <div class="sep"></div>
+          <div class="sq" style="background:var(--accent);color:var(--foreground)"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 10V7a2 2 0 0 0-2-2h-6l-2-2H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3"/></svg></div>
+          <div class="sq"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 10V7a2 2 0 0 0-2-2h-6l-2-2H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3"/></svg></div>
+        </div>
+        <div class="stage"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="notes">
+    <div class="note">
+      <h3>What actually changes</h3>
+      <ul>
+        <li><b>One line per chat.</b> The <code>OpenCode · opencode-go/qwen3.7-plus</code> subtitle on every row is the main source of noise — it moves to the tooltip and to the active row only.</li>
+        <li><b>Day headers.</b> Today / Yesterday / <code>Aug 17</code>, sticky while scrolling, from <code>startedAt</code>.</li>
+        <li><b>28px rows, 6px radius.</b> ~22 chats visible instead of ~11; the 12px pill radius stops looking bulbous at row scale.</li>
+        <li><b>Projects above history.</b> Structure is short and stable, history is long — so the long list goes last and never pushes projects off screen.</li>
+      </ul>
+    </div>
+    <div class="note">
+      <h3>Type scale: 7 styles → 4</h3>
+      <ul>
+        <li><b>14px semibold</b> — wordmark only.</li>
+        <li><b>13px</b> — every row title, new chat, project name.</li>
+        <li><b>11px</b> — group and section labels, worker text. No more <code>0.16em</code> uppercase, no gradient rule.</li>
+        <li><b>10px mono</b> — counts, timestamps, branch. Numbers only.</li>
+        <li>Gone: 8px / 9px / 9.5px worker text, 10px row subtitles, 12px footer.</li>
+      </ul>
+    </div>
+    <div class="note">
+      <h3>Grouping &amp; filter</h3>
+      <ul>
+        <li><b>Group by</b> Date · Agent · Status · Name, from the ⇅ button on the history header, persisted in <code>localStorage</code>.</li>
+        <li><b>Filter</b> matches title, harness and model, and hits inside projects auto-expand.</li>
+        <li><b>Show more</b> caps a group at 12 rows so one busy day can't bury the rest.</li>
+      </ul>
+    </div>
+    <div class="note">
+      <h3>Status, quieter</h3>
+      <ul>
+        <li>Today every row carries a dot, so 38 grey dots read as decoration. Idle drops to 30% opacity; only <b>working / waiting / failed / ready</b> keep full ink.</li>
+        <li>Active row = <code>bg-accent</code> + medium weight. The card fill, border and inset ring go away.</li>
+        <li>Workers collapse to a 26px strip with a foldable body — same information, a quarter of the chrome.</li>
+      </ul>
+    </div>
+  </div>
+</div>
+
+<script>
+const HARNESS = {
+  codex: ["Codex", "gpt-5.6-sol"],
+  opencode: ["OpenCode", "opencode-go/qwen3.7-plus"],
+  claudeOpus: ["Claude", "opus"],
+  claudeSonnet: ["Claude", "sonnet"],
+  gpt: ["OpenCode", "openai/gpt-5.3-chat-latest"],
+};
+const DAY = 86400000;
+const NOW = new Date(2026, 7, 19, 16, 30).getTime(); // Aug 19 2026, fixed so the mock is stable
+
+function chat(title, h, status, daysAgo, hoursAgo = 0) {
+  const [harness, model] = HARNESS[h];
+  return { title, harness, model, status, at: NOW - daysAgo * DAY - hoursAgo * 3600000 };
+}
+
+const BASE = [
+  chat("Launch bridge locally on macOS", "claudeOpus", "working", 0, 1),
+  chat("Markdown tables + copy buttons", "codex", "waiting", 0, 3),
+  chat("Code readability improvements", "opencode", "idle", 0, 5),
+  chat("App redesign: bridge artifact", "claudeSonnet", "idle", 0, 7),
+  chat("Bridge UI/UX issues and plugin architecture", "codex", "failed", 0, 9),
+  chat("any-llm: five Messages encode-side losses", "opencode", "idle", 1, 2),
+  chat("Add a machine-readable page for AI agents", "claudeOpus", "ready", 1, 4),
+  chat("Rimo backend PR token costs", "codex", "idle", 1, 6),
+  chat("AI agent security multi-step tool attacks", "gpt", "idle", 1, 8),
+  chat("Anime vocab announcement email", "opencode", "idle", 1, 11),
+  chat("Freeze AxonHub output_format drop", "codex", "idle", 2, 3),
+  chat("Freeze LiteLLM /health extra_headers leak", "claudeOpus", "failed", 2, 6),
+  chat("Shinka Evolve bug/feature validation", "opencode", "idle", 2, 9),
+  chat("Bridge harness PR review", "claudeSonnet", "idle", 3, 4),
+  chat("Claude Code Router documentation", "codex", "idle", 3, 7),
+  chat("Privacy Radar revamp", "opencode", "idle", 3, 10),
+  chat("Freeze Switchyard api-key headers", "gpt", "idle", 5, 5),
+  chat("GitHub discussion verification", "claudeOpus", "idle", 6, 8),
+];
+// the screenshot's real pain: dozens of same-named orchestrators
+const NOISE = [];
+const NOISE_SPEC = [
+  ["Orchestrator", "codex", "failed"], ["Bridge orchestrator", "opencode", "idle"],
+  ["Bridge orchestrator", "opencode", "idle"], ["Bridge orchestrator", "codex", "idle"],
+  ["Bridge orchestrator", "opencode", "idle"], ["Orchestrator", "claudeOpus", "ready"],
+  ["Orchestrator", "opencode", "failed"], ["Bridge orchestrator", "opencode", "idle"],
+  ["Bridge orchestrator", "opencode", "idle"], ["Orchestrator", "claudeOpus", "failed"],
+  ["Orchestrator", "claudeOpus", "failed"], ["Orchestrator", "claudeOpus", "failed"],
+  ["Orchestrator", "claudeSonnet", "idle"], ["Bridge orchestrator", "claudeOpus", "idle"],
+  ["Orchestrator", "gpt", "idle"], ["Orchestrator", "codex", "idle"],
+  ["Bridge orchestrator", "opencode", "idle"], ["Orchestrator", "claudeOpus", "idle"],
+  ["Orchestrator", "codex", "idle"], ["Bridge orchestrator", "claudeSonnet", "idle"],
+];
+NOISE_SPEC.forEach(([t, h, s], i) => NOISE.push(chat(t, h, s, 1 + (i % 2), 12 + (i % 9))));
+
+const PROJECTS = [
+  { title: "harness", branch: "main", dirty: 3, chats: [
+      chat("Sidebar redesign", "claudeOpus", "working", 0, 0.5),
+      chat("Workspace editor races", "codex", "idle", 0, 6),
+      chat("Diff syntax highlighting", "opencode", "idle", 2, 2),
+  ]},
+  { title: "agentclash", branch: "feat/router", dirty: 0, chats: [
+      chat("Shared runtime library", "codex", "ready", 1, 3),
+      chat("Referral jobs review", "claudeSonnet", "idle", 4, 5),
+  ]},
+  { title: "rimo-backend", branch: "develop", dirty: 12, chats: [
+      chat("Token cost report", "opencode", "idle", 2, 8),
+  ]},
+];
+
+let state = { mode: "date", q: "", busy: true, expanded: new Set(["harness"]), menu: false, showAll: new Set(), workersOpen: true };
+
+const fmt = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric" });
+function startOfDay(ts) { const d = new Date(ts); d.setHours(0,0,0,0); return d.getTime(); }
+function dayLabel(ts) {
+  const day = startOfDay(ts), today = startOfDay(NOW);
+  const y = new Date(today); y.setDate(y.getDate() - 1);
+  if (day === today) return "Today";
+  if (day === y.getTime()) return "Yesterday";
+  return fmt.format(new Date(ts));
+}
+const STATUS_ORDER = ["working", "waiting", "failed", "ready", "idle"];
+const STATUS_LABEL = { working: "Working", waiting: "Waiting on you", failed: "Failed", ready: "Ready", idle: "Idle" };
+
+function history() {
+  const list = state.busy ? BASE.concat(NOISE) : BASE.slice(0, 8);
+  const q = state.q.trim().toLowerCase();
+  return q ? list.filter(c => (c.title + " " + c.harness + " " + c.model).toLowerCase().includes(q)) : list;
+}
+
+function groups() {
+  const list = history().slice();
+  if (state.mode === "name") {
+    list.sort((a, b) => a.title.localeCompare(b.title));
+    return [{ key: "all", label: "", chats: list }];
+  }
+  list.sort((a, b) => b.at - a.at);
+  const buckets = new Map();
+  for (const c of list) {
+    const key = state.mode === "date" ? String(startOfDay(c.at))
+      : state.mode === "agent" ? c.harness
+      : c.status;
+    if (!buckets.has(key)) buckets.set(key, []);
+    buckets.get(key).push(c);
+  }
+  let keys = [...buckets.keys()];
+  if (state.mode === "date") keys.sort((a, b) => Number(b) - Number(a));
+  if (state.mode === "agent") keys.sort((a, b) => buckets.get(b).length - buckets.get(a).length || a.localeCompare(b));
+  if (state.mode === "status") keys.sort((a, b) => STATUS_ORDER.indexOf(a) - STATUS_ORDER.indexOf(b));
+  return keys.map(k => ({
+    key: k,
+    label: state.mode === "date" ? dayLabel(Number(k)) : state.mode === "status" ? STATUS_LABEL[k] : k,
+    chats: buckets.get(k),
+  }));
+}
+
+const el = (tag, cls, html) => { const n = document.createElement(tag); if (cls) n.className = cls; if (html != null) n.innerHTML = html; return n; };
+const CAP = 12;
+
+const CHEV = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" class="chev"><path d="m9 6 6 6-6 6"/></svg>';
+const FOLDER = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M20 10V7a2 2 0 0 0-2-2h-6l-2-2H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3"/></svg>';
+const SORT = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M3 6h11M3 12h8M3 18h5M17 5v14M17 19l3-3M17 19l-3-3"/></svg>';
+const PLUS = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9"><path d="M12 5v14M5 12h14"/></svg>';
+const GIT = '<svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><circle cx="6" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9M18 6v3"/></svg>';
+
+function renderOld() {
+  const host = document.getElementById("oldlist");
+  host.innerHTML = "";
+  for (const c of history().sort((a, b) => b.at - a.at)) {
+    const row = el("div", "row" + (c.title === "Launch bridge locally on macOS" ? " active" : ""));
+    row.innerHTML = `<span class="dot d-${c.status === 'idle' ? 'idle' : c.status}"></span>
+      <span style="min-width:0;flex:1"><span class="t">${c.title}</span><span class="m">${c.harness} · ${c.model}</span></span>`;
+    host.append(row);
+  }
+}
+
+function renderNew() {
+  const host = document.getElementById("newscroll");
+  host.innerHTML = "";
+  const q = state.q.trim().toLowerCase();
+
+  // ── Projects
+  const ph = el("div", "sectionhead");
+  ph.innerHTML = `<span>Projects</span><span class="sp"><button class="iconbtn" title="New project">${PLUS}</button></span>`;
+  host.append(ph);
+  const tree = el("div", "tree");
+  const projects = q
+    ? PROJECTS.filter(p => p.title.toLowerCase().includes(q) || p.chats.some(c => c.title.toLowerCase().includes(q)))
+    : PROJECTS;
+  for (const p of projects) {
+    const open = q ? true : state.expanded.has(p.title);
+    const twig = el("button", "twig");
+    twig.setAttribute("aria-expanded", String(open));
+    twig.innerHTML = `${CHEV}<span style="color:var(--muted-foreground);display:flex">${FOLDER}</span><span class="t">${p.title}</span><span class="n">${p.chats.length}</span>`;
+    twig.onclick = () => { state.expanded.has(p.title) ? state.expanded.delete(p.title) : state.expanded.add(p.title); render(); };
+    tree.append(twig);
+    if (open) {
+      const kids = el("div", "kids");
+      const shown = q ? p.chats.filter(c => c.title.toLowerCase().includes(q) || p.title.toLowerCase().includes(q)) : p.chats;
+      for (const c of shown) kids.append(row(c));
+      const bl = el("div", "branchline");
+      bl.innerHTML = `${GIT}${p.branch} · ${p.dirty ? p.dirty + " changed" : "clean"}`;
+      kids.append(bl);
+      tree.append(kids);
+    }
+  }
+  if (!projects.length) tree.append(el("div", "empty", "No project matches."));
+  host.append(tree);
+
+  // ── History
+  const hh = el("div", "sectionhead");
+  hh.innerHTML = `<span>Chats</span>
+    <span class="sp menuhost">
+      <button class="iconbtn" id="sortbtn" aria-pressed="${state.menu}" title="Group chats">${SORT}</button>
+    </span>`;
+  host.append(hh);
+  hh.querySelector("#sortbtn").onclick = e => { e.stopPropagation(); state.menu = !state.menu; render(); };
+  if (state.menu) {
+    const menu = el("div", "menu");
+    menu.innerHTML = `<div class="mlabel">Group by</div>` + [
+      ["date", "Date", "⌥1"], ["agent", "Agent", "⌥2"], ["status", "Status", "⌥3"], ["name", "Name", "⌥4"],
+    ].map(([id, label, k]) => `<button role="menuitemradio" data-mode="${id}" aria-checked="${state.mode === id}">
+        <span class="tick"><svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="m5 13 4 4L19 7"/></svg></span>
+        ${label}<span class="k">${k}</span></button>`).join("");
+    menu.querySelectorAll("button").forEach(b => b.onclick = e => { e.stopPropagation(); state.mode = b.dataset.mode; state.menu = false; render(); });
+    document.body.append(menu);
+    const anchor = hh.querySelector("#sortbtn").getBoundingClientRect();
+    menu.style.left = Math.round(anchor.right - 186) + "px";
+    menu.style.top = Math.round(anchor.bottom + 4) + "px";
+  }
+
+  const gs = groups();
+  if (!gs[0]?.chats.length) host.append(el("div", "empty", q ? "No chat matches “" + state.q + "”." : "No chats yet."));
+  for (const g of gs) {
+    if (g.label) {
+      const gh = el("div", "grouphead");
+      gh.innerHTML = `<span>${g.label}</span><span class="n">${g.chats.length}</span>`;
+      host.append(gh);
+    }
+    const all = state.showAll.has(g.key) || g.chats.length <= CAP;
+    const shown = all ? g.chats : g.chats.slice(0, CAP);
+    for (const c of shown) host.append(row(c));
+    if (!all) {
+      const more = el("button", "showmore", `Show ${g.chats.length - CAP} more`);
+      more.onclick = () => { state.showAll.add(g.key); render(); };
+      host.append(more);
+    }
+  }
+}
+
+function row(c) {
+  const active = c.title === "Sidebar redesign";
+  const b = el("button", "nrow" + (active ? " active" : ""));
+  b.title = `${c.title} — ${c.harness} · ${c.model}`;
+  b.innerHTML = `<span class="dot d-${c.status === 'idle' ? 'idle' : c.status}"></span><span class="t">${c.title}</span>`
+    + (active ? `<span class="meta">${c.model}</span>` : "");
+  return b;
+}
+
+function render() { document.querySelectorAll("body > .menu").forEach(n => n.remove()); renderOld(); renderNew(); }
+
+document.getElementById("theme").onclick = e => {
+  const dark = !document.documentElement.classList.contains("dark");
+  document.documentElement.classList.toggle("dark", dark);
+  e.target.textContent = dark ? "Dark" : "Light";
+  e.target.setAttribute("aria-pressed", String(dark));
+};
+document.getElementById("fill").onclick = e => {
+  state.busy = !state.busy;
+  e.target.setAttribute("aria-pressed", String(state.busy));
+  e.target.textContent = state.busy ? "Busy history (38 chats)" : "Quiet history (8 chats)";
+  render();
+};
+document.getElementById("searchtoggle").onclick = e => {
+  const wrap = document.getElementById("searchwrap");
+  const open = wrap.classList.toggle("hidden") === false;
+  e.currentTarget.setAttribute("aria-pressed", String(open));
+  if (open) document.getElementById("q").focus();
+  else { state.q = ""; document.getElementById("q").value = ""; render(); }
+};
+document.getElementById("q").oninput = e => { state.q = e.target.value; render(); };
+document.getElementById("whead").onclick = e => {
+  state.workersOpen = !state.workersOpen;
+  document.getElementById("wbody").classList.toggle("hidden", !state.workersOpen);
+  e.currentTarget.setAttribute("aria-expanded", String(state.workersOpen));
+  e.currentTarget.querySelector(".chev").style.transform = state.workersOpen ? "" : "rotate(-90deg)";
+};
+document.addEventListener("click", () => { if (state.menu) { state.menu = false; render(); } });
+render();
+</script>
+</body>
+</html>

@@ -1,10 +1,33 @@
+/**
+ * The conversation projections, as the app has always called them.
+ *
+ * Both are now the same two steps — normalize, then reduce — over the typed
+ * union in `src/transcript/`. This module is the seam that keeps `App.tsx` and
+ * `AgentConversation.tsx` call sites unchanged, plus the item-level folds
+ * (worker delegation panels, live/durable merge) that operate on reduced items
+ * rather than on events.
+ */
+
+import { normalizeAgentEvent, normalizeSessionEntry } from "./transcript/codec";
+import { reduceTranscript } from "./transcript/reducer";
+import type { TranscriptEvent } from "./transcript/events";
+import { readToolCall, type ToolCallDisplay, type ToolCallSource } from "./transcript/toolCall";
+import { itemIdentity, type ConversationItem } from "./transcript/item";
 import type { AgentEvent, SessionEntry } from "./types";
 
-export type ConversationItemType = "message" | "reasoning" | "activity" | "plan" | "approval" | "error" | "diff" | "artifact" | "delegation" | "checkpoint" | "compaction" | "branch-summary" | "raw";
-export interface ConversationItem {
-  key: string; type: ConversationItemType; eventId: number; role?: string; status?: string;
-  title?: string; text: string; data: Record<string, unknown>; sequence: number; entryId?: string;
-}
+export { itemIdentity, itemSignature, sameItem, sameItems, type ConversationItem, type ConversationItemType } from "./transcript/item";
+export { alignTurns, groupItems, isToolItem, type Rendered } from "./transcript/grouping";
+export { compactionReasonLabel, reasoningDisplayText } from "./transcript/codec";
+export { isInternalCompactionEnvelope, stripWorkerResultBlocks } from "./transcript/reducer";
+export {
+  classifyExploratoryCommand,
+  hasUnquotedRedirect,
+  parseCommandTokens,
+  type ToolCallDisplay,
+  type ToolGlyph,
+  type ToolStatus,
+  type ToolVerb,
+} from "./transcript/toolCall";
 
 /** Select one root-to-leaf path without relying on input array order. */
 export function selectActiveBranch(entries: SessionEntry[], activeLeafId: string | null): SessionEntry[] {
@@ -27,195 +50,193 @@ export function selectActiveBranch(entries: SessionEntry[], activeLeafId: string
   return branch.reverse();
 }
 
-/** Lifecycle kinds whose started/completed entries describe one tool call. */
-const LIFECYCLE_KINDS = new Set([
-  "tool.started", "tool.completed",
-  "command.started", "command.completed",
-  "file_change.started", "file_change.completed",
-  "item.started", "item.completed",
-]);
+/** The live event window, reduced. */
+export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
+  return reduceTranscript(events.map(normalizeAgentEvent));
+}
 
-/** Project immutable forest entries into UI items with entry-derived, branch-stable keys. */
+/** Immutable forest entries on the active branch, reduced the same way. */
 export function projectSessionConversation(entries: SessionEntry[], activeLeafId: string | null): ConversationItem[] {
-  const items: ConversationItem[] = [];
-  const approvalsBySequence = new Map<number, ConversationItem>();
-  const lifecycleByItemId = new Map<string, ConversationItem>();
-  for (const entry of selectActiveBranch(entries, activeLeafId)) {
-    if (entry.semanticSchemaVersion < 1 || entry.semanticSchemaVersion > 2) {
-      throw new Error(`Unsupported semantic event schema version ${entry.semanticSchemaVersion} on entry ${entry.id}`);
-    }
-    if (entry.kind === "approval.resolved") {
-      const nested = objectValue(entry.payload.data);
-      const requestEventId = Number(entry.payload.requestEventId ?? nested.requestEventId);
-      const request = approvalsBySequence.get(requestEventId);
-      if (request) {
-        request.status = stringValue(entry.payload.decision) ?? stringValue(nested.decision) ?? stringValue(entry.payload.status) ?? "resolved";
-        request.data = { ...request.data, resolution: entry.payload };
-        continue;
-      }
-    }
-    const item = projectSessionEntry(entry);
-    // Tool calls are stored as separate started/completed entries — fold them
-    // into a single row so a stale "inProgress" ghost never lingers.
-    const itemId = stringValue(entry.payload.itemId);
-    if (itemId && LIFECYCLE_KINDS.has(entry.kind)) {
-      const existing = lifecycleByItemId.get(itemId);
-      if (existing) {
-        existing.status = item.status ?? existing.status;
-        existing.title = item.title ?? existing.title;
-        if (item.text) existing.text = item.text;
-        existing.data = { ...existing.data, ...item.data };
-        existing.eventId = item.eventId;
-        continue;
-      }
-      lifecycleByItemId.set(itemId, item);
-    }
-    items.push(item);
-    if (entry.kind === "approval.requested") approvalsBySequence.set(entry.sequence, item);
+  const branch = selectActiveBranch(entries, activeLeafId);
+  const events: TranscriptEvent[] = [];
+  for (const entry of branch) {
+    const event = normalizeSessionEntry(entry);
+    if (event) events.push(event);
   }
+  return reduceTranscript(events);
+}
+
+/**
+ * The optimistic pending rows that have not yet come back as real user turns.
+ *
+ * Delivery is judged per row, in the row's **own** session: a pending message
+ * for an aside must reconcile against the aside's slice of the live stream,
+ * never against whichever session happens to be selected. The selected
+ * session gets one extra source — its durable projection — because its forest
+ * is the only one the app holds in memory; every other session's user turn
+ * still arrives on the global live stream, which is enough.
+ *
+ * Returns the same array reference when nothing was delivered, so callers can
+ * keep referential equality for render stability.
+ */
+export function undeliveredPending<T extends { sessionId: string; text: string }>(
+  pending: readonly T[],
+  liveEvents: AgentEvent[],
+  selected: { sessionId?: string; durableUserTexts: ReadonlySet<string> },
+): T[] {
+  if (!pending.length) return pending as T[];
+  const liveTexts = new Map<string, Set<string>>();
+  const deliveredIn = (sessionId: string, text: string): boolean => {
+    let texts = liveTexts.get(sessionId);
+    if (!texts) {
+      texts = new Set(
+        reduceConversation(liveEvents.filter(event => event.sessionId === sessionId))
+          .filter(item => item.type === "message" && item.role === "user")
+          .map(item => item.text.trim()),
+      );
+      liveTexts.set(sessionId, texts);
+    }
+    if (texts.has(text)) return true;
+    return sessionId === selected.sessionId && selected.durableUserTexts.has(text);
+  };
+  const next = pending.filter(item => !deliveredIn(item.sessionId, item.text.trim()));
+  return next.length === pending.length ? (pending as T[]) : next;
+}
+
+function isUnidentifiedAssistantShadow(live: ConversationItem, durable: ConversationItem): boolean {
+  if (live.type !== "message" || durable.type !== "message") return false;
+  if ((live.role ?? "assistant") === "user" || (durable.role ?? "assistant") === "user") return false;
+  const text = live.text.trim();
+  if (!text || text !== durable.text.trim()) return false;
+  return live.status === "streaming" || !live.itemId;
+}
+
+export function mergeConversationProjections(durableItems: ConversationItem[], liveItems: ConversationItem[]): ConversationItem[] {
+  const durableIds = new Set(durableItems.map(item => item.identity ?? itemIdentity(item)));
+  const liveAnchors = new Map(liveItems.map(item => [item.identity ?? itemIdentity(item), item.sequence]));
+  const items = durableItems.map(item => {
+    const identity = item.identity ?? itemIdentity(item);
+    let anchor = liveAnchors.get(identity);
+    if (anchor === undefined) {
+      const twin = liveItems.find(live => isUnidentifiedAssistantShadow(live, item));
+      if (twin) anchor = twin.sequence;
+    }
+    return anchor !== undefined && anchor < item.sequence ? { ...item, sequence: anchor } : item;
+  });
+  for (const live of liveItems) {
+    const identity = live.identity ?? itemIdentity(live);
+    if (durableIds.has(identity)) continue;
+    if (durableItems.some(durable => isUnidentifiedAssistantShadow(live, durable))) continue;
+    items.push(live);
+  }
+  items.sort((a, b) => a.sequence - b.sequence);
   return items;
 }
 
-function projectSessionEntry(entry: SessionEntry): ConversationItem {
-  const payload = entry.payload;
-  const base = {
-    key: `entry:${entry.id}`,
-    entryId: entry.id,
-    eventId: entry.sequence,
-    sequence: entry.sequence,
-    status: stringValue(payload.status),
-    data: payload,
+/** A worker-result payload stamped onto assistant prose, if that is all the text is. */
+export function workerResultSummary(text: string): string | undefined {
+  const prefix = "[worker result]";
+  if (!text.startsWith(prefix)) return undefined;
+  const rest = text.slice(prefix.length).trim();
+  return rest || undefined;
+}
+
+/**
+ * Read one conversation item as the tool call it describes.
+ *
+ * The reduced item already carries the facet the codec read at ingestion; this
+ * derives one only for items assembled by hand (tests, previews) so no caller
+ * has to know which is which.
+ */
+export function toolCallDisplay(item: ConversationItem): ToolCallDisplay {
+  if (item.tool) return item.tool;
+  const source: ToolCallSource = {
+    title: item.title,
+    text: item.text,
+    status: item.status,
+    surface: item.type === "diff" ? "diff" : "activity",
+    data: item.data,
   };
-  if (isRawProviderEntry(entry)) {
-    return {
-      ...base,
-      type: "raw",
-      title: stringValue(payload.title) ?? "Raw provider event",
-      text: stringValue(payload.text) ?? "",
-      data: { ...payload, collapsed: true, inspectable: true },
-    };
+  return readToolCall(source);
+}
+
+/* ── Worker delegation items ─────────────────────────────────────────────
+   Four different provider events land as `delegation` items and the renderer
+   used to sniff them apart with inline `"key" in data` checks. Naming the
+   facets once means the fold below and the card that draws them can never
+   disagree about what a row is. */
+
+export type DelegationFacet = "spawn" | "result" | "blocked" | "rejected" | "steered";
+
+export function delegationFacet(item: ConversationItem): DelegationFacet {
+  if ("childBlocked" in item.data) return "blocked";
+  if ("willRetry" in item.data) return "rejected";
+  if ("steeredBy" in item.data) return "steered";
+  if ("delivered" in item.data) return "result";
+  return "spawn";
+}
+
+export function delegationChildSessionId(item: ConversationItem): string | undefined {
+  return typeof item.data.childSessionId === "string" ? item.data.childSessionId : undefined;
+}
+
+/**
+ * Collapse each worker's result onto the panel that spawned it.
+ *
+ * The spawn row is a live panel while the worker runs, so letting the result
+ * arrive as its own row further down left the user with two cards for one
+ * worker: a stale live one and a disconnected outcome. One worker is one place
+ * in the transcript, from "delegated" through to "done".
+ *
+ * Applied to the merged durable+live list rather than inside either projection,
+ * because a spawn read from the forest and a result still only in the live
+ * stream is the normal case mid-run.
+ */
+export function foldWorkerDelegations(items: ConversationItem[]): ConversationItem[] {
+  const panelByChild = new Map<string, ConversationItem>();
+  const folded: ConversationItem[] = [];
+  for (const item of items) {
+    if (item.type !== "delegation") { folded.push(item); continue; }
+    const childSessionId = delegationChildSessionId(item);
+    const facet = delegationFacet(item);
+    if (!childSessionId) { folded.push(item); continue; }
+    if (facet === "spawn") {
+      // Copied because the merge below mutates the row that is already in the
+      // output list, and the caller's item must not change underneath it.
+      const panel = { ...item, data: { ...item.data } };
+      panelByChild.set(childSessionId, panel);
+      folded.push(panel);
+      continue;
+    }
+    const panel = facet === "result" ? panelByChild.get(childSessionId) : undefined;
+    // An orphan result — durable history truncated, or a branch switched away
+    // from the spawn — still has to render. Folding must never lose a row.
+    if (!panel) { folded.push(item); continue; }
+    panel.data = { ...panel.data, ...item.data };
+    panel.status = item.status ?? panel.status;
+    panel.title = item.title ?? panel.title;
+    // A `[worker result] …` stamp is routing metadata for the panel, not a
+    // replacement for the human objective the spawn already showed.
+    if (item.text && !workerResultSummary(item.text)) panel.text = item.text;
+    // The panel keeps its own key and eventId: the key is what React reconciles
+    // on, and the eventId is what the durable/live dedupe upstream matches.
   }
-  switch (entry.kind) {
-    case "user.message":
-    case "assistant.message":
-      return {
-        ...base,
-        type: "message",
-        role: entry.kind === "user.message" ? "user" : stringValue(payload.role) ?? "assistant",
-        text: stringValue(payload.text) ?? "",
-      };
-    case "checkpoint":
-      return { ...base, type: "checkpoint", title: "Checkpoint", text: stringValue(payload.summary) ?? "" };
-    case "compaction":
-      return { ...base, type: "compaction", title: "Context compacted", text: stringValue(payload.summary) ?? "" };
-    case "compaction.requested":
-      return { ...base, type: "compaction", title: "Compaction requested", text: stringValue(payload.reason) ?? "" };
-    case "compaction.failed":
-      return { ...base, type: "compaction", status: "failed", title: "Compaction failed", text: stringValue(payload.reason) ?? "" };
-    case "branch.summary":
-      return { ...base, type: "branch-summary", title: "Branch summary", text: stringValue(payload.summary) ?? "" };
-    case "error":
-      return { ...base, type: "error", status: stringValue(payload.status) ?? "failed", title: stringValue(payload.title) ?? "Agent error", text: errorTextFromPayload(payload) };
-    default:
-      return {
-        ...base,
-        type: entry.kind === "approval.requested" || entry.kind === "approval.resolved" ? "approval" : entry.kind === "artifact.created" ? "artifact" : entry.kind.startsWith("delegation.") || entry.kind === "worker.result" ? "delegation" : "activity",
-        role: stringValue(payload.role),
-        title: stringValue(payload.title) ?? humanizeKind(entry.kind),
-        text: stringValue(payload.text) ?? stringValue(payload.summary) ?? stringValue(payload.reason) ?? "",
-        // Flatten the stored wrapper: the inner event data (tool input, command,
-        // output…) wins, so durable items render like live ones.
-        data: { ...payload, ...objectValue(payload.data) },
-      };
-  }
+  return folded;
 }
 
-/** Pull a human-readable error string from an error entry, tolerant of provider shapes. */
-function errorTextFromPayload(payload: Record<string, unknown>): string {
-  const direct = stringValue(payload.text);
-  if (direct) return direct;
-  const data = objectValue(payload.data);
-  const error = objectValue(data.error);
-  return stringValue(error.message) ?? stringValue(data.message) ?? stringValue(data.reason) ?? "";
+/**
+ * Image attachments persisted on a user turn, as renderable data URIs.
+ *
+ * The backend stamps `data.attachments = [{mediaType, dataUri}]` onto the
+ * user's message event so the conversation can re-render what was sent after
+ * a reload. Malformed payloads return [] — a bad attachment must never be
+ * able to break the transcript row it rides on.
+ */
+export function attachmentUris(data: Record<string, unknown>): string[] {
+  const attachments = data.attachments;
+  if (!Array.isArray(attachments)) return [];
+  return attachments.flatMap((attachment) => {
+    const dataUri = (attachment as { dataUri?: unknown } | null)?.dataUri;
+    return typeof dataUri === "string" && dataUri.startsWith("data:image/") ? [dataUri] : [];
+  });
 }
-
-function isRawProviderEntry(entry: SessionEntry): boolean {
-  return entry.kind.startsWith("provider.") || entry.kind.startsWith("raw.") || entry.contextVisibility.toLowerCase().includes("raw");
-}
-
-function stringValue(value: unknown): string | undefined {
-  return typeof value === "string" ? value : undefined;
-}
-
-function objectValue(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
-}
-
-function humanizeKind(kind: string): string {
-  return kind.replace(/[._-]+/g, " ").replace(/^\w/, (letter) => letter.toUpperCase());
-}
-
-export function reduceConversation(events: AgentEvent[]): ConversationItem[] {
-  const items = new Map<string, ConversationItem>();
-  for (const event of [...events].sort((a, b) => a.sequence - b.sequence)) {
-    if (event.kind === "provider.unknown" || event.kind.startsWith("session.") || event.kind.startsWith("turn.") || event.kind === "usage.updated") continue;
-    const itemKey = event.itemId ?? `${event.kind}:${event.id}`;
-    if (event.kind === "message.delta" || event.kind === "reasoning.delta") {
-      if (!event.text) continue;
-      const type = event.kind.startsWith("message") ? "message" : "reasoning";
-      const existing = items.get(itemKey) ?? { key:itemKey, type, eventId:event.id, role:event.role ?? undefined, status:"streaming", text:"", data:{}, sequence:event.sequence };
-      existing.text += event.text ?? ""; existing.status = "streaming"; existing.eventId = event.id; items.set(itemKey, existing); continue;
-    }
-    if (event.kind.endsWith(".output_delta") || event.kind === "diff.delta" || event.kind === "tool.progress") {
-      const type: ConversationItemType = event.kind.startsWith("diff") ? "diff" : "activity";
-      const existing = items.get(itemKey) ?? { key:itemKey, type, eventId:event.id, status:event.status ?? "inProgress", title:event.title ?? undefined, text:"", data:event.data, sequence:event.sequence };
-      existing.text += event.text ?? ""; existing.status = event.status ?? existing.status; existing.eventId = event.id; existing.data = { ...existing.data, ...event.data }; items.set(itemKey, existing); continue;
-    }
-    if (event.kind === "plan.updated" || event.kind.startsWith("plan.")) {
-      items.set("current-plan", { key:"current-plan", type:"plan", eventId:event.id, status:event.status ?? undefined, title:event.title ?? "Plan", text:event.text ?? "", data:event.data, sequence:event.sequence }); continue;
-    }
-    if (event.kind === "delegation.spawned" || event.kind === "delegation.result") {
-      items.set(itemKey, { key:itemKey, type:"delegation", eventId:event.id, role:"system", status:event.status ?? undefined, title:event.title ?? undefined, text:event.text ?? "", data:event.data, sequence:event.sequence }); continue;
-    }
-    if (event.kind === "approval.requested") {
-      items.set(`approval:${event.id}`, { key:`approval:${event.id}`, type:"approval", eventId:event.id, status:"pending", title:event.title ?? "Approval required", text:event.text ?? "", data:event.data, sequence:event.sequence }); continue;
-    }
-    if (event.kind === "approval.resolved") {
-      const requestId = Number(event.data.requestEventId); const approval = items.get(`approval:${requestId}`); if (approval) approval.status = String(event.data.decision ?? event.status ?? "resolved"); continue;
-    }
-    const type: ConversationItemType = event.kind.startsWith("message.") ? "message" : event.kind.startsWith("reasoning.") ? "reasoning" : event.kind.startsWith("diff.") || event.kind.startsWith("file_change.") ? "diff" : event.kind.startsWith("artifact.") ? "artifact" : event.kind === "error" ? "error" : "activity";
-    if (type === "reasoning" && !(event.text || stringList(event.data.summary))) continue;
-    if (type === "message" && !event.text && !items.has(itemKey)) continue;
-    const existing = items.get(itemKey);
-    const next: ConversationItem = existing ?? { key:itemKey, type, eventId:event.id, role:event.role ?? undefined, status:event.status ?? undefined, title:event.title ?? undefined, text:"", data:{}, sequence:event.sequence };
-    next.eventId = event.id; next.status = event.status ?? next.status; next.title = event.title ?? next.title; next.role = event.role ?? next.role;
-    if (event.text) next.text = event.text; next.data = { ...next.data, ...event.data }; items.set(itemKey,next);
-  }
-  return [...items.values()]
-    .map(item => item.type === "message" ? { ...item, text: stripWorkerResultBlocks(item.text) } : item)
-    .filter(item => item.type !== "reasoning" || item.text.trim().length > 0)
-    .filter(item => item.type !== "message" || item.text.trim().length > 0)
-    .sort((a,b)=>a.sequence-b.sequence);
-}
-
-export function stripWorkerResultBlocks(text: string): string {
-  const lines = text.split("\n");
-  const kept: string[] = [];
-  let index = 0;
-  while (index < lines.length) {
-    const trimmed = lines[index].trimStart();
-    const tag = trimmed.startsWith("```") ? trimmed.replace(/^`+/, "").trim().toLowerCase() : "";
-    if (tag.includes("bridge") && tag.includes("worker") && tag.includes("result")) {
-      const closing = lines.findIndex((line, candidate) => candidate > index && line.trimStart().startsWith("```"));
-      if (closing >= 0) {
-        index = closing + 1;
-        continue;
-      }
-    }
-    kept.push(lines[index]);
-    index += 1;
-  }
-  return kept.join("\n").trim();
-}
-
-function stringList(value:unknown){return Array.isArray(value)?value.join("\n"):"";}

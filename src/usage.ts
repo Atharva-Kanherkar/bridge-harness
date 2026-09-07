@@ -1,4 +1,5 @@
 import type { AgentEvent, Harness, Session, SessionStatus, UsageLedgerRow } from "./types";
+import { readWireKind } from "./transcript/wire";
 
 // Ambient subscription-usage snapshot, parsed from real provider `usage.updated`
 // events. Codex (app-server) reports `rate_limits` windows — the same data its
@@ -29,7 +30,7 @@ export interface UsageSnapshot {
   capturedAt: string;
 }
 
-export type UsageProvider = "claude" | "codex" | "opencode";
+export type UsageProvider = "claude" | "codex" | "cursor" | "opencode";
 
 export interface AccountUsagePayload {
   provider: UsageProvider;
@@ -69,6 +70,33 @@ export interface UsageHistoryEntry {
   totalTokens?: number;
   contextPercent?: number;
   createdAt: string;
+}
+
+export type CacheCostCoverage = "reported" | "partial" | "unknown";
+
+export const MAX_CACHE_DIAGNOSTIC_ROWS = 1_000;
+
+export interface CacheDiagnostic {
+  key: string;
+  harness: string;
+  model: string;
+  role: string;
+  taskFamily: string;
+  restorationMode: string;
+  stablePrefixId?: string;
+  stablePrefixHash?: string;
+  promptSchemaVersion?: number;
+  prefixTokenEstimate?: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  uncachedInputTokens: number;
+  cacheHitRatio?: number;
+  writeAmortization?: number;
+  observations: number;
+  crossHarnessReuse: string[];
+  reportedCostMicrousd?: number;
+  costSources: string[];
+  costCoverage: CacheCostCoverage;
 }
 
 function isDict(value: unknown): value is Dict {
@@ -258,10 +286,80 @@ export function buildUsageHistory(rows: UsageLedgerRow[], sessions: Session[]): 
   }).sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt) || b.id - a.id);
 }
 
+/** Aggregate provider cache telemetry without estimating prices or savings. */
+export function buildCacheDiagnostics(rows: UsageLedgerRow[]): CacheDiagnostic[] {
+  type Accumulator = CacheDiagnostic & { costObservations: number };
+  const groups = new Map<string, Accumulator>();
+  for (const row of rows.slice(-MAX_CACHE_DIAGNOSTIC_ROWS)) {
+    if (!row.source.startsWith("provider.")) continue;
+    const hasCacheSignal = row.cacheReadTokens != null || row.cacheWriteTokens != null || row.uncachedInputTokens != null;
+    if (!hasCacheSignal && !row.stablePrefixId) continue;
+    const harness = row.harness ?? (row.source.slice("provider.".length) || "unknown");
+    const model = row.model ?? "unknown";
+    const role = row.role ?? "unknown";
+    const taskFamily = row.taskFamily ?? "unknown";
+    const restorationMode = row.restorationMode ?? "unknown";
+    const key = JSON.stringify([harness, model, role, taskFamily, restorationMode, row.stablePrefixId ?? "unknown"]);
+    let group = groups.get(key);
+    if (!group) {
+      group = {
+        key,
+        harness,
+        model,
+        role,
+        taskFamily,
+        restorationMode,
+        stablePrefixId: row.stablePrefixId ?? undefined,
+        stablePrefixHash: row.stablePrefixHash ?? undefined,
+        promptSchemaVersion: row.promptSchemaVersion ?? undefined,
+        prefixTokenEstimate: row.prefixTokenEstimate ?? undefined,
+        cacheReadTokens: 0,
+        cacheWriteTokens: 0,
+        uncachedInputTokens: 0,
+        observations: 0,
+        crossHarnessReuse: [],
+        costSources: [],
+        costCoverage: "unknown",
+        costObservations: 0,
+      };
+      groups.set(key, group);
+    }
+    group.cacheReadTokens += Math.max(0, row.cacheReadTokens ?? 0);
+    group.cacheWriteTokens += Math.max(0, row.cacheWriteTokens ?? 0);
+    group.uncachedInputTokens += Math.max(0, row.uncachedInputTokens ?? 0);
+    group.observations += 1;
+    if (row.crossHarnessReuse && !group.crossHarnessReuse.includes(row.crossHarnessReuse)) group.crossHarnessReuse.push(row.crossHarnessReuse);
+    if (row.costMicrousd != null && row.costSource) {
+      group.reportedCostMicrousd = (group.reportedCostMicrousd ?? 0) + row.costMicrousd;
+      group.costObservations += 1;
+      if (!group.costSources.includes(row.costSource)) group.costSources.push(row.costSource);
+    }
+  }
+
+  return [...groups.values()].map(group => {
+    const { costObservations, ...base } = group;
+    const totalInput = group.cacheReadTokens + group.cacheWriteTokens + group.uncachedInputTokens;
+    const diagnostic: CacheDiagnostic = {
+      ...base,
+      cacheHitRatio: totalInput > 0 ? group.cacheReadTokens / totalInput : undefined,
+      writeAmortization: group.cacheWriteTokens > 0 ? group.cacheReadTokens / group.cacheWriteTokens : undefined,
+      crossHarnessReuse: [...group.crossHarnessReuse].sort(),
+      costSources: [...group.costSources].sort(),
+      costCoverage: costObservations === 0 ? "unknown" : costObservations === group.observations ? "reported" : "partial",
+    };
+    return diagnostic;
+  }).sort((left, right) => left.harness.localeCompare(right.harness)
+    || left.model.localeCompare(right.model)
+    || left.role.localeCompare(right.role)
+    || left.taskFamily.localeCompare(right.taskFamily)
+    || left.restorationMode.localeCompare(right.restorationMode)
+    || (left.stablePrefixId ?? "").localeCompare(right.stablePrefixId ?? ""));
+}
+
 /** Latest real usage snapshot from a session's live event stream, if any. */
 export function latestUsageSnapshot(events: AgentEvent[]): UsageSnapshot | null {
   for (let index = events.length - 1; index >= 0; index -= 1) {
-    if (events[index].kind === "usage.updated") {
+    if (readWireKind(events[index].kind) === "usage.updated") {
       const snapshot = extractUsageSnapshot(events[index].data);
       if (snapshot) return snapshot;
     }

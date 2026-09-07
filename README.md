@@ -8,6 +8,16 @@ Bridge is built for developers who want the speed of coding agents with explicit
 
 > Early-stage software: Bridge is currently packaged for macOS 12 or later and is under active development.
 
+## Download
+
+macOS 12 or later (Apple Silicon). Open the `.dmg`, drag **Bridge** into Applications, then launch it.
+
+- **Release:** [GitHub Releases](https://github.com/Atharva-Kanherkar/bridge-harness/releases) — look for `Bridge_0.5.1_*.dmg`
+- Claude models need **Node.js 18+** on your `PATH`. Codex, Claude Code, and OpenCode stay optional: a missing CLI shows that adapter as unavailable instead of blocking startup.
+- A notarized build should open without Gatekeeper blocking it. If you built from source yourself, the binary is ad-hoc signed and macOS will ask you to open it anyway.
+
+The application is all rights reserved unless the maintainers publish a license.
+
 ## Highlights
 
 - **Structured agent sessions** — Connect Codex through its `app-server` JSON-RPC protocol, Claude Code through the Agent SDK sidecar, and OpenCode through its headless server API. Bridge renders normalized messages, reasoning, plans, tool calls, approvals, file changes, errors, and artifacts in the desktop UI instead of embedding provider TUIs.
@@ -90,7 +100,7 @@ Rust supervisor and policy engine
    └── PTY terminal and health reporting
 ```
 
-The frontend lives in `src/`. The native application, provider supervision, persistence, routing, Git integration, and terminal process management live in `src-tauri/src/`. The Claude sidecar lives in `sidecar/claude-agent/` and requires Node.js 18 or newer.
+The frontend lives in `src/`. The native side is a cargo workspace under `src-tauri/`: the `bridge-core` crate (`src-tauri/bridge-core/`) holds the Tauri-free runtime — provider supervision, persistence, routing, Git integration, policy, and the `BridgeCore` state — while the Tauri shell (`src-tauri/src/`) holds the IPC command wrappers and desktop wiring. The Claude sidecar lives in `sidecar/claude-agent/` and requires Node.js 18 or newer.
 
 ## Prerequisites
 
@@ -130,6 +140,12 @@ To run the complete desktop application with the Rust shell, provider supervisio
 bun run tauri dev
 ```
 
+The package script stages the native browser host and daemon before starting
+Tauri's dev-server readiness timer. This allows a cold Rust build to finish even
+when it takes more than three minutes. Use this package script for desktop
+development; direct Tauri CLI invocations require the native helpers to be staged
+first.
+
 When debugging provider discovery, confirm the binaries are visible to the same environment that launches the app:
 
 ```sh
@@ -139,6 +155,15 @@ command -v opencode
 node --version
 rustc --version
 ```
+
+## macOS file access prompts
+
+macOS gates `~/Desktop`, `~/Documents`, and `~/Downloads` behind per-app consent (TCC). The first time Bridge — or an agent process it supervises — touches a file inside one of those folders, macOS shows a "Bridge would like to access…" prompt, and a denied prompt turns into silent file-access failures later. Bridge's health response checks for the two situations that make this painful and shows a warning in the app for each:
+
+- **A project or workspace registered inside a protected folder.** Every process in the chain needs its own grant, so prompts repeat per app and per folder. Keep repositories somewhere unprotected such as `~/Code`, or grant Bridge Full Disk Access under System Settings → Privacy & Security if you must work inside these folders.
+- **An ad-hoc signed build.** macOS keys file-access grants to the app's code-signing identity. Locally built binaries (`bun run tauri dev`, `bun run tauri build --debug`) are ad-hoc signed by default — `codesign -dv` shows `Signature=adhoc` and no `TeamIdentifier` — and an ad-hoc identity changes on every rebuild, so yesterday's grants vanish and the prompts come back. Sign development builds with a stable identity (configure `signingIdentity` in the Tauri bundle settings, or re-sign the built app with your Apple Development certificate) to keep grants across rebuilds.
+
+If prompts keep reappearing, address whichever of the two warnings the app shows. Stale per-app decisions can be cleared with `tccutil reset SystemPolicyDocumentsFolder <bundle-id>` (and the matching `SystemPolicyDesktopFolder` / `SystemPolicyDownloadsFolder` services) before relaunching.
 
 ## Verify and build
 
@@ -162,14 +187,28 @@ bun run tauri build --debug
 open src-tauri/target/debug/bundle/macos/Bridge.app
 ```
 
-The Tauri configuration targets a macOS `.app` bundle and uses `http://localhost:1420` for development.
+A production `.app` and `.dmg` (unsigned unless you set a Developer ID and notary credentials):
+
+```sh
+bun run tauri build
+open src-tauri/target/release/bundle/macos/Bridge.app
+```
+
+Signed, notarized disk image for GitHub Releases (Developer ID Application certificate + App Store Connect API key or Apple ID app-specific password):
+
+```sh
+bun run release:dmg
+```
+
+The Tauri configuration targets a macOS `.app` and `.dmg` and uses `http://localhost:1420` for development.
 
 ## Repository layout
 
 | Path | Purpose |
 | --- | --- |
 | `src/` | React UI, typed Tauri API boundary, event normalization, conversation projection, usage, and tests |
-| `src-tauri/src/` | Rust adapters, process supervision, policy, orchestration, persistence, Git, worktrees, PTY, and health |
+| `src-tauri/bridge-core/` | Tauri-free Rust runtime: adapters, process supervision, policy, orchestration, persistence, Git, worktrees, PTY, and health |
+| `src-tauri/src/` | Tauri shell: IPC command wrappers, event emission, and desktop wiring around `bridge-core` |
 | `sidecar/claude-agent/` | Node.js bridge for Claude Agent SDK sessions |
 | `docs/` | Design notes for session history, delegation, compaction, local history, and adaptive learning |
 | `testing/` | Acceptance contracts, regression notes, and replay fixtures |
@@ -177,6 +216,8 @@ The Tauri configuration targets a macOS `.app` bundle and uses `http://localhost
 
 Useful design references:
 
+- [`CHANGELOG.md`](CHANGELOG.md) — release notes for the downloadable app
+- [`docs/protocol/README.md`](docs/protocol/README.md) — the versioned RPC contract, handshake, error codes, and generated client types
 - [`docs/session-forest.md`](docs/session-forest.md) — immutable history, active branches, and divergence evidence
 - [`docs/delegation-policy.md`](docs/delegation-policy.md) — routing, budgets, write isolation, approvals, and worker lifecycle
 - [`docs/compaction-and-resume.md`](docs/compaction-and-resume.md) — checkpoint ownership and restoration modes
