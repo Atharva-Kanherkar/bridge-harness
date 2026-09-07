@@ -905,6 +905,13 @@
       "resultDeferred": "bridge_core::browser_bridge::BrowserBridgeSnapshot"
     },
     {
+      "command": "browser_frame",
+      "domain": "browser",
+      "method": "browser/browser_frame",
+      "paramsSchema": "browser-frame-params.json",
+      "resultSchema": "browser-frame-result.json"
+    },
+    {
       "command": "install_browser_native_host",
       "domain": "browser",
       "method": "browser/install_browser_native_host",

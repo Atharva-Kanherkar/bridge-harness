@@ -1,5 +1,5 @@
 use crate::{
-    adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest},
+    adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest, TurnContext},
     binary,
     context_inventory::{
         AdapterContextInventory, ContextInventoryScope, ContextLifecyclePhase, ContextSegmentClass,
@@ -209,7 +209,7 @@ fn launch(
     } else if let Some(thread_id) = resume_thread_id {
         (
             "thread/resume",
-            thread_resume_params(thread_id, cwd, model, instructions, write_mode),
+            thread_resume_params(thread_id, cwd, model, effort, instructions, write_mode),
             ContextLifecyclePhase::Resume,
         )
     } else {
@@ -307,8 +307,15 @@ fn thread_start_params(
         // Reasoning-effort override. Field names accepted by current Codex
         // app-server builds; unknown fields are ignored safely on older ones,
         // and the worker briefing also states the effort so behavior follows.
+        // The generated schema for codex-cli 0.153.4 has no top-level `effort`
+        // on either ThreadStartParams or ThreadResumeParams, but both accept
+        // a permissive `config` map — and `model_reasoning_effort` is the
+        // Codex config key for it — so carry it there too. Start and resume
+        // agree on this shape; the top-level fields stay for any build that
+        // did read them.
         params["effort"] = json!(effort);
         params["model_reasoning_effort"] = json!(effort);
+        params["config"] = json!({ "model_reasoning_effort": effort });
     }
     if let Some(instructions) = instructions
         .map(str::trim)
@@ -325,6 +332,7 @@ fn thread_resume_params(
     thread_id: &str,
     cwd: &str,
     model: Option<&str>,
+    effort: Option<&str>,
     instructions: Option<&str>,
     write_mode: Option<WriteMode>,
 ) -> Value {
@@ -337,6 +345,14 @@ fn thread_resume_params(
     });
     if let Some(model) = model.map(str::trim).filter(|value| !value.is_empty()) {
         params["model"] = json!(model);
+    }
+    if let Some(effort) = effort.map(str::trim).filter(|value| !value.is_empty()) {
+        // Resume previously sent no effort at all, so a switch that changed
+        // model *and* effort resumed at the thread's previous effort. The
+        // app-server schema has no top-level `effort` on ThreadResumeParams,
+        // but it accepts a permissive `config` map, and
+        // `model_reasoning_effort` is the Codex config key for it.
+        params["config"] = json!({ "model_reasoning_effort": effort });
     }
     if let Some(instructions) = instructions
         .map(str::trim)
@@ -358,7 +374,7 @@ fn thread_fork_params(
     instructions: Option<&str>,
     write_mode: Option<WriteMode>,
 ) -> Value {
-    let mut params = thread_resume_params(thread_id, cwd, model, instructions, write_mode);
+    let mut params = thread_resume_params(thread_id, cwd, model, None, instructions, write_mode);
     params["threadSource"] = json!("bridge_side_chat");
     params
 }
@@ -443,19 +459,10 @@ impl CodexRuntime {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
-    pub fn start_turn(
-        &self,
-        text: &str,
-        application_context: Option<&str>,
-    ) -> Result<(), BridgeError> {
+    pub fn start_turn(&self, text: &str, context: TurnContext<'_>) -> Result<(), BridgeError> {
         self.request(
             "turn/start",
-            turn_start_params(
-                &self.thread_id,
-                text,
-                application_context,
-                self.sandbox_policy.as_ref(),
-            ),
+            turn_start_params(&self.thread_id, text, context, self.sandbox_policy.as_ref()),
         )?;
         crate::context_inventory::record_runtime_inventory(
             &self.context_inventory,
@@ -493,17 +500,35 @@ impl CodexRuntime {
 fn turn_start_params(
     thread_id: &str,
     text: &str,
-    application_context: Option<&str>,
+    context: TurnContext<'_>,
     sandbox_policy: Option<&Value>,
 ) -> Value {
-    let mut params =
-        json!({"threadId":thread_id,"input":[{"type":"text","text":text,"text_elements":[]}]});
-    if let Some(context) = application_context
+    // The session frame is a leading `input` item, not `additionalContext`.
+    //
+    // `TurnStartParams` documents eleven fields as applying "for this turn and
+    // subsequent turns"; `additionalContext` is deliberately not one of them —
+    // it is "context fragments" scoped to the turn that carries them. A
+    // standing contract delivered there once would be gone by the next turn,
+    // and the delivery ledger would still believe the thread held it. `input`
+    // items are the turn's user message, so they persist in the thread exactly
+    // like Claude's content blocks and OpenCode's parts, which is what
+    // deliver-once needs.
+    let mut input = Vec::new();
+    if let Some(frame) = context.session.map(str::trim).filter(|f| !f.is_empty()) {
+        input.push(json!({"type":"text","text":frame,"text_elements":[]}));
+    }
+    input.push(json!({"type":"text","text":text,"text_elements":[]}));
+    let mut params = json!({"threadId":thread_id,"input":input});
+    // Per-turn credential context keeps its existing home: it is re-sent on
+    // every turn whose text carries a registered marker, so a turn-scoped
+    // fragment is exactly right for it.
+    if let Some(credentials) = context
+        .credentials
         .map(str::trim)
         .filter(|value| !value.is_empty())
     {
         params["additionalContext"] = json!({
-            "bridge.credentials": {"kind": "application", "value": context}
+            "bridge.credentials": {"kind": "application", "value": credentials}
         });
     }
     if let Some(sandbox_policy) = sandbox_policy {
@@ -526,14 +551,14 @@ impl AdapterRuntime for CodexRuntime {
         self.context_inventory.lock().unwrap().clone()
     }
     fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
-        self.start_turn(text, None)
+        self.start_turn(text, TurnContext::default())
     }
     fn send_turn_with_context(
         &self,
         text: &str,
-        application_context: &str,
+        context: TurnContext<'_>,
     ) -> Result<(), BridgeError> {
-        self.start_turn(text, Some(application_context))
+        self.start_turn(text, context)
     }
     fn interrupt(&self) -> Result<(), BridgeError> {
         CodexRuntime::interrupt(self)
@@ -710,7 +735,7 @@ mod tests {
         let start = thread_start_params("/tmp/work", None, None, Some("bridge"), None);
         assert_eq!(start["instructions"], "bridge");
         assert_eq!(start["developerInstructions"], "bridge");
-        let resume = thread_resume_params("thread", "/tmp/work", None, Some("bridge"), None);
+        let resume = thread_resume_params("thread", "/tmp/work", None, None, Some("bridge"), None);
         assert!(resume.get("instructions").is_none());
         assert_eq!(resume["developerInstructions"], "bridge");
 
@@ -766,7 +791,48 @@ mod tests {
         );
         assert_eq!(params["model"], "runtime-model");
         assert_eq!(params["effort"], "high");
+        assert_eq!(params["model_reasoning_effort"], "high");
+        assert_eq!(params["config"]["model_reasoning_effort"], "high");
         assert_eq!(params["developerInstructions"], "worker rules");
+    }
+
+    #[test]
+    fn thread_resume_carries_effort_as_config_and_omits_it_when_absent() {
+        // A switch that changes model *and* effort resumes the stored thread,
+        // so the resume must carry the effort — via the permissive `config`
+        // map, the only place the 0.153.4 schema accepts it.
+        let with_effort = thread_resume_params(
+            "thread-existing",
+            "/tmp/work",
+            Some("runtime-model"),
+            Some("high"),
+            None,
+            None,
+        );
+        assert_eq!(with_effort["config"]["model_reasoning_effort"], "high");
+
+        let without_effort =
+            thread_resume_params("thread-existing", "/tmp/work", None, None, None, None);
+        assert!(without_effort.get("config").is_none());
+
+        // Start and resume agree; the top-level fields stay for any build that
+        // did read them.
+        let start = thread_start_params("/tmp/work", None, Some("high"), None, None);
+        assert_eq!(start["config"]["model_reasoning_effort"], "high");
+        assert_eq!(start["effort"], "high");
+        let start_without = thread_start_params("/tmp/work", None, None, None, None);
+        assert!(start_without.get("config").is_none());
+
+        // A fork is an aside, not a model switch — its effort is out of scope
+        // and stays untouched.
+        let fork = thread_fork_params(
+            "thread-existing",
+            "/tmp/work",
+            Some("runtime-model"),
+            None,
+            None,
+        );
+        assert!(fork.get("config").is_none());
     }
 
     #[test]
@@ -817,6 +883,7 @@ mod tests {
             "thread-existing",
             "/tmp/work",
             Some("runtime-model"),
+            None,
             Some("restored rules"),
             Some(WriteMode::ReadOnly),
         );
@@ -839,10 +906,25 @@ mod tests {
         let params = turn_start_params(
             "thread-existing",
             "verify [secret:sec_reference]",
-            Some("trusted broker capability"),
+            TurnContext {
+                session: Some("<bridge-session-context schema=\"1\">frame</bridge-session-context>"),
+                credentials: Some("trusted broker capability"),
+            },
             None,
         );
-        assert_eq!(params["input"][0]["text"], "verify [secret:sec_reference]");
+        // The session frame leads the turn's own input items, so it is part of
+        // the user message and persists in the thread. The user's words follow
+        // it, unedited.
+        let input = params["input"].as_array().unwrap();
+        assert_eq!(input.len(), 2);
+        assert_eq!(
+            input[0]["text"],
+            "<bridge-session-context schema=\"1\">frame</bridge-session-context>"
+        );
+        assert_eq!(input[0]["type"], "text");
+        assert_eq!(input[1]["text"], "verify [secret:sec_reference]");
+
+        // Per-turn credential context keeps its turn-scoped home.
         assert_eq!(
             params["additionalContext"]["bridge.credentials"]["kind"],
             "application"
@@ -850,6 +932,70 @@ mod tests {
         assert_eq!(
             params["additionalContext"]["bridge.credentials"]["value"],
             "trusted broker capability"
+        );
+        assert!(
+            params["additionalContext"].get("bridge.session").is_none(),
+            "a standing contract must not live in a turn-scoped fragment"
+        );
+    }
+
+    /// `TurnStartParams` marks eleven fields as applying "for this turn and
+    /// subsequent turns". `additionalContext` is not one of them, so anything
+    /// the delivery ledger expects the thread to still hold next turn cannot
+    /// go there.
+    #[test]
+    fn a_standing_frame_rides_input_while_per_turn_context_rides_additional_context() {
+        let frame_only = turn_start_params(
+            "thread",
+            "hello",
+            TurnContext {
+                session: Some("frame"),
+                credentials: None,
+            },
+            None,
+        );
+        assert_eq!(frame_only["input"].as_array().unwrap().len(), 2);
+        assert!(
+            frame_only.get("additionalContext").is_none(),
+            "no per-turn fragment means no additionalContext at all"
+        );
+
+        let credentials_only = turn_start_params(
+            "thread",
+            "verify",
+            TurnContext {
+                session: None,
+                credentials: Some("trusted broker capability"),
+            },
+            None,
+        );
+        let input = credentials_only["input"].as_array().unwrap();
+        assert_eq!(input.len(), 1, "no frame means the user text stands alone");
+        assert_eq!(input[0]["text"], "verify");
+        let additional = credentials_only["additionalContext"].as_object().unwrap();
+        assert_eq!(additional.len(), 1);
+        assert!(additional.contains_key("bridge.credentials"));
+    }
+
+    #[test]
+    fn a_blank_context_value_is_absence_not_an_empty_claim() {
+        let blank = turn_start_params(
+            "thread",
+            "verify",
+            TurnContext {
+                session: Some("   "),
+                credentials: Some("  \n "),
+            },
+            None,
+        );
+        assert!(blank.get("additionalContext").is_none());
+        assert_eq!(blank["input"].as_array().unwrap().len(), 1);
+
+        // A context-free turn is byte-identical to the wire before #528.
+        let plain = turn_start_params("thread", "verify", TurnContext::default(), None);
+        assert_eq!(
+            plain,
+            json!({"threadId":"thread","input":[{"type":"text","text":"verify","text_elements":[]}]})
         );
     }
 
@@ -860,7 +1006,7 @@ mod tests {
             "writableRoots": ["/tmp/bridge-output"],
             "networkAccess": false,
         });
-        let params = turn_start_params("thread", "verify", None, Some(&policy));
+        let params = turn_start_params("thread", "verify", TurnContext::default(), Some(&policy));
         assert_eq!(params["sandboxPolicy"], policy);
         assert_eq!(
             params["sandboxPolicy"]["writableRoots"]
@@ -890,7 +1036,10 @@ mod tests {
         let mut runtime = started.runtime;
         let mut reader = started.reader;
         runtime
-            .start_turn("Reply exactly BRIDGE_SMOKE_OK. Do not use tools.", None)
+            .start_turn(
+                "Reply exactly BRIDGE_SMOKE_OK. Do not use tools.",
+                TurnContext::default(),
+            )
             .unwrap();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || loop {
@@ -931,7 +1080,10 @@ mod tests {
     #[ignore = "requires an installed, authenticated Codex binary and persists a provider thread"]
     fn live_codex_thread_survives_process_restart() {
         fn run_turn(started: &mut StartedCodex, prompt: &str) -> String {
-            started.runtime.start_turn(prompt, None).unwrap();
+            started
+                .runtime
+                .start_turn(prompt, TurnContext::default())
+                .unwrap();
             let mut transcript = String::new();
             loop {
                 let mut line = String::new();

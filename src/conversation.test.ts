@@ -249,7 +249,7 @@ describe("session forest conversation projection",()=>{
       entry("m1",null,"session.model_changed",{role:"system",status:"ready",title:"Chat model changed",text:"Chat runtime changed from codex/stub-fast to claude/opus. The next message starts a fresh provider session — carried forward: summary + 2 decisions + 3 files.",data:{previousHarness:"codex",harness:"claude",model:"opus",freshProviderSession:true,carriedContext:{summary:true,decisions:2,filesTouched:3,recentEntries:4}}},1),
     ],"m1");
     expect(items).toHaveLength(1);
-    expect(items[0].type).toBe("activity");
+    expect(items[0].type).toBe("model-change");
     expect(items[0].title).toBe("Chat model changed");
     expect(items[0].text).toContain("carried forward: summary + 2 decisions + 3 files");
   });

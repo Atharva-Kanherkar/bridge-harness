@@ -42,6 +42,10 @@ pub struct BridgeCore {
     pub runtimes: Mutex<HashMap<String, RuntimeSession>>,
     pub adapters: Mutex<HashMap<String, Box<dyn adapters::AdapterRuntime>>>,
     pub reader_launches: Mutex<HashMap<String, Arc<Mutex<bool>>>>,
+    /// A model switch's outgoing runtimes, detached and summarising in the
+    /// background after the switch committed. Keyed by the shared session id;
+    /// distinguished from the incoming model's live runtime by process id.
+    pub detached_summaries: Mutex<HashMap<String, crate::switch_summary::DetachedSummary>>,
     pub adapter_registry: Arc<adapters::AdapterRegistry>,
     /// Which backend serves each agent. The registry executes; this decides
     /// what may execute, and what a session recorded last time.
@@ -71,6 +75,13 @@ pub struct BridgeCore {
     pub skill_store: PathBuf,
     pub skill_consents: Arc<Mutex<HashMap<String, skill_marketplace::SkillConsent>>>,
     pub credential_broker: Arc<credential_broker::CredentialBroker>,
+    /// Which sessions are owed the session-context frame — the capability
+    /// contract and the memory packet — and which provider thread already
+    /// holds it. In memory on purpose: its lifetime is this process, which is
+    /// exactly the lifetime of the proxy token inside the frame, so a new
+    /// process cannot inherit a claim that a dead token was delivered.
+    /// See `session_context`.
+    pub session_context: Mutex<crate::session_context::SessionContextLedger>,
     pub browser_bridge: Arc<browser_bridge::BrowserBridgeSupervisor>,
     /// Read-only `gh` CLI surface. It owns no credentials and is deliberately
     /// separate from model adapters and their sidecars.
@@ -270,6 +281,7 @@ impl BridgeCore {
             runtimes: Mutex::new(HashMap::new()),
             adapters: Mutex::new(HashMap::new()),
             reader_launches: Mutex::new(HashMap::new()),
+            detached_summaries: Mutex::new(HashMap::new()),
             adapter_registry: Arc::new(adapters::AdapterRegistry::empty()),
             backend_resolver: Arc::new(backend_binding::BackendResolver::built_in()),
             catalog: Arc::new(
@@ -293,6 +305,7 @@ impl BridgeCore {
             ),
             github_surface: crate::github_surface::GithubSurface::unavailable_for_tests(),
             github_poller: crate::github_poll::GithubPoller::default(),
+            session_context: Mutex::new(Default::default()),
             worker_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
             user_stop_requested: Mutex::new(std::collections::HashSet::new()),
@@ -387,6 +400,7 @@ impl BridgeCore {
             runtimes: Mutex::new(HashMap::new()),
             adapters: Mutex::new(HashMap::new()),
             reader_launches: Mutex::new(HashMap::new()),
+            detached_summaries: Mutex::new(HashMap::new()),
             adapter_registry,
             backend_resolver: Arc::new(backend_resolver),
             catalog: Arc::new(loaded.catalog),
@@ -404,6 +418,7 @@ impl BridgeCore {
             browser_bridge,
             github_surface: crate::github_surface::GithubSurface::discover(),
             github_poller: crate::github_poll::GithubPoller::default(),
+            session_context: Mutex::new(Default::default()),
             worker_activity: Mutex::new(HashMap::new()),
             worker_activity_persisted: Mutex::new(HashMap::new()),
             user_stop_requested: Mutex::new(std::collections::HashSet::new()),

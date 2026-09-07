@@ -285,6 +285,12 @@ export function normalizeAgentEvent(raw: AgentEvent): TranscriptEvent {
   if (kind === "turn.started") return { type: "turn.started", envelope };
   if (kind.startsWith("turn.")) return { type: "turn.completed", envelope, status };
   if (kind === "usage.updated") return { type: "usage", envelope };
+  if (kind === "session.model_changed") {
+    // The switch milestone is its own row, live and replayed alike: the
+    // backend publishes this event on the bus at commit time, so the divider
+    // appears immediately rather than only after a reload.
+    return { type: "model.change", envelope, title, text, status };
+  }
   if (kind.startsWith("session.")) {
     return { type: "session.lifecycle", envelope, settles: kind === "session.idle" };
   }
@@ -524,10 +530,14 @@ export function normalizeSessionEntry(entry: SessionEntry): TranscriptEvent | nu
   if (kind === "turn.started") return { type: "turn.started", envelope };
   if (kind.startsWith("turn.")) return { type: "turn.completed", envelope, status };
   if (kind === "usage.updated") return { type: "usage", envelope };
+  if (kind === "session.model_changed") {
+    // The switch milestone is its own row: grouping and rendering key off the
+    // normalized type, never off a payload field.
+    return { type: "model.change", envelope, title, text: body, status };
+  }
   if (kind.startsWith("session.") && kind !== "session.model_changed") {
-    // Deliberately narrower than the live filter: `session.model_changed` is a
-    // bespoke row that reports what the switch carried, and it exists only in
-    // replay.
+    // Deliberately narrower than the live filter: every other `session.*`
+    // frame is lifecycle plumbing with no row of its own.
     return null;
   }
   if (isToolKind(kind)) {

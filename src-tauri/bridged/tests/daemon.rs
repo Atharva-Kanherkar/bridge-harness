@@ -92,15 +92,23 @@ impl Client {
 
     /// Receive frames until the response with `id` arrives, collecting any
     /// interleaved notifications.
-    fn recv_response(&mut self, id: i64) -> (Value, Vec<Value>) {
+    fn recv_response(&mut self, id: impl Into<Value>) -> (Value, Vec<Value>) {
+        let id = id.into();
         let mut notifications = Vec::new();
         loop {
             let frame = self.recv();
             if frame.get("id").is_none() {
+                assert_eq!(frame["jsonrpc"], json!("2.0"));
+                assert!(
+                    frame["method"].is_string()
+                        && frame.get("result").is_none()
+                        && frame.get("error").is_none(),
+                    "expected a notification, got {frame:?}"
+                );
                 notifications.push(frame);
                 continue;
             }
-            assert_eq!(frame["id"], json!(id), "responses arrive in request order");
+            assert_eq!(frame["id"], id, "responses arrive in request order");
             return (frame, notifications);
         }
     }
@@ -130,6 +138,24 @@ impl Client {
         self.send(frame);
         self.recv_response(id)
     }
+}
+
+#[test]
+fn browser_frame_polling_uses_the_typed_daemon_contract() {
+    let fixture = tempfile::tempdir().unwrap();
+    let running = RunningDaemon::start(fixture.path());
+    let mut client = Client::connect(&running.socket_path);
+    assert!(client.handshake(&running.token).get("error").is_none());
+    let (state, _) = client.call(1, "browser/browser_bridge_state", None);
+    assert!(state.get("error").is_none());
+    assert!(state["result"]["screenshot"].is_null());
+    let (frame, _) = client.call(2, "browser/browser_frame", Some(json!({"afterRevision": 0})));
+    assert!(frame.get("error").is_none());
+    assert!(frame.get("result").is_some_and(Value::is_null));
+    let (invalid, _) = client.call(3, "browser/browser_frame", Some(json!({"afterRevision": -1})));
+    assert_eq!(invalid["error"]["code"], json!(-32602));
+    drop(client);
+    running.stop();
 }
 
 #[test]
@@ -599,22 +625,25 @@ fn cancellation_and_envelope_semantics_follow_json_rpc() {
     assert!(response["error"]["message"].as_str().unwrap().contains("interrupt_turn"));
 
     // Notification-form $/cancel gets no response; the connection moves on.
+    // Background discovery may publish a valid notification between any of
+    // these replies. The response helper must still reject an extra response
+    // (including one with a null id) without mistaking that event for a reply.
+    running.daemon.core.events.publish(bridge_core::events::CoreEvent::AdaptersChanged);
     client.send(json!({"jsonrpc": "2.0", "method": "$/cancel", "params": {"id": 99}}));
-    let (health, notifications) = client.call(2, "health/health", None);
+    let (health, _) = client.call(2, "health/health", None);
     assert_eq!(health["result"]["ok"], json!(true));
-    assert!(notifications.is_empty(), "cancel produced frames: {notifications:?}");
 
     // A structurally invalid request echoes its id with invalid_request —
     // not a parse error with a null id.
     client.send(json!({"jsonrpc": "2.0", "id": 7, "params": {}}));
-    let response = client.recv();
+    let (response, _) = client.recv_response(7);
     assert_eq!(response["id"], json!(7));
     assert_eq!(response["error"]["code"], json!(-32600));
 
     // Non-JSON is the parse-error case, with the null id the spec requires.
     client.writer.write_all(b"not json at all\n").unwrap();
     client.writer.flush().unwrap();
-    let response = client.recv();
+    let (response, _) = client.recv_response(Value::Null);
     assert_eq!(response["id"], Value::Null);
     assert_eq!(response["error"]["code"], json!(-32700));
 

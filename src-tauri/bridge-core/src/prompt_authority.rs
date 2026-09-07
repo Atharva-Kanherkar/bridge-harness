@@ -117,10 +117,12 @@ pub struct ProviderBasePromptAuthority {
 ///   instructions — they are their own channel, and whether that channel
 ///   layers onto the base or merely rides beside it is unverified.
 /// - **OpenCode** (`opencode_adapter.rs`): `send_turn_with_context` rebuilds
-///   the `system` field from `instructions` plus per-turn application context
-///   from scratch on *every* turn. That is a fresh value handed to the
-///   provider each time, not a base Bridge has ever read back or observed
-///   being layered onto.
+///   the `system` field from `instructions` from scratch on *every* turn. The
+///   bytes are now constant for the launch — per-turn context rides in the
+///   prompt parts, so a turn carrying a credential contract no longer mutates
+///   `system` — but it is still a fresh value handed to the provider each
+///   time, not a base Bridge has ever read back or observed being layered
+///   onto.
 ///
 /// Not a field on any other contract table: this is its own kind of fact,
 /// certified by reading each adapter's delivery code rather than by a
@@ -155,7 +157,7 @@ const PROVIDER_BASE_PROMPT_AUTHORITY: &[ProviderBasePromptAuthority] = &[
             reason: "OpenCode's session API has no endpoint that returns its provider's base system prompt",
         },
         appendable: PromptVerdict::Unsupported {
-            reason: "send_turn_with_context reconstructs the `system` field from scratch on every turn instead of layering onto a base Bridge has observed, so whether OpenCode appends this to its own default or overwrites it is unverified",
+            reason: "send_turn_with_context reconstructs the `system` field from scratch on every turn instead of layering onto a base Bridge has observed, so whether OpenCode appends this to its own default or overwrites it is unverified — holding those bytes constant across turns does not make the layering observable",
         },
         replaceable: PromptVerdict::Unsupported {
             reason: "the same reconstruction on every turn makes replace unprovable: OpenCode's layering behavior against its provider's own base prompt is undocumented and unverified",

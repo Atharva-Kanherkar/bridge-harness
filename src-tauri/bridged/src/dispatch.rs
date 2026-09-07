@@ -650,6 +650,10 @@ pub fn dispatch(
         }
 
         MethodName::BrowserBridgeState => reply(api::browser_bridge_state(core)),
+        MethodName::BrowserFrame => {
+            let p: wire::BrowserFrameParams = decode(method, params)?;
+            reply(api::browser_frame(core, p.after_revision))
+        }
         MethodName::InstallBrowserNativeHost => reply(api::install_browser_native_host(core)),
         MethodName::BrowserAction => {
             let p: wire::BrowserActionParams = decode(method, params)?;

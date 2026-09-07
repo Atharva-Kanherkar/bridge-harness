@@ -23,6 +23,73 @@ use std::{
     time::Duration,
 };
 
+/// Trusted, application-owned context for one turn: Bridge's own words, never
+/// folded into the visible user message.
+///
+/// Two named things rather than one blob, because they are owed for different
+/// reasons and a provider that can name its context entries must not label one
+/// as the other. `session` is the launch's session-context frame
+/// (`session_context.rs`) — capabilities and memory, delivered in the
+/// conversation tail so the system prompt stays byte-stable across restarts.
+/// `credentials` is the per-turn capability contract, present only when the
+/// visible text carries a `[secret:]` marker registered to this session.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TurnContext<'a> {
+    pub session: Option<&'a str>,
+    pub credentials: Option<&'a str>,
+}
+
+/// One present context entry. `name` is the wire key for providers that carry
+/// named context entries (Codex's `additionalContext`); providers whose only
+/// channel is the message body use `value` alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnContextEntry<'a> {
+    pub name: &'static str,
+    pub value: &'a str,
+}
+
+impl<'a> TurnContext<'a> {
+    /// The entries actually present, in delivery order: the session frame
+    /// first, because it is the standing contract the per-turn note refines.
+    pub fn entries(&self) -> impl Iterator<Item = TurnContextEntry<'a>> {
+        [
+            ("bridge.session", self.session),
+            ("bridge.credentials", self.credentials),
+        ]
+        .into_iter()
+        .filter_map(|(name, value)| {
+            let value = value.map(str::trim).filter(|value| !value.is_empty())?;
+            Some(TurnContextEntry { name, value })
+        })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries().next().is_none()
+    }
+}
+
+/// The message a provider gets when the message body is its only channel.
+///
+/// ACP has no system prompt: Cursor and Grok already receive the compiled
+/// prompt folded into their first user message, so Bridge's per-turn context
+/// has nowhere else to go either. Order matters — the launch's instructions,
+/// then the session frame, then the per-turn note, then the user's words,
+/// which stay last and unedited.
+pub fn folded_message(
+    pending_instructions: Option<String>,
+    context: TurnContext<'_>,
+    text: &str,
+) -> String {
+    let mut parts = Vec::new();
+    parts.extend(pending_instructions);
+    parts.extend(context.entries().map(|entry| entry.value.to_owned()));
+    if parts.is_empty() {
+        return text.to_owned();
+    }
+    parts.push(text.to_owned());
+    parts.join("\n\n")
+}
+
 pub trait AdapterRuntime: Send {
     fn process_id(&self) -> u32;
     fn provider_session_id(&self) -> &str;
@@ -44,7 +111,7 @@ pub trait AdapterRuntime: Send {
     fn send_turn_with_context(
         &self,
         text: &str,
-        _application_context: &str,
+        _context: TurnContext<'_>,
     ) -> Result<(), BridgeError> {
         self.send_turn(text)
     }
@@ -63,7 +130,7 @@ pub trait AdapterRuntime: Send {
     fn send_turn_with_images(
         &self,
         _text: &str,
-        _application_context: Option<&str>,
+        _context: TurnContext<'_>,
         _images: &[bridge_protocol::messages::TurnImage],
     ) -> Result<(), BridgeError> {
         Err(BridgeError::Invalid(
@@ -2404,5 +2471,57 @@ mod tests {
         // The intermediate's own `sleep 600` shares its group; sweep it so
         // the test leaves nothing behind.
         let _ = terminate_process_group(supervisor.id());
+    }
+}
+
+#[cfg(test)]
+mod turn_context_tests {
+    use super::*;
+
+    #[test]
+    fn entries_are_ordered_and_blank_values_are_absent() {
+        let both = TurnContext {
+            session: Some("frame"),
+            credentials: Some("contract"),
+        };
+        assert_eq!(
+            both.entries().collect::<Vec<_>>(),
+            vec![
+                TurnContextEntry { name: "bridge.session", value: "frame" },
+                TurnContextEntry { name: "bridge.credentials", value: "contract" },
+            ]
+        );
+        assert!(!both.is_empty());
+
+        let blank = TurnContext {
+            session: Some("   \n "),
+            credentials: None,
+        };
+        assert!(blank.is_empty(), "whitespace is absence, not an empty claim");
+        assert!(TurnContext::default().is_empty());
+    }
+
+    #[test]
+    fn a_body_only_provider_keeps_the_user_text_last_and_unedited() {
+        let context = TurnContext {
+            session: Some("<bridge-session-context>frame</bridge-session-context>"),
+            credentials: Some("contract"),
+        };
+        let folded = folded_message(Some("compiled prompt".into()), context, "ship it");
+        assert_eq!(
+            folded,
+            "compiled prompt\n\n<bridge-session-context>frame</bridge-session-context>\n\ncontract\n\nship it"
+        );
+
+        // Nothing to prepend must not reshape the message at all: that is the
+        // wire every turn after the first one takes.
+        assert_eq!(
+            folded_message(None, TurnContext::default(), "ship it"),
+            "ship it"
+        );
+        assert_eq!(
+            folded_message(None, context, "ship it"),
+            "<bridge-session-context>frame</bridge-session-context>\n\ncontract\n\nship it"
+        );
     }
 }

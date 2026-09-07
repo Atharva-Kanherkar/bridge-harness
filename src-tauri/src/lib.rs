@@ -183,6 +183,14 @@ async fn browser_bridge_state(
 }
 
 #[tauri::command]
+async fn browser_frame(
+    state: State<'_, Arc<BridgeCore>>,
+    after_revision: u64,
+) -> Result<Option<browser_bridge::BrowserFrame>, BridgeError> {
+    api::browser_frame(state.inner(), after_revision)
+}
+
+#[tauri::command]
 async fn install_browser_native_host(state: State<'_, Arc<BridgeCore>>) -> Result<String, BridgeError> {
     let core = state.inner().clone();
     blocking("Native host registration", move || api::install_browser_native_host(&core)).await
@@ -2000,6 +2008,7 @@ pub fn run() {
             github_review,
             github_checkout,
             browser_bridge_state,
+            browser_frame,
             install_browser_native_host,
             browser_action,
             set_browser_permission,
@@ -2879,12 +2888,21 @@ mod tests {
 
     #[test]
     fn worker_objective_delivery_failure_is_not_reported_as_launched() {
-        let adapters = Mutex::new(HashMap::from([(
+        let scratch = tempfile::tempdir().unwrap();
+        let core = Arc::new(
+            BridgeCore::boot(BootConfig {
+                data_dir: scratch.path().to_path_buf(),
+                browser_extension_path: scratch.path().join("no-extension"),
+                events: None,
+            })
+            .unwrap(),
+        );
+        core.adapters.lock().unwrap().insert(
             "worker".into(),
             Box::new(RejectingRuntime) as Box<dyn adapters::AdapterRuntime>,
-        )]));
-        assert!(deliver_worker_objective(&adapters, "worker", "do work").is_err());
-        assert!(deliver_worker_objective(&adapters, "missing", "do work").is_err());
+        );
+        assert!(deliver_worker_objective(&core, "worker", "do work").is_err());
+        assert!(deliver_worker_objective(&core, "missing", "do work").is_err());
     }
 
     #[test]
@@ -2894,7 +2912,7 @@ mod tests {
         let sent = Arc::new(Mutex::new(Vec::new()));
         let runtime = RecordingRuntime { sent: sent.clone() };
 
-        deliver_sanitized_turn(&runtime, &prepared.text, None).unwrap();
+        deliver_sanitized_turn(&runtime, &prepared.text, adapters::TurnContext::default()).unwrap();
 
         let delivered = sent.lock().unwrap().first().cloned().unwrap();
         assert!(!delivered.contains(canary));

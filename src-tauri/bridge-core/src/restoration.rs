@@ -1,11 +1,56 @@
 use crate::{
     context::ContextProjector,
     model::{RestorationMode, ResumeEligibility},
+    model_catalog,
     session_forest::{EntryKind, SessionForest},
     store, BridgeError,
 };
 use chrono::Utc;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
+
+/// The smallest restoration context a cold start will inject, whatever the
+/// window: the old fixed cap, kept as the floor so a tiny or unknown window
+/// never carries less than before.
+pub const MIN_RESTORATION_BUDGET_BYTES: usize = 8_000;
+/// The largest restoration context, sized under
+/// [`crate::prompt_compiler::MAX_VARIABLE_SUFFIX_BYTES`] (128 KiB) with room for
+/// the other variable sections — the memory packet is capped at 4k chars and
+/// the session capabilities are a paragraph — so a full budget can never make
+/// the compiler reject the launch.
+pub const MAX_RESTORATION_BUDGET_BYTES: usize = 96 * 1024;
+/// The share of the incoming model's window the carried conversation may take.
+const RESTORATION_WINDOW_DIVISOR: i64 = 8;
+const BYTES_PER_TOKEN_ESTIMATE: i64 = 4;
+
+/// How many bytes of stored conversation a cold start may inject for a model
+/// with this context window: one eighth of the window at four bytes per token,
+/// clamped to `[MIN_RESTORATION_BUDGET_BYTES, MAX_RESTORATION_BUDGET_BYTES]`.
+pub fn restoration_budget_bytes(context_window_tokens: i64) -> usize {
+    let bytes = (context_window_tokens.max(0) / RESTORATION_WINDOW_DIVISOR)
+        .saturating_mul(BYTES_PER_TOKEN_ESTIMATE);
+    usize::try_from(bytes)
+        .unwrap_or(usize::MAX)
+        .clamp(MIN_RESTORATION_BUDGET_BYTES, MAX_RESTORATION_BUDGET_BYTES)
+}
+
+/// The context window of the model a session is (now) served by, read from
+/// its own row. After a switch commits, that is the incoming model — exactly
+/// the one whose window should size what the cold start injects.
+pub fn session_context_window_tokens(
+    db: &Connection,
+    session_id: &str,
+) -> Result<i64, BridgeError> {
+    let selection: Option<(String, Option<String>)> = db
+        .query_row(
+            "SELECT harness,model FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    Ok(selection
+        .map(|(harness, model)| model_catalog::context_window_tokens(&harness, model.as_deref()))
+        .unwrap_or(model_catalog::DEFAULT_CONTEXT_WINDOW_TOKENS))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestorationPlan {
@@ -79,20 +124,43 @@ pub fn select_plan(
     }
 }
 
+/// The stored history a cold start injects when no native thread can be
+/// resumed, sized by the session's own (incoming) model. See
+/// [`checkpoint_context_with_window`].
 pub fn checkpoint_context(
     db: &Connection,
     session_id: &str,
 ) -> Result<Option<String>, BridgeError> {
+    let window = session_context_window_tokens(db, session_id)?;
+    checkpoint_context_with_window(db, session_id, window)
+}
+
+/// Project the active branch into labelled restoration text for a model with
+/// `context_window_tokens` of room.
+///
+/// The header — the newest valid compaction's summary and decisions, else the
+/// latest checkpoint summary — is never dropped. Below it, the conversation
+/// tail is walked newest-first and kept verbatim, whole entries only, until
+/// [`restoration_budget_bytes`] is spent; if even the newest entry alone does
+/// not fit, its head is trimmed so the most recent words survive. The former
+/// fixed twelve-line stop and 8 000-byte cut were the "new model forgot
+/// everything" experience: a 40-turn conversation arrived as a paragraph.
+pub fn checkpoint_context_with_window(
+    db: &Connection,
+    session_id: &str,
+    context_window_tokens: i64,
+) -> Result<Option<String>, BridgeError> {
     let branch = SessionForest::new(db)
         .active_branch(session_id)
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-    let projection = ContextProjector::project(&branch, 128_000)
+    let projection = ContextProjector::project(&branch, context_window_tokens.max(1))
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-    let mut selected = Vec::new();
+    let budget = restoration_budget_bytes(context_window_tokens);
+    let mut header = Vec::new();
     if let Some(restoration) = projection.restoration_context {
-        selected.push(format!("compaction: {}", restoration.summary));
+        header.push(format!("compaction: {}", restoration.summary));
         for decision in restoration.decisions {
-            selected.push(format!("decision: {decision}"));
+            header.push(format!("decision: {decision}"));
         }
     } else if let Some(summary) = branch.iter().rev().find_map(|entry| {
         (entry.kind == "checkpoint")
@@ -104,8 +172,16 @@ pub fn checkpoint_context(
             })
             .flatten()
     }) {
-        selected.push(format!("checkpoint: {summary}"));
+        header.push(format!("checkpoint: {summary}"));
     }
+    // Reserve the header's room first, and bound the header itself: checkpoint
+    // fields have no length limit, and the compiler's ceiling must hold even
+    // for a pathological summary. Cutting the header's *end* keeps the summary
+    // line and the earliest decisions — the front is what carries meaning.
+    let header = bound_header(header, MAX_RESTORATION_BUDGET_BYTES);
+    let header_bytes = header.iter().map(|line| line.len() + 1).sum::<usize>();
+    let mut remaining = budget.saturating_sub(header_bytes);
+    let mut tail = Vec::new();
     for entry in projection.render_entries.iter().rev() {
         let value = match entry.kind.as_str() {
             "checkpoint" | "compaction" | "branch.summary" | "handoff.brief" => entry
@@ -121,28 +197,74 @@ pub fn checkpoint_context(
                 .and_then(serde_json::Value::as_str),
             _ => None,
         };
-        if let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) {
-            selected.push(format!("{}: {value}", entry.kind));
+        let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+            continue;
+        };
+        let line = format!("{}: {value}", entry.kind);
+        let cost = line.len() + 1;
+        if cost <= remaining {
+            remaining -= cost;
+            tail.push(line);
+            continue;
         }
-        if selected.len() >= 12 {
-            break;
+        let prefix = format!("{}: …", entry.kind);
+        if tail.is_empty() && remaining > prefix.len() + 1 {
+            // The newest entry alone is over budget: keep its most recent bytes,
+            // still labelled, rather than nothing.
+            let kept = keep_tail(value, remaining - prefix.len() - 1);
+            tail.push(format!("{prefix}{kept}"));
         }
+        break;
     }
-    if selected.is_empty() {
+    if header.is_empty() && tail.is_empty() {
         return Ok(None);
     }
-    selected.reverse();
-    let mut context = selected.join("\n");
-    if context.len() > 8_000 {
-        let mut start = context.len() - 8_000;
-        while !context.is_char_boundary(start) {
-            start += 1;
-        }
-        context = context[start..].to_owned();
-    }
+    tail.reverse();
+    let mut header = header;
+    header.extend(tail);
+    // By construction: header ≤ MAX, tail ≤ budget − header ≤ MAX − header.
+    let context = header.join("\n");
     Ok(Some(format!(
         "Bridge checkpoint-restoration context (stored history, not native provider resume):\n{context}"
     )))
+}
+
+/// Keep the header's lines in order until `max_bytes` is spent; the line that
+/// overflows is cut at its end (on a char boundary) and marked, and anything
+/// after it is dropped. The summary line always survives in some form.
+fn bound_header(lines: Vec<String>, max_bytes: usize) -> Vec<String> {
+    let mut kept = Vec::new();
+    let mut used = 0usize;
+    for line in lines {
+        let cost = line.len() + 1;
+        if used + cost <= max_bytes {
+            used += cost;
+            kept.push(line);
+            continue;
+        }
+        let room = max_bytes.saturating_sub(used + 1 + '…'.len_utf8());
+        if room > 0 {
+            let mut end = room.min(line.len());
+            while !line.is_char_boundary(end) {
+                end -= 1;
+            }
+            kept.push(format!("{}…", &line[..end]));
+        }
+        break;
+    }
+    kept
+}
+
+/// The last `max_bytes` of `text`, cut forward to a char boundary.
+fn keep_tail(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let mut start = text.len() - max_bytes;
+    while !text.is_char_boundary(start) {
+        start += 1;
+    }
+    &text[start..]
 }
 
 pub fn record_resume_failed(
@@ -185,6 +307,40 @@ pub fn record_checkpoint_restore_failed(
         session_id,
         reason,
     )
+}
+
+/// Reset the head for a session that is about to be served by a *different*
+/// provider, clearing the native thread id instead of coalescing it.
+///
+/// [`set_head_state`] deliberately keeps an existing id when passed `None`, so
+/// a launch that does not know the thread id cannot wipe a good one. That is
+/// wrong for exactly one caller: a cross-harness switch, where the stored id
+/// belongs to an agent that will never serve this session again. Leaving it
+/// behind left `session_heads.native_provider_session_id` pointing at a dead
+/// thread while `sessions.provider_session_id` was already NULL, and the forest
+/// snapshot surfaced the stale id.
+pub fn clear_head_state_for_new_provider(
+    db: &Connection,
+    session_id: &str,
+    mode: RestorationMode,
+    eligibility: ResumeEligibility,
+) -> Result<(), BridgeError> {
+    db.execute(
+        "INSERT INTO session_heads(session_id,native_provider_session_id,restoration_mode,resume_eligibility,updated_at)
+         VALUES(?1,NULL,?2,?3,?4)
+         ON CONFLICT(session_id) DO UPDATE SET
+            native_provider_session_id=NULL,
+            restoration_mode=excluded.restoration_mode,
+            resume_eligibility=excluded.resume_eligibility,
+            updated_at=excluded.updated_at",
+        params![
+            session_id,
+            mode.as_str(),
+            eligibility.as_str(),
+            Utc::now().to_rfc3339(),
+        ],
+    )?;
+    Ok(())
 }
 
 pub fn set_head_state(
@@ -347,6 +503,147 @@ mod tests {
     }
 
     #[test]
+    fn restoration_budget_scales_with_the_window_and_respects_the_compiler_cap() {
+        assert_eq!(restoration_budget_bytes(32_000), 16_000);
+        assert_eq!(restoration_budget_bytes(128_000), 64_000);
+        assert_eq!(restoration_budget_bytes(200_000), MAX_RESTORATION_BUDGET_BYTES);
+        assert_eq!(restoration_budget_bytes(1_000_000), MAX_RESTORATION_BUDGET_BYTES);
+        assert_eq!(restoration_budget_bytes(1_000), MIN_RESTORATION_BUDGET_BYTES);
+        assert_eq!(restoration_budget_bytes(-5), MIN_RESTORATION_BUDGET_BYTES);
+        assert!(
+            MAX_RESTORATION_BUDGET_BYTES < crate::prompt_compiler::MAX_VARIABLE_SUFFIX_BYTES,
+            "a full restoration budget must leave room for the other variable sections"
+        );
+        assert!(restoration_budget_bytes(128_000) > 8_000, "the old fixed cap is the floor, not the ceiling");
+    }
+
+    fn forty_turn_branch(db: &Connection) {
+        let forest = SessionForest::new(db);
+        for turn in 0..40 {
+            let (kind, speaker) = if turn % 2 == 0 {
+                (EntryKind::UserMessage, "user")
+            } else {
+                (EntryKind::AssistantMessage, "assistant")
+            };
+            forest
+                .append(
+                    "s",
+                    kind,
+                    serde_json::json!({
+                        "text": format!("turn {turn:02} {speaker}: {}", "the payments retry lives in src/billing/retry.ts and we keep it there. ".repeat(20)),
+                    }),
+                )
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn a_forty_turn_conversation_keeps_its_recent_turns_verbatim() {
+        let db = database();
+        db.execute("UPDATE sessions SET harness='claude', model='claude-opus-4-6' WHERE id='s'", [])
+            .unwrap();
+        forty_turn_branch(&db);
+        let context = checkpoint_context(&db, "s").unwrap().unwrap();
+        assert!(context.len() > 8_000, "the old cap would have cut this to a paragraph: {}", context.len());
+        for turn in 20..40 {
+            let speaker = if turn % 2 == 0 { "user" } else { "assistant" };
+            assert!(
+                context.contains(&format!("turn {turn:02} {speaker}: the payments retry")),
+                "turn {turn} must survive verbatim"
+            );
+        }
+        assert!(context.contains("not native provider resume"));
+    }
+
+    #[test]
+    fn the_tail_is_cut_by_the_incoming_models_budget_not_a_line_count() {
+        let db = database();
+        forty_turn_branch(&db);
+        let wide = checkpoint_context_with_window(&db, "s", 128_000).unwrap().unwrap();
+        let narrow = checkpoint_context_with_window(&db, "s", 32_000).unwrap().unwrap();
+        let count = |context: &str| context.matches("\nuser.message: turn ").count()
+            + context.matches("\nassistant.message: turn ").count();
+        assert!(count(&wide) > 12, "more than the old twelve lines: {}", count(&wide));
+        assert!(count(&narrow) < count(&wide), "a smaller window carries fewer turns");
+        assert!(wide.contains("turn 39 assistant") && narrow.contains("turn 39 assistant"), "the newest turn always survives");
+        let envelope = "Bridge checkpoint-restoration context (stored history, not native provider resume):\n".len();
+        assert!(narrow.len() - envelope <= restoration_budget_bytes(32_000));
+        assert!(wide.len() - envelope <= restoration_budget_bytes(128_000));
+    }
+
+    #[test]
+    fn the_header_survives_when_the_budget_is_tiny() {
+        let db = database();
+        let forest = SessionForest::new(&db);
+        forest
+            .append(
+                "s",
+                EntryKind::Checkpoint,
+                serde_json::json!({"schemaVersion":1,"summary":"we chose the SQLite token store"}),
+            )
+            .unwrap();
+        // Multibyte payload so the head trim has boundaries to respect.
+        let huge = "ünïcödé ".repeat(3_000);
+        forest
+            .append("s", EntryKind::AssistantMessage, serde_json::json!({"text": format!("{huge} FINAL WORDS")}))
+            .unwrap();
+        let context = checkpoint_context_with_window(&db, "s", 1_000).unwrap().unwrap();
+        assert!(context.contains("checkpoint: we chose the SQLite token store"));
+        assert!(context.ends_with("FINAL WORDS"), "the newest words survive the head trim");
+        let envelope = "Bridge checkpoint-restoration context (stored history, not native provider resume):\n".len();
+        assert!(context.len() - envelope <= MIN_RESTORATION_BUDGET_BYTES);
+    }
+
+    #[test]
+    fn an_oversized_header_keeps_its_summary_start_and_the_cap_holds() {
+        use crate::compaction_controller::{CompactionController, CompactionReason};
+        let db = database();
+        let forest = SessionForest::new(&db);
+        forest
+            .append("s", EntryKind::UserMessage, serde_json::json!({"text":"older words"}))
+            .unwrap();
+        // A real compaction boundary whose summary is far over the cap.
+        CompactionController::begin(&db, "s", CompactionReason::Manual, 7).unwrap().unwrap();
+        let pending = CompactionController::pending(&db, "s").unwrap().unwrap();
+        let huge = format!("THE POINT: we chose SQLite. {}", "filler ünïcödé ".repeat(20_000));
+        let output = serde_json::json!({
+            "schemaVersion":1,"summary":huge,"decisions":["first decision","second decision"],
+            "filesTouched":[],"sourceAgent":"s","firstRetainedEntryId":pending.first_retained_entry_id,
+            "tokensBefore":pending.tokens_before,"reason":pending.reason.as_str()
+        })
+        .to_string();
+        CompactionController::handle_output(&db, "s", &output).unwrap();
+        forest
+            .append("s", EntryKind::AssistantMessage, serde_json::json!({"text":"newest words"}))
+            .unwrap();
+        let context = checkpoint_context_with_window(&db, "s", 128_000).unwrap().unwrap();
+        let envelope = "Bridge checkpoint-restoration context (stored history, not native provider resume):\n".len();
+        assert!(context.len() - envelope <= MAX_RESTORATION_BUDGET_BYTES, "{}", context.len());
+        assert!(
+            context.contains("compaction: THE POINT: we chose SQLite."),
+            "the header's start is what survives, never cut from the front"
+        );
+        assert!(context.contains('…'), "the overflowing header line is marked as cut");
+        assert!(!context.contains("second decision"), "what follows the cut header line is dropped, not the summary");
+    }
+
+    #[test]
+    fn the_budget_reads_the_sessions_own_model() {
+        let db = database();
+        assert_eq!(
+            session_context_window_tokens(&db, "s").unwrap(),
+            model_catalog::DEFAULT_CONTEXT_WINDOW_TOKENS
+        );
+        db.execute("UPDATE sessions SET harness='claude', model='claude-sonnet-4-5' WHERE id='s'", [])
+            .unwrap();
+        assert_eq!(session_context_window_tokens(&db, "s").unwrap(), 200_000);
+        assert_eq!(
+            session_context_window_tokens(&db, "no-such-session").unwrap(),
+            model_catalog::DEFAULT_CONTEXT_WINDOW_TOKENS
+        );
+    }
+
+    #[test]
     fn handoff_brief_entries_feed_the_checkpoint_projection() {
         let db = database();
         let forest = SessionForest::new(&db);
@@ -405,5 +702,65 @@ mod tests {
         assert_eq!(failure.payload["stage"], "checkpoint_restored");
         let events = store::state(&db).unwrap().events;
         assert_eq!(events[0].kind, "session.checkpoint_restore_failed");
+    }
+
+    #[test]
+    fn a_retained_provider_id_resumes_natively_which_is_what_the_kept_id_buys() {
+        // The same-harness switch keeps `sessions.provider_session_id`; the
+        // next cold start must select Native on exactly that state.
+        assert_eq!(
+            select_plan(false, Some("thread-1"), true, false, true, false),
+            RestorationPlan::Native
+        );
+    }
+
+    #[test]
+    fn head_state_coalesces_a_none_id_but_clears_it_when_asked() {
+        let db = database();
+        set_head_state(
+            &db,
+            "s",
+            RestorationMode::Native,
+            ResumeEligibility::Native,
+            Some("thread-1"),
+        )
+        .unwrap();
+        // The default: a launch that does not know the thread id must not wipe
+        // a good one.
+        set_head_state(
+            &db,
+            "s",
+            RestorationMode::Native,
+            ResumeEligibility::Native,
+            None,
+        )
+        .unwrap();
+        let kept: Option<String> = db
+            .query_row(
+                "SELECT native_provider_session_id FROM session_heads WHERE session_id='s'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept.as_deref(), Some("thread-1"));
+
+        // The opt-in clear: a cross-harness switch, whose stored id belongs to
+        // an agent that will never serve this session again.
+        clear_head_state_for_new_provider(
+            &db,
+            "s",
+            RestorationMode::Fresh,
+            ResumeEligibility::Fresh,
+        )
+        .unwrap();
+        let (mode, cleared): (String, Option<String>) = db
+            .query_row(
+                "SELECT restoration_mode,native_provider_session_id FROM session_heads WHERE session_id='s'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(mode, "fresh");
+        assert_eq!(cleared, None);
     }
 }

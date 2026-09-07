@@ -11,6 +11,7 @@ import { BROWSER_POLL_HIDDEN_MS, BROWSER_POLL_VISIBLE_MS, BrowserSurface, type B
 vi.mock("../api", () => ({
   bridgeApi: {
     browserBridgeState: vi.fn(),
+    browserFrame: vi.fn(),
     takeoverBrowser: vi.fn(),
     browserAction: vi.fn(),
     installBrowserNativeHost: vi.fn(),
@@ -59,6 +60,7 @@ const tick = async (ms: number) => {
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   vi.useFakeTimers();
+  vi.mocked(bridgeApi.browserFrame).mockReset().mockResolvedValue(null);
   state.mockReset();
   state.mockResolvedValue(snapshot());
   container = document.createElement("div");
@@ -126,5 +128,50 @@ describe("BrowserSurface as a dock tenant", () => {
     state.mockResolvedValue(leased({ pendingApproval: { id: "a1", commandId: "c1", action: "click", domain: "example.com", effect: "Submit a form", createdAt: "now" } } as unknown as Partial<BrowserBridgeSnapshot>));
     await tick(BROWSER_POLL_VISIBLE_MS);
     expect(seen.at(-1)).toEqual({ status: "reading", attention: true });
+  });
+
+  it("fetches frames by revision, retains them across metadata polls, and stops while hidden", async () => {
+    const frames = vi.mocked(bridgeApi.browserFrame);
+    const dataUrl = "data:image/webp;base64,AAAA";
+    state.mockResolvedValue(leased({ captureActive: true }));
+    frames.mockResolvedValueOnce({ revision: 7, leaseId: "lease-1", dataUrl, redactedRegions: 1 });
+    await render();
+    expect(container.querySelector("img")?.getAttribute("src")).toBe(dataUrl);
+    await tick(BROWSER_POLL_VISIBLE_MS);
+    expect(frames).toHaveBeenLastCalledWith(7);
+    expect(container.querySelector("img")?.getAttribute("src")).toBe(dataUrl);
+    await render({ visible: false });
+    const calls = frames.mock.calls.length;
+    await tick(BROWSER_POLL_HIDDEN_MS);
+    expect(frames).toHaveBeenCalledTimes(calls);
+  });
+
+  it("discards a frame that arrives after the attached lease changes", async () => {
+    const frames = vi.mocked(bridgeApi.browserFrame);
+    let resolveFrame!: (frame: Awaited<ReturnType<typeof bridgeApi.browserFrame>>) => void;
+    state.mockResolvedValue(leased({ captureActive: true }));
+    frames.mockReturnValueOnce(new Promise(resolve => { resolveFrame = resolve; }));
+    await render();
+    const nextLease = { ...leased().lease!, id: "lease-2" };
+    state.mockResolvedValue(leased({ lease: nextLease, captureActive: true }));
+    await tick(BROWSER_POLL_VISIBLE_MS);
+    await act(async () => resolveFrame({ revision: 10, leaseId: "lease-1", dataUrl: "data:image/webp;base64,OLD", redactedRegions: 0 }));
+    expect(container.querySelector("img")).toBeNull();
+    await tick(80);
+    expect(frames).toHaveBeenLastCalledWith(0);
+  });
+
+  it("clears the last frame when capture ends on the same lease", async () => {
+    const frames = vi.mocked(bridgeApi.browserFrame);
+    state.mockResolvedValue(leased({ captureActive: true }));
+    frames.mockResolvedValueOnce({ revision: 2, leaseId: "lease-1", dataUrl: "data:image/webp;base64,AAAA", redactedRegions: 0 });
+    await render();
+    expect(container.querySelector("img")).not.toBeNull();
+    state.mockResolvedValue(leased({ captureActive: false }));
+    await tick(BROWSER_POLL_VISIBLE_MS);
+    expect(container.querySelector("img")).toBeNull();
+    const calls = frames.mock.calls.length;
+    await tick(160);
+    expect(frames).toHaveBeenCalledTimes(calls);
   });
 });

@@ -256,8 +256,13 @@ impl Daemon {
                  are still mid-request"
             );
         }
-        let sessions: Vec<String> =
+        // Detached model-switch summaries hold live provider processes outside
+        // the adapter map; a shutdown must stop those too or they are orphaned.
+        let mut sessions: Vec<String> =
             self.core.adapters.lock().unwrap().keys().cloned().collect();
+        sessions.extend(bridge_core::switch_summary::detached_session_ids(&self.core));
+        sessions.sort();
+        sessions.dedup();
         for session_id in sessions {
             self.core
                 .stop_session_adapter(&session_id, bridge_core::adapters::ShutdownReason::AppShutdown);

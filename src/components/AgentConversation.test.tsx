@@ -187,6 +187,16 @@ describe("AgentConversation", () => {
     expect(html).not.toContain("Used tools");
   });
 
+  it("renders a same-harness model change via the stable marker, not a tools group", () => {
+    // Same-harness switches are truthful — `freshProviderSession: false` —
+    // so the divider must key off `modelChanged: true`, the marker every
+    // model change carries.
+    const changed: SessionEntry = { id: "e1", sessionId: "s", parentEntryId: null, sequence: 1, semanticSchemaVersion: 2, kind: "session.model_changed", payload: { role: "system", status: "ready", title: "Chat model changed", text: "Chat model changed.", data: { previousHarness: "codex", previousModel: "stub-fast", harness: "codex", model: "stub-standard", modelChanged: true, freshProviderSession: false } }, providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: "now" };
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={[changed]} activeLeafId="e1" />);
+    expect(html).not.toContain("Used tools");
+    expect(html).toContain("→");
+  });
+
   it("narrates a model switch with the incoming harness's mark, and no first-launch note anywhere", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} modelSwitch={{ harness: "claude", label: "Opus" }} />);
     expect(html).toContain("Switching to Opus…");
