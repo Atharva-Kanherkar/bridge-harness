@@ -19,6 +19,16 @@ export function EffortList({ levels, value, onChange, disabled }: EffortControlP
         type="button"
         role="radio"
         aria-checked={on}
+        tabIndex={on || (index < 0 && i === 0) ? 0 : -1}
+        onKeyDown={event => {
+          if (inert) return;
+          const step = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 0;
+          if (!step && event.key !== "Home" && event.key !== "End") return;
+          event.preventDefault();
+          const next = event.key === "Home" ? 0 : event.key === "End" ? levels.length - 1 : (i + step + levels.length) % levels.length;
+          onChange?.(levels[next].value);
+          event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus();
+        }}
         aria-pressed={on}
         disabled={inert}
         data-effort={level.value}
@@ -34,9 +44,9 @@ export function EffortList({ levels, value, onChange, disabled }: EffortControlP
         </span>
         <span className="min-w-0">
           <span className="block text-[12px] font-medium text-foreground">{level.label}</span>
-          {meaning && <span className="block text-[10.5px] text-muted-foreground">{meaning}</span>}
+          {meaning && <span className="block text-[11px] text-muted-foreground">{meaning}</span>}
         </span>
-        {i < 9 && <kbd aria-hidden="true" className="rounded border border-border px-1 font-mono text-[9.5px] text-faint">{i + 1}</kbd>}
+        {i < 9 && <kbd aria-hidden="true" className="rounded border border-border px-1 font-mono text-[11px] text-faint">{i + 1}</kbd>}
       </button>;
     })}
   </div>;

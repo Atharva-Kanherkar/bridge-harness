@@ -28,13 +28,13 @@ export function WorkspaceCreateDialog({
   }, [open]);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open || busy) return;
     const handler = (event: KeyboardEvent) => {
       if (event.key === "Escape") onClose();
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [open, onClose]);
+  }, [open, busy, onClose]);
 
   const canSubmit = !busy && title.trim().length > 0;
 
@@ -50,7 +50,7 @@ export function WorkspaceCreateDialog({
       onClose={onClose}
       dismissOnScrim
     >
-      <label htmlFor="workspace-name" className="mb-2 block text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+      <label htmlFor="workspace-name" className="mb-2 block text-[13px] font-medium text-foreground">
         Workspace name
       </label>
       <input
@@ -68,28 +68,28 @@ export function WorkspaceCreateDialog({
           }
         }}
         className={cn(
-          "w-full rounded-2xl border border-input bg-card px-4 py-3.5",
-          "text-[15px] tracking-[-0.006em] text-foreground placeholder:text-muted-foreground/70",
+          "h-9 w-full rounded-lg border border-input bg-card px-3",
+          "text-[13px] text-foreground placeholder:text-muted-foreground",
           "transition-colors",
         )}
       />
 
-      <div className="mt-5 flex flex-wrap gap-2">
-        <button
-          type="button"
-          disabled={!canSubmit}
-          onClick={onSubmit}
-          className="min-w-40 flex-1 rounded-xl bg-primary px-4 py-2.5 text-sm font-medium text-primary-foreground transition-all hover:bg-primary/90 active:scale-[0.98] disabled:opacity-30"
-        >
-          {busy ? "Creating…" : "Create workspace"}
-        </button>
+      <div className="mt-6 flex flex-wrap justify-end gap-2 border-t border-border pt-4">
         <button
           type="button"
           disabled={busy}
           onClick={onClose}
-          className="rounded-xl border border-border bg-card px-4 py-2.5 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-30"
+          className="min-h-8 rounded-lg border border-border bg-card px-4 text-[13px] text-foreground transition-colors hover:bg-accent disabled:opacity-45"
         >
           Cancel
+        </button>
+        <button
+          type="button"
+          disabled={!canSubmit}
+          onClick={onSubmit}
+          className="min-h-8 rounded-lg bg-primary px-4 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-45"
+        >
+          {busy ? "Creating…" : "Create workspace"}
         </button>
       </div>
     </CreateDialogShell>

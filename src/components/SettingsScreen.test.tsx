@@ -90,7 +90,7 @@ describe("SettingsScreen", () => {
       await open("Appearance");
       expect(container.textContent).toContain("Shell");
 
-      await act(async () => { button(container, "Cursor").click(); await flush(); });
+      await act(async () => { button(container, "Vibrancy").click(); await flush(); });
       expect(document.documentElement.dataset.skin).toBe("vibrancy");
 
       await act(async () => { button(container, "Solid").click(); await flush(); });
@@ -256,7 +256,7 @@ describe("SettingsScreen", () => {
         document.body.append(container);
         root = createRoot(container);
       }
-      expect([...widths]).toEqual(["max-w-[720px]"]);
+      expect([...widths]).toEqual(["max-w-page"]);
     });
 
     it("names what Reset all deletes before it deletes it", async () => {

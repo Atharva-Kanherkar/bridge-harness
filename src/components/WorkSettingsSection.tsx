@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { CircleNotch } from "@phosphor-icons/react";
+import { LoaderCircle as CircleNotch } from "lucide-react";
 import { bridgeApi } from "../api";
 import { CONNECTOR_LOGOS } from "./connectorLogos";
 import type {
@@ -62,7 +62,7 @@ export function WorkSettingsSection({ onError }: { onError: (message: string) =>
   if (!draft || !options) {
     return <SettingsPage title="Work briefing">
       <SettingsGroup>
-        <SettingsRow label="Loading…" control={<CircleNotch size={12} weight="regular" className="animate-spin text-muted-foreground" aria-hidden="true" />} />
+        <SettingsRow label="Loading…" control={<CircleNotch size={12} strokeWidth={1.7} className="animate-spin text-muted-foreground" aria-hidden="true" />} />
       </SettingsGroup>
     </SettingsPage>;
   }

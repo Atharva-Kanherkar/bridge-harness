@@ -41,10 +41,10 @@ describe("AppTitleBar", () => {
     expect(header().getAttribute("data-tauri-drag-region")).toBe("deep");
   });
 
-  it("carries the brand on desktop and the view title where the sidebar is hidden", () => {
+  it("names the current view at every window width", () => {
     mount();
     const text = header().textContent ?? "";
-    expect(text).toContain("bridge");
+    expect(text).not.toContain("bridge");
     expect(text).toContain("Orchestrator");
   });
 

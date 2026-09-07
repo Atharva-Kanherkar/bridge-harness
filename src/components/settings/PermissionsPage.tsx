@@ -4,7 +4,7 @@
 // is a security control, so showing it on because a request was sent would be a
 // lie the moment the request failed.
 
-import { LockSimple } from "@phosphor-icons/react";
+import { Lock as LockSimple } from "lucide-react";
 import type { BridgeEvent, PermissionPolicy } from "../../types";
 import { SettingsGroup, SettingsPage, SettingsRow, Switch } from "./kit";
 
@@ -52,7 +52,7 @@ export function PermissionsSection({ policy, autoApprovals, busy, saved, onChang
     <SettingsGroup label="Always asks" note="These keep asking either way">
       {SURVIVING_GATES.map(gate => <SettingsRow
         key={gate.title}
-        lead={<LockSimple size={12} weight="regular" aria-hidden="true" />}
+        lead={<LockSimple size={12} strokeWidth={1.7} aria-hidden="true" />}
         label={gate.title}
         description={gate.copy}
       />)}
@@ -60,11 +60,11 @@ export function PermissionsSection({ policy, autoApprovals, busy, saved, onChang
 
     <SettingsGroup label="Recent auto-approvals" note="Every automatic decision is recorded">
       {autoApprovals.length === 0
-        ? <SettingsRow label={<span className="font-mono text-[10.5px] text-muted-foreground">Nothing has been auto-approved yet.</span>} />
+        ? <SettingsRow label={<span className="font-mono text-[11px] text-muted-foreground">Nothing has been auto-approved yet.</span>} />
         : autoApprovals.map(event => <SettingsRow
             key={event.id}
-            label={<span className="font-mono text-[10.5px] text-foreground/85">{event.body}</span>}
-            control={<time className="shrink-0 font-mono text-[10.5px] text-muted-foreground">
+            label={<span className="font-mono text-[11px] text-foreground/85">{event.body}</span>}
+            control={<time className="shrink-0 font-mono text-[11px] text-muted-foreground">
               {new Date(event.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
             </time>}
           />)}

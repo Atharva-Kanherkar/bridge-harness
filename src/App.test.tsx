@@ -224,6 +224,22 @@ describe("the dock in the session view", () => {
     expect(welcomeCalls.some(args => args[1] === "Build session supervisor")).toBe(false);
   });
 
+  it("cancels new orchestrator setup without creating a session", async () => {
+    await mountApp();
+    await click(container.querySelector<HTMLButtonElement>('button[aria-label="Projects"]')!);
+    const create = vi.spyOn(bridgeApi, "createWorkspaceSession");
+    const open = () => click([...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "New agent")!);
+    await open();
+    expect(container.querySelector('[aria-labelledby="orchestrator-create-title"]')).not.toBeNull();
+    await click(container.querySelector<HTMLButtonElement>('button[aria-label="Cancel new orchestrator"]')!);
+    expect(create).not.toHaveBeenCalled();
+    await open();
+    await key({ key: "Escape" });
+    expect(create).not.toHaveBeenCalled();
+    expect(container.querySelector('[aria-labelledby="orchestrator-create-title"]:not([aria-hidden="true"])')).toBeNull();
+    create.mockRestore();
+  });
+
   it("keeps the conversation and an open pane on screen together, with the composer usable", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
@@ -580,7 +596,7 @@ describe("the dock in the session view", () => {
   // AppTitleBar is the only <header> in the flush/no-brand form the shell
   // mounts it in; other components (worker cards, plan cards, …) also render
   // a bare <header>, so this pins on the flush-specific class instead.
-  const appTitleBar = () => container.querySelector("header.bg-transparent");
+  const appTitleBar = () => container.querySelector('header[data-tauri-drag-region="deep"]');
 
   it("collapses to one chrome row on the session view — no second AppTitleBar strip", async () => {
     await mountApp();
@@ -619,7 +635,7 @@ describe("the dock in the session view", () => {
       box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     });
     await settle(4);
-    const aside = container.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Claude"]')!;
+    const aside = document.body.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Claude"]')!;
     expect(aside).not.toBeNull();
     expect(aside.textContent).toContain("is the plan sound?");
     // The chat underneath never moved.
@@ -628,7 +644,7 @@ describe("the dock in the session view", () => {
     // Promote: the aside becomes the active chat and the panel goes away.
     const promote = [...aside.querySelectorAll("button")].find(button => button.textContent?.includes("Open as chat"))!;
     await click(promote);
-    expect(container.querySelector('div[role="dialog"][aria-label^="Aside"]')).toBeNull();
+    expect(document.body.querySelector('div[role="dialog"][aria-label^="Aside"]')).toBeNull();
     expect(container.querySelector("h1")!.textContent).toContain("is the plan sound?");
   });
 
@@ -654,7 +670,7 @@ describe("the dock in the session view", () => {
     await type("$claude review the plan");
     const createSpy = vi.spyOn(bridgeApi, "createAsideChat");
     await type("$codex sanity check");
-    const aside = container.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Codex"]');
+    const aside = document.body.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Codex"]');
     expect(aside).not.toBeNull();
     expect(createSpy).toHaveBeenCalledWith(expect.any(String), "codex", "gpt-5.6-terra", expect.anything());
   });
@@ -672,7 +688,7 @@ describe("the dock in the session view", () => {
     });
     await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
     await settle(8);
-    const aside = container.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Claude"]')!;
+    const aside = document.body.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Claude"]')!;
     const pill = aside.querySelector<HTMLButtonElement>('[aria-label^="Aside model:"]')!;
     expect(pill).not.toBeNull();
     const updateSpy = vi.spyOn(bridgeApi, "updateChatModel");
@@ -705,7 +721,7 @@ describe("the dock in the session view", () => {
       await settle(4);
     };
     await type("/btw is the plan sound?");
-    const aside = container.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Claude"]');
+    const aside = document.body.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Claude"]');
     expect(aside).not.toBeNull();
     expect(aside!.textContent).toContain("is the plan sound?");
     // The parent chat never moved and its composer is clean.
@@ -729,7 +745,7 @@ describe("the dock in the session view", () => {
     });
     await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
     await settle(4);
-    expect(container.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Claude"]')).not.toBeNull();
+    expect(document.body.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Claude"]')).not.toBeNull();
     expect(composer()!.value).toBe("");
   });
 
@@ -753,7 +769,7 @@ describe("the dock in the session view", () => {
     });
     await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
     await settle(4);
-    expect(container.querySelector('div[role="dialog"][aria-label^="Aside"]')).toBeNull();
+    expect(document.body.querySelector('div[role="dialog"][aria-label^="Aside"]')).toBeNull();
     expect(container.textContent).toContain("Ask a side question");
     // The draft and its attachment survive the refusal for the retry.
     expect(box.value).toBe("/btw");
@@ -781,7 +797,7 @@ describe("the dock in the session view", () => {
     expect(chip).not.toBeNull();
     await click(chip!);
     await settle(4);
-    const aside = container.querySelector<HTMLElement>('div[role="dialog"][aria-label^="Aside with"]')!;
+    const aside = document.body.querySelector<HTMLElement>('div[role="dialog"][aria-label^="Aside with"]')!;
     expect(aside).not.toBeNull();
     const expectedQuote = (selectable!.textContent ?? "").trim();
     expect(aside.textContent).toContain(expectedQuote);
@@ -832,7 +848,7 @@ describe("the dock in the session view", () => {
     });
     await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
     await settle(6);
-    const aside = container.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Claude"]')!;
+    const aside = document.body.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Claude"]')!;
     expect(aside).not.toBeNull();
     expect(aside.textContent).toContain("what does this screenshot break?");
     const sourceId = createSpy.mock.calls[0]?.[0];

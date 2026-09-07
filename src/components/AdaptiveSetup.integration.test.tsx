@@ -19,8 +19,8 @@ const adapters: AdapterDescriptor[] = [{
   models: [{ id: "hidden", label: "Unsupported", tier: "strong", defaultForTier: true }],
 }];
 
-function button(container: HTMLElement, label: string): HTMLButtonElement {
-  const match = [...container.querySelectorAll("button")]
+function button(label: string): HTMLButtonElement {
+  const match = [...document.body.querySelectorAll("button")]
     .find(candidate => candidate.textContent?.includes(label));
   if (!match) throw new Error(`Button ${label} was not rendered`);
   return match;
@@ -54,7 +54,7 @@ describe("adaptive setup journeys", () => {
       await flush();
     });
     await act(async () => {
-      button(container, "Use recommended defaults").click();
+      button("Use recommended defaults").click();
       await flush();
     });
     expect(completed).toMatchObject({ complete: true, activeVersion: 1 });
@@ -66,10 +66,10 @@ describe("adaptive setup journeys", () => {
       root.render(<ModelSetupWizard adapters={adapters} onComplete={() => undefined} onError={error => { throw new Error(error); }} />);
       await flush();
     });
-    await act(async () => button(container, "Customize role profiles").click());
-    expect(container.textContent).toContain("Advanced role profiles");
-    expect(container.textContent).toContain("Model evaluator");
-    expect(container.textContent).not.toContain("Unsupported");
+    await act(async () => button("Customize role profiles").click());
+    expect(document.body.textContent).toContain("Advanced role profiles");
+    expect(document.body.textContent).toContain("Model evaluator");
+    expect(document.body.textContent).not.toContain("Unsupported");
   });
 
   it("runs manual learning and renders its explicit no-op report", async () => {
@@ -79,14 +79,14 @@ describe("adaptive setup journeys", () => {
       await flush();
     });
     await act(async () => {
-      button(container, "Run learning now").click();
+      button("Run learning now").click();
       await flush();
     });
     expect(errors).toEqual([]);
-    expect(container.textContent).toContain("insufficient evidence");
-    expect(container.textContent).toContain("Cost comparison is unknown");
-    expect(container.textContent).toContain("Policy");
-    expect(container.textContent).toContain("not run");
+    expect(document.body.textContent).toContain("insufficient evidence");
+    expect(document.body.textContent).toContain("Cost comparison is unknown");
+    expect(document.body.textContent).toContain("Policy");
+    expect(document.body.textContent).toContain("not run");
   });
 
   it("refetches learning state when a learning job changes", async () => {
@@ -138,8 +138,8 @@ describe("adaptive setup journeys", () => {
       resolveSlow({ ...initial, activePolicyVersion: 3 });
       await flush();
     });
-    expect(container.textContent).toContain("Active policy v7");
-    expect(container.textContent).not.toContain("Active policy v3");
+    expect(document.body.textContent).toContain("Active policy v7");
+    expect(document.body.textContent).not.toContain("Active policy v3");
   });
 
   it("an emptied pass floor cannot commit zero on the way to a number", async () => {
@@ -148,7 +148,7 @@ describe("adaptive setup journeys", () => {
       root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
       await flush();
     });
-    const field = container.querySelector<HTMLInputElement>('input[type="number"][max="100"]')!;
+    const field = document.body.querySelector<HTMLInputElement>('input[type="number"][max="100"]')!;
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
     await act(async () => {
       setter.call(field, "");
@@ -158,7 +158,7 @@ describe("adaptive setup journeys", () => {
     });
     expect(field.value, "blurring an empty field restores the saved floor").toBe("65");
     await act(async () => {
-      button(container, "Save").click();
+      button("Save").click();
       await flush();
     });
     const committed = update.mock.calls.at(-1);
@@ -170,15 +170,15 @@ describe("adaptive setup journeys", () => {
       root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
       await flush();
     });
-    const field = container.querySelector<HTMLInputElement>('input[type="number"][max="100"]')!;
+    const field = document.body.querySelector<HTMLInputElement>('input[type="number"][max="100"]')!;
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
     await act(async () => {
       setter.call(field, "150");
       field.dispatchEvent(new Event("input", { bubbles: true }));
       await flush();
     });
-    expect(container.textContent).toContain("Enter a percentage between 0 and 100.");
-    expect(button(container, "Save").disabled).toBe(true);
+    expect(document.body.textContent).toContain("Enter a percentage between 0 and 100.");
+    expect(button("Save").disabled).toBe(true);
   });
 
   it("typing a sub-minimum cadence shows a validation message and disables Save", async () => {
@@ -186,7 +186,7 @@ describe("adaptive setup journeys", () => {
       root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
       await flush();
     });
-    const cadenceLabel = [...container.querySelectorAll("label")].find(label => label.textContent?.startsWith("Cadence"))!;
+    const cadenceLabel = [...document.body.querySelectorAll("label")].find(label => label.textContent?.startsWith("Cadence"))!;
     const field = cadenceLabel.querySelector("input") as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
     await act(async () => {
@@ -194,8 +194,8 @@ describe("adaptive setup journeys", () => {
       field.dispatchEvent(new Event("input", { bubbles: true }));
       await flush();
     });
-    expect(container.textContent).toContain("Cadence must be at least 15 minutes.");
-    expect(button(container, "Save").disabled).toBe(true);
+    expect(document.body.textContent).toContain("Cadence must be at least 15 minutes.");
+    expect(button("Save").disabled).toBe(true);
   });
 
   it("typing a fractional cadence shows a validation message and disables Save", async () => {
@@ -203,7 +203,7 @@ describe("adaptive setup journeys", () => {
       root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
       await flush();
     });
-    const cadenceLabel = [...container.querySelectorAll("label")].find(label => label.textContent?.startsWith("Cadence"))!;
+    const cadenceLabel = [...document.body.querySelectorAll("label")].find(label => label.textContent?.startsWith("Cadence"))!;
     const field = cadenceLabel.querySelector("input") as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
     await act(async () => {
@@ -211,8 +211,8 @@ describe("adaptive setup journeys", () => {
       field.dispatchEvent(new Event("input", { bubbles: true }));
       await flush();
     });
-    expect(container.textContent).toContain("Cadence must be a whole number of minutes.");
-    expect(button(container, "Save").disabled).toBe(true);
+    expect(document.body.textContent).toContain("Cadence must be a whole number of minutes.");
+    expect(button("Save").disabled).toBe(true);
   });
 
   it("typing a negative spend ceiling shows a validation message and disables Save", async () => {
@@ -220,7 +220,7 @@ describe("adaptive setup journeys", () => {
       root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
       await flush();
     });
-    const ceilingLabel = [...container.querySelectorAll("label")].find(label => label.textContent?.startsWith("Spend ceiling"))!;
+    const ceilingLabel = [...document.body.querySelectorAll("label")].find(label => label.textContent?.startsWith("Spend ceiling"))!;
     const field = ceilingLabel.querySelector("input") as HTMLInputElement;
     const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value")!.set!;
     await act(async () => {
@@ -228,8 +228,8 @@ describe("adaptive setup journeys", () => {
       field.dispatchEvent(new Event("input", { bubbles: true }));
       await flush();
     });
-    expect(container.textContent).toContain("Must be zero or greater.");
-    expect(button(container, "Save").disabled).toBe(true);
+    expect(document.body.textContent).toContain("Must be zero or greater.");
+    expect(button("Save").disabled).toBe(true);
   });
 
   it("picking a harness clears a previously pinned model", async () => {
@@ -237,7 +237,7 @@ describe("adaptive setup journeys", () => {
       root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
       await flush();
     });
-    const select = (label: string) => [...container.querySelectorAll("label")].find(candidate => candidate.textContent?.includes(label))!.querySelector("select") as HTMLSelectElement;
+    const select = (label: string) => [...document.body.querySelectorAll("label")].find(candidate => candidate.textContent?.includes(label))!.querySelector("select") as HTMLSelectElement;
     const harnessSelect = select("Pin harness");
     const modelSelect = select("Pin model");
     const setter = Object.getOwnPropertyDescriptor(window.HTMLSelectElement.prototype, "value")!.set!;
@@ -267,7 +267,7 @@ describe("adaptive setup journeys", () => {
       await flush();
     });
     await act(async () => {
-      button(container, "Save").click();
+      button("Save").click();
       await flush();
     });
     expect(update).not.toHaveBeenCalled();
@@ -280,7 +280,7 @@ describe("adaptive setup journeys", () => {
       .mockImplementation(() => new Promise(() => undefined));
     const render = (open: boolean) => root.render(<RouterSettingsDialog open={open} workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
     await act(async () => { render(true); await flush(); });
-    const checkbox = [...container.querySelectorAll("label")]
+    const checkbox = [...document.body.querySelectorAll("label")]
       .find(label => label.textContent?.includes("In-app schedule"))
       ?.querySelector("input[type=checkbox]") as HTMLInputElement;
     await act(async () => { checkbox.click(); await flush(); });
@@ -288,7 +288,7 @@ describe("adaptive setup journeys", () => {
     await act(async () => { render(false); await flush(); });
     await act(async () => { render(true); await flush(); });
     expect(
-      [...container.querySelectorAll("label")].some(label => label.textContent?.includes("In-app schedule")),
+      [...document.body.querySelectorAll("label")].some(label => label.textContent?.includes("In-app schedule")),
       "a reopened dialog must show the loading state, not last session's unsaved edits",
     ).toBe(false);
   });
@@ -298,12 +298,12 @@ describe("adaptive setup journeys", () => {
       root.render(<RouterSettingsDialog open workspaceId="demo-1" adapters={adapters.slice(0, 1)} onClose={() => undefined} onError={error => { throw new Error(error); }} />);
       await flush();
     });
-    const disabledCeilings = [...container.querySelectorAll("input[type=number]")].filter(input => (input as HTMLInputElement).disabled);
+    const disabledCeilings = [...document.body.querySelectorAll("input[type=number]")].filter(input => (input as HTMLInputElement).disabled);
     expect(disabledCeilings).toHaveLength(0);
-    expect(container.textContent).toContain("Spend ceiling");
-    expect(container.textContent).toContain("Token ceiling");
-    expect(container.textContent).not.toContain("No executor yet");
-    expect(container.textContent).toContain("not Bridge's memory engine");
+    expect(document.body.textContent).toContain("Spend ceiling");
+    expect(document.body.textContent).toContain("Token ceiling");
+    expect(document.body.textContent).not.toContain("No executor yet");
+    expect(document.body.textContent).toContain("not Bridge's memory engine");
   });
 
   it("does not create a profile version when settings save without profile edits", async () => {
@@ -313,7 +313,7 @@ describe("adaptive setup journeys", () => {
       await flush();
     });
     await act(async () => {
-      button(container, "Save").click();
+      button("Save").click();
       await flush();
     });
     expect((await bridgeApi.modelSetup()).activeVersion).toBe(before.activeVersion);

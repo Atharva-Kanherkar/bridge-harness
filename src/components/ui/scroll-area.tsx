@@ -34,9 +34,8 @@ export function ScrollArea({
         data-slot="scroll-area-viewport"
       >
         <ScrollAreaPrimitive.Content
-          className={cn(fill && "size-full")}
+          className={cn(fill && "size-full", clampContentMinWidth && "min-w-0")}
           data-slot="scroll-area-content"
-          style={clampContentMinWidth ? { minWidth: 0 } : undefined}
         >
           {children}
         </ScrollAreaPrimitive.Content>

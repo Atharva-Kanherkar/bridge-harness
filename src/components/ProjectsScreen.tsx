@@ -1,3 +1,4 @@
+import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
 import { FolderGit2, FolderOpen, GitBranch, Plus, Sparkles } from "lucide-react";
 import type { Session, SessionStatus, Workspace } from "../types";
 import { cn } from "@/lib/utils";
@@ -50,14 +51,8 @@ export function ProjectsScreen({
 }: ProjectsScreenProps) {
   return (
     <div className="h-full overflow-y-auto">
-      <div className="mx-auto w-full max-w-5xl px-5 py-6 sm:px-8 sm:py-8">
-        <header className="mb-5 flex items-end gap-3" data-tauri-drag-region="deep">
-          <div className="min-w-0 flex-1">
-            <h1 className="m-0 font-display text-[19px] font-semibold tracking-[-0.02em] text-foreground">Projects</h1>
-            <p className="mt-1 text-[13px] text-muted-foreground">
-              A repo, its branch, and the agents working in it.
-            </p>
-          </div>
+      <div className={SCREEN_CONTENT}>
+        <ScreenHeading title="Projects" description="Your repositories, conversations, and changes." action={
           <button
             type="button"
             onClick={onNewWorkspace}
@@ -65,7 +60,7 @@ export function ProjectsScreen({
           >
             <Plus size={14} strokeWidth={1.9} aria-hidden="true" /> New project
           </button>
-        </header>
+        } />
 
         {!workspaces.length ? (
           <div className="rounded-xl border border-border bg-card px-6 py-10 text-center">
@@ -76,7 +71,7 @@ export function ProjectsScreen({
             </p>
           </div>
         ) : (
-          <div className="grid gap-3 sm:grid-cols-2">
+          <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
             {workspaces.map(workspace => {
               const own = chats
                 .filter(chat => chat.workspaceId === workspace.id)
@@ -84,25 +79,43 @@ export function ProjectsScreen({
               const shown = own.slice(0, CHATS_PER_CARD);
               const dirty = workspace.dirtyFiles > 0;
               return (
-                <section key={workspace.id} className="flex flex-col rounded-xl border border-border bg-card p-4">
+                <section key={workspace.id} className="px-4 py-4">
                   <div className="flex min-w-0 items-center gap-2">
-                    <FolderGit2 size={15} strokeWidth={1.6} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-                    <h2 className="m-0 min-w-0 flex-1 truncate text-[14px] font-semibold tracking-[-0.01em] text-foreground">{workspace.title}</h2>
-                    <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
-                      {own.length} {own.length === 1 ? "chat" : "chats"}
-                    </span>
+                    <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-accent text-muted-foreground"><FolderGit2 size={19} strokeWidth={1.6} aria-hidden="true" /></span>
+                    <h2 className="m-0 min-w-0 flex-1 truncate text-[15px] font-semibold tracking-[-0.01em] text-foreground">{workspace.title}</h2>
+                  <div className="ml-auto flex shrink-0 flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => onNewWorkspaceSession(workspace.id)}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
+                    >
+                      <Sparkles size={11} strokeWidth={1.75} aria-hidden="true" /> New agent
+                    </button>
+                    {!workspace.path && (
+                      <button
+                        type="button"
+                        onClick={() => onConnectFolder(workspace.id)}
+                        className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                      >
+                        <FolderOpen size={11} strokeWidth={1.75} aria-hidden="true" /> Connect folder
+                      </button>
+                    )}
+                  </div>
                   </div>
 
                   <p
-                    className="mt-1.5 truncate text-[11px] text-muted-foreground/80"
+                    className="mt-1 pl-11 truncate text-caption text-muted-foreground"
                     title={workspace.path ?? undefined}
                   >
                     {workspace.path ? shortPath(workspace.path) : "No folder connected"}
                   </p>
 
-                  <p className="mt-2 flex items-center gap-1.5 font-mono text-[10px] text-muted-foreground">
+                  <p className="mt-1 flex flex-wrap items-center gap-1.5 pl-11 text-caption text-muted-foreground">
                     <GitBranch size={11} strokeWidth={1.6} aria-hidden="true" />
                     {workspace.branch ?? "folder"}
+                    <span aria-hidden="true">·</span>
+                    <span>{own.length} {own.length === 1 ? "chat" : "chats"}</span>
                     <span aria-hidden="true">·</span>
                     {dirty ? (
                       <>
@@ -115,7 +128,7 @@ export function ProjectsScreen({
                     )}
                   </p>
 
-                  <div className="mt-3 min-h-0 flex-1">
+                  <div className="mt-3 min-h-0 pl-10">
                     {shown.map(chat => (
                       <button
                         key={chat.id}
@@ -123,7 +136,7 @@ export function ProjectsScreen({
                         onClick={() => onOpenSession(chat.id)}
                         title={chatName(chat)}
                         className={cn(
-                          "flex h-7 w-full items-center gap-2 rounded-md px-1.5 text-left text-[13px] transition-colors",
+                          "flex h-9 w-full items-center gap-2 rounded-md px-1.5 text-left text-[13px] transition-colors",
                           chat.id === activeSessionId
                             ? "bg-accent font-medium text-foreground"
                             : "text-muted-foreground hover:bg-accent hover:text-foreground",
@@ -131,35 +144,18 @@ export function ProjectsScreen({
                       >
                         <StatusDot status={chat.status} />
                         <span className="min-w-0 flex-1 truncate">{chatName(chat)}</span>
+                        <span className="shrink-0 text-caption text-muted-foreground">{chat.status === "working" ? "Working" : chat.status === "waiting" ? "Needs you" : chat.status === "failed" ? "Failed" : ""}</span>
                       </button>
                     ))}
                     {own.length > CHATS_PER_CARD && (
-                      <p className="px-1.5 pt-1 text-[11px] text-muted-foreground/70">+{own.length - CHATS_PER_CARD} more</p>
+                      <p className="px-1.5 pt-1 text-caption text-muted-foreground">+{own.length - CHATS_PER_CARD} more</p>
                     )}
                     {!own.length && (
-                      <p className="px-1.5 text-[11px] text-muted-foreground/70">No agents here yet.</p>
+                      <p className="px-1.5 text-caption text-muted-foreground">No agents here yet.</p>
                     )}
                   </div>
 
-                  <div className="mt-3 flex items-center gap-1.5 border-t border-border pt-3">
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => onNewWorkspaceSession(workspace.id)}
-                      className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
-                    >
-                      <Sparkles size={11} strokeWidth={1.75} aria-hidden="true" /> New agent
-                    </button>
-                    {!workspace.path && (
-                      <button
-                        type="button"
-                        onClick={() => onConnectFolder(workspace.id)}
-                        className="inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                      >
-                        <FolderOpen size={11} strokeWidth={1.75} aria-hidden="true" /> Connect folder
-                      </button>
-                    )}
-                  </div>
+
                 </section>
               );
             })}

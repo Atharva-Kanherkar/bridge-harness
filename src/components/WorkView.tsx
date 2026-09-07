@@ -96,7 +96,7 @@ export type WorkViewProps = {
 
 function Chip({ children }: { children: React.ReactNode }) {
   return (
-    <span className="inline-flex max-w-full items-center gap-1 truncate rounded border border-border px-1.5 py-px text-[10.5px] text-muted-foreground">
+    <span className="inline-flex max-w-full items-center gap-1 truncate rounded border border-border px-1.5 py-px text-[11px] text-muted-foreground">
       {children}
     </span>
   );
@@ -162,34 +162,34 @@ function FactRow({
       </span>
       <div className="min-w-0 flex-1 pt-2.5 sm:pt-0">
         <div className="flex flex-wrap items-center gap-2">
-          <span className={cn("text-[10px] font-semibold uppercase tracking-wide", SEVERITY_INK[fact.severity])}>
+          <span className={cn("text-[11px] font-semibold uppercase tracking-wide", SEVERITY_INK[fact.severity])}>
             {SEVERITY_LABEL[fact.severity]}
           </span>
-          <span className="text-[10.5px] font-medium text-muted-foreground">{SOURCE_LABEL[source]}</span>
+          <span className="text-[11px] font-medium text-muted-foreground">{SOURCE_LABEL[source]}</span>
         </div>
         {/* The accessible name says severity, source and freshness in words, so the
             row reads the same with no colour at all. */}
-        <p className="mt-0.5 text-[12.5px] font-medium leading-snug [overflow-wrap:anywhere]">
+        <p className="mt-0.5 text-[13px] font-medium leading-snug [overflow-wrap:anywhere]">
           <span className="sr-only">{factAnnouncement(fact, now)}</span>
           <span aria-hidden="true">{fact.title}</span>
         </p>
         {fact.detail && (
-          <p className={cn("mt-1 text-[11.5px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]", detailIsDimmed(fact) && "opacity-70")}>
+          <p className={cn("mt-1 text-[12px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]", detailIsDimmed(fact) && "opacity-70")}>
             {fact.detail}
           </p>
         )}
-        {stale && <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">{stale}</p>}
+        {stale && <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">{stale}</p>}
         {failure && (
           <div id={`${fact.dedupeKey}-failure`} className="mt-2 flex gap-2 rounded-lg border border-border border-l-[3px] border-l-destructive px-2.5 py-2">
             <AlertCircle size={13} strokeWidth={1.8} className="mt-px shrink-0 text-destructive" aria-hidden="true" />
-            <p className="text-[11.5px] leading-relaxed text-muted-foreground">{failure}</p>
+            <p className="text-[12px] leading-relaxed text-muted-foreground">{failure}</p>
           </div>
         )}
         <div className="mt-1.5 flex flex-wrap items-center gap-2">
           {fact.target.kind === "workspace" && <Chip>{fact.target.workspaceId}</Chip>}
           {fact.target.kind === "completionAttempt" && <Chip>attempt {fact.target.attemptId}</Chip>}
           {fact.target.kind === "workerQueueItem" && <Chip>queued {fact.target.queueId}</Chip>}
-          <span className={cn("inline-flex items-center gap-1.5 text-[10.5px]", fact.freshness === "stale" ? "text-warning" : "text-muted-foreground")}>
+          <span className={cn("inline-flex items-center gap-1.5 text-[11px]", fact.freshness === "stale" ? "text-warning" : "text-muted-foreground")}>
             <FreshnessDot freshness={fact.freshness} />
             {freshnessText(fact, now)}
           </span>
@@ -204,7 +204,7 @@ function FactRow({
           disabled={busy}
           aria-describedby={failure ? `${fact.dedupeKey}-failure` : undefined}
           className={cn(
-            "h-7 shrink-0 rounded-md px-2.5 text-[11.5px] font-medium transition-colors disabled:opacity-60",
+            "h-7 shrink-0 rounded-md px-2.5 text-[12px] font-medium transition-colors disabled:opacity-60",
             actionIsPrimary(fact) && !failure
               ? "bg-primary text-primary-foreground hover:opacity-90"
               : "border border-border text-foreground hover:bg-accent",
@@ -278,18 +278,18 @@ function TaskRow({
       </span>
       <div className="min-w-0 flex-1 pt-2.5 sm:pt-0">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-[10.5px] font-medium text-muted-foreground">{sourceLabel(task)}</span>
+          <span className="text-[11px] font-medium text-muted-foreground">{sourceLabel(task)}</span>
           {task.pinned && (
-            <span className="inline-flex items-center gap-1 text-[10px] font-medium text-muted-foreground">
+            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
               <Pin size={10} strokeWidth={2} aria-hidden="true" />
               Pinned
             </span>
           )}
           {task.state === "stale" && (
-            <span className="text-[10px] font-semibold uppercase tracking-wide text-warning">Stale</span>
+            <span className="text-[11px] font-semibold uppercase tracking-wide text-warning">Stale</span>
           )}
         </div>
-        <p className="mt-0.5 text-[12.5px] font-medium leading-snug [overflow-wrap:anywhere]">
+        <p className="mt-0.5 text-[13px] font-medium leading-snug [overflow-wrap:anywhere]">
           <span className="sr-only">{taskAnnouncement(task)}</span>
           {routable ? (
             <button
@@ -304,11 +304,11 @@ function TaskRow({
             <span aria-hidden="true">{task.title}</span>
           )}
         </p>
-        <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{task.why}</p>
+        <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{task.why}</p>
         {failure && (
           <div id={`${task.id}-failure`} className="mt-2 flex gap-2 rounded-lg border border-border border-l-[3px] border-l-destructive px-2.5 py-2">
             <AlertCircle size={13} strokeWidth={1.8} className="mt-px shrink-0 text-destructive" aria-hidden="true" />
-            <p className="text-[11.5px] leading-relaxed text-muted-foreground">{failure}</p>
+            <p className="text-[12px] leading-relaxed text-muted-foreground">{failure}</p>
           </div>
         )}
         <div className="mt-1.5 flex flex-wrap items-center gap-2">
@@ -317,7 +317,7 @@ function TaskRow({
             <button
               type="button"
               onClick={() => onOpenEvidence(task)}
-              className="inline-flex items-center gap-1 rounded border border-border px-1.5 py-px text-[10.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+              className="inline-flex min-h-7 items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
             >
               <ExternalLink size={10} strokeWidth={1.8} aria-hidden="true" />
               {evidenceLabel(task)}
@@ -333,7 +333,7 @@ function TaskRow({
             disabled={busy}
             aria-pressed={task.pinned}
             aria-label={task.pinned ? "Unpin this task" : "Pin this task"}
-            className="inline-flex h-7 items-center rounded-md border border-border px-2 text-[11.5px] text-foreground transition-colors hover:bg-accent disabled:opacity-60"
+            className="inline-flex h-7 items-center rounded-md border border-border px-2 text-[12px] text-foreground transition-colors hover:bg-accent disabled:opacity-60"
           >
             <Pin size={12} strokeWidth={1.8} aria-hidden="true" />
           </button>
@@ -347,7 +347,7 @@ function TaskRow({
               disabled={busy}
               aria-describedby={failure ? `${task.id}-failure` : undefined}
               className={cn(
-                "h-7 shrink-0 rounded-md px-2.5 text-[11.5px] font-medium transition-colors disabled:opacity-60",
+                "h-7 shrink-0 rounded-md px-2.5 text-[12px] font-medium transition-colors disabled:opacity-60",
                 action === "start"
                   ? "bg-primary text-primary-foreground hover:opacity-90"
                   : "border border-border text-foreground hover:bg-accent",
@@ -400,7 +400,7 @@ function GhostButton({ children, onClick }: { children: React.ReactNode; onClick
     <button
       type="button"
       onClick={onClick}
-      className="inline-flex h-6.5 items-center gap-1.5 rounded-md border border-border px-2.5 text-[11.5px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      className="inline-flex h-6.5 items-center gap-1.5 rounded-md border border-border px-2.5 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
     >
       {children}
     </button>
@@ -426,10 +426,10 @@ export function WorkView({ board, error, refreshError, onRefresh, onAction, now 
   const showNotice = !noticeDismissed && board?.suggestions.state === "not_configured";
 
   return (
-    <section aria-label="Work" className="flex min-h-0 flex-1 flex-col overflow-y-auto">
-      <header className="flex items-start gap-3 px-5 pb-3 pt-5" data-tauri-drag-region="deep">
+    <section aria-label="Work" className="mx-auto flex min-h-0 w-full max-w-page flex-1 flex-col overflow-y-auto">
+      <header className="flex flex-wrap items-start gap-3 px-5 pb-5 pt-6 sm:px-8" data-tauri-drag-region="deep">
         <div className="min-w-0">
-          <h2 className="text-[17px] font-semibold tracking-tight">Needs you</h2>
+          <h2 className="font-display text-title font-semibold tracking-tight">Needs you</h2>
           <p aria-live="polite" className="mt-0.5 text-[12px] leading-snug text-muted-foreground">
             {error
               ? "The board could not be read."
@@ -461,7 +461,7 @@ export function WorkView({ board, error, refreshError, onRefresh, onAction, now 
           No secrets and no raw provider errors reach this line. */}
       {board !== undefined && (board.latestRun || board.suggestions.state === "running") && (
         <div aria-label="Briefing status" className="mx-5 mb-2.5 rounded-lg border border-border bg-card px-2.5 py-2">
-          <p className="text-[11.5px] leading-relaxed text-muted-foreground">
+          <p className="text-[12px] leading-relaxed text-muted-foreground">
             <span className="font-medium text-foreground">{lastRunLine(board.latestRun, now)}</span>{" "}
             {toolsReadLine(board.sources)}
           </p>
@@ -471,14 +471,14 @@ export function WorkView({ board, error, refreshError, onRefresh, onAction, now 
       {showNotice && (
         <div className="mx-5 mb-2.5 flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-2">
           <AlertCircle size={13} strokeWidth={1.6} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-          <p className="min-w-0 flex-1 text-[11.5px] leading-relaxed text-muted-foreground">
+          <p className="min-w-0 flex-1 text-[12px] leading-relaxed text-muted-foreground">
             Suggested work is off until a briefing model is set up. The facts below do not need one.
           </p>
           <button
             type="button"
             onClick={() => setNoticeDismissed(true)}
             aria-label="Dismiss the suggested work notice"
-            className="shrink-0 rounded p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            className="shrink-0 grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
             <X size={12} strokeWidth={1.8} aria-hidden="true" />
           </button>
@@ -486,13 +486,13 @@ export function WorkView({ board, error, refreshError, onRefresh, onAction, now 
       )}
 
       {board?.suggestions.state === "running" && (
-        <div className="mx-5 mb-2.5 rounded-lg border border-border bg-card px-2.5 py-2 text-[11.5px] text-muted-foreground">
+        <div className="mx-5 mb-2.5 rounded-lg border border-border bg-card px-2.5 py-2 text-[12px] text-muted-foreground">
           Suggestions are being refreshed. The current board remains available while Bridge reads.
         </div>
       )}
 
       {board?.suggestions.state === "degraded" && (
-        <div className="mx-5 mb-2.5 rounded-lg border border-border border-l-[3px] border-l-warning px-2.5 py-2 text-[11.5px] text-muted-foreground">
+        <div className="mx-5 mb-2.5 rounded-lg border border-border border-l-[3px] border-l-warning px-2.5 py-2 text-[12px] text-muted-foreground">
           <span className="font-medium text-foreground">Suggestions may be stale.</span>{" "}
           {board.suggestions.detail ?? "The latest briefing did not complete."}
         </div>
@@ -501,7 +501,7 @@ export function WorkView({ board, error, refreshError, onRefresh, onAction, now 
       {refreshError && board !== undefined && (
         <div className="mx-5 mb-2.5 flex items-start gap-2 rounded-lg border border-border border-l-[3px] border-l-destructive px-2.5 py-2">
           <AlertCircle size={13} strokeWidth={1.8} className="mt-px shrink-0 text-destructive" aria-hidden="true" />
-          <p className="min-w-0 flex-1 text-[11.5px] leading-relaxed text-muted-foreground">
+          <p className="min-w-0 flex-1 text-[12px] leading-relaxed text-muted-foreground">
             <span className="font-medium text-foreground">Could not re-read the board.</span> {refreshError} What is below is the last thing Bridge read.
           </p>
         </div>
@@ -527,7 +527,7 @@ export function WorkView({ board, error, refreshError, onRefresh, onAction, now 
             <section key={band.severity} aria-labelledby={`work-band-${band.severity}`}>
               <h3
                 id={`work-band-${band.severity}`}
-                className="mb-1 mt-2.5 flex items-center gap-2 pl-0.5 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground first:mt-0"
+                className="mb-1 mt-2.5 flex items-center gap-2 pl-0.5 text-[12px] font-medium text-muted-foreground first:mt-0"
               >
                 {SEVERITY_LABEL[band.severity]}
                 <span className="font-normal normal-case tracking-normal opacity-65">— {SEVERITY_CAPTION[band.severity]}</span>
@@ -545,7 +545,7 @@ export function WorkView({ board, error, refreshError, onRefresh, onAction, now 
           <section aria-labelledby="work-band-suggested">
             <h3
               id="work-band-suggested"
-              className="mb-1 mt-2.5 flex items-center gap-2 pl-0.5 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground"
+              className="mb-1 mt-2.5 flex items-center gap-2 pl-0.5 text-[12px] font-medium text-muted-foreground"
             >
               Suggested
               <span className="font-normal normal-case tracking-normal opacity-65">
@@ -570,7 +570,7 @@ export function WorkView({ board, error, refreshError, onRefresh, onAction, now 
         {hiddenTasks.length > 0 && (
           <section aria-labelledby="work-band-hidden">
             <div className="mb-1 mt-2.5 flex items-center justify-between gap-2">
-              <h3 id="work-band-hidden" className="pl-0.5 text-[10.5px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <h3 id="work-band-hidden" className="pl-0.5 text-[12px] font-medium text-muted-foreground">
                 Hidden — {hiddenTasks.length}
               </h3>
               <GhostButton onClick={() => setHiddenShown(value => !value)}>

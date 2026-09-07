@@ -20,7 +20,7 @@ export function BypassBadge({ bypassing, onOpenSettings }: {
   return <button
     type="button"
     onClick={onOpenSettings}
-    className="inline-flex h-7 items-center gap-1.5 rounded-full border border-warning/30 bg-warning/10 px-2.5 text-[10.5px] font-medium text-warning transition-colors hover:bg-warning/20"
+    className="inline-flex h-7 items-center gap-1.5 rounded-full border border-warning/30 bg-warning/10 px-2.5 text-[11px] font-medium text-warning transition-colors hover:bg-warning/20"
     title="Every agent's approvals are being accepted automatically. Click to change."
   >
     <ShieldOff size={11} aria-hidden="true" /> Approvals bypassed

@@ -47,11 +47,11 @@ export function EffortSentence(props: EffortControlProps) {
   // Off the ladder (unset: the provider's own default) reads as "normally".
   const { text, settled } = useScramble(current ? effortWord(current.value) : "normally");
   return <div className="flex h-full flex-col justify-between" data-effort-style="sentence">
-    <p className="flex items-baseline gap-1 whitespace-nowrap text-[12.5px] leading-5 text-muted-foreground">
+    <p className="flex items-baseline gap-1 whitespace-nowrap text-[13px] leading-5 text-muted-foreground">
       <span className="min-w-0 truncate">{modelLabel} thinks</span>
       <span data-testid="effort-word" className={cn("font-semibold text-foreground transition-colors", !settled && "text-muted-foreground")}>{text}</span>
       <span>.</span>
-      <span className="ml-auto font-mono text-[10px] text-faint">{current?.value ?? ""}</span>
+      <span className="ml-auto font-mono text-[11px] text-faint">{current?.value ?? ""}</span>
     </p>
     <EffortRail {...props} />
   </div>;

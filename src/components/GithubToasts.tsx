@@ -22,10 +22,10 @@ function ToastCard({ toast, onOpen, onDismiss }: { toast: CiToast; onOpen: (toas
   return <div className="u-glass-popover pointer-events-auto flex w-[min(22rem,calc(100vw-1.5rem))] items-start gap-2.5 rounded-xl border border-border p-3 shadow-2xl animate-page-mount">
     <Icon size={16} aria-hidden="true" className={cn("mt-0.5 shrink-0", text.tone === "failure" ? "text-destructive" : "text-success")} />
     <button type="button" onClick={() => onOpen(toast)} className="min-w-0 flex-1 text-left" aria-label={`${text.headline} — open the pull request`}>
-      <span className="block text-[12.5px] font-medium leading-snug text-foreground">{text.headline}</span>
-      <span className="mt-0.5 block truncate text-[11.5px] text-muted-foreground">{text.detail}</span>
+      <span className="block text-[13px] font-medium leading-snug text-foreground">{text.headline}</span>
+      <span className="mt-0.5 block truncate text-[12px] text-muted-foreground">{text.detail}</span>
     </button>
-    <button type="button" onClick={() => onDismiss(toast.key)} aria-label="Dismiss notification" className="shrink-0 rounded-md p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+    <button type="button" onClick={() => onDismiss(toast.key)} aria-label="Dismiss notification" className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
       <X size={13} aria-hidden="true" />
     </button>
   </div>;
@@ -42,8 +42,8 @@ export function GithubToasts({ toasts, hint, onOpen, onDismiss, onDismissHint }:
   if (!toasts.length && !hint) return null;
   return <div className="pointer-events-none fixed bottom-3 right-3 z-30 flex flex-col items-end gap-2 sm:bottom-[18px] sm:right-[18px]">
     {hint && <div className="u-glass-popover pointer-events-auto flex max-w-[min(22rem,calc(100vw-1.5rem))] items-start gap-2 rounded-xl border border-border px-3 py-2 shadow-2xl animate-page-mount">
-      <span className="min-w-0 flex-1 text-[11.5px] leading-relaxed text-muted-foreground">{hint}</span>
-      <button type="button" onClick={onDismissHint} aria-label="Dismiss hint" className="shrink-0 rounded-md p-0.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><X size={12} aria-hidden="true" /></button>
+      <span className="min-w-0 flex-1 text-[12px] leading-relaxed text-muted-foreground">{hint}</span>
+      <button type="button" onClick={onDismissHint} aria-label="Dismiss hint" className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><X size={12} aria-hidden="true" /></button>
     </div>}
     {toasts.map(toast => <ToastCard key={toast.key} toast={toast} onOpen={onOpen} onDismiss={onDismiss} />)}
   </div>;

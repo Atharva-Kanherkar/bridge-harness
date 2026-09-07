@@ -28,14 +28,14 @@ export type AppTitleBarProps = {
   sidebarHidden?: boolean;
 };
 
-export function AppTitleBar({ title, navOpen, onOpenNav, leading, actions, flush = false, hideBrand = false, sidebarHidden = false }: AppTitleBarProps) {
+export function AppTitleBar({ title, navOpen, onOpenNav, leading, actions, flush = false, hideBrand: _hideBrand = false, sidebarHidden = false }: AppTitleBarProps) {
   return (
     <header
       data-tauri-drag-region="deep"
       className={cn(
         "flex h-11 shrink-0 items-center gap-2",
-        flush ? "bg-transparent pr-3" : "u-vibrancy-sidebar border-b border-border bg-sidebar pr-[var(--window-control-inset)]",
-        !flush || sidebarHidden ? "u-traffic-inset pl-24" : undefined,
+        flush ? "bg-background pr-3" : "u-vibrancy-sidebar border-b border-border bg-sidebar pr-[var(--window-control-inset)]",
+        !flush || sidebarHidden ? "u-traffic-inset pl-24" : "pl-5",
       )}
     >
       {leading && <div className="hidden shrink-0 items-center gap-0.5 sm:flex">{leading}</div>}
@@ -49,8 +49,7 @@ export function AppTitleBar({ title, navOpen, onOpenNav, leading, actions, flush
         <PanelLeft size={16} strokeWidth={1.7} aria-hidden="true" />
       </button>
       <p className="m-0 min-w-0 flex-1 truncate">
-        <span className="text-[12.5px] font-medium text-foreground sm:hidden">{title}</span>
-        {!hideBrand && <span className="hidden font-display text-[14px] font-semibold tracking-[-0.012em] text-foreground sm:inline">bridge</span>}
+        <span className="text-[13px] font-semibold text-foreground">{title}</span>
       </p>
       {actions && <div className="flex shrink-0 items-center gap-1.5">{actions}</div>}
     </header>

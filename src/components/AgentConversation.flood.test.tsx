@@ -33,7 +33,7 @@ function mount(events: AgentEvent[]) {
   });
 }
 
-const rows = () => [...(host.querySelector(".max-w-3xl")?.children ?? [])];
+const rows = () => [...(host.querySelector("[data-conversation-content]")?.children ?? [])];
 const buttonWith = (text: string) =>
   [...host.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.includes(text));
 

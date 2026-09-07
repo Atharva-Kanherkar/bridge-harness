@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { CircleNotch } from "@phosphor-icons/react";
+import { LoaderCircle as CircleNotch } from "lucide-react";
 import { bridgeApi } from "../api";
 import { profileDraftsFromSetup } from "../modelProfiles";
 import type { AdapterDescriptor, AgentDefinition, AgentRole, BridgeEvent, ConfigState, HarnessConfig, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PermissionPolicy, ReasoningEffort } from "../types";
@@ -215,7 +215,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
     catch (error) { onError(String(error)); } finally { setBusy(false); }
   };
 
-  return <div className="flex h-full min-h-0">
+  return <div className="flex h-full min-h-0 flex-col md:flex-row">
     <SettingsRail
       section={section}
       query={query}
@@ -227,9 +227,9 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       onSelect={next => { setSection(next); setQuery(""); setPresetDetailId(null); setHarnessDetailId(null); }}
       onResetAll={() => void resetEverything()}
     />
-    <div className="relative min-h-0 flex-1 overflow-y-auto">
-      <div className="h-4" data-tauri-drag-region="deep" />
-      {busy && !config ? <div className="grid h-full place-items-center"><CircleNotch className="animate-spin text-muted-foreground" size={18} weight="regular" /></div> : null}
+    <div className="relative min-h-0 min-w-0 flex-1 overflow-y-auto">
+
+      {busy && !config ? <div className="grid h-full place-items-center"><CircleNotch className="animate-spin text-muted-foreground" size={18} strokeWidth={1.7} /></div> : null}
 
       {section === "appearance" && <AppearancePage />}
 

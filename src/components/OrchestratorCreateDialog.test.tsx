@@ -40,7 +40,7 @@ describe("OrchestratorCreateDialog", () => {
 
     expect(container.textContent).toContain("Connect a Git repository");
     expect([...container.querySelectorAll("button")].find(button => button.textContent?.includes("Create worktree"))?.disabled).toBe(true);
-    const close = container.querySelector<HTMLButtonElement>('button[aria-label="Continue without a worktree"]')!;
+    const close = container.querySelector<HTMLButtonElement>('button[aria-label="Cancel new orchestrator"]')!;
     await act(async () => close.click());
     expect(onClose).toHaveBeenCalledOnce();
     await act(async () => root.unmount());

@@ -45,15 +45,15 @@ function providerLabel(harness?: string | null): string | undefined {
 /// `TranscriptRow` wrapper: a CSS animation replays on every remount and cannot
 /// be told "only the row that just arrived", which is exactly what a transcript
 /// needs.
-const BUBBLE = "ml-auto w-fit max-w-[85%] whitespace-pre-wrap break-words rounded-2xl border border-border bg-card px-3.5 py-2 text-[14px] leading-[1.7] tracking-[-0.006em] text-foreground";
+const BUBBLE = "ml-auto w-fit max-w-[85%] whitespace-pre-wrap break-words rounded-2xl border border-border bg-accent/70 px-4 py-2.5 text-message tracking-[-0.006em] text-foreground";
 /// Transcript-level notice: a quiet card that reads as a margin note.
 const NOTICE = "mb-4 rounded-lg border border-border border-l-2 bg-card px-3 py-2 text-xs text-muted-foreground";
 /// A decision the user has to make — approvals, adoptions, stale bases.
-const PANEL = "my-4 min-w-0 overflow-hidden rounded-lg border border-border border-l-2 bg-card";
+const PANEL = "min-w-0 overflow-hidden rounded-lg border border-border border-l-2 bg-card";
 /// Verbatim text — paths, commands, diffstats — sits in an inset code well.
-const WELL = "block rounded-md border border-border bg-code px-2.5 py-2 font-mono text-[11.5px] leading-relaxed whitespace-pre-wrap break-words overflow-x-auto text-foreground";
-const BTN_PRIMARY = "inline-flex items-center gap-1.5 rounded-full bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50";
-const BTN_SECONDARY = "inline-flex items-center gap-1.5 rounded-full border border-input px-3 py-1.5 text-xs font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50";
+const WELL = "block rounded-md border border-border bg-code px-2.5 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words overflow-x-auto text-foreground";
+const BTN_PRIMARY = "inline-flex min-h-8 items-center gap-1.5 rounded-lg bg-primary px-3 py-1 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50";
+const BTN_SECONDARY = "inline-flex min-h-8 items-center gap-1.5 rounded-lg border border-input px-3 py-1 text-[13px] font-medium text-foreground transition-colors hover:bg-accent disabled:opacity-50";
 
 /* ── Transcript motion ───────────────────────────────────────────────────
    Three moves, and only three: a row arriving rises 6px into place, a
@@ -164,10 +164,6 @@ const TOOL_ICON: Record<ToolGlyph, React.ReactNode> = {
   navigation: <Navigation size={12}/>,
 };
 
-/// Reads and searches earn less ink than writes: they stay flat rows under a
-/// group label, while an edit or a command becomes a card with a body.
-const FLAT_VERBS = new Set<ToolVerb>(["read", "search"]);
-
 /// What a collapsed run says it did, in the order the work reads: commands
 /// first, then the files it looked at, then the files it changed. This is the
 /// only description of a hundred steps most readers will ever want, so it
@@ -213,6 +209,7 @@ function formatThoughtDuration(ms: number): string {
   const total = Math.max(1, Math.round(ms / 1000));
   const minutes = Math.floor(total / 60);
   const seconds = total % 60;
+  if (minutes >= 60) return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
   if (minutes === 0) return `${seconds}s`;
   return `${minutes}m ${String(seconds).padStart(2, "0")}s`;
 }
@@ -221,27 +218,18 @@ function formatThoughtDuration(ms: number): string {
 /// command's outcome stops hiding inside a checkmark. Absent everywhere else:
 /// an unreported exit code is not the same fact as a zero one.
 function ExitChip({ code }: { code: number }) {
-  return <span className={cn("shrink-0 rounded-full border border-border px-1.5 py-px text-[10px]", code === 0 ? "text-success" : "text-destructive")}>exit {code}</span>;
+  return <span className={cn("shrink-0 rounded-full border border-border px-1.5 py-px text-[11px]", code === 0 ? "text-success" : "text-destructive")}>exit {code}</span>;
 }
 
 /// A command the way a terminal shows one: a `❯` prompt line carrying what ran,
 /// and the output dimmed a step below it on the code ground.
 function TerminalBlock({ command, output }: { command?: string; output?: string }) {
-  return <div className="bg-code font-mono text-[11.5px] leading-[1.7]">
+  return <div className="bg-code font-mono text-[12px] leading-[1.7]">
     {command && <div className="flex gap-2 px-3.5 pb-1 pt-2.5">
       <span className="shrink-0 select-none font-semibold text-success" aria-hidden="true">❯</span>
       <span className="min-w-0 whitespace-pre-wrap break-words text-foreground">{command}</span>
     </div>}
     {output && <CappedOutput text={output} className="max-h-[260px] overflow-auto whitespace-pre-wrap break-words px-3.5 pb-2.5 pl-[30px] text-muted-foreground"/>}
-  </div>;
-}
-
-/// The quiet header over a run of reads and searches. Exploration is context,
-/// not a step, so it gets one label and a hairline rather than a card each.
-function GroupLabel({ children }: { children: ReactNode }) {
-  return <div className="mb-1 flex items-center gap-2 pl-0.5 font-mono text-[10.5px] uppercase tracking-[0.08em] text-muted-foreground/70">
-    {children}
-    <span className="h-px flex-1 bg-border" aria-hidden="true"/>
   </div>;
 }
 
@@ -264,10 +252,11 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
   // one keeps it collapsed.
   const [toggled, setToggled] = useState<boolean | null>(null);
   const open = (toggled ?? !!call.patch) && !!body;
-  // Reads and searches earn a flat row; writes and commands earn a card.
-  const card = !FLAT_VERBS.has(call.verb);
   const label = `${live ? call.doing : call.done}${call.target ? ` ${call.target}` : ""}`;
   const path = call.path && call.path !== call.target ? call.path : undefined;
+  // The filename is already in the action label. Only its parent earns a
+  // second label; the link and tooltip retain the complete path.
+  const directory = path ? path.slice(0, Math.max(0, path.lastIndexOf("/"))) || "Workspace" : undefined;
   // A path the workspace recognises is a link into the Code pane. It has to be
   // a sibling of the expand control, not a child — buttons do not nest.
   const links = useContext(FileLinkContext);
@@ -276,22 +265,23 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
     // No `initial`/`animate` of its own: the row inherits both from the group
     // that reveals it, which is what produces the stagger.
     <motion.div className="min-w-0" variants={ROW_VARIANTS}>
-      <div className={cn("min-w-0", card && "overflow-hidden rounded-lg border border-border bg-card")}>
+      <div data-tool-row className="min-w-0 overflow-hidden">
         <div
           className={cn(
-            "group/row flex w-full min-w-0 items-center gap-2 px-3 py-1.5 font-mono text-[11px] text-muted-foreground transition-colors",
-            body && "hover:bg-accent",
-            !card && "rounded-lg",
+            "group/row flex min-h-9 w-full min-w-0 items-center gap-2 px-3 text-[12px] text-muted-foreground transition-colors",
+            body && "hover:bg-accent/50",
           )}
         >
           <button
             type="button"
-            className="flex min-w-0 shrink-0 items-center gap-2 text-left disabled:cursor-default"
+            className="flex min-h-8 min-w-0 items-center gap-2 rounded-md text-left disabled:cursor-default"
             disabled={!body}
+            aria-expanded={body ? open : undefined}
+            title={label}
             onClick={() => body && setToggled(!open)}
           >
-            <span className="shrink-0 text-muted-foreground/70" aria-hidden="true">{TOOL_ICON[call.glyph]}</span>
-            <span className={cn("truncate", live && "text-foreground")}>{label}</span>
+            <span className="shrink-0 text-muted-foreground" aria-hidden="true">{TOOL_ICON[call.glyph]}</span>
+            <span className={cn("truncate", (live || open) && "text-foreground")}>{label}</span>
           </button>
           {/* flex-1 from a zero basis, so the path gives up room before the label does. */}
           {path && (fileRef
@@ -300,12 +290,12 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
                 onClick={() => links!.open(fileRef.path, fileRef.line)}
                 aria-label={`Open ${fileRef.path} in the Code pane`}
                 title={`Open ${fileRef.path} in the Code pane`}
-                className="hidden min-w-0 flex-1 truncate text-left text-faint decoration-dotted underline-offset-2 hover:text-foreground hover:underline sm:block"
-              >{path}</button>
-            : <span className="hidden min-w-0 flex-1 truncate text-faint sm:block">{path}</span>)}
+                className="hidden min-h-8 min-w-0 flex-1 truncate rounded-md text-left text-muted-foreground decoration-dotted underline-offset-2 hover:text-foreground hover:underline sm:block"
+              >{directory}</button>
+            : <span title={path} className="hidden min-w-0 flex-1 truncate text-muted-foreground sm:block">{directory}</span>)}
           <button
             type="button"
-            className="ml-auto flex shrink-0 items-center gap-2 disabled:cursor-default"
+            className="ml-auto flex min-h-8 shrink-0 items-center gap-2 rounded-md text-[11px] tabular-nums disabled:cursor-default"
             disabled={!body}
             aria-label={open ? "Collapse tool output" : "Expand tool output"}
             onClick={() => body && setToggled(!open)}
@@ -314,51 +304,22 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
               <span><b className="font-medium text-success">+{call.additions}</b> <b className="font-medium text-destructive">−{call.deletions ?? 0}</b></span>
             )}
             {call.exitCode !== undefined && <ExitChip code={call.exitCode}/>}
-            {call.durationMs !== undefined && !live && <span className="text-faint">{Math.max(1, Math.round(call.durationMs / 1000))}s</span>}
-            <StatusGlyph live={live} failed={failed} succeeded={succeeded}/>
-            {body && <ChevronRight size={12} className={cn("text-muted-foreground/70 transition-transform", open && "rotate-90")} aria-hidden="true"/>}
+            {call.durationMs !== undefined && !live && <span className="text-muted-foreground">{formatThoughtDuration(call.durationMs)}</span>}
+            {(live || failed || (succeeded && call.exitCode === undefined && call.verb !== "edit")) && <StatusGlyph live={live} failed={failed} succeeded={succeeded}/>}
+            {body && <ChevronRight size={12} className={cn("text-muted-foreground transition-transform", open && "rotate-90")} aria-hidden="true"/>}
           </button>
         </div>
-        <Disclosure open={open} className={cn(card && "border-t border-border")}>
-          {body === "patch" && <PatchView patch={call.patch ?? ""} path={call.path ?? ""} className="max-h-[420px] px-1" foldAfterHunks={1}/>}
+        <Disclosure open={open} className="border-t border-border/60">
+          {body === "patch" && <PatchView patch={call.patch ?? ""} path={call.path ?? ""} className="max-h-[360px] bg-card" foldAfterHunks={1}/>}
           {body === "terminal" && <TerminalBlock command={call.command} output={call.output}/>}
           {body === "output" && (looksLikeDiff(call.output ?? "")
             ? <PatchView patch={call.output ?? ""} path={call.path ?? ""} className="max-h-[320px] px-1" foldAfterHunks={2}/>
-            : <CappedOutput text={call.output ?? ""} className="max-h-[320px] overflow-auto whitespace-pre-wrap break-words bg-code p-3 font-mono text-[11.5px] leading-relaxed text-muted-foreground"/>)}
+            : <CappedOutput text={call.output ?? ""} className="max-h-[320px] overflow-auto whitespace-pre-wrap break-words bg-code p-3 font-mono text-[12px] leading-relaxed text-muted-foreground"/>)}
         </Disclosure>
       </div>
     </motion.div>
   );
 }, (previous, next) => sameItem(previous.item, next.item));
-
-/// A run of consecutive rows that belong together: exploration under one label,
-/// a thought where the model paused to think, everything else on its own.
-/// *Consecutive*, never sorted — reordering the transcript to tidy it would
-/// destroy the one thing it is for.
-type ActionChunk =
-  | { kind: "explored"; key: string; items: ConversationItem[] }
-  | { kind: "row"; key: string; item: ConversationItem }
-  /// A thought or a plan update that fell inside the run. Drawn by the same
-  /// components the top level uses; a run is not a different kind of thinking.
-  | { kind: "note"; key: string; item: ConversationItem };
-
-function chunkActions(items: ConversationItem[]): ActionChunk[] {
-  const out: ActionChunk[] = [];
-  for (const item of items) {
-    if (!isToolItem(item)) {
-      out.push({ kind: "note", key: item.key, item });
-      continue;
-    }
-    if (!FLAT_VERBS.has(toolCallDisplay(item).verb)) {
-      out.push({ kind: "row", key: item.key, item });
-      continue;
-    }
-    const last = out[out.length - 1];
-    if (last?.kind === "explored") { last.items.push(item); continue; }
-    out.push({ kind: "explored", key: `explored-${item.key}`, items: [item] });
-  }
-  return out;
-}
 
 /// A run short enough to take in at a glance opens itself when it carries a
 /// patch. What the model wrote is the most important thing on the screen, and a
@@ -383,6 +344,10 @@ const ActivityGroup = memo(function ActivityGroup({ items }: { items: Conversati
   // streaming by a provider that never settles it must not keep a finished run
   // spinning forever.
   const live = tools.some(item => item.status === "inProgress" || item.status === "streaming");
+  const needsAttention = tools.some(item => {
+    const call = toolCallDisplay(item);
+    return call.status === "failed" || (call.exitCode !== undefined && call.exitCode !== 0);
+  });
   const glance = tools.length <= SELF_OPENING_STEPS && tools.some(item => !!toolCallDisplay(item).patch);
   // `null` is "nobody has decided yet", which is not the same as closed.
   const [toggled, setToggled] = useState<boolean | null>(null);
@@ -390,7 +355,6 @@ const ActivityGroup = memo(function ActivityGroup({ items }: { items: Conversati
   // Rows revealed together arrive one after another at the same 40ms cadence the
   // CSS entrance used, so an expanding group unfolds instead of appearing whole.
   const stagger = useMotionStagger();
-  const chunks = useMemo(() => chunkActions(items), [items]);
   // One collapsed line for the whole run: the summary, then a mono step count on
   // the right. The count is the number of tool calls folded away, faint because
   // it is a measure of the work rather than the work itself.
@@ -412,22 +376,30 @@ const ActivityGroup = memo(function ActivityGroup({ items }: { items: Conversati
     .filter(span => Number.isFinite(span.start));
   const workedMs = spans.length ? Math.max(...spans.map(s => s.end)) - Math.min(...spans.map(s => s.start)) : 0;
   return (
-    <div className="my-2.5 min-w-0">
+    <div data-activity-group className="min-w-0 overflow-hidden rounded-xl border border-border/80">
       <button
         type="button"
-        className="group flex w-full items-center gap-2 rounded-[7px] px-1 py-1 text-left text-[12px] text-muted-foreground transition-colors hover:text-foreground"
+        className="group flex min-h-11 w-full items-center gap-2.5 px-3 py-2 text-left text-[12px] text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
         aria-expanded={expanded}
         onClick={() => setToggled(!expanded)}
       >
-        {live ? <PulseDot size={7}/> : <Check size={12} className="shrink-0 text-faint" aria-hidden="true"/>}
-        <span className={cn("min-w-0 truncate", live && "text-foreground")}>{summarize(items, live)}</span>
-        <span className="ml-auto shrink-0 font-mono text-[11px] tabular-nums text-faint">{stepCount} step{stepCount === 1 ? "" : "s"}</span>
+        {live ? <PulseDot size={7}/> : needsAttention
+          ? <AlertTriangle size={12} className="shrink-0 text-destructive" aria-hidden="true"/>
+          : <Check size={12} className="shrink-0 text-faint" aria-hidden="true"/>}
+        <span className="min-w-0 flex-1">
+          <span className="flex items-baseline gap-2">
+            <span className="font-medium text-foreground">{live ? "Working" : needsAttention ? "Activity needs attention" : "Activity"}</span>
+            <span className="ml-auto text-[11px] tabular-nums text-muted-foreground">{stepCount} step{stepCount === 1 ? "" : "s"}</span>
+            {!live && workedMs > 0 && <span className="text-[11px] tabular-nums text-muted-foreground">· <span className="sr-only">Worked for </span>{formatThoughtDuration(workedMs)}</span>}
+          </span>{" "}
+          <span className="block truncate" title={summarize(items, live)}>{summarize(items, live)}</span>
+        </span>
         <ChevronDown size={13} className={cn("shrink-0 text-faint transition-transform", expanded && "rotate-180")} aria-hidden="true"/>
       </button>
       {/* Collapsed and still working: the step running right now, and nothing
           else. A reader watching a run wants the head of it, not its history. */}
       {current && !expanded && (
-        <div className="flex min-w-0 items-center gap-2 pl-1 font-mono text-[11px] text-faint">
+        <div className="flex min-w-0 items-center gap-2 px-3 pb-2.5 text-[12px] text-muted-foreground">
           <span className="shrink-0" aria-hidden="true">{TOOL_ICON[current.glyph]}</span>
           <span className="min-w-0 truncate">{current.doing}{current.target ? ` ${current.target}` : ""}</span>
           <StatusGlyph live failed={false} succeeded={false}/>
@@ -435,34 +407,20 @@ const ActivityGroup = memo(function ActivityGroup({ items }: { items: Conversati
       )}
       <Disclosure open={expanded}>
         <motion.div
-          className="mt-1 grid min-w-0 gap-1.5"
+          className="grid min-w-0 divide-y divide-border/60 border-t border-border/80"
           initial="hidden"
           animate="shown"
           variants={{ hidden: {}, shown: {} }}
           transition={stagger}
         >
-          {chunks.map(chunk => chunk.kind === "row"
-            ? <ActionRow key={chunk.key} item={chunk.item}/>
-            : chunk.kind === "note"
-            ? <div key={chunk.key} className="min-w-0">
-                {chunk.item.type === "plan" ? <PlanCard item={chunk.item}/> : <Reasoning item={chunk.item}/>}
-              </div>
-            : <div key={chunk.key} className="min-w-0">
-                <GroupLabel>Explored</GroupLabel>
-                <div className="grid min-w-0 gap-0.5">
-                  {chunk.items.map(item => <ActionRow key={item.key} item={item}/>)}
-                </div>
+          {items.map(item => isToolItem(item)
+            ? <ActionRow key={item.key} item={item}/>
+            : <div key={item.key} className="min-w-0 px-3 py-2">
+                {item.type === "plan" ? <PlanCard item={item}/> : <Reasoning item={item}/>}
               </div>)}
         </motion.div>
       </Disclosure>
-      {/* The trailer a finished run leaves behind: how long the work took, stated
-          the way the transcript states everything quiet — faint, mono, at rest. */}
-      {!live && workedMs > 0 && (
-        <div className="mt-1 flex items-center gap-1 pl-1 font-mono text-[11px] text-faint">
-          <span>Worked for {formatThoughtDuration(workedMs)}</span>
-          <ChevronRight size={12} className="text-faint" aria-hidden="true"/>
-        </div>
-      )}
+
     </div>
   );
   // The reducer rebuilds every item on every fold, so reference equality would
@@ -556,24 +514,16 @@ function useStartupNarration({ sessionId, harness, model, switchingToLabel, hasP
   });
 }
 
-/// The row itself: the harness's own mark, the elapsed seconds, the label —
-/// in that order, so the eye lands on *which agent* before it reads *what it is
-/// doing*.
-///
-/// `view.mounted` gates presence entirely, and the `HarnessMark` is rendered
-/// unconditionally within that window; only the label/elapsed siblings mount and
-/// unmount, so the collapse handoff never remounts the animation. The counter is
-/// `tabular-nums` because a second ticking over must not reflow the label beside
-/// it.
+/// The status leads, with elapsed time kept as secondary metadata. The mark
+/// stays mounted during the handoff to streaming so its animation does not restart.
 function StartupStatusRow({ view, harness }: { view: NarrationView; harness?: string | null }) {
   if (!view.mounted) return null;
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex min-h-8 min-w-0 items-center gap-2.5 text-[12px] text-muted-foreground">
       <HarnessMark harness={harness} live={!view.reducedMotion}/>
-      {!view.collapsed && <span className="min-w-0 truncate text-[12px] font-medium">
-        {/* Dimmer than the label: the counter is metadata, the label is the news. */}
-        {view.showElapsed && <span className="text-muted-foreground/70 tabular-nums">{view.elapsedSeconds}s · </span>}
-        <span className="text-shimmer">{view.label}</span>
+      {!view.collapsed && <span className="flex min-w-0 items-baseline gap-2.5">
+        <span className="truncate">{view.label}</span>
+        {view.showElapsed && <span className="shrink-0 tabular-nums">{formatThoughtDuration(view.elapsedSeconds * 1000)}</span>}
       </span>}
     </div>
   );
@@ -670,14 +620,14 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const historySessionId = forestEntries?.[0]?.sessionId;
   const transcriptIsForThisSession = !session || !historySessionId || historySessionId === session.id;
   const populated = transcriptIsForThisSession && (visibleItems.length > 0 || optimisticBubbles.length > 0);
-  return <FileLinkContext.Provider value={fileLinks}><ScrollFollow sessionKey={session?.id ?? "preview"} populated={populated} signature={scrollSignature} className="absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth px-3 py-8 pb-24 sm:px-6 sm:py-10">
-    <div className="mx-auto flex w-full min-w-0 max-w-3xl flex-col gap-6 sm:gap-8">
+  return <FileLinkContext.Provider value={fileLinks}><ScrollFollow sessionKey={session?.id ?? "preview"} populated={populated} signature={scrollSignature} className="absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth px-4 py-5 pb-16 sm:px-8 sm:py-6">
+    <div data-conversation-content className="mx-auto flex w-full min-w-0 max-w-conversation flex-col gap-5">
       {pendingAdoptions.map(binding => <AdoptionCard key={binding.sessionId} binding={binding} onResolve={onResolveAdoption}/>)}
       {completion && <VerificationCard summary={completion} onWaive={onWaiveCompletion}/>}
       {repositoryDivergence === "diverged" && <div role="alert" className={`${NOTICE} border-l-warning`}>This branch&apos;s context predates the current file state.</div>}
       {continuationFidelity === "projected_at_boundary" && <div role="status" className={`${NOTICE} border-l-info`}>Continuation restored from a phase-boundary projection; provider reasoning state was not transferred.</div>}
       {continuationFidelity === "projected_mid_turn" && <div role="alert" className={`${NOTICE} border-l-warning`}>Continuation fidelity degraded: context was projected mid-turn and provider reasoning state was lost.</div>}
-      {preview && <div className="w-fit mx-auto mb-[22px] px-2.5 py-1 border border-dashed border-border rounded-full text-muted-foreground text-[10.5px] tracking-[0.04em]">Design preview — sample conversation</div>}
+      {preview && <div className="w-fit mx-auto mb-[22px] px-2.5 py-1 border border-dashed border-border rounded-full text-muted-foreground text-[11px] tracking-[0.04em]">Design preview — sample conversation</div>}
       {/* `initial={false}`: the rows already on screen when a session opens must
           not replay their entrance. Only what actually arrives afterwards rises
           into place — which is the difference between a transcript that breathes
@@ -822,20 +772,24 @@ function AdoptionCard({ binding, onResolve }: { binding: WorkerRepositoryBinding
     finally { setBusy(null); }
   };
   return <div role="alert" className={`${PANEL} border-l-warning`}>
-    <header className="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-3.5 pt-3 sm:px-4">
-      <b className="text-[13px] font-semibold text-foreground">Worker changes are not in your workspace yet</b>
-      {settling && <small className="text-warning text-[10.5px] tracking-[0.03em]">settling…</small>}
+    <header className="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 pt-3">
+      <b className="text-ui font-semibold text-foreground">Worker changes are ready to review</b>
+      {settling && <small className="text-caption text-warning">Finishing…</small>}
     </header>
-    <p className="mt-1.5 px-3.5 text-[12.5px] leading-relaxed text-muted-foreground sm:px-4">
-      This worker wrote in its own worktree. Adopting merges those changes into your checkout; discarding throws them away. Until you choose, this session stays unfinished.
+    <p className="mt-1 px-4 text-ui leading-relaxed text-muted-foreground">
+      Adopt merges this worker’s changes into your workspace. Discard deletes them. Choose to finish this session.
     </p>
-    {binding.changedPaths.length > 0 && <code className={`mt-2 mx-3.5 sm:mx-4 max-h-40 overflow-y-auto ${WELL}`}>{binding.changedPaths.join("\n")}</code>}
-    <small className="mt-1 block px-3.5 font-mono text-[10.5px] break-all text-muted-foreground/70 sm:px-4">
-      {binding.diffstat ?? "no diffstat"} · {binding.worktreeBranch}{binding.dirty ? " · uncommitted" : ""}
-    </small>
-    <small className="mt-0.5 block px-3.5 font-mono text-[10.5px] break-all text-muted-foreground/70 sm:px-4">{binding.worktreePath}</small>
-    {error && <p className="mt-1.5 px-3.5 text-[12px] leading-relaxed text-destructive sm:px-4">{error}</p>}
-    <div className="flex flex-wrap items-center justify-end gap-[7px] px-3.5 py-3 sm:px-4">
+    <div className="flex flex-wrap items-start gap-x-3 gap-y-2 px-4 py-3">
+    <details className="min-w-0 flex-1 basis-48 text-caption">
+      <summary className="w-fit cursor-pointer rounded py-1 text-muted-foreground marker:text-muted-foreground hover:text-foreground">
+        {binding.changedPaths.length} changed file{binding.changedPaths.length === 1 ? "" : "s"} · Review details
+      </summary>
+      {binding.changedPaths.length > 0 && <code className={`mt-2 max-h-40 overflow-y-auto ${WELL}`}>{binding.changedPaths.join("\n")}</code>}
+      <p className="mt-2 break-all font-mono text-caption text-muted-foreground">{binding.diffstat ?? "No change summary"} · {binding.worktreeBranch}{binding.dirty ? " · uncommitted" : ""}</p>
+      <p className="mt-1 break-all font-mono text-caption text-muted-foreground">{binding.worktreePath}</p>
+    </details>
+
+    <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
       <button disabled={!!busy || settling || !onResolve} className={BTN_SECONDARY} onClick={() => act("discard")}>
         <X size={12} aria-hidden="true" /> {busy === "discard" ? "Discarding…" : "Discard"}
       </button>
@@ -843,6 +797,8 @@ function AdoptionCard({ binding, onResolve }: { binding: WorkerRepositoryBinding
         <Check size={12} aria-hidden="true" /> {busy === "adopt" ? "Adopting…" : "Adopt changes"}
       </button>
     </div>
+    </div>
+    {error && <p className="mt-1.5 px-3.5 text-[12px] leading-relaxed text-destructive sm:px-4">{error}</p>}
   </div>;
 }
 
@@ -857,22 +813,25 @@ function VerificationCard({ summary, onWaive }: { summary: CompletionSummary; on
   const tone = summary.verdict === "verified" ? "border-l-success" : summary.verdict === "waived" ? "border-l-warning" : failedVerdict ? "border-l-destructive bg-destructive/5" : "border-l-info";
   const title = summary.verdict === "verified" ? "Verified" : summary.verdict === "waived" ? "Verified with waiver" : summary.verdict === "changes_requested" ? "Changes requested" : summary.verdict === "superseded" ? "Evidence superseded" : summary.verdict === "failed" ? "Verification failed" : "Verifying";
   const statusIcon = (status: string) => status === "passed" ? <Check size={12} className="mt-0.5 shrink-0 text-success" aria-hidden="true"/> : status === "failed" ? <X size={12} className="mt-0.5 shrink-0 text-destructive" aria-hidden="true"/> : status === "skipped" || status === "blocked" || status === "stale" ? <AlertTriangle size={12} className="mt-0.5 shrink-0 text-warning" aria-hidden="true"/> : <Circle size={10} className="mt-1 shrink-0 text-muted-foreground" aria-hidden="true"/>;
-  return <section aria-label="Completion verification" className={`min-w-0 overflow-hidden rounded-xl border border-border border-l-2 bg-card ${tone}`}>
-    <div className="flex items-start gap-3 px-3.5 py-3 sm:px-4">
-      <div className="min-w-0 flex-1"><div className="flex flex-wrap items-center gap-x-2 gap-y-0.5"><strong className="font-display text-sm text-foreground">{title}</strong><span className="text-[11px] text-muted-foreground">{summary.passedRequired} of {summary.totalRequired} required checks passed</span></div><p className="mt-1 font-mono text-[10.5px] break-all text-muted-foreground">revision {summary.repository.head.slice(0, 12)} · {summary.repository.dirtyDigest === "clean" ? "clean" : `tree ${summary.repository.dirtyDigest.slice(0, 8)}`}</p></div>
-      {!summary.markdownCommitted && <span className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10px] text-muted-foreground">private contract</span>}
-    </div>
-    <details className="border-t border-border">
-      <summary className="cursor-pointer px-3.5 py-2 text-xs text-foreground marker:text-muted-foreground sm:px-4">Proof and checks</summary>
-      <div className="space-y-1 border-t border-border px-3.5 py-3 sm:px-4">
-        {summary.checks.map(check => <div key={check.checkId} className="flex items-start gap-2 text-xs text-muted-foreground">{statusIcon(check.status)}<div className="min-w-0 flex-1"><div className="flex flex-wrap gap-x-2"><span className="text-foreground">{check.command || check.checkId}</span><span>{humanizeCheckKind(check.kind)}</span>{check.verifierFamily && <span>· {check.verifierFamily}</span>}</div>{check.detail && <p className="mt-0.5 truncate font-mono text-[10.5px]">{check.detail}</p>}</div><span className="shrink-0 text-[10px] tracking-wide">{humanizeCheckStatus(check.status)}</span></div>)}
+  return <section aria-label="Completion verification" className={`min-w-0 overflow-hidden rounded-lg border border-border border-l-2 bg-card ${tone}`}>
+    <details className="group/verification">
+      <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-x-2 gap-y-1 px-4 py-2.5 text-ui [&::-webkit-details-marker]:hidden">
+        <ChevronRight size={14} className="shrink-0 text-muted-foreground transition-transform group-open/verification:rotate-90" aria-hidden="true" />
+        <strong className="font-semibold text-foreground">{title}</strong>
+        <span className="text-caption text-muted-foreground">{summary.passedRequired} of {summary.totalRequired} required checks passed</span>
+        <span className="ml-auto text-caption text-muted-foreground">Proof and checks</span>
+      </summary>
+      <div className="space-y-2 border-t border-border px-4 py-3">
+        <p className="break-all font-mono text-caption text-muted-foreground">Revision {summary.repository.head.slice(0, 12)} · {summary.repository.dirtyDigest === "clean" ? "clean" : `tree ${summary.repository.dirtyDigest.slice(0, 8)}`}</p>
+        {!summary.markdownCommitted && <p className="text-caption text-muted-foreground">Verification record is saved locally and has not been committed.</p>}
+        {summary.checks.map(check => <div key={check.checkId} className="flex items-start gap-2 text-xs text-muted-foreground">{statusIcon(check.status)}<div className="min-w-0 flex-1"><div className="flex flex-wrap gap-x-2"><span className="text-foreground">{check.command || check.checkId}</span><span>{humanizeCheckKind(check.kind)}</span>{check.verifierFamily && <span>· {check.verifierFamily}</span>}</div>{check.detail && <p className="mt-0.5 truncate font-mono text-[11px]">{check.detail}</p>}</div><span className="shrink-0 text-[11px] tracking-wide">{humanizeCheckStatus(check.status)}</span></div>)}
         {summary.waiverReason && <p className="mt-2 rounded-md border border-border border-l-2 border-l-warning bg-background px-2 py-1.5 text-xs text-warning">Waiver: {summary.waiverReason}</p>}
         {onWaive && unresolved.length > 0 && !["verified", "waived", "superseded"].includes(summary.verdict) && <div className="pt-2">
-          {!waiverOpen ? <button type="button" onClick={() => setWaiverOpen(true)} className="rounded-full border border-input px-2.5 py-1.5 text-xs font-medium text-warning transition-colors hover:bg-accent">Waive unresolved checks</button> : <form onSubmit={event => { event.preventDefault(); const reason = waiverReason.trim(); if (!reason) { setWaiverError("Explain why these checks can be waived."); return; } setWaiving(true); setWaiverError(undefined); void onWaive(summary.attemptId, unresolved.map(check => check.checkId), reason).then(() => { setWaiverOpen(false); setWaiverReason(""); }).catch(error => setWaiverError(error instanceof Error ? error.message : String(error))).finally(() => setWaiving(false)); }} className="space-y-2 rounded-lg border border-border border-l-2 border-l-warning bg-background p-2.5">
+          {!waiverOpen ? <button type="button" onClick={() => setWaiverOpen(true)} className="min-h-8 rounded-lg border border-input px-2.5 py-1.5 text-ui font-medium text-warning transition-colors hover:bg-accent">Waive unresolved checks</button> : <form onSubmit={event => { event.preventDefault(); const reason = waiverReason.trim(); if (!reason) { setWaiverError("Explain why these checks can be waived."); return; } setWaiving(true); setWaiverError(undefined); void onWaive(summary.attemptId, unresolved.map(check => check.checkId), reason).then(() => { setWaiverOpen(false); setWaiverReason(""); }).catch(error => setWaiverError(error instanceof Error ? error.message : String(error))).finally(() => setWaiving(false)); }} className="space-y-2 rounded-lg border border-border border-l-2 border-l-warning bg-background p-2.5">
             <p className="text-xs text-warning">This records human-approved risk for: {unresolved.map(check => check.command || check.checkId).join(", ")}. It remains distinct from Verified.</p>
             <textarea autoFocus value={waiverReason} onChange={event => setWaiverReason(event.target.value)} rows={2} placeholder="Reason for waiver" aria-label="Waiver reason" className="w-full resize-none rounded-md border border-input bg-card px-2.5 py-2 text-xs text-foreground placeholder:text-muted-foreground"/>
             {waiverError && <p role="alert" className="text-xs text-destructive">{waiverError}</p>}
-            <div className="flex flex-wrap gap-2"><button type="submit" disabled={waiving} className="rounded-full bg-warning px-2.5 py-1.5 text-xs font-semibold text-warning-foreground disabled:opacity-50">{waiving ? "Recording…" : `Waive ${unresolved.length} check${unresolved.length === 1 ? "" : "s"}`}</button><button type="button" disabled={waiving} onClick={() => { setWaiverOpen(false); setWaiverError(undefined); }} className="rounded-full border border-input px-2.5 py-1.5 text-xs text-muted-foreground disabled:opacity-50">Cancel</button></div>
+            <div className="flex flex-wrap gap-2"><button type="submit" disabled={waiving} className="min-h-8 rounded-lg bg-warning px-2.5 py-1.5 text-ui font-semibold text-warning-foreground disabled:opacity-50">{waiving ? "Recording…" : `Waive ${unresolved.length} check${unresolved.length === 1 ? "" : "s"}`}</button><button type="button" disabled={waiving} onClick={() => { setWaiverOpen(false); setWaiverError(undefined); }} className="min-h-8 rounded-lg border border-input px-2.5 py-1.5 text-ui text-muted-foreground disabled:opacity-50">Cancel</button></div>
           </form>}
         </div>}
       </div>
@@ -1152,7 +1111,7 @@ function ModelChangedRow({ item }: { item: ConversationItem }) {
   ].filter(Boolean).join(" · ");
   const from = side(item.data.previousHarness, item.data.previousModel);
   const to = side(item.data.harness, item.data.model);
-  return <div className="my-3 flex items-center gap-2 font-mono text-[10.5px] uppercase tracking-[0.08em] text-muted-foreground/70">
+  return <div className="my-3 flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground">
     <span className="h-px flex-1 bg-border" aria-hidden="true"/>
     <span className="shrink-0 normal-case tracking-normal">{from && to ? `${from} → ${to}` : item.title || "Model changed"}</span>
     <span className="h-px flex-1 bg-border" aria-hidden="true"/>
@@ -1176,12 +1135,12 @@ function ForestCard({ item, onRetryCompaction }: { item: ConversationItem; onRet
     catch (cause) { setRetryError(cause instanceof Error ? cause.message : String(cause)); }
     finally { retryingRef.current = false; setRetrying(false); }
   };
-  return <div role={item.status === "failed" ? "alert" : undefined} className={`my-2 min-w-0 px-3 py-2.5 border border-border rounded-lg bg-card ${item.type}`}>
-    <header className="flex gap-2 items-center"><GitFork size={13} className="shrink-0" aria-hidden="true" /><b className="min-w-0 truncate text-foreground">{item.title || label}</b><small className="ml-auto shrink-0 text-muted-foreground">{item.status || "durable"}</small></header>
+  return <div role={item.status === "failed" ? "alert" : undefined} className={`min-w-0 border-l-2 py-1 pl-3 ${item.status === "failed" ? "rounded-r-lg border-destructive bg-destructive/5 pr-3 py-3" : "border-border"} ${item.type}`}>
+    <header className="flex items-center gap-2 text-ui"><GitFork size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" /><b className="min-w-0 truncate font-medium text-foreground">{item.title || label}</b><small className="ml-auto shrink-0 text-caption text-muted-foreground">{!item.status || item.status === "durable" ? "Saved" : item.status}</small></header>
     {/* The former raw reason block only repeated the primary copy and exposed
         protocol diagnostics. Failure details now remain in the inspector data
         while the card renders the backend's classified message. */}
-    {item.text && <p className="mt-2 text-muted-foreground text-[12px]">{item.text}</p>}
+    {item.text && <p className="mt-1 text-ui text-muted-foreground">{item.text}</p>}
     {recoveryAction && <p className="mt-1.5 text-muted-foreground text-[11px] leading-relaxed">{recoveryAction}</p>}
     {retryError && <p className="mt-1.5 text-destructive text-[11px] leading-relaxed">{retryError}</p>}
     {retryable && <div className="mt-2.5 flex justify-end">
@@ -1196,7 +1155,7 @@ function ForestCard({ item, onRetryCompaction }: { item: ConversationItem; onRet
 function RawEvent({ item }: { item: ConversationItem }) {
   return <details className="my-2 min-w-0 p-2 border border-border rounded-lg bg-card group [&_summary::-webkit-details-marker]:hidden">
     <summary className="flex items-center gap-[7px] cursor-pointer text-[11px] text-muted-foreground hover:text-foreground transition-colors"><SquareTerminal size={12} className="shrink-0" aria-hidden="true" /><span className="min-w-0 flex-1 truncate">{item.title || "Raw provider event"}</span><small className="shrink-0 text-muted-foreground group-open:hidden">inspect</small></summary>
-    <pre className="max-h-[220px] overflow-auto mt-1.5 p-2 rounded-md border border-border bg-code font-mono text-[10px] whitespace-pre-wrap break-words text-muted-foreground">{JSON.stringify(item.data, null, 2)}</pre>
+    <pre className="max-h-[220px] overflow-auto mt-1.5 p-2 rounded-md border border-border bg-code font-mono text-[11px] whitespace-pre-wrap break-words text-muted-foreground">{JSON.stringify(item.data, null, 2)}</pre>
   </details>;
 }
 
@@ -1228,11 +1187,11 @@ const Reasoning = memo(function Reasoning({ item }: { item: ConversationItem }) 
     const lines = text.split("\n").map(line => line.trim()).filter(Boolean);
     return (
       <div data-thinking="streaming" className="my-3 flex min-w-0 items-start gap-3 rounded-xl border border-border bg-card px-3.5 py-3 sm:px-4">
-        <Brain size={14} className="mt-0.5 shrink-0 text-muted-foreground/70" aria-hidden="true"/>
+        <Brain size={14} className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden="true"/>
         <div className="min-w-0 flex-1">
           <span className="flex items-center gap-2 text-[12px] font-medium text-muted-foreground">Thinking…<ThinkingMark/></span>
           {lines.length > 0 && <div className="mt-1.5 space-y-0.5">
-            {lines.map((line, index) => <p key={index} className={`whitespace-pre-wrap break-words text-[12px] leading-relaxed ${index === lines.length - 1 ? "text-muted-foreground" : "text-muted-foreground/70"}`}>{line}</p>)}
+            {lines.map((line, index) => <p key={index} className={`whitespace-pre-wrap break-words text-[12px] leading-relaxed ${index === lines.length - 1 ? "text-muted-foreground" : "text-muted-foreground"}`}>{line}</p>)}
           </div>}
         </div>
       </div>
@@ -1241,12 +1200,12 @@ const Reasoning = memo(function Reasoning({ item }: { item: ConversationItem }) 
   return (
     <details data-thinking="completed" className="group my-3 min-w-0 rounded-xl border border-border bg-card [&_summary::-webkit-details-marker]:hidden">
       <summary className="flex cursor-pointer items-center gap-2.5 px-3.5 py-2.5 text-[12px] text-muted-foreground transition-colors hover:text-foreground sm:px-4">
-        <Brain size={13} className="shrink-0 text-muted-foreground/70" aria-hidden="true"/>
+        <Brain size={13} className="shrink-0 text-muted-foreground" aria-hidden="true"/>
         <span className="min-w-0 flex-1 truncate">
           <span className="font-medium">{label}</span>
-          {lastLine && <span className="ml-2 font-normal text-muted-foreground/70">{lastLine}</span>}
+          {lastLine && <span className="ml-2 font-normal text-muted-foreground">{lastLine}</span>}
         </span>
-        <ChevronRight size={12} className="ml-auto shrink-0 text-muted-foreground/70 transition-transform group-open:rotate-90" aria-hidden="true"/>
+        <ChevronRight size={12} className="ml-auto shrink-0 text-muted-foreground transition-transform group-open:rotate-90" aria-hidden="true"/>
       </summary>
       <div className="border-t border-border px-3.5 py-3 text-muted-foreground sm:px-4">
         <Markdown text={text}/>
@@ -1258,8 +1217,8 @@ const Reasoning = memo(function Reasoning({ item }: { item: ConversationItem }) 
 function PlanCard({ item }: { item: ConversationItem }) {
   return <div className="my-[14px] min-w-0 border border-border rounded-lg bg-card overflow-hidden">
     <header className="flex items-center gap-2 px-3.5 py-2.5 border-b border-border text-muted-foreground sm:px-4"><FileText size={13} className="shrink-0" aria-hidden="true" /><b className="text-[12px] font-medium text-foreground">{item.title || "Plan"}</b></header>
-    {planSteps(item.data).map((step, index) => <div className={`min-h-[30px] flex items-center gap-[9px] py-[2px] px-3.5 text-[12.5px] sm:px-4 ${step.status === "completed" ? "text-muted-foreground/70 line-through decoration-border" : step.status === "inProgress" ? "text-foreground" : "text-muted-foreground"}`} key={`${step.step}-${index}`}>
-      {step.status === "completed" ? <Check size={12} className="flex-none text-muted-foreground/70" aria-hidden="true" /> : step.status === "inProgress" ? <PulseDot size={8}/> : <Circle size={8} className="flex-none text-muted-foreground/70" aria-hidden="true" />}
+    {planSteps(item.data).map((step, index) => <div className={`min-h-[30px] flex items-center gap-[9px] py-[2px] px-3.5 text-[13px] sm:px-4 ${step.status === "completed" ? "text-muted-foreground line-through decoration-border" : step.status === "inProgress" ? "text-foreground" : "text-muted-foreground"}`} key={`${step.step}-${index}`}>
+      {step.status === "completed" ? <Check size={12} className="flex-none text-muted-foreground" aria-hidden="true" /> : step.status === "inProgress" ? <PulseDot size={8}/> : <Circle size={8} className="flex-none text-muted-foreground" aria-hidden="true" />}
       <span className="min-w-0">{step.step}</span>
     </div>)}
   </div>;
@@ -1315,10 +1274,10 @@ function PermissionCard({ item, onResolve }: { item: ConversationItem; onResolve
   return <div role={pending ? "alert" : "status"} className={`${PANEL} border-l-warning`}>
     <header className="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-3.5 pt-3 sm:px-4">
       <b className="text-[13px] font-semibold text-foreground">{item.title || "Permission needed"}</b>
-      {pending && <small className="text-[10.5px] tracking-[0.03em] text-warning">waiting for you</small>}
-      {settling && <small className="text-[10.5px] tracking-[0.03em] text-warning">settling…</small>}
+      {pending && <small className="text-[11px] tracking-[0.03em] text-warning">waiting for you</small>}
+      {settling && <small className="text-[11px] tracking-[0.03em] text-warning">settling…</small>}
     </header>
-    {item.text && <p className="mt-1.5 px-3.5 text-[12.5px] leading-relaxed text-muted-foreground sm:px-4">{item.text}</p>}
+    {item.text && <p className="mt-1.5 px-3.5 text-[13px] leading-relaxed text-muted-foreground sm:px-4">{item.text}</p>}
     {item.data.command ? <code className={`mx-3.5 mt-2.5 sm:mx-4 ${WELL}`}>{String(item.data.command)}</code> : null}
     {pending && actions.length > 0 && <div className="flex flex-wrap justify-end gap-[7px] px-3.5 py-3 sm:px-4">
       {actions.map(action => <button
@@ -1328,10 +1287,10 @@ function PermissionCard({ item, onResolve }: { item: ConversationItem; onResolve
         onClick={() => void act(action)}
       >{action.decision === "decline" ? <X size={12} aria-hidden="true" /> : action.decision === "accept" ? <Check size={12} aria-hidden="true" /> : null}{busy === (action.optionId ?? action.decision) ? "Applying…" : action.label}</button>)}
     </div>}
-    {pending && actions.length === 0 && <p className="px-3.5 py-3 text-[11.5px] text-muted-foreground sm:px-4">The provider offered no supported action.</p>}
-    {!pending && <p className={`px-3.5 py-3 text-[11.5px] sm:px-4 ${item.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>{resolutionCopy(item)}</p>}
-    {typeof item.data.failure === "string" && <p role="alert" className="px-3.5 pb-3 text-[11.5px] text-destructive sm:px-4">{item.data.failure}</p>}
-    {error && <p role="alert" className="px-3.5 pb-3 text-[11.5px] text-destructive sm:px-4">{error}</p>}
+    {pending && actions.length === 0 && <p className="px-3.5 py-3 text-[12px] text-muted-foreground sm:px-4">The provider offered no supported action.</p>}
+    {!pending && <p className={`px-3.5 py-3 text-[12px] sm:px-4 ${item.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>{resolutionCopy(item)}</p>}
+    {typeof item.data.failure === "string" && <p role="alert" className="px-3.5 pb-3 text-[12px] text-destructive sm:px-4">{item.data.failure}</p>}
+    {error && <p role="alert" className="px-3.5 pb-3 text-[12px] text-destructive sm:px-4">{error}</p>}
   </div>;
 }
 
@@ -1388,34 +1347,37 @@ function QuestionCard({ item, onResolve }: { item: ConversationItem; onResolve: 
   return <div role={pending ? "alert" : "status"} className={`${PANEL} border-l-info`}>
     <header className="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-3.5 pt-3 sm:px-4">
       <b className="text-[13px] font-semibold text-foreground">{item.title || "Question"}</b>
-      {pending && <small className="text-[10.5px] tracking-[0.03em] text-info">waiting for your answer</small>}
+      {pending && <small className="text-[11px] tracking-[0.03em] text-info">waiting for your answer</small>}
     </header>
-    {item.text && <p className="mt-1.5 px-3.5 text-[12.5px] leading-relaxed text-muted-foreground sm:px-4">{item.text}</p>}
+    {item.text && <p className="mt-1.5 px-3.5 text-[13px] leading-relaxed text-muted-foreground sm:px-4">{item.text}</p>}
     {pending && <div className="space-y-3 px-3.5 py-3 sm:px-4">
       {fields.map(field => <fieldset key={field.id} className="space-y-2">
         <legend className="text-[12px] font-medium text-foreground">{field.prompt}</legend>
         {field.options.length > 0 ? <div className="flex flex-wrap gap-1.5">{field.options.map(option => <button
           type="button"
           key={option}
+          disabled={!!busy}
           aria-pressed={(answers[field.id] ?? []).includes(option)}
           className={(answers[field.id] ?? []).includes(option) ? BTN_PRIMARY : BTN_SECONDARY}
           onClick={() => setAnswer(field, option)}
         >{option}</button>)}</div> : <input
+          aria-label={field.prompt}
+          disabled={!!busy}
           value={answers[field.id]?.[0] ?? ""}
           onChange={event => setAnswers(current => ({ ...current, [field.id]: [event.target.value] }))}
-          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-[12.5px] text-foreground outline-none transition-colors placeholder:text-muted-foreground/60 focus:border-ring"
+          className="w-full rounded-lg border border-border bg-background px-3 py-2 text-[13px] text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-ring"
           placeholder="Type your answer"
         />}
       </fieldset>)}
-      {fields.length === 0 && <p className="text-[11.5px] text-muted-foreground">This provider did not supply an answerable question shape.</p>}
+      {fields.length === 0 && <p className="text-[12px] text-muted-foreground">This provider did not supply an answerable question shape.</p>}
       <div className="flex flex-wrap justify-end gap-[7px] pt-1">
         <button disabled={!!busy} className={BTN_SECONDARY} onClick={() => void act("decline")}><X size={12} aria-hidden="true" />{busy === "decline" ? "Declining…" : "Decline"}</button>
         <button disabled={!!busy || fields.length === 0 || !Object.values(answers).some(values => values.some(value => value.trim()))} className={BTN_PRIMARY} onClick={() => void act("answer")}><Check size={12} aria-hidden="true" />{busy === "answer" ? "Sending…" : "Send answer"}</button>
       </div>
     </div>}
-    {!pending && <p className={`px-3.5 py-3 text-[11.5px] sm:px-4 ${item.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>{resolutionCopy(item)}</p>}
-    {typeof item.data.failure === "string" && <p role="alert" className="px-3.5 pb-3 text-[11.5px] text-destructive sm:px-4">{item.data.failure}</p>}
-    {error && <p role="alert" className="px-3.5 pb-3 text-[11.5px] text-destructive sm:px-4">{error}</p>}
+    {!pending && <p className={`px-3.5 py-3 text-[12px] sm:px-4 ${item.status === "failed" ? "text-destructive" : "text-muted-foreground"}`}>{resolutionCopy(item)}</p>}
+    {typeof item.data.failure === "string" && <p role="alert" className="px-3.5 pb-3 text-[12px] text-destructive sm:px-4">{item.data.failure}</p>}
+    {error && <p role="alert" className="px-3.5 pb-3 text-[12px] text-destructive sm:px-4">{error}</p>}
   </div>;
 }
 
@@ -1433,18 +1395,16 @@ function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: 
   const remediation = typeof item.data.remediation === "string" ? item.data.remediation : "";
   const human = reason ? humanizeApprovalReason(reason) : { title: item.title || "Approval needed", detail: undefined };
   return <div className={`${PANEL} border-l-warning`}>
-    <header className="flex flex-wrap items-baseline gap-x-2 gap-y-1 pt-3 px-3.5 sm:px-4"><b className="text-[13px] font-semibold text-foreground">{human.title}</b>{pending && <small className="text-warning text-[10.5px] tracking-[0.03em]">waiting for you</small>}</header>
-    {human.detail ? <p className="mt-1.5 px-3.5 text-muted-foreground text-[12.5px] leading-relaxed sm:px-4">{human.detail}</p> : null}
-    {item.data.objective ? <p className="mt-1.5 px-3.5 text-muted-foreground text-[12.5px] leading-relaxed sm:px-4">{String(item.data.objective)}</p> : null}
+    <header className="flex flex-wrap items-baseline gap-x-2 gap-y-1 pt-3 px-3.5 sm:px-4"><b className="text-[13px] font-semibold text-foreground">{human.title}</b>{pending && <small className="text-warning text-[11px] tracking-[0.03em]">waiting for you</small>}</header>
+    {human.detail ? <p className="mt-1.5 px-3.5 text-muted-foreground text-[13px] leading-relaxed sm:px-4">{human.detail}</p> : null}
+    {item.data.objective ? <p className="mt-1.5 px-3.5 text-muted-foreground text-[13px] leading-relaxed sm:px-4">{String(item.data.objective)}</p> : null}
     {scope.length > 0 && <div className="mt-2 px-3.5 sm:px-4">
-      <small className="block text-muted-foreground/70 text-[10.5px] tracking-[0.03em] uppercase">Write scope</small>
+      <small className="block text-muted-foreground text-[11px] tracking-[0.03em] uppercase">Write scope</small>
       <code className={`mt-1 ${WELL}`}>{scope.join("\n")}</code>
     </div>}
-    {remediation
-      ? <p className="mt-2 px-3.5 text-muted-foreground text-[12.5px] leading-relaxed sm:px-4">{remediation}</p>
-      : item.text && <p className="mt-1.5 px-3.5 text-muted-foreground text-[12.5px] leading-relaxed sm:px-4">{item.text}</p>}
+    {!remediation && item.text && <p className="mt-1.5 px-3.5 text-ui leading-relaxed text-muted-foreground sm:px-4">{item.text}</p>}
     {item.data.command ? <code className={`mt-2.5 mx-3.5 sm:mx-4 ${WELL}`}>{String(item.data.command)}</code> : null}
-    {item.data.cwd ? <small className="block pt-1.5 px-3.5 text-muted-foreground/70 font-mono text-[10.5px] break-all sm:px-4">{String(item.data.cwd)}</small> : null}
+    {item.data.cwd ? <small className="block pt-1.5 px-3.5 text-muted-foreground font-mono text-[11px] break-all sm:px-4">{String(item.data.cwd)}</small> : null}
     {/* Resolving an approval swaps the actions for the outcome. `mode="wait"`
         lets the buttons leave before the verdict arrives, so the card reads as
         settling rather than as one row being overwritten by another. */}
@@ -1464,18 +1424,19 @@ function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: 
           </motion.div>
         : <motion.div
             key="resolved"
-            className="flex items-center gap-1.5 px-3.5 pb-3 pt-2.5 text-muted-foreground text-[11.5px] sm:px-4"
+            className="flex items-center gap-1.5 px-3.5 pb-3 pt-2.5 text-muted-foreground text-[12px] sm:px-4"
             initial={{ opacity: 0, y: 4 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0 }}
             transition={transition}
           >{accepted ? <Check size={12} aria-hidden="true" /> : <X size={12} aria-hidden="true" />} {humanizeResolution(item.status ?? "resolved")}</motion.div>}
     </AnimatePresence>
-    {reason && <details className="border-t border-border px-3.5 py-2 text-[11px] text-muted-foreground sm:px-4">
+    {(reason || remediation) && <details className="border-t border-border px-3.5 py-2 text-caption text-muted-foreground sm:px-4">
       <summary className="cursor-pointer">Policy</summary>
-      <p className="mt-1 font-mono break-all">{reason}</p>
+      {remediation && <p className="mt-1 leading-relaxed">{remediation}</p>}
+      {reason && <p className="mt-2 break-all font-mono">{reason}</p>}
     </details>}
-    {error && <p role="alert" className="px-3.5 pb-3 text-[11.5px] text-destructive sm:px-4">{error}</p>}
+    {error && <p role="alert" className="px-3.5 pb-3 text-[12px] text-destructive sm:px-4">{error}</p>}
   </div>;
 }
 
@@ -1510,19 +1471,21 @@ function StaleBaseCard({ item, onRefresh }: { item: ConversationItem; onRefresh?
     <header className="flex items-baseline gap-[9px] px-3.5 pt-3 sm:px-4">
       <b className="text-[13px] font-semibold text-foreground">{item.title || `Workspace is ${behind} commits behind ${baseRef}`}</b>
     </header>
-    <p className="mt-1.5 px-3.5 text-[12.5px] leading-relaxed text-muted-foreground sm:px-4">{item.text}</p>
-    <small className="mt-1 block px-3.5 font-mono text-[10.5px] break-all text-muted-foreground/70 sm:px-4">{behind} behind · {ahead} ahead · {baseRef}{divergence.dirty === true ? " · uncommitted changes" : ""}</small>
+    <details className="mt-1 px-4 text-caption text-muted-foreground">
+      <summary className="min-h-8 w-fit cursor-pointer rounded py-1.5">{behind} behind · {ahead} ahead · {baseRef}{divergence.dirty === true ? " · uncommitted changes" : ""}</summary>
+      <p className="pb-2 leading-relaxed">{item.text}</p>
+    </details>
     {error && <p className="mt-1.5 px-3.5 text-[12px] leading-relaxed text-destructive sm:px-4">{error}</p>}
     {refreshed
-      ? <div className="flex items-center gap-1.5 px-3.5 pb-3 pt-2.5 text-[11.5px] text-muted-foreground sm:px-4"><Check size={12} aria-hidden="true" /> Workspace refreshed onto {baseRef}</div>
+      ? <div className="flex items-center gap-1.5 px-3.5 pb-3 pt-2.5 text-[12px] text-muted-foreground sm:px-4"><Check size={12} aria-hidden="true" /> Workspace refreshed onto {baseRef}</div>
       : blocker
         // Refresh is a strict fast-forward, and this card already has the
         // fields that decide whether one is possible. Offering the button
         // anyway meant the common case — a worktree with one commit on it —
         // presented an action whose only outcome was an error dialog.
-        ? <div className="px-3.5 pb-3 pt-2.5 text-[11.5px] leading-relaxed text-muted-foreground sm:px-4">{blocker}</div>
+        ? <div className="px-3.5 pb-3 pt-2.5 text-[12px] leading-relaxed text-muted-foreground sm:px-4">{blocker}</div>
         : <div className="flex flex-wrap items-center justify-end gap-[7px] px-3.5 py-3 sm:px-4">
-            <span className="mr-auto text-[11.5px] text-muted-foreground/70">Or continue on the current revision.</span>
+            <span className="mr-auto text-[12px] text-muted-foreground">Or continue on the current revision.</span>
             <button disabled={busy || !onRefresh} className={BTN_PRIMARY} onClick={refresh}>{busy ? "Refreshing…" : "Refresh workspace"}</button>
           </div>}
   </div>;
@@ -1552,7 +1515,7 @@ function DelegationRow({ item, workers, now, onOpenSession, onExpandWorker, onRe
     // straight to the worker's conversation where the real approval lives —
     // otherwise the block is a dead end and the card is effectively lost.
     if (!blocked) {
-      return <div className="my-3 flex min-w-0 items-center gap-[9px] px-2 -ml-2 text-muted-foreground text-[12.5px]">
+      return <div className="my-3 flex min-w-0 items-center gap-[9px] px-2 -ml-2 text-muted-foreground text-[13px]">
         <Check size={13} className="shrink-0" aria-hidden="true" />
         <span className="min-w-0 truncate">{item.title || "Worker approval resolved"}</span>
       </div>;
@@ -1562,14 +1525,14 @@ function DelegationRow({ item, workers, now, onOpenSession, onExpandWorker, onRe
       {item.data.objective ? <p className="mt-1">{String(item.data.objective)}</p> : null}
       {item.text && <p className="mt-1">{item.text}</p>}
       {item.data.command ? <code className={`mt-1.5 ${WELL}`}>{String(item.data.command)}</code> : null}
-      {item.data.cwd ? <small className="mt-1 block font-mono text-[10.5px] break-all text-muted-foreground/70">{String(item.data.cwd)}</small> : null}
-      {paths.length > 0 && <small className="mt-1 block font-mono text-[10.5px] break-all text-muted-foreground/70">write scope: {paths.join(", ")}</small>}
+      {item.data.cwd ? <small className="mt-1 block font-mono text-[11px] break-all text-muted-foreground">{String(item.data.cwd)}</small> : null}
+      {paths.length > 0 && <small className="mt-1 block font-mono text-[11px] break-all text-muted-foreground">write scope: {paths.join(", ")}</small>}
       {childSessionId && onOpenSession
         ? <div className="mt-2 flex flex-wrap items-center gap-2">
-            <button type="button" onClick={() => onOpenSession(childSessionId)} className="inline-flex items-center gap-1.5 rounded-full bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90"><CornerDownRight size={12} aria-hidden="true" /> Open worker to approve</button>
-            <span className="text-muted-foreground/70">The worker is idle until you do.</span>
+            <button type="button" onClick={() => onOpenSession(childSessionId)} className="inline-flex min-h-8 items-center gap-1.5 rounded-lg bg-primary px-3 py-1 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90"><CornerDownRight size={12} aria-hidden="true" /> Open worker to approve</button>
+            <span className="text-muted-foreground">The worker is idle until you do.</span>
           </div>
-        : <p className="mt-1 text-muted-foreground/70">Open the worker&apos;s conversation to allow or decline. The worker is idle until you do.</p>}
+        : <p className="mt-1 text-muted-foreground">Open the worker&apos;s conversation to allow or decline. The worker is idle until you do.</p>}
     </div>;
   }
   if (facet === "rejected") {
@@ -1579,7 +1542,7 @@ function DelegationRow({ item, workers, now, onOpenSession, onExpandWorker, onRe
     return <div className="my-3 min-w-0 rounded-lg border border-border border-l-2 border-l-warning bg-card px-3 py-2 text-xs text-muted-foreground" role="alert">
       <div className="flex items-center gap-1.5 font-medium text-warning"><AlertTriangle size={13} className="shrink-0" aria-hidden="true" /> <span className="min-w-0">{launchFailed ? "Worker failed to start" : "Delegation rejected — no worker started"}</span></div>
       {reason && <p className="mt-1 font-mono text-[11px] leading-relaxed break-words text-foreground">{reason}</p>}
-      <p className="mt-1 text-muted-foreground/70">{launchFailed ? (item.data.orchestratorNotified === true ? "The orchestrator was notified and will not wait for this worker." : "The orchestrator could not be notified; retry after fixing the launch failure.") : willRetry ? "Asked the orchestrator to correct and re-emit the request." : "Automatic correction limit reached; the orchestrator will not retry on its own."}</p>
+      <p className="mt-1 text-muted-foreground">{launchFailed ? (item.data.orchestratorNotified === true ? "The orchestrator was notified and will not wait for this worker." : "The orchestrator could not be notified; retry after fixing the launch failure.") : willRetry ? "Asked the orchestrator to correct and re-emit the request." : "Automatic correction limit reached; the orchestrator will not retry on its own."}</p>
     </div>;
   }
   const isResult = facet === "result";
@@ -1616,13 +1579,13 @@ function DelegationRow({ item, workers, now, onOpenSession, onExpandWorker, onRe
     />;
   }
   return <div className="my-3 min-w-0">
-    <button className="w-full min-w-0 flex items-center gap-[9px] min-h-[30px] px-2 py-1 -ml-2 rounded-md text-left text-muted-foreground text-[12.5px] hover:bg-accent transition-colors" onClick={() => item.text && setOpen(value => !value)}>
+    <button className="w-full min-w-0 flex items-center gap-[9px] min-h-[30px] px-2 py-1 -ml-2 rounded-md text-left text-muted-foreground text-[13px] hover:bg-accent transition-colors" onClick={() => item.text && setOpen(value => !value)}>
       {isResult ? <CornerDownRight size={13} className="shrink-0" aria-hidden="true" /> : <GitFork size={13} className="shrink-0" aria-hidden="true" />}
       <span className="min-w-0 flex-1 overflow-hidden whitespace-nowrap text-ellipsis">{isResult ? "Subagent finished" : "Delegated"}{titleAddsInfo(item, isResult) && <b className="text-muted-foreground font-medium"> · {item.title}</b>}</span>
-      {model && <em className="hidden flex-none font-mono text-[10px] text-muted-foreground/70 not-italic border border-border rounded px-1.5 py-0.5 sm:inline">{model}{effort ? ` · ${effort}` : ""}</em>}
+      {model && <em className="hidden flex-none font-mono text-[11px] text-muted-foreground not-italic border border-border rounded px-1.5 py-0.5 sm:inline">{model}{effort ? ` · ${effort}` : ""}</em>}
       {item.text && <ChevronRight size={12} className={`shrink-0 transition-transform ${open ? "rotate-90" : ""}`} aria-hidden="true" />}
     </button>
-    {open && item.text && <div className="my-1 ml-[5px] min-w-0 pl-[15px] border-l border-border text-muted-foreground text-[12.5px] leading-relaxed"><Markdown text={item.text}/></div>}
+    {open && item.text && <div className="my-1 ml-[5px] min-w-0 pl-[15px] border-l border-border text-muted-foreground text-[13px] leading-relaxed"><Markdown text={item.text}/></div>}
   </div>;
 }
 
@@ -1691,26 +1654,26 @@ function WorkerPanel({ model, objective, modelLabel, effort, now, onOpenSession,
       {live
         ? <PulseDot size={7}/>
         : <CornerDownRight size={13} className="shrink-0 text-muted-foreground" aria-hidden="true"/>}
-      <b className="min-w-0 truncate text-[12.5px] font-medium text-foreground">{name}</b>
-      <span className={cn("shrink-0 text-[8.5px] font-semibold tracking-[0.07em]", PANEL_TONE_TEXT[model.status.tone])}>{model.status.label}</span>
+      <b className="min-w-0 truncate text-[13px] font-medium text-foreground">{name}</b>
+      <span className={cn("shrink-0 text-[11px] font-semibold tracking-[0.07em]", PANEL_TONE_TEXT[model.status.tone])}>{model.status.label}</span>
       <span className="flex-1"/>
-      {modelLabel && <em className="hidden flex-none rounded border border-border px-1.5 py-0.5 font-mono text-[10px] not-italic text-muted-foreground/70 sm:inline">{modelLabel}{effort ? ` · ${effort}` : ""}</em>}
-      {model.retryCount > 0 && <span className="inline-flex shrink-0 items-center gap-0.5 font-mono text-[9px] text-muted-foreground"><RotateCcw size={9} aria-hidden="true"/>retry {model.retryCount}</span>}
-      <span className="shrink-0 font-mono text-[9px] text-muted-foreground">{formatElapsed(model.startedAt, elapsedAt)}</span>
+      {modelLabel && <em className="hidden flex-none rounded border border-border px-1.5 py-0.5 font-mono text-[11px] not-italic text-muted-foreground sm:inline">{modelLabel}{effort ? ` · ${effort}` : ""}</em>}
+      {model.retryCount > 0 && <span className="inline-flex shrink-0 items-center gap-0.5 font-mono text-[11px] text-muted-foreground"><RotateCcw size={9} aria-hidden="true"/>retry {model.retryCount}</span>}
+      <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{formatElapsed(model.startedAt, elapsedAt)}</span>
     </header>
 
     {objective && <p className="px-3.5 pb-2 text-[12px] leading-relaxed text-muted-foreground">{objective}</p>}
 
-    {(model.progressSummary || model.waitingReason) && <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 border-t border-border px-3.5 py-2 text-[10.5px]">
+    {(model.progressSummary || model.waitingReason) && <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 border-t border-border px-3.5 py-2 text-[11px]">
       {model.progressSummary && <span className="min-w-0 truncate font-mono text-foreground/80">{model.progressSummary}</span>}
-      {model.waitingReason && <span className="shrink-0 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[9px] font-medium text-warning">waiting: {model.waitingReason.replaceAll("_", " ")}{model.waitingSince ? ` · ${formatElapsed(model.waitingSince, clock)}` : ""}</span>}
+      {model.waitingReason && <span className="shrink-0 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning">waiting: {model.waitingReason.replaceAll("_", " ")}{model.waitingSince ? ` · ${formatElapsed(model.waitingSince, clock)}` : ""}</span>}
     </div>}
 
     {live && model.feed.length > 0 && <ol className="m-0 list-none border-t border-border px-3.5 py-2 space-y-0.5">
-      {model.feed.map((line, index) => <li key={line.id} className={cn("truncate font-mono text-[10.5px] leading-[1.6]", index === model.feed.length - 1 ? "text-muted-foreground" : "text-muted-foreground/60")}>{line.text}</li>)}
+      {model.feed.map((line, index) => <li key={line.id} className={cn("truncate font-mono text-[11px] leading-[1.6]", index === model.feed.length - 1 ? "text-muted-foreground" : "text-muted-foreground")}>{line.text}</li>)}
     </ol>}
 
-    {model.result && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-3.5 py-2 text-[10.5px] text-muted-foreground">
+    {model.result && <div className="flex flex-wrap items-center gap-x-3 gap-y-1 border-t border-border px-3.5 py-2 text-[11px] text-muted-foreground">
       {model.result.filesChanged.length > 0 && <span className="inline-flex items-center gap-1"><FileText size={11} aria-hidden="true"/>{model.result.filesChanged.length} file{model.result.filesChanged.length === 1 ? "" : "s"}</span>}
       {tests.length > 0 && <span className={cn("inline-flex items-center gap-1", failedTests ? "text-destructive" : "text-success")}>{failedTests ? <X size={11} aria-hidden="true"/> : <Check size={11} aria-hidden="true"/>}{failedTests ? `${failedTests} of ${tests.length} failing` : `${tests.length} test${tests.length === 1 ? "" : "s"} passing`}</span>}
       {model.result.summary && <span className="min-w-0 flex-1 truncate">{model.result.summary}</span>}
@@ -1735,14 +1698,14 @@ function SteerChip({ item, onOpenSession }: { item: ConversationItem; onOpenSess
   const undelivered = item.data.steerDelivered === false;
   const queued = item.data.landed === "next_turn_boundary";
   const unnotified = item.data.orchestratorNotified === false;
-  return <div className="my-3 flex min-w-0 items-center gap-[9px] px-2 -ml-2 text-[12.5px] text-muted-foreground">
+  return <div className="my-3 flex min-w-0 items-center gap-[9px] px-2 -ml-2 text-[13px] text-muted-foreground">
     <Navigation size={12} className={cn("shrink-0", undelivered && "text-warning")} aria-hidden="true"/>
-    <span className="min-w-0 flex-1 truncate">{item.title || "Worker steered"}{item.text && <span className="text-muted-foreground/70"> — {item.text}</span>}</span>
+    <span className="min-w-0 flex-1 truncate">{item.title || "Worker steered"}{item.text && <span className="text-muted-foreground"> — {item.text}</span>}</span>
     {undelivered
-      ? <span className="shrink-0 text-[9px] font-medium tracking-[0.06em] text-warning">NOT DELIVERED</span>
-      : queued && <span className="shrink-0 text-[9px] font-medium tracking-[0.06em] text-muted-foreground/70">AT NEXT STEP</span>}
-    {!undelivered && unnotified && <span className="shrink-0 text-[9px] tracking-[0.06em] text-muted-foreground/70">ORCHESTRATOR NOT TOLD</span>}
-    {childSessionId && onOpenSession && <button type="button" onClick={() => onOpenSession(childSessionId)} className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[10.5px] transition-colors hover:bg-accent">Open</button>}
+      ? <span className="shrink-0 text-[11px] font-medium tracking-[0.06em] text-warning">NOT DELIVERED</span>
+      : queued && <span className="shrink-0 text-[11px] font-medium tracking-[0.06em] text-muted-foreground">AT NEXT STEP</span>}
+    {!undelivered && unnotified && <span className="shrink-0 text-[11px] tracking-[0.06em] text-muted-foreground">ORCHESTRATOR NOT TOLD</span>}
+    {childSessionId && onOpenSession && <button type="button" onClick={() => onOpenSession(childSessionId)} className="shrink-0 rounded-full border border-border px-2 py-0.5 text-[11px] transition-colors hover:bg-accent">Open</button>}
   </div>;
 }
 
@@ -1766,14 +1729,14 @@ function WorkerFailureRow({ title, summary, cause, failureClass, childSessionId,
   return <div className="my-3 min-w-0 rounded-lg border border-border border-l-2 border-l-warning bg-card px-3 py-2 text-xs text-muted-foreground" role="alert">
     <div className="flex items-center gap-1.5 font-medium text-warning"><AlertTriangle size={13} className="shrink-0" aria-hidden="true" /> <span className="min-w-0">{title}</span></div>
     <p className="mt-1 text-foreground">{cause}</p>
-    {transport && <p className="mt-1 text-muted-foreground/70">Bridge could not read this worker&apos;s result, so nothing below has been verified. Retrying would not change that on its own.</p>}
+    {transport && <p className="mt-1 text-muted-foreground">Bridge could not read this worker&apos;s result, so nothing below has been verified. Retrying would not change that on its own.</p>}
     {summary && <p className="mt-1.5 whitespace-pre-wrap break-words">{summary}</p>}
     <div className="mt-2 flex flex-wrap items-center gap-2">
       {childSessionId && onRetryWorker && <button
         type="button"
         disabled={busy}
         onClick={() => { setBusy(true); setError(undefined); void onRetryWorker(childSessionId).catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause))).finally(() => setBusy(false)); }}
-        className="inline-flex items-center gap-1.5 rounded-full bg-primary px-2.5 py-1 text-[11px] font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
+        className="inline-flex min-h-8 items-center gap-1.5 rounded-lg bg-primary px-3 py-1 text-ui font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50"
       ><RotateCcw size={12} aria-hidden="true" /> {busy ? "Retrying…" : "Retry this task"}</button>}
       {childSessionId && onOpenSession && <button type="button" onClick={() => onOpenSession(childSessionId)} className="inline-flex items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[11px] transition-colors hover:bg-accent"><CornerDownRight size={12} aria-hidden="true" /> Open the worker</button>}
     </div>

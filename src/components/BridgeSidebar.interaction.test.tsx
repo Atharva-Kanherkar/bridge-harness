@@ -97,6 +97,28 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe("sidebar keyboard resizing", () => {
+  it("resizes with arrow keys, clamps to the limits, and persists the width", () => {
+    mount();
+    const handle = container.querySelector<HTMLElement>('[role="separator"]')!;
+    expect(handle.tabIndex).toBe(0);
+    const press = (key: string) => act(() => {
+      handle.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true }));
+    });
+    press("ArrowRight");
+    expect(handle.getAttribute("aria-valuenow")).toBe("264");
+    expect(localStorage.getItem("bridge.sidebar.width")).toBe("264");
+    press("Home");
+    press("ArrowLeft");
+    expect(handle.getAttribute("aria-valuenow")).toBe("200");
+    press("End");
+    press("ArrowRight");
+    expect(handle.getAttribute("aria-valuenow")).toBe("400");
+    press("Escape");
+    expect(localStorage.getItem("bridge.sidebar.width")).toBe("400");
+  });
+});
+
 describe("BridgeSidebar group folding", () => {
   it("hides a group's chats but keeps its header and count", () => {
     localStorage.setItem(CHAT_VIEW_KEY, DATE_VIEW);
@@ -209,7 +231,8 @@ describe("BridgeSidebar action rows", () => {
     click(compose);
     expect(onOpenNewChat).toHaveBeenCalledOnce();
     expect(container.querySelector('input[aria-label="Filter chats and projects"]')).toBeNull();
-    expect(compose.textContent).toBe("New Chat");
+    expect(compose.getAttribute("aria-label")).toBe("New Chat");
+    expect(compose.textContent).toContain("New Chat");
 
     click(container.querySelector('button[aria-label="Search"]')!);
     act(() => container.querySelector<HTMLButtonElement>('button[aria-label="Marketplace"]')!.focus());

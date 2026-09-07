@@ -7,17 +7,14 @@
 // because each one drew its own layout. A page that can only compose these
 // primitives cannot drift that way again.
 //
-// Sizes are fixed here rather than chosen per page: controls are 28px tall with
-// 12px text and an 8px radius; a row is at least 44px with 10px/14px padding;
-// a group card is 12px radius with a hairline between rows and 26px of air
-// after it. Type is limited to 17 / 13 / 12 / 11.5 / 11 and 10.5 mono.
+// Desktop controls and group rhythm are shared with the main destinations.
+// Settings remain rows of labels and controls with quiet explanatory text.
 //
-// Icons are Phosphor Regular. No symbol on the Settings screen comes from
-// `lucide-react`.
+// Shared controls use the same Lucide symbols as the rest of Bridge.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { Select as SelectPrimitive } from "@base-ui/react/select";
-import { CaretDown, CaretRight, Check } from "@phosphor-icons/react";
+import { ChevronDown as CaretDown, ChevronRight as CaretRight, Check } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 /* ── page ─────────────────────────────────────────────────────────────────── */
@@ -38,23 +35,23 @@ export function SettingsPage({ title, description, breadcrumb, action, children 
   action?: ReactNode;
   children: ReactNode;
 }) {
-  return <div data-settings-column className="mx-auto w-full max-w-[720px] px-6 pb-24 pt-[30px]">
+  return <div data-settings-column className="@container/settings mx-auto w-full max-w-page px-5 pb-12 pt-6 sm:px-8">
     {breadcrumb && breadcrumb.length > 0 && <nav aria-label="Breadcrumb" className="mb-2 flex items-center gap-1.5 text-xs">
       {breadcrumb.map((crumb, index) => <span key={`${crumb.label}-${index}`} className="flex items-center gap-1.5">
-        {index > 0 && <span aria-hidden="true" className="text-muted-foreground/50">/</span>}
+        {index > 0 && <span aria-hidden="true" className="text-muted-foreground">/</span>}
         {crumb.onClick
           ? <button type="button" onClick={crumb.onClick} className="rounded text-muted-foreground transition-colors hover:text-foreground">{crumb.label}</button>
           : <span className="text-foreground">{crumb.label}</span>}
       </span>)}
     </nav>}
-    <header className="mb-6 flex items-start gap-4">
+    <header className="mb-5 flex flex-wrap items-center gap-4">
       <div className="min-w-0 flex-1">
-        <h2 className="text-[17px] font-semibold leading-tight text-foreground">{title}</h2>
-        {description && <p className="mt-1 text-xs text-muted-foreground">{description}</p>}
+        <h2 className="font-display text-title font-semibold leading-tight tracking-tight text-foreground">{title}</h2>
+        {description && <p className="mt-1 text-ui leading-relaxed text-muted-foreground">{description}</p>}
       </div>
       {action && <div className="flex shrink-0 items-center gap-2 pt-0.5">{action}</div>}
     </header>
-    <div className="space-y-[26px]">{children}</div>
+    <div className="space-y-6">{children}</div>
   </div>;
 }
 
@@ -69,9 +66,9 @@ export function SettingsGroup({ label, note, children, className }: {
   className?: string;
 }) {
   return <section className={className}>
-    {(label || note) && <div className="mb-2 flex items-baseline gap-3 px-0.5">
-      {label && <h3 className="text-[11px] font-semibold uppercase tracking-[0.09em] text-muted-foreground">{label}</h3>}
-      {note && <span className="ml-auto text-[11px] text-muted-foreground/70">{note}</span>}
+    {(label || note) && <div className="mb-2 flex flex-wrap items-baseline gap-x-3 gap-y-1 px-0.5">
+      {label && <h3 className="text-ui font-medium text-foreground">{label}</h3>}
+      {note && <span className="ml-auto text-[12px] text-muted-foreground">{note}</span>}
     </div>}
     <div className="overflow-hidden rounded-xl border border-border-card bg-card">
       <div className="divide-y divide-border">{children}</div>
@@ -108,19 +105,19 @@ export function SettingsRow({ label, openLabel, description, mono, lead, control
   disabled?: boolean;
   className?: string;
 }) {
-  const text = <span className="min-w-0 flex-1 text-left">
-    <span className="block truncate text-[13px] text-foreground">{label}</span>
+  const text = <span className="min-w-0 flex-1 basis-40 text-left">
+    <span className="block text-[13px] text-foreground">{label}</span>
     {description !== undefined && description !== null && description !== "" && <span className={cn(
       "mt-0.5 block text-muted-foreground",
       // Prose wraps; an id or a path truncates, because half a sentence is
       // useless and half a hash is still a hash you can widen the window to read.
-      mono ? "truncate font-mono text-[10.5px]" : "text-[11.5px] leading-relaxed",
+      mono ? "truncate font-mono text-[11px]" : "text-[12px] leading-relaxed",
     )}>{description}</span>}
   </span>;
   const trailing = <>
     {saved && <SavedFlash />}
     {control}
-    {onOpen && <CaretRight size={12} weight="regular" aria-hidden="true" className="shrink-0 text-muted-foreground/60" />}
+    {onOpen && <CaretRight size={12} strokeWidth={1.7} aria-hidden="true" className="shrink-0 text-muted-foreground" />}
   </>;
 
   // A row that only opens a page is the button, so the hit target matches what
@@ -140,7 +137,7 @@ export function SettingsRow({ label, openLabel, description, mono, lead, control
   // full-bleed button underneath and the action sits above it. One accessible
   // name each, and the whole row is still the target for "open this".
   if (onOpen) {
-    return <div className={cn("relative flex min-h-11 items-center gap-3 px-3.5 py-2.5", className)}>
+    return <div className={cn("relative flex min-h-11 flex-wrap items-center gap-3 px-3.5 py-2.5", className)}>
       <button
         type="button"
         disabled={disabled}
@@ -150,11 +147,11 @@ export function SettingsRow({ label, openLabel, description, mono, lead, control
       />
       {lead && <span className="pointer-events-none relative z-10"><RowLead>{lead}</RowLead></span>}
       <span className="pointer-events-none relative z-10 flex min-w-0 flex-1">{text}</span>
-      <span className="relative z-10 flex shrink-0 items-center gap-2">{trailing}</span>
+      <span className="relative z-10 flex shrink-0 flex-wrap items-center gap-2">{trailing}</span>
     </div>;
   }
 
-  return <div className={cn("flex min-h-11 items-center gap-3 px-3.5 py-2.5", disabled && "opacity-45", className)}>
+  return <div className={cn("flex min-h-11 flex-wrap items-center gap-3 px-3.5 py-2.5", disabled && "opacity-45", className)}>
     {lead && <RowLead>{lead}</RowLead>}{text}{trailing}
   </div>;
 }
@@ -172,7 +169,7 @@ export function SettingsBlockRow({ label, description, children, action, classNa
     {(label || action) && <div className="mb-2 flex items-baseline gap-3">
       <div className="min-w-0 flex-1">
         {label && <span className="block text-[13px] text-foreground">{label}</span>}
-        {description && <span className="mt-0.5 block text-[11.5px] text-muted-foreground">{description}</span>}
+        {description && <span className="mt-0.5 block text-[12px] text-muted-foreground">{description}</span>}
       </div>
       {action}
     </div>}
@@ -182,7 +179,7 @@ export function SettingsBlockRow({ label, description, children, action, classNa
 
 function SavedFlash() {
   return <span role="status" className="flex shrink-0 items-center gap-1 text-[11px] text-success">
-    <Check size={12} weight="regular" aria-hidden="true" />Saved
+    <Check size={12} strokeWidth={1.7} aria-hidden="true" />Saved
   </span>;
 }
 
@@ -252,9 +249,8 @@ const CONTROL = "h-7 rounded-lg border border-border-card bg-popover px-2.5 text
 /**
  * A select that renders no native select element.
  *
- * Native selects render a macOS system menu that ignores every token in this
- * file, which is why the design bans them outright. This is a button plus a
- * listbox: the same keyboard contract, drawn in Bridge's own chrome.
+ * Base UI supplies typeahead, arrow keys, focus management, and a portal that
+ * keeps the model catalog clear of scrolling group cards.
  */
 export function Select({ value, options, onChange, disabled, label, placeholder = "Choose", width = "w-56" }: {
   value: string;
@@ -281,7 +277,7 @@ export function Select({ value, options, onChange, disabled, label, placeholder 
     >
       {selected?.lead}
       <span className="min-w-0 flex-1 truncate text-left">{selected?.label ?? (value || placeholder)}</span>
-      <CaretDown size={12} weight="regular" aria-hidden="true" className={cn("shrink-0 text-muted-foreground/60 transition-transform", open && "rotate-180")} />
+      <CaretDown size={12} strokeWidth={1.7} aria-hidden="true" className={cn("shrink-0 text-muted-foreground transition-transform", open && "rotate-180")} />
     </SelectPrimitive.Trigger>
     {/* Escape the cards' overflow clipping and flip above the trigger when
         there is not enough room below it. */}
@@ -311,9 +307,9 @@ export function Select({ value, options, onChange, disabled, label, placeholder 
             {option.lead}
             <span className="min-w-0 flex-1">
               <SelectPrimitive.ItemText render={<span />}>{option.label}</SelectPrimitive.ItemText>
-              {option.description && <span className="mt-0.5 block text-[10.5px] text-muted-foreground">{option.description}</span>}
+              {option.description && <span className="mt-0.5 block text-[11px] text-muted-foreground">{option.description}</span>}
             </span>
-            {option.value === value && <Check size={12} weight="regular" aria-hidden="true" className="shrink-0" />}
+            {option.value === value && <Check size={12} strokeWidth={1.7} aria-hidden="true" className="shrink-0" />}
           </SelectPrimitive.Item>)}
         </SelectPrimitive.Popup>
       </SelectPrimitive.Positioner>
@@ -343,7 +339,7 @@ export function Field({ value, onChange, disabled, label, placeholder, type = "t
     spellCheck={false}
     onKeyDown={onKeyDown}
     onChange={event => onChange(event.target.value)}
-    className={cn(CONTROL, width, "shrink-0 placeholder:text-muted-foreground/70 focus:border-foreground/25", mono && "font-mono text-[11px]")}
+    className={cn(CONTROL, width, "max-w-full shrink-0 placeholder:text-muted-foreground focus:border-foreground/25", mono && "font-mono text-[11px]")}
   />;
 }
 
@@ -364,7 +360,7 @@ export function TextArea({ value, onChange, disabled, label, placeholder, rows =
     placeholder={placeholder}
     spellCheck={false}
     onChange={event => onChange(event.target.value)}
-    className="w-full resize-y rounded-lg border border-border-card bg-popover px-2.5 py-2 font-mono text-[11px] leading-relaxed text-foreground outline-none transition-colors placeholder:text-muted-foreground/70 focus:border-foreground/25 disabled:opacity-45"
+    className="w-full resize-y rounded-lg border border-border-card bg-popover px-2.5 py-2 font-mono text-[11px] leading-relaxed text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-foreground/25 disabled:opacity-45"
   />;
 }
 
@@ -413,7 +409,7 @@ const PILL_TONE: Record<PillTone, string> = {
 
 /** The one place tint is allowed outside a harness mark, and only for status. */
 export function StatusPill({ tone = "neutral", children }: { tone?: PillTone; children: ReactNode }) {
-  return <span className={cn("shrink-0 rounded-full border px-1.5 py-0.5 text-[10.5px] leading-none", PILL_TONE[tone])}>{children}</span>;
+  return <span className={cn("shrink-0 rounded-full border px-1.5 py-0.5 text-[11px] leading-none", PILL_TONE[tone])}>{children}</span>;
 }
 
 /* ── save bar ─────────────────────────────────────────────────────────────── */
@@ -437,7 +433,7 @@ export function SaveBar({ dirty, saving, canSave = true, onSave, onDiscard, labe
   saveLabel?: string;
 }) {
   if (!dirty) return null;
-  return <div className="sticky bottom-0 z-20 -mx-1 mt-[26px] flex items-center gap-3 rounded-xl border border-border-card bg-card px-3.5 py-2.5">
+  return <div className="sticky bottom-0 z-20 -mx-1 mt-[26px] flex flex-wrap items-center gap-3 rounded-xl border border-border-card bg-card px-3.5 py-2.5">
     <span className="min-w-0 flex-1 text-[13px] text-foreground">{label}</span>
     <TextButton onClick={onDiscard} disabled={saving}>Discard</TextButton>
     <PrimaryButton onClick={onSave} disabled={saving || !canSave}>{saving ? "Saving…" : saveLabel}</PrimaryButton>

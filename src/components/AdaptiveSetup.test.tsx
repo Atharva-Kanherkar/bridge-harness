@@ -1,3 +1,6 @@
+// @vitest-environment jsdom
+import { act } from "react";
+import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { ModelSetupWizard } from "./ModelSetupWizard";
@@ -94,8 +97,12 @@ describe("adaptive setup surfaces", () => {
     expect(html).not.toContain("Thinking");
   });
 
-  it("explains the single local runner and truthful provider limitations", () => {
-    const html = renderToStaticMarkup(<RouterSettingsDialog open workspaceId="workspace" adapters={adapters} onClose={() => undefined} onError={() => undefined} />);
+  it("explains the single local runner and truthful provider limitations", async () => {
+    const host = document.createElement("div"); document.body.append(host);
+    const root = createRoot(host);
+    await act(async () => root.render(<RouterSettingsDialog open workspaceId="workspace" adapters={adapters} onClose={() => undefined} onError={() => undefined} />));
+    const html = document.body.innerHTML;
+    await act(async () => root.unmount()); host.remove();
     expect(html).toContain("Run learning now");
     expect(html).toContain("Bridge cannot create or enumerate schedules");
     expect(html).toContain("Cloud Routines remain experimental");

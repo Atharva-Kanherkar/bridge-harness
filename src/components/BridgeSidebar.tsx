@@ -37,9 +37,7 @@ function readWidth(): number {
   return Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, value));
 }
 
-// A row's status is a single coloured dot, not a word: the one state worth
-// acting on in its own ink. Everything at rest resolves to null, so no dot
-// shows and the subtitle is just the chat's age.
+// Working, waiting, and failure states pair a status dot with readable text.
 function rowStatus(status: SessionStatus): { label: string; dot: string } | null {
   const bucket = statusBucket(status);
   if (bucket === "active") return { label: "working", dot: "bg-success" };
@@ -69,22 +67,23 @@ function ChatRow({
       type="button"
       onClick={onClick}
       title={detail}
+      aria-current={active ? "page" : undefined}
       className={cn(
         "flex h-11 w-full items-center gap-2 rounded-[7px] pr-2 text-left font-sans transition-colors active:scale-[0.99]",
         indented ? "pl-7" : "pl-2",
-        active ? "bg-card" : "hover:bg-card/60",
+        active ? "bg-selection text-selection-foreground" : "hover:bg-accent",
       )}
     >
       <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
         <span className={cn("truncate text-[13px] leading-4 tracking-[-0.008em] text-foreground", active && "font-medium")}>{name}</span>
         <span className="flex min-w-0 items-center gap-1.5 truncate text-[11px] leading-3.5 tracking-[-0.004em] text-muted-foreground">
-          {status && <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", status.dot)} role="img" aria-label={status.label} />}
+          {status && <><span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", status.dot)} aria-hidden="true" /><span>{status.label}</span><span aria-hidden="true">·</span></>}
           {time && <span className="shrink-0 tabular-nums text-faint">{time}</span>}
         </span>
       </span>
       {/* Muted at rest: a column of full-tint marks is the loudest thing in the
           rail and the chrome stays achromatic. The active row earns its tint. */}
-      <HarnessMark harness={chat.harness} size={13} className={cn("shrink-0", !active && "text-muted-foreground/50")} />
+      <HarnessMark harness={chat.harness} size={13} className={cn("shrink-0", !active && "text-muted-foreground")} />
     </button>
   );
 }
@@ -152,7 +151,7 @@ function RailIconButton({ label, onClick, children }: { label: string; onClick: 
       onClick={onClick}
       title={label}
       aria-label={label}
-      className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      className="inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
     >
       {children}
     </button>
@@ -216,8 +215,8 @@ function ActionRow({
       aria-label={label}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "flex h-7 w-full items-center gap-2.5 rounded-md px-2 text-[13px] tracking-[-0.008em] transition-colors",
-        active ? "bg-accent font-medium text-foreground" : "text-foreground/85 hover:bg-accent hover:text-foreground",
+        "flex h-8 w-full items-center gap-2.5 rounded-lg px-2 text-[13px] tracking-[-0.008em] transition-colors",
+        active ? "bg-selection font-medium text-selection-foreground" : "text-foreground/85 hover:bg-accent hover:text-foreground",
         disabled && "cursor-default opacity-50 hover:bg-transparent hover:text-foreground/85",
       )}
     >
@@ -470,8 +469,8 @@ export function BridgeSidebar({
         className={cn(
           "z-40 flex shrink-0 flex-col font-sans antialiased",
           "fixed inset-y-0 left-0 w-[min(84vw,20rem)] transition-transform duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
-          mobileOpen ? "translate-x-0" : "-translate-x-full",
-          "sm:relative sm:z-20 sm:w-(--sidebar-w) sm:translate-x-0",
+          mobileOpen ? "visible translate-x-0" : "invisible -translate-x-full",
+          "sm:visible sm:relative sm:z-20 sm:w-(--sidebar-w) sm:translate-x-0",
           "u-vibrancy-sidebar bg-sidebar",
           // Hidden means hidden: no rail, no icons, not even the seam.
           hidden ? "overflow-hidden" : "border-r border-sidebar-border",
@@ -503,11 +502,11 @@ export function BridgeSidebar({
           />
         </div>
       )}
-      <div className={cn("flex min-h-0 flex-1 flex-col overflow-hidden px-2 pb-3", showWindowNav ? "pt-1" : "pt-3")}>
+      <div className={cn("flex min-h-0 flex-1 flex-col overflow-hidden px-3 pb-3", showWindowNav ? "pt-1" : "pt-3")}>
         {/* New Chat leads the row; Search expands into the wide slot only
             while filtering, with a compact compose button beside the field. */}
         <div
-          className="mb-1.5 flex shrink-0 items-center gap-1.5"
+          className="mb-3 flex shrink-0 items-center gap-1.5"
           onBlur={event => {
             // Focusing compose is part of its click. Keep it in place until
             // the click completes; only dismiss on focus leaving the row.
@@ -536,12 +535,12 @@ export function BridgeSidebar({
             aria-label="New Chat"
             title={`New Chat  ${chordLabel("new-chat")}`}
             className={cn(
-              "inline-flex h-8 items-center gap-2 rounded-[7px] bg-primary text-primary-foreground text-[13px] font-medium transition-colors enabled:hover:bg-primary/90 disabled:cursor-default disabled:opacity-50",
+              "inline-flex h-8 items-center gap-2 rounded-[7px] border border-border-card bg-card text-foreground shadow-control text-[13px] font-medium transition-colors enabled:hover:bg-accent disabled:cursor-default disabled:opacity-50",
               searchOpen ? "w-8 shrink-0 justify-center" : "min-w-0 flex-1 px-2.5 text-left",
             )}
           >
             <SquarePen size={15} strokeWidth={1.6} className="shrink-0" aria-hidden="true" />
-            {!searchOpen && <span className="min-w-0 flex-1 truncate">New Chat</span>}
+            {!searchOpen && <><span className="min-w-0 flex-1 truncate">New Chat</span><span aria-hidden="true" className="text-[11px] font-normal text-muted-foreground">{chordLabel("new-chat")}</span></>}
           </button>
           {!searchOpen && (
             <button
@@ -556,14 +555,14 @@ export function BridgeSidebar({
           )}
         </div>
 
-        <div className="mb-2 shrink-0">
+        <nav aria-label="Main navigation" className="mb-4 shrink-0 space-y-0.5">
           <ActionRow icon={Store} label="Marketplace" onClick={onOpenMarketplace} active={marketplaceActive} />
           {/* The work-board stays off the nav for now. Routing props remain on the
            * type (and wired in App) so the screens and their data plumbing are
            * untouched. */}
           <ActionRow icon={FolderGit2} label="Projects" chord="open-projects" onClick={onOpenProjects} active={projectsActive} />
           <ActionRow icon={Pin} label="Memory" onClick={onOpenMemory} active={memoryActive} />
-        </div>
+        </nav>
 
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
           <SectionLabel action={
@@ -589,7 +588,7 @@ export function BridgeSidebar({
               ? (group.key === NO_PROJECT_GROUP_KEY ? Home : Folder)
               : undefined;
             return (
-              <div key={group.key} className="flex flex-col mb-0.5 gap-0.5">
+              <div key={group.key} className="mb-2 flex flex-col gap-0.5">
                 {group.label && (
                   <GroupLabel
                     label={group.label}
@@ -602,7 +601,7 @@ export function BridgeSidebar({
                         onClick={() => onNewChatInProject(group.key)}
                         title={`New chat in ${group.label}`}
                         aria-label={`New chat in ${group.label}`}
-                        className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+                        className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                       >
                         <Plus size={12} strokeWidth={1.7} aria-hidden="true" />
                       </button>
@@ -646,9 +645,7 @@ export function BridgeSidebar({
         {/* A rail of achromatic icon buttons pinned to the bottom: settings
             (the account's settings entry), source control, usage, and refresh. */}
         <div className="mt-1 flex shrink-0 items-center gap-0.5 border-t border-sidebar-border pt-1.5">
-          <RailBottomButton label={`Open settings for ${accountName}`} active={settingsActive} onClick={onOpenSettings}>
-            <Settings2 size={16} strokeWidth={1.6} aria-hidden="true" />
-          </RailBottomButton>
+          <button type="button" onClick={onOpenSettings} aria-label={`Open settings for ${accountName}`} aria-current={settingsActive ? "page" : undefined} title={`Open settings for ${accountName}`} className={cn("flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 text-[12px] transition-colors", settingsActive ? "bg-selection text-selection-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground")}><Settings2 size={16} strokeWidth={1.6} aria-hidden="true" /><span className="truncate">Settings</span></button>
           <RailBottomButton label="Source control" onClick={onOpenProjects}>
             <GitBranch size={16} strokeWidth={1.6} aria-hidden="true" />
           </RailBottomButton>
@@ -668,6 +665,16 @@ export function BridgeSidebar({
           role="separator"
           aria-orientation="vertical"
           aria-label="Resize sidebar"
+          tabIndex={0}
+          aria-valuemin={MIN_WIDTH}
+          aria-valuemax={MAX_WIDTH}
+          aria-valuenow={width}
+          onKeyDown={event => {
+            const delta = event.key === "ArrowLeft" ? -16 : event.key === "ArrowRight" ? 16 : 0;
+            if (!delta && event.key !== "Home" && event.key !== "End") return;
+            event.preventDefault();
+            setWidth(current => event.key === "Home" ? MIN_WIDTH : event.key === "End" ? MAX_WIDTH : Math.min(MAX_WIDTH, Math.max(MIN_WIDTH, current + delta)));
+          }}
           onPointerDown={startResize}
           className={cn(
             "absolute inset-y-0 -right-3 z-30 hidden w-3 cursor-col-resize touch-none select-none sm:block",

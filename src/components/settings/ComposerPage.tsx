@@ -9,7 +9,7 @@
 // no save bar.
 
 import { useEffect, useState } from "react";
-import { CircleNotch } from "@phosphor-icons/react";
+import { LoaderCircle as CircleNotch } from "lucide-react";
 import { bridgeApi } from "../../api";
 import type { AdapterDescriptor } from "../../types";
 import type { SuggestionSettings, SuggestionSettingsSnapshot } from "../../protocol/generated/protocol";
@@ -64,7 +64,7 @@ export function ComposerPage({ adapters, onChange, onError }: {
   >
     <SettingsGroup label="Inline suggestions">
       {!draft
-        ? <SettingsRow label="Loading…" control={<CircleNotch size={12} weight="regular" className="animate-spin text-muted-foreground" aria-hidden="true" />} />
+        ? <SettingsRow label="Loading…" control={<CircleNotch size={12} strokeWidth={1.7} className="animate-spin text-muted-foreground" aria-hidden="true" />} />
         : <>
             <SettingsRow
               label="Enabled"
