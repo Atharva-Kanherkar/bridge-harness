@@ -1,5 +1,5 @@
 use crate::{
-    context::Checkpoint,
+    context::{Checkpoint, CheckpointDraft, CHECKPOINT_SCHEMA_VERSION},
     model::{SessionEntry, SEMANTIC_EVENT_SCHEMA_VERSION},
     session_forest::{append_in_transaction, EntryKind, SessionForest},
     store, BridgeError,
@@ -303,44 +303,68 @@ impl CheckpointEvidence {
         Ok(evidence)
     }
 
-    fn verify(&self, checkpoint: &Checkpoint) -> Result<(), String> {
-        let actual_decisions = checkpoint
-            .decisions
-            .iter()
-            .map(|value| value.trim().to_owned())
-            .collect::<BTreeSet<_>>();
-        let actual_files = checkpoint
-            .files_touched
-            .iter()
-            .map(|value| value.trim().to_owned())
-            .collect::<BTreeSet<_>>();
-        let missing_decisions = self
-            .decisions
-            .difference(&actual_decisions)
-            .cloned()
-            .collect::<Vec<_>>();
-        let missing_files = self
-            .files_touched
-            .difference(&actual_files)
-            .cloned()
-            .collect::<Vec<_>>();
-        if missing_decisions.is_empty() && missing_files.is_empty() {
-            return Ok(());
+    /// The evidence as a line the request can carry.
+    ///
+    /// Empty when there is nothing durable to account for, so a short session
+    /// is not handed a list of nothing.
+    fn prompt_section(&self) -> String {
+        if self.decisions.is_empty() && self.files_touched.is_empty() {
+            return String::new();
         }
-        Err(format!(
-            "checkpoint omits durable evidence; missing decisions: {}; missing files: {}",
-            if missing_decisions.is_empty() {
-                "none".into()
-            } else {
-                missing_decisions.join(" | ")
-            },
-            if missing_files.is_empty() {
-                "none".into()
-            } else {
-                missing_files.join(" | ")
-            },
-        ))
+        let mut parts = Vec::new();
+        if !self.decisions.is_empty() {
+            parts.push(format!(
+                "decisions already on record: {}",
+                self.decisions.iter().cloned().collect::<Vec<_>>().join("; ")
+            ));
+        }
+        if !self.files_touched.is_empty() {
+            parts.push(format!(
+                "files already on record: {}",
+                self.files_touched
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join("; ")
+            ));
+        }
+        format!(
+            " Bridge has these on record from this session, so account for \
+             them in your lists ({}).",
+            parts.join(", ")
+        )
     }
+
+    /// Fill in what the checkpoint left out, and say who filled it.
+    ///
+    /// Replaces rejecting an otherwise good summary for an incomplete list.
+    /// Bridge scanned the branch itself, so it already holds every missing
+    /// item; spending a repair turn to be told them again, and then failing
+    /// the boundary when the second reply also missed one, discarded a usable
+    /// summary over bookkeeping Bridge could complete in place.
+    ///
+    /// Returns the provenance the boundary is stamped with: `agent` when the
+    /// session accounted for its own evidence, `agent+controller` when Bridge
+    /// had to add to it.
+    fn augment(&self, checkpoint: &mut Checkpoint) -> &'static str {
+        let missing_decisions = self.missing_from(&self.decisions, &checkpoint.decisions);
+        let missing_files = self.missing_from(&self.files_touched, &checkpoint.files_touched);
+        if missing_decisions.is_empty() && missing_files.is_empty() {
+            return "agent";
+        }
+        checkpoint.decisions.extend(missing_decisions);
+        checkpoint.files_touched.extend(missing_files);
+        "agent+controller"
+    }
+
+    fn missing_from(&self, required: &BTreeSet<String>, present: &[String]) -> Vec<String> {
+        let seen = present
+            .iter()
+            .map(|value| value.trim().to_owned())
+            .collect::<BTreeSet<_>>();
+        required.difference(&seen).cloned().collect()
+    }
+
 }
 
 fn collect_strings(payload: &Value, field: &str, target: &mut BTreeSet<String>) {
@@ -388,36 +412,47 @@ impl CompactionController {
     /// empty arrays are valid: told to fill `decisions` and `filesTouched` from
     /// a conversation where nothing was decided and nothing was touched, an
     /// honest agent's only options are to invent or to refuse.
-    pub fn checkpoint_prompt(
-        session_id: &str,
+    /// The request Bridge sends the session for its own checkpoint.
+    ///
+    /// Asks for meaning only. Every piece of bookkeeping the boundary needs
+    /// (schema version, source agent, first retained entry, token count,
+    /// reason) is filled in by Bridge after the reply lands, so a model can no
+    /// longer fail a checkpoint by mistyping a UUID it was handed, and there
+    /// is no request-matching value left for it to get wrong.
+    ///
+    /// `evidence` rides on the first attempt, not held back for a repair. The
+    /// old prompt showed a model what it had missed only after rejecting it
+    /// once, which spent a whole turn establishing something the request could
+    /// have said up front.
+    fn checkpoint_prompt(
+        _session_id: &str,
         pending: &PendingCompaction,
         repair_error: Option<&str>,
+        evidence: Option<&CheckpointEvidence>,
     ) -> String {
         let repair = repair_error
-            .map(|error| format!(" Your previous response was not valid against that schema: {error}. Reply with the JSON alone."))
+            .map(|error| {
+                format!(" Your previous reply could not be read as that object: {error}. Send the object.")
+            })
+            .unwrap_or_default();
+        let account_for = evidence
+            .map(CheckpointEvidence::prompt_section)
             .unwrap_or_default();
         format!(
-            "[bridge session maintenance] This is Bridge, the host running this \
-             session, not the person you are talking to. {why} Reply with this \
-             JSON object and nothing else — no prose, no code fence: \
-             {{\"schemaVersion\":1,\"summary\":\"what this session was about so \
-             far\",\"decisions\":[],\"filesTouched\":[],\"sourceAgent\":\
-             \"{session_id}\",\"firstRetainedEntryId\":\"{first_retained}\",\
-             \"tokensBefore\":{tokens_before},\"reason\":\"{reason}\"}} Report \
-             only what actually happened: leave `decisions` and `filesTouched` \
-             as empty arrays if nothing was decided or changed, and say so \
-             plainly in `summary` if this session has barely started. Invent \
-             nothing. Do not call tools, run commands, change files, delegate, \
-             or take any other action; this maintenance turn may only return \
-             the checkpoint JSON. Copy `sourceAgent`, `firstRetainedEntryId`, \
-             `tokensBefore`, and `reason` through exactly as given — they are \
-             Bridge's own bookkeeping and are how this reply is matched to this \
-             request. Nothing you write here reaches the user, and this turn is \
-             not part of your conversation with them.{repair}",
+            "Bridge is asking, not the person you are talking to. {why} Reply \
+             with one JSON object and nothing else: \
+             {{\"summary\":\"what this session has been about\",\"decisions\":\
+             [],\"filesTouched\":[],\"openWork\":[]}} `summary` is prose. \
+             `decisions` are the choices made and worth keeping. \
+             `filesTouched` are paths actually changed. `openWork` is what is \
+             still unfinished. Report only what happened: leave a list empty \
+             if there is nothing in it, and say so in `summary` if this \
+             session has barely started. Invent nothing.{account_for} This is \
+             bookkeeping, so do not call tools, run commands, change files, or \
+             delegate; the only thing this turn may produce is that object. \
+             Nothing you write here reaches the user and none of it becomes \
+             part of your conversation with them.{repair}",
             why = pending.reason.why_asked(),
-            first_retained = pending.first_retained_entry_id,
-            tokens_before = pending.tokens_before,
-            reason = pending.reason.as_str(),
         )
     }
 
@@ -476,7 +511,16 @@ impl CompactionController {
                 }),
             )
             .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-        Ok(Some(Self::checkpoint_prompt(session_id, &pending, None)))
+        // The evidence rides on the *first* request. Holding it back for a
+        // repair is what made the opening attempt guess at a list Bridge had
+        // already scanned, and then spend a turn being corrected.
+        let evidence = CheckpointEvidence::from_active_history(db, session_id)?;
+        Ok(Some(Self::checkpoint_prompt(
+            session_id,
+            &pending,
+            None,
+            Some(&evidence),
+        )))
     }
 
     /// Backward-compatible lifecycle hook used by issue #9. The production
@@ -509,101 +553,113 @@ impl CompactionController {
         let Some(pending) = Self::pending(db, session_id)? else {
             return Ok(CheckpointOutcome::NotPending);
         };
-        let checkpoint = match Checkpoint::parse_and_validate(output, session_id) {
-            Ok(checkpoint) => checkpoint,
+        // The evidence Bridge scanned for itself. Read before the reply is
+        // parsed because it is also what a repair request carries.
+        let evidence = if pending.background {
+            CheckpointEvidence::from_history_before_request(db, session_id)?
+        } else {
+            CheckpointEvidence::from_active_history(db, session_id)?
+        };
+        let draft = match CheckpointDraft::parse(output) {
+            Ok(draft) => draft,
             Err(error) if pending.attempt == 0 => {
-                SessionForest::new(db)
-                    .append(
-                        session_id,
-                        EntryKind::CompactionRequested,
-                        json!({
-                            "reason": pending.reason.as_str(),
-                            "attempt": 1,
-                            "tokensBefore": pending.tokens_before,
-                            "sourceAgent": session_id,
-                            "requestedAt": Utc::now().to_rfc3339(),
-                            "firstRetainedEntryId": pending.first_retained_entry_id,
-                            "background": pending.background,
-                            "repairOf": error.to_string(),
-                        }),
-                    )
-                    .map_err(|forest_error| BridgeError::Invalid(forest_error.to_string()))?;
-                return Ok(CheckpointOutcome::Repair {
-                    prompt: Self::checkpoint_prompt(
-                        session_id,
-                        &PendingCompaction {
-                            attempt: 1,
-                            ..pending
-                        },
-                        Some(&error.to_string()),
-                    ),
-                });
+                return Self::request_repair(db, session_id, &pending, &error.to_string(), &evidence);
             }
             Err(error) => {
                 Self::record_failure(db, session_id, &error.to_string(), pending.attempt)?;
                 return Ok(CheckpointOutcome::Failed);
             }
         };
-        if checkpoint.first_retained_entry_id != pending.first_retained_entry_id
-            || checkpoint.tokens_before != pending.tokens_before
-            || checkpoint.reason != pending.reason.as_str()
-        {
-            let error = "checkpoint metadata does not match its controller request";
-            if pending.attempt == 0 {
-                SessionForest::new(db)
-                    .append(
-                        session_id,
-                        EntryKind::CompactionRequested,
-                        json!({
-                            "reason": pending.reason.as_str(),
-                            "attempt": 1,
-                            "tokensBefore": pending.tokens_before,
-                            "sourceAgent": session_id,
-                            "requestedAt": Utc::now().to_rfc3339(),
-                            "firstRetainedEntryId": pending.first_retained_entry_id,
-                            "background": pending.background,
-                            "repairOf": error,
-                        }),
-                    )
-                    .map_err(|forest_error| BridgeError::Invalid(forest_error.to_string()))?;
-                return Ok(CheckpointOutcome::Repair {
-                    prompt: Self::checkpoint_prompt(
-                        session_id,
-                        &PendingCompaction {
-                            attempt: 1,
-                            ..pending
-                        },
-                        Some(error),
-                    ),
-                });
-            }
-            Self::record_failure(db, session_id, error, pending.attempt)?;
-            return Ok(CheckpointOutcome::Failed);
-        }
-        let evidence = if pending.background {
-            CheckpointEvidence::from_history_before_request(db, session_id)?
-        } else {
-            CheckpointEvidence::from_active_history(db, session_id)?
+        // Bridge owns every field that identifies this boundary, so none of
+        // them can arrive wrong. This is what retired the metadata-echo and
+        // source-agent-mismatch failure kinds outright.
+        let mut checkpoint = Checkpoint {
+            schema_version: CHECKPOINT_SCHEMA_VERSION,
+            summary: draft.summary,
+            decisions: draft.decisions,
+            files_touched: draft.files_touched,
+            source_agent: session_id.to_owned(),
+            first_retained_entry_id: pending.first_retained_entry_id.clone(),
+            tokens_before: pending.tokens_before,
+            reason: pending.reason.as_str().to_owned(),
+            open_work: draft.open_work,
+            provenance: None,
         };
-        if let Err(error) = evidence.verify(&checkpoint) {
-            return Self::reject_incomplete_checkpoint(db, session_id, &pending, &error);
-        }
+        // An incomplete list is completed, not rejected: Bridge is holding the
+        // missing items already, and the provenance says who supplied them.
+        let provenance = evidence.augment(&mut checkpoint);
         if pending.background && conversation_appended_since_request(db, session_id)? {
             // The incoming model has already spoken. Moving the boundary now
             // would hide its turns behind a summary the outgoing model wrote
             // without seeing them, so the summary is kept as a plain
             // checkpoint the projection carries in its tail.
-            return Self::record_late_checkpoint(db, session_id, checkpoint, pending);
+            return Self::record_late_checkpoint(db, session_id, checkpoint, pending, provenance);
         }
         Self::record_checkpoint(
             db,
             session_id,
             checkpoint,
             pending,
-            "agent",
+            provenance,
             Some(&evidence),
         )
     }
+
+    /// The repair request on its own, for a caller that has already recorded
+    /// the retry (the live-turn supervisor rebuilding a prompt after a
+    /// timeout) and needs only the text.
+    pub fn repair_prompt(
+        db: &Connection,
+        session_id: &str,
+        pending: &PendingCompaction,
+        error: &str,
+    ) -> Result<String, BridgeError> {
+        let evidence = CheckpointEvidence::from_active_history(db, session_id)?;
+        Ok(Self::checkpoint_prompt(
+            session_id,
+            pending,
+            Some(error),
+            Some(&evidence),
+        ))
+    }
+
+    /// Ask once more, saying what could not be read and what to account for.
+    fn request_repair(
+        db: &Connection,
+        session_id: &str,
+        pending: &PendingCompaction,
+        error: &str,
+        evidence: &CheckpointEvidence,
+    ) -> Result<CheckpointOutcome, BridgeError> {
+        SessionForest::new(db)
+            .append(
+                session_id,
+                EntryKind::CompactionRequested,
+                json!({
+                    "reason": pending.reason.as_str(),
+                    "attempt": 1,
+                    "tokensBefore": pending.tokens_before,
+                    "sourceAgent": session_id,
+                    "requestedAt": Utc::now().to_rfc3339(),
+                    "firstRetainedEntryId": pending.first_retained_entry_id,
+                    "background": pending.background,
+                    "repairOf": error,
+                }),
+            )
+            .map_err(|forest_error| BridgeError::Invalid(forest_error.to_string()))?;
+        Ok(CheckpointOutcome::Repair {
+            prompt: Self::checkpoint_prompt(
+                session_id,
+                &PendingCompaction {
+                    attempt: 1,
+                    ..pending.clone()
+                },
+                Some(error),
+                Some(evidence),
+            ),
+        })
+    }
+
 
     /// Record a validated summary as a `checkpoint` entry only — no
     /// `compaction` boundary, no retained-set change. `pending_from_branch`
@@ -613,8 +669,9 @@ impl CompactionController {
         session_id: &str,
         checkpoint: Checkpoint,
         pending: PendingCompaction,
+        provenance: &str,
     ) -> Result<CheckpointOutcome, BridgeError> {
-        let mut payload = checkpoint_payload(&checkpoint, &pending, "agent");
+        let mut payload = checkpoint_payload(&checkpoint, &pending, provenance);
         payload["landing"] = json!("late");
         let entry = SessionForest::new(db)
             .append(session_id, EntryKind::Checkpoint, payload)
@@ -648,6 +705,9 @@ impl CompactionController {
             first_retained_entry_id: Uuid::new_v4().to_string(),
             tokens_before: active_token_estimate(db, session_id)?,
             reason: reason.as_str().to_owned(),
+            // A reconstruction reads normalized events and Git facts, which
+            // say what changed but never what is still unfinished.
+            open_work: Vec::new(),
             provenance: Some("reconstructed".into()),
         };
         checkpoint
@@ -781,43 +841,6 @@ impl CompactionController {
         Ok(())
     }
 
-    fn reject_incomplete_checkpoint(
-        db: &Connection,
-        session_id: &str,
-        pending: &PendingCompaction,
-        error: &str,
-    ) -> Result<CheckpointOutcome, BridgeError> {
-        if pending.attempt == 0 {
-            SessionForest::new(db)
-                .append(
-                    session_id,
-                    EntryKind::CompactionRequested,
-                    json!({
-                        "reason": pending.reason.as_str(),
-                        "attempt": 1,
-                        "tokensBefore": pending.tokens_before,
-                        "sourceAgent": session_id,
-                        "requestedAt": Utc::now().to_rfc3339(),
-                        "firstRetainedEntryId": pending.first_retained_entry_id,
-                        "background": pending.background,
-                        "repairOf": error,
-                    }),
-                )
-                .map_err(|forest_error| BridgeError::Invalid(forest_error.to_string()))?;
-            return Ok(CheckpointOutcome::Repair {
-                prompt: Self::checkpoint_prompt(
-                    session_id,
-                    &PendingCompaction {
-                        attempt: 1,
-                        ..pending.clone()
-                    },
-                    Some(error),
-                ),
-            });
-        }
-        Self::record_failure(db, session_id, error, pending.attempt)?;
-        Ok(CheckpointOutcome::Failed)
-    }
 
     fn record_checkpoint(
         db: &Connection,
@@ -853,6 +876,7 @@ impl CompactionController {
                 "summary": checkpoint.summary,
                 "decisions": checkpoint.decisions,
                 "filesTouched": checkpoint.files_touched,
+                "openWork": checkpoint.open_work,
                 "firstRetainedEntryId": checkpoint.first_retained_entry_id,
                 "tokensBefore": pending.tokens_before,
                 "reason": pending.reason.as_str(),
@@ -926,6 +950,7 @@ fn checkpoint_payload(
         "summary": checkpoint.summary,
         "decisions": checkpoint.decisions,
         "filesTouched": checkpoint.files_touched,
+        "openWork": checkpoint.open_work,
         "tokensBefore": pending.tokens_before,
         "reason": pending.reason.as_str(),
         "sourceAgent": checkpoint.source_agent,
@@ -1120,15 +1145,15 @@ mod tests {
         }
     }
 
-    /// The wording is load-bearing. An agent that cannot tell who is asking, or
-    /// that is told to fill arrays from a session where nothing happened, is
-    /// right to refuse — and a refusal is what the user ends up looking at.
+    /// The wording is load-bearing. An agent that cannot tell who is asking,
+    /// or that is told to fill arrays from a session where nothing happened,
+    /// is right to refuse, and a refusal is what the user ends up looking at.
     #[test]
-    fn the_checkpoint_prompt_names_its_asker_and_asks_for_no_invention() {
+    fn the_checkpoint_prompt_asks_for_meaning_and_nothing_else() {
         let pending = pending_for(CompactionReason::BeforeDowngrade);
-        let prompt = CompactionController::checkpoint_prompt("s", &pending, None);
+        let prompt = CompactionController::checkpoint_prompt("s", &pending, None, None);
         assert!(
-            prompt.contains("bridge session maintenance") && prompt.contains("the host running this session"),
+            prompt.starts_with("Bridge is asking, not the person you are talking to."),
             "the prompt must say who is asking: {prompt}"
         );
         assert!(
@@ -1136,16 +1161,15 @@ mod tests {
             "and why it is asking: {prompt}"
         );
         assert!(
-            prompt.contains("empty arrays") && prompt.contains("Invent nothing"),
+            prompt.contains("leave a list empty") && prompt.contains("Invent nothing"),
             "and that an empty answer is a valid one: {prompt}"
         );
         for forbidden_action in [
-            "Do not call tools",
+            "do not call tools",
             "run commands",
             "change files",
             "delegate",
-            "any other action",
-            "may only return the checkpoint JSON",
+            "the only thing this turn may produce",
         ] {
             assert!(
                 prompt.contains(forbidden_action),
@@ -1153,15 +1177,71 @@ mod tests {
             );
         }
         assert!(
-            prompt.contains("reaches the user") && prompt.contains("not part of your conversation"),
+            prompt.contains("reaches the user") && prompt.contains("part of your conversation"),
             "and that this turn is not the conversation: {prompt}"
         );
-        // The mangled-continuation trap: a `\`-joined Rust literal that lost its
-        // continuations reads as one line with runs of indentation inside it.
+        // The mangled-continuation trap: a `\`-joined Rust literal that lost
+        // its continuations reads as one line with runs of indentation in it.
         assert!(!prompt.contains("   "), "the prompt carries stray indentation: {prompt}");
-        // The bookkeeping still has to survive verbatim, or `handle_output`
-        // cannot match a reply to its request.
-        assert!(prompt.contains("retained-1") && prompt.contains("4200") && prompt.contains("before_downgrade"));
+
+        // The point of the rewrite: no bookkeeping is asked of the model, so
+        // none of it can come back wrong. Bridge fills every one of these.
+        for bookkeeping in [
+            "retained-1",
+            "4200",
+            "before_downgrade",
+            "sourceAgent",
+            "firstRetainedEntryId",
+            "tokensBefore",
+            "schemaVersion",
+        ] {
+            assert!(
+                !prompt.contains(bookkeeping),
+                "the model is never asked for {bookkeeping:?}: {prompt}"
+            );
+        }
+        // What it is asked for, and only that.
+        for wanted in ["summary", "decisions", "filesTouched", "openWork"] {
+            assert!(prompt.contains(wanted), "the prompt must ask for {wanted:?}: {prompt}");
+        }
+    }
+
+    #[test]
+    fn the_first_request_already_carries_the_evidence_to_account_for() {
+        // The old prompt showed a model what it had missed only after
+        // rejecting it once, spending a whole turn to establish something the
+        // request could have said up front.
+        let db = database();
+        SessionForest::new(&db)
+            .append(
+                "s",
+                EntryKind::WorkerResult,
+                json!({
+                    "status":"completed",
+                    "summary":"implemented",
+                    "decisions":["Keep the public API"],
+                    "filesChanged":["src/api.rs"]
+                }),
+            )
+            .unwrap();
+        let prompt = CompactionController::begin(&db, "s", CompactionReason::Manual, 42)
+            .unwrap()
+            .unwrap();
+        assert!(prompt.contains("Keep the public API"), "{prompt}");
+        assert!(prompt.contains("src/api.rs"), "{prompt}");
+        assert!(prompt.contains("account for"), "{prompt}");
+    }
+
+    #[test]
+    fn a_session_with_nothing_on_record_is_not_handed_a_list_of_nothing() {
+        let db = database();
+        SessionForest::new(&db)
+            .append("s", EntryKind::AssistantMessage, json!({"text":"just talking"}))
+            .unwrap();
+        let prompt = CompactionController::begin(&db, "s", CompactionReason::Manual, 42)
+            .unwrap()
+            .unwrap();
+        assert!(!prompt.contains("already on record"), "{prompt}");
     }
 
     #[test]
@@ -1181,33 +1261,43 @@ mod tests {
                 "{reason:?} has no sentence explaining itself: {why}"
             );
             assert!(
-                CompactionController::checkpoint_prompt("s", &pending_for(reason), None).contains(why),
+                CompactionController::checkpoint_prompt("s", &pending_for(reason), None, None).contains(why),
                 "{reason:?} does not carry its explanation into the prompt"
             );
         }
     }
 
-    /// The prompt embeds the schema it wants back, so the schema it shows has to
-    /// be one the validator accepts — including with the empty arrays it now
-    /// explicitly permits.
+    /// The prompt shows the object it wants back, so that object has to be one
+    /// the reader accepts, including with the empty lists it explicitly
+    /// permits for a session where nothing happened yet.
     #[test]
-    fn an_empty_but_honest_checkpoint_validates() {
-        let pending = pending_for(CompactionReason::BeforeDowngrade);
+    fn an_empty_but_honest_checkpoint_commits() {
+        let db = database();
+        SessionForest::new(&db)
+            .append("s", EntryKind::AssistantMessage, json!({"text":"hello"}))
+            .unwrap();
+        CompactionController::begin(&db, "s", CompactionReason::BeforeDowngrade, 42)
+            .unwrap()
+            .unwrap();
         let output = json!({
-            "schemaVersion": 1,
             "summary": "This session had only just started; nothing was decided or changed.",
             "decisions": [],
             "filesTouched": [],
-            "sourceAgent": "s",
-            "firstRetainedEntryId": pending.first_retained_entry_id,
-            "tokensBefore": pending.tokens_before,
-            "reason": pending.reason.as_str(),
+            "openWork": [],
         })
         .to_string();
-        let checkpoint = Checkpoint::parse_and_validate(&output, "s")
+        assert!(matches!(
+            CompactionController::handle_output(&db, "s", &output).unwrap(),
+            CheckpointOutcome::Completed { .. }
+        ));
+        let boundary = store::session_entries(&db, "s")
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.kind == "compaction")
             .expect("an honestly empty checkpoint is still a checkpoint");
-        assert!(checkpoint.decisions.is_empty());
-        assert!(checkpoint.files_touched.is_empty());
+        assert_eq!(boundary.payload["decisions"].as_array().unwrap().len(), 0);
+        assert_eq!(boundary.payload["filesTouched"].as_array().unwrap().len(), 0);
+        assert_eq!(boundary.payload["provenance"], "agent");
     }
 
     /// The two estimates answer different questions and must be allowed to
@@ -1499,7 +1589,11 @@ mod tests {
     }
 
     #[test]
-    fn schema_valid_checkpoint_with_missing_durable_evidence_repairs_then_fails() {
+    fn an_evidence_gap_is_completed_by_bridge_not_rejected() {
+        // Bridge scanned the branch itself, so it is already holding every
+        // item a checkpoint left out. Spending a repair turn to be told them
+        // again, then failing the boundary when the second reply also missed
+        // one, threw away a usable summary over bookkeeping.
         let db = database();
         SessionForest::new(&db)
             .append(
@@ -1523,23 +1617,165 @@ mod tests {
         CompactionController::begin(&db, "s", CompactionReason::Manual, 42)
             .unwrap()
             .unwrap();
-        let pending = CompactionController::pending(&db, "s").unwrap().unwrap();
         let incomplete = json!({
-            "schemaVersion":1,"summary":"looks complete","decisions":[],"filesTouched":[],
-            "sourceAgent":"s","firstRetainedEntryId":pending.first_retained_entry_id,
-            "tokensBefore":pending.tokens_before,"reason":pending.reason.as_str()
+            "summary":"looks complete","decisions":[],"filesTouched":[]
         })
         .to_string();
-        let CheckpointOutcome::Repair { prompt } =
-            CompactionController::handle_output(&db, "s", &incomplete).unwrap()
-        else {
-            panic!("expected repair")
-        };
-        assert!(prompt.contains("Keep the public API"));
-        assert!(prompt.contains("src/api.rs"));
-        assert!(prompt.contains("docs/api.md"));
-        assert_eq!(
+        assert!(matches!(
             CompactionController::handle_output(&db, "s", &incomplete).unwrap(),
+            CheckpointOutcome::Completed { .. }
+        ));
+
+        let entries = store::session_entries(&db, "s").unwrap();
+        let boundary = entries
+            .iter()
+            .find(|entry| entry.kind == "compaction")
+            .expect("the boundary commits");
+        assert_eq!(boundary.payload["summary"], "looks complete");
+        assert_eq!(
+            boundary.payload["provenance"], "agent+controller",
+            "the record says which parts Bridge supplied"
+        );
+        let decisions = boundary.payload["decisions"].as_array().unwrap();
+        let files = boundary.payload["filesTouched"].as_array().unwrap();
+        assert_eq!(decisions, &[json!("Keep the public API")]);
+        assert_eq!(
+            files,
+            &[json!("docs/api.md"), json!("src/api.rs")],
+            "every durable file is present, and a duplicate on record is one entry"
+        );
+        assert!(
+            !entries.iter().any(|entry| entry.kind == "compaction.failed"),
+            "a completable gap is not a failure"
+        );
+        assert!(
+            !entries
+                .iter()
+                .any(|entry| entry.payload.get("repairOf").is_some()),
+            "and it costs no repair turn"
+        );
+
+        // A stored boundary still has to satisfy the strict schema on the way
+        // back out, duplicate rule included. Augmenting in place is only safe
+        // because the draft is trimmed and deduplicated first, so this is the
+        // assertion that would catch it if that ever stopped being true.
+        let stored = entries
+            .iter()
+            .find(|entry| entry.kind == "checkpoint")
+            .expect("the checkpoint commits beside the boundary");
+        let read_back = crate::context::Checkpoint::from_value(&stored.payload)
+            .expect("an augmented checkpoint reads back through the strict schema");
+        assert_eq!(read_back.provenance.as_deref(), Some("agent+controller"));
+        assert_eq!(read_back.files_touched, ["docs/api.md", "src/api.rs"]);
+    }
+
+    #[test]
+    fn open_work_is_stored_and_reaches_a_restored_session() {
+        // Asking for unfinished work and then dropping it would make the
+        // prompt field decoration. It is stored on the boundary and carried
+        // into the restoration header a cold start reads.
+        let db = database();
+        SessionForest::new(&db)
+            .append("s", EntryKind::AssistantMessage, json!({"text":"work"}))
+            .unwrap();
+        CompactionController::begin(&db, "s", CompactionReason::BeforeSuspend, 42)
+            .unwrap()
+            .unwrap();
+        let reply = json!({
+            "summary":"halfway through the migration",
+            "decisions":[],
+            "filesTouched":[],
+            "openWork":["backfill the old rows","delete the shim"]
+        })
+        .to_string();
+        CompactionController::handle_output(&db, "s", &reply).unwrap();
+        let boundary = store::session_entries(&db, "s")
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.kind == "compaction")
+            .expect("the boundary commits");
+        assert_eq!(
+            boundary.payload["openWork"],
+            json!(["backfill the old rows", "delete the shim"])
+        );
+    }
+
+    #[test]
+    fn a_checkpoint_that_accounts_for_itself_keeps_its_own_provenance() {
+        let db = database();
+        SessionForest::new(&db)
+            .append(
+                "s",
+                EntryKind::WorkerResult,
+                json!({
+                    "status":"completed",
+                    "summary":"implemented",
+                    "decisions":["Keep the public API"],
+                    "filesChanged":["src/api.rs"]
+                }),
+            )
+            .unwrap();
+        CompactionController::begin(&db, "s", CompactionReason::Manual, 42)
+            .unwrap()
+            .unwrap();
+        let complete = json!({
+            "summary":"the API stayed put",
+            "decisions":["Keep the public API"],
+            "filesTouched":["src/api.rs"]
+        })
+        .to_string();
+        CompactionController::handle_output(&db, "s", &complete).unwrap();
+        let entries = store::session_entries(&db, "s").unwrap();
+        let boundary = entries
+            .iter()
+            .find(|entry| entry.kind == "compaction")
+            .expect("the boundary commits");
+        assert_eq!(boundary.payload["provenance"], "agent");
+    }
+
+    #[test]
+    fn a_fenced_or_prefaced_reply_is_read_rather_than_rejected() {
+        // Eight of the checkpoint failures in a month of real use were this,
+        // and not one of them had anything wrong with the summary inside.
+        for reply in [
+            "```json\n{\"summary\":\"fenced\",\"decisions\":[],\"filesTouched\":[]}\n```",
+            "Here is the checkpoint:\n{\"summary\":\"fenced\",\"decisions\":[],\"filesTouched\":[]}",
+            "{\"summary\":\"fenced\",\"decisions\":[],\"filesTouched\":[]}\n\nLet me know if you need more.",
+        ] {
+            let db = database();
+            SessionForest::new(&db)
+                .append("s", EntryKind::AssistantMessage, json!({"text":"work"}))
+                .unwrap();
+            CompactionController::begin(&db, "s", CompactionReason::Manual, 42)
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(
+                    CompactionController::handle_output(&db, "s", reply).unwrap(),
+                    CheckpointOutcome::Completed { .. }
+                ),
+                "this reply must commit: {reply}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_reply_with_no_object_still_repairs_and_then_fails() {
+        // What remains a failure: nothing to read.
+        let db = database();
+        SessionForest::new(&db)
+            .append("s", EntryKind::AssistantMessage, json!({"text":"work"}))
+            .unwrap();
+        CompactionController::begin(&db, "s", CompactionReason::Manual, 42)
+            .unwrap()
+            .unwrap();
+        let prose = "I have summarised the session above, let me know what else you need.";
+        assert!(matches!(
+            CompactionController::handle_output(&db, "s", prose).unwrap(),
+            CheckpointOutcome::Repair { .. }
+        ));
+        assert_eq!(
+            CompactionController::handle_output(&db, "s", prose).unwrap(),
             CheckpointOutcome::Failed
         );
         assert!(!store::session_entries(&db, "s")

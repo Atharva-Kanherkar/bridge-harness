@@ -226,6 +226,27 @@ export interface CompactionReported extends Framed {
   status?: string;
 }
 
+/**
+ * The harness compacted its own context window.
+ *
+ * Its own variant rather than a `CompactionReported` phase, because it is a
+ * different fact with a different owner: Bridge records this, it does not cause
+ * it, and it must not touch the maintenance fold that a Bridge checkpoint
+ * request opens. `preTokens` and `postTokens` are present only when the
+ * provider reported them, so a card can say the window shrank by a number only
+ * when a number was actually sent. See `docs/compaction-and-resume.md`.
+ */
+export interface ContextCompacted extends Framed {
+  type: "context.compacted";
+  harness?: string;
+  trigger?: string;
+  preTokens?: number;
+  postTokens?: number;
+  title: string;
+  text: string;
+  status?: string;
+}
+
 export interface BranchSummary extends Framed {
   type: "branch.summary";
   title: string;
@@ -332,6 +353,7 @@ export type TranscriptEvent =
   | ArtifactReady
   | CheckpointRecorded
   | CompactionReported
+  | ContextCompacted
   | BranchSummary
   | TranscriptError
   | TranscriptNotice

@@ -3651,6 +3651,68 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn a_native_compaction_is_durable_history() {
+        // The harness's own compaction boundary must survive the process that
+        // reported it: it is the only evidence a provider context actually
+        // shrank, and the transcript card is drawn from the stored entry on
+        // every later reload.
+        let db = open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,harness,label,status,metric_source) VALUES('s','claude','Chat','idle','reported')",
+            [],
+        )
+        .unwrap();
+        let mut event = crate::agent::NormalizedEvent::new(crate::agent::NATIVE_COMPACTION_KIND);
+        event.status = Some("completed".into());
+        event.title = Some("Context compacted".into());
+        event.data = json!({"harness":"claude","trigger":"auto","preTokens":184_000,"postTokens":22_500});
+
+        let stored = session_event(&db, "s", &event, &json!({})).unwrap();
+        assert!(
+            stored.sequence > 0,
+            "a transient event returns sequence 0 and writes no row"
+        );
+
+        // Reading it back runs `validate_stored_entry`, which is where an
+        // entry kind the forest cannot account for would be rejected.
+        let replayed = session_events_tail(&db, "s", 10).unwrap();
+        assert_eq!(replayed.len(), 1);
+        assert_eq!(replayed[0].kind, crate::agent::NATIVE_COMPACTION_KIND);
+        assert_eq!(replayed[0].data["harness"], "claude");
+        assert_eq!(replayed[0].data["postTokens"], 22_500);
+        assert_eq!(replayed[0].title.as_deref(), Some("Context compacted"));
+
+        // It is history, not a Bridge compaction: nothing in the controller's
+        // vocabulary was written.
+        let bridge_boundaries: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM session_entries WHERE kind IN ('compaction','compaction.requested','compaction.failed','checkpoint')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(bridge_boundaries, 0);
+
+        // The head advances to it, exactly as it does for any conversation
+        // entry: a native boundary joins history rather than replacing it.
+        // What it must not do is become a projection boundary, and it does not,
+        // because only a `compaction` entry is one. `context::tests::
+        // a_native_compaction_stays_in_the_projection` holds that end.
+        let head: Option<String> = db
+            .query_row(
+                "SELECT active_entry_id FROM session_heads WHERE session_id='s'",
+                [],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+        assert!(
+            head.is_some(),
+            "a durable entry advances the head like any other conversation entry"
+        );
+    }
+
+    #[test]
     fn newer_schema_is_rejected_before_recovery_or_backup_pruning() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bridge.db");

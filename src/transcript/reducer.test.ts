@@ -215,6 +215,37 @@ describe("reduceTranscript", () => {
     expect(reduceTranscript(events)).toEqual(reduceTranscript(events));
     expect(JSON.stringify(events)).toBe(before);
   });
+
+  it("keeps the harness's own boundary out of Bridge's maintenance window", () => {
+    // A Bridge checkpoint request opens a window in which the model's prose is
+    // protocol traffic rather than conversation. A native compaction is not
+    // part of that exchange, so it must neither open the window nor close one
+    // a checkpoint request opened, which would let the checkpoint's own reply
+    // land in the transcript as a message.
+    const items = reduce([
+      live(1, "compaction.requested", { data: { reason: "phase_boundary" } }),
+      live(2, "context.compacted", { status: "completed", data: { harness: "claude", preTokens: 180_000, postTokens: 20_000 } }),
+      live(3, "message.completed", { role: "assistant", text: '{"schemaVersion":1,"summary":"internal"}' }),
+    ]);
+    expect(items.map(item => item.type)).toEqual(["compaction", "context-compacted"]);
+    expect(items.find(item => item.type === "context-compacted")).toMatchObject({
+      title: "Context compacted",
+      text: "Claude summarised its context, 180k tokens down to 20k tokens.",
+    });
+  });
+
+  it("draws a native boundary on its own row, never folded into a Bridge one", () => {
+    const items = reduce([
+      live(1, "context.compacted", { status: "completed", data: { harness: "codex" } }),
+      live(2, "compaction.requested", { data: { reason: "manual" } }),
+      live(3, "compaction", { data: { summary: "Saved the plan", reason: "manual" } }),
+    ]);
+    // A request and the boundary it commits are already two rows. What this
+    // pins is that neither of them absorbs the native one.
+    expect(items.map(item => item.type)).toEqual(["context-compacted", "compaction", "compaction"]);
+    expect(items[1]).toMatchObject({ title: "Compaction requested" });
+    expect(items[2]).toMatchObject({ title: "Checkpoint saved" });
+  });
 });
 
 

@@ -382,7 +382,11 @@ const demoEntries: SessionEntry[] = [
   forestEntry("entry-11b", "session-1", 13, "tool.completed", { status: "completed", title: "Read tokenStore.ts", data: { type: "readFile", path: "src/auth/tokenStore.ts" } }, "entry-10b"),
   forestEntry("entry-12b", "session-1", 14, "file_change.completed", { status: "completed", title: "tokenStore.ts", data: { path: "src/auth/tokenStore.ts", additions: 9, deletions: 4, durationMs: 400, patch: MOCK_PATCH } }, "entry-11b"),
   forestEntry("entry-13b", "session-1", 15, "command.completed", { status: "completed", title: "bun test src/auth", data: { type: "commandExecution", command: "bun test src/auth", exitCode: 0, durationMs: 2400, aggregatedOutput: "bun test v1.1.34\n\n 42 pass\n 0 fail\nRan 42 tests across 6 files. [2.41s]" } }, "entry-12b"),
-  forestEntry("entry-raw", "session-1", 16, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-13b")
+  // The harness's own boundary, beside Bridge's `compaction` above. Two
+  // different facts on purpose: this one is the provider's context actually
+  // shrinking, that one is Bridge saving a summary for a later cold start.
+  forestEntry("entry-14b", "session-1", 16, "context.compacted", { status: "completed", title: "Context compacted", data: { harness: "claude", trigger: "auto", preTokens: 184000, postTokens: 22500 } }, "entry-13b"),
+  forestEntry("entry-raw", "session-1", 17, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-14b")
 ];
 // Seed memory for the mock host: a spread the Memory surface can actually
 // render — pinned + accepted + proposed records, a supersession lineage, a

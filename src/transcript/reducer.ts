@@ -344,11 +344,13 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
 
     case "checkpoint":
     case "compaction":
+    case "context.compacted":
     case "branch.summary":
     case "error":
     case "notice": {
       const type: ConversationItemType = event.type === "checkpoint" ? "checkpoint"
         : event.type === "compaction" ? "compaction"
+        : event.type === "context.compacted" ? "context-compacted"
         : event.type === "branch.summary" ? "branch-summary"
         : event.type === "error" ? "error"
         : "activity";

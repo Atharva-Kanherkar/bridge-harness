@@ -27,23 +27,103 @@ pub struct Checkpoint {
     pub first_retained_entry_id: String,
     pub tokens_before: i64,
     pub reason: String,
+    /// What was still unfinished at the boundary. Additive: a checkpoint
+    /// stored before this field existed reads back as an empty list.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_work: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<String>,
 }
 
-impl Checkpoint {
-    /// Parse one exact JSON checkpoint and verify that it belongs to the agent that
-    /// was asked to produce it. Markdown fences and trailing prose are rejected.
-    pub fn parse_and_validate(
-        text: &str,
-        expected_source_agent: &str,
-    ) -> Result<Self, ContextError> {
-        let checkpoint: Self = serde_json::from_str(text)
-            .map_err(|error| ContextError::InvalidCheckpoint(error.to_string()))?;
-        checkpoint.validate(Some(expected_source_agent))?;
-        Ok(checkpoint)
-    }
+/// What a session is actually asked for: meaning only.
+///
+/// Separate from [`Checkpoint`] on purpose. A checkpoint carries bookkeeping
+/// that identifies the boundary, and asking a model to echo any of it made a
+/// mistyped UUID indistinguishable from a bad summary. Unknown keys are
+/// tolerated rather than rejected: a model volunteering an extra field, or
+/// echoing metadata an older prompt asked for, is not a reason to discard a
+/// good summary.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckpointDraft {
+    #[serde(default)]
+    pub summary: String,
+    #[serde(default)]
+    pub decisions: Vec<String>,
+    #[serde(default)]
+    pub files_touched: Vec<String>,
+    #[serde(default)]
+    pub open_work: Vec<String>,
+}
 
+impl CheckpointDraft {
+    /// Read a session's reply, tolerating a fence or a sentence around it.
+    ///
+    /// Rejecting fenced JSON and prose preambles was the largest single
+    /// failure kind in the local ledger, and not one of those replies had
+    /// anything wrong with the summary inside it.
+    pub fn parse(text: &str) -> Result<Self, ContextError> {
+        let object = first_json_object(text).ok_or_else(|| {
+            ContextError::InvalidCheckpoint("no JSON object in the reply".into())
+        })?;
+        let mut draft: Self = serde_json::from_str(object)
+            .map_err(|error| ContextError::InvalidCheckpoint(error.to_string()))?;
+        draft.summary = draft.summary.trim().to_owned();
+        require_non_empty("summary", &draft.summary)?;
+        draft.decisions = deduplicate(draft.decisions);
+        draft.files_touched = deduplicate(draft.files_touched);
+        draft.open_work = deduplicate(draft.open_work);
+        Ok(draft)
+    }
+}
+
+/// Trimmed, non-empty, first occurrence wins.
+///
+/// A model listing the same file twice used to fail the whole checkpoint. The
+/// order is the model's, because it reflects what it thought mattered most.
+fn deduplicate(values: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    values
+        .into_iter()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty() && seen.insert(value.clone()))
+        .collect()
+}
+
+/// The first balanced JSON object in a reply, brace-counted with strings and
+/// escapes honoured.
+///
+/// Deliberately not a regex and not "everything between the first `{` and the
+/// last `}`": a summary that mentions a brace, or a fence followed by prose
+/// that also contains one, would make either of those read past the object.
+fn first_json_object(text: &str) -> Option<&str> {
+    let bytes = text.as_bytes();
+    let start = bytes.iter().position(|byte| *byte == b'{')?;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, byte) in bytes.iter().enumerate().skip(start) {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match byte {
+            b'\\' if in_string => escaped = true,
+            b'"' => in_string = !in_string,
+            b'{' if !in_string => depth += 1,
+            b'}' if !in_string => {
+                depth -= 1;
+                if depth == 0 {
+                    return text.get(start..=offset);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+impl Checkpoint {
     pub fn validate(&self, expected_source_agent: Option<&str>) -> Result<(), ContextError> {
         if self.schema_version != CHECKPOINT_SCHEMA_VERSION {
             return Err(ContextError::UnsupportedCheckpointVersion(
@@ -59,6 +139,7 @@ impl Checkpoint {
         }
         validate_string_list("decisions", &self.decisions)?;
         validate_string_list("filesTouched", &self.files_touched)?;
+        validate_string_list("openWork", &self.open_work)?;
         if self.tokens_before < 0 {
             return Err(ContextError::InvalidCheckpoint(
                 "tokensBefore must be non-negative".into(),
@@ -76,7 +157,7 @@ impl Checkpoint {
         Ok(())
     }
 
-    fn from_value(value: &Value) -> Result<Self, ContextError> {
+    pub(crate) fn from_value(value: &Value) -> Result<Self, ContextError> {
         // SessionForest adds this envelope marker after validating producer output.
         // It is storage metadata, not part of the strict checkpoint schema.
         let mut stored = value.clone();
@@ -99,6 +180,8 @@ pub struct RestorationContext {
     pub decisions: Vec<String>,
     pub files_touched: Vec<String>,
     pub source_agent: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_work: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provenance: Option<String>,
 }
@@ -191,6 +274,7 @@ impl ContextProjector {
                     decisions,
                     files_touched: checkpoint.files_touched,
                     source_agent: checkpoint.source_agent,
+                    open_work: checkpoint.open_work,
                     provenance: checkpoint.provenance,
                 }),
             )
@@ -425,6 +509,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_native_compaction_stays_in_the_projection() {
+        // The harness compacting its own window is conversation history, not a
+        // Bridge projection boundary: Bridge's own `compaction` entry is the
+        // only thing that moves where a projection starts. A native boundary
+        // that hid itself here would vanish from a restored transcript.
+        let native = entry(
+            3,
+            "context.compacted",
+            json!({"data":{"harness":"claude","preTokens":180_000,"postTokens":20_000}}),
+        );
+        let projected = project_render_entry(&native).expect("a native boundary is visible");
+        assert_eq!(projected.kind, "context.compacted");
+        assert_eq!(projected.payload["data"]["harness"], "claude");
+
+        // Bridge's own boundary is still excluded from the render stream.
+        for bridge_kind in ["checkpoint", "compaction", "compaction.requested", "compaction.failed"] {
+            assert!(
+                project_render_entry(&entry(4, bridge_kind, json!({"summary":"s","reason":"manual"}))).is_none(),
+                "{bridge_kind} is Bridge bookkeeping, not a rendered turn"
+            );
+        }
+    }
+
     fn checkpoint(summary: &str, retained: &str, decisions: &[&str], source: &str) -> Value {
         json!({
             "schemaVersion": CHECKPOINT_SCHEMA_VERSION,
@@ -439,54 +547,135 @@ mod tests {
     }
 
     #[test]
-    fn checkpoint_schema_is_strict_versioned_and_owned() {
-        let value = checkpoint("state", "entry-9", &["keep decision"], "agent-a");
-        let parsed = Checkpoint::parse_and_validate(&value.to_string(), "agent-a").unwrap();
-        assert_eq!(parsed.source_agent, "agent-a");
-        assert!(matches!(
-            Checkpoint::parse_and_validate(&value.to_string(), "agent-b"),
-            Err(ContextError::SourceAgentMismatch { .. })
-        ));
-
-        let mut unsupported = value.clone();
-        unsupported["schemaVersion"] = json!(2);
-        assert_eq!(
-            Checkpoint::parse_and_validate(&unsupported.to_string(), "agent-a"),
-            Err(ContextError::UnsupportedCheckpointVersion(2))
-        );
-        let mut unknown = value.clone();
-        unknown["rawTranscript"] = json!("must never be accepted");
-        assert!(matches!(
-            Checkpoint::parse_and_validate(&unknown.to_string(), "agent-a"),
-            Err(ContextError::InvalidCheckpoint(_))
-        ));
-        assert!(
-            Checkpoint::parse_and_validate(&format!("```json\n{}\n```", value), "agent-a").is_err()
-        );
+    fn a_reply_is_read_through_a_fence_a_preamble_and_a_trailer() {
+        // Rejecting these was the largest single checkpoint failure kind in a
+        // month of real use, and none of those replies had a bad summary.
+        let bare = r#"{"summary":"state","decisions":["keep it"],"filesTouched":["src/a.rs"]}"#;
+        for reply in [
+            bare.to_owned(),
+            format!("```json\n{bare}\n```"),
+            format!("Here is the checkpoint:\n\n{bare}"),
+            format!("{bare}\n\nTell me if you want more detail."),
+            format!("Sure.\n```\n{bare}\n```\nDone."),
+        ] {
+            let draft = CheckpointDraft::parse(&reply).unwrap_or_else(|error| {
+                panic!("this reply must parse: {reply}: {error:?}")
+            });
+            assert_eq!(draft.summary, "state");
+            assert_eq!(draft.decisions, ["keep it"]);
+            assert_eq!(draft.files_touched, ["src/a.rs"]);
+        }
     }
 
     #[test]
-    fn checkpoint_rejects_missing_malformed_and_duplicate_fields() {
-        let mut missing = checkpoint("state", "entry-9", &[], "agent-a");
-        missing.as_object_mut().unwrap().remove("filesTouched");
-        assert!(Checkpoint::parse_and_validate(&missing.to_string(), "agent-a").is_err());
+    fn the_object_read_is_the_first_balanced_one_not_the_widest_span() {
+        // A summary that mentions a brace, or prose after the object that
+        // contains one, would make "first `{` to last `}`" read past the end.
+        let draft = CheckpointDraft::parse(
+            "{\"summary\":\"the handler uses { and } literally\",\"decisions\":[],\"filesTouched\":[]}\nAnything else? {maybe}",
+        )
+        .unwrap();
+        assert_eq!(draft.summary, "the handler uses { and } literally");
+        // Nested objects inside the checkpoint are still one object.
+        assert!(CheckpointDraft::parse(
+            r#"{"summary":"nested","decisions":[],"filesTouched":[],"extra":{"a":{"b":1}}}"#
+        )
+        .is_ok());
+    }
 
-        let mut negative = checkpoint("state", "entry-9", &[], "agent-a");
-        negative["tokensBefore"] = json!(-1);
-        assert!(Checkpoint::parse_and_validate(&negative.to_string(), "agent-a").is_err());
+    #[test]
+    fn a_reply_with_nothing_to_read_still_fails() {
+        // What remains a failure after the rewrite.
+        assert!(matches!(
+            CheckpointDraft::parse("I have summarised the session above."),
+            Err(ContextError::InvalidCheckpoint(_))
+        ));
+        assert!(CheckpointDraft::parse("").is_err());
+        // An object with no summary is not a checkpoint.
+        assert!(CheckpointDraft::parse(r#"{"decisions":[],"filesTouched":[]}"#).is_err());
+        assert!(CheckpointDraft::parse(r#"{"summary":"   "}"#).is_err());
+        // An unterminated object is not one either.
+        assert!(CheckpointDraft::parse(r#"{"summary":"cut off"#).is_err());
+    }
 
-        let duplicate = checkpoint("state", "entry-9", &["same", "same"], "agent-a");
-        assert!(Checkpoint::parse_and_validate(&duplicate.to_string(), "agent-a").is_err());
+    #[test]
+    fn a_draft_deduplicates_instead_of_failing_and_tolerates_extra_keys() {
+        // A model listing the same file twice used to fail the whole
+        // checkpoint. An extra key it volunteers, or metadata an older prompt
+        // asked it to echo, is not a reason to discard a good summary either.
+        let draft = CheckpointDraft::parse(
+            r#"{"summary":"state","decisions":["same"," same ","other"],
+                "filesTouched":["src/a.rs","src/a.rs",""],"openWork":["finish the test"],
+                "sourceAgent":"echoed","tokensBefore":1200,"schemaVersion":1}"#,
+        )
+        .unwrap();
+        assert_eq!(draft.decisions, ["same", "other"], "first occurrence wins, in order");
+        assert_eq!(draft.files_touched, ["src/a.rs"]);
+        assert_eq!(draft.open_work, ["finish the test"]);
+    }
 
-        let mut reconstructed = checkpoint("state", "entry-9", &[], "agent-a");
-        reconstructed["provenance"] = json!("reconstructed");
+    #[test]
+    fn a_stored_boundary_keeps_its_own_invariants() {
+        // The boundary is Bridge's to build, so these are checks on Bridge's
+        // own output rather than on a model's.
+        let mut boundary = Checkpoint {
+            schema_version: CHECKPOINT_SCHEMA_VERSION,
+            summary: "state".into(),
+            decisions: vec!["keep decision".into()],
+            files_touched: vec!["src/a.rs".into()],
+            source_agent: "agent-a".into(),
+            first_retained_entry_id: "entry-9".into(),
+            tokens_before: 1200,
+            reason: "pressure".into(),
+            open_work: vec![],
+            provenance: None,
+        };
+        boundary.validate(Some("agent-a")).unwrap();
+        assert!(matches!(
+            boundary.validate(Some("agent-b")),
+            Err(ContextError::SourceAgentMismatch { .. })
+        ));
+
+        let mut future = boundary.clone();
+        future.schema_version = 2;
         assert_eq!(
-            Checkpoint::parse_and_validate(&reconstructed.to_string(), "agent-a")
-                .unwrap()
-                .provenance
-                .as_deref(),
-            Some("reconstructed")
+            future.validate(None),
+            Err(ContextError::UnsupportedCheckpointVersion(2))
         );
+
+        let mut negative = boundary.clone();
+        negative.tokens_before = -1;
+        assert!(negative.validate(None).is_err());
+
+        let mut blank = boundary.clone();
+        blank.summary = "  ".into();
+        assert!(blank.validate(None).is_err());
+
+        boundary.provenance = Some("reconstructed".into());
+        boundary.validate(None).unwrap();
+    }
+
+    #[test]
+    fn a_stored_boundary_still_refuses_an_unknown_field() {
+        // `deny_unknown_fields` guards what Bridge reads back out of the
+        // forest, which is the one place an unexpected key would mean the
+        // stored shape and this build disagree.
+        let mut stored = json!({
+            "schemaVersion": CHECKPOINT_SCHEMA_VERSION,
+            "summary": "state",
+            "decisions": [],
+            "filesTouched": [],
+            "sourceAgent": "agent-a",
+            "firstRetainedEntryId": "entry-9",
+            "tokensBefore": 1200,
+            "reason": "pressure"
+        });
+        assert!(Checkpoint::from_value(&stored).is_ok());
+        stored["rawTranscript"] = json!("must never be accepted");
+        assert!(matches!(
+            Checkpoint::from_value(&stored),
+            Err(ContextError::InvalidCheckpoint(_))
+        ));
     }
 
     #[test]

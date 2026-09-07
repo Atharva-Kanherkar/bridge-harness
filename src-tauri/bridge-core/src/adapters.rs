@@ -90,6 +90,32 @@ pub fn folded_message(
     parts.join("\n\n")
 }
 
+/// What a harness can do with a `/compact` Bridge hands it.
+///
+/// Three states rather than a bool, because the difference between the two
+/// supported ones is something the reply has to say out loud: a harness that
+/// compacts the whole conversation cannot honour a focus, and dropping the
+/// focus in silence would leave the user believing it was applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeCompaction {
+    /// No command exists. Bridge writes its own checkpoint instead.
+    Unsupported,
+    /// The harness compacts its context and takes a focus instruction.
+    WithFocus,
+    /// The harness compacts its whole context. A focus cannot be forwarded.
+    WholeConversation,
+}
+
+impl NativeCompaction {
+    pub fn is_supported(self) -> bool {
+        !matches!(self, Self::Unsupported)
+    }
+
+    pub fn accepts_focus(self) -> bool {
+        matches!(self, Self::WithFocus)
+    }
+}
+
 pub trait AdapterRuntime: Send {
     fn process_id(&self) -> u32;
     fn provider_session_id(&self) -> &str;
@@ -189,6 +215,26 @@ pub trait AdapterRuntime: Send {
     /// Providers without an on-demand usage query keep the default no-op.
     fn read_usage(&self) -> Result<(), BridgeError> {
         Ok(())
+    }
+    /// What this harness does with a compaction request Bridge forwards.
+    ///
+    /// The harness owns its live context window, so `/compact` belongs to it
+    /// wherever it has a command for the job. The default is `Unsupported`,
+    /// which is what routes the request to a Bridge checkpoint instead. See
+    /// `docs/compaction-and-resume.md`.
+    fn native_compaction(&self) -> NativeCompaction {
+        NativeCompaction::Unsupported
+    }
+    /// Ask the harness to compact its own context.
+    ///
+    /// `focus` is only ever passed to a runtime that answered
+    /// [`NativeCompaction::WithFocus`]. The default errs rather than returning
+    /// `Ok`: a provider with no compaction command must fail at this seam, not
+    /// report success for a compaction that never happened.
+    fn compact_native(&self, _focus: Option<&str>) -> Result<(), BridgeError> {
+        Err(BridgeError::Invalid(
+            "This provider has no compaction command".into(),
+        ))
     }
     /// Why the provider process died, once it has: exit status plus a bounded
     /// stderr tail. `None` while it is still running or when nothing useful
@@ -603,6 +649,16 @@ pub trait HarnessAdapter: Send + Sync + Any {
     fn supports_native_fork(&self) -> bool {
         false
     }
+    /// Whether this harness has a compaction command at all.
+    ///
+    /// The static half of the capability, asked without the adapters mutex
+    /// held, because answering it can cost a process launch: Codex reads its
+    /// app-server schema exactly as it does for resume and fork. The runtime's
+    /// [`AdapterRuntime::native_compaction`] refines this with per-session
+    /// state that only the live process knows.
+    fn supports_native_compaction(&self) -> bool {
+        false
+    }
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent>;
     /// Drop any normalization state kept for `provider_session_id`. Called
     /// when the session's runtime is gone; adapters without per-session state
@@ -852,6 +908,12 @@ impl AdapterRegistry {
         self.adapters
             .get(id)
             .is_some_and(|adapter| adapter.supports_native_fork())
+    }
+
+    pub fn supports_native_compaction(&self, id: &str) -> bool {
+        self.adapters
+            .get(id)
+            .is_some_and(|adapter| adapter.supports_native_compaction())
     }
 
     pub fn normalize(&self, id: &str, value: &Value) -> Vec<agent::NormalizedEvent> {
@@ -1308,6 +1370,9 @@ impl HarnessAdapter for OpenCodeAdapter {
     fn supports_native_resume(&self) -> bool {
         self.catalog.read().unwrap().is_some()
     }
+    fn supports_native_compaction(&self) -> bool {
+        true
+    }
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent> {
         let session_key = value
             .pointer("/properties/sessionID")
@@ -1577,6 +1642,9 @@ impl HarnessAdapter for CodexAdapter {
     fn supports_native_resume(&self) -> bool {
         codex_adapter::supports_native_resume()
     }
+    fn supports_native_compaction(&self) -> bool {
+        codex_adapter::supports_native_compaction()
+    }
     fn supports_native_fork(&self) -> bool {
         codex_adapter::supports_native_fork()
     }
@@ -1740,6 +1808,9 @@ impl HarnessAdapter for ClaudeAdapter {
     fn supports_native_resume(&self) -> bool {
         claude_adapter::supports_native_resume()
     }
+    fn supports_native_compaction(&self) -> bool {
+        true
+    }
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent> {
         let session_key = value
             .get("session_id")
@@ -1820,6 +1891,88 @@ mod tests {
         result.expect("descriptor reads must complete while the catalog is refreshed");
         reader.join().unwrap();
         writer.join().unwrap();
+    }
+
+    #[test]
+    fn a_provider_with_no_compaction_command_says_so_at_the_seam() {
+        // The default must not be a silent Ok: reporting success for a
+        // compaction that never happened would leave the reader believing a
+        // full context had been relieved.
+        struct Bare;
+        impl AdapterRuntime for Bare {
+            fn process_id(&self) -> u32 { 0 }
+            fn provider_session_id(&self) -> &str { "s" }
+            fn current_turn(&self) -> Arc<Mutex<Option<String>>> { Arc::new(Mutex::new(None)) }
+            fn send_turn(&self, _text: &str) -> Result<(), BridgeError> { Ok(()) }
+            fn interrupt(&self) -> Result<(), BridgeError> { Ok(()) }
+            fn respond(&self, _request_id: Value, _decision: &str) -> Result<(), BridgeError> { Ok(()) }
+            fn stop(&mut self, _reason: ShutdownReason) {}
+        }
+        let bare = Bare;
+        assert_eq!(bare.native_compaction(), NativeCompaction::Unsupported);
+        assert!(!bare.native_compaction().is_supported());
+        assert!(!bare.native_compaction().accepts_focus());
+        assert!(bare.compact_native(None).is_err());
+        assert!(bare.compact_native(Some("the failing test")).is_err());
+    }
+
+    #[test]
+    fn the_static_capability_defaults_to_no_command() {
+        // Read through the registry, off the adapters mutex, because a harness
+        // may have to launch a process to answer. A harness that has not opted
+        // in must answer no without being asked to prove it.
+        struct Bare;
+        impl HarnessAdapter for Bare {
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+            fn descriptor(&self) -> AdapterDescriptor {
+                AdapterDescriptor {
+                    sandbox_modes: crate::model::SandboxMode::ALL.to_vec(),
+                    id: "bare".into(),
+                    label: "Bare".into(),
+                    available: true,
+                    auth_state: crate::model::AuthState::Unknown,
+                    version: Some("1".into()),
+                    capabilities: vec!["messages".into()],
+                    unavailable_reason: None,
+                    models: vec![],
+                    default_model: None,
+                    model_catalog: ModelCatalogDiagnostics::curated(),
+                }
+            }
+            fn start(&self, _request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+                Err(BridgeError::Invalid("not launched".into()))
+            }
+            fn resume(&self, _request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+                Err(BridgeError::Invalid("not resumed".into()))
+            }
+            fn supports_native_resume(&self) -> bool {
+                false
+            }
+            fn normalize(&self, _value: &Value) -> Vec<agent::NormalizedEvent> {
+                vec![]
+            }
+        }
+        assert!(!Bare.supports_native_compaction());
+        let mut registry = AdapterRegistry::empty();
+        registry.register(Box::new(Bare)).unwrap();
+        assert!(!registry.supports_native_compaction("bare"));
+        assert!(
+            !registry.supports_native_compaction("not-registered"),
+            "an unknown harness answers no rather than panicking"
+        );
+    }
+
+    #[test]
+    fn only_a_focus_accepting_harness_reports_that_it_takes_one() {
+        assert!(NativeCompaction::WithFocus.is_supported());
+        assert!(NativeCompaction::WithFocus.accepts_focus());
+        assert!(NativeCompaction::WholeConversation.is_supported());
+        assert!(
+            !NativeCompaction::WholeConversation.accepts_focus(),
+            "a whole-conversation harness must not claim a focus it cannot honour"
+        );
     }
 
     #[test]

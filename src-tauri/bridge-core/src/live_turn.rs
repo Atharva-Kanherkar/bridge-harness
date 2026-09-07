@@ -2471,6 +2471,10 @@ fn handle_agent_value(
     let mut child_left_waiting: Option<&'static str> = None;
     let mut pending_telemetry: Vec<store::TelemetrySpan> = Vec::new();
     let mut turn_completed = false;
+    // Set when a native boundary released the optimistic `working` mark a
+    // forwarded `/compact` wrote. The release's side effects run after the
+    // database guard is dropped, because draining takes the lock itself.
+    let mut native_compaction_released = false;
     let mut checkpoint_prompt_after_turn: Option<String> = None;
     let mut checkpoint_response_seen = false;
     let mut checkpoint_turn_handled = false;
@@ -2697,6 +2701,18 @@ fn handle_agent_value(
                         );
                     }
                 }
+                // The harness finished compacting its own window. When the
+                // only reason this session reads as busy is the optimistic
+                // mark a forwarded `/compact` wrote, this boundary releases
+                // it, so a harness that reports a boundary without turn
+                // lifecycle cannot leave the session claiming a turn forever
+                // (the #261 shape: queued input waiting on a boundary that
+                // never arrives). A boundary during a real turn carries an
+                // active turn id, and that turn's own completion owns the
+                // status instead.
+                agent::NATIVE_COMPACTION_KIND => {
+                    native_compaction_released |= release_native_compaction(&db, session_id);
+                }
                 "usage.updated" => {
                     let scope = workspace_id.as_deref().unwrap_or(session_id);
                     let _ = policy::record_provider_usage(
@@ -2903,11 +2919,8 @@ fn handle_agent_value(
                 && normalized_event.kind == "message.completed"
                 && normalized_event.role.as_deref() == Some("assistant")
                 && pending_compaction.is_some();
-            let suppress_checkpoint_frame = checkpoint_turn_active
-                && !matches!(
-                    normalized_event.kind.as_str(),
-                    "turn.started" | "turn.completed" | "usage.updated" | "error"
-                );
+            let suppress_checkpoint_frame =
+                checkpoint_turn_active && !survives_checkpoint_turn(&normalized_event.kind);
             if suppress_checkpoint_frame {
                 if let Some(data) = normalized_event.data.as_object_mut() {
                     data.insert(
@@ -3151,13 +3164,17 @@ fn handle_agent_value(
                             session_id,
                             &pending.requested_at,
                         );
-                        checkpoint_prompt_after_turn = Some(
-                            compaction_controller::CompactionController::checkpoint_prompt(
+                        // The evidence read is best-effort here: a repair that
+                        // cannot list what to account for is still worth
+                        // sending, and this path cannot fail a turn.
+                        checkpoint_prompt_after_turn =
+                            compaction_controller::CompactionController::repair_prompt(
+                                &db,
                                 session_id,
                                 &pending,
-                                Some("repair the invalid checkpoint response"),
-                            ),
-                        );
+                                "the previous reply could not be read as that object",
+                            )
+                            .ok();
                     }
                 } else if checkpoint_turn_active && !checkpoint_response_seen {
                     checkpoint_turn_handled = true;
@@ -3199,6 +3216,19 @@ fn handle_agent_value(
                 chrono::Utc::now(),
             );
         }
+    }
+
+    // A released compaction owes what a turn's end owes. The status change
+    // alone leaves the composer busy and leaves anything the user typed while
+    // the compaction ran sitting in the queue: that input was queued *because*
+    // the forward marked the session working, so the release is what has to let
+    // it through. `drain_queued_input` re-checks idleness itself, so this is a
+    // no-op if anything else has since claimed the session.
+    // `turn_completed` runs the same finish work further down, so a batch that
+    // carries both must not deliver two queued rows for one boundary.
+    if native_compaction_released && !turn_completed {
+        drain_queued_input(core, session_id);
+        state.events.publish(CoreEvent::StateChanged);
     }
 
     // Telemetry is deliberately flushed only after the correctness database
@@ -3633,6 +3663,190 @@ fn run_compaction_recovery(core: &Arc<BridgeCore>, session_id: &str) -> Result<(
 /// reconstruction for `BeforeDowngrade` — doing so from this (incoming model's)
 /// reader would race the switch commit and append old-provider state past the
 /// new model boundary. Other compaction reasons keep the established path.
+/// Whether a frame arriving during Bridge's own checkpoint turn is still the
+/// session's business rather than the maintenance turn's.
+///
+/// Everything else is suppressed before persistence, because a stored-then-
+/// hidden entry is still in the forest and the forest is what a reconnecting
+/// client replays. Turn lifecycle, usage and errors survive because the
+/// supervisor needs them. A native compaction survives because the harness
+/// shrinking its own window is a fact about the session, and a checkpoint turn
+/// is exactly when a full context is most likely to trip native autocompact:
+/// dropping it would discard the only evidence the provider's context shrank.
+fn survives_checkpoint_turn(kind: &str) -> bool {
+    matches!(
+        kind,
+        "turn.started"
+            | "turn.completed"
+            | "usage.updated"
+            | "error"
+            | agent::NATIVE_COMPACTION_KIND
+    )
+}
+
+#[cfg(test)]
+mod native_compaction_release_tests {
+    use super::{drain_queued_input, release_native_compaction, STARTED_IDLE_STATUS};
+    use crate::{runtime::BridgeCore, session_input};
+    use rusqlite::params;
+    use std::sync::Arc;
+
+    fn seeded(status: &str, active_turn: Option<&str>) -> (tempfile::TempDir, Arc<BridgeCore>) {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = Arc::new(BridgeCore::for_tests(scratch.path()));
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions(id,harness,label,status,metric_source,active_turn_id)
+                 VALUES('s','codex','Chat',?1,'reported',?2)",
+                params![status, active_turn],
+            )
+            .unwrap();
+        (scratch, core)
+    }
+
+    fn status(core: &BridgeCore) -> String {
+        core.db
+            .lock()
+            .unwrap()
+            .query_row("SELECT status FROM sessions WHERE id='s'", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    fn release(core: &BridgeCore) -> bool {
+        release_native_compaction(&core.db.lock().unwrap(), "s")
+    }
+
+    #[test]
+    fn a_boundary_releases_the_optimistic_mark_a_forwarded_compact_wrote() {
+        let (_scratch, core) = seeded("working", None);
+        assert!(release(&core), "the release fired, so it owes the finish work");
+        assert_eq!(
+            status(&core),
+            STARTED_IDLE_STATUS,
+            "a session left busy only by the forward must not stay busy forever"
+        );
+        assert!(
+            !release(&core),
+            "a second boundary has nothing left to release"
+        );
+    }
+
+    #[test]
+    fn a_boundary_during_a_real_turn_leaves_that_turn_alone() {
+        // Autocompact mid-turn. The turn owns the status, and its own
+        // completion is what ends it.
+        let (_scratch, core) = seeded("working", Some("turn-1"));
+        assert!(!release(&core));
+        assert_eq!(status(&core), "working");
+    }
+
+    #[test]
+    fn a_boundary_never_disturbs_a_session_that_is_not_working() {
+        for held in ["checkpointing", "waiting", "idle", "failed"] {
+            let (_scratch, core) = seeded(held, None);
+            assert!(!release(&core), "{held} is not the forward's mark to clear");
+            assert_eq!(status(&core), held);
+        }
+    }
+
+    #[test]
+    fn the_release_is_what_lets_queued_input_through() {
+        // The bug this closes: a forwarded `/compact` marks the session
+        // working, so a message typed while it runs is queued rather than
+        // started. Nothing else will release that queue, because no
+        // `turn.completed` is coming for a harness that reports a boundary
+        // without turn lifecycle.
+        let (_scratch, core) = seeded("working", None);
+        {
+            let db = core.db.lock().unwrap();
+            session_input::enqueue(&db, "s", "typed while compacting", "typed while compacting")
+                .unwrap();
+        }
+        assert!(
+            !drain_queued_input(&core, "s"),
+            "while the forward's mark stands, the queue is correctly held"
+        );
+        assert!(
+            session_input::next_queued(&core.db.lock().unwrap(), "s")
+                .unwrap()
+                .is_some(),
+            "and the row is still waiting"
+        );
+
+        assert!(release(&core));
+        // The drain declines only for want of a live adapter now, which is the
+        // documented #252 behaviour: the row stays unclaimed for the next
+        // user-initiated send rather than spawning a process here. What matters
+        // is that the session is no longer the thing blocking it.
+        let idle_for_delivery: bool = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT active_turn_id IS NULL AND status NOT IN ('working','checkpointing')
+                 FROM sessions WHERE id='s'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            idle_for_delivery,
+            "after the release the session reads deliverable to the drain"
+        );
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_turn_visibility_tests {
+    use super::survives_checkpoint_turn;
+    use crate::agent;
+
+    #[test]
+    fn a_checkpoint_turn_hides_its_own_content_but_not_the_session_s_facts() {
+        for maintenance in [
+            "message.completed",
+            "message.delta",
+            "reasoning.delta",
+            "tool.started",
+            "tool.completed",
+        ] {
+            assert!(
+                !survives_checkpoint_turn(maintenance),
+                "{maintenance} during a checkpoint turn is protocol traffic, not conversation"
+            );
+        }
+        for fact in ["turn.started", "turn.completed", "usage.updated", "error"] {
+            assert!(survives_checkpoint_turn(fact), "the supervisor needs {fact}");
+        }
+        assert!(
+            survives_checkpoint_turn(agent::NATIVE_COMPACTION_KIND),
+            "a harness compacting during Bridge's checkpoint turn is the one \
+             moment the evidence matters most, and it must not be dropped"
+        );
+    }
+}
+
+/// Release the optimistic `working` mark a forwarded `/compact` wrote, if that
+/// mark is still the only reason this session reads as busy.
+///
+/// Returns whether it fired, because a release owes what a turn's end owes:
+/// the composer has to stop showing busy, and anything the user typed while the
+/// compaction ran has to be let through. That input was queued *because* the
+/// forward marked the session working, so nothing else will release it.
+///
+/// A boundary that lands during a real turn carries an active turn id and is
+/// left alone: that turn owns the status and its own completion ends it.
+fn release_native_compaction(db: &Connection, session_id: &str) -> bool {
+    db.execute(
+        "UPDATE sessions SET status=?2 WHERE id=?1
+         AND status='working' AND active_turn_id IS NULL",
+        params![session_id, STARTED_IDLE_STATUS],
+    )
+    .is_ok_and(|rows| rows > 0)
+}
+
 fn should_recover_compaction(
     pending: Option<&compaction_controller::PendingCompaction>,
 ) -> bool {
@@ -8405,7 +8619,8 @@ struct PreparedInput {
 /// and the one that got skipped would be the one that leaked a secret.
 ///
 /// `allow_session_control` is false while a turn is running. `/clear` drops the
-/// provider process, `/compact` starts a checkpoint turn, `/usage` re-reads the
+/// provider process, `/compact` reaches the harness's own compaction (or starts
+/// a Bridge checkpoint turn where the harness has none), `/usage` re-reads the
 /// account: none of those are safe underneath a live turn, so they are refused
 /// with a reason rather than quietly reinterpreted as prose.
 fn prepare_input(
@@ -8522,7 +8737,80 @@ fn prepare_input(
             emit_local_assistant(core, &session_id, &session_harness, &text)?;
             return Ok(InputPreparation::Handled { interceptions });
         }
-        slash::SlashDispatch::Compact { .. } => {
+        slash::SlashDispatch::Compact { focus } => {
+            // The harness owns its live context window, so `/compact` is its
+            // command wherever it has one. Only a harness with no compaction
+            // of its own falls back to a Bridge checkpoint, which summarises
+            // history for a later cold start without freeing a single
+            // provider token. See `docs/compaction-and-resume.md`.
+            //
+            // The static half of the capability is asked here, off the
+            // adapters mutex, because answering it can cost a process launch:
+            // Codex reads its app-server schema, and doing that while holding
+            // the mutex would stall every other session's adapter I/O behind
+            // one chat's first `/compact`.
+            let harness_compacts = state
+                .adapter_registry
+                .supports_native_compaction(&session_harness);
+            let requested = if harness_compacts {
+                let adapters = state.adapters.lock().unwrap();
+                match adapters.get(session_id) {
+                    // The runtime refines the static answer with what only a
+                    // live process knows, then serves the request under the
+                    // same acquisition so nothing can slip in between.
+                    Some(runtime) => {
+                        let support = runtime.native_compaction();
+                        if support.is_supported() {
+                            runtime.compact_native(
+                                focus.as_deref().filter(|_| support.accepts_focus()),
+                            )?;
+                        }
+                        support
+                    }
+                    // The process went away between the two questions. Falling
+                    // through to the Bridge checkpoint is the honest answer:
+                    // it reports the missing process rather than inventing a
+                    // compaction that never happened.
+                    None => adapters::NativeCompaction::Unsupported,
+                }
+            } else {
+                adapters::NativeCompaction::Unsupported
+            };
+            if requested.is_supported() {
+                // A forwarded compaction is a turn the provider is now
+                // running: Claude reads the slash line off its input stream,
+                // Codex and OpenCode each run theirs as a turn of their own.
+                // Marking it before returning closes the window between this
+                // dispatch and the provider's `turn.started`, which is exactly
+                // where a message typed immediately after would otherwise be
+                // routed as a new turn and collide with the compaction. The
+                // provider's own `turn.completed` clears it, as it does for
+                // any other turn. See `turn_is_active`.
+                let _ = state.db.lock().unwrap().execute(
+                    "UPDATE sessions SET status='working' WHERE id=?1",
+                    params![session_id],
+                );
+                let focus_ignored = focus
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|value| !value.is_empty())
+                    && !requested.accepts_focus();
+                if focus_ignored {
+                    // Naming what was ignored, rather than letting the reader
+                    // believe a focus they typed was applied.
+                    emit_local_assistant(
+                        core,
+                        session_id,
+                        &session_harness,
+                        &format!(
+                            "{} compacts the whole conversation, so the focus was not applied.",
+                            crate::model::Harness::from_stored(&session_harness).label()
+                        ),
+                    )?;
+                }
+                core.events.publish(CoreEvent::StateChanged);
+                return Ok(InputPreparation::Handled { interceptions });
+            }
             let prompt = state.begin_manual_compaction(session_id)?;
             send_internal_checkpoint_turn(core, session_id, &prompt)?;
             return Ok(InputPreparation::Handled { interceptions });
@@ -10059,6 +10347,348 @@ fn record_shutdown_reason(
         session_id,
         reason.as_str(),
     )
+}
+
+#[cfg(test)]
+mod compact_routing_tests {
+    use super::prepare_input;
+    use crate::{
+        adapters::{
+            AdapterRegistry, AdapterRuntime, HarnessAdapter, NativeCompaction, ResumeRequest,
+            ShutdownReason, StartRequest, StartedAdapter,
+        },
+        model::{AdapterDescriptor, ModelCatalogDiagnostics},
+        runtime::BridgeCore,
+        BridgeError,
+    };
+    use serde_json::Value;
+    use std::any::Any;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
+
+    /// The static half of the capability, which the routing asks through the
+    /// registry rather than through the runtime so a schema probe cannot run
+    /// while the adapters mutex is held.
+    struct CompactingHarness {
+        supports_compaction: bool,
+    }
+
+    impl HarnessAdapter for CompactingHarness {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn descriptor(&self) -> AdapterDescriptor {
+            AdapterDescriptor {
+                sandbox_modes: crate::model::SandboxMode::ALL.to_vec(),
+                id: "codex".into(),
+                label: "Codex".into(),
+                available: true,
+                auth_state: crate::model::AuthState::Unknown,
+                version: Some("1".into()),
+                capabilities: vec!["messages".into()],
+                unavailable_reason: None,
+                models: vec![],
+                default_model: None,
+                model_catalog: ModelCatalogDiagnostics::curated(),
+            }
+        }
+        fn start(&self, _request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+            Err(BridgeError::Invalid("not launched in this test".into()))
+        }
+        fn resume(&self, _request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+            Err(BridgeError::Invalid("not resumed in this test".into()))
+        }
+        fn supports_native_resume(&self) -> bool {
+            false
+        }
+        fn supports_native_compaction(&self) -> bool {
+            self.supports_compaction
+        }
+        fn normalize(&self, _value: &Value) -> Vec<crate::agent::NormalizedEvent> {
+            vec![]
+        }
+    }
+
+    /// A runtime that records what `/compact` reached it as.
+    struct CompactingRuntime {
+        support: NativeCompaction,
+        calls: Arc<Mutex<Vec<Option<String>>>>,
+        turns: Arc<AtomicUsize>,
+    }
+
+    impl AdapterRuntime for CompactingRuntime {
+        fn process_id(&self) -> u32 {
+            0
+        }
+        fn provider_session_id(&self) -> &str {
+            "provider-1"
+        }
+        fn current_turn(&self) -> Arc<Mutex<Option<String>>> {
+            Arc::new(Mutex::new(None))
+        }
+        fn send_turn(&self, _text: &str) -> Result<(), BridgeError> {
+            self.turns.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        fn interrupt(&self) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn respond(&self, _request_id: Value, _decision: &str) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn native_compaction(&self) -> NativeCompaction {
+            self.support
+        }
+        fn compact_native(&self, focus: Option<&str>) -> Result<(), BridgeError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(focus.map(str::to_owned));
+            Ok(())
+        }
+        fn stop(&mut self, _reason: ShutdownReason) {}
+    }
+
+    /// One idle session with enough history that a Bridge checkpoint would be
+    /// allowed, so a test that sees no `compaction.requested` row is seeing a
+    /// forwarded compaction rather than a suppressed one.
+    fn seeded(support: NativeCompaction) -> (
+        tempfile::TempDir,
+        Arc<BridgeCore>,
+        Arc<Mutex<Vec<Option<String>>>>,
+    ) {
+        seeded_with_harness(support, true)
+    }
+
+    fn seeded_with_harness(
+        support: NativeCompaction,
+        harness_compacts: bool,
+    ) -> (
+        tempfile::TempDir,
+        Arc<BridgeCore>,
+        Arc<Mutex<Vec<Option<String>>>>,
+    ) {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut core = BridgeCore::for_tests(scratch.path());
+        let mut registry = AdapterRegistry::empty();
+        registry
+            .register(Box::new(CompactingHarness {
+                supports_compaction: harness_compacts,
+            }))
+            .unwrap();
+        core.adapter_registry = Arc::new(registry);
+        let core = Arc::new(core);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,provider_session_id)
+                 VALUES('s',NULL,'codex','Chat','idle','reported','direct','provider-1')",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at)
+                 VALUES('e1','s',NULL,1,'assistant.message','{\"text\":\"real work happened here\"}','now')",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO session_heads(session_id,active_entry_id,restoration_mode,updated_at)
+                 VALUES('s','e1','fresh','now')",
+                [],
+            )
+            .unwrap();
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        core.adapters.lock().unwrap().insert(
+            "s".into(),
+            Box::new(CompactingRuntime {
+                support,
+                calls: calls.clone(),
+                turns: Arc::new(AtomicUsize::new(0)),
+            }),
+        );
+        (scratch, core, calls)
+    }
+
+    fn bridge_requests(core: &Arc<BridgeCore>) -> i64 {
+        core.db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM session_entries WHERE session_id='s' AND kind='compaction.requested'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    fn local_replies(core: &Arc<BridgeCore>) -> Vec<String> {
+        let db = core.db.lock().unwrap();
+        let mut statement = db
+            .prepare(
+                "SELECT json_extract(payload,'$.text') FROM session_entries
+                 WHERE session_id='s' AND kind='assistant.message' AND sequence>1 ORDER BY sequence",
+            )
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| row.get::<_, Option<String>>(0))
+            .unwrap()
+            .filter_map(|value| value.ok().flatten())
+            .collect();
+        rows
+    }
+
+    #[test]
+    fn a_focus_accepting_harness_gets_the_focus_and_bridge_stays_out_of_it() {
+        let (_scratch, core, calls) = seeded(NativeCompaction::WithFocus);
+        prepare_input(&core, "s", "/compact the auth refactor", true).unwrap();
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            [Some("the auth refactor".to_owned())]
+        );
+        assert_eq!(
+            bridge_requests(&core),
+            0,
+            "a forwarded compaction is the harness's work, so Bridge writes no boundary of its own"
+        );
+        assert!(
+            local_replies(&core).is_empty(),
+            "nothing to explain when the focus was honoured"
+        );
+    }
+
+    #[test]
+    fn a_whole_conversation_harness_says_the_focus_was_not_applied() {
+        let (_scratch, core, calls) = seeded(NativeCompaction::WholeConversation);
+        prepare_input(&core, "s", "/compact the auth refactor", true).unwrap();
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            [None],
+            "a focus is never handed to a harness that cannot honour it"
+        );
+        assert_eq!(bridge_requests(&core), 0);
+        let replies = local_replies(&core);
+        assert_eq!(replies.len(), 1, "{replies:?}");
+        assert!(
+            replies[0].contains("Codex") && replies[0].contains("focus was not applied"),
+            "the reader is told which harness ignored the focus: {}",
+            replies[0]
+        );
+        assert!(!replies[0].contains('\u{2014}'), "no em dashes in UI copy");
+    }
+
+    #[test]
+    fn a_bare_compact_on_a_whole_conversation_harness_explains_nothing() {
+        let (_scratch, core, calls) = seeded(NativeCompaction::WholeConversation);
+        prepare_input(&core, "s", "/compact", true).unwrap();
+        assert_eq!(calls.lock().unwrap().as_slice(), [None]);
+        assert_eq!(bridge_requests(&core), 0);
+        assert!(
+            local_replies(&core).is_empty(),
+            "there is nothing to report when no focus was asked for"
+        );
+    }
+
+    #[test]
+    fn a_harness_with_no_compaction_command_falls_back_to_a_bridge_checkpoint() {
+        let (_scratch, core, calls) = seeded(NativeCompaction::Unsupported);
+        prepare_input(&core, "s", "/compact", true).unwrap();
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "an unsupported harness is never asked"
+        );
+        assert_eq!(
+            bridge_requests(&core),
+            1,
+            "the checkpoint that already existed is the fallback"
+        );
+    }
+
+    fn session_status(core: &Arc<BridgeCore>) -> String {
+        core.db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT status FROM sessions WHERE id='s'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn a_forwarded_compaction_marks_the_turn_it_started() {
+        // The provider is now running a turn, and its `turn.started` is
+        // asynchronous. Until this was marked, a message typed in that window
+        // read the session as idle and was routed as a new turn, which lands
+        // on Claude and Codex either as a rejection or as a turn against
+        // half-compacted context.
+        for support in [NativeCompaction::WithFocus, NativeCompaction::WholeConversation] {
+            let (_scratch, core, _calls) = seeded(support);
+            assert_eq!(session_status(&core), "idle", "the fixture starts idle");
+            prepare_input(&core, "s", "/compact", true).unwrap();
+            assert_eq!(
+                session_status(&core),
+                "working",
+                "{support:?} must not leave the session claiming to be idle"
+            );
+            assert!(
+                super::turn_is_active(&core, "s").unwrap(),
+                "and the input router must see a turn in flight"
+            );
+        }
+    }
+
+    #[test]
+    fn a_forwarded_compaction_is_not_a_bridge_maintenance_turn() {
+        // `checkpointing` is the marker that suppresses content frames as
+        // protocol traffic. A native compaction is the harness's own work, so
+        // claiming that status would hide whatever it says while compacting.
+        let (_scratch, core, _calls) = seeded(NativeCompaction::WholeConversation);
+        prepare_input(&core, "s", "/compact", true).unwrap();
+        assert_ne!(session_status(&core), "checkpointing");
+    }
+
+    #[test]
+    fn a_harness_without_the_command_is_never_asked_through_the_runtime() {
+        // The static half of the capability is read off the registry, before
+        // the adapters mutex is taken, because answering it costs Codex a
+        // process launch. A harness that answers no there must not reach the
+        // runtime at all.
+        let (_scratch, core, calls) =
+            seeded_with_harness(NativeCompaction::WithFocus, false);
+        prepare_input(&core, "s", "/compact the auth refactor", true).unwrap();
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "the runtime was consulted for a harness with no compaction command"
+        );
+        assert_eq!(
+            bridge_requests(&core),
+            1,
+            "and the request became the Bridge checkpoint instead"
+        );
+    }
+
+    #[test]
+    fn a_session_with_no_runtime_takes_the_bridge_path_it_always_did() {
+        // Nothing to forward to, so the request routes to the Bridge
+        // checkpoint, which then reports that there is no process to ask.
+        // Recorded here because it is unchanged by the ownership split: a
+        // cold session's `/compact` failed this way before it too.
+        let (_scratch, core, calls) = seeded(NativeCompaction::WithFocus);
+        core.adapters.lock().unwrap().remove("s");
+        let Err(error) = prepare_input(&core, "s", "/compact", true) else {
+            panic!("a cold session has no process to compact");
+        };
+        assert!(
+            error.to_string().contains("not running"),
+            "the reason names the missing process: {error}"
+        );
+        assert!(calls.lock().unwrap().is_empty());
+    }
 }
 
 #[cfg(test)]

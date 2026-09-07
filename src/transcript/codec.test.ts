@@ -63,6 +63,7 @@ const VOCABULARY: [kind: string, type: string][] = [
   ["compaction", "compaction"],
   ["compaction.requested", "compaction"],
   ["compaction.failed", "compaction"],
+  ["context.compacted", "context.compacted"],
   ["branch.summary", "branch.summary"],
   ["handoff.brief", "notice"],
   ["error", "error"],
@@ -185,6 +186,60 @@ describe("normalizeSessionEntry", () => {
   it("keeps a replayed raw provider frame inspectable", () => {
     expect(normalizeSessionEntry(durable("provider.unknown", { title: "frame" }, { contextVisibility: "worker_raw" })))
       .toMatchObject({ type: "raw", inspectable: true, title: "frame" });
+  });
+
+  it("draws the compacted card from the harness's own boundary, live and replayed", () => {
+    // The card exists to say the provider's context actually shrank, so it is
+    // drawn from the provider's own report and nowhere else.
+    const facts = { harness: "claude", trigger: "auto", preTokens: 184_000, postTokens: 22_500 };
+    const liveEvent = normalizeAgentEvent(live("context.compacted", { status: "completed", data: facts }));
+    expect(liveEvent).toMatchObject({
+      type: "context.compacted",
+      harness: "claude",
+      trigger: "auto",
+      preTokens: 184_000,
+      postTokens: 22_500,
+      title: "Context compacted",
+      text: "Claude summarised its context, 184k tokens down to 23k tokens.",
+    });
+
+    // The durable twin reads the same, from the stored `data` wrapper.
+    const replayed = normalizeSessionEntry(durable("context.compacted", { status: "completed", title: "Context compacted", data: facts }));
+    expect(replayed).toMatchObject({
+      type: "context.compacted",
+      preTokens: 184_000,
+      postTokens: 22_500,
+      title: "Context compacted",
+      text: "Claude summarised its context, 184k tokens down to 23k tokens.",
+    });
+  });
+
+  it("names a token figure only when the provider sent one", () => {
+    // Codex and OpenCode report a boundary with no numbers at all. A zero
+    // rendered as a figure would read as "the context shrank to nothing".
+    for (const harness of ["codex", "opencode"]) {
+      const event = normalizeAgentEvent(live("context.compacted", { data: { harness } }));
+      expect(event).toMatchObject({ type: "context.compacted", preTokens: undefined, postTokens: undefined });
+      expect((event as { text: string }).text).not.toMatch(/\d/);
+    }
+    expect(normalizeAgentEvent(live("context.compacted", { data: { harness: "codex" } })))
+      .toMatchObject({ text: "Codex summarised its own context." });
+
+    // A boundary that summarized everything reports no post figure.
+    expect(normalizeAgentEvent(live("context.compacted", { data: { harness: "claude", preTokens: 90_000 } })))
+      .toMatchObject({ text: "Claude summarised its context at 90k tokens." });
+  });
+
+  it("does not let a Bridge checkpoint claim the context shrank", () => {
+    // Committing a Bridge checkpoint writes forest entries and moves the
+    // session head. It never touches the adapter, so on a hot session the
+    // provider's context is exactly as full as it was.
+    expect(normalizeSessionEntry(durable("compaction", { summary: "Kept the API stable", reason: "phase_boundary" })))
+      .toMatchObject({ type: "compaction", phase: "completed", title: "Checkpoint saved", text: "Kept the API stable" });
+    expect(normalizeSessionEntry(durable("compaction.requested", { reason: "manual" })))
+      .toMatchObject({ type: "compaction", phase: "requested", title: "Compaction requested" });
+    expect(normalizeSessionEntry(durable("compaction.failed", { reason: "timed out", message: "The summary did not arrive" })))
+      .toMatchObject({ type: "compaction", phase: "failed", title: "Compaction failed" });
   });
 
   it("fails closed on an unsupported future semantic event schema", () => {
