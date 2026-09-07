@@ -33,6 +33,13 @@ pub struct HistorySnapshotManifest {
 }
 
 pub fn open(path: &Path) -> Result<Connection, BridgeError> {
+    if path != Path::new(":memory:") && path.try_exists()? {
+        // Even a SELECT on a read-write connection can recover a hot journal.
+        // Inspect existing stores without permission to rewrite them first.
+        let preflight =
+            Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        supported_schema_version(&preflight)?;
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -3716,6 +3723,72 @@ mod tests {
         let error = open(&path).unwrap_err();
         assert!(matches!(&error, BridgeError::Invalid(_)));
         assert!(error.to_string().contains("newer Bridge version"));
+    }
+
+    #[test]
+    fn newer_schema_with_a_hot_journal_is_not_recovered_by_preflight() {
+        const FIXTURE_PATH: &str = "BRIDGE_TEST_FUTURE_DATABASE_JOURNAL";
+        if let Some(path) = std::env::var_os(FIXTURE_PATH) {
+            let db = Connection::open(PathBuf::from(path)).unwrap();
+            db.execute_batch(
+                "PRAGMA journal_mode=DELETE;
+                 PRAGMA synchronous=FULL;
+                 PRAGMA cache_size=1;
+                 PRAGMA cache_spill=ON;
+                 CREATE TABLE schema_version(version INTEGER PRIMARY KEY);
+                 CREATE TABLE journal_fixture(payload BLOB);
+                 INSERT INTO journal_fixture VALUES(zeroblob(65536));",
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO schema_version VALUES(?1)",
+                params![LATEST_SCHEMA_VERSION + 1],
+            )
+            .unwrap();
+            db.execute_batch(
+                "BEGIN IMMEDIATE;
+                 UPDATE journal_fixture SET payload=randomblob(65536);",
+            )
+            .unwrap();
+            // Simulate a crash after dirty pages spill, skipping SQLite's
+            // connection destructor and its rollback of the active transaction.
+            std::process::exit(0);
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        let journal = dir.path().join("bridge.db-journal");
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "store::tests::newer_schema_with_a_hot_journal_is_not_recovered_by_preflight",
+                "--nocapture",
+            ])
+            .env(FIXTURE_PATH, &path)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let before = std::fs::read(&path).unwrap();
+        let journal_before = std::fs::read(&journal).unwrap();
+        assert_eq!(
+            &journal_before[..8],
+            &[0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7],
+            "the child must leave a hot rollback journal"
+        );
+
+        assert!(open(&path).is_err(), "recovery must not run before version validation");
+        assert!(std::fs::read(&path).unwrap() == before, "database bytes changed");
+        assert!(
+            std::fs::read(&journal).unwrap() == journal_before,
+            "the rollback journal must be left intact"
+        );
+
+        // Prove the fixture requires recovery: normal SQLite access rolls it
+        // back, returning the future version and removing its hot journal.
+        let recovering = Connection::open(&path).unwrap();
+        assert_eq!(current_schema_version(&recovering).unwrap(), LATEST_SCHEMA_VERSION + 1);
+        assert!(!journal.exists());
+        assert!(std::fs::read(&path).unwrap() != before);
     }
 
     #[test]
