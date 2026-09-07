@@ -1618,6 +1618,8 @@ impl BrowserBridgeSupervisor {
             "frame" => {
                 let sequence = payload.get("sequence").and_then(Value::as_u64).unwrap_or(0);
                 let valid = inner.page_ready
+                    && payload.get("snapshotGeneration").and_then(Value::as_u64)
+                        == Some(inner.snapshot_generation)
                     && payload.get("leaseId").and_then(Value::as_str)
                         == inner.lease.as_ref().map(|lease| lease.id.as_str());
                 if !valid {
@@ -2466,13 +2468,22 @@ mod tests {
         let (supervisor, root) = test_supervisor("read_only", Utc::now() + Duration::minutes(1));
         supervisor.handle_extension_event(json!({
             "type": "frame",
-            "payload": {"leaseId": "lease", "dataUrl": "data:image/webp;base64,frame", "redactedRegions": 2}
+            "payload": {"leaseId": "lease", "dataUrl": "data:image/webp;base64,frame", "redactedRegions": 2, "snapshotGeneration": 0}
         }));
         assert!(supervisor.state_snapshot().screenshot.is_none());
         let frame = supervisor.frame(0).unwrap();
         assert_eq!(frame.revision, 1);
         assert_eq!(frame.redacted_regions, 2);
         assert!(supervisor.frame(frame.revision).is_none());
+        // A frame held by extension backpressure must not cross a newer DOM
+        // snapshot, even when the tab lease itself has not changed.
+        supervisor.inner.lock().unwrap().snapshot_generation = 1;
+        supervisor.handle_extension_event(json!({
+            "type": "frame",
+            "payload": {"leaseId": "lease", "dataUrl": "data:image/webp;base64,stale", "snapshotGeneration": 0}
+        }));
+        assert!(supervisor.frame(frame.revision).is_none());
+        assert_eq!(supervisor.snapshot().screenshot.as_deref(), Some("data:image/webp;base64,frame"));
         drop(supervisor);
         let _ = fs::remove_dir_all(root);
     }

@@ -321,7 +321,7 @@ chrome.tabs.onRemoved.addListener(tabId => { if (tabId === attachedTabId) void d
 chrome.runtime.onMessage.addListener((message, _sender, reply) => {
   if (message.type === "bridge-live-frame") {
     latestRedactedFrame = message.dataUrl;
-    if (attachedTabId != null && snapshotReady && message.redactionEpoch === acknowledgedRedactionEpoch) queueFrame({ leaseId, dataUrl: latestRedactedFrame, redactedRegions: message.redactedRegions ?? 0, sequence: message.sequence ?? 0 });
+    if (attachedTabId != null && snapshotReady && message.redactionEpoch === acknowledgedRedactionEpoch) queueFrame({ leaseId, dataUrl: latestRedactedFrame, redactedRegions: message.redactedRegions ?? 0, sequence: message.sequence ?? 0, snapshotGeneration: acknowledgedRedactionEpoch });
     reply({ ok: true }); return;
   }
   if (message.type === "bridge-capture-error") {
