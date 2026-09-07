@@ -37,13 +37,44 @@ export function BrowserSurface({ visible = true, onClose, onError, onSupervision
   const [remoteEndpoint, setRemoteEndpoint] = useState("");
   const [remoteTokenEnv, setRemoteTokenEnv] = useState("BRIDGE_REMOTE_BROWSER_TOKEN");
   const [remoteUrl, setRemoteUrl] = useState("https://example.com");
+  const frameRevision = useRef(0);
+  const latestState = useRef<BrowserBridgeSnapshot>();
 
-  const refresh = async () => setSnapshot(await bridgeApi.browserBridgeState());
+  const refresh = async () => {
+    const next = await bridgeApi.browserBridgeState();
+    if (latestState.current?.lease?.id !== next.lease?.id || !next.captureActive) {
+      frameRevision.current = 0;
+    }
+    latestState.current = next;
+    setSnapshot(current => {
+      const retainFrame = next.captureActive && next.lease && current?.lease?.id === next.lease.id;
+      return {
+        ...next,
+        screenshot: retainFrame ? (current?.screenshot ?? next.screenshot) : next.screenshot,
+      };
+    });
+  };
   const hasLease = !!snapshot?.lease;
+  const leaseId = snapshot?.lease?.id;
+  const captureActive = !!snapshot?.captureActive;
   useEffect(() => {
     if (!visible && !hasLease) return;
     return startSerialPoll(refresh, visible ? BROWSER_POLL_VISIBLE_MS : BROWSER_POLL_HIDDEN_MS);
   }, [visible, hasLease]);
+  useEffect(() => {
+    if (!visible || !leaseId || !captureActive) return;
+    let cancelled = false;
+    const stop = startSerialPoll(async () => {
+      const frame = await bridgeApi.browserFrame(frameRevision.current);
+      if (cancelled || !frame || frame.leaseId !== leaseId ||
+          latestState.current?.lease?.id !== leaseId || !latestState.current.captureActive) return;
+      frameRevision.current = frame.revision;
+      setSnapshot(current => current?.lease?.id === frame.leaseId ? {
+        ...current, screenshot: frame.dataUrl, screenshotRedactedRegions: frame.redactedRegions,
+      } : current);
+    }, 80);
+    return () => { cancelled = true; stop(); };
+  }, [visible, leaseId, captureActive]);
   useEffect(() => {
     if (!snapshot?.remoteProvider) return;
     setRemoteEndpoint(snapshot.remoteProvider.endpoint); setRemoteTokenEnv(snapshot.remoteProvider.bearerTokenEnv);

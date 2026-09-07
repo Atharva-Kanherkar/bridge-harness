@@ -183,6 +183,14 @@ async fn browser_bridge_state(
 }
 
 #[tauri::command]
+async fn browser_frame(
+    state: State<'_, Arc<BridgeCore>>,
+    after_revision: u64,
+) -> Result<Option<browser_bridge::BrowserFrame>, BridgeError> {
+    api::browser_frame(state.inner(), after_revision)
+}
+
+#[tauri::command]
 async fn install_browser_native_host(state: State<'_, Arc<BridgeCore>>) -> Result<String, BridgeError> {
     let core = state.inner().clone();
     blocking("Native host registration", move || api::install_browser_native_host(&core)).await
@@ -2000,6 +2008,7 @@ pub fn run() {
             github_review,
             github_checkout,
             browser_bridge_state,
+            browser_frame,
             install_browser_native_host,
             browser_action,
             set_browser_permission,

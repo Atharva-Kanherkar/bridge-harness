@@ -141,6 +141,24 @@ impl Client {
 }
 
 #[test]
+fn browser_frame_polling_uses_the_typed_daemon_contract() {
+    let fixture = tempfile::tempdir().unwrap();
+    let running = RunningDaemon::start(fixture.path());
+    let mut client = Client::connect(&running.socket_path);
+    assert!(client.handshake(&running.token).get("error").is_none());
+    let (state, _) = client.call(1, "browser/browser_bridge_state", None);
+    assert!(state.get("error").is_none());
+    assert!(state["result"]["screenshot"].is_null());
+    let (frame, _) = client.call(2, "browser/browser_frame", Some(json!({"afterRevision": 0})));
+    assert!(frame.get("error").is_none());
+    assert!(frame.get("result").is_some_and(Value::is_null));
+    let (invalid, _) = client.call(3, "browser/browser_frame", Some(json!({"afterRevision": -1})));
+    assert_eq!(invalid["error"]["code"], json!(-32602));
+    drop(client);
+    running.stop();
+}
+
+#[test]
 fn a_session_is_created_driven_and_observed_end_to_end_over_the_socket() {
     let fixture = tempfile::tempdir().unwrap();
     let running = RunningDaemon::start(fixture.path());

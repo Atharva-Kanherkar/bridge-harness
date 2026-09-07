@@ -8529,6 +8529,7 @@ fn prepare_input(
         }
         slash::SlashDispatch::Clear => {
             state.credential_broker.clear_session(session_id);
+            state.browser_bridge.revoke_session(session_id);
             // The conversation that held the frame is gone, so the claim that
             // it was delivered goes with it.
             state.session_context.lock().unwrap().forget(session_id);
@@ -8671,9 +8672,14 @@ fn deliver_prepared_input(
     let credential_context = state
         .credential_broker
         .turn_context(session_id, &prepared.outbound);
+    let browser_context = state.browser_bridge.capability_context(session_id, runtime.process_id());
+    let application_context = match (credential_context, browser_context) {
+        (Some(credentials), Some(browser)) => Some(format!("{credentials}\n\n{browser}")),
+        (credentials, browser) => credentials.or(browser),
+    };
     let turn_context = adapters::TurnContext {
         session: session_frame.as_ref().map(session_context::SessionContext::text),
-        credentials: credential_context.as_deref(),
+        credentials: application_context.as_deref(),
     };
     let has_images = !prepared.images.is_empty();
     if has_images && !runtime.supports_images() {
@@ -9870,6 +9876,7 @@ pub fn stop_session(
 ) -> Result<BridgeState, BridgeError> {
     let state = core;
     void_orphaned_questions(&state.db.lock().unwrap(), &session_id, "session_stopped");
+    state.browser_bridge.revoke_session(&session_id);
     let is_worker = state.db.lock().unwrap().query_row(
         "SELECT parent_session_id IS NOT NULL FROM sessions WHERE id=?1",
         params![session_id],

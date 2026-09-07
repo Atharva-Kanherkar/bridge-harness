@@ -136,6 +136,7 @@ export type BridgeMethod =
   | "learning/enable_learning_trigger"
   | "learning/approve_learning_run"
   | "browser/browser_bridge_state"
+  | "browser/browser_frame"
   | "browser/install_browser_native_host"
   | "browser/browser_action"
   | "browser/set_browser_permission"
@@ -302,6 +303,7 @@ export const BRIDGE_METHODS = [
   { method: "learning/enable_learning_trigger", domain: "learning", command: "enable_learning_trigger" },
   { method: "learning/approve_learning_run", domain: "learning", command: "approve_learning_run" },
   { method: "browser/browser_bridge_state", domain: "browser", command: "browser_bridge_state" },
+  { method: "browser/browser_frame", domain: "browser", command: "browser_frame" },
   { method: "browser/install_browser_native_host", domain: "browser", command: "install_browser_native_host" },
   { method: "browser/browser_action", domain: "browser", command: "browser_action" },
   { method: "browser/set_browser_permission", domain: "browser", command: "set_browser_permission" },
@@ -528,6 +530,7 @@ export interface BridgeMethodParams {
   "learning/enable_learning_trigger": EnableLearningTriggerParams;
   "learning/approve_learning_run": ApproveLearningRunParams;
   "browser/browser_bridge_state": undefined;
+  "browser/browser_frame": BrowserFrameParams;
   "browser/install_browser_native_host": undefined;
   "browser/browser_action": BrowserActionParams;
   "browser/set_browser_permission": SetBrowserPermissionParams;
@@ -696,6 +699,7 @@ export interface BridgeMethodResults {
   "learning/enable_learning_trigger": UnitResult;
   "learning/approve_learning_run": unknown;
   "browser/browser_bridge_state": unknown;
+  "browser/browser_frame": BrowserFrameResult;
   "browser/install_browser_native_host": InstallBrowserNativeHostResult;
   "browser/browser_action": BrowserActionResult;
   "browser/set_browser_permission": UnitResult;
@@ -800,6 +804,13 @@ export interface BrowserActionRequest {
   url?: string | null;
   x?: number | null;
   y?: number | null;
+}
+
+export interface BrowserFrame {
+  dataUrl: string;
+  leaseId: string;
+  redactedRegions: number;
+  revision: number;
 }
 
 export type BrowserPermission = "read_only" | "interact";
@@ -2847,6 +2858,12 @@ export interface EnableLearningTriggerParams {
 export interface ApproveLearningRunParams {
   runId: string;
 }
+
+export interface BrowserFrameParams {
+  afterRevision: number;
+}
+
+export type BrowserFrameResult = BrowserFrame | null;
 
 export type InstallBrowserNativeHostResult = string;
 

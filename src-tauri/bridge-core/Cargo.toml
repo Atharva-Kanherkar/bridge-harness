@@ -20,6 +20,7 @@ chrono = { workspace = true }
 which = "7"
 thiserror = "2"
 tiny_http = "0.12"
+libc = "0.2"
 tokio = { version = "1", features = ["sync"] }
 # The Agent Client Protocol SDK. Pinned exactly: the API moved wholesale
 # between 1.0 and 2.0 within a month, and a silent minor bump would rewrite the

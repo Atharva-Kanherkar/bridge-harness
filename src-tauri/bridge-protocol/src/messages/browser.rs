@@ -4,6 +4,27 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Fetch only frames newer than the caller's last displayed revision.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct BrowserFrameParams {
+    pub after_revision: u64,
+}
+
+/// A pre-redacted frame belonging to one supervised tab lease.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BrowserFrame {
+    pub revision: u64,
+    pub lease_id: String,
+    pub data_url: String,
+    pub redacted_regions: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct BrowserFrameResult(pub Option<BrowserFrame>);
+
 /// What the leased tab may be used for. The command rejects anything outside
 /// this set, so the contract names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

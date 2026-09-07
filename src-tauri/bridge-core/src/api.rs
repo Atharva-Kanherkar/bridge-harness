@@ -4180,7 +4180,14 @@ pub fn approve_learning_run(
 pub fn browser_bridge_state(
     core: &Arc<BridgeCore>,
 ) -> Result<browser_bridge::BrowserBridgeSnapshot, BridgeError> {
-    Ok(core.browser_bridge.snapshot())
+    Ok(core.browser_bridge.state_snapshot())
+}
+
+pub fn browser_frame(
+    core: &Arc<BridgeCore>,
+    after_revision: u64,
+) -> Result<Option<browser_bridge::BrowserFrame>, BridgeError> {
+    Ok(core.browser_bridge.frame(after_revision))
 }
 
 fn find_browser_host(directory: &Path) -> Option<PathBuf> {

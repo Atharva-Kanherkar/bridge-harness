@@ -11,6 +11,12 @@ Bridge can supervise one user-approved tab from the user's normal logged-in brow
 
 The extension ID is pinned by `browser-extension/manifest.json`; native messaging accepts only that origin. The tab badge remains visible while a lease is active. A lease expires after 30 minutes, at task completion/manual detach, when the tab closes, or when navigation crosses the granted domain.
 
+## Agent access
+
+When a tab lease is active and its first safe snapshot is ready, Bridge injects a hidden application-owned capability into Codex, Claude, and OpenCode turns. The capability points to a local Unix-socket tool bound to both the Bridge session and the current lease. Agents can inspect the attached title, domain, viewport, and a bounded redacted semantic snapshot, then request click, type, scroll, same-domain navigation, focus, fresh screenshot, or user takeover operations. Tool calls still pass through `BrowserBridgeSupervisor`; providers never talk to the extension directly. Agent clicks always wait for user approval.
+
+The capability is not advertised when no usable attached tab exists. Its token is also bound to the owning adapter process tree, so another agent session cannot reuse a discovered wrapper. Task stop/clear, detach, lease expiry, cross-domain navigation, extension disconnect, or user takeover invalidates it immediately. DOM changes mark native state unreadable until the matching lease and redaction generation produce a fresh snapshot. Provider command calls and structured tool results flow through the adapters' existing normalized event stream, so browser activity remains visible in the conversation timeline.
+
 ## Safety and recovery
 
 - Read-only is the default. Click, type, scroll, and navigation are a separate capability.
@@ -20,6 +26,10 @@ The extension ID is pinned by `browser-extension/manifest.json`; native messagin
 - Sensitive rectangles are painted out before a screenshot is delivered to Bridge.
 - Command IDs are retained in `chrome.storage.session`, so reconnecting returns a prior result instead of repeating a side effect.
 - Network and console inspection is opt-in and attaches only to the leased Chrome tab.
+
+## Live mirror performance
+
+The mirror encodes asynchronous WebP frames at up to 10 FPS and paints known sensitive rectangles before encoding. Redaction maps and frames carry matching epochs, so a frame encoded during a stale DOM generation is discarded. Only one native frame may be in flight; if rendering or transport falls behind, the extension drops stale frames and forwards the newest one after acknowledgement. Bridge exposes frames through a revisioned frame-only command, while semantic state, audit history, and lease status use a separate lightweight poll. Screenshot bytes remain ephemeral and are stripped from persisted audit events. This avoids background decode/re-encode work and repeated cloning of large base64 frames with every state refresh.
 
 ## Browser routing
 
