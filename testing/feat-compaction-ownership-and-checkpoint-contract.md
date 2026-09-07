@@ -261,6 +261,25 @@ enforces the mismatch for any caller that supplies an expected agent, and
 inline expressions with no way to assert on them. Each is now a named function
 with a test, following the pattern the ACP body-only fold already set.
 
+**One contract claim that was wrong about the mechanism.** Section 2's last
+bullet said `session_heads.active_entry_id` "is not moved by" a native
+compaction. It is: every durable entry advances the head, an ordinary assistant
+message included, because that is how the active branch is tracked. What the
+bullet was protecting is real and does hold: a native boundary is not a
+*projection* boundary, since only a `compaction` entry moves where
+`ContextProjector` starts. The store test asserts the head advances like any
+other entry, and `a_native_compaction_stays_in_the_projection` holds the
+projection end.
+
+**One contract claim that did not ship.** Section 3 said the transcript's
+in-flight compaction state "follows the provider: Claude's `status:
+"compacting"` frame". Only the second half of that bullet shipped. A native
+compaction neither opens nor closes the maintenance fold a Bridge checkpoint
+request opens, which is the correctness half and is tested. Nothing in Bridge
+consumes Claude's `compacting` status yet, so the transcript shows no in-flight
+state while a harness compacts. Displaying one means adding to the session
+status vocabulary and is left as a follow-up rather than claimed here.
+
 **Two additions beyond the contract.**
 
 - `openWork` is stored on the boundary and emitted in the restoration header.

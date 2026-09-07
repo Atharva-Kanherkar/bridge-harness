@@ -3671,6 +3671,24 @@ mod tests {
             )
             .unwrap();
         assert_eq!(bridge_boundaries, 0);
+
+        // The head advances to it, exactly as it does for any conversation
+        // entry: a native boundary joins history rather than replacing it.
+        // What it must not do is become a projection boundary, and it does not,
+        // because only a `compaction` entry is one. `context::tests::
+        // a_native_compaction_stays_in_the_projection` holds that end.
+        let head: Option<String> = db
+            .query_row(
+                "SELECT active_entry_id FROM session_heads WHERE session_id='s'",
+                [],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+        assert!(
+            head.is_some(),
+            "a durable entry advances the head like any other conversation entry"
+        );
     }
 
     #[test]
