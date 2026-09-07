@@ -900,9 +900,40 @@ pub fn normalize_claude_message(message: &Value) -> Vec<NormalizedEvent> {
 pub struct ClaudeStreamState {
     pub active_message_id: Option<String>,
     pub active_reasoning_id: Option<String>,
+    thinking_blocks: std::collections::BTreeMap<String, ClaudeThinkingBlock>,
     /// Open tool calls by `tool_use` id, so the eventual `tool_result` completes
     /// under the same normalized kind and carries a host-measured duration.
     tool_calls: HashMap<String, ClaudeToolCall>,
+}
+
+#[derive(Debug, Default, Clone)]
+struct ClaudeThinkingBlock {
+    text: String,
+    completed: bool,
+}
+
+fn claude_thinking_id(message_id: &str, index: u64) -> String {
+    // Preserve the identity used by existing histories for the first block.
+    if index == 0 {
+        format!("reasoning-{message_id}")
+    } else {
+        format!("reasoning-{message_id}-block-{index}")
+    }
+}
+
+fn complete_claude_thinking(id: &str, block: &mut ClaudeThinkingBlock) -> Option<NormalizedEvent> {
+    if block.completed {
+        return None;
+    }
+    block.completed = true;
+    if block.text.is_empty() {
+        return None;
+    }
+    let mut event = NormalizedEvent::new("reasoning.completed");
+    event.item_id = Some(id.to_owned());
+    event.status = Some("completed".into());
+    event.text = Some(block.text.clone());
+    Some(event)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1004,9 +1035,12 @@ fn synthesize_claude_patch(name: &str, input: &Value) -> Option<String> {
             .to_owned()
     };
     let hunks: Vec<String> = match name {
-        "Edit" => claude_diff_hunk(&string_field(input, "old_string"), &string_field(input, "new_string"))
-            .into_iter()
-            .collect(),
+        "Edit" => claude_diff_hunk(
+            &string_field(input, "old_string"),
+            &string_field(input, "new_string"),
+        )
+        .into_iter()
+        .collect(),
         "MultiEdit" => input
             .get("edits")?
             .as_array()?
@@ -1035,7 +1069,10 @@ fn synthesize_claude_patch(name: &str, input: &Value) -> Option<String> {
     } else {
         format!("a/{path}")
     };
-    Some(format!("--- {old_file}\n+++ b/{path}\n{}", hunks.join("\n")))
+    Some(format!(
+        "--- {old_file}\n+++ b/{path}\n{}",
+        hunks.join("\n")
+    ))
 }
 
 /// One `@@` hunk turning `old` into `new`. The tool input carries no line
@@ -1113,8 +1150,14 @@ pub fn normalize_claude_message_with_state(
         "assistant" => normalize_claude_assistant(message, state),
         "user" => normalize_claude_user(message, state),
         "result" => {
+            let mut events: Vec<_> = state
+                .thinking_blocks
+                .iter_mut()
+                .filter_map(|(id, block)| complete_claude_thinking(id, block))
+                .collect();
             *state = ClaudeStreamState::default();
-            normalize_claude_result(message)
+            events.extend(normalize_claude_result(message));
+            events
         }
         "control_request" | "sdk_control_request" => normalize_claude_control_request(message)
             .into_iter()
@@ -1227,10 +1270,16 @@ fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Ve
                         return vec![];
                     }
                     let mut normalized = NormalizedEvent::new("reasoning.delta");
-                    normalized.item_id = state
-                        .active_reasoning_id
-                        .clone()
-                        .or_else(|| Some(format!("reasoning-{message_id}")));
+                    let id = claude_thinking_id(
+                        &message_id,
+                        event.get("index").and_then(Value::as_u64).unwrap_or(0),
+                    );
+                    let block = state.thinking_blocks.entry(id.clone()).or_default();
+                    if block.completed {
+                        return vec![];
+                    }
+                    block.text.push_str(text);
+                    normalized.item_id = Some(id);
                     normalized.status = Some("streaming".into());
                     normalized.text = Some(text.to_owned());
                     vec![normalized]
@@ -1250,16 +1299,51 @@ fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Ve
                         .active_message_id
                         .clone()
                         .unwrap_or_else(|| "claude-live".into());
-                    state.active_reasoning_id = Some(format!("reasoning-{message_id}"));
-                    vec![]
+                    let id = claude_thinking_id(
+                        &message_id,
+                        event.get("index").and_then(Value::as_u64).unwrap_or(0),
+                    );
+                    state.active_reasoning_id = Some(id.clone());
+                    let thinking = state.thinking_blocks.entry(id.clone()).or_default();
+                    let text = block.get("thinking").and_then(Value::as_str).unwrap_or("");
+                    if thinking.completed || text.is_empty() || !thinking.text.is_empty() {
+                        return vec![];
+                    }
+                    thinking.text.push_str(text);
+                    let mut normalized = NormalizedEvent::new("reasoning.delta");
+                    normalized.item_id = Some(id);
+                    normalized.status = Some("streaming".into());
+                    normalized.text = Some(text.to_owned());
+                    vec![normalized]
                 }
                 _ => vec![],
             }
         }
+        "content_block_stop" => {
+            let message_id = state.active_message_id.as_deref().unwrap_or("claude-live");
+            let id = claude_thinking_id(
+                message_id,
+                event.get("index").and_then(Value::as_u64).unwrap_or(0),
+            );
+            state
+                .thinking_blocks
+                .get_mut(&id)
+                .and_then(|block| complete_claude_thinking(&id, block))
+                .into_iter()
+                .collect()
+        }
         "message_stop" => {
-            // Keep active ids until the assistant snapshot or result arrives so
-            // completed text can replace the same bubble.
-            vec![]
+            // A truncated stream may omit block_stop; retain its text durably.
+            let prefix = format!(
+                "reasoning-{}",
+                state.active_message_id.as_deref().unwrap_or("claude-live")
+            );
+            state
+                .thinking_blocks
+                .iter_mut()
+                .filter(|(id, _)| **id == prefix || id.starts_with(&format!("{prefix}-block-")))
+                .filter_map(|(id, block)| complete_claude_thinking(id, block))
+                .collect()
         }
         _ => vec![],
     }
@@ -1282,8 +1366,10 @@ fn normalize_claude_assistant(
                 .map(str::to_owned)
         })
         .unwrap_or_else(|| "assistant".into());
-    state.active_message_id = Some(message_id.clone());
-    state.active_reasoning_id = Some(format!("reasoning-{message_id}"));
+    // A delayed snapshot must not redirect an already-started next message.
+    if state.active_message_id.is_none() {
+        state.active_message_id = Some(message_id.clone());
+    }
     let content = payload
         .get("content")
         .and_then(Value::as_array)
@@ -1305,7 +1391,7 @@ fn normalize_claude_assistant(
         event.data = payload.clone();
         events.push(event);
     }
-    for part in content {
+    for (block_index, part) in content.into_iter().enumerate() {
         let part_type = part.get("type").and_then(Value::as_str).unwrap_or("");
         match part_type {
             "tool_use" => {
@@ -1314,11 +1400,15 @@ fn normalize_claude_assistant(
             "thinking" => {
                 if let Some(thinking) = part.get("thinking").and_then(Value::as_str) {
                     if !thinking.is_empty() {
-                        let mut event = NormalizedEvent::new("reasoning.completed");
-                        event.item_id = Some(format!("reasoning-{message_id}"));
-                        event.status = Some("completed".into());
-                        event.text = Some(thinking.to_owned());
-                        events.push(event);
+                        let id = claude_thinking_id(&message_id, block_index as u64);
+                        let block = state.thinking_blocks.entry(id.clone()).or_default();
+                        if block.text != thinking {
+                            block.text = thinking.to_owned();
+                            block.completed = false;
+                        }
+                        if let Some(event) = complete_claude_thinking(&id, block) {
+                            events.push(event);
+                        }
                     }
                 }
             }
@@ -1883,6 +1973,118 @@ mod tests {
         assert_eq!(delta[0].item_id.as_deref(), Some("msg_9"));
         assert_eq!(completed[0].item_id.as_deref(), Some("msg_9"));
         assert_eq!(completed[0].kind, "message.completed");
+    }
+
+    #[test]
+    fn claude_block_stop_completes_before_answer_and_reconciles_snapshot() {
+        let mut state = ClaudeStreamState::default();
+        let frames = [
+            json!({"type":"message_start","message":{"id":"m1"}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Check "}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"facts."}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Answer."}}),
+        ];
+        let events: Vec<_> = frames
+            .into_iter()
+            .flat_map(|event| {
+                normalize_claude_message_with_state(
+                    &json!({"type":"stream_event","event":event}),
+                    &mut state,
+                )
+            })
+            .collect();
+        assert_eq!(
+            events.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(),
+            vec![
+                "reasoning.delta",
+                "reasoning.delta",
+                "reasoning.completed",
+                "message.delta"
+            ]
+        );
+        assert_eq!(events[2].text.as_deref(), Some("Check facts."));
+        assert_eq!(events[2].item_id, events[0].item_id);
+        let snapshot = normalize_claude_message_with_state(
+            &json!({"type":"assistant","message":{"id":"m1","content":[
+                {"type":"thinking","thinking":"Check facts."},{"type":"text","text":"Answer."}
+            ]}}),
+            &mut state,
+        );
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].kind, "message.completed");
+        // Duplicate stop and a stray delta cannot reopen the completed thought.
+        for event in [
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"late"}}),
+        ] {
+            assert!(normalize_claude_message_with_state(
+                &json!({"type":"stream_event","event":event}),
+                &mut state
+            )
+            .is_empty());
+        }
+    }
+
+    #[test]
+    fn claude_thinking_blocks_and_delayed_snapshots_keep_message_identity() {
+        let mut state = ClaudeStreamState::default();
+        for id in ["m1", "m2"] {
+            normalize_claude_message_with_state(
+                &json!({"type":"stream_event","event":{"type":"message_start","message":{"id":id}}}),
+                &mut state,
+            );
+            for index in [0, 2] {
+                let delta = normalize_claude_message_with_state(
+                    &json!({"type":"stream_event","event":{"type":"content_block_delta","index":index,"delta":{"type":"thinking_delta","thinking":"thought"}}}),
+                    &mut state,
+                );
+                let stop = normalize_claude_message_with_state(
+                    &json!({"type":"stream_event","event":{"type":"content_block_stop","index":index}}),
+                    &mut state,
+                );
+                assert_eq!(stop[0].item_id, delta[0].item_id);
+                assert_eq!(
+                    stop[0].item_id.as_deref(),
+                    Some(claude_thinking_id(id, index).as_str())
+                );
+            }
+        }
+        let late = normalize_claude_message_with_state(
+            &json!({"type":"assistant","message":{"id":"m1","content":[
+                {"type":"thinking","thinking":"thought"},{"type":"text","text":"answer"},{"type":"thinking","thinking":"thought"}
+            ]}}),
+            &mut state,
+        );
+        assert_eq!(late.len(), 1);
+        assert_eq!(state.active_message_id.as_deref(), Some("m2"));
+    }
+
+    #[test]
+    fn claude_interrupted_thinking_retains_text_and_resets_state() {
+        let mut state = ClaudeStreamState::default();
+        normalize_claude_message_with_state(
+            &json!({"type":"stream_event","event":{"type":"message_start","message":{"id":"m"}}}),
+            &mut state,
+        );
+        normalize_claude_message_with_state(
+            &json!({"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"partial"}}}),
+            &mut state,
+        );
+        // Stops for text/tool blocks must not settle another block.
+        assert!(normalize_claude_message_with_state(
+            &json!({"type":"stream_event","event":{"type":"content_block_stop","index":1}}),
+            &mut state
+        )
+        .is_empty());
+        let end = normalize_claude_message_with_state(
+            &json!({"type":"result","is_error":true,"subtype":"error_during_execution"}),
+            &mut state,
+        );
+        assert_eq!(end[0].kind, "reasoning.completed");
+        assert_eq!(end[0].text.as_deref(), Some("partial"));
+        assert!(state.thinking_blocks.is_empty());
     }
 
     #[test]
