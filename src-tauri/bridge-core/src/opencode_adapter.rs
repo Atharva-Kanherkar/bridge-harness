@@ -380,6 +380,19 @@ fn build_authenticated_client(server_password: &str) -> Result<Client, BridgeErr
         .map_err(|error| BridgeError::Adapter(format!("Cannot create OpenCode client: {error}")))
 }
 
+/// The body `/session/{id}/summarize` requires.
+///
+/// `providerID` and `modelID` are not optional on the wire: the endpoint uses
+/// them to pick the model that writes the summary. `auto` stays false, because
+/// this request is always something the user asked for by hand.
+fn summarize_body(model: &ModelRef) -> Value {
+    json!({
+        "providerID": model.provider_id,
+        "modelID": model.model_id,
+        "auto": false,
+    })
+}
+
 /// Backoff between readiness probes: short while the server is most likely
 /// still booting, ramping up to the steady 100ms poll once it has had time to
 /// come up. `attempt` is zero-based (the delay taken *after* probe `attempt`).
@@ -710,6 +723,27 @@ impl AdapterRuntime for OpenCodeRuntime {
             &format!("/session/{}/abort", self.session_id),
             None,
             "interrupt OpenCode turn",
+        )
+    }
+    /// `/session/{id}/summarize` names the model that writes the summary and
+    /// takes no focus, so OpenCode compacts the whole session. Without a known
+    /// model there is nothing to name, and the request would be rejected.
+    fn native_compaction(&self) -> crate::adapters::NativeCompaction {
+        if self.model.is_some() {
+            crate::adapters::NativeCompaction::WholeConversation
+        } else {
+            crate::adapters::NativeCompaction::Unsupported
+        }
+    }
+    fn compact_native(&self, _focus: Option<&str>) -> Result<(), BridgeError> {
+        let model = self.model.as_ref().ok_or_else(|| {
+            BridgeError::Invalid("OpenCode needs a selected model to summarize".into())
+        })?;
+        self.request(
+            reqwest::Method::POST,
+            &format!("/session/{}/summarize", self.session_id),
+            Some(summarize_body(model)),
+            "compact the OpenCode session",
         )
     }
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError> {
@@ -1447,6 +1481,20 @@ mod tests {
     /// It is rebuilt on every turn, so anything per-turn folded into it — a
     /// credential contract for a `[secret:]` marker, say — invalidated that
     /// turn's prefix by itself.
+    #[test]
+    fn summarize_names_the_model_that_writes_the_summary() {
+        // `providerID` and `modelID` are required on the wire. `auto` stays
+        // false: this request only ever exists because a user asked by hand.
+        let body = summarize_body(&ModelRef {
+            provider_id: "anthropic".into(),
+            model_id: "claude-sonnet-4-5".into(),
+        });
+        assert_eq!(body["providerID"], "anthropic");
+        assert_eq!(body["modelID"], "claude-sonnet-4-5");
+        assert_eq!(body["auto"], false);
+        assert!(body.get("focus").is_none(), "the endpoint takes no focus");
+    }
+
     #[test]
     fn the_system_value_is_identical_with_and_without_turn_context() {
         let body = |context| {

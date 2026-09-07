@@ -24,7 +24,10 @@ pub enum SlashDispatch {
     Expand { text: String },
     /// Bridge-handled: refresh account usage for the session harness.
     Usage,
-    /// Bridge-handled: run forest compaction.
+    /// Bridge-routed: ask the harness to compact its own context, falling
+    /// back to a Bridge checkpoint only where the harness has no compaction
+    /// command. `focus` is forwarded where the harness accepts one and
+    /// reported as not applied where it does not.
     Compact { focus: Option<String> },
     /// Bridge-handled: clear provider session / start fresh in this chat.
     Clear,
@@ -738,9 +741,16 @@ mod tests {
             dispatch("/clear", "claude", &available),
             SlashDispatch::Clear
         ));
+        // The focus is carried, not merely present: it is forwarded to a
+        // harness that accepts one and reported as ignored by one that does
+        // not, so losing the text here would silently lose the instruction.
         assert!(matches!(
             dispatch("/compact focus on errors", "claude", &available),
-            SlashDispatch::Compact { focus: Some(_) }
+            SlashDispatch::Compact { focus: Some(focus) } if focus == "focus on errors"
+        ));
+        assert!(matches!(
+            dispatch("/compact", "claude", &available),
+            SlashDispatch::Compact { focus: None }
         ));
         assert!(matches!(
             dispatch("/recall what did we decide", "claude", &available),

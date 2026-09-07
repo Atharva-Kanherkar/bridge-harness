@@ -8453,7 +8453,8 @@ struct PreparedInput {
 /// and the one that got skipped would be the one that leaked a secret.
 ///
 /// `allow_session_control` is false while a turn is running. `/clear` drops the
-/// provider process, `/compact` starts a checkpoint turn, `/usage` re-reads the
+/// provider process, `/compact` reaches the harness's own compaction (or starts
+/// a Bridge checkpoint turn where the harness has none), `/usage` re-reads the
 /// account: none of those are safe underneath a live turn, so they are refused
 /// with a reason rather than quietly reinterpreted as prose.
 fn prepare_input(
@@ -8570,7 +8571,50 @@ fn prepare_input(
             emit_local_assistant(core, &session_id, &session_harness, &text)?;
             return Ok(InputPreparation::Handled { interceptions });
         }
-        slash::SlashDispatch::Compact { .. } => {
+        slash::SlashDispatch::Compact { focus } => {
+            // The harness owns its live context window, so `/compact` is its
+            // command wherever it has one. Only a harness with no compaction
+            // of its own falls back to a Bridge checkpoint, which summarises
+            // history for a later cold start without freeing a single
+            // provider token. See `docs/compaction-and-resume.md`.
+            // One acquisition: asking whether the harness compacts and then
+            // asking it to would let the runtime disappear between the two
+            // and turn a supported harness into a "not running" error.
+            let requested = {
+                let adapters = state.adapters.lock().unwrap();
+                match adapters.get(session_id) {
+                    Some(runtime) => {
+                        let support = runtime.native_compaction();
+                        if support.is_supported() {
+                            runtime
+                                .compact_native(focus.as_deref().filter(|_| support.accepts_focus()))?;
+                        }
+                        support
+                    }
+                    None => adapters::NativeCompaction::Unsupported,
+                }
+            };
+            if requested.is_supported() {
+                let focus_ignored = focus
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|value| !value.is_empty())
+                    && !requested.accepts_focus();
+                if focus_ignored {
+                    // Naming what was ignored, rather than letting the reader
+                    // believe a focus they typed was applied.
+                    emit_local_assistant(
+                        core,
+                        session_id,
+                        &session_harness,
+                        &format!(
+                            "{} compacts the whole conversation, so the focus was not applied.",
+                            crate::model::Harness::from_stored(&session_harness).label()
+                        ),
+                    )?;
+                }
+                return Ok(InputPreparation::Handled { interceptions });
+            }
             let prompt = state.begin_manual_compaction(session_id)?;
             send_internal_checkpoint_turn(core, session_id, &prompt)?;
             return Ok(InputPreparation::Handled { interceptions });
@@ -10100,6 +10144,216 @@ fn record_shutdown_reason(
         session_id,
         reason.as_str(),
     )
+}
+
+#[cfg(test)]
+mod compact_routing_tests {
+    use super::prepare_input;
+    use crate::{
+        adapters::{AdapterRuntime, NativeCompaction, ShutdownReason},
+        runtime::BridgeCore,
+        BridgeError,
+    };
+    use serde_json::Value;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
+
+    /// A runtime that records what `/compact` reached it as.
+    struct CompactingRuntime {
+        support: NativeCompaction,
+        calls: Arc<Mutex<Vec<Option<String>>>>,
+        turns: Arc<AtomicUsize>,
+    }
+
+    impl AdapterRuntime for CompactingRuntime {
+        fn process_id(&self) -> u32 {
+            0
+        }
+        fn provider_session_id(&self) -> &str {
+            "provider-1"
+        }
+        fn current_turn(&self) -> Arc<Mutex<Option<String>>> {
+            Arc::new(Mutex::new(None))
+        }
+        fn send_turn(&self, _text: &str) -> Result<(), BridgeError> {
+            self.turns.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        fn interrupt(&self) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn respond(&self, _request_id: Value, _decision: &str) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn native_compaction(&self) -> NativeCompaction {
+            self.support
+        }
+        fn compact_native(&self, focus: Option<&str>) -> Result<(), BridgeError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(focus.map(str::to_owned));
+            Ok(())
+        }
+        fn stop(&mut self, _reason: ShutdownReason) {}
+    }
+
+    /// One idle session with enough history that a Bridge checkpoint would be
+    /// allowed, so a test that sees no `compaction.requested` row is seeing a
+    /// forwarded compaction rather than a suppressed one.
+    fn seeded(support: NativeCompaction) -> (
+        tempfile::TempDir,
+        Arc<BridgeCore>,
+        Arc<Mutex<Vec<Option<String>>>>,
+    ) {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = Arc::new(BridgeCore::for_tests(scratch.path()));
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,provider_session_id)
+                 VALUES('s',NULL,'codex','Chat','idle','reported','direct','provider-1')",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at)
+                 VALUES('e1','s',NULL,1,'assistant.message','{\"text\":\"real work happened here\"}','now')",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO session_heads(session_id,active_entry_id,restoration_mode,updated_at)
+                 VALUES('s','e1','fresh','now')",
+                [],
+            )
+            .unwrap();
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        core.adapters.lock().unwrap().insert(
+            "s".into(),
+            Box::new(CompactingRuntime {
+                support,
+                calls: calls.clone(),
+                turns: Arc::new(AtomicUsize::new(0)),
+            }),
+        );
+        (scratch, core, calls)
+    }
+
+    fn bridge_requests(core: &Arc<BridgeCore>) -> i64 {
+        core.db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM session_entries WHERE session_id='s' AND kind='compaction.requested'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    fn local_replies(core: &Arc<BridgeCore>) -> Vec<String> {
+        let db = core.db.lock().unwrap();
+        let mut statement = db
+            .prepare(
+                "SELECT json_extract(payload,'$.text') FROM session_entries
+                 WHERE session_id='s' AND kind='assistant.message' AND sequence>1 ORDER BY sequence",
+            )
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| row.get::<_, Option<String>>(0))
+            .unwrap()
+            .filter_map(|value| value.ok().flatten())
+            .collect();
+        rows
+    }
+
+    #[test]
+    fn a_focus_accepting_harness_gets_the_focus_and_bridge_stays_out_of_it() {
+        let (_scratch, core, calls) = seeded(NativeCompaction::WithFocus);
+        prepare_input(&core, "s", "/compact the auth refactor", true).unwrap();
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            [Some("the auth refactor".to_owned())]
+        );
+        assert_eq!(
+            bridge_requests(&core),
+            0,
+            "a forwarded compaction is the harness's work, so Bridge writes no boundary of its own"
+        );
+        assert!(
+            local_replies(&core).is_empty(),
+            "nothing to explain when the focus was honoured"
+        );
+    }
+
+    #[test]
+    fn a_whole_conversation_harness_says_the_focus_was_not_applied() {
+        let (_scratch, core, calls) = seeded(NativeCompaction::WholeConversation);
+        prepare_input(&core, "s", "/compact the auth refactor", true).unwrap();
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            [None],
+            "a focus is never handed to a harness that cannot honour it"
+        );
+        assert_eq!(bridge_requests(&core), 0);
+        let replies = local_replies(&core);
+        assert_eq!(replies.len(), 1, "{replies:?}");
+        assert!(
+            replies[0].contains("Codex") && replies[0].contains("focus was not applied"),
+            "the reader is told which harness ignored the focus: {}",
+            replies[0]
+        );
+        assert!(!replies[0].contains('\u{2014}'), "no em dashes in UI copy");
+    }
+
+    #[test]
+    fn a_bare_compact_on_a_whole_conversation_harness_explains_nothing() {
+        let (_scratch, core, calls) = seeded(NativeCompaction::WholeConversation);
+        prepare_input(&core, "s", "/compact", true).unwrap();
+        assert_eq!(calls.lock().unwrap().as_slice(), [None]);
+        assert_eq!(bridge_requests(&core), 0);
+        assert!(
+            local_replies(&core).is_empty(),
+            "there is nothing to report when no focus was asked for"
+        );
+    }
+
+    #[test]
+    fn a_harness_with_no_compaction_command_falls_back_to_a_bridge_checkpoint() {
+        let (_scratch, core, calls) = seeded(NativeCompaction::Unsupported);
+        prepare_input(&core, "s", "/compact", true).unwrap();
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "an unsupported harness is never asked"
+        );
+        assert_eq!(
+            bridge_requests(&core),
+            1,
+            "the checkpoint that already existed is the fallback"
+        );
+    }
+
+    #[test]
+    fn a_session_with_no_runtime_takes_the_bridge_path_it_always_did() {
+        // Nothing to forward to, so the request routes to the Bridge
+        // checkpoint, which then reports that there is no process to ask.
+        // Recorded here because it is unchanged by the ownership split: a
+        // cold session's `/compact` failed this way before it too.
+        let (_scratch, core, calls) = seeded(NativeCompaction::WithFocus);
+        core.adapters.lock().unwrap().remove("s");
+        let Err(error) = prepare_input(&core, "s", "/compact", true) else {
+            panic!("a cold session has no process to compact");
+        };
+        assert!(
+            error.to_string().contains("not running"),
+            "the reason names the missing process: {error}"
+        );
+        assert!(calls.lock().unwrap().is_empty());
+    }
 }
 
 #[cfg(test)]

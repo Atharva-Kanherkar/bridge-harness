@@ -737,6 +737,17 @@ impl ClaudeRuntime {
     }
 }
 
+/// The `/compact` line a harness reads off its input stream.
+///
+/// A blank focus is dropped rather than sent as a trailing space, so a bare
+/// `/compact` and `/compact "   "` are the same request.
+fn compact_command(focus: Option<&str>) -> String {
+    match focus.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(focus) => format!("/compact {focus}"),
+        None => "/compact".into(),
+    }
+}
+
 impl AdapterRuntime for ClaudeRuntime {
     fn process_id(&self) -> u32 {
         self.child.id()
@@ -762,6 +773,17 @@ impl AdapterRuntime for ClaudeRuntime {
         context: TurnContext<'_>,
     ) -> Result<(), BridgeError> {
         self.start_turn(text, context)
+    }
+    /// Claude Code reads slash commands off its own input stream, and its
+    /// `/compact` takes a focus instruction.
+    fn native_compaction(&self) -> crate::adapters::NativeCompaction {
+        crate::adapters::NativeCompaction::WithFocus
+    }
+    /// The command travels as an ordinary user frame: the streaming-input
+    /// `query()` the sidecar feeds is exactly where the SDK expects to find a
+    /// slash command, which is why this needs no control channel of its own.
+    fn compact_native(&self, focus: Option<&str>) -> Result<(), BridgeError> {
+        self.send_turn(&compact_command(focus))
     }
     /// Vision-capable transport: the SDK message content is a content-block
     /// array, so image blocks ride beside text natively.
@@ -971,6 +993,19 @@ fn lock_writer<'a, T>(
 mod tests {
     use super::*;
     use crate::context_inventory::ContextObservationProvenance;
+    #[test]
+    fn compact_forwards_the_focus_on_the_input_stream() {
+        // The SDK reads slash commands off the same streaming-input query that
+        // carries user turns, which is why forwarding needs no control frame.
+        assert_eq!(compact_command(None), "/compact");
+        assert_eq!(compact_command(Some("the auth refactor")), "/compact the auth refactor");
+        // A blank focus is the same request as no focus, not a trailing space.
+        assert_eq!(compact_command(Some("   ")), "/compact");
+        assert_eq!(compact_command(Some("")), "/compact");
+        // Surrounding whitespace is the user's typing, not part of the focus.
+        assert_eq!(compact_command(Some("  keep the failing test  ")), "/compact keep the failing test");
+    }
+
     #[test]
     fn poisoned_writer_is_a_typed_adapter_error() {
         let writer = Mutex::new(());

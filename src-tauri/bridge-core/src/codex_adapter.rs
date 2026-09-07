@@ -381,7 +381,7 @@ fn thread_fork_params(
 
 pub fn supports_native_resume() -> bool {
     static SUPPORTS: OnceLock<bool> = OnceLock::new();
-    *SUPPORTS.get_or_init(discover_native_resume)
+    *SUPPORTS.get_or_init(|| schema_declares(schema_supports_resume))
 }
 
 /// Whether this Codex build exposes `thread/fork` — the native side-chat verb:
@@ -390,10 +390,16 @@ pub fn supports_native_resume() -> bool {
 /// native resume is, and cached for the process lifetime.
 pub fn supports_native_fork() -> bool {
     static SUPPORTS: OnceLock<bool> = OnceLock::new();
-    *SUPPORTS.get_or_init(discover_native_fork)
+    *SUPPORTS.get_or_init(|| schema_declares(schema_supports_fork))
 }
 
-fn discover_native_fork() -> bool {
+/// Whether the installed Codex's app-server schema declares a capability.
+///
+/// One probe, shared: generating the schema costs a process launch, and three
+/// near-copies of this walk is how the next capability ends up reading a
+/// different file than the others. Each caller supplies only the predicate,
+/// and caches its own answer for the process lifetime.
+fn schema_declares(predicate: fn(&str) -> bool) -> bool {
     let Some(binary) = resolve_runtime() else {
         return false;
     };
@@ -412,37 +418,27 @@ fn discover_native_fork() -> bool {
         .is_ok_and(|status| status.success());
     let supported = generated
         && std::fs::read_to_string(output_dir.join("ClientRequest.json"))
-            .is_ok_and(|schema| schema_supports_fork(&schema));
+            .is_ok_and(|schema| predicate(&schema));
     let _ = std::fs::remove_dir_all(output_dir);
     supported
+}
+
+/// Whether this Codex build exposes `thread/compact/start`, its own
+/// compaction verb. Under the ownership split in
+/// `docs/compaction-and-resume.md` this is what `/compact` reaches on a Codex
+/// chat; the params carry a thread id and nothing else, so a focus cannot be
+/// forwarded.
+pub fn supports_native_compaction() -> bool {
+    static SUPPORTS: OnceLock<bool> = OnceLock::new();
+    *SUPPORTS.get_or_init(|| schema_declares(schema_supports_compact))
+}
+
+fn schema_supports_compact(schema: &str) -> bool {
+    schema.contains("thread/compact/start") && schema.contains("ThreadCompactStartParams")
 }
 
 fn schema_supports_fork(schema: &str) -> bool {
     schema.contains("thread/fork") && schema.contains("ThreadForkParams")
-}
-
-fn discover_native_resume() -> bool {
-    let Some(binary) = resolve_runtime() else {
-        return false;
-    };
-    let output_dir = std::env::temp_dir().join(format!("bridge-codex-schema-{}", Uuid::new_v4()));
-    let generated = Command::new(binary)
-        .args([
-            "app-server",
-            "generate-json-schema",
-            "--experimental",
-            "--out",
-        ])
-        .arg(&output_dir)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success());
-    let supported = generated
-        && std::fs::read_to_string(output_dir.join("ClientRequest.json"))
-            .is_ok_and(|schema| schema_supports_resume(&schema));
-    let _ = std::fs::remove_dir_all(output_dir);
-    supported
 }
 
 fn schema_supports_resume(schema: &str) -> bool {
@@ -562,6 +558,21 @@ impl AdapterRuntime for CodexRuntime {
     }
     fn interrupt(&self) -> Result<(), BridgeError> {
         CodexRuntime::interrupt(self)
+    }
+    /// `thread/compact/start` takes a thread id and nothing else, so Codex
+    /// compacts the whole conversation and a focus cannot ride along.
+    fn native_compaction(&self) -> crate::adapters::NativeCompaction {
+        if supports_native_compaction() {
+            crate::adapters::NativeCompaction::WholeConversation
+        } else {
+            crate::adapters::NativeCompaction::Unsupported
+        }
+    }
+    fn compact_native(&self, _focus: Option<&str>) -> Result<(), BridgeError> {
+        self.request(
+            "thread/compact/start",
+            json!({"threadId": self.thread_id}),
+        )
     }
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError> {
         CodexRuntime::respond(self, request_id, decision)
@@ -875,6 +886,22 @@ mod tests {
         assert!(!schema_supports_resume(
             r#"{"method":"thread/start","params":{"$ref":"ThreadStartParams"}}"#
         ));
+    }
+
+    #[test]
+    fn native_compaction_capability_is_discovered_from_protocol_schema() {
+        // Read off the same generated `ClientRequest.json` the fork and resume
+        // probes read, so a Codex without the verb falls back to a Bridge
+        // checkpoint rather than writing a request it will not answer.
+        assert!(schema_supports_compact(
+            r#"{"method":"thread/compact/start","params":{"$ref":"ThreadCompactStartParams"}}"#
+        ));
+        assert!(!schema_supports_compact(
+            r#"{"method":"thread/compacted","params":{"$ref":"ContextCompactedNotification"}}"#
+        ));
+        // The method name alone is not the capability: a schema that mentions
+        // it without the params type is not one Bridge can call.
+        assert!(!schema_supports_compact(r#"{"method":"thread/compact/start"}"#));
     }
 
     #[test]
