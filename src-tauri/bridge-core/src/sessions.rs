@@ -42,16 +42,6 @@ fn aside_fork_eligible(
         && codex_supports_fork
 }
 
-/// How long a model switch waits for the outgoing provider to produce its
-/// handoff summary before falling back to the mechanical projection. Tighter
-/// than [`compaction_controller::CHECKPOINT_TIMEOUT_SECONDS`] because the user
-/// is actively waiting on the switch — and because on the daemon host the wait
-/// holds one pooled connection for its duration. Still long enough for a real
-/// summarisation turn over meaningful history: at the original 6 seconds
-/// nearly every switch with a hot provider timed out, recording a spurious
-/// `compaction.failed` and handing the next model nothing.
-pub const SWITCH_SUMMARY_TIMEOUT_SECONDS: i64 = 20;
-
 /// Below this many tokens on the active branch, a model switch asks for no
 /// handoff summary.
 ///
@@ -663,6 +653,9 @@ impl BridgeCore {
         if let Some(mut runtime) = self.adapters.lock().unwrap().remove(session_id) {
             runtime.stop(reason);
         }
+        // A model switch's outgoing runtime lives outside the adapter map while
+        // it summarises; stopping the session must not leave it running.
+        crate::switch_summary::stop_for_session(self, session_id, reason);
     }
 
     /// Replay durable session events with a sequence greater than the
@@ -856,7 +849,10 @@ impl BridgeCore {
         }
         let tokens =
             compaction_controller::active_token_estimate(&db, session_id)?;
-        let Some(prompt) = compaction_controller::CompactionController::begin(
+        // Background: the request is answered by the outgoing runtime *after*
+        // the switch commits, on a reader that shares this session id with the
+        // incoming model, so the live reader must never treat it as its own.
+        let Some(prompt) = compaction_controller::CompactionController::begin_background(
             &db,
             session_id,
             compaction_controller::CompactionReason::BeforeDowngrade,
@@ -911,13 +907,17 @@ impl BridgeCore {
         }
         let kind: Option<String> = db
             .query_row(
-                "SELECT kind FROM session_entries WHERE session_id=?1 AND sequence > ?2 AND kind IN ('compaction','compaction.failed') ORDER BY sequence DESC LIMIT 1",
+                "SELECT kind FROM session_entries WHERE session_id=?1 AND sequence > ?2 AND kind IN ('compaction','compaction.failed','checkpoint') ORDER BY sequence DESC LIMIT 1",
                 params![request.session_id, request.after_sequence],
                 |row| row.get(0),
             )
             .optional()?;
         match kind.as_deref() {
-            Some("compaction") => Ok(SwitchSummaryOutcome::Summarised),
+            // `checkpoint` alone is a late background landing (the new model had
+            // already spoken, so no boundary moved); paired, it precedes the
+            // `compaction` this query finds first. Either way the request was
+            // answered.
+            Some("compaction") | Some("checkpoint") => Ok(SwitchSummaryOutcome::Summarised),
             _ => Ok(SwitchSummaryOutcome::Failed),
         }
     }
@@ -1094,10 +1094,18 @@ impl BridgeCore {
                 change.adapter_id,
             )
         } else {
-            let carry_note = carried
+            let mut carry_note = carried
                 .as_ref()
                 .map(CarriedContext::describe)
                 .unwrap_or_else(|| "no context carried (summary unavailable)".to_owned());
+            // `is_detached` asks for a *live* summary: a retired entry (its
+            // runtime already stopped, only its reader still draining) is no
+            // longer preparing anything and must not be claimed as such.
+            if crate::switch_summary::is_detached(self, session_id) {
+                // A background summary from the outgoing model is on its way; the
+                // mechanical projection above is what the new model inherits now.
+                carry_note.push_str("; a handoff summary from the previous model is being prepared in the background");
+            }
             format!(
                 "{subject} runtime changed from {}/{} to {}/{}. The next message starts a fresh provider session; {}.",
                 change.previous_harness,
@@ -3426,6 +3434,73 @@ mod tests {
         ).unwrap();
         assert_eq!(model, "stub-opus");
         assert_eq!(provider.as_deref(), Some("thread-1"), "the thread survives the switch");
+    }
+
+    #[test]
+    fn a_cross_harness_switch_commits_before_the_summary_turn_starts() {
+        // The whole point of #529: a cross-harness switch must return without
+        // waiting on the outgoing model's checkpoint. It commits on the
+        // mechanical projection and detaches the old runtime to summarise in
+        // the background.
+        let (_scratch, core) = resume_fixture();
+        seed_workspace(&core, false);
+        let core = std::sync::Arc::new(core);
+        core.db.lock().unwrap().execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,model,provider_session_id) VALUES('x','w','claude','Chat','idle','estimated','direct','stub-sonnet','thread-1')", [],
+        ).unwrap();
+        core.adapters.lock().unwrap().insert("x".into(), Box::new(RecordingRuntime {
+            interrupted: Default::default(), usage_requested: Default::default(),
+        }));
+        {
+            let db = core.db.lock().unwrap();
+            let forest = session_forest::SessionForest::new(&db);
+            for index in 0..8 {
+                forest.append(
+                    "x",
+                    session_forest::EntryKind::UserMessage,
+                    serde_json::json!({"text": format!("{index}: {}", "we decided to change src/app.ts. ".repeat(40))}),
+                ).unwrap();
+            }
+        }
+
+        crate::api::update_chat_model(&core, "x", &Harness::Codex, Some("stub-standard"), None).unwrap();
+
+        // The switch committed: the row is the incoming model, and the outgoing
+        // runtime is detached (out of the adapter slot, in the summary map),
+        // with a BACKGROUND pending request the incoming reader will ignore.
+        let (harness, model): (String, String) = core.db.lock().unwrap().query_row(
+            "SELECT harness,model FROM sessions WHERE id='x'", [], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(harness, "codex");
+        assert_eq!(model, "stub-standard");
+        assert!(crate::switch_summary::is_detached(&core, "x"), "the outgoing runtime is detached");
+        assert!(!core.adapters.lock().unwrap().contains_key("x"), "the adapter slot is free for the incoming model");
+        let pending = compaction_controller::CompactionController::pending(&core.db.lock().unwrap(), "x")
+            .unwrap()
+            .expect("a summary request is pending");
+        assert!(pending.background, "the request is a background one");
+        assert_eq!(pending.reason, compaction_controller::CompactionReason::BeforeDowngrade);
+
+        // The switch's own audit event is recorded; any checkpoint.turn_started
+        // can only come after it, from the background thread post-commit.
+        let events = store::state(&core.db.lock().unwrap()).unwrap().events;
+        let model_changed = events.iter().find(|event| event.kind == "session.model_changed").expect("the switch committed its milestone");
+        let model_changed_id = Some(model_changed.id);
+        assert!(
+            model_changed.body.contains("being prepared in the background"),
+            "the milestone names the live background summary: {}",
+            model_changed.body
+        );
+        for event in &events {
+            if event.kind == "checkpoint.turn_started" {
+                assert!(event.id > model_changed_id.unwrap(), "a summary turn never precedes the commit");
+            }
+        }
+
+        // Settle the request so the background waiter exits promptly instead of
+        // polling for its full budget.
+        core.cancel_switch_summary("x", "test teardown", 1).unwrap();
+        crate::switch_summary::abort(&core, "x");
     }
 
     #[test]

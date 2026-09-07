@@ -22,7 +22,7 @@ use crate::{
     secret_interception,
     session_recall, session_supervisor,
     sessions, skill_marketplace, slash, store,
-    suggestion_engine, verification_pipeline, verified_catalog, work, work_actions,
+    suggestion_engine, switch_summary, verification_pipeline, verified_catalog, work, work_actions,
     work_observation, work_reconcile, work_task_state, worker_adoption,
     worker_lifecycle, workspace_files, BridgeCore, BridgeError, RuntimeSession,
 };
@@ -1108,16 +1108,41 @@ pub fn update_chat_model(
         // and every timeout would land in the ledger as a compaction failure.
         // Anything else — a harness change, an adapter without native resume,
         // a chat with no stored thread — still summarises exactly as before.
-        if !change.resumes_natively() {
-            summarise_for_switch(core, session_id);
+        // Take the outgoing model's handoff summary off the switch's critical
+        // path. Rather than block the invoke while the old provider writes a
+        // checkpoint, detach its runtime — kept alive on its own reader — and
+        // let a background waiter summarise after the switch commits. The
+        // switch itself proceeds on Bridge's mechanical projection, which
+        // loses nothing the stored history did not already hold.
+        let detached = if !change.resumes_natively() {
+            detach_switch_summary(core, session_id)
+        } else {
+            false
+        };
+        if !detached {
+            core.stop_session_adapter(session_id, adapters::ShutdownReason::Replaced);
         }
-        core.stop_session_adapter(session_id, adapters::ShutdownReason::Replaced);
-        // The summary turn wrote `active_turn_id` asynchronously and its
-        // `turn.completed` may be dead with the adapter; settle that residue so
-        // the commit's revision check sees the idle row the plan verified instead
-        // of failing the switch against its own summary turn.
+        // With no live (attached) runtime, settle any turn residue so the
+        // commit's revision check sees the idle row the plan verified.
         core.settle_adapterless_turn_state(session_id, std::time::Duration::from_secs(3))?;
-        core.commit_chat_model_change(change)?;
+        if let Err(error) = core.commit_chat_model_change(change) {
+            if detached {
+                // The switch never landed: stop the detached runtime and cancel
+                // its pending request so a later reply is not misparsed.
+                switch_summary::abort(core, session_id);
+                let _ = core.cancel_switch_summary(
+                    session_id,
+                    "model switch did not commit; summary abandoned",
+                    1,
+                );
+            }
+            return Err(error);
+        }
+        if detached {
+            let background = core.clone();
+            let session = session_id.to_owned();
+            thread::spawn(move || switch_summary::deliver_and_wait(background, session));
+        }
     }
     if effort_changed {
         if !model_changed {
@@ -1157,63 +1182,30 @@ fn selected_chat_effort(
         .map(str::to_owned))
 }
 
-/// Best-effort handoff brief: while the outgoing provider is still alive, ask
-/// it to summarise the conversation through the validated compaction pipeline
-/// so the incoming model inherits a typed summary instead of nothing.
+/// Plan the outgoing model's handoff summary and detach its runtime so the
+/// switch can commit without waiting on it. Returns whether a detached summary
+/// is now in flight; `false` means there was nothing worth summarising or no
+/// live provider, and the caller stops the adapter the ordinary way.
 ///
-/// Bounded by [`sessions::SWITCH_SUMMARY_TIMEOUT_SECONDS`] and forbidden from
-/// failing the switch: every skip, timeout, delivery failure, or invalid
-/// output simply leaves the mechanical projection (`start_chat`'s stored-
-/// history injection) as the carried context instead.
-///
-/// The wait is deliberately inline: teardown must not run while the outgoing
-/// provider is still writing its summary, and the invoke must return the
-/// post-commit state. The budget is kept short because on the daemon host it
-/// holds one pooled connection for its duration.
-fn summarise_for_switch(core: &Arc<BridgeCore>, session_id: &str) {
+/// The summary itself is delivered and awaited off-thread by
+/// [`switch_summary::deliver_and_wait`], under the controller's own budget —
+/// never the switch's, which now returns immediately.
+fn detach_switch_summary(core: &Arc<BridgeCore>, session_id: &str) -> bool {
     let request = match core.plan_switch_summary(session_id) {
         Ok(Some(request)) => request,
-        _ => return,
+        _ => return false,
     };
-    if let Err(error) =
-        live_turn::send_internal_checkpoint_turn(core, session_id, &request.prompt)
-    {
-        let _ = core.cancel_switch_summary(
-            session_id,
-            &format!("model-switch summary could not be delivered: {error}"),
-            0,
-        );
-        return;
+    if switch_summary::detach(core, session_id, request) {
+        return true;
     }
-    let deadline = std::time::Instant::now()
-        + std::time::Duration::from_secs(sessions::SWITCH_SUMMARY_TIMEOUT_SECONDS.max(0) as u64);
-    loop {
-        match core.switch_summary_outcome(&request) {
-            Ok(sessions::SwitchSummaryOutcome::Summarised)
-            | Ok(sessions::SwitchSummaryOutcome::Failed) => return,
-            Ok(sessions::SwitchSummaryOutcome::Pending) => {}
-            Err(error) => {
-                // A read failure mid-wait strands the pending request exactly
-                // like a timeout would: cancel so later normal replies are
-                // never misparsed as checkpoint output.
-                let _ = core.cancel_switch_summary(
-                    session_id,
-                    &format!("model-switch summary wait failed: {error}"),
-                    1,
-                );
-                return;
-            }
-        }
-        if std::time::Instant::now() >= deadline {
-            let _ = core.cancel_switch_summary(
-                session_id,
-                "model-switch summary timed out; switch continued",
-                1,
-            );
-            return;
-        }
-        thread::sleep(std::time::Duration::from_millis(300));
-    }
+    // `plan_switch_summary` saw a live runtime but it went away before detach.
+    // Cancel the request it began so a later reply is not misparsed.
+    let _ = core.cancel_switch_summary(
+        session_id,
+        "no live provider to summarise; stored history carried",
+        0,
+    );
+    false
 }
 
 /// Carry a source chat's projected context into another chat as a durable
