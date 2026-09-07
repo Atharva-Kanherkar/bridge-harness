@@ -95,6 +95,7 @@ pub mod skill_marketplace;
 pub mod slash;
 pub mod store;
 pub mod suggestion_engine;
+pub mod switch_summary;
 pub mod verification_pipeline;
 pub mod verified_catalog;
 pub mod worker_adoption;
