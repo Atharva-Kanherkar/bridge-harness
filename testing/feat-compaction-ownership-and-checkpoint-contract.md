@@ -136,6 +136,25 @@ Added after review, from two findings on the first push.
   shape: queued input waiting on a boundary that never arrives. A boundary
   during a real turn carries an active turn id and is left alone.
 
+### 4c. A released compaction owes what a turn's end owes
+
+Added after the second review round, from a finding on 4b's own fix.
+
+- Marking the session `working` made input queue, which is correct, but the
+  release only wrote the status. It notified no listener and drained nothing, so
+  a harness reporting a boundary without turn lifecycle left the composer busy
+  and left the queued message undelivered against a database that already read
+  idle.
+- The release is now a named rule, `release_native_compaction`, that reports
+  whether it fired. When it fires, the session drains its queue and publishes
+  `StateChanged`, which is the same finish work `turn_completed` runs. That
+  input was queued *because* the forward marked the session working, so the
+  release is the only thing that will let it through.
+- A batch carrying both a real `turn.completed` and a release drains once, not
+  twice.
+- `drain_queued_input` re-checks idleness itself, so the release's drain is a
+  no-op if anything else has claimed the session in between.
+
 ### 5. The checkpoint contract stops failing on shape
 
 - Bridge fills `sourceAgent`, `firstRetainedEntryId`, `tokensBefore`, `reason`,

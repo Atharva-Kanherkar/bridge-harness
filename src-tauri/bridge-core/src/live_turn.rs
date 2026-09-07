@@ -2471,6 +2471,10 @@ fn handle_agent_value(
     let mut child_left_waiting: Option<&'static str> = None;
     let mut pending_telemetry: Vec<store::TelemetrySpan> = Vec::new();
     let mut turn_completed = false;
+    // Set when a native boundary released the optimistic `working` mark a
+    // forwarded `/compact` wrote. The release's side effects run after the
+    // database guard is dropped, because draining takes the lock itself.
+    let mut native_compaction_released = false;
     let mut checkpoint_prompt_after_turn: Option<String> = None;
     let mut checkpoint_response_seen = false;
     let mut checkpoint_turn_handled = false;
@@ -2707,11 +2711,7 @@ fn handle_agent_value(
                 // active turn id, and that turn's own completion owns the
                 // status instead.
                 agent::NATIVE_COMPACTION_KIND => {
-                    let _ = db.execute(
-                        "UPDATE sessions SET status=?2 WHERE id=?1
-                         AND status='working' AND active_turn_id IS NULL",
-                        params![session_id, STARTED_IDLE_STATUS],
-                    );
+                    native_compaction_released |= release_native_compaction(&db, session_id);
                 }
                 "usage.updated" => {
                     let scope = workspace_id.as_deref().unwrap_or(session_id);
@@ -3218,6 +3218,19 @@ fn handle_agent_value(
         }
     }
 
+    // A released compaction owes what a turn's end owes. The status change
+    // alone leaves the composer busy and leaves anything the user typed while
+    // the compaction ran sitting in the queue: that input was queued *because*
+    // the forward marked the session working, so the release is what has to let
+    // it through. `drain_queued_input` re-checks idleness itself, so this is a
+    // no-op if anything else has since claimed the session.
+    // `turn_completed` runs the same finish work further down, so a batch that
+    // carries both must not deliver two queued rows for one boundary.
+    if native_compaction_released && !turn_completed {
+        drain_queued_input(core, session_id);
+        state.events.publish(CoreEvent::StateChanged);
+    }
+
     // Telemetry is deliberately flushed only after the correctness database
     // lock and all semantic transactions are complete. A telemetry failure is
     // best-effort and cannot roll back durable local history.
@@ -3673,26 +3686,14 @@ fn survives_checkpoint_turn(kind: &str) -> bool {
 
 #[cfg(test)]
 mod native_compaction_release_tests {
-    use crate::{live_turn::STARTED_IDLE_STATUS, runtime::BridgeCore};
+    use super::{drain_queued_input, release_native_compaction, STARTED_IDLE_STATUS};
+    use crate::{runtime::BridgeCore, session_input};
     use rusqlite::params;
+    use std::sync::Arc;
 
-    /// The release rule the live handler applies when a native boundary lands.
-    /// Expressed against the database so the SQL itself is what is tested.
-    fn release(core: &BridgeCore) {
-        core.db
-            .lock()
-            .unwrap()
-            .execute(
-                "UPDATE sessions SET status=?2 WHERE id=?1
-                 AND status='working' AND active_turn_id IS NULL",
-                params!["s", STARTED_IDLE_STATUS],
-            )
-            .unwrap();
-    }
-
-    fn seeded(status: &str, active_turn: Option<&str>) -> (tempfile::TempDir, BridgeCore) {
+    fn seeded(status: &str, active_turn: Option<&str>) -> (tempfile::TempDir, Arc<BridgeCore>) {
         let scratch = tempfile::tempdir().unwrap();
-        let core = BridgeCore::for_tests(scratch.path());
+        let core = Arc::new(BridgeCore::for_tests(scratch.path()));
         core.db
             .lock()
             .unwrap()
@@ -3713,14 +3714,22 @@ mod native_compaction_release_tests {
             .unwrap()
     }
 
+    fn release(core: &BridgeCore) -> bool {
+        release_native_compaction(&core.db.lock().unwrap(), "s")
+    }
+
     #[test]
     fn a_boundary_releases_the_optimistic_mark_a_forwarded_compact_wrote() {
         let (_scratch, core) = seeded("working", None);
-        release(&core);
+        assert!(release(&core), "the release fired, so it owes the finish work");
         assert_eq!(
             status(&core),
             STARTED_IDLE_STATUS,
             "a session left busy only by the forward must not stay busy forever"
+        );
+        assert!(
+            !release(&core),
+            "a second boundary has nothing left to release"
         );
     }
 
@@ -3729,7 +3738,7 @@ mod native_compaction_release_tests {
         // Autocompact mid-turn. The turn owns the status, and its own
         // completion is what ends it.
         let (_scratch, core) = seeded("working", Some("turn-1"));
-        release(&core);
+        assert!(!release(&core));
         assert_eq!(status(&core), "working");
     }
 
@@ -3737,11 +3746,56 @@ mod native_compaction_release_tests {
     fn a_boundary_never_disturbs_a_session_that_is_not_working() {
         for held in ["checkpointing", "waiting", "idle", "failed"] {
             let (_scratch, core) = seeded(held, None);
-            release(&core);
-            assert_eq!(status(&core), held, "{held} is not the forward's mark to clear");
+            assert!(!release(&core), "{held} is not the forward's mark to clear");
+            assert_eq!(status(&core), held);
         }
     }
 
+    #[test]
+    fn the_release_is_what_lets_queued_input_through() {
+        // The bug this closes: a forwarded `/compact` marks the session
+        // working, so a message typed while it runs is queued rather than
+        // started. Nothing else will release that queue, because no
+        // `turn.completed` is coming for a harness that reports a boundary
+        // without turn lifecycle.
+        let (_scratch, core) = seeded("working", None);
+        {
+            let db = core.db.lock().unwrap();
+            session_input::enqueue(&db, "s", "typed while compacting", "typed while compacting")
+                .unwrap();
+        }
+        assert!(
+            !drain_queued_input(&core, "s"),
+            "while the forward's mark stands, the queue is correctly held"
+        );
+        assert!(
+            session_input::next_queued(&core.db.lock().unwrap(), "s")
+                .unwrap()
+                .is_some(),
+            "and the row is still waiting"
+        );
+
+        assert!(release(&core));
+        // The drain declines only for want of a live adapter now, which is the
+        // documented #252 behaviour: the row stays unclaimed for the next
+        // user-initiated send rather than spawning a process here. What matters
+        // is that the session is no longer the thing blocking it.
+        let idle_for_delivery: bool = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT active_turn_id IS NULL AND status NOT IN ('working','checkpointing')
+                 FROM sessions WHERE id='s'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            idle_for_delivery,
+            "after the release the session reads deliverable to the drain"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -3772,6 +3826,25 @@ mod checkpoint_turn_visibility_tests {
              moment the evidence matters most, and it must not be dropped"
         );
     }
+}
+
+/// Release the optimistic `working` mark a forwarded `/compact` wrote, if that
+/// mark is still the only reason this session reads as busy.
+///
+/// Returns whether it fired, because a release owes what a turn's end owes:
+/// the composer has to stop showing busy, and anything the user typed while the
+/// compaction ran has to be let through. That input was queued *because* the
+/// forward marked the session working, so nothing else will release it.
+///
+/// A boundary that lands during a real turn carries an active turn id and is
+/// left alone: that turn owns the status and its own completion ends it.
+fn release_native_compaction(db: &Connection, session_id: &str) -> bool {
+    db.execute(
+        "UPDATE sessions SET status=?2 WHERE id=?1
+         AND status='working' AND active_turn_id IS NULL",
+        params![session_id, STARTED_IDLE_STATUS],
+    )
+    .is_ok_and(|rows| rows > 0)
 }
 
 fn should_recover_compaction(
