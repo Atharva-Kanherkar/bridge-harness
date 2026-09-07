@@ -509,29 +509,30 @@ function AppContent() {
     setView("workspace");
     setParadigm("single");
     dispatchDock({ type: "open-pane", pane: "github" });
-  }, []);
+  }, [dispatchDock]);
 
   function openPullRequestPane(number: number) {
     openGithubPane({ kind: "pull", number, tab: "conversation" });
   }
 
-  // Which repository a workspace is on costs a `gh` round-trip, so it is asked
-  // for on the first GitHub-shaped link click and remembered per workspace —
-  // a chat whose links never point at GitHub never pays for it. A workspace
-  // that resolves to nothing (no `gh`, signed out, no remote) is not
-  // remembered, so signing in and clicking again works without a restart.
+  // Which repository a workspace is on is read per click rather than
+  // remembered. The pane resolves the repository itself, server-side and at
+  // call time, from the workspace's remote — so an identity remembered here
+  // and since changed would not merely fail to route: it would route a link
+  // for the old repository into a pane bound to the new one and open, or act
+  // on, the same number there. Asking each time keeps the decision and the
+  // read that follows it looking at the same repository. It is not a hot
+  // path — one read per GitHub-shaped click, behind the surface's own cache.
   const githubWorkspaceIdRef = useRef(githubWorkspaceId);
   githubWorkspaceIdRef.current = githubWorkspaceId;
-  const githubRepositories = useRef(new Map<string, Promise<GithubRepository | null>>());
-  const resolveGithubRepository = useCallback((id: string): Promise<GithubRepository | null> => {
-    const cached = githubRepositories.current.get(id);
-    if (cached) return cached;
-    const pending = bridgeApi.githubStatus(id)
-      .then(status => status.availability.status === "available" ? status.repository ?? null : null)
-      .catch(() => null);
-    void pending.then(repository => { if (!repository) githubRepositories.current.delete(id); });
-    githubRepositories.current.set(id, pending);
-    return pending;
+  const resolveGithubRepository = useCallback(async (id: string): Promise<GithubRepository | null> => {
+    try {
+      const status = await bridgeApi.githubStatus(id);
+      return status.availability.status === "available" ? status.repository ?? null : null;
+    } catch {
+      // No `gh`, signed out, no remote: nothing to route into.
+      return null;
+    }
   }, []);
 
   // A GitHub link the pane can render belongs in the pane, not in the OS

@@ -25,12 +25,14 @@ match into a pane intent.
 Three things keep it honest. The pane resolves its repository server-side
 from the workspace's Git remote and never takes a repo selector from a caller
 (`feat-343-github-surface-actions`), so a link to *any other* repository
-cannot be shown inline and keeps going to the browser. Resolving the repo
-costs a `gh` round-trip, so it happens on the first GitHub-shaped click and
-is remembered per workspace — a chat whose links never point at GitHub never
-pays for it. And the affordances whose entire purpose is to leave the app —
-the pane's own "Open on GitHub", the truncated-patch "view the full diff",
-the per-check "Open logs" — say so on the anchor and are never routed.
+cannot be shown inline and keeps going to the browser. That resolution is
+read per click rather than remembered: the pane resolves the repository again,
+itself, when it reads — so an identity cached here and since changed would not
+merely fail to route, it would route a link for the old repository into a pane
+bound to the new one and open, or act on, the same number there. And the
+affordances whose entire purpose is to leave the app — the pane's own "Open on
+GitHub", the truncated-patch "view the full diff", the per-check "Open logs" —
+say so on the anchor and are never routed.
 
 The intent widens from a bare PR number to a view, because the pane has more
 than one view and a URL names which. `openPullRequestPane` keeps its
@@ -87,7 +89,8 @@ Every existing case stays green unchanged.
 | 3.2 | A link to another repository still leaves | an anchor to a different `owner/name` calls the shell and does not open the pane |
 | 3.3 | A GitHub path with no inline view still leaves | a `/commit/<sha>` anchor calls the shell |
 | 3.4 | A chat with no worktree still leaves | with no repository workspace, the same PR anchor calls the shell |
-| 3.5 | The repository is resolved once per workspace | two GitHub link clicks in one workspace issue one `github/github_status` read |
+| 3.5 | The pane it opened is persisted under the workspace's dock key | after a routed click the stored dock record for the workspace reads `{ open: true, pane: "github" }` |
+| 3.6 | The repository is re-read per click | after the workspace resolves to a different repository, a link to the old one goes to the browser |
 
 ## 4. The pane obeys the wider intent — `src/components/GitHubPane.test.tsx` (extended)
 

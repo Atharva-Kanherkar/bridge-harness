@@ -24,6 +24,7 @@ class MockResizeObserver {
 
 let container: HTMLDivElement;
 let root: Root;
+let store: Map<string, string>;
 
 const settle = async (rounds = 3) => {
   for (let i = 0; i < rounds; i++) {
@@ -35,7 +36,7 @@ beforeEach(async () => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   await bridgeApi.resetModelProfiles();
   vi.stubGlobal("ResizeObserver", MockResizeObserver);
-  const store = new Map<string, string>();
+  store = new Map<string, string>();
   Object.defineProperty(globalThis, "localStorage", {
     configurable: true,
     value: {
@@ -130,17 +131,37 @@ describe("clicking a GitHub link", () => {
     expect(open).toHaveBeenCalledWith(`${repo}/pull/42`);
   });
 
-  it("asks which repository the workspace is on once, not once per link", async () => {
+  it("persists the pane it opened under the workspace's own dock key", async () => {
     await openWorkspaceSession();
-    const status = vi.spyOn(bridgeApi, "githubStatus");
 
     await clickLink(`${repo}/pull/42`);
-    // The pane reads the status for itself when it mounts; what matters is
-    // that the second link costs nothing.
-    const settled = status.mock.calls.length;
-    await clickLink(`${repo}/issues/7`);
 
+    // The dock dispatcher is memoized on the dock key, which is undefined
+    // until a session is selected — capturing it once would leave the pane
+    // open on screen but unwritten, so it would not come back after a restart.
     expect(activePane()).toBe("GitHub");
-    expect(status.mock.calls.length).toBe(settled);
+    const persisted = [...store.entries()].find(([key]) => key.startsWith("bridge.dock.v1."));
+    expect(persisted, "the dock wrote nothing").toBeDefined();
+    expect(JSON.parse(persisted![1])).toMatchObject({ open: true, pane: "github" });
+  });
+
+  it("re-reads the repository per click, so a remote that has changed stops routing", async () => {
+    await openWorkspaceSession();
+    await clickLink(`${repo}/pull/42`);
+    expect(activePane()).toBe("GitHub");
+
+    // The workspace is moved onto a different repository. The pane resolves
+    // its repository server-side at call time, so a remembered identity would
+    // route this link into a pane bound to the new repo and open the same
+    // number there — a different pull request entirely.
+    vi.spyOn(bridgeApi, "githubStatus").mockResolvedValue({
+      availability: { status: "available" },
+      repository: { host: "github.com", owner: "someone", name: "elsewhere" },
+    });
+    open.mockClear();
+
+    await clickLink(`${repo}/pull/99`);
+
+    expect(open).toHaveBeenCalledWith(`${repo}/pull/99`);
   });
 });
