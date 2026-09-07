@@ -3148,13 +3148,17 @@ fn handle_agent_value(
                             session_id,
                             &pending.requested_at,
                         );
-                        checkpoint_prompt_after_turn = Some(
-                            compaction_controller::CompactionController::checkpoint_prompt(
+                        // The evidence read is best-effort here: a repair that
+                        // cannot list what to account for is still worth
+                        // sending, and this path cannot fail a turn.
+                        checkpoint_prompt_after_turn =
+                            compaction_controller::CompactionController::repair_prompt(
+                                &db,
                                 session_id,
                                 &pending,
-                                Some("repair the invalid checkpoint response"),
-                            ),
-                        );
+                                "the previous reply could not be read as that object",
+                            )
+                            .ok();
                     }
                 } else if checkpoint_turn_active && !checkpoint_response_seen {
                     checkpoint_turn_handled = true;

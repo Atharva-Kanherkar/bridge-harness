@@ -809,13 +809,16 @@ mod tests {
         // First reply is not valid JSON: the handler resends a repair prompt.
         handle_detached_frame(&core, "s", 4242, "outgoing-thread", &json!({"assistant": "sorry, no"}));
         assert_eq!(sent.lock().unwrap().len(), 1, "a repair prompt was resent");
-        assert!(sent.lock().unwrap()[0].contains("not valid against that schema"), "the resend is a repair prompt");
-        // The repair reply carries the decision and settles.
-        let db_pending = CompactionController::pending(&core.db.lock().unwrap(), "s").unwrap().unwrap();
+        assert!(
+            sent.lock().unwrap()[0].contains("could not be read as that object"),
+            "the resend is a repair prompt"
+        );
+        // A repair says what to account for, which the first request also did.
+        assert!(sent.lock().unwrap()[0].contains("Keep it"), "the repair names the evidence");
+        // The reply carries meaning only: Bridge fills the bookkeeping itself,
+        // so the background path has no metadata to get wrong either.
         let repaired = json!({
-            "schemaVersion":1,"summary":"done","decisions":["Keep it"],"filesTouched":[],
-            "sourceAgent":"s","firstRetainedEntryId":db_pending.first_retained_entry_id,
-            "tokensBefore":db_pending.tokens_before,"reason":db_pending.reason.as_str()
+            "summary":"done","decisions":["Keep it"],"filesTouched":[]
         }).to_string();
         handle_detached_frame(&core, "s", 4242, "outgoing-thread", &json!({"assistant": repaired}));
         assert!(CompactionController::pending(&core.db.lock().unwrap(), "s").unwrap().is_none());

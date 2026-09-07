@@ -162,6 +162,12 @@ pub fn checkpoint_context_with_window(
         for decision in restoration.decisions {
             header.push(format!("decision: {decision}"));
         }
+        // What was unfinished at the boundary. Carried under the decisions so
+        // the budget trim, which cuts the header's end, drops it before it
+        // drops the summary or the earliest decisions.
+        for open in restoration.open_work {
+            header.push(format!("still open: {open}"));
+        }
     } else if let Some(summary) = branch.iter().rev().find_map(|entry| {
         (entry.kind == "checkpoint")
             .then(|| {
