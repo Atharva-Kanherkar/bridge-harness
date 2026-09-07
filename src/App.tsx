@@ -7,7 +7,7 @@ import { harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
 import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
-import { openExternalUrl } from "./externalLinks";
+import { openExternalUrl, setInternalLinkRouter } from "./externalLinks";
 import { appendAgentEventBatch, queueAgentEvent as queueAgentEventBatch } from "./agentEvents";
 import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
@@ -16,7 +16,7 @@ import { HealthWarnings } from "./components/HealthWarnings";
 import { ComposerContextStrip } from "./components/ComposerContextStrip";
 import { ProjectsScreen } from "./components/ProjectsScreen";
 import { NewProjectDialog } from "./components/NewProjectDialog";
-import type { QuestionAction, SuggestCompletionResult, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
+import type { GithubRepository, QuestionAction, SuggestCompletionResult, SuggestionSettingsSnapshot, WorkFactAction, WorkTask } from "./protocol/generated/protocol";
 import type { WorkActionOutcome } from "./components/WorkView";
 import { taskRoute, type TaskAction } from "./components/workTasks";
 import { isHiddenSession } from "./components/sidebarChats";
@@ -30,6 +30,7 @@ import { ChangesPanel } from "./components/ChangesPanel";
 import { GitHubPane } from "./components/GitHubPane";
 import { GithubToasts, type CiToast } from "./components/GithubToasts";
 import { ciToastKey, jumpFallbackHint } from "./githubSurface";
+import { githubLinkMatchesRepository, parseGithubLink, type GithubLinkView } from "./githubLinks";
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
 import type { BrowserSupervision } from "./components/BrowserSurface";
 import type { TerminalActivity } from "./components/TerminalPane";
@@ -400,6 +401,9 @@ function AppContent() {
   // The new-thread hero names the project when it can, dotted-underlined.
   const projectName = (workspace?.projectId ? state.projects.find(p => p.id === workspace.projectId)?.name : undefined) ?? workspace?.title ?? undefined;
   const hasRepo = !!workspace?.path;
+  // The workspace a GitHub link could be routed into, if any — the same
+  // condition that decides whether the pane is available at all.
+  const githubWorkspaceId = hasRepo ? workspace?.id : undefined;
   const isDirectChat = session?.kind === "direct";
   const importedSourceFingerprint = useMemo(() => {
     if (session?.kind !== "imported") return undefined;
@@ -491,20 +495,66 @@ function AppContent() {
   }
 
   // ── GitHub surface glue ────────────────────────────────────────────────────
-  // Deep links into the GitHub dock pane (sidebar rows, CI toasts), the
-  // CI-finished notification stack, and jump-to-diff from a review comment.
+  // Deep links into the GitHub dock pane (CI toasts, GitHub links clicked
+  // anywhere in the app), the CI-finished notification stack, and
+  // jump-to-diff from a review comment.
   const githubIntentNonce = useRef(0);
-  const [githubIntent, setGithubIntent] = useState<{ number: number; nonce: number }>();
+  const [githubIntent, setGithubIntent] = useState<{ view: GithubLinkView; nonce: number }>();
   const [githubToasts, setGithubToasts] = useState<CiToast[]>([]);
   const [githubJumpHint, setGithubJumpHint] = useState<string>();
 
-  function openPullRequestPane(number: number) {
+  const openGithubPane = useCallback((view: GithubLinkView) => {
     githubIntentNonce.current += 1;
-    setGithubIntent({ number, nonce: githubIntentNonce.current });
+    setGithubIntent({ view, nonce: githubIntentNonce.current });
     setView("workspace");
     setParadigm("single");
     dispatchDock({ type: "open-pane", pane: "github" });
+  }, []);
+
+  function openPullRequestPane(number: number) {
+    openGithubPane({ kind: "pull", number, tab: "conversation" });
   }
+
+  // Which repository a workspace is on costs a `gh` round-trip, so it is asked
+  // for on the first GitHub-shaped link click and remembered per workspace —
+  // a chat whose links never point at GitHub never pays for it. A workspace
+  // that resolves to nothing (no `gh`, signed out, no remote) is not
+  // remembered, so signing in and clicking again works without a restart.
+  const githubWorkspaceIdRef = useRef(githubWorkspaceId);
+  githubWorkspaceIdRef.current = githubWorkspaceId;
+  const githubRepositories = useRef(new Map<string, Promise<GithubRepository | null>>());
+  const resolveGithubRepository = useCallback((id: string): Promise<GithubRepository | null> => {
+    const cached = githubRepositories.current.get(id);
+    if (cached) return cached;
+    const pending = bridgeApi.githubStatus(id)
+      .then(status => status.availability.status === "available" ? status.repository ?? null : null)
+      .catch(() => null);
+    void pending.then(repository => { if (!repository) githubRepositories.current.delete(id); });
+    githubRepositories.current.set(id, pending);
+    return pending;
+  }, []);
+
+  // A GitHub link the pane can render belongs in the pane, not in the OS
+  // browser. Anything else — another repository, a view the pane does not
+  // have, a chat with no worktree — is declined here and leaves the app
+  // exactly as it did before.
+  const routeGithubLink = useCallback(async (url: string): Promise<boolean> => {
+    const link = parseGithubLink(url);
+    if (!link || !githubWorkspaceId) return false;
+    const repository = await resolveGithubRepository(githubWorkspaceId);
+    // Resolving can take a `gh` round-trip, and the reader may have moved on
+    // in the meantime; a pane intent aimed at the workspace they left would
+    // open the wrong repository's PR under the same number.
+    if (githubWorkspaceIdRef.current !== githubWorkspaceId) return false;
+    if (!githubLinkMatchesRepository(link, repository)) return false;
+    openGithubPane(link.view);
+    return true;
+  }, [githubWorkspaceId, resolveGithubRepository, openGithubPane]);
+
+  useEffect(() => {
+    setInternalLinkRouter(routeGithubLink);
+    return () => setInternalLinkRouter(undefined);
+  }, [routeGithubLink]);
 
   function openCiToast(toast: CiToast) {
     setGithubToasts(current => current.filter(item => item.key !== toast.key));

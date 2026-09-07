@@ -29,6 +29,7 @@ import { Badge } from "@/components/ui/badge";
 import { Markdown } from "./Markdown";
 import { relativeTime } from "./workDashboard";
 import { checksNeedPolling, rollupState, type PullRequestListItem, type RollupState } from "../githubSurface";
+import type { GithubLinkView, PullRequestView } from "../githubLinks";
 import type {
   GithubAction,
   GithubCheckoutResult,
@@ -57,15 +58,15 @@ export type GitHubPaneProps = {
   /** The active orchestrator session, so a subagent review attaches to it
    * rather than minting an orphan session. */
   sessionId?: string;
-  /** An outside ask (sidebar row, CI toast) to open one PR. Nonce distinguishes
-   * "open it again" from a re-render. */
-  intent?: { number: number; nonce: number };
+  /** An outside ask (CI toast, a clicked GitHub link) to show one view. Nonce
+   * distinguishes "open it again" from a re-render. */
+  intent?: { view: GithubLinkView; nonce: number };
   onJumpToFile: (path: string, line: number | undefined, headBranch: string) => void;
 };
 
 type Detail = { result: GithubPullRequestResult; checks: GithubChecksResult };
 type SurfaceTab = "pulls" | "issues" | "repository";
-type PullRequestTab = "conversation" | "changes" | "checks";
+type PullRequestTab = PullRequestView;
 
 const ROLLUP: Record<RollupState, { icon: typeof CircleCheck; className: string; label: string }> = {
   failing: { icon: CircleX, className: "text-destructive", label: "Failing" },
@@ -305,13 +306,33 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
     return () => { active = false; offs.forEach(off => off()); };
   }, [workspaceId, refreshChecks]);
 
-  // Deep links (sidebar row, CI toast) land here.
+  // Deep links (CI toast, a GitHub link clicked anywhere in the app) land
+  // here. A list or overview intent clears whatever detail was open, so the
+  // pane shows the view that was asked for rather than the one it was left on.
   const seenIntent = useRef(0);
+  const [pullRequestFocus, setPullRequestFocus] = useState<{ tab: PullRequestTab; nonce: number }>();
   useEffect(() => {
     if (!intent || intent.nonce === seenIntent.current) return;
     seenIntent.current = intent.nonce;
-    void openDetail(intent.number);
-  }, [intent, openDetail]);
+    const view = intent.view;
+    const showSurface = (tab: SurfaceTab) => {
+      setSurfaceTab(tab);
+      setSelected(undefined); setDetail(undefined); setDetailError(undefined);
+      setSelectedIssue(undefined); setIssueDetail(undefined); setIssueError(undefined);
+    };
+    switch (view.kind) {
+      case "pull":
+        setPullRequestFocus({ tab: view.tab, nonce: intent.nonce });
+        void openDetail(view.number);
+        break;
+      case "issue":
+        void openIssue(view.number);
+        break;
+      case "pulls": showSurface("pulls"); break;
+      case "issues": showSurface("issues"); break;
+      case "repository": showSurface("repository"); break;
+    }
+  }, [intent, openDetail, openIssue]);
 
   const repoLabel = status?.repository ? `${status.repository.owner}/${status.repository.name}` : undefined;
 
@@ -333,6 +354,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
       number={selected}
       detail={detail}
       error={detailError}
+      focus={pullRequestFocus}
       availableLabels={repositoryOverview?.labels ?? []}
       onBack={() => { setSelected(undefined); setDetail(undefined); setDetailError(undefined); }}
       onActed={() => { void loadSurface(); void openDetail(selected, true); }}
@@ -476,7 +498,7 @@ function PatchView({ patch, fullDiffUrl }: { patch: string; fullDiffUrl: string 
     <pre className="max-h-80 overflow-auto bg-background/50 py-2 font-mono text-[11px] leading-5" aria-label="File patch">{shown.map((line, index) => <span key={`${index}-${line}`} className={cn("block whitespace-pre px-3", line.startsWith("+") && !line.startsWith("+++") && "bg-success/10 text-success", line.startsWith("-") && !line.startsWith("---") && "bg-destructive/10 text-destructive", line.startsWith("@@") && "bg-info/10 text-info")}>
       {line || " "}
     </span>)}</pre>
-    {shown.length < lines.length && <a href={fullDiffUrl} target="_blank" rel="noreferrer" className="flex items-center gap-1.5 border-t border-border px-3 py-2 text-[11px] text-muted-foreground transition-colors hover:text-foreground">
+    {shown.length < lines.length && <a href={fullDiffUrl} target="_blank" rel="noreferrer" data-system-browser className="flex items-center gap-1.5 border-t border-border px-3 py-2 text-[11px] text-muted-foreground transition-colors hover:text-foreground">
       <ExternalLink size={11} aria-hidden="true" />
       Patch truncated at {PATCH_LINE_LIMIT} lines — view the full diff on GitHub
     </a>}
@@ -521,7 +543,7 @@ function ChecksList({ checks }: { checks: GithubChecksResult["checks"] }) {
           <ToneIcon size={13.5} className={cn("shrink-0", tone.className)} aria-hidden="true" />
           <span className="min-w-0 flex-1 truncate text-[12px] text-foreground">{check.name}</span>
           <span className="shrink-0 text-[11px] text-muted-foreground">{check.conclusion ?? check.status}</span>
-          {check.logUrl && <a href={check.logUrl} target="_blank" rel="noreferrer" aria-label={`Open logs for ${check.name}`} title="Open logs" className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><ExternalLink size={12.5} aria-hidden="true" /></a>}
+          {check.logUrl && <a href={check.logUrl} target="_blank" rel="noreferrer" data-system-browser aria-label={`Open logs for ${check.name}`} title="Open logs" className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><ExternalLink size={12.5} aria-hidden="true" /></a>}
         </div>;
       })}
     </div> : <p className="text-[12px] text-muted-foreground">No checks reported.</p>}
@@ -581,13 +603,17 @@ type PullRequestDetailProps = {
   number: number;
   detail?: Detail;
   error?: string;
+  /** Which tab a deep link asked for, if it asked. Nonce-gated like the pane's
+   * own intent, so arriving from `/pull/12/files` selects Changes without
+   * fighting the reader who then clicks Conversation. */
+  focus?: { tab: PullRequestTab; nonce: number };
   availableLabels: GithubLabel[];
   onBack: () => void;
   onActed: () => void;
   onJumpToFile: (path: string, line: number | undefined, headBranch: string) => void;
 };
 
-function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository, number, detail, error, availableLabels, onBack, onActed, onJumpToFile }: PullRequestDetailProps) {
+function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository, number, detail, error, focus, availableLabels, onBack, onActed, onJumpToFile }: PullRequestDetailProps) {
   const [pending, setPending] = useState<PendingAction>();
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewBusy, setReviewBusy] = useState(false);
@@ -601,6 +627,12 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string>();
   const [tab, setTab] = useState<PullRequestTab>("conversation");
+  const seenFocus = useRef(0);
+  useEffect(() => {
+    if (!focus || focus.nonce === seenFocus.current) return;
+    seenFocus.current = focus.nonce;
+    setTab(focus.tab);
+  }, [focus]);
   const detailId = useId();
   const [labelsOpen, setLabelsOpen] = useState(false);
 
@@ -688,7 +720,7 @@ function PullRequestDetail({ workspaceId, workspaceBranch, sessionId, repository
           <span className="capitalize">{summary.isDraft ? "draft" : summary.state}</span>
           <span className="truncate">by {summary.author?.login ?? "ghost"}</span>
           {review && <Badge variant={review.variant} size="sm">{review.label}</Badge>}
-          <a href={summary.url} target="_blank" rel="noreferrer" aria-label={`Open #${summary.number} on GitHub`} title="Open on GitHub" className="ml-auto text-muted-foreground transition-colors hover:text-foreground"><SquareArrowOutUpRight size={12.5} aria-hidden="true" /></a>
+          <a href={summary.url} target="_blank" rel="noreferrer" data-system-browser aria-label={`Open #${summary.number} on GitHub`} title="Open on GitHub" className="ml-auto text-muted-foreground transition-colors hover:text-foreground"><SquareArrowOutUpRight size={12.5} aria-hidden="true" /></a>
         </div>
         <h2 className="mt-1.5 font-display text-[15px] font-semibold leading-snug tracking-[-0.01em] text-foreground">{summary.title}</h2>
         <p className="mt-1 font-mono text-[11px] text-muted-foreground">

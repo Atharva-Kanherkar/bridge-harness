@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { bridgeApi } from "../api";
 import { GitHubPane } from "./GitHubPane";
 import type { GithubPullRequestResult, GithubStatusResult } from "../protocol/generated/protocol";
+import type { GithubLinkView } from "../githubLinks";
 
 let root: Root | undefined;
 let host: HTMLDivElement | undefined;
@@ -370,5 +371,110 @@ describe("GitHubPane", () => {
     expect(list.mock.calls.length).toBe(before);
     await act(async () => { fire?.({ workspaceId: "w", number: 1 }); await flush(); });
     expect(list.mock.calls.length).toBe(before + 1);
+  });
+});
+
+describe("GitHubPane deep links", () => {
+  const issues = () => {
+    vi.spyOn(bridgeApi, "githubIssues").mockResolvedValue({ issues: [{
+      number: 17, title: "Stay inside Bridge", state: "open", author: { login: "atharva" }, labels: [],
+      createdAt: "now", updatedAt: "now", url: "https://example.test/issues/17",
+    }] });
+    return vi.spyOn(bridgeApi, "githubIssue").mockResolvedValue({ issue: {
+      summary: { number: 17, title: "Stay inside Bridge", state: "open", author: { login: "atharva" }, labels: [], createdAt: "now", updatedAt: "now", url: "https://example.test/issues/17" },
+      body: "Issue body", comments: [{ id: "i1", author: { login: "reviewer" }, body: "Issue comment", createdAt: "now", url: "https://example.test" }],
+    } });
+  };
+  const overview = () => vi.spyOn(bridgeApi, "githubRepository").mockResolvedValue({ nameWithOwner: "bridge/harness", description: "Repository overview", visibility: "PRIVATE", defaultBranch: "main", primaryLanguage: "Rust", url: "https://example.test", openIssues: 1, openPullRequests: 2, labels: [] });
+  const detailTabs = () => [...document.body.querySelectorAll<HTMLButtonElement>('[aria-label="Pull request detail"] button[role="tab"]')];
+  const selectedDetailTab = () => detailTabs().find(tab => tab.getAttribute("aria-selected") === "true")?.textContent;
+  const detailTab = (name: string) => detailTabs().find(tab => tab.textContent?.startsWith(name))!;
+
+  it("opens the pull request a pull intent names", async () => {
+    mockReads();
+    await mount({ intent: { view: { kind: "pull", number: 1, tab: "conversation" }, nonce: 1 } });
+
+    expect(host!.textContent).toContain("Main conversation comment");
+    expect(selectedDetailTab()).toContain("conversation");
+  });
+
+  it("selects the sub-tab a pull intent names", async () => {
+    mockReads();
+    await mount({ intent: { view: { kind: "pull", number: 1, tab: "changes" }, nonce: 1 } });
+    expect(selectedDetailTab()).toContain("changes");
+    expect(host!.querySelector('section[aria-label="Changed files"]')).not.toBeNull();
+
+    await act(async () => { root?.render(<GitHubPane workspaceId="w" workspaceBranch="main" onJumpToFile={() => undefined} intent={{ view: { kind: "pull", number: 1, tab: "checks" }, nonce: 2 }} />); await flush(); });
+    expect(selectedDetailTab()).toContain("checks");
+  });
+
+  it("opens the issue an issue intent names", async () => {
+    mockReads(); issues(); overview();
+    await mount({ intent: { view: { kind: "issue", number: 17 }, nonce: 1 } });
+
+    expect(host!.querySelector('button[aria-label="Issues"]')?.getAttribute("aria-pressed")).toBe("true");
+    expect(host!.textContent).toContain("Issue comment");
+  });
+
+  it("shows a list or overview intent with nothing selected", async () => {
+    mockReads(); issues(); overview();
+    await mount({ intent: { view: { kind: "pull", number: 1, tab: "conversation" }, nonce: 1 } });
+    expect(host!.textContent).toContain("Main conversation comment");
+
+    const render = async (view: GithubLinkView, nonce: number) => {
+      await act(async () => { root?.render(<GitHubPane workspaceId="w" workspaceBranch="main" onJumpToFile={() => undefined} intent={{ view, nonce }} />); await flush(); });
+    };
+
+    await render({ kind: "issues" }, 2);
+    expect(host!.querySelector('button[aria-label="Issues"]')?.getAttribute("aria-pressed")).toBe("true");
+    expect(host!.textContent).toContain("Stay inside Bridge");
+    expect(host!.textContent).not.toContain("Issue comment");
+
+    await render({ kind: "repository" }, 3);
+    expect(host!.textContent).toContain("Repository overview");
+
+    await render({ kind: "pulls" }, 4);
+    expect(host!.querySelector('button[aria-label="Pull requests"]')?.getAttribute("aria-pressed")).toBe("true");
+    expect(host!.textContent).not.toContain("Main conversation comment");
+  });
+
+  it("re-fires on a new nonce and stays put on a re-render", async () => {
+    mockReads();
+    const detailRead = vi.spyOn(bridgeApi, "githubPullRequest");
+    await mount({ intent: { view: { kind: "pull", number: 1, tab: "conversation" }, nonce: 1 } });
+    const opened = detailRead.mock.calls.length;
+
+    const render = async (nonce: number) => {
+      await act(async () => { root?.render(<GitHubPane workspaceId="w" workspaceBranch="main" onJumpToFile={() => undefined} intent={{ view: { kind: "pull", number: 1, tab: "conversation" }, nonce }} />); await flush(); });
+    };
+
+    await render(1);
+    expect(detailRead.mock.calls.length).toBe(opened);
+    await render(2);
+    expect(detailRead.mock.calls.length).toBe(opened + 1);
+  });
+
+  it("marks the affordances whose whole point is to leave the app", async () => {
+    mockReads();
+    // A patch past the pane's line cap is what puts the full-diff escape on
+    // screen; the diff it points at is the one the pane just refused to show.
+    vi.spyOn(bridgeApi, "githubPullRequest").mockResolvedValue({
+      ...detail,
+      files: [{ path: "src/api.ts", previousPath: null, status: "modified", additions: 700, deletions: 0, patch: ["@@ -1 +1 @@", ...Array.from({ length: 700 }, (_, line) => `+line ${line}`)].join("\n") }],
+    });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+
+    const marked = (selector: string) => host!.querySelector(selector)?.hasAttribute("data-system-browser");
+    expect(marked('a[aria-label="Open #1 on GitHub"]')).toBe(true);
+
+    await click(detailTab("changes"));
+    expect(host!.textContent).toContain("view the full diff on GitHub");
+    expect(marked('a[href="https://example.test/pr/1/files"]')).toBe(true);
+
+    await click(detailTab("checks"));
+    // A log URL is often shaped `/pull/<n>/checks`, which the pane would
+    // otherwise swallow into a checks list holding no logs.
+    expect(marked('a[aria-label="Open logs for build"]')).toBe(true);
   });
 });
