@@ -1,3 +1,4 @@
+import { recordStreamReceipt } from "./streamTiming";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
@@ -1806,7 +1807,7 @@ export const bridgeApi = {
   onAgentEvent: async (handler: (event: AgentEvent) => void): Promise<UnlistenFn> => {
     if (isTauri()) {
       return listen<AgentEvent[]>(AGENT_EVENT_BATCH, event => {
-        for (const frame of event.payload) handler(frame);
+        for (const frame of event.payload) { recordStreamReceipt(frame); handler(frame); }
       });
     }
     agentListeners.add(handler);

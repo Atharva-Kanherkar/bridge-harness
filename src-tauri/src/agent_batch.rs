@@ -3,9 +3,9 @@
 //! A single tool call is roughly four frames — started, an output delta or
 //! two, completed — and a hundred-step turn is four hundred of them, each one
 //! its own IPC message, each one serialized, posted and dispatched
-//! individually. The frontend already re-batches on arrival (a 50 ms timer in
-//! `App.tsx`), so the per-frame delivery buys nothing and costs the webview a
-//! wake-up per frame at the exact moment it is trying to draw.
+//! individually. Native batching gets 16 ms of the shared 32 ms display
+//! buffering budget; the frontend drains on the next frame or within the
+//! remaining 16 ms. Lifecycle boundaries bypass both waits.
 //!
 //! This sits at the shell's emit boundary and nowhere else. Nothing about
 //! durability changes: the frames were persisted before the event bus ever
@@ -77,8 +77,11 @@ impl Pending {
             out.push((kind.to_string(), payload));
             return out;
         }
+        let urgent = payload.get("kind").and_then(Value::as_str).is_some_and(|kind| {
+            !matches!(kind, "message.delta" | "reasoning.delta" | "command.output_delta" | "diff.delta" | "tool.progress")
+        });
         self.events.push(payload);
-        if self.events.len() >= cap {
+        if urgent || self.events.len() >= cap {
             return self.take().into_iter().collect();
         }
         match self.deadline {
@@ -223,6 +226,18 @@ mod tests {
             .iter()
             .map(|value| value["id"].as_i64().expect("an id"))
             .collect()
+    }
+
+    #[test]
+    fn lifecycle_boundaries_flush_preceding_deltas_immediately() {
+        for kind in ["reasoning.completed", "message.completed", "tool.started", "approval.requested", "turn.completed", "session.stopped", "error"] {
+            let mut pending = Pending::default();
+            let now = Instant::now();
+            assert!(pending.offer(agent_event_name(), serde_json::json!({"id":1,"kind":"message.delta"}), now, WINDOW, 64).is_empty());
+            let sent = pending.offer(agent_event_name(), serde_json::json!({"id":2,"kind":kind}), now, WINDOW, 64);
+            assert_eq!(ids(&sent[0]), vec![1, 2]);
+            assert!(pending.deadline.is_none());
+        }
     }
 
     #[test]
