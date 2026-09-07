@@ -1108,7 +1108,7 @@ function ItemView({ item, workers, now, onResolve, onAnswerQuestion, onOpenSessi
   if (item.type === "permission") return <PermissionCard item={item} onResolve={onResolve}/>;
   if (item.type === "question") return <QuestionCard item={item} onResolve={onAnswerQuestion}/>;
   if (item.type === "delegation") return <DelegationRow item={item} workers={workers} now={now} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRetryWorker={onRetryWorker}/>;
-  if (item.type === "checkpoint" || item.type === "compaction" || item.type === "branch-summary") return <ForestCard item={item} onRetryCompaction={onRetryCompaction}/>;
+  if (item.type === "checkpoint" || item.type === "compaction" || item.type === "context-compacted" || item.type === "branch-summary") return <ForestCard item={item} onRetryCompaction={onRetryCompaction}/>;
   if (item.type === "model-change") return <ModelChangedRow item={item}/>;
   if (item.type === "raw") return <RawEvent item={item}/>;
   if (item.type === "error") return <ErrorCard item={item} errorContext={errorContext}/>;
@@ -1164,7 +1164,10 @@ function ForestCard({ item, onRetryCompaction }: { item: ConversationItem; onRet
   const retryingRef = useRef(false);
   const [retryAccepted, setRetryAccepted] = useState(false);
   const [retryError, setRetryError] = useState<string>();
-  const label = item.type === "checkpoint" ? "Checkpoint" : item.type === "compaction" ? "Context" : "Branch";
+  const label = item.type === "checkpoint" ? "Checkpoint"
+    : item.type === "context-compacted" ? "Context"
+    : item.type === "compaction" ? "Checkpoint"
+    : "Branch";
   const retryable = item.type === "compaction" && item.status === "failed" && item.data.retryable === true && !!onRetryCompaction;
   const recoveryAction = typeof item.data.recoveryAction === "string" ? item.data.recoveryAction : undefined;
   const retry = async () => {
