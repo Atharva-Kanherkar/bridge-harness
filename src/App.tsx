@@ -2429,6 +2429,8 @@ function AppContent() {
                       workspace={workspace ?? null}
                       worktree={worktreeOn}
                       locked={conversationStarted || forest === undefined}
+                      lockReason={forest === undefined ? "Chat context is loading." : undefined}
+                      onNewChat={workspace ? () => openWorkspaceDraft(workspace.id) : undefined}
                       branches={branchWorkspaceId === workspace?.id ? workspaceBranches : []}
                       currentBranch={branchWorkspaceId === workspace?.id ? workspaceBranchCurrent : workspace?.branch ?? null}
                       branchBusy={branchWorkspaceId === workspace?.id && branchBusy}

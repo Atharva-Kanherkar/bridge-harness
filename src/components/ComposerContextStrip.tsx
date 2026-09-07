@@ -1,15 +1,17 @@
-import { Cloud, FolderGit2, GitBranch, GitFork, Laptop, Terminal } from "lucide-react";
+import { ChevronDown, Cloud, FolderGit2, GitBranch, GitFork, Laptop, Plus, Terminal } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { MenuItem, MenuPanel, useMenuPanel } from "@/components/ui/menu-panel";
+import { MenuItem, MenuPanel, MenuSeparator, useMenuPanel } from "@/components/ui/menu-panel";
 import type { Workspace } from "../types";
 
 export type ComposerContextStripProps = {
   workspaces: Workspace[];
   workspace: Workspace | null;
   worktree: boolean;
-  /** Repo menu and worktree toggle lock after the first user turn. */
+  /** Existing chats keep their checkout; menus still explain the restriction. */
   locked: boolean;
+  lockReason?: string;
+  onNewChat?: () => void;
   branches: string[];
   /** Git's HEAD name when it differs from the last stored `workspace.branch`. */
   currentBranch?: string | null;
@@ -21,52 +23,20 @@ export type ComposerContextStripProps = {
   onToggleWorktree: () => void;
 };
 
-const HOSTS: { id: "local" | "cloud" | "ssh"; label: string; icon: LucideIcon; hint: string; disabled: boolean }[] = [
-  { id: "local", label: "This Mac", icon: Laptop, hint: "Run the agent on this machine", disabled: false },
-  { id: "cloud", label: "Cloud", icon: Cloud, hint: "Not wired up yet", disabled: true },
-  { id: "ssh", label: "SSH", icon: Terminal, hint: "Not wired up yet", disabled: true },
+const HOSTS: { id: "local" | "cloud" | "ssh"; label: string; icon: LucideIcon; disabled: boolean }[] = [
+  { id: "local", label: "This Mac", icon: Laptop, disabled: false },
+  { id: "cloud", label: "Cloud", icon: Cloud, disabled: true },
+  { id: "ssh", label: "SSH", icon: Terminal, disabled: true },
 ];
 
-function Chip({
-  icon: Icon,
-  label,
-  pressed,
-  expanded,
-  disabled,
-  onClick,
-  ariaLabel,
-  compact = false,
-}: {
-  icon: LucideIcon;
-  label: string;
-  pressed?: boolean;
-  expanded?: boolean;
-  disabled?: boolean;
-  onClick?: () => void;
-  ariaLabel?: string;
-  compact?: boolean;
-}) {
-  const className = cn(
-    "inline-flex h-7 max-w-[16rem] items-center gap-1.5 rounded-md px-2 text-[12.5px] tracking-[-0.01em]",
-    pressed || expanded ? "bg-accent text-foreground" : "text-muted-foreground",
-    onClick && !disabled && "transition-colors hover:bg-accent hover:text-foreground",
-    disabled && "opacity-70",
-    compact && "shrink-0",
-  );
-  if (!onClick) {
-    return (
-      <span className={className} title={label} aria-label={label}>
-        <Icon size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
-        <span className={cn("min-w-0 truncate", compact && "hidden @xl/composer-context:inline")}>{label}</span>
-      </span>
-    );
-  }
-  return (
-    <button type="button" title={label} aria-label={ariaLabel} aria-pressed={pressed} aria-expanded={expanded} disabled={disabled} onClick={onClick} className={className}>
-      <Icon size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
-      <span className={cn("min-w-0 truncate", compact && "hidden @xl/composer-context:inline")}>{label}</span>
-    </button>
-  );
+function ContextHelp({ text, onNewChat }: { text: string; onNewChat?: () => void }) {
+  return <>
+    <p className="px-3 py-2 text-caption text-muted-foreground">{text}</p>
+    {onNewChat && <>
+      <MenuSeparator />
+      <MenuItem label="New chat with different settings…" leading={<Plus size={13} aria-hidden="true" />} onClick={onNewChat} />
+    </>}
+  </>;
 }
 
 export function ComposerContextStrip({
@@ -74,6 +44,8 @@ export function ComposerContextStrip({
   workspace,
   worktree,
   locked,
+  lockReason = "Project and work mode are fixed after the first message. Choose different settings in a new chat.",
+  onNewChat,
   branches,
   currentBranch,
   branchBusy = false,
@@ -83,9 +55,10 @@ export function ComposerContextStrip({
   onSelectBranch,
   onToggleWorktree,
 }: ComposerContextStripProps) {
-  const repoMenu = useMenuPanel<HTMLButtonElement>({ width: 220, height: 220 });
-  const branchMenu = useMenuPanel<HTMLButtonElement>({ width: 240, height: 260 });
-  const hostMenu = useMenuPanel<HTMLButtonElement>({ width: 240, height: 180 });
+  const repoMenu = useMenuPanel<HTMLButtonElement>({ width: 280, height: 260 });
+  const branchMenu = useMenuPanel<HTMLButtonElement>({ width: 280, height: 260 });
+  const hostMenu = useMenuPanel<HTMLButtonElement>({ width: 280, height: 220 });
+  const worktreeMenu = useMenuPanel<HTMLButtonElement>({ width: 280, height: 260 });
   const worktreeAvailable = !!workspace?.projectId;
   const branchAvailable = worktreeAvailable && !worktree;
   const displayedBranch = currentBranch || workspace?.branch || "No branch";
@@ -97,29 +70,32 @@ export function ComposerContextStrip({
         ref={repoMenu.triggerRef}
         aria-haspopup="menu"
         aria-expanded={repoMenu.open}
-        disabled={locked || workspaces.length === 0}
         title={workspace?.title ?? "No project"}
         onClick={repoMenu.toggle}
         className={cn(
           "inline-flex h-7 min-w-0 max-w-[16rem] flex-1 items-center gap-1.5 rounded-md px-2 text-[12px] tracking-[-0.01em] text-muted-foreground transition-colors",
-          !locked && workspaces.length > 0 && "hover:bg-accent hover:text-foreground",
+          "hover:bg-accent hover:text-foreground",
           repoMenu.open && "bg-accent text-foreground",
         )}
       >
         <FolderGit2 size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
         <span className="min-w-0 truncate">{workspace?.title ?? "No project"}</span>
+        <ChevronDown size={10} className="shrink-0 opacity-60" aria-hidden="true" />
       </button>
       <MenuPanel controller={repoMenu} label="Repository">
-        {workspaces.map(item => (
+        {(locked ? workspace ? [workspace] : [] : workspaces).map(item => (
           <MenuItem
             key={item.id}
             role="menuitemradio"
             checked={item.id === workspace?.id}
+            disabled={locked}
             label={item.title}
             leading={<FolderGit2 size={13} aria-hidden="true" />}
             onClick={() => { onSelectWorkspace(item.id); repoMenu.close(); }}
           />
         ))}
+        {locked && <ContextHelp text={lockReason} onNewChat={onNewChat ? () => { repoMenu.close(); onNewChat(); } : undefined} />}
+        {!locked && workspaces.length === 0 && <ContextHelp text="Add a project to choose a repository for this chat." />}
       </MenuPanel>
 
       <button
@@ -127,92 +103,120 @@ export function ComposerContextStrip({
         ref={branchMenu.triggerRef}
         aria-haspopup="menu"
         aria-expanded={branchMenu.open}
-        disabled={locked || !branchAvailable}
         title={displayedBranch}
         onClick={() => {
-          if (!branchBusy) onRequestBranches();
+          if (!locked && branchAvailable && !branchBusy) onRequestBranches();
           branchMenu.toggle();
         }}
         className={cn(
           "inline-flex h-7 min-w-0 max-w-[16rem] flex-1 items-center gap-1.5 rounded-md px-2 text-[12px] tracking-[-0.01em] text-muted-foreground transition-colors",
-          !locked && branchAvailable && "hover:bg-accent hover:text-foreground",
+          "hover:bg-accent hover:text-foreground",
           branchMenu.open && "bg-accent text-foreground",
-          (locked || !branchAvailable || branchBusy) && "opacity-70",
+          branchBusy && "opacity-70",
         )}
       >
         <GitBranch size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
         <span className="min-w-0 truncate">{displayedBranch}</span>
+        <ChevronDown size={10} className="shrink-0 opacity-60" aria-hidden="true" />
       </button>
       <MenuPanel controller={branchMenu} label="Branch">
-        {branchBusy && <p role="status" aria-live="polite" className="px-3 py-2 text-[12px] text-muted-foreground">Loading branches…</p>}
-        {!branchBusy && branchError && <p role="status" aria-live="polite" className="px-3 py-2 text-[12px] text-destructive">{branchError}</p>}
-        {!branchBusy && !branchError && branches.map(branch => (
-          <MenuItem
-            key={branch}
-            role="menuitemradio"
-            checked={branch === displayedBranch}
-            label={branch}
-            leading={<GitBranch size={13} aria-hidden="true" />}
-            onClick={() => {
-              if (branch !== displayedBranch) onSelectBranch(branch);
-              branchMenu.close();
-            }}
+        {locked || !branchAvailable ? <>
+          <MenuItem label={displayedBranch} role="menuitemradio" checked disabled onClick={() => {}} leading={<GitBranch size={13} aria-hidden="true" />} />
+          <ContextHelp
+            text={locked ? "This chat keeps its current checkout. Branch switching requires the chats and terminal using that checkout to be stopped." : worktree ? "This chat uses its own isolated worktree. The project checkout is unchanged." : "Connect a Git repository to choose a branch."}
+            onNewChat={locked && onNewChat ? () => { branchMenu.close(); onNewChat(); } : undefined}
           />
-        ))}
-        {!branchBusy && !branchError && branches.length === 0 && (
-          <p role="status" className="px-3 py-2 text-[12px] text-muted-foreground">No local branches</p>
-        )}
+        </> : <>
+          {branchBusy && <p role="status" aria-live="polite" className="px-3 py-2 text-[12px] text-muted-foreground">Loading branches…</p>}
+          {!branchBusy && branchError && <p role="status" aria-live="polite" className="px-3 py-2 text-[12px] text-destructive">{branchError}</p>}
+          {!branchBusy && !branchError && branches.map(branch => (
+            <MenuItem
+              key={branch}
+              role="menuitemradio"
+              checked={branch === displayedBranch}
+              label={branch}
+              leading={<GitBranch size={13} aria-hidden="true" />}
+              onClick={() => {
+                if (branch !== displayedBranch) onSelectBranch(branch);
+                branchMenu.close();
+              }}
+            />
+          ))}
+          {!branchBusy && !branchError && branches.length === 0 && (
+            <p role="status" className="px-3 py-2 text-[12px] text-muted-foreground">No local branches</p>
+          )}
+        </>}
       </MenuPanel>
 
-      <Chip
-        compact
-        icon={GitFork}
-        label={worktree ? "Isolated worktree" : "Work on branch"}
-        ariaLabel={worktree ? "Using an isolated worktree. Click to work on the branch." : "Working on the branch. Click to isolate in a worktree."}
-        pressed={worktree}
-        disabled={locked || !worktreeAvailable}
-        onClick={locked || !worktreeAvailable ? undefined : onToggleWorktree}
-      />
+      <button
+        type="button"
+        ref={worktreeMenu.triggerRef}
+        aria-label={worktree ? "Work mode: Isolated worktree" : "Work mode: Work on branch"}
+        aria-haspopup="menu"
+        aria-expanded={worktreeMenu.open}
+        title={worktree ? "Isolated worktree" : "Work on branch"}
+        onClick={worktreeMenu.toggle}
+        className={cn(
+          "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+          worktreeMenu.open && "bg-accent text-foreground",
+        )}
+      >
+        <GitFork size={13} strokeWidth={1.7} aria-hidden="true" />
+        <span className="hidden @xl/composer-context:inline">{worktree ? "Isolated worktree" : "Work on branch"}</span>
+        <ChevronDown size={10} className="shrink-0 opacity-60" aria-hidden="true" />
+      </button>
+      <MenuPanel controller={worktreeMenu} label="Work mode">
+        {[false, true].map(isolated => <MenuItem
+          key={String(isolated)}
+          label={isolated ? "Isolated worktree" : "Work on branch"}
+          role="menuitemradio"
+          checked={worktree === isolated}
+          disabled={locked || !worktreeAvailable}
+          leading={<GitFork size={13} aria-hidden="true" />}
+          onClick={() => {
+            if (isolated !== worktree) onToggleWorktree();
+            worktreeMenu.close();
+          }}
+        />)}
+        <ContextHelp
+          text={locked ? lockReason : !worktreeAvailable ? "Connect a Git repository to create an isolated worktree." : "Use the project checkout, or give this chat an isolated copy in its own worktree."}
+          onNewChat={locked && onNewChat ? () => { worktreeMenu.close(); onNewChat(); } : undefined}
+        />
+      </MenuPanel>
 
-      {HOSTS.filter(host => !host.disabled).length === 1 ? (
-        <span className="ml-auto inline-flex">
-          <Chip compact icon={Laptop} label="This Mac" />
-        </span>
-      ) : (
-        <>
-          <button
-            type="button"
-            ref={hostMenu.triggerRef}
-            aria-haspopup="menu"
-            aria-expanded={hostMenu.open}
-            onClick={hostMenu.toggle}
-            className={cn(
-              "ml-auto inline-flex h-7 max-w-[16rem] items-center gap-1.5 rounded-md px-2 text-[12.5px] tracking-[-0.01em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
-              hostMenu.open && "bg-accent text-foreground",
-            )}
-          >
-            <Laptop size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
-            <span className="min-w-0 truncate">This Mac</span>
-          </button>
-          <MenuPanel controller={hostMenu} label="Agent host">
-            {HOSTS.map(item => {
-              const Icon = item.icon;
-              return (
-                <MenuItem
-                  key={item.id}
-                  label={item.label}
-                  disabled={item.disabled}
-                  checked={item.id === "local"}
-                  role="menuitemradio"
-                  leading={<Icon size={13} aria-hidden="true" />}
-                  trailing={<span className="text-[11px] text-muted-foreground">{item.hint}</span>}
-                  onClick={() => hostMenu.close()}
-                />
-              );
-            })}
-          </MenuPanel>
-        </>
-      )}
+      <button
+        type="button"
+        ref={hostMenu.triggerRef}
+        aria-label="Agent host: This Mac"
+        aria-haspopup="menu"
+        aria-expanded={hostMenu.open}
+        title="This Mac"
+        onClick={hostMenu.toggle}
+        className={cn(
+          "ml-auto inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
+          hostMenu.open && "bg-accent text-foreground",
+        )}
+      >
+        <Laptop size={13} strokeWidth={1.7} aria-hidden="true" />
+        <span className="hidden @xl/composer-context:inline">This Mac</span>
+        <ChevronDown size={10} className="shrink-0 opacity-60" aria-hidden="true" />
+      </button>
+      <MenuPanel controller={hostMenu} label="Agent host">
+        {HOSTS.map(item => {
+          const Icon = item.icon;
+          return <MenuItem
+            key={item.id}
+            label={item.label}
+            disabled={item.disabled}
+            checked={item.id === "local"}
+            role="menuitemradio"
+            leading={<Icon size={13} aria-hidden="true" />}
+            trailing={item.disabled ? <span className="text-caption text-muted-foreground">Unavailable</span> : undefined}
+            onClick={() => hostMenu.close()}
+          />;
+        })}
+        <ContextHelp text="Agents run on this Mac. Cloud and SSH hosts are not available yet." />
+      </MenuPanel>
     </div>
   );
 }
