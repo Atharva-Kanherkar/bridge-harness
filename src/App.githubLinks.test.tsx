@@ -90,19 +90,49 @@ async function openWorkspaceSession() {
   throw new Error("no workspace chat opened");
 }
 
-const activePane = () => container.querySelector<HTMLElement>('aside[aria-label="Dock"] button[role="tab"][aria-selected="true"]')?.getAttribute("aria-label");
+const activePane = () => container.querySelector<HTMLElement>('aside[aria-label="Dock"] div[role="tablist"][aria-label="Dock panes"] button[aria-selected="true"]')?.getAttribute("aria-label");
+/** The chooser is a dialog, and dialogs portal out of the App container. */
+const chooser = () => document.querySelector<HTMLElement>('[aria-label="Open GitHub link"]');
+const chooserButton = (label: string) => [...(chooser()?.querySelectorAll("button") ?? [])]
+  .find(button => button.textContent?.includes(label)) as HTMLButtonElement | undefined;
 
 // The mock backend resolves every workspace to this repository.
 const repo = "https://github.com/Atharva-Kanherkar/bridge-harness";
 
 describe("clicking a GitHub link", () => {
-  it("opens the pull request in the dock instead of the browser", async () => {
+  it("asks where to open a link the pane could render, rather than deciding", async () => {
     await openWorkspaceSession();
 
     await clickLink(`${repo}/pull/42`);
 
-    expect(activePane()).toBe("GitHub");
+    // Nothing has opened yet — the question is the whole response to the click.
+    expect(chooser(), "no chooser appeared").not.toBeNull();
+    expect(chooser()!.textContent).toContain("Pull request #42");
+    expect(chooser()!.textContent).toContain(`${repo}/pull/42`);
+    expect(activePane()).not.toBe("GitHub");
     expect(open).not.toHaveBeenCalled();
+  });
+
+  it("opens in the dock when that is the choice", async () => {
+    await openWorkspaceSession();
+    await clickLink(`${repo}/pull/42`);
+
+    await click(chooserButton("Open in Bridge")!);
+
+    expect(activePane()).toBe("GitHub");
+    expect(chooser()).toBeNull();
+    expect(open).not.toHaveBeenCalled();
+  });
+
+  it("opens in the browser when that is the choice", async () => {
+    await openWorkspaceSession();
+    await clickLink(`${repo}/pull/42`);
+
+    await click(chooserButton("Open in browser")!);
+
+    expect(open).toHaveBeenCalledWith(`${repo}/pull/42`);
+    expect(chooser()).toBeNull();
+    expect(activePane()).not.toBe("GitHub");
   });
 
   it("still leaves for a repository this workspace is not on", async () => {
@@ -110,6 +140,7 @@ describe("clicking a GitHub link", () => {
 
     await clickLink("https://github.com/someone/else/pull/42");
 
+    expect(chooser(), "an unroutable link should not ask").toBeNull();
     expect(activePane()).not.toBe("GitHub");
     expect(open).toHaveBeenCalledWith("https://github.com/someone/else/pull/42");
   });
@@ -119,6 +150,7 @@ describe("clicking a GitHub link", () => {
 
     await clickLink(`${repo}/commit/9f8e7d6`);
 
+    expect(chooser(), "an unroutable link should not ask").toBeNull();
     expect(activePane()).not.toBe("GitHub");
     expect(open).toHaveBeenCalledWith(`${repo}/commit/9f8e7d6`);
   });
@@ -127,6 +159,7 @@ describe("clicking a GitHub link", () => {
     // The default landing view has no workspace session selected.
     await clickLink(`${repo}/pull/42`);
 
+    expect(chooser(), "a chat with no worktree should not ask").toBeNull();
     expect(activePane()).not.toBe("GitHub");
     expect(open).toHaveBeenCalledWith(`${repo}/pull/42`);
   });
@@ -135,6 +168,7 @@ describe("clicking a GitHub link", () => {
     await openWorkspaceSession();
 
     await clickLink(`${repo}/pull/42`);
+    await click(chooserButton("Open in Bridge")!);
 
     // The dock dispatcher is memoized on the dock key, which is undefined
     // until a session is selected — capturing it once would leave the pane
@@ -148,6 +182,7 @@ describe("clicking a GitHub link", () => {
   it("re-reads the repository per click, so a remote that has changed stops routing", async () => {
     await openWorkspaceSession();
     await clickLink(`${repo}/pull/42`);
+    await click(chooserButton("Open in Bridge")!);
     expect(activePane()).toBe("GitHub");
 
     // The workspace is moved onto a different repository. The pane resolves
@@ -162,6 +197,7 @@ describe("clicking a GitHub link", () => {
 
     await clickLink(`${repo}/pull/99`);
 
+    expect(chooser(), "a link to the old repository should not ask").toBeNull();
     expect(open).toHaveBeenCalledWith(`${repo}/pull/99`);
   });
 });

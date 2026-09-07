@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { githubLinkMatchesRepository, parseGithubLink } from "./githubLinks";
+import { describeGithubLink, githubLinkMatchesRepository, parseGithubLink } from "./githubLinks";
 import type { GithubRepository } from "./protocol/generated/protocol";
 
 const repository: GithubRepository = { host: "github.com", owner: "bridge", name: "harness" };
@@ -104,5 +104,19 @@ describe("githubLinkMatchesRepository", () => {
   it("matches nothing when the workspace resolved no repository", () => {
     expect(githubLinkMatchesRepository(link("/bridge/harness/pull/1"), null)).toBe(false);
     expect(githubLinkMatchesRepository(link("/bridge/harness/pull/1"), undefined)).toBe(false);
+  });
+});
+
+describe("describeGithubLink", () => {
+  const describe_ = (path: string) => describeGithubLink(parseGithubLink(url(path))!);
+
+  it("names what the reader is about to open", () => {
+    expect(describe_("/bridge/harness/pull/12")).toBe("Pull request #12");
+    expect(describe_("/bridge/harness/pull/12/files")).toBe("Pull request #12 · Changes");
+    expect(describe_("/bridge/harness/pull/12/checks")).toBe("Pull request #12 · Checks");
+    expect(describe_("/bridge/harness/issues/204")).toBe("Issue #204");
+    expect(describe_("/bridge/harness/pulls")).toBe("Pull requests");
+    expect(describe_("/bridge/harness/issues")).toBe("Issues");
+    expect(describe_("/bridge/harness")).toBe("Repository");
   });
 });

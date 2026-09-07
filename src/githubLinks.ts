@@ -116,3 +116,19 @@ export function githubLinkMatchesRepository(
     && sameToken(link.owner, repository.owner)
     && sameToken(link.name, repositoryName(repository.name));
 }
+
+/** What the link points at, for a reader deciding where to open it. Kept
+ * beside the parser so the wording tracks the views the pane actually has. */
+export function describeGithubLink(link: GithubLink): string {
+  const view = link.view;
+  switch (view.kind) {
+    case "pull": {
+      const tab = view.tab === "changes" ? " · Changes" : view.tab === "checks" ? " · Checks" : "";
+      return `Pull request #${view.number}${tab}`;
+    }
+    case "issue": return `Issue #${view.number}`;
+    case "pulls": return "Pull requests";
+    case "issues": return "Issues";
+    case "repository": return "Repository";
+  }
+}

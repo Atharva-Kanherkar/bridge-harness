@@ -7,7 +7,7 @@ import { harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
 import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
-import { openExternalUrl, setInternalLinkRouter } from "./externalLinks";
+import { openExternalUrl, openInSystemBrowser, setInternalLinkRouter } from "./externalLinks";
 import { appendAgentEventBatch, queueAgentEvent as queueAgentEventBatch } from "./agentEvents";
 import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
@@ -30,7 +30,8 @@ import { ChangesPanel } from "./components/ChangesPanel";
 import { GitHubPane } from "./components/GitHubPane";
 import { GithubToasts, type CiToast } from "./components/GithubToasts";
 import { ciToastKey, jumpFallbackHint } from "./githubSurface";
-import { githubLinkMatchesRepository, parseGithubLink, type GithubLinkView } from "./githubLinks";
+import { describeGithubLink, githubLinkMatchesRepository, parseGithubLink, type GithubLink, type GithubLinkView } from "./githubLinks";
+import { GithubLinkDestinationDialog } from "./components/GithubLinkDestinationDialog";
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
 import type { BrowserSupervision } from "./components/BrowserSurface";
 import type { TerminalActivity } from "./components/TerminalPane";
@@ -539,6 +540,12 @@ function AppContent() {
   // browser. Anything else — another repository, a view the pane does not
   // have, a chat with no worktree — is declined here and leaves the app
   // exactly as it did before.
+  // A GitHub link the pane could render is a question, not a decision: the
+  // reader is asked where to open it. Only a link with somewhere to go inline
+  // is worth asking about — another repository, a view the pane does not have,
+  // a chat with no worktree — those have one destination, so they take it
+  // silently and leave, exactly as they did before any of this.
+  const [githubLinkChoice, setGithubLinkChoice] = useState<{ url: string; link: GithubLink }>();
   const routeGithubLink = useCallback(async (url: string): Promise<boolean> => {
     const link = parseGithubLink(url);
     if (!link || !githubWorkspaceId) return false;
@@ -548,9 +555,10 @@ function AppContent() {
     // open the wrong repository's PR under the same number.
     if (githubWorkspaceIdRef.current !== githubWorkspaceId) return false;
     if (!githubLinkMatchesRepository(link, repository)) return false;
-    openGithubPane(link.view);
+    // Taken: the question is now on screen, so nothing may open behind it.
+    setGithubLinkChoice({ url, link });
     return true;
-  }, [githubWorkspaceId, resolveGithubRepository, openGithubPane]);
+  }, [githubWorkspaceId, resolveGithubRepository]);
 
   useEffect(() => {
     setInternalLinkRouter(routeGithubLink);
@@ -2606,6 +2614,15 @@ function AppContent() {
         </Alert>
       );
     })()}
+    {githubLinkChoice && <GithubLinkDestinationDialog
+      subject={describeGithubLink(githubLinkChoice.link)}
+      repository={`${githubLinkChoice.link.owner}/${githubLinkChoice.link.name}`}
+      url={githubLinkChoice.url}
+      onOpenInline={() => { openGithubPane(githubLinkChoice.link.view); setGithubLinkChoice(undefined); }}
+      onOpenInBrowser={() => { void openInSystemBrowser(githubLinkChoice.url); setGithubLinkChoice(undefined); }}
+      onCancel={() => setGithubLinkChoice(undefined)}
+    />}
+
     {/* Behind the error alert on purpose: a failure to act outranks CI news. */}
     <GithubToasts
       toasts={githubToasts}

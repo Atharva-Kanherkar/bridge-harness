@@ -19,8 +19,14 @@ The fix gives the interceptor a router to ask. `externalLinks` gains a
 settable internal router; `openExternalUrl` consults it before falling back
 to the shell, so the two direct callers (Work-task evidence, the Codex setup
 button) route by the same rule as every anchor. `App` registers a router that
-parses the URL, checks it against the workspace's own repository, and turns a
-match into a pane intent.
+parses the URL and checks it against the workspace's own repository.
+
+A match is a question, not a decision. Both destinations are legitimate — the
+pane keeps the workspace around the pull request, the browser has everything
+the pane does not — so the reader picks, in a dialog naming what the link
+points at and showing the URL itself, and the choice is honoured. Only a link
+with somewhere to go inline is worth asking about: everything else has exactly
+one destination and takes it silently, exactly as it did before any of this.
 
 Three things keep it honest. The pane resolves its repository server-side
 from the workspace's Git remote and never takes a repo selector from a caller
@@ -85,12 +91,20 @@ Every existing case stays green unchanged.
 
 | # | Behaviour | Assertion |
 |---|---|---|
-| 3.1 | A PR link for this repo opens the pane on that PR | clicking an anchor to the workspace repo's `/pull/N` opens the dock on the GitHub pane and the shell is not called |
-| 3.2 | A link to another repository still leaves | an anchor to a different `owner/name` calls the shell and does not open the pane |
-| 3.3 | A GitHub path with no inline view still leaves | a `/commit/<sha>` anchor calls the shell |
-| 3.4 | A chat with no worktree still leaves | with no repository workspace, the same PR anchor calls the shell |
-| 3.5 | The pane it opened is persisted under the workspace's dock key | after a routed click the stored dock record for the workspace reads `{ open: true, pane: "github" }` |
-| 3.6 | The repository is re-read per click | after the workspace resolves to a different repository, a link to the old one goes to the browser |
+| 3.1 | A routable link asks instead of deciding | clicking an anchor to the workspace repo's `/pull/N` renders the chooser naming the pull request and the URL; nothing opens, the shell is not called, and the pane is not selected |
+| 3.2 | Choosing Bridge opens the pane | the dock lands on the GitHub pane and the shell is never called |
+| 3.3 | Choosing the browser leaves | the shell is called with the URL and the pane is not selected |
+| 3.4 | A link to another repository still leaves, unasked | an anchor to a different `owner/name` renders no chooser and calls the shell |
+| 3.5 | A GitHub path with no inline view still leaves, unasked | a `/commit/<sha>` anchor renders no chooser and calls the shell |
+| 3.6 | A chat with no worktree still leaves, unasked | with no repository workspace, the same PR anchor renders no chooser and calls the shell |
+| 3.7 | The pane it opened is persisted under the workspace's dock key | after choosing Bridge the stored dock record for the workspace reads `{ open: true, pane: "github" }` |
+| 3.8 | The repository is re-read per click | after the workspace resolves to a different repository, a link to the old one renders no chooser and goes to the browser |
+
+## 3a. Naming the destination — `src/githubLinks.test.ts` (extended)
+
+| # | Behaviour | Assertion |
+|---|---|---|
+| 3a.1 | Each view names itself for the chooser | `describeGithubLink` yields "Pull request #12", "… · Changes", "… · Checks", "Issue #204", "Pull requests", "Issues", "Repository" |
 
 ## 4. The pane obeys the wider intent — `src/components/GitHubPane.test.tsx` (extended)
 
