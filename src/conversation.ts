@@ -103,30 +103,35 @@ export function undeliveredPending<T extends { sessionId: string; text: string }
   return next.length === pending.length ? (pending as T[]) : next;
 }
 
-function isUnidentifiedAssistantShadow(live: ConversationItem, durable: ConversationItem): boolean {
-  if (live.type !== "message" || durable.type !== "message") return false;
-  if ((live.role ?? "assistant") === "user" || (durable.role ?? "assistant") === "user") return false;
-  const text = live.text.trim();
-  if (!text || text !== durable.text.trim()) return false;
-  return live.status === "streaming" || !live.itemId;
+function assistantShadowText(item: ConversationItem): string | undefined {
+  if (item.type !== "message" || item.role === "user") return undefined;
+  return item.text.trim() || undefined;
 }
 
 export function mergeConversationProjections(durableItems: ConversationItem[], liveItems: ConversationItem[]): ConversationItem[] {
   const durableIds = new Set(durableItems.map(item => item.identity ?? itemIdentity(item)));
   const liveAnchors = new Map(liveItems.map(item => [item.identity ?? itemIdentity(item), item.sequence]));
+  const liveShadows = new Map<string, number>();
+  const durableTexts = new Set<string>();
+  for (const live of liveItems) {
+    if (live.status !== "streaming" && live.itemId) continue;
+    const text = assistantShadowText(live);
+    // Preserve find() semantics: the first matching item supplies the anchor,
+    // which need not be the smallest sequence in an unsorted input.
+    if (text !== undefined && !liveShadows.has(text)) liveShadows.set(text, live.sequence);
+  }
   const items = durableItems.map(item => {
     const identity = item.identity ?? itemIdentity(item);
-    let anchor = liveAnchors.get(identity);
-    if (anchor === undefined) {
-      const twin = liveItems.find(live => isUnidentifiedAssistantShadow(live, item));
-      if (twin) anchor = twin.sequence;
-    }
+    const text = assistantShadowText(item);
+    if (text !== undefined) durableTexts.add(text);
+    const anchor = liveAnchors.get(identity) ?? (text === undefined ? undefined : liveShadows.get(text));
     return anchor !== undefined && anchor < item.sequence ? { ...item, sequence: anchor } : item;
   });
   for (const live of liveItems) {
     const identity = live.identity ?? itemIdentity(live);
     if (durableIds.has(identity)) continue;
-    if (durableItems.some(durable => isUnidentifiedAssistantShadow(live, durable))) continue;
+    const text = assistantShadowText(live);
+    if ((live.status === "streaming" || !live.itemId) && text !== undefined && durableTexts.has(text)) continue;
     items.push(live);
   }
   items.sort((a, b) => a.sequence - b.sequence);
