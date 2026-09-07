@@ -1,0 +1,21 @@
+{"timestamp":"2026-09-06 16:36:51 +0530","app_version":"0.5.0","private_metadata":"DO_NOT_EXPORT_METADATA"}
+{
+  "captureTime":"2026-09-06 16:36:49 +0530",
+  "bundleInfo":{"CFBundleShortVersionString":"0.5.1"},
+  "procPath":"/Users/TEST/Downloads/Bridge.app/Contents/MacOS/bridge-deck",
+  "codeSigningID":"bridge_deck-test","codeSigningTeamID":"",
+  "exception":{"type":"EXC_CRASH","signal":"SIGABRT"},
+  "termination":{"namespace":"SIGNAL","code":6,"indicator":"DO_NOT_EXPORT_INDICATOR"},
+  "faultingThread":0,
+  "threads":[
+    {"triggered":true,"queue":"com.apple.main-thread","frames":[
+      {"imageIndex":0,"symbol":"abort","imageOffset":100},
+      {"imageIndex":1,"symbol":"core::panicking::panic_cannot_unwind","imageOffset":200},
+      {"imageIndex":1,"symbol":"tao::platform_impl::platform::app_delegate::did_finish_launching"}
+    ]},
+    {"frames":[{"symbol":"DO_NOT_EXPORT_IDLE_WORKER"}]}
+  ],
+  "usedImages":[{"name":"libsystem_c.dylib"},{"name":"bridge-deck","path":"DO_NOT_EXPORT_IMAGE_PATH"}],
+  "asi":{"diagnostic":"DO_NOT_EXPORT_APPLICATION_DATA"},
+  "vmSummary":"JS JIT generated code 512 MB DO_NOT_EXPORT_VM"
+}

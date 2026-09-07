@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.2] - Unreleased
+
+- Regenerate app icons from the source SVG and verify the visible mark before packaging.
+- Report native startup errors in a dialog instead of panicking through macOS launch callbacks; retain bounded diagnostic logs with the executable path and version.
+- Let macOS manage its titlebar controls. Use public AppKit material/layer APIs and defer geometry updates outside window callbacks.
+- Update Bridge's owned material during resize without repeatedly retaining and releasing Wry's parent view, which reproduced a native deallocation failure.
+- Keep other Bridge builds and their active daemons running when a conflicting copy opens.
+- Reject overlong local socket paths before runtime startup, with an actionable data-directory error.
+- Refresh recommended model profiles when live model discovery replaces their initial aliases.
+- Validate signing, entitlements, bundled sidecar dependencies, and notarization before producing a public DMG.
+
 ## [0.5.1] - 2026-09-04
 
 ### Fixed

@@ -1,6 +1,6 @@
 {
   "name": "bridge-claude-agent-sidecar",
-  "version": "0.5.1",
+  "version": "0.5.2",
   "private": true,
   "type": "module",
   "description": "Node sidecar that drives Claude via the Claude Agent SDK for Bridge's Rust backend.",

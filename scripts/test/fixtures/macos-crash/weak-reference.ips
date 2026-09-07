@@ -1,0 +1,16 @@
+{
+  "captureTime":"2026-09-04 18:18:10 +0530",
+  "bundleInfo":{"CFBundleShortVersionString":"0.5.0"},
+  "procPath":"/private/tmp/Bridge-test.app/Contents/MacOS/bridge-deck",
+  "codeSigningID":"dev.bridge.deck","codeSigningTeamID":"TESTTEAM00",
+  "exception":{"type":"EXC_CRASH","signal":"SIGABRT"},
+  "termination":{"namespace":"OBJC","code":1},
+  "faultingThread":0,
+  "threads":[{"queue":"com.apple.main-thread","frames":[
+    {"symbol":"__abort_with_payload"},
+    {"symbol":"_objc_fatal"},
+    {"symbol":"weak_register_no_lock"},
+    {"symbol":"objc_initWeak"},
+    {"symbol":"-[NSView updateConstraints]"}
+  ]}]
+}
