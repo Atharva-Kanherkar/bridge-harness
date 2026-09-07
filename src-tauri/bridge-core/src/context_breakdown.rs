@@ -21,9 +21,10 @@ use crate::context_inventory::{
 use crate::model::SessionEntry;
 use crate::{session_forest, store, BridgeError};
 
-/// The projection window used until Bridge grows a real per-session
-/// `context_window_tokens` source; mirrors `restoration.rs`. The value is
-/// echoed in every breakdown so clients see the basis.
+/// The projection window the breakdown reports against. Restoration now sizes
+/// itself per session through `restoration::session_context_window_tokens`;
+/// the breakdown keeps one fixed basis so its percentages stay comparable
+/// across models, and echoes the value so clients see that basis.
 pub const CONTEXT_BREAKDOWN_WINDOW_TOKENS: i64 = 128_000;
 
 const CONVERSATION_METHOD: &str = "bridge-context-projector";

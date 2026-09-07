@@ -145,6 +145,12 @@ pub struct PendingCompaction {
     pub tokens_before: i64,
     pub requested_at: String,
     pub first_retained_entry_id: String,
+    /// Asked of a provider that no longer serves the session's conversation:
+    /// a model switch's outgoing runtime, detached and summarising after the
+    /// switch committed. The session's live reader must not treat the
+    /// incoming model's turns as this request's reply, and the reply may land
+    /// after the new model has already spoken.
+    pub background: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -241,6 +247,18 @@ struct CheckpointEvidence {
 
 impl CheckpointEvidence {
     fn from_active_history(db: &Connection, session_id: &str) -> Result<Self, BridgeError> {
+        Self::collect(db, session_id, false)
+    }
+
+    /// The evidence the outgoing model could actually have seen: everything
+    /// since the last compaction up to (not including) its own request. A
+    /// background summary must not be rejected for omitting a decision or file
+    /// the incoming model produced while the summary was being written.
+    fn from_history_before_request(db: &Connection, session_id: &str) -> Result<Self, BridgeError> {
+        Self::collect(db, session_id, true)
+    }
+
+    fn collect(db: &Connection, session_id: &str, stop_at_request: bool) -> Result<Self, BridgeError> {
         let branch = SessionForest::new(db)
             .active_branch(session_id)
             .map_err(|error| BridgeError::Invalid(error.to_string()))?;
@@ -249,11 +267,22 @@ impl CheckpointEvidence {
             .rposition(|entry| entry.kind == "compaction")
             .map(|index| index + 1)
             .unwrap_or(0);
+        let end = if stop_at_request {
+            branch
+                .iter()
+                .rposition(|entry| {
+                    entry.kind == "compaction.requested"
+                        && entry.payload.get("attempt").and_then(Value::as_u64).unwrap_or(0) == 0
+                })
+                .unwrap_or(branch.len())
+        } else {
+            branch.len()
+        };
         let mut evidence = Self {
             decisions: BTreeSet::new(),
             files_touched: BTreeSet::new(),
         };
-        for entry in &branch[start..] {
+        for entry in &branch[start..end.max(start)] {
             if matches!(entry.kind.as_str(), "worker.result" | "checkpoint") {
                 collect_strings(&entry.payload, "decisions", &mut evidence.decisions);
             }
@@ -335,6 +364,11 @@ pub enum CheckpointOutcome {
         checkpoint_entry_id: String,
         compaction_entry_id: String,
     },
+    /// A valid background summary that arrived after the incoming model had
+    /// already spoken: recorded as a plain `checkpoint`, no boundary moved.
+    LateCheckpoint {
+        checkpoint_entry_id: String,
+    },
     Repair {
         prompt: String,
     },
@@ -393,6 +427,28 @@ impl CompactionController {
         reason: CompactionReason,
         tokens_before: i64,
     ) -> Result<Option<String>, BridgeError> {
+        Self::begin_with_options(db, session_id, reason, tokens_before, false)
+    }
+
+    /// [`Self::begin`] for a request the session's *former* runtime will
+    /// answer after a model switch has committed. See
+    /// [`PendingCompaction::background`].
+    pub fn begin_background(
+        db: &Connection,
+        session_id: &str,
+        reason: CompactionReason,
+        tokens_before: i64,
+    ) -> Result<Option<String>, BridgeError> {
+        Self::begin_with_options(db, session_id, reason, tokens_before, true)
+    }
+
+    fn begin_with_options(
+        db: &Connection,
+        session_id: &str,
+        reason: CompactionReason,
+        tokens_before: i64,
+        background: bool,
+    ) -> Result<Option<String>, BridgeError> {
         if Self::pending(db, session_id)?.is_some() {
             return Ok(None);
         }
@@ -403,6 +459,7 @@ impl CompactionController {
             tokens_before: tokens_before.max(0),
             requested_at: Utc::now().to_rfc3339(),
             first_retained_entry_id,
+            background,
         };
         SessionForest::new(db)
             .append(
@@ -415,6 +472,7 @@ impl CompactionController {
                     "sourceAgent": session_id,
                     "requestedAt": pending.requested_at,
                     "firstRetainedEntryId": pending.first_retained_entry_id,
+                    "background": background,
                 }),
             )
             .map_err(|error| BridgeError::Invalid(error.to_string()))?;
@@ -465,6 +523,7 @@ impl CompactionController {
                             "sourceAgent": session_id,
                             "requestedAt": Utc::now().to_rfc3339(),
                             "firstRetainedEntryId": pending.first_retained_entry_id,
+                            "background": pending.background,
                             "repairOf": error.to_string(),
                         }),
                     )
@@ -502,6 +561,7 @@ impl CompactionController {
                             "sourceAgent": session_id,
                             "requestedAt": Utc::now().to_rfc3339(),
                             "firstRetainedEntryId": pending.first_retained_entry_id,
+                            "background": pending.background,
                             "repairOf": error,
                         }),
                     )
@@ -520,9 +580,20 @@ impl CompactionController {
             Self::record_failure(db, session_id, error, pending.attempt)?;
             return Ok(CheckpointOutcome::Failed);
         }
-        let evidence = CheckpointEvidence::from_active_history(db, session_id)?;
+        let evidence = if pending.background {
+            CheckpointEvidence::from_history_before_request(db, session_id)?
+        } else {
+            CheckpointEvidence::from_active_history(db, session_id)?
+        };
         if let Err(error) = evidence.verify(&checkpoint) {
             return Self::reject_incomplete_checkpoint(db, session_id, &pending, &error);
+        }
+        if pending.background && conversation_appended_since_request(db, session_id)? {
+            // The incoming model has already spoken. Moving the boundary now
+            // would hide its turns behind a summary the outgoing model wrote
+            // without seeing them, so the summary is kept as a plain
+            // checkpoint the projection carries in its tail.
+            return Self::record_late_checkpoint(db, session_id, checkpoint, pending);
         }
         Self::record_checkpoint(
             db,
@@ -532,6 +603,32 @@ impl CompactionController {
             "agent",
             Some(&evidence),
         )
+    }
+
+    /// Record a validated summary as a `checkpoint` entry only — no
+    /// `compaction` boundary, no retained-set change. `pending_from_branch`
+    /// treats a checkpoint newer than the request as its settlement.
+    fn record_late_checkpoint(
+        db: &Connection,
+        session_id: &str,
+        checkpoint: Checkpoint,
+        pending: PendingCompaction,
+    ) -> Result<CheckpointOutcome, BridgeError> {
+        let mut payload = checkpoint_payload(&checkpoint, &pending, "agent");
+        payload["landing"] = json!("late");
+        let entry = SessionForest::new(db)
+            .append(session_id, EntryKind::Checkpoint, payload)
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        store::event(
+            db,
+            "compaction",
+            "checkpoint.landed_late",
+            session_id,
+            "Background handoff summary recorded as a checkpoint; the new model had already replied, so no boundary moved",
+        )?;
+        Ok(CheckpointOutcome::LateCheckpoint {
+            checkpoint_entry_id: entry.id,
+        })
     }
 
     pub fn record_reconstructed(
@@ -562,6 +659,7 @@ impl CompactionController {
             tokens_before: active_token_estimate(db, session_id)?,
             requested_at: Utc::now().to_rfc3339(),
             first_retained_entry_id: checkpoint.first_retained_entry_id.clone(),
+            background: false,
         };
         Self::record_checkpoint(db, session_id, checkpoint, pending, "reconstructed", None)
     }
@@ -570,6 +668,24 @@ impl CompactionController {
         db: &Connection,
         session_id: &str,
         git_status: &str,
+    ) -> Result<CheckpointOutcome, BridgeError> {
+        Self::reconstruct_from_normalized_events_and_git_with_reason(
+            db,
+            session_id,
+            git_status,
+            CompactionReason::PhaseBoundary,
+        )
+    }
+
+    /// [`Self::reconstruct_from_normalized_events_and_git`] recording the
+    /// reason the failed checkpoint was asked for, so a model switch whose
+    /// background summary failed still leaves a `before_downgrade` checkpoint
+    /// with `provenance: reconstructed` rather than nothing.
+    pub fn reconstruct_from_normalized_events_and_git_with_reason(
+        db: &Connection,
+        session_id: &str,
+        git_status: &str,
+        reason: CompactionReason,
     ) -> Result<CheckpointOutcome, BridgeError> {
         let branch = SessionForest::new(db)
             .active_branch(session_id)
@@ -625,7 +741,7 @@ impl CompactionController {
             summary,
             decisions,
             files_touched,
-            CompactionReason::PhaseBoundary,
+            reason,
         )?;
         store::event(
             db,
@@ -683,6 +799,7 @@ impl CompactionController {
                         "sourceAgent": session_id,
                         "requestedAt": Utc::now().to_rfc3339(),
                         "firstRetainedEntryId": pending.first_retained_entry_id,
+                        "background": pending.background,
                         "repairOf": error,
                     }),
                 )
@@ -820,7 +937,10 @@ fn checkpoint_payload(
 fn pending_from_branch(branch: &[SessionEntry]) -> Result<Option<PendingCompaction>, BridgeError> {
     for entry in branch.iter().rev() {
         match entry.kind.as_str() {
-            "compaction" | "compaction.failed" => return Ok(None),
+            // A `checkpoint` is only ever appended as a request's answer —
+            // paired with a `compaction` by `record_checkpoint`, or alone by a
+            // late background landing — so one newer than the request settles it.
+            "compaction" | "compaction.failed" | "checkpoint" => return Ok(None),
             "compaction.requested" => {
                 let reason = entry
                     .payload
@@ -852,12 +972,42 @@ fn pending_from_branch(branch: &[SessionEntry]) -> Result<Option<PendingCompacti
                         .and_then(Value::as_str)
                         .unwrap_or_default()
                         .to_owned(),
+                    background: entry
+                        .payload
+                        .get("background")
+                        .and_then(Value::as_bool)
+                        .unwrap_or(false),
                 }));
             }
             _ => {}
         }
     }
     Ok(None)
+}
+
+/// Whether any conversation entry landed after the pending request was first
+/// made (its attempt-0 `compaction.requested`). Only a background request can
+/// see this: a foreground checkpoint turn suppresses every conversation frame
+/// until it settles.
+pub fn conversation_appended_since_request(
+    db: &Connection,
+    session_id: &str,
+) -> Result<bool, BridgeError> {
+    let branch = SessionForest::new(db)
+        .active_branch(session_id)
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    let mut spoke = false;
+    for entry in branch.iter().rev() {
+        if entry.kind == "compaction.requested"
+            && entry.payload.get("attempt").and_then(Value::as_u64).unwrap_or(0) == 0
+        {
+            return Ok(spoke);
+        }
+        if CONVERSATION_KINDS.contains(&entry.kind.as_str()) {
+            spoke = true;
+        }
+    }
+    Ok(false)
 }
 
 pub fn active_token_estimate(db: &Connection, session_id: &str) -> Result<i64, BridgeError> {
@@ -966,6 +1116,7 @@ mod tests {
             tokens_before: 4_200,
             requested_at: "now".into(),
             first_retained_entry_id: "retained-1".into(),
+            background: false,
         }
     }
 
@@ -1186,6 +1337,165 @@ mod tests {
         let unknown = classify_failure("unexpected controller failure", None);
         assert_eq!(unknown.kind, "unknown");
         assert!(unknown.message.contains("original conversation history is intact"));
+    }
+
+    #[test]
+    fn background_requests_are_parsed_and_only_a_matching_checkpoint_settles_them() {
+        let db = database();
+        // A checkpoint OLDER than the request is history, not an answer.
+        SessionForest::new(&db)
+            .append("s", EntryKind::Checkpoint, json!({"schemaVersion":1,"summary":"earlier"}))
+            .unwrap();
+        CompactionController::begin_background(&db, "s", CompactionReason::BeforeDowngrade, 42)
+            .unwrap()
+            .expect("nothing pending");
+        let pending = CompactionController::pending(&db, "s").unwrap().unwrap();
+        assert!(pending.background);
+        assert_eq!(pending.reason, CompactionReason::BeforeDowngrade);
+        // A foreground request is refused while the background one is pending,
+        // and does not silently turn into a foreground parse of it.
+        assert!(CompactionController::begin(&db, "s", CompactionReason::Manual, 1).unwrap().is_none());
+        // A repair re-request keeps the flag.
+        assert!(matches!(
+            CompactionController::handle_output(&db, "s", "not json").unwrap(),
+            CheckpointOutcome::Repair { .. }
+        ));
+        let _ = &pending;
+        assert!(CompactionController::pending(&db, "s").unwrap().unwrap().background);
+        // A checkpoint NEWER than the request settles it.
+        SessionForest::new(&db)
+            .append("s", EntryKind::Checkpoint, json!({"schemaVersion":1,"summary":"the answer"}))
+            .unwrap();
+        assert!(CompactionController::pending(&db, "s").unwrap().is_none());
+        // Foreground requests default to not-background.
+        CompactionController::begin(&db, "s", CompactionReason::Manual, 1).unwrap().unwrap();
+        assert!(!CompactionController::pending(&db, "s").unwrap().unwrap().background);
+    }
+
+    #[test]
+    fn late_landing_records_a_checkpoint_without_moving_the_boundary() {
+        let db = database();
+        SessionForest::new(&db).append("s", EntryKind::WorkerResult, json!({
+            "status":"completed","summary":"verified",
+            "decisions":["Keep SQLite as source of truth"],
+            "filesChanged":["src-tauri/src/context.rs"]
+        })).unwrap();
+        CompactionController::begin_background(&db, "s", CompactionReason::BeforeDowngrade, 55)
+            .unwrap()
+            .unwrap();
+        let pending = CompactionController::pending(&db, "s").unwrap().unwrap();
+        assert!(!conversation_appended_since_request(&db, "s").unwrap());
+        // The incoming model speaks before the outgoing model's summary lands.
+        SessionForest::new(&db)
+            .append("s", EntryKind::UserMessage, json!({"text":"hello new model"}))
+            .unwrap();
+        SessionForest::new(&db)
+            .append("s", EntryKind::AssistantMessage, json!({"text":"hello, continuing"}))
+            .unwrap();
+        assert!(conversation_appended_since_request(&db, "s").unwrap());
+        let outcome = CompactionController::handle_output(
+            &db,
+            "s",
+            &valid_output(&pending, "What the old model knew"),
+        )
+        .unwrap();
+        assert!(matches!(outcome, CheckpointOutcome::LateCheckpoint { .. }), "{outcome:?}");
+        let entries = store::session_entries(&db, "s").unwrap();
+        let kinds = entries.iter().map(|entry| entry.kind.as_str()).collect::<Vec<_>>();
+        assert_eq!(
+            kinds,
+            vec!["user.message", "worker.result", "compaction.requested", "user.message", "assistant.message", "checkpoint"]
+        );
+        let late = entries.last().unwrap();
+        assert_eq!(late.payload["landing"], "late");
+        assert_eq!(late.payload["provenance"], "agent");
+        assert_eq!(late.payload["reason"], "before_downgrade");
+        assert!(CompactionController::pending(&db, "s").unwrap().is_none(), "the request is settled");
+        // No boundary moved: the new model's turns stay in the projection and
+        // there is no restoration header hiding them. The late checkpoint is a
+        // durable record, not re-injected conversation, so the projector's tail
+        // does not carry it (bare checkpoints never render as conversation).
+        let branch = SessionForest::new(&db).active_branch("s").unwrap();
+        let projection = crate::context::ContextProjector::project(&branch, 128_000).unwrap();
+        assert!(projection.restoration_context.is_none());
+        assert!(projection.render_entries.iter().any(|entry| entry.kind == "assistant.message"));
+        assert!(projection.render_entries.iter().all(|entry| entry.kind != "checkpoint"));
+    }
+
+    #[test]
+    fn background_evidence_is_scoped_to_what_the_outgoing_model_saw() {
+        let db = database();
+        CompactionController::begin_background(&db, "s", CompactionReason::BeforeDowngrade, 9)
+            .unwrap()
+            .unwrap();
+        let pending = CompactionController::pending(&db, "s").unwrap().unwrap();
+        // The incoming model lands a decision the outgoing model never saw.
+        SessionForest::new(&db).append("s", EntryKind::WorkerResult, json!({
+            "status":"completed","summary":"new work","decisions":["Adopt the new API"],
+            "filesChanged":["src/new.rs"]
+        })).unwrap();
+        let output = json!({
+            "schemaVersion":1,"summary":"the old conversation","decisions":[],"filesTouched":[],
+            "sourceAgent":"s","firstRetainedEntryId":pending.first_retained_entry_id,
+            "tokensBefore":pending.tokens_before,"reason":pending.reason.as_str()
+        }).to_string();
+        let outcome = CompactionController::handle_output(&db, "s", &output).unwrap();
+        assert!(
+            matches!(outcome, CheckpointOutcome::LateCheckpoint { .. }),
+            "evidence the outgoing model could not have seen must not reject its summary: {outcome:?}"
+        );
+    }
+
+    #[test]
+    fn a_foreground_request_never_lands_late_even_with_a_stale_conversation_flag() {
+        // A foreground checkpoint turn suppresses conversation frames, so the
+        // late rule is gated on `background`; a foreground request that somehow
+        // sees a newer user message still commits the boundary.
+        let db = database();
+        CompactionController::begin(&db, "s", CompactionReason::Manual, 7).unwrap().unwrap();
+        let pending = CompactionController::pending(&db, "s").unwrap().unwrap();
+        SessionForest::new(&db)
+            .append("s", EntryKind::UserMessage, json!({"text":"racing frame"}))
+            .unwrap();
+        let output = json!({
+            "schemaVersion":1,"summary":"done","decisions":[],"filesTouched":[],
+            "sourceAgent":"s","firstRetainedEntryId":pending.first_retained_entry_id,
+            "tokensBefore":pending.tokens_before,"reason":pending.reason.as_str()
+        }).to_string();
+        let outcome = CompactionController::handle_output(&db, "s", &output).unwrap();
+        assert!(matches!(outcome, CheckpointOutcome::Completed { .. }), "{outcome:?}");
+    }
+
+    #[test]
+    fn reconstruct_with_reason_records_before_downgrade() {
+        let db = database();
+        SessionForest::new(&db)
+            .append("s", EntryKind::AssistantMessage, json!({"text":"we chose the SQLite token store"}))
+            .unwrap();
+        let outcome = CompactionController::reconstruct_from_normalized_events_and_git_with_reason(
+            &db,
+            "s",
+            " M src/store.rs\n",
+            CompactionReason::BeforeDowngrade,
+        )
+        .unwrap();
+        assert!(matches!(outcome, CheckpointOutcome::Completed { .. }));
+        let entries = store::session_entries(&db, "s").unwrap();
+        let checkpoint = entries.iter().find(|entry| entry.kind == "checkpoint").unwrap();
+        assert_eq!(checkpoint.payload["reason"], "before_downgrade");
+        assert_eq!(checkpoint.payload["provenance"], "reconstructed");
+        assert!(checkpoint.payload["summary"].as_str().unwrap().contains("SQLite token store"));
+        assert_eq!(checkpoint.payload["filesTouched"], json!(["src/store.rs"]));
+
+        // The un-suffixed entry point keeps its phase-boundary reason.
+        let db = database();
+        SessionForest::new(&db)
+            .append("s", EntryKind::AssistantMessage, json!({"text":"phase work"}))
+            .unwrap();
+        CompactionController::reconstruct_from_normalized_events_and_git(&db, "s", "").unwrap();
+        let entries = store::session_entries(&db, "s").unwrap();
+        let checkpoint = entries.iter().find(|entry| entry.kind == "checkpoint").unwrap();
+        assert_eq!(checkpoint.payload["reason"], "phase_boundary");
     }
 
     #[test]
