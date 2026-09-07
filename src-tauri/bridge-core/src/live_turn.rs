@@ -2224,6 +2224,7 @@ fn spawn_reader_thread(
             match reader.read_line(&mut line) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
+                    let frame_timing = FrameTiming::received();
                     // Check the gate without holding it across handler work:
                     // handle_agent_value may complete a worker, which calls
                     // deactivate_reader_launch and re-locks the same mutex.
@@ -2257,7 +2258,7 @@ fn spawn_reader_thread(
                                 &value,
                             );
                         } else {
-                            handle_agent_value(&core, &session_id, &current_turn, &value);
+                            handle_agent_value_timed(&core, &session_id, &current_turn, &value, frame_timing);
                         }
                     }
                 }
@@ -2440,11 +2441,35 @@ pub fn agent_event_changes_bridge_state(event: &agent::NormalizedEvent) -> bool 
     ) || (event.kind == "error" && event.status.as_deref() == Some("failed"))
 }
 
+/// Opt-in, content-free live diagnostics. Durations share a native monotonic
+/// clock; the webview records its own durations and correlates by frameId.
+struct FrameTiming {
+    id: String,
+    received: std::time::Instant,
+}
+
+impl FrameTiming {
+    fn received() -> Option<Self> {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        ENABLED.get_or_init(|| std::env::var("BRIDGE_STREAM_TIMING").as_deref() == Ok("1"))
+            .then(|| Self { id: Uuid::new_v4().to_string(), received: std::time::Instant::now() })
+    }
+    fn elapsed_ms(&self) -> f64 { self.received.elapsed().as_secs_f64() * 1000.0 }
+}
+
+#[cfg(test)]
 fn handle_agent_value(
+    core: &Arc<BridgeCore>, session_id: &str, current_turn: &Arc<Mutex<Option<String>>>, value: &serde_json::Value,
+) {
+    handle_agent_value_timed(core, session_id, current_turn, value, None);
+}
+
+fn handle_agent_value_timed(
     core: &Arc<BridgeCore>,
     session_id: &str,
     current_turn: &Arc<Mutex<Option<String>>>,
     value: &serde_json::Value,
+    frame_timing: Option<FrameTiming>,
 ) {
     // Codex account rate-limit frames (the reply to `account/rateLimits/read`
     // and its rolling push) are subscription telemetry, not conversation. Route
@@ -2484,7 +2509,9 @@ fn handle_agent_value(
     let bridge_state_changed;
 
     {
+        let lock_requested = std::time::Instant::now();
         let db = state.db.lock().unwrap();
+        let db_wait_ms = lock_requested.elapsed().as_secs_f64() * 1000.0;
         let session_context: Option<(Option<String>, String, i64, Option<String>, String, String)> = db
             .query_row(
                 "SELECT workspace_id,harness,COALESCE(depth,0),active_turn_id,kind,COALESCE(trace_id,id) FROM sessions WHERE id=?1",
@@ -2516,6 +2543,7 @@ fn handle_agent_value(
         // The exact composer text is persisted locally at submission time.
         // Provider echoes may include hidden user-role file context, so do not
         // duplicate them into the visible conversation.
+        let normalization_started = std::time::Instant::now();
         let mut normalized = state
             .adapter_registry
             .normalize(&adapter_id, value)
@@ -2524,6 +2552,7 @@ fn handle_agent_value(
                 event.role.as_deref() != Some("user") || !event.kind.starts_with("message.")
             })
             .collect::<Vec<_>>();
+        let normalization_ms = normalization_started.elapsed().as_secs_f64() * 1000.0;
         // Interrupting a provider to honor a user's Stop click routinely makes
         // it emit an "error" frame (an aborted turn, a broken pipe, a non-zero
         // exit) that looks identical to a genuine crash. That is not a failure
@@ -3093,7 +3122,8 @@ fn handle_agent_value(
             // forest is what a reconnecting client replays. This includes
             // streamed text/reasoning and late output after cancellation.
             if !suppress_checkpoint_frame {
-                if let Ok(event) = store::session_event(
+                let persistence_started = std::time::Instant::now();
+                if let Ok(mut event) = store::session_event(
                     &db,
                     session_id,
                     &normalized_event,
@@ -3116,6 +3146,17 @@ fn handle_agent_value(
                     // Publish while the database mutex is still held. This keeps
                     // durable live delivery in commit/sequence order: another
                     // thread cannot persist and publish sequence N+1 before N.
+                    if let Some(timing) = &frame_timing {
+                        // Attach after persistence: live diagnostics never enter the forest.
+                        event.provider_meta["bridgeStreamTiming"] = serde_json::json!({
+                            "frameId": timing.id,
+                            "eventId": format!("{}:{}:{}", timing.id, event.kind, event.item_id.as_deref().unwrap_or("")),
+                            "dbWaitMs": db_wait_ms,
+                            "normalizationMs": normalization_ms,
+                            "persistenceMs": persistence_started.elapsed().as_secs_f64() * 1000.0,
+                            "receiptToPublicationMs": timing.elapsed_ms(),
+                        });
+                    }
                     state.events.publish(CoreEvent::Agent(event));
                 }
             }
@@ -12091,6 +12132,31 @@ mod submit_input_tests {
                 |row| row.get(0),
             )
             .unwrap()
+    }
+
+    #[test]
+    fn stream_timing_correlates_publication_without_persisting_diagnostics() {
+        let (_fixture, core, _managed_root) = core_with_chat("working");
+        core.db.lock().unwrap().execute("UPDATE sessions SET harness='codex' WHERE id='chat'", []).unwrap();
+        let mut published = core.events.subscribe();
+        handle_agent_value_timed(&core, "chat", &Arc::new(Mutex::new(Some("turn-1".into()))),
+            &codex_agent_message("answer"), Some(FrameTiming { id: "frame-test".into(), received: std::time::Instant::now() }));
+        let mut found = false;
+        while let Ok(event) = published.try_recv() {
+            if let CoreEvent::Agent(event) = event {
+                let timing = &event.provider_meta["bridgeStreamTiming"];
+                assert_eq!(timing["frameId"], "frame-test");
+                for key in ["dbWaitMs", "normalizationMs", "persistenceMs", "receiptToPublicationMs"] {
+                    assert!(timing[key].as_f64().unwrap() >= 0.0);
+                }
+                assert!(timing["receiptToPublicationMs"].as_f64().unwrap() >= timing["dbWaitMs"].as_f64().unwrap());
+                found = true;
+            }
+        }
+        assert!(found);
+        let db = core.db.lock().unwrap();
+        let leaked: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM session_entries WHERE payload LIKE '%bridgeStreamTiming%')", [], |row| row.get(0)).unwrap();
+        assert!(!leaked);
     }
 
     #[test]

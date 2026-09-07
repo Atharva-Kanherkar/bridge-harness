@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import * as conversation from "../conversation";
 import { AgentConversation } from "./AgentConversation";
 import { asWireKind } from "../transcript/wire";
 import type { AgentEvent, CompletionSummary, Session, SessionEntry, WorkerRuntimeRecord } from "../types";
@@ -12,6 +13,29 @@ const event = (id: number, kind: string, overrides: Partial<AgentEvent> = {}): A
 const completion = (verdict: CompletionSummary["verdict"]): CompletionSummary => ({ attemptId:"a",contractId:"c",verdict,repository:{head:"abcdef1234567890",dirtyDigest:"clean"},passedRequired:0,totalRequired:1,markdownCommitted:false,waiverReason:verdict === "waived" ? "Accepted risk" : null,checks:[{checkId:"gate",kind:"deterministic",required:true,status:verdict === "verified" ? "passed" : verdict === "changes_requested" ? "failed" : verdict === "superseded" ? "stale" : verdict === "waived" ? "skipped" : "pending",executor:"bridge.shell",command:"bun test",verifierFamily:null,detail:null,outputDigest:verdict === "verified" ? "digest" : null,artifactRefs:[]}] });
 
 describe("AgentConversation", () => {
+  it("does not reproject an unchanged durable branch on live-only updates", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const project = vi.spyOn(conversation, "projectSessionConversation");
+    const forestEntries: SessionEntry[] = [{ id: "e1", sessionId: "s", parentEntryId: null,
+      sequence: 1, semanticSchemaVersion: 2, kind: "assistant.message", payload: { text: "history", itemId: "old" },
+      providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: "now" }];
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    try {
+      for (const text of ["a", "ab", "abc"]) {
+        await act(async () => root.render(<AgentConversation session={session} onResolve={() => undefined}
+          forestEntries={forestEntries} activeLeafId="e1" events={[event(0, "message.delta", { text, itemId: "new" })]} />));
+      }
+      expect(project).toHaveBeenCalledTimes(1);
+      await act(async () => root.render(<AgentConversation session={session} onResolve={() => undefined}
+        forestEntries={[...forestEntries]} activeLeafId="e1" events={[]} />));
+      expect(project).toHaveBeenCalledTimes(2);
+    } finally {
+      await act(async () => root.unmount());
+      project.mockRestore();
+    }
+  });
+
   const editToolEvent = event(1, "tool.started", { itemId: "t", title: "Edit src/App.tsx", status: "completed", data: { type: "fileChange", path: "src/App.tsx" } });
 
   async function mountConversation(extraProps: Record<string, unknown>) {

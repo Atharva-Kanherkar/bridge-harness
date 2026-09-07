@@ -1,4 +1,5 @@
-import { memo, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { recordStreamCommit, recordStreamPaintProxy } from "../streamTiming";
+import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
 import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Maximize2, MessageSquarePlus, Navigation, Pencil, Pin, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
 import { alignTurns, attachmentUris, delegationChildSessionId, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
@@ -546,8 +547,34 @@ function StallNotice({ onStop }: { onStop?: () => void }) {
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
 export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onExpandWorker, onWaiveCompletion, onRefreshBase, onRetryWorker, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void }) {
+  const paintFrames = useRef<{ first?: number; second?: number; ids: string[] }>({ ids: [] });
+  useLayoutEffect(() => {
+    const pending = paintFrames.current;
+    pending.ids.push(...recordStreamCommit(events));
+    pending.ids = pending.ids.slice(-512);
+    if (!pending.ids.length || pending.first !== undefined) return;
+    // Keep the paint opportunity alive across sustained renders. Cancelling it
+    // on every delta would prevent any sample in a continuously updating turn.
+    pending.first = requestAnimationFrame(() => {
+      pending.second = requestAnimationFrame(() => {
+        recordStreamPaintProxy(pending.ids);
+        pending.ids = [];
+        pending.first = pending.second = undefined;
+      });
+    });
+  }, [events]);
+  useEffect(() => () => {
+    const pending = paintFrames.current;
+    if (pending.first !== undefined) cancelAnimationFrame(pending.first);
+    if (pending.second !== undefined) cancelAnimationFrame(pending.second);
+    pending.first = pending.second = undefined;
+    pending.ids = [];
+  }, []);
+  const durableItems = useMemo(
+    () => forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [],
+    [forestEntries, activeLeafId],
+  );
   const visibleItems = useMemo(() => {
-    const durableItems = forestEntries?.length ? projectSessionConversation(forestEntries, activeLeafId ?? null) : [];
     const nextLiveItems = reduceConversation(events);
     const items = mergeConversationProjections(durableItems, nextLiveItems);
     // Folded after the merge, not inside either projection: mid-run the spawn is
@@ -557,7 +584,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     // their own start, so mid-turn a run carries two indices and the grouping
     // walk cuts it at the seam. See `alignTurns`.
     return alignTurns(folded);
-  }, [activeLeafId, events, forestEntries]);
+  }, [durableItems, events]);
   const renderedItems = useMemo(() => groupItems(visibleItems), [visibleItems]);
 
   // Every file name in the transcript resolves against this one set; without
