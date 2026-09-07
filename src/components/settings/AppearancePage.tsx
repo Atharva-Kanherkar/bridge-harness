@@ -22,7 +22,7 @@ const MODES: Tile<ThemePreference>[] = [
 
 const SKINS: Tile<ThemeSkin>[] = [
   { id: "graphite", label: "Solid", hint: "Opaque shell", swatches: ["bg-foreground/[0.08]", "bg-foreground/[0.16]"] },
-  { id: "vibrancy", label: "Cursor", hint: "Translucent, tints with your wallpaper", swatches: ["bg-foreground/[0.04]", "bg-info/25"] },
+  { id: "vibrancy", label: "Vibrancy", hint: "Sidebar tinted by your desktop", swatches: ["bg-foreground/[0.04]", "bg-info/25"] },
 ];
 
 /* Static previews of the three thinking controls, drawn in the page's ink so
@@ -32,7 +32,7 @@ const SLIDER_PREVIEW = <span className="relative block h-full w-full">
   <span className="absolute left-3 top-1/2 h-1 w-[55%] -translate-y-1/2 rounded-full bg-foreground/55" />
   <span className="absolute left-[calc(3*0.25rem+55%)] top-1/2 size-2.5 -translate-x-1/2 -translate-y-1/2 rounded-full border border-background bg-foreground" />
 </span>;
-const SENTENCE_PREVIEW = <span className="flex h-full items-center justify-center gap-1 text-[10px] text-muted-foreground">
+const SENTENCE_PREVIEW = <span className="flex h-full items-center justify-center gap-1 text-[11px] text-muted-foreground">
   Think <span className="rounded border border-border bg-muted px-1 font-semibold text-foreground">deeply</span>
 </span>;
 const LIST_PREVIEW = <span className="flex h-full flex-col justify-center gap-1 px-3">
@@ -63,6 +63,16 @@ function TileGrid<T extends string>({ name, tiles, value, onChange, columns }: {
         type="button"
         role="radio"
         aria-checked={selected}
+        tabIndex={selected ? 0 : -1}
+        onKeyDown={event => {
+          const step = event.key === "ArrowRight" || event.key === "ArrowDown" ? 1 : event.key === "ArrowLeft" || event.key === "ArrowUp" ? -1 : 0;
+          if (!step && event.key !== "Home" && event.key !== "End") return;
+          event.preventDefault();
+          const index = tiles.findIndex(candidate => candidate.id === tile.id);
+          const next = event.key === "Home" ? 0 : event.key === "End" ? tiles.length - 1 : (index + step + tiles.length) % tiles.length;
+          onChange(tiles[next].id);
+          event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="radio"]')[next]?.focus();
+        }}
         onClick={() => onChange(tile.id)}
         className={cn(
           "rounded-lg border p-2.5 text-left transition-colors",
@@ -84,7 +94,7 @@ function TileGrid<T extends string>({ name, tiles, value, onChange, columns }: {
           )}>{selected && <span className="size-1.5 rounded-full bg-foreground" />}</span>
           <span className="min-w-0 flex-1 truncate text-[13px] text-foreground">{tile.label}</span>
         </span>
-        <span className="mt-0.5 block text-[11.5px] text-muted-foreground">{tile.hint}</span>
+        <span className="mt-0.5 block text-[12px] text-muted-foreground">{tile.hint}</span>
       </button>;
     })}
   </div>;
@@ -97,13 +107,13 @@ export function AppearancePage() {
     description={`Bridge follows macOS by default. Currently showing ${resolved === "dark" ? "graphite" : "paper"}.`}
   >
     <SettingsGroup label="Mode">
-      <TileGrid name="Mode" tiles={MODES} value={preference} onChange={setPreference} columns="sm:grid-cols-3" />
+      <TileGrid name="Mode" tiles={MODES} value={preference} onChange={setPreference} columns="@min-[580px]/settings:grid-cols-3" />
     </SettingsGroup>
     <SettingsGroup label="Shell" note="The surface behind the app">
-      <TileGrid name="Shell" tiles={SKINS} value={skin} onChange={setSkin} columns="sm:grid-cols-2" />
+      <TileGrid name="Shell" tiles={SKINS} value={skin} onChange={setSkin} columns="@min-[480px]/settings:grid-cols-2" />
     </SettingsGroup>
     <SettingsGroup label="Thinking control" note="How the model picker sets reasoning effort">
-      <TileGrid name="Thinking control" tiles={EFFORT_STYLES} value={effortSelector} onChange={setEffortSelector} columns="sm:grid-cols-3" />
+      <TileGrid name="Thinking control" tiles={EFFORT_STYLES} value={effortSelector} onChange={setEffortSelector} columns="@min-[580px]/settings:grid-cols-3" />
     </SettingsGroup>
   </SettingsPage>;
 }

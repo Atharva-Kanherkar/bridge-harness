@@ -7,7 +7,7 @@ import { formatChord, SHORTCUT_GROUPS, shortcutsInGroup, type Shortcut } from ".
 // the sheet had drifted, which is the thing the table exists to prevent.
 
 function Chord({ shortcut }: { shortcut: Shortcut }) {
-  return <kbd className="shrink-0 rounded-md border border-border bg-muted px-1.5 py-0.5 font-mono text-[10.5px] font-medium text-foreground">
+  return <kbd className="shrink-0 rounded-md border border-border bg-muted px-1.5 py-0.5 font-mono text-[11px] font-medium text-foreground">
     {formatChord(shortcut)}
   </kbd>;
 }
@@ -27,16 +27,16 @@ export function ShortcutsSheet({ open, onClose }: { open: boolean; onClose: () =
       <DialogPanel>
         <div className="grid gap-4">
           {SHORTCUT_GROUPS.map(group => <section key={group} aria-label={group}>
-            <h3 className="mb-1.5 text-[9px] font-semibold uppercase tracking-[0.13em] text-muted-foreground">{group}</h3>
+            <h3 className="mb-1.5 text-[12px] font-medium text-muted-foreground">{group}</h3>
             <ul className="grid gap-0.5">
-              {shortcutsInGroup(group).map(shortcut => <li key={shortcut.id} className="flex items-center gap-3 rounded-lg px-1.5 py-1 text-[12px] text-muted-foreground">
+              {shortcutsInGroup(group).map(shortcut => <li key={shortcut.id} className="flex min-h-8 items-center gap-3 rounded-lg px-1.5 py-1 text-[12px] text-muted-foreground">
                 <span className="min-w-0 flex-1 truncate text-foreground">{shortcut.label}</span>
                 <Chord shortcut={shortcut} />
               </li>)}
             </ul>
           </section>)}
         </div>
-        <p className="mt-4 text-[10.5px] leading-relaxed text-muted-foreground/70">Escape steps back one layer at a time: it restores an expanded dock before it leaves the fullscreen layout.</p>
+        <p className="mt-4 text-[11px] leading-relaxed text-muted-foreground">Escape steps back one layer at a time: it restores an expanded dock before it leaves the fullscreen layout.</p>
       </DialogPanel>
     </DialogContent>
   </Dialog>;

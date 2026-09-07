@@ -514,6 +514,56 @@ fn a_killed_daemons_interrupted_turn_is_surfaced_after_restart() {
 }
 
 #[test]
+fn graceful_shutdown_does_not_leave_chats_as_failed_orphans_after_restart() {
+    let fixture = tempfile::tempdir().unwrap();
+    let running = RunningDaemon::start(fixture.path());
+    let mut client = Client::connect(&running.socket_path);
+    client.handshake(&running.token);
+    let mut cases: Vec<(String, &str)> = Vec::new();
+    for (index, status) in ["ready", "working", "waiting", "completed", "failed"].iter().enumerate() {
+        let (created, _) = client.call(index as i64 + 1, "sessions/create_chat", Some(json!({"harness": "shell"})));
+        let session_id = created["result"]["sessions"].as_array().unwrap().iter()
+            .find(|session| !cases.iter().any(|(id, _)| session["id"].as_str() == Some(id.as_str())))
+            .unwrap()["id"].as_str().unwrap().to_owned();
+        {
+            let db = running.daemon.core.db.lock().unwrap();
+            db.execute(
+                "UPDATE sessions SET status=?2,adapter_pid=2147483647,adapter_process_identity='test-provider',active_turn_id=?3 WHERE id=?1",
+                rusqlite::params![session_id, status, if matches!(*status, "working" | "waiting") { Some("turn") } else { None }],
+            ).unwrap();
+        }
+        running.daemon.core.adapters.lock().unwrap().insert(
+            session_id.clone(),
+            Box::new(RecordingRuntime { responded: Default::default() }),
+        );
+        cases.push((session_id, *status));
+    }
+    drop(client);
+    running.stop();
+
+    let restarted = RunningDaemon::start(fixture.path());
+    {
+        let db = restarted.daemon.core.db.lock().unwrap();
+        for (session_id, previous_status) in cases {
+            let (status, pid, identity, active_turn): (String, Option<i64>, Option<String>, Option<String>) = db.query_row(
+                "SELECT status,adapter_pid,adapter_process_identity,active_turn_id FROM sessions WHERE id=?1",
+                [&session_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            ).unwrap();
+            let expected = if matches!(previous_status, "completed" | "failed") { previous_status } else { "stopped" };
+            assert_eq!(status, expected, "status before shutdown: {previous_status}");
+            assert_eq!((pid, identity, active_turn), (None, None, None));
+            let entries = bridge_core::store::session_entries(&db, &session_id).unwrap();
+            assert!(!entries.iter().any(|entry| entry.payload["reason"] == "supervisor_restart_orphan"),
+                "an orderly stop must not be reported as an orphaned provider");
+            if expected == "stopped" {
+                assert!(entries.iter().any(|entry| entry.payload["reason"] == "app_shutdown"));
+            }
+        }
+    }
+    restarted.stop();
+}
+
+#[test]
 fn oversized_frames_are_refused_with_a_bounded_error() {
     let fixture = tempfile::tempdir().unwrap();
     let running = RunningDaemon::start(fixture.path());

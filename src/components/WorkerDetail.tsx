@@ -72,7 +72,7 @@ function FeedIcon({ event }: { event: AgentEvent }) {
   if (readWireKind(event.kind).startsWith("tool.")) return <Hammer size={11} className="text-muted-foreground" aria-hidden="true" />;
   if (event.role === "user") return <User size={11} className="text-muted-foreground" aria-hidden="true" />;
   if (event.role === "assistant") return <Bot size={11} className="text-muted-foreground" aria-hidden="true" />;
-  return <CircleDot size={11} className="text-muted-foreground/60" aria-hidden="true" />;
+  return <CircleDot size={11} className="text-muted-foreground" aria-hidden="true" />;
 }
 
 function feedLabel(event: AgentEvent): string | null {
@@ -199,19 +199,19 @@ export function WorkerDetail({
       <div className="flex shrink-0 flex-wrap items-center gap-x-2.5 gap-y-1 border-b border-border px-4 py-3 sm:px-6">
         <button ref={closeRef} type="button" onClick={onClose} className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label="Back to Mission Control"><X size={14}/></button>
         <h1 className="m-0 min-w-0 truncate font-display text-sm font-semibold tracking-tight text-foreground">{session.title || session.label}</h1>
-        <span className={cn("shrink-0 text-[8.5px] font-semibold tracking-[0.07em]", toneText[status.tone])}>{status.label}</span>
+        <span className={cn("shrink-0 text-[11px] font-semibold tracking-[0.07em]", toneText[status.tone])}>{status.label}</span>
         <span className="flex-1" />
-        <span className="hidden font-mono text-[9px] text-muted-foreground sm:inline">{runtime?.taskFamily}</span>
-        {runtime?.retryCount ? <span className="inline-flex items-center gap-0.5 font-mono text-[9px] text-muted-foreground"><RefreshCw size={8} aria-hidden="true"/>retry {runtime.retryCount}</span> : null}
-        <span className="font-mono text-[9px] text-muted-foreground">{formatElapsed(session.startedAt, clock)}</span>
+        <span className="hidden font-mono text-[11px] text-muted-foreground sm:inline">{runtime?.taskFamily}</span>
+        {runtime?.retryCount ? <span className="inline-flex items-center gap-0.5 font-mono text-[11px] text-muted-foreground"><RefreshCw size={8} aria-hidden="true"/>retry {runtime.retryCount}</span> : null}
+        <span className="font-mono text-[11px] text-muted-foreground">{formatElapsed(session.startedAt, clock)}</span>
         {onToggleFullscreen && <Button type="button" variant="ghost" size="sm" className="text-muted-foreground" onClick={onToggleFullscreen} aria-label={fullscreen ? "Exit fullscreen" : "Fullscreen"}>{fullscreen ? <Minimize2 size={13}/> : <Maximize2 size={13}/>}</Button>}
         <Button type="button" variant="secondary" size="sm" onClick={() => onFocusSession(session.id)}>Open session <ArrowRight size={12}/></Button>
       </div>
 
       {(runtime?.progressSummary || runtime?.waitingReason) && (
-        <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border bg-card px-4 py-2 text-[10.5px] sm:px-6">
+        <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border bg-card px-4 py-2 text-[11px] sm:px-6">
           {runtime.progressSummary && <span className="min-w-0 truncate font-mono text-foreground/80">{runtime.progressSummary}</span>}
-          {runtime.waitingReason && <span className="shrink-0 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[9px] font-medium text-warning">waiting: {runtime.waitingReason.replaceAll("_", " ")}{runtime.waitingSince ? ` · ${formatElapsed(runtime.waitingSince, clock)}` : ""}</span>}
+          {runtime.waitingReason && <span className="shrink-0 rounded-full border border-warning/30 bg-warning/10 px-2 py-0.5 text-[11px] font-medium text-warning">waiting: {runtime.waitingReason.replaceAll("_", " ")}{runtime.waitingSince ? ` · ${formatElapsed(runtime.waitingSince, clock)}` : ""}</span>}
         </div>
       )}
 
@@ -223,22 +223,22 @@ export function WorkerDetail({
         }}
         className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-3 sm:px-6"
       >
-        {failure && <p className="mb-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-[10.5px] text-destructive">{failure}</p>}
+        {failure && <p className="mb-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-[11px] text-destructive">{failure}</p>}
         {loading && <p className="flex items-center gap-2 py-4 text-xs text-muted-foreground"><LoaderCircle className="animate-spin" size={13}/>Loading the worker's activity…</p>}
-        {!loading && feed.length === 0 && <p className="py-8 text-center font-mono text-[10px] text-muted-foreground/70">No activity recorded yet.</p>}
+        {!loading && feed.length === 0 && <p className="py-8 text-center font-mono text-[11px] text-muted-foreground">No activity recorded yet.</p>}
         <ol className="m-0 list-none space-y-1.5 p-0">
           {feed.map(event => (
             <li key={eventKey(event)} className="flex items-start gap-2">
               <span className="mt-[3px] w-4 shrink-0 text-center"><FeedIcon event={event}/></span>
-              <p className={cn("m-0 min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[10.5px] leading-[1.55]", readWireKind(event.kind).startsWith("tool.") ? "text-muted-foreground" : "text-foreground/85")}>{feedLabel(event)}</p>
+              <p className={cn("m-0 min-w-0 flex-1 whitespace-pre-wrap break-words font-mono text-[11px] leading-[1.55]", readWireKind(event.kind).startsWith("tool.") ? "text-muted-foreground" : "text-foreground/85")}>{feedLabel(event)}</p>
             </li>
           ))}
         </ol>
         {result && (
           <div className="mt-4 rounded-xl border border-border bg-card p-3.5">
-            <p className="mb-1.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70">Result envelope</p>
+            <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Result envelope</p>
             {typeof result.summary === "string" && <p className="text-[11px] leading-relaxed text-foreground/85">{result.summary}</p>}
-            <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-muted p-2.5 font-mono text-[9.5px] leading-[1.5] text-muted-foreground">{JSON.stringify(result, null, 2)}</pre>
+            <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-muted p-2.5 font-mono text-[11px] leading-[1.5] text-muted-foreground">{JSON.stringify(result, null, 2)}</pre>
           </div>
         )}
       </div>
@@ -303,7 +303,7 @@ export function SteerComposer({ sessionId, steerable, onSteer, label = "Steer th
       <Button type="submit" size="sm" disabled={busy || !draft.trim()}><Navigation size={12}/>{busy ? "Sending…" : "Steer"}</Button>
       {trailing}
     </div>
-    <p className="mt-1.5 text-[10px] text-muted-foreground/70">Guidance is folded into the worker&rsquo;s objective and its orchestrator is told. It still reports a typed result.</p>
-    {failure && <p className="mt-1.5 text-[10.5px] text-destructive">{failure}</p>}
+    <p className="mt-1.5 text-[11px] text-muted-foreground">Guidance is folded into the worker&rsquo;s objective and its orchestrator is told. It still reports a typed result.</p>
+    {failure && <p className="mt-1.5 text-[11px] text-destructive">{failure}</p>}
   </form>;
 }

@@ -39,7 +39,7 @@ function sourceLabel(source: MetricSource): string {
 }
 
 function SourceBadge({ source }: { source: MetricSource }) {
-  return <span className="shrink-0 whitespace-nowrap rounded-full border border-border px-1.5 py-0.5 text-[8px] font-semibold uppercase tracking-[0.08em] text-muted-foreground">{sourceLabel(source)}</span>;
+  return <span className="shrink-0 whitespace-nowrap rounded-full border border-border px-1.5 py-0.5 text-caption font-semibold uppercase tracking-[0.08em] text-muted-foreground">{sourceLabel(source)}</span>;
 }
 
 function highestUse(snapshot?: UsageSnapshot): number | undefined {
@@ -94,7 +94,7 @@ function usageTier(percent: number | null): UsageTier {
 }
 
 const TIER_RING_CLASS: Record<UsageTier, string> = {
-  unknown: "text-muted-foreground/35",
+  unknown: "text-muted-foreground",
   ok: "text-success",
   warning: "text-warning",
   critical: "text-destructive",
@@ -135,6 +135,7 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
   const [showMore, setShowMore] = useState(false);
   const [activeLogin, setActiveLogin] = useState<UsageProvider | null>(null);
   const [frame, setFrame] = useState<HTMLElement | null>(null);
+  const [availableHeight, setAvailableHeight] = useState<number>();
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const detailsTransition = useMotionTransition(MOTION_DURATION.reveal);
@@ -155,6 +156,31 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
     }
     setFrame(rootRef.current?.closest<HTMLElement>("[data-composer-frame]") ?? null);
   }, [compact]);
+
+  // A tall composer leaves less room than a viewport percentage allows.
+  // Keep the popover below the toolbar and above its actual anchor.
+  useEffect(() => {
+    if (!compact || !open) return;
+    const anchor = frame ?? rootRef.current;
+    if (!anchor) return;
+    const main = anchor.closest("main");
+    const measure = () => {
+      let top = Math.max(0, main?.getBoundingClientRect().top ?? 0);
+      for (let parent = anchor.parentElement; parent; parent = parent.parentElement) {
+        const overflow = getComputedStyle(parent);
+        if (/(auto|scroll|hidden|clip)/.test(overflow.overflowY || overflow.overflow)) {
+          top = Math.max(top, parent.getBoundingClientRect().top);
+        }
+      }
+      setAvailableHeight(Math.max(0, Math.min(window.innerHeight * 0.8, anchor.getBoundingClientRect().top - top - 12)));
+    };
+    measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(anchor);
+    if (main) observer?.observe(main);
+    window.addEventListener("resize", measure);
+    return () => { observer?.disconnect(); window.removeEventListener("resize", measure); };
+  }, [compact, frame, open]);
 
   useEffect(() => {
     if (!open) return;
@@ -201,15 +227,14 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
         open ? "visible pointer-events-auto opacity-100" : "invisible pointer-events-none opacity-0",
       )}
     >
-      {/* Flat, not floating: a plain popover surface with a border and no
-          shadow. It is sized by its content, stops at 80dvh, and scrolls
-          inside instead of cutting the provider cards in half. */}
+      {/* Content scrolls inside the material, bounded by the space above the composer. */}
       <div
+        style={compact && availableHeight !== undefined ? { maxHeight: availableHeight } : undefined}
         className={cn(
-          "flex max-h-[80dvh] flex-col overflow-hidden border border-border bg-popover",
+          "@container/usage u-glass-popover flex max-h-[80dvh] flex-col overflow-hidden",
           // Every corner, both modes: a popover is a whole shape, and half-round
           // corners read as a rendering fault rather than as a join.
-          compact ? "w-full rounded-2xl" : "w-[390px] max-w-[calc(100vw-1.5rem)] rounded-2xl",
+          compact ? "w-full rounded-2xl" : "w-[440px] max-w-[calc(100vw-1.5rem)] rounded-2xl",
         )}
       >
         <div className={cn("min-h-0 flex-1 overflow-y-auto", PANEL_PAD)}>
@@ -222,22 +247,22 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
           <div className="mb-2.5 flex items-center gap-2 px-0.5">
             <Gauge size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
             <h2 className="font-display text-sm font-semibold text-foreground">Usage health</h2>
-            <span className="ml-auto truncate text-[9px] text-muted-foreground/70">No invented limits</span>
-            <button type="button" onClick={() => setOpen(false)} className="grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label="Close usage health details"><X size={13} aria-hidden="true" /></button>
+            <span className="ml-auto truncate text-caption text-muted-foreground">Provider usage</span>
+            <button type="button" onClick={() => setOpen(false)} className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label="Close usage health details"><X size={13} aria-hidden="true" /></button>
           </div>
 
-          <div className={cn("grid gap-2", compact ? "grid-cols-2" : "grid-cols-1")}>
+          <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
             {PROVIDERS.map(provider => <ProviderDetail key={provider.id} provider={provider} snapshot={usage[provider.id]} samples={samples[provider.id] ?? []} adapter={adapters?.find(item => item.id === provider.id)} activeLogin={activeLogin} onStartLogin={setActiveLogin} onCloseLogin={() => setActiveLogin(null)} />)}
           </div>
 
           <section className={cn("mt-2 border border-border p-3", PANEL_NESTED)} aria-label="Context pressure">
             <div className="flex flex-wrap items-center gap-2">
-              <b className="text-[11px] text-foreground">{pressure.label}</b>
-              {pressure.percent != null && <span className="font-mono text-[10px] text-muted-foreground">{Math.round(pressure.percent)}%</span>}
+              <b className="text-caption text-foreground">{pressure.label}</b>
+              {pressure.percent != null && <span className="font-mono text-caption text-muted-foreground">{Math.round(pressure.percent)}%</span>}
               {pressure.percent != null && <SourceBadge source={contextSource} />}
             </div>
-            <p className="mt-1.5 text-[10px] leading-relaxed text-muted-foreground">{pressure.explanation}</p>
-            {focusedSessionId && <button type="button" onClick={() => setShowBreakdown(true)} aria-haspopup="dialog" className="mt-2 inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 text-[9.5px] font-medium text-ring transition-colors hover:bg-accent">
+            <p className="mt-1.5 text-caption leading-relaxed text-muted-foreground">{pressure.explanation}</p>
+            {focusedSessionId && <button type="button" onClick={() => setShowBreakdown(true)} aria-haspopup="dialog" className="mt-2 inline-flex items-center gap-1.5 min-h-7 rounded-md px-2 text-caption font-medium text-ring transition-colors hover:bg-accent">
               <Layers size={10} aria-hidden="true" />Open context breakdown
             </button>}
           </section>
@@ -247,7 +272,7 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
             aria-expanded={showMore}
             aria-controls="usage-health-details"
             onClick={() => setShowMore(value => !value)}
-            className="mt-2 flex w-full items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-[10px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            className="mt-2 flex w-full items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-caption font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           >
             {showMore ? "Show less" : "Show more"}
             <ChevronDown size={12} aria-hidden="true" className={cn("transition-transform duration-300 ease-in-out motion-reduce:transition-none", showMore && "rotate-180")} />
@@ -267,21 +292,21 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
             >
               <section className="mt-3" aria-label="Prompt cache diagnostics">
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-0.5">
-                  <h3 className="text-[9px] font-semibold uppercase tracking-[0.13em] text-muted-foreground">Prompt cache</h3>
-                  <span className="text-[9px] text-muted-foreground/70">Provider-reported tokens</span>
+                  <h3 className="text-caption font-semibold uppercase tracking-[0.13em] text-muted-foreground">Prompt cache</h3>
+                  <span className="text-caption text-muted-foreground">Provider-reported tokens</span>
                 </div>
                 {cacheDiagnostics.length ? <>
                   <div className="grid gap-1.5">{cacheDiagnostics.slice(0, 6).map(diagnostic => <CacheRow key={diagnostic.key} diagnostic={diagnostic} />)}</div>
-                  {cacheDiagnostics.length > 6 && <p className="mt-2 px-0.5 text-[9px] text-muted-foreground/70">Showing 6 of {cacheDiagnostics.length} recent prompt groups.</p>}
-                </> : <p className={cn("border border-dashed border-border px-3 py-4 text-center text-[10px] text-muted-foreground/70", PANEL_NESTED)}>No prompt-cache telemetry reported yet.</p>}
+                  {cacheDiagnostics.length > 6 && <p className="mt-2 px-0.5 text-caption text-muted-foreground">Showing 6 of {cacheDiagnostics.length} recent prompt groups.</p>}
+                </> : <p className={cn("border border-dashed border-border px-3 py-4 text-center text-caption text-muted-foreground", PANEL_NESTED)}>No prompt-cache telemetry reported yet.</p>}
               </section>
 
               <section className="mt-3" aria-label="Usage history">
                 <div className="mb-2 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-0.5">
-                  <h3 className="text-[9px] font-semibold uppercase tracking-[0.13em] text-muted-foreground">Recent work units</h3>
-                  <span className="text-[9px] text-muted-foreground/70">Newest first</span>
+                  <h3 className="text-caption font-semibold uppercase tracking-[0.13em] text-muted-foreground">Recent work units</h3>
+                  <span className="text-caption text-muted-foreground">Newest first</span>
                 </div>
-                {history.length ? <div className="grid gap-1.5">{history.slice(0, 6).map(entry => <HistoryRow key={entry.id} entry={entry} />)}</div> : <p className={cn("border border-dashed border-border px-3 py-4 text-center text-[10px] text-muted-foreground/70", PANEL_NESTED)}>No measured work-unit history yet.</p>}
+                {history.length ? <div className="grid gap-1.5">{history.slice(0, 6).map(entry => <HistoryRow key={entry.id} entry={entry} />)}</div> : <p className={cn("border border-dashed border-border px-3 py-4 text-center text-caption text-muted-foreground", PANEL_NESTED)}>No measured work-unit history yet.</p>}
               </section>
             </motion.div>}
           </AnimatePresence>
@@ -321,17 +346,17 @@ function CacheRow({ diagnostic }: { diagnostic: CacheDiagnostic }) {
     : `$${(diagnostic.reportedCostMicrousd / 1_000_000).toFixed(4)} ${diagnostic.costCoverage}`;
   return <div className={cn("border border-border px-3 py-2", PANEL_NESTED)}>
     <div className="flex min-w-0 items-center gap-2">
-      <b className="shrink-0 text-[10px] text-foreground">{diagnostic.harness}</b>
-      <span className="min-w-0 flex-1 truncate font-mono text-[9px] text-muted-foreground">{diagnostic.model}</span>
-      <span className="shrink-0 whitespace-nowrap font-mono text-[9px] text-foreground">Hit {hit}</span>
+      <b className="shrink-0 text-caption text-foreground">{diagnostic.harness}</b>
+      <span className="min-w-0 flex-1 truncate font-mono text-caption text-muted-foreground">{diagnostic.model}</span>
+      <span className="shrink-0 whitespace-nowrap font-mono text-caption text-foreground">Hit {hit}</span>
     </div>
-    <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[9px] text-muted-foreground/70">
+    <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-caption text-muted-foreground">
       <span>{diagnostic.cacheReadTokens.toLocaleString()} read</span>
       <span>{diagnostic.cacheWriteTokens.toLocaleString()} write</span>
       <span>{diagnostic.uncachedInputTokens.toLocaleString()} uncached</span>
       <span>write amortization {amortization}</span>
     </div>
-    <div className="mt-1 flex min-w-0 flex-wrap gap-x-2 gap-y-1 text-[8.5px] text-muted-foreground/70">
+    <div className="mt-1 flex min-w-0 flex-wrap gap-x-2 gap-y-1 text-caption text-muted-foreground">
       <span>Role: {humanizeMetric(diagnostic.role)}</span>
       <span>Task: {humanizeMetric(diagnostic.taskFamily)}</span>
       <span>Restore: {humanizeMetric(diagnostic.restorationMode)}</span>
@@ -339,7 +364,7 @@ function CacheRow({ diagnostic }: { diagnostic: CacheDiagnostic }) {
       {diagnostic.stablePrefixId && <span className="max-w-full truncate font-mono" title={`${diagnostic.stablePrefixId} · ${diagnostic.stablePrefixHash ?? "hash unknown"}`}>{diagnostic.stablePrefixId}</span>}
       {diagnostic.promptSchemaVersion != null && <span>schema v{diagnostic.promptSchemaVersion}</span>}
     </div>
-    <div className="mt-1 text-[8.5px] text-muted-foreground/70">{cost}</div>
+    <div className="mt-1 text-caption text-muted-foreground">{cost}</div>
   </div>;
 }
 
@@ -353,40 +378,40 @@ function ProviderDetail({ provider, snapshot, samples, adapter, activeLogin, onS
   const used = status === "normal" ? highestUse(snapshot) : undefined;
   const projection = status === "normal" ? projectUsageExhaustion(samples) : null;
   const loginActive = activeLogin === provider.id;
-  return <section className={cn("border border-border p-3", PANEL_NESTED, loginActive && "col-span-2")} aria-label={`${provider.label} usage`}>
+  return <section className="px-3 py-3" aria-label={`${provider.label} usage`}>
     <div className="flex min-w-0 flex-wrap items-center gap-2">
       <UsageRing used={used} inert={status !== "normal"} />
-      <b className="text-[11px] text-foreground">{provider.label}</b>
-      {status === "normal" && snapshot?.planType && <span className="text-[9px] text-muted-foreground">{snapshot.planType}</span>}
-      {status === "normal" && snapshot?.model && <span className="min-w-0 truncate font-mono text-[9px] text-muted-foreground">{snapshot.model}</span>}
+      <b className="text-caption text-foreground">{provider.label}</b>
+      {status === "normal" && snapshot?.planType && <span className="text-caption text-muted-foreground">{snapshot.planType}</span>}
+      {status === "normal" && snapshot?.model && <span className="min-w-0 truncate font-mono text-caption text-muted-foreground">{snapshot.model}</span>}
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
-        {status === "not_installed" && <span className="text-[9px] text-muted-foreground/70">Not installed</span>}
+        {status === "not_installed" && <span className="text-caption text-muted-foreground">Not installed</span>}
         {status === "signed_out" && !loginActive && <>
-          <span className="text-[9px] text-muted-foreground/70">Not signed in</span>
+          <span className="text-caption text-muted-foreground">Not signed in</span>
           <button
             type="button"
             onClick={() => onStartLogin(provider.id)}
-            className="rounded-md border border-border px-1.5 py-0.5 text-[9px] font-medium text-foreground transition-colors hover:bg-accent"
+            className="min-h-7 rounded-md border border-border px-2 text-caption font-medium text-foreground transition-colors hover:bg-accent"
           >
             Sign in
           </button>
         </>}
-        {status === "normal" && (snapshot ? <SourceBadge source={snapshot.source} /> : <span className="text-[9px] text-muted-foreground/70">Limit unknown</span>)}
+        {status === "normal" && (snapshot ? <SourceBadge source={snapshot.source} /> : <span className="text-caption text-muted-foreground">Limit unknown</span>)}
       </span>
     </div>
     {loginActive ? <ProviderLoginPane provider={provider.id} label={provider.label} onClose={onCloseLogin} />
-    : status === "not_installed" ? <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">{adapter?.unavailableReason ?? `${provider.label} isn't installed.`} Add it in Settings → Harnesses.</p>
-    : status === "signed_out" ? <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">Sign in to see usage, quota, and context for this provider.</p>
+    : status === "not_installed" ? <p className="mt-2 text-caption leading-relaxed text-muted-foreground">{adapter?.unavailableReason ?? `${provider.label} isn't installed.`} Add it in Settings → Harnesses.</p>
+    : status === "signed_out" ? <p className="mt-2 text-caption leading-relaxed text-muted-foreground">Sign in to see usage, quota, and context for this provider.</p>
     : snapshot?.windows.length ? <div className="mt-2.5 grid gap-2.5">{snapshot.windows.map(window => {
       const clamped = clampPercent(window.usedPercent);
       const reset = window.resetsLabel ?? formatReset(window.resetsInSeconds);
       return <div key={window.id}>
-        <div className="mb-1 flex flex-wrap items-center gap-2 text-[10px]"><span className="min-w-0 truncate text-muted-foreground">{window.label}</span><span className="ml-auto whitespace-nowrap font-mono text-foreground">{Math.round(clamped)}% used</span><SourceBadge source={window.source} /></div>
+        <div className="mb-1 flex flex-wrap items-center gap-2 text-caption"><span className="min-w-0 truncate text-muted-foreground">{window.label}</span><span className="ml-auto whitespace-nowrap font-mono text-foreground">{Math.round(clamped)}% used</span><SourceBadge source={window.source} /></div>
         <UsageBar used={clamped} />
-        <div className="mt-1 text-[9px] text-muted-foreground/70">{reset ?? "Reset unknown"}</div>
+        <div className="mt-1 text-caption text-muted-foreground">{reset ?? "Reset unknown"}</div>
       </div>;
-    })}</div> : <p className="mt-2 text-[10px] leading-relaxed text-muted-foreground">Limit unknown — this provider has not exposed a stable quota value. Token and context history remain available below.</p>}
-    {projection && <div className="mt-2.5 flex gap-2 rounded-lg border border-warning/30 bg-warning/10 p-2 text-[9.5px] leading-relaxed text-warning"><AlertTriangle size={12} className="mt-0.5 shrink-0" aria-hidden="true" /><span>{projection.explanation} <b className="font-semibold uppercase tracking-wide">Estimated</b></span></div>}
+    })}</div> : <p className="mt-2 text-caption leading-relaxed text-muted-foreground">This provider has not reported its quota yet.</p>}
+    {projection && <div className="mt-2.5 flex gap-2 rounded-lg border border-warning/30 bg-warning/10 p-2 text-caption leading-relaxed text-warning"><AlertTriangle size={12} className="mt-0.5 shrink-0" aria-hidden="true" /><span>{projection.explanation} <b className="font-semibold uppercase tracking-wide">Estimated</b></span></div>}
   </section>;
 }
 
@@ -435,13 +460,13 @@ function ProviderLoginPane({ provider, label, onClose }: { provider: UsageProvid
     setEntry("");
   };
   return <div className="mt-2 grid gap-1.5">
-    <div className="flex items-center gap-2">
-      <span className="text-[9px] font-semibold uppercase tracking-[0.13em] text-muted-foreground">{label} sign-in</span>
-      <span className="text-[8.5px] text-muted-foreground/70">Runs {label}'s own flow — Bridge never sees the credential.</span>
-      <button type="button" onClick={onClose} className="ml-auto rounded-md px-1 py-0.5 text-[9px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Hide</button>
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-caption font-semibold uppercase tracking-[0.13em] text-muted-foreground">{label} sign-in</span>
+      <span className="text-caption text-muted-foreground">Runs {label}'s own flow — Bridge never sees the credential.</span>
+      <button type="button" onClick={onClose} className="ml-auto min-h-7 rounded-md px-2 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Hide</button>
     </div>
-    <pre ref={outputRef} aria-live="polite" aria-label={`${label} sign-in output`} className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-md border border-border bg-card p-2 font-mono text-[9.5px] leading-relaxed text-foreground">{output || "Starting…"}</pre>
-    {error && <p role="alert" className="text-[9.5px] text-destructive">{error}</p>}
+    <pre ref={outputRef} aria-live="polite" aria-label={`${label} sign-in output`} className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-md border border-border bg-card p-2 font-mono text-caption leading-relaxed text-foreground">{output || "Starting…"}</pre>
+    {error && <p role="alert" className="text-caption text-destructive">{error}</p>}
     {/* Deliberately not a <form>. This pane renders through the composer's
         `leading` slot — inside the composer's own <form> — and a nested
         form's submit event still bubbles, so an Enter here would also invoke
@@ -454,9 +479,9 @@ function ProviderLoginPane({ provider, label, onClose }: { provider: UsageProvid
         onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); send(); } }}
         placeholder="Type a response or paste a code / URL, press Enter"
         aria-label={`Reply to the ${label} sign-in prompt`}
-        className="min-w-0 flex-1 rounded-md border border-border bg-card px-2 py-1 font-mono text-[10px] text-foreground placeholder:text-muted-foreground/60 focus:outline-none focus:ring-1 focus:ring-ring"
+        className="min-w-0 flex-1 rounded-md border border-border bg-card px-2 py-1 font-mono text-caption text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
       />
-      <button type="button" onClick={send} className="rounded-md border border-border px-2 py-1 text-[9px] font-medium text-foreground transition-colors hover:bg-accent">Send</button>
+      <button type="button" onClick={send} className="rounded-md border border-border px-2 py-1 text-caption font-medium text-foreground transition-colors hover:bg-accent">Send</button>
     </div>
   </div>;
 }
@@ -464,10 +489,10 @@ function ProviderLoginPane({ provider, label, onClose }: { provider: UsageProvid
 function HistoryRow({ entry }: { entry: UsageHistoryEntry }) {
   return <div className={cn("border border-border px-3 py-2", PANEL_NESTED)}>
     <div className="flex min-w-0 items-center gap-2">
-      <span className="min-w-0 flex-1 truncate font-mono text-[9.5px] text-foreground" title={entry.workUnit}>{entry.workUnit}</span>
+      <span className="min-w-0 flex-1 truncate font-mono text-caption text-foreground" title={entry.workUnit}>{entry.workUnit}</span>
       <SourceBadge source={entry.source} />
     </div>
-    <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[9px] text-muted-foreground/70">
+    <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-caption text-muted-foreground">
       <span>{entry.harness}</span>
       <span>{entry.model ?? "model unknown"}</span>
       <span>{entry.outcome}</span>

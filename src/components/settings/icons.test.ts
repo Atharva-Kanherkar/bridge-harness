@@ -2,10 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import { extname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 
-// The Settings screen is on Phosphor Regular. The rest of the app is still on
-// lucide, and migrating it is a follow-up, so the boundary is what needs
-// guarding: a page that reaches for a lucide symbol reintroduces two icon
-// families in one column, which is exactly the drift the redesign removed.
+// Settings shares the Lucide icon family used by the rest of Bridge.
 //
 // Listed by module rather than by glob, because these files are the Settings
 // screen: the rail, the kit, the nine pages, and the four components the pages
@@ -36,10 +33,10 @@ describe("Settings icons", () => {
     expect(kit).toContain("src/components/settings/SettingsRail.tsx");
   });
 
-  it("imports no symbol from lucide-react", () => {
+  it("uses the shared Lucide icon family", () => {
     const offenders = [...SETTINGS_MODULES, ...settingsKitFiles()]
-      .filter(path => /from\s+["']lucide-react["']/.test(readFileSync(path, "utf8")));
-    expect(offenders, "Settings uses @phosphor-icons/react, Regular weight").toEqual([]);
+      .filter(path => /from\s+["']@phosphor-icons\/react["']/.test(readFileSync(path, "utf8")));
+    expect(offenders, "Settings uses lucide-react").toEqual([]);
   });
 
   it("uses no native select and no native checkbox in its source", () => {

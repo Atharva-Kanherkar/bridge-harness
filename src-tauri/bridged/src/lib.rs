@@ -264,8 +264,11 @@ impl Daemon {
         sessions.sort();
         sessions.dedup();
         for session_id in sessions {
-            self.core
-                .stop_session_adapter(&session_id, bridge_core::adapters::ShutdownReason::AppShutdown);
+            if let Err(error) = self.core.shutdown_session_adapter(&session_id) {
+                // A failed durable cleanup keeps its process claim so startup
+                // recovery can report it instead of implying a clean stop.
+                eprintln!("bridged: could not record shutdown for {session_id}: {error}");
+            }
         }
         let _ = std::fs::remove_file(&self.socket_path);
     }

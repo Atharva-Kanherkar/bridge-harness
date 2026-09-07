@@ -4,7 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
 import { agentMentionQuery, agentShortcutCandidates, parseAgentMention, type AgentShortcutCandidate } from "./agentMention";
 import { harnessShortcutQuery, parseHarnessShortcut } from "./harnessShortcut";
-import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
+import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, FileDiff, FileText, FolderGit2, GitCommitHorizontal, GitPullRequest, Inbox, LoaderCircle, MessageSquareText, Monitor, Play, Plus, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "./api";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
 import { openExternalUrl } from "./externalLinks";
@@ -2018,7 +2018,7 @@ function AppContent() {
   const startupError = error ?? (healthError ? errorMessage(healthError) : modelSetupError ? errorMessage(modelSetupError) : undefined);
   if (!health || !modelSetup) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{startupError ? <><X size={14} className="text-destructive" aria-hidden="true" />{startupError}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
   if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard adapters={health.adapters} onComplete={acceptModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
-  const chromeTitle = view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "settings" ? "Settings" : session?.title || session?.label || "Bridge";
+  const chromeTitle = view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "settings" ? "Settings" : paradigm === "grid" ? "Activity" : session?.title || session?.label || "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -2093,8 +2093,8 @@ function AppContent() {
       actions={titleBarActions}
     />}
     <main className="relative z-10 min-w-0 flex-1 overflow-hidden flex flex-col animate-page-mount">
-      {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
-      <HealthWarnings warnings={health.warnings ?? []} className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-2xl" />
+      {!adaptersReady && <Alert variant="warning" className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-3xl"><AlertTitle>No model adapters available</AlertTitle><AlertDescription>Bridge remains accessible, but chats and orchestrators are disabled until Codex, Claude, or OpenCode is installed and signed in.</AlertDescription></Alert>}
+      <HealthWarnings warnings={health.warnings ?? []} className="mx-auto mt-4 w-[calc(100%-2rem)] max-w-3xl" />
       {view === "work" ? <Suspense fallback={<PanelLoading label="Opening work…"/>}><WorkView
         board={workBoard}
         error={workError}
@@ -2138,6 +2138,7 @@ function AppContent() {
       /> : session ? <>
         <SessionToolbar
           title={session.title || session.label}
+          projectName={workspace?.title}
           sourceBadge={session.kind === "imported" ? `Imported · Claude Code${importedSourceFingerprint ? ` · ${importedSourceFingerprint.slice(0, 12)}…` : ""}` : undefined}
           leading={sidebarNav}
           sidebarHidden={sidebarCollapsed}
@@ -2164,6 +2165,18 @@ function AppContent() {
             setRecallOpen(open => !open);
           }}
           recallOpen={recallOpen}
+          actions={hasRepo && workspace && workspace.dirtyFiles > 0 ? <button
+            type="button"
+            onClick={() => dispatchDock({ type: "open-pane", pane: "changes" })}
+            aria-label={`Review changes in ${workspace.dirtyFiles} ${workspace.dirtyFiles === 1 ? "file" : "files"}`}
+            aria-pressed={dock.open && dock.pane === "changes"}
+            className="inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md border border-border bg-card px-2 text-[12px] text-foreground shadow-xs transition-colors hover:bg-accent"
+          >
+            <FileDiff size={13} aria-hidden="true" />
+            <span className="hidden md:inline">Review</span>
+            <span>{workspace.dirtyFiles} {workspace.dirtyFiles === 1 ? "file" : "files"}</span>
+            <span className="hidden gap-1.5 pl-1 font-mono text-[11px] tabular-nums xl:inline-flex"><span className="text-success">+{workspace.additions}</span><span className="text-destructive">−{workspace.deletions}</span></span>
+          </button> : undefined}
           onEnd={sessionConnected ? () => void endChat() : undefined}
           busy={busy}
         />
@@ -2298,25 +2311,18 @@ function AppContent() {
                     dropped. Saying so is the difference between a considered
                     queue and an agent that ignored you. */}
                 <MemoryUsedChip audit={packetAudit} open={memoryDisclosureOpen} onToggle={() => setMemoryDisclosureOpen(current => !current)} />
-                {queuedFollowUpCount > 0 && <div className="mx-auto mb-2 flex max-w-2xl justify-center px-4 sm:px-6">
+                {queuedFollowUpCount > 0 && <div className="mx-auto mb-2 flex max-w-conversation justify-center px-4 sm:px-6">
                   <div className="u-glass-soft inline-flex items-center gap-2 h-[30px] px-3.5 rounded-full text-muted-foreground text-xs" role="status">
                     <Clock3 size={12} aria-hidden="true" />
                     <span>{`${queuedFollowUpCount} follow-up${queuedFollowUpCount === 1 ? "" : "s"} queued — sent when this step finishes`}</span>
                   </div>
                 </div>}
-                {hasRepo && workspace && workspace.dirtyFiles > 0 && <div className="mx-auto mb-2 flex max-w-2xl justify-center px-4 sm:px-6">
-                  <div className="u-glass-soft inline-flex items-center gap-2 h-[30px] px-3.5 rounded-full text-muted-foreground text-xs">
-                    <FileDiff size={12} aria-hidden="true" />
-                    <span>{`${workspace.dirtyFiles} file${workspace.dirtyFiles === 1 ? "" : "s"}`}</span>
-                    <em className="not-italic font-mono text-[11px]"><b className="text-success">+{workspace.additions}</b> <b className="text-destructive">−{workspace.deletions}</b></em>
-                  </div>
-                </div>}
-                {fallbackNotice && <div className="mx-auto mb-2 flex max-w-2xl justify-center px-4 sm:px-6">
+                {fallbackNotice && <div className="mx-auto mb-2 flex max-w-conversation justify-center px-4 sm:px-6">
                   <div className="u-glass-soft inline-flex items-center gap-2 h-[30px] px-3.5 rounded-full text-muted-foreground text-xs" role="status">
                     <span>{fallbackNotice}</span>
                   </div>
                 </div>}
-                {agentDispatchNotice && <div className="mx-auto mb-2 flex max-w-2xl justify-center px-4 sm:px-6">
+                {agentDispatchNotice && <div className="mx-auto mb-2 flex max-w-conversation justify-center px-4 sm:px-6">
                   <div className="u-glass-soft inline-flex items-center gap-2 min-h-[30px] px-3.5 rounded-full text-muted-foreground text-xs" role="status">
                     <Bot size={12} aria-hidden="true" />
                     <span>{agentDispatchNotice}</span>
@@ -2325,10 +2331,10 @@ function AppContent() {
                 {/* A worker gets a steering composer, not the chat composer: what
                     you type amends the objective its orchestrator gave it, and
                     the orchestrator is told so it does not fight the change. */}
-                {isWorkerView ? <div className="mx-auto max-w-2xl px-4 sm:px-6">
+                {isWorkerView ? <div className="mx-auto max-w-conversation px-4 sm:px-6">
                   <div className="u-glass-soft flex items-center gap-2.5 rounded-2xl px-4 py-2.5 text-[12px] text-muted-foreground"><Bot size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" /><span>This is a background worker. It takes its objective from its orchestrator — steer it here to amend that objective.</span></div>
                   <SteerComposer sessionId={session.id} steerable={!!workerSteerable} onSteer={steerWorker} className="pt-2" trailing={usageWidget}/>
-                </div> : <div className="relative mx-auto max-w-2xl">
+                </div> : <div className="relative mx-auto max-w-conversation-frame">
                   {!slashOpen && !mentionOpen && !agentShortcutOpen && !harnessShortcutOpen && skillSuggestions.length > 0 && <div className="u-glass-popover absolute bottom-full left-4 right-4 z-20 mb-2 overflow-hidden rounded-2xl sm:left-6 sm:right-6"><div className="border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">Available skills for this task</div>{skillSuggestions.map(suggestion => <button key={suggestion.id} type="button" onMouseDown={event => { event.preventDefault(); setComposer(current => `/${suggestion.command} ${current}`); setSkillSuggestions([]); }} className="flex w-full items-start gap-3 border-b border-border px-3 py-2 text-left last:border-0 hover:bg-accent"><span className="mt-0.5 rounded border border-success/25 bg-success/10 px-1.5 py-0.5 text-[8.5px] uppercase text-success">installed</span><span className="min-w-0 flex-1"><b className="block truncate text-[11px] font-medium text-foreground">{suggestion.name}</b><small className="mt-0.5 block text-[9.5px] leading-4 text-muted-foreground">{suggestion.relevance} · {suggestion.source} · {suggestion.risk} risk · {suggestion.permissions.join(", ")}</small></span></button>)}</div>}
                   {agentShortcutOpen && <div id="agent-shortcut-listbox" role="listbox" aria-label="Specialist agents" className="u-glass-popover absolute left-4 right-4 sm:left-6 sm:right-6 bottom-full mb-2 z-20 rounded-2xl overflow-hidden flex flex-col max-h-[min(420px,55vh)]">
                     <div className="shrink-0 px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70 border-b border-border flex items-center gap-2">
@@ -2405,7 +2411,7 @@ function AppContent() {
                     } : undefined}
                     suggestion={draftSuggestion?.suggestion}
                     onAcceptSuggestion={acceptSuggestion}
-                    placeholder={isDirectChat ? "Ask Bridge…" : sessionConnected ? "Message…" : "Message…  (starts the agent)"}
+                    placeholder={session.activeTurnId ? "Send a follow-up…" : "Message Bridge…"}
                     disabled={!session}
                     working={!!session?.activeTurnId}
                     activeAction={activeAction}
@@ -2563,7 +2569,7 @@ function AppContent() {
       busy={busy}
       onCreateWorktree={() => void newWorkspaceSession(true)}
       onUseCurrentFolder={() => void newWorkspaceSession(false)}
-      onClose={() => void newWorkspaceSession(false)}
+      onClose={() => { if (!busy) { closeModal(); setPendingWorkspaceId(undefined); } }}
     />
     <NewProjectDialog
       open={newProjectOpen}
@@ -2659,14 +2665,17 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
       .then(pasted => setAttachments(current => [...current, ...pasted]))
       .catch(error => setComposerError(errorMessage(error)));
   };
-  return <div className="flex flex-1 flex-col items-center justify-center px-4 text-center animate-page-enter">
-    <h1 className="mb-8 max-w-xl font-display text-[1.9rem] font-medium leading-[1.15] tracking-[-0.025em] text-foreground sm:mb-10 sm:text-[2.4rem]">
+  return <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-8 sm:px-10 animate-page-enter">
+    <div className="mx-auto my-auto w-full max-w-3xl py-8">
+    <p className="mb-3 text-[12px] font-medium text-muted-foreground">Your workspace, ready.</p>
+    <h1 className="mb-3 max-w-2xl font-display text-[28px] font-medium leading-tight tracking-[-0.025em] text-foreground sm:text-[34px]">
       {greeting.parts.length > 1
         ? greeting.parts.map((part, index) => part.kind === "project"
-          ? <span key={index} className="underline decoration-dotted decoration-muted-foreground/60 underline-offset-[8px]">{part.text}</span>
+          ? <span key={index} className="text-foreground">{part.text}</span>
           : <span key={index}>{part.text}</span>)
         : greeting.headline}
     </h1>
+    <p className="mb-7 max-w-xl text-[13px] leading-relaxed text-muted-foreground">Ask a question, explore an idea, or pick a project and get to work.</p>
     <ComposerPill
       layout="hero"
       value={draft}
@@ -2706,8 +2715,19 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
         onToggleWorktree={() => onToggleWorktree(draft.trim() || undefined)}
       /> : undefined}
     />
-    {composerError && <p className="mt-2 max-w-2xl text-left text-[11px] text-destructive">{composerError}</p>}
-    <p className="mt-6 max-w-md text-[13px] leading-relaxed text-muted-foreground">{greeting.hint}</p>
+    {composerError && <p className="mt-2 max-w-3xl text-left text-[11px] text-destructive">{composerError}</p>}
+    <div className="mt-3 flex flex-wrap items-center justify-between gap-2 px-1 text-[11px] text-muted-foreground">
+      <span>{greeting.hint}</span>
+      <span className="shrink-0"><kbd className="font-sans">↵</kbd> Send <span className="mx-1.5" aria-hidden="true">·</span><kbd className="font-sans">⇧↵</kbd> New line</span>
+    </div>
+    {workspaces.length > 0 && <section aria-label="Choose a project" className="mt-9 border-t border-border pt-5">
+      <div className="mb-3 flex items-center justify-between"><h2 className="text-[12px] font-medium text-muted-foreground">Projects</h2><button type="button" onClick={onNewWorkspace} className="inline-flex h-7 items-center gap-1 rounded-md px-2 text-[12px] text-muted-foreground hover:bg-accent hover:text-foreground"><Plus size={13} aria-hidden="true" />Add project</button></div>
+      <div className="grid gap-2 sm:grid-cols-2">{workspaces.slice(0, 4).map(item => <button key={item.id} type="button" disabled={busy} onClick={() => onSelectWorkspace(item.id)} aria-pressed={workspace?.id === item.id} className={cn("flex min-w-0 items-center gap-3 rounded-xl border p-3 text-left transition-colors disabled:opacity-50", workspace?.id === item.id ? "border-ring/50 bg-selection" : "border-border bg-card hover:border-input")}>
+        <span className="grid size-8 shrink-0 place-items-center rounded-lg bg-accent text-muted-foreground"><FolderGit2 size={17} strokeWidth={1.6} aria-hidden="true" /></span>
+        <span className="min-w-0 flex-1"><span className="block truncate text-[13px] font-medium text-foreground">{item.title}</span><span className="mt-0.5 block truncate text-[11px] text-muted-foreground">{item.branch ?? "Choose a project folder"}</span></span>
+      </button>)}</div>
+    </section>}
+    </div>
   </div>;
 }
 function CommandPalette({ workspaces, onChoose }: { workspaces: Workspace[]; onChoose: (id:string)=>void }) { return <><InputGroup className="border-b border-border rounded-none border-x-0 border-t-0 shadow-none"><InputGroupInput autoFocus placeholder="Search workspaces and actions…" /><InputGroupAddon><Search size={17} aria-hidden="true" /></InputGroupAddon></InputGroup><div className="p-[9px]"><label className="block p-[5px_9px_7px] text-muted-foreground/65 text-[10px] font-semibold tracking-[0.09em]">WORKSPACES</label>{workspaces.map(w => <Button type="button" key={w.id} variant="ghost" className="w-full h-[44px] rounded-md justify-start px-2.5" onClick={() => onChoose(w.id)}><StatusDot status={w.status}/><span className="flex flex-col gap-[3px] flex-1 text-left"><b className="text-[12.5px] font-medium">{w.title}</b><small className="text-[10.5px] text-muted-foreground">{w.city} · {w.branch}</small></span><Kbd className="font-mono text-muted-foreground/65 border border-border rounded px-1 py-[1px] text-[10px]">↵</Kbd></Button>)}</div><div className="h-[32px] border-t border-border flex items-center gap-[14px] px-[13px] text-muted-foreground/65 text-[10.5px]"><span>↑↓ navigate</span><span>esc close</span></div></>; }

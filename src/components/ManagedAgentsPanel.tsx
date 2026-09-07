@@ -220,10 +220,10 @@ export function ManagedAgentRows({ state, onOpen }: { state: ManagedAgents; onOp
             <RowAction agent={agent} state={state} />
           </>}
         />
-        {agent.vendorMessage && <p className="px-3.5 pb-2.5 text-[11.5px] text-warning" data-testid={`agent-vendor-${agent.agentId}`}>
+        {agent.vendorMessage && <p className="px-3.5 pb-2.5 text-[12px] text-warning" data-testid={`agent-vendor-${agent.agentId}`}>
           {agent.vendorMessage}
         </p>}
-        {state.errors[agent.agentId] && <p role="alert" className="px-3.5 pb-2.5 text-[11.5px] text-destructive">
+        {state.errors[agent.agentId] && <p role="alert" className="px-3.5 pb-2.5 text-[12px] text-destructive">
           {state.errors[agent.agentId]}
         </p>}
       </div>)}
@@ -343,23 +343,23 @@ function RemoveConfirmation({ agent, onCancel, onConfirm }: {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-scrim p-4 pt-[6vh] backdrop-blur-md sm:pt-[10vh]"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-scrim p-4 pt-[8vh] sm:pt-[10vh]"
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
       data-testid="remove-confirmation"
     >
-      <div ref={dialog} className="u-overlay-strong flex max-h-[90dvh] w-full max-w-md flex-col gap-2 overflow-y-auto rounded-xl p-4">
+      <div ref={dialog} className="u-glass-popover flex max-h-[84dvh] w-full max-w-md flex-col gap-2 overflow-y-auto rounded-xl p-4">
         <h4 id={titleId} className="text-[13px] font-medium text-foreground">
           Remove the Bridge-managed {agent.label}
           {agent.version ? ` ${agent.version}` : ""}?
         </h4>
         {agent.executable && (
-          <p className="truncate font-mono text-[10.5px] text-muted-foreground" title={agent.executable}>
+          <p className="truncate font-mono text-[11px] text-muted-foreground" title={agent.executable}>
             {agent.executable}
           </p>
         )}
-        <p className="text-[11.5px] text-muted-foreground">
+        <p className="text-[12px] text-muted-foreground">
           Your conversation history, vendor configuration, sign-in, and any copy you
           installed yourself are left untouched. You can reinstall at any time.
         </p>

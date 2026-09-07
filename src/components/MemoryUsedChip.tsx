@@ -18,10 +18,10 @@ export function MemoryUsedChip({
   if (!audit || audit.selected.length === 0) return null;
   return <div className="mx-auto mb-2 flex w-full max-w-2xl flex-col items-center px-4 sm:px-6">
     {open && (
-      <div className="u-glass-soft mb-1.5 w-full space-y-1 rounded-2xl px-3.5 py-2.5 text-[12px] text-muted-foreground">
+      <div className="u-glass-soft mb-1.5 w-full space-y-1 rounded-xl px-3.5 py-2.5 text-[12px] text-muted-foreground">
         <p className="text-[11px] font-semibold uppercase tracking-wider">In this session's context</p>
         {audit.selected.map(item => (
-          <p key={item.recordId} className="truncate">
+          <p key={item.recordId} className="whitespace-pre-wrap break-words">
             <span className="text-foreground">{item.body}</span> — {item.reason}
           </p>
         ))}

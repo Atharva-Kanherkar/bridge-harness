@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { DownloadSimple, Plus } from "@phosphor-icons/react";
+import { Download as DownloadSimple, Plus } from "lucide-react";
 import { bridgeApi } from "../api";
 import type { CompiledPromptPreviewResult, PromptSectionStatePayload, PromptSectionView, PromptStackView, PromptTargetChoice } from "../types";
 import { CodeEditor } from "./editor/CodeEditor";
@@ -316,14 +316,14 @@ export function PromptStudio() {
     >
       {errorRow}
 
-      {warnings.length > 0 && <div role="status" className="rounded-xl border border-warning/30 bg-warning/10 px-3.5 py-2.5 text-[11.5px] leading-relaxed text-warning">
+      {warnings.length > 0 && <div role="status" className="rounded-xl border border-warning/30 bg-warning/10 px-3.5 py-2.5 text-[12px] leading-relaxed text-warning">
         {warnings.map(warning => <p key={warning.marker}>{warning.message}</p>)}
       </div>}
 
       <SettingsGroup
         label="prompt.md"
         note={<span className="flex items-center gap-2">
-          <span className="font-mono text-[10.5px]">{section.tokenEstimate} tok est</span>
+          <span className="font-mono text-[11px]">{section.tokenEstimate} tok est</span>
           {section.state.state === "overridden" && <StatusPill tone="warning">Modified</StatusPill>}
           {isDeleted && <StatusPill tone="destructive">Deleted</StatusPill>}
           {isDirty && <StatusPill tone="info">Unsaved draft</StatusPill>}
@@ -398,10 +398,10 @@ export function PromptStudio() {
       label="Sections"
       note={<span className="flex items-center gap-2">
         <GhostButton disabled={busy} onClick={() => void handleExport()}>
-          <DownloadSimple size={12} weight="regular" aria-hidden="true" />Export overrides
+          <DownloadSimple size={12} strokeWidth={1.7} aria-hidden="true" />Export overrides
         </GhostButton>
         <GhostButton disabled={busy} onClick={() => fileInputRef.current?.click()}>
-          <Plus size={12} weight="regular" aria-hidden="true" />Import overrides
+          <Plus size={12} strokeWidth={1.7} aria-hidden="true" />Import overrides
         </GhostButton>
         {overriddenInTarget.length > 0 && <TextButton disabled={busy} onClick={() => void handleResetAll()}>
           Reset all for {targetLabel}
@@ -416,7 +416,7 @@ export function PromptStudio() {
               const key = docKeyFor(target, item.id);
               return <SettingsRow
                 key={item.id}
-                label={<span className="font-mono text-[11.5px]">{item.id}</span>}
+                label={<span className="font-mono text-[12px]">{item.id}</span>}
                 openLabel={`Edit ${item.id}`}
                 description={`${item.tokenEstimate} tok`}
                 mono
@@ -442,7 +442,7 @@ export function PromptStudio() {
     {importResults && <SettingsGroup label="Last import">
       {importResults.map(item => <SettingsRow
         key={item.key}
-        label={<span className={cn("font-mono text-[10.5px]", !item.ok && "text-destructive")}>{item.key}</span>}
+        label={<span className={cn("font-mono text-[11px]", !item.ok && "text-destructive")}>{item.key}</span>}
         control={<span className={cn("text-[11px]", item.ok ? "text-muted-foreground" : "text-destructive")}>
           {item.ok ? "saved" : `failed (${item.message})`}
         </span>}
@@ -467,25 +467,30 @@ function CompiledPreview({ preview, previewError, prefixChanged }: {
       ? <SettingsRow label="Loading preview…" />
       : <>
           <SettingsRow label="Exact Bridge bytes" description={`${preview.prefixBytes} bytes · ${preview.prefixTokenEstimate} tokens est`} />
-          <SettingsRow label="Hash" description={preview.prefixHash} mono />
-          <SettingsRow label="ID" description={preview.prefixId} mono />
-          <SettingsBlockRow label="Stable prefix" description="Exact bytes">
-            <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border-card bg-popover p-2 font-mono text-[10.5px]">{preview.stablePrefix}</pre>
-          </SettingsBlockRow>
-          <SettingsBlockRow label="Variable suffix" description="Exact bytes">
-            <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border-card bg-popover p-2 font-mono text-[10.5px]">{preview.variableSuffix}</pre>
-          </SettingsBlockRow>
           {prefixChanged && <SettingsRow
             label={<span role="status" className="text-warning">Bridge prefix changed</span>}
             description="The next turn is likely a cache miss on the Bridge prefix. Provider-side cache effects are estimated, not measured."
           />}
+          <details>
+            <summary className="cursor-pointer px-3.5 py-2.5 text-ui text-muted-foreground hover:text-foreground">Show exact prompt and provider layers</summary>
+            <div className="divide-y divide-border border-t border-border">
+          <SettingsRow label="Hash" description={preview.prefixHash} mono />
+          <SettingsRow label="ID" description={preview.prefixId} mono />
+          <SettingsBlockRow label="Stable prefix" description="Exact bytes">
+            <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border-card bg-popover p-2 font-mono text-[11px]">{preview.stablePrefix}</pre>
+          </SettingsBlockRow>
+          <SettingsBlockRow label="Variable suffix" description="Exact bytes">
+            <pre className="max-h-24 overflow-auto whitespace-pre-wrap break-words rounded-lg border border-border-card bg-popover p-2 font-mono text-[11px]">{preview.variableSuffix}</pre>
+          </SettingsBlockRow>
           <SettingsRow label="Provider layers (not exact)" description="Bridge describes these; it does not own their bytes." />
           {preview.providerLayers.map(layer => <SettingsRow
             key={`${layer.layer}:${layer.adapter}`}
-            label={<span className="font-mono text-[11.5px]">{layer.adapter}</span>}
+            label={<span className="font-mono text-[12px]">{layer.adapter}</span>}
             description={layer.detail}
             control={<StatusPill>{layer.source}</StatusPill>}
           />)}
+            </div>
+          </details>
         </>}
   </SettingsGroup>;
 }

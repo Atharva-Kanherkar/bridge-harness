@@ -35,6 +35,7 @@ function Chip({
   disabled,
   onClick,
   ariaLabel,
+  compact = false,
 }: {
   icon: LucideIcon;
   label: string;
@@ -43,25 +44,27 @@ function Chip({
   disabled?: boolean;
   onClick?: () => void;
   ariaLabel?: string;
+  compact?: boolean;
 }) {
   const className = cn(
     "inline-flex h-7 max-w-[16rem] items-center gap-1.5 rounded-md px-2 text-[12.5px] tracking-[-0.01em]",
     pressed || expanded ? "bg-accent text-foreground" : "text-muted-foreground",
     onClick && !disabled && "transition-colors hover:bg-accent hover:text-foreground",
     disabled && "opacity-70",
+    compact && "shrink-0",
   );
   if (!onClick) {
     return (
-      <span className={className}>
+      <span className={className} title={label} aria-label={label}>
         <Icon size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
-        <span className="min-w-0 truncate">{label}</span>
+        <span className={cn("min-w-0 truncate", compact && "hidden @xl/composer-context:inline")}>{label}</span>
       </span>
     );
   }
   return (
-    <button type="button" aria-label={ariaLabel} aria-pressed={pressed} aria-expanded={expanded} disabled={disabled} onClick={onClick} className={className}>
+    <button type="button" title={label} aria-label={ariaLabel} aria-pressed={pressed} aria-expanded={expanded} disabled={disabled} onClick={onClick} className={className}>
       <Icon size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
-      <span className="min-w-0 truncate">{label}</span>
+      <span className={cn("min-w-0 truncate", compact && "hidden @xl/composer-context:inline")}>{label}</span>
     </button>
   );
 }
@@ -88,16 +91,17 @@ export function ComposerContextStrip({
   const displayedBranch = currentBranch || workspace?.branch || "No branch";
 
   return (
-    <div className="flex h-[34px] flex-nowrap items-center justify-start gap-0.5 overflow-x-auto border-t border-border px-3 text-muted-foreground" aria-label="Chat context">
+    <div className="@container/composer-context flex min-h-7 items-center gap-0.5 text-muted-foreground" aria-label="Chat context">
       <button
         type="button"
         ref={repoMenu.triggerRef}
         aria-haspopup="menu"
         aria-expanded={repoMenu.open}
         disabled={locked || workspaces.length === 0}
+        title={workspace?.title ?? "No project"}
         onClick={repoMenu.toggle}
         className={cn(
-          "inline-flex h-7 max-w-[16rem] items-center gap-1.5 rounded-md px-2 text-[12.5px] tracking-[-0.01em] text-muted-foreground transition-colors",
+          "inline-flex h-7 min-w-0 max-w-[16rem] flex-1 items-center gap-1.5 rounded-md px-2 text-[12px] tracking-[-0.01em] text-muted-foreground transition-colors",
           !locked && workspaces.length > 0 && "hover:bg-accent hover:text-foreground",
           repoMenu.open && "bg-accent text-foreground",
         )}
@@ -124,12 +128,13 @@ export function ComposerContextStrip({
         aria-haspopup="menu"
         aria-expanded={branchMenu.open}
         disabled={locked || !branchAvailable}
+        title={displayedBranch}
         onClick={() => {
           if (!branchBusy) onRequestBranches();
           branchMenu.toggle();
         }}
         className={cn(
-          "inline-flex h-7 max-w-[16rem] items-center gap-1.5 rounded-md px-2 text-[12.5px] tracking-[-0.01em] text-muted-foreground transition-colors",
+          "inline-flex h-7 min-w-0 max-w-[16rem] flex-1 items-center gap-1.5 rounded-md px-2 text-[12px] tracking-[-0.01em] text-muted-foreground transition-colors",
           !locked && branchAvailable && "hover:bg-accent hover:text-foreground",
           branchMenu.open && "bg-accent text-foreground",
           (locked || !branchAvailable || branchBusy) && "opacity-70",
@@ -160,6 +165,7 @@ export function ComposerContextStrip({
       </MenuPanel>
 
       <Chip
+        compact
         icon={GitFork}
         label={worktree ? "Isolated worktree" : "Work on branch"}
         ariaLabel={worktree ? "Using an isolated worktree. Click to work on the branch." : "Working on the branch. Click to isolate in a worktree."}
@@ -170,7 +176,7 @@ export function ComposerContextStrip({
 
       {HOSTS.filter(host => !host.disabled).length === 1 ? (
         <span className="ml-auto inline-flex">
-          <Chip icon={Laptop} label="This Mac" />
+          <Chip compact icon={Laptop} label="This Mac" />
         </span>
       ) : (
         <>

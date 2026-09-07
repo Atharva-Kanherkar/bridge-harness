@@ -100,8 +100,8 @@ export function SessionRecallSearch({
                   onClick={() => onJump(hit.entryId)}
                   className="flex w-full flex-col gap-0.5 rounded-lg px-2 py-1.5 text-left transition-colors hover:bg-accent"
                 >
-                  <span className="font-mono text-[10px] text-muted-foreground">{hit.kind} · #{hit.sequence}</span>
-                  <span className="line-clamp-2 text-[12.5px] text-foreground">{hit.snippet}</span>
+                  <span className="font-mono text-[11px] text-muted-foreground">{hit.kind} · #{hit.sequence}</span>
+                  <span className="line-clamp-2 text-[13px] text-foreground">{hit.snippet}</span>
                 </button>
               </li>
             ))}

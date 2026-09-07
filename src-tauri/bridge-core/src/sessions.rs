@@ -658,6 +658,34 @@ impl BridgeCore {
         crate::switch_summary::stop_for_session(self, session_id, reason);
     }
 
+    /// Stop a provider for app shutdown and persist that orderly teardown.
+    /// Replacement uses `stop_session_adapter` because its session continues.
+    pub fn shutdown_session_adapter(&self, session_id: &str) -> Result<(), BridgeError> {
+        self.stop_session_adapter(session_id, adapters::ShutdownReason::AppShutdown);
+        let db = self.db.lock().unwrap();
+        let transaction = db.unchecked_transaction()?;
+        session_supervisor::SessionSupervisor::clear_adapter_process(&transaction, session_id)?;
+        let stopped = transaction.execute(
+            "UPDATE sessions SET status='stopped',active_turn_id=NULL,ended_at=?2
+             WHERE id=?1 AND status NOT IN ('completed','cancelled','stopped','failed')",
+            params![session_id, chrono::Utc::now().to_rfc3339()],
+        )?;
+        if stopped > 0 {
+            session_forest::append_in_transaction(
+                &transaction,
+                session_id,
+                session_forest::EntryKind::SessionStatus,
+                serde_json::json!({"status":"stopped","reason":"app_shutdown"}),
+            )
+            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
+            store::event(&transaction, "adapter", "session.shutdown", session_id, "app_shutdown")?;
+        }
+        session_supervisor::SessionSupervisor::reconcile_workspace_statuses(&transaction)?;
+        transaction.commit()?;
+        self.events.publish(crate::events::CoreEvent::StateChanged);
+        Ok(())
+    }
+
     /// Replay durable session events with a sequence greater than the
     /// cursor. This is the recovery path of the notify-then-replay contract:
     /// after a disconnect or a lagged live channel, a client calls this with

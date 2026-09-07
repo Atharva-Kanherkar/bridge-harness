@@ -5,16 +5,31 @@
 /* ── Graphite & Paper ───────────────────────────────────────────────────────
    Bridge hosts Codex, Claude Code, and OpenCode side by side, so its chrome
    stays achromatic and color is reserved for meaning: agent status, diffs,
-   and approvals. Elevation is a lightness ladder — sidebar < canvas < card <
-   popover — not borders, blur, or shadows. */
+   and approvals. Navigation, content, and floating controls occupy distinct neutral surfaces.
+   Content stays opaque; native vibrancy belongs to the navigation layer. */
 
 @theme inline {
-    --font-family-display: "Geist Variable", "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    /* Shared desktop hierarchy: reading, controls, metadata, and page titles. */
+    --container-conversation: 50rem;
+    --container-conversation-frame: 54rem;
+    --container-page: 64rem;
+    --text-message: 0.9375rem;
+    --text-message--line-height: 1.7;
+    --text-ui: 0.8125rem;
+    --text-ui--line-height: 1.5;
+    --text-caption: 0.75rem;
+    --text-caption--line-height: 1.5;
+    --text-title: 1.5rem;
+    --text-title--line-height: 1.25;
+    --font-family-display: "Bricolage Grotesque Variable", "Geist Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
     --font-family-sans: "Geist Variable", "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
-    --font-display: "Geist Variable", "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --font-display: "Bricolage Grotesque Variable", "Geist Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
     --font-heading: var(--font-display);
     --font-mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
     --font-sans: "Geist Variable", "Inter Variable", ui-sans-serif, system-ui, -apple-system, sans-serif;
+    --color-selection: var(--selection);
+    --color-selection-foreground: var(--selection-foreground);
+    --shadow-control: var(--control-shadow);
     --color-sidebar-ring: var(--sidebar-ring);
     --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
     --color-sidebar-primary: var(--sidebar-primary);
@@ -79,7 +94,7 @@
     color-scheme: light;
 
     /* The ladder */
-    --sidebar: #f3f3f1;
+    --sidebar: #eeefed;
     --background: #fafaf9;
     --card: #ffffff;
     --popover: #ffffff;
@@ -88,10 +103,14 @@
     --foreground: #1f1f1d;
     --card-foreground: #1f1f1d;
     --popover-foreground: #1f1f1d;
-    --muted-foreground: #5d5d57;
+    --muted-foreground: #62625c;
+    --selection: #dcdedb;
+    --selection-foreground: #1f1f1d;
+    --control-shadow: 0 1px 3px rgb(31 31 29 / 0.06), 0 4px 16px rgb(31 31 29 / 0.03);
 
     /* Structure */
-    --border: #e7e7e4;
+    --border: #deded9;
+    --border-card: #d7d8d2;
     --input: #d6d6d1;
     --muted: #f0f0ee;
     --secondary: #f0f0ee;
@@ -135,10 +154,10 @@
     /* Appearance preview swatches: the literal sidebar and canvas each mode
        renders. Fixed in both themes on purpose, because the Paper tile has to
        look like paper while Graphite is the one switched on. */
-    --preview-paper-sidebar: #f3f3f1;
+    --preview-paper-sidebar: #eeefed;
     --preview-paper-canvas: #fafaf9;
-    --preview-graphite-sidebar: #000000;
-    --preview-graphite-canvas: #0f0f0f;
+    --preview-graphite-sidebar: #202022;
+    --preview-graphite-canvas: #272729;
 
     /* Code */
     --code: #f3f3f1;
@@ -155,7 +174,7 @@
     --syn-tag: #2a6480;
     --syn-punct: #5d5d57;
 
-    --radius: 0.75rem;
+    --radius: 0.5rem;
 
     /* macOS Tahoe titlebar-only windows. 16pt is the measured community fallback
        (toolbar windows are larger). Trailing titlebar chrome is inset by the
@@ -176,35 +195,37 @@
 .dark {
     color-scheme: dark;
 
-    /* Pure-black shell — the ground is true black; raised surfaces lift off it
-       in neutral greys. Color lives only in harness marks and status ink. */
-    --sidebar: #000000;
-    --background: #000000;
-    --card: #0f0f0f;
-    --popover: #161616;
+    /* Distinct neutral planes keep navigation, reading, and controls legible. */
+    --sidebar: #202022;
+    --background: #272729;
+    --card: #303032;
+    --popover: #353537;
 
-    --foreground: #e4e4e4;
-    --card-foreground: #e4e4e4;
-    --popover-foreground: #e4e4e4;
+    --foreground: #f2f2f3;
+    --card-foreground: #f2f2f3;
+    --popover-foreground: #f2f2f3;
     /* Body copy sits a step under --foreground; muted is the row subtitle ink. */
-    --body: #c9c9c9;
-    --muted-foreground: #8b8b8b;
+    --body: #dedee0;
+    --muted-foreground: #b0b0b4;
+    --selection: #414145;
+    --selection-foreground: #ffffff;
+    --control-shadow: 0 1px 2px rgb(0 0 0 / 0.16), 0 4px 16px rgb(0 0 0 / 0.08);
     /* Faint ink for times, counts and paths. */
-    --faint: #6b6b6b;
-    --faint-2: #4a4a4a;
+    --faint: #a5a5aa;
+    --faint-2: #a5a5aa;
 
-    --border: #1e1e1e;
-    /* Hairline lifts to #242424 on cards/inputs where it needs to read. */
-    --border-card: #242424;
-    --input: #242424;
-    --muted: #1c1c1c;
-    --secondary: #161616;
-    --secondary-foreground: #e4e4e4;
-    --accent: color-mix(in srgb, #e4e4e4 6%, transparent);
-    --accent-foreground: #e4e4e4;
+    --border: #414144;
+    /* Inputs use a stronger edge than passive content separators. */
+    --border-card: #4e4e52;
+    --input: #66666b;
+    --muted: #252527;
+    --secondary: #3b3b3e;
+    --secondary-foreground: #f2f2f3;
+    --accent: color-mix(in srgb, #f2f2f3 6%, transparent);
+    --accent-foreground: #f2f2f3;
 
-    --primary: #e4e4e4;
-    --primary-foreground: #000000;
+    --primary: #f2f2f3;
+    --primary-foreground: #202022;
 
     --ring: #6a9bcc;
     --scrim: rgb(0 0 0 / 0.62);
@@ -230,11 +251,11 @@
     --cursor-facet-lighter: #cfcfcf;
     --cursor-facet-lightest: #ededed;
 
-    --code: #0a0a0a;
+    --code: #222224;
     --code-foreground: #ececea;
     --code-highlight: color-mix(in srgb, #ececea 7%, transparent);
 
-    --syn-comment: #78786f;
+    --syn-comment: #a0a097;
     --syn-keyword: #b9a0dc;
     --syn-string: #86c08a;
     --syn-number: #ddb877;
@@ -243,32 +264,17 @@
     --syn-tag: #8fbfd8;
     --syn-punct: #9a9a94;
 
-    --sidebar-foreground: #8b8b8b;
-    --sidebar-accent: color-mix(in srgb, #e4e4e4 6%, transparent);
-    --sidebar-accent-foreground: #e4e4e4;
-    --sidebar-border: #161616;
-    --sidebar-primary: #e4e4e4;
-    --sidebar-primary-foreground: #000000;
+    --sidebar-foreground: #b0b0b4;
+    --sidebar-accent: color-mix(in srgb, #f2f2f3 6%, transparent);
+    --sidebar-accent-foreground: #f2f2f3;
+    --sidebar-border: #38383b;
+    --sidebar-primary: #f2f2f3;
+    --sidebar-primary-foreground: #202022;
     --sidebar-ring: #6a9bcc;
 }
 
-/* ── Dark · vibrancy skin (cursor-style translucency) ─────────────────────────
-   Pure black cannot host the AppKit wallpaper wash — a color-mix of #000 and
-   transparent is still black. The translucent shell needs a near-black ground
-   to lift the material into a warm, cursor-like haze, so the vibrancy skin
-   restores the graphite near-blacks the opaque shell dropped. Higher specificity
-   than `.dark` alone (class + attribute) and declared after it, so it wins only
-   when the user opts into this skin; graphite stays pure black. */
-.dark[data-skin="vibrancy"] {
-    --sidebar: #0d0d0d;
-    --background: #111111;
-    --card: #161616;
-    --popover: #1a1a1a;
-    --primary-foreground: #111111;
-    --code: #0e0e0d;
-    --sidebar-border: #171717;
-    --sidebar-primary-foreground: #111111;
-}
+/* The optional native material uses the same palette. Only navigation lets
+   AppKit's wallpaper tint through; reading surfaces remain opaque. */
 
 /* Unlayered so this beats `:root { --window-radius: 16px }`. Fullscreen is a
    flush rectangle; chip radius stays 10pt because there is no window arc to
@@ -392,8 +398,9 @@ html[data-native-fullscreen] .u-traffic-inset {
   }
   .u-segmented-item {
     border-radius: 8px;
-    padding: 3px 12px;
-    font-size: 11.5px;
+    min-height: 28px;
+    padding: 4px 12px;
+    font-size: 12px;
     font-weight: 500;
     letter-spacing: -0.006em;
     color: var(--color-muted-foreground);
@@ -429,10 +436,7 @@ html[data-native-fullscreen] .u-traffic-inset {
    `bg-sidebar` / `bg-background`. Vite in Chrome never sets data-tauri, so it
    stays fully opaque. */
 @layer utilities {
-  /* Pure-black shell: no AppKit material bleeds through. The wallpaper wash was
-     the "brown tint" — a warm desktop tinted the translucent grounds. Both the
-     rail and the canvas are now fully opaque, so the ground is exactly its
-     token, never the wallpaper behind the window. */
+  /* Opaque by default; the native skin opts navigation into vibrancy. */
   html[data-tauri] .u-app-shell {
     background: var(--color-background);
   }
@@ -443,21 +447,7 @@ html[data-native-fullscreen] .u-traffic-inset {
     background-color: var(--color-background);
   }
 
-  /* Vibrancy skin: the cursor-style translucent shell. The webview is
-     transparent over an NSVisualEffectView, so dropping the grounds to a
-     color-mix against transparent lets AppKit's material — and the desktop
-     wallpaper tint — wash through. Sidebar keeps more material (60%) than the
-     canvas (82% ground) so the reading surface stays legible. These carry an
-     extra attribute over the opaque defaults above, so they win only under this
-     skin; graphite keeps the solid grounds. Chrome (no data-tauri) has no
-     material behind it and stays opaque regardless.
-
-     Mode-agnostic on purpose (this restores the original pre-graphite
-     behaviour). Dark needs the near-black `.dark[data-skin=vibrancy]` lift
-     because a color-mix of pure black against transparent is still black and
-     shows no tint; light needs no such compensation — the paper ground
-     (#fafaf9) is already a high-luminance frost base that the wallpaper tints
-     cleanly. */
+  /* Native sidebar material is opt-in and never sits behind the transcript. */
   html[data-tauri][data-skin="vibrancy"] .u-app-shell {
     background: transparent;
   }
@@ -465,7 +455,7 @@ html[data-native-fullscreen] .u-traffic-inset {
     background-color: color-mix(in srgb, var(--color-sidebar) 60%, transparent);
   }
   html[data-tauri][data-skin="vibrancy"] .u-vibrancy-canvas {
-    background-color: color-mix(in srgb, var(--color-background) 82%, transparent);
+    background-color: var(--color-background);
   }
 }
 
@@ -752,6 +742,7 @@ html[data-native-fullscreen] .u-traffic-inset {
 }
 
 .code-block-copy {
+  min-height: 28px;
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
@@ -801,6 +792,7 @@ html[data-native-fullscreen] .u-traffic-inset {
 }
 
 .rich-block-copy {
+  min-height: 28px;
   position: absolute;
   top: 0.35rem;
   right: 0.35rem;
@@ -941,7 +933,7 @@ html[data-native-fullscreen] .u-traffic-inset {
 .cm-editor .cm-gutters {
   background: var(--color-code);
   border-right: 1px solid var(--color-border);
-  color: color-mix(in srgb, var(--color-muted-foreground) 55%, transparent);
+  color: var(--color-muted-foreground);
   font-size: 11px;
 }
 .cm-editor .cm-lineNumbers .cm-gutterElement {
@@ -1057,3 +1049,44 @@ html[data-native-fullscreen] .u-traffic-inset {
 .tok-strong { font-weight: 600; }
 .tok-strikethrough { text-decoration: line-through; }
 .tok-invalid { color: var(--color-destructive); }
+
+/* Accessibility preferences also apply to custom webview materials. */
+@media (prefers-reduced-transparency: reduce) {
+  html[data-tauri][data-skin="vibrancy"] .u-vibrancy-sidebar {
+    background-color: var(--color-sidebar);
+  }
+  .u-glass-liquid {
+    background: var(--color-popover);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --border: #91918a;
+    --border-card: #777770;
+    --input: #62625c;
+    --muted-foreground: #45453f;
+    --sidebar-foreground: #45453f;
+    --selection: #ced0cb;
+  }
+  .dark {
+    --border: #838389;
+    --border-card: #98989d;
+    --input: #b0b0b4;
+    --muted-foreground: #dedee0;
+    --sidebar-foreground: #dedee0;
+    --faint: #dedee0;
+    --faint-2: #dedee0;
+    --selection: #535359;
+  }
+  html[data-tauri][data-skin="vibrancy"] .u-vibrancy-sidebar {
+    background-color: var(--color-sidebar);
+  }
+  .u-glass-liquid {
+    background: var(--color-popover);
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}

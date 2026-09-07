@@ -90,11 +90,11 @@ describe("inline diffs", () => {
     expect(host.textContent).toContain("current_generation");
   });
 
-  it("keeps the diffstat and path on the summary row", () => {
+  it("keeps the diffstat and full path discoverable on the summary row", () => {
     mount([fileChange()]);
     expect(host.textContent).toContain("+24");
     expect(host.textContent).toContain("−3");
-    expect(host.textContent).toContain("src-tauri/src/lib.rs");
+    expect(host.querySelector('[title="src-tauri/src/lib.rs"]')?.textContent).toBe("src-tauri/src");
   });
 
   it("still opens a group whose edit carries no diff only on request", () => {
@@ -130,6 +130,7 @@ describe("command rows", () => {
     const chip = exitChip("exit 2");
     expect(chip).toBeDefined();
     expect(chip?.className).toContain("text-destructive");
+    expect(buttonWith("Activity needs attention")).toBeDefined();
   });
 
   it("renders no chip at all when the provider reports no exit code", async () => {
@@ -150,24 +151,26 @@ describe("three layers", () => {
     title: `Read ${path}`, data: { type: "readFile", path },
   });
 
-  it("groups consecutive reads and searches under a quiet label", () => {
+  it("keeps reads, searches, and edits in one activity section", () => {
     mount([
       read(1, "src-tauri/src/lib.rs"),
       event(2, "tool.completed", { title: "grep", data: { name: "Grep", input: { pattern: "resume" } } }),
       fileChange({ id: 3, sequence: 3, itemId: "i-3" }),
     ]);
     // The group is already open, because the edit carries a diff.
-    expect(host.textContent).toContain("Explored");
+    expect(host.querySelectorAll("[data-activity-group]")).toHaveLength(1);
+    expect(host.textContent).not.toContain("Explored");
   });
 
-  it("gives an edit a bordered card and a read a flat row", () => {
+  it("puts each action in the shared activity section with the patch still visible", () => {
     mount([read(1, "src-tauri/src/lib.rs"), fileChange({ id: 2, sequence: 2, itemId: "i-2" })]);
-    // The card is the nearest bordered ancestor: the row split into sibling
-    // controls (a path can be a link, and buttons do not nest), so the card
-    // frame sits one level above the row.
-    const carded = (label: string) => !!buttonWith(label)?.closest(".bg-card");
-    expect(carded("Edited lib.rs")).toBe(true);
-    expect(carded("Read lib.rs")).toBe(false);
+    const activity = host.querySelector("[data-activity-group]");
+    expect(activity?.querySelectorAll("[data-tool-row]")).toHaveLength(2);
+    expect(buttonWith("Edited lib.rs")?.closest("[data-activity-group]")).toBe(activity);
+    expect(buttonWith("Read lib.rs")?.closest("[data-activity-group]")).toBe(activity);
+    expect(host.querySelector(".stx")).not.toBeNull();
+    // The basename appears once per action, with the parent path as context.
+    expect(buttonWith("Read lib.rs")?.closest("[data-tool-row]")?.textContent).toBe("Read lib.rssrc-tauri/src");
   });
 
   it("does not reorder the transcript to tidy it", () => {
@@ -177,8 +180,8 @@ describe("three layers", () => {
       read(3, "b.rs"),
     ]);
     const text = host.textContent ?? "";
-    // Two separate "Explored" runs, because the edit sits between them.
-    expect(text.split("Explored")).toHaveLength(3);
+    expect(text.indexOf("Read a.rs")).toBeLessThan(text.indexOf("Edited lib.rs"));
+    expect(text.indexOf("Edited lib.rs")).toBeLessThan(text.indexOf("Read b.rs"));
   });
 
   it("keeps a plan in stream order without splitting the run around it", () => {
@@ -222,19 +225,17 @@ describe("three layers", () => {
     expect(fullText).toContain("Post-execution thought reflection");
   });
 
-  it("folds exploratory CLI commands into Explored hairline section", () => {
+  it("keeps exploratory CLI commands in the same chronological activity list", () => {
     mount([
       event(1, "command.completed", { title: "cat src/auth.rs", data: { type: "commandExecution", command: "cat src/auth.rs" } }),
       event(2, "command.completed", { title: "git status", data: { type: "commandExecution", command: "git status" } }),
     ]);
     expect(host.textContent).toContain("Read 2 files");
     act(() => buttonWith("Read 2 files")!.click());
-    expect(host.textContent).toContain("Explored");
+    expect(host.querySelectorAll("[data-activity-group]")).toHaveLength(1);
     expect(host.textContent).toContain("Read auth.rs");
     expect(host.textContent).toContain("Checked git status");
-    const carded = (label: string) => !!buttonWith(label)?.closest(".bg-card");
-    expect(carded("Read auth.rs")).toBe(false);
-    expect(carded("Checked git status")).toBe(false);
+    expect(host.querySelectorAll("[data-tool-row]")).toHaveLength(2);
   });
 
   it("interleaves live-only rows into durable history by causal anchor", () => {

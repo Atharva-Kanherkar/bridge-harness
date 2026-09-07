@@ -712,6 +712,22 @@ describe("ChatModelControl effort styles", () => {
       expect(panel().style.maxHeight).toBe("288px");
     });
 
+    it("keeps the search header inside a clipping pane, even when neither side fits the preferred minimum", async () => {
+      let paneTop = 44;
+      container.style.overflowY = "hidden";
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+        return this === container ? box(paneTop, 400 - paneTop) : box(300);
+      });
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
+      await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="opus" onChange={vi.fn()} effort="high" onEffortChange={vi.fn()} />));
+      await act(async () => trigger().click());
+      expect(panel().style.maxHeight).toBe("244px");
+      paneTop = 140;
+      await act(async () => window.dispatchEvent(new Event("resize")));
+      expect(panel().className).toContain("bottom-full");
+      expect(panel().style.maxHeight).toBe("148px");
+    });
+
     it("leaves the defaults alone when the trigger has no box", async () => {
       await act(async () => root.render(<ChatModelControl adapters={effortAwareAdapters} harness="claude" model="opus" onChange={vi.fn()} effort="high" onEffortChange={vi.fn()} />));
       await act(async () => trigger().click());

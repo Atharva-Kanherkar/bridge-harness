@@ -109,7 +109,7 @@ function AgentTile({ agent, active, now, onFocus }: { agent: Agent; active: bool
       aria-label={`Focus ${session.title || session.label}`}
       className={cn(
         "group relative flex h-56 min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card text-left transition-all",
-        "hover:-translate-y-0.5 hover:border-foreground/20",
+        "hover:bg-accent hover:border-input",
         active && "ring-1 ring-foreground/30",
       )}
     >
@@ -118,31 +118,31 @@ function AgentTile({ agent, active, now, onFocus }: { agent: Agent; active: bool
       {isRunning(tone) && <span className="mission-live-accent pointer-events-none absolute inset-x-0 top-0 h-0.5 bg-success" />}
 
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-3.5 py-2.5">
-        <span className="flex w-4 shrink-0 justify-center">{isWorker ? <CornerDownRight size={13} className="text-muted-foreground/70" aria-hidden="true" /> : <Bot size={14} className="text-muted-foreground" strokeWidth={1.7} aria-hidden="true" />}</span>
-        <span className="min-w-0 flex-1 truncate text-[12.5px] font-semibold text-foreground">{session.title || session.label}</span>
+        <span className="flex w-4 shrink-0 justify-center">{isWorker ? <CornerDownRight size={13} className="text-muted-foreground" aria-hidden="true" /> : <Bot size={14} className="text-muted-foreground" strokeWidth={1.7} aria-hidden="true" />}</span>
+        <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-foreground">{session.title || session.label}</span>
         <span className="flex shrink-0 items-center gap-1.5">
           <TileIcon tone={tone} />
-          <span className={cn("text-[8.5px] font-semibold tracking-[0.07em]", toneText[tone])}>{label}</span>
+          <span className={cn("text-[11px] font-medium", toneText[tone])}>{label}</span>
         </span>
       </div>
 
-      <div className="flex shrink-0 items-center gap-1.5 px-3.5 pt-2 font-mono text-[9px] text-muted-foreground">
+      <div className="flex shrink-0 items-center gap-1.5 px-3.5 pt-2 font-mono text-[11px] text-muted-foreground">
         <span className="truncate">{runtime?.taskFamily ?? (session.kind === "orchestrator" ? "orchestrator" : harnessLabel(session.harness))}</span>
         {runtime?.retryCount ? <span className="inline-flex items-center gap-0.5"><RefreshCw size={8} aria-hidden="true" />retry {runtime.retryCount}</span> : null}
         <GitBranch size={9} aria-hidden="true" className="ml-auto shrink-0" />
         <span className="shrink-0">{formatElapsed(session.startedAt, now)}</span>
-        <span className="shrink-0 text-muted-foreground/70">{relativeUpdate(runtime?.lastActivityAt ?? runtime?.updatedAt, now)}</span>
+        <span className="shrink-0 text-muted-foreground">{relativeUpdate(runtime?.lastActivityAt ?? runtime?.updatedAt, now)}</span>
       </div>
 
       {needsYou && (
-        <div className="mx-3.5 mt-2 flex shrink-0 items-center gap-1.5 rounded-r-md border-l-2 border-l-warning bg-accent px-2 py-1 text-[10px] font-medium text-foreground">
+        <div className="mx-3.5 mt-2 flex shrink-0 items-center gap-1.5 rounded-r-md border-l-2 border-l-warning bg-accent px-2 py-1 text-[11px] font-medium text-foreground">
           <AlertTriangle size={11} className="shrink-0 text-warning" aria-hidden="true" />
           <span className="truncate">{runtime?.waitingReason ? `Waiting: ${runtime.waitingReason.replaceAll("_", " ")} — click to open` : "Needs your approval — click to open"}</span>
         </div>
       )}
 
       {runtime?.progressSummary && !needsYou && (
-        <p className="mx-3.5 mt-2 shrink-0 truncate font-mono text-[10px] font-medium text-foreground/85">{runtime.progressSummary}</p>
+        <p className="mx-3.5 mt-2 shrink-0 truncate font-mono text-[11px] font-medium text-foreground/85">{runtime.progressSummary}</p>
       )}
 
       <div className="relative mt-2 min-h-0 flex-1 overflow-hidden px-3.5 pb-3">
@@ -152,8 +152,8 @@ function AgentTile({ agent, active, now, onFocus }: { agent: Agent; active: bool
               <p
                 key={line.id}
                 className={cn(
-                  "line-clamp-2 font-mono text-[10px] leading-[1.5]",
-                  index !== stream.length - 1 ? "text-muted-foreground/70" : broken ? "text-destructive" : "text-foreground/80",
+                  "line-clamp-2 font-mono text-[11px] leading-[1.5]",
+                  index !== stream.length - 1 ? "text-muted-foreground" : broken ? "text-destructive" : "text-foreground/80",
                 )}
               >{line.text}</p>
             ))}
@@ -161,7 +161,7 @@ function AgentTile({ agent, active, now, onFocus }: { agent: Agent; active: bool
         ) : isRunning(tone) ? (
           <div className="thinking-shimmer h-[2px] w-16 rounded-full" />
         ) : (
-          <p className="font-mono text-[10px] text-muted-foreground/70">No recent activity.</p>
+          <p className="font-mono text-[11px] text-muted-foreground">No recent activity.</p>
         )}
       </div>
     </button>
@@ -260,12 +260,12 @@ export function MissionControl({
   }
 
   return (
-    <div className="relative flex min-h-0 flex-1 flex-col animate-page-mount">
+    <div className="relative flex min-h-0 flex-1 @container/mission flex-col animate-page-mount">
       <div className="flex shrink-0 flex-wrap items-center gap-x-2.5 gap-y-1 border-b border-border px-4 py-3 sm:px-6">
         <LayoutGrid size={15} className="shrink-0 text-muted-foreground" aria-hidden="true" />
         <h1 className="m-0 font-display text-sm font-semibold tracking-tight text-foreground">Mission Control</h1>
-        <span className="font-mono text-[10px] text-muted-foreground/70">{agents.length} agent{agents.length === 1 ? "" : "s"}</span>
-        <span className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1 text-[10px]">
+        <span className="font-mono text-[11px] text-muted-foreground">{agents.length} agent{agents.length === 1 ? "" : "s"}</span>
+        <span className="ml-auto flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px]">
           {running > 0 && <span className="inline-flex items-center gap-1.5 text-success"><span className="h-1.5 w-1.5 animate-pulse rounded-full bg-success" />{running} active</span>}
           {waiting > 0 && <span className="text-warning">{waiting} need you</span>}
           {broken > 0 && <span className="text-destructive">{broken} failed</span>}
@@ -278,7 +278,7 @@ export function MissionControl({
       </div>
       {agents.length ? (
         <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain p-4 sm:p-6">
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">
+          <div className="grid grid-cols-1 gap-3 @min-[620px]/mission:grid-cols-2 @min-[960px]/mission:grid-cols-3 @min-[1280px]/mission:grid-cols-4">
             {agents.map(agent => (
               <AgentTile
                 key={agent.session.id}
@@ -298,7 +298,7 @@ export function MissionControl({
           <div className="max-w-sm">
             <div className="mx-auto mb-3 grid h-12 w-12 place-items-center rounded-lg border border-border bg-card text-muted-foreground"><Bot size={20} strokeWidth={1.5} aria-hidden="true" /></div>
             <p className="text-[13px] font-medium text-foreground">No agents running yet</p>
-            <p className="mt-1 text-[11.5px] leading-relaxed text-muted-foreground">Start a chat or delegate work, and every live agent will appear here as its own window.</p>
+            <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">Start a chat or delegate work, and every live agent will appear here as its own window.</p>
           </div>
         </div>
       )}

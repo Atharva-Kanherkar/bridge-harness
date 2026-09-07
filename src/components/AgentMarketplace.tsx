@@ -1,3 +1,4 @@
+import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, LoaderCircle, RefreshCw } from "lucide-react";
 import { bridgeApi } from "../api";
@@ -63,19 +64,13 @@ export function AgentMarketplace() {
   }, []);
 
   return <div className="h-full min-h-0 overflow-y-auto">
-    <main className="mx-auto w-full max-w-5xl px-3 pb-16 pt-8 sm:px-6 sm:pt-12">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0">
-          <h1 className="font-display text-[26px] font-semibold tracking-[-0.025em] text-foreground sm:text-[32px]">Agents</h1>
-          <p className="mt-1.5 text-[13.5px] leading-relaxed text-muted-foreground">Install and uninstall coding agents</p>
-        </div>
-        <button type="button" onClick={() => void refresh()} disabled={loading || working} aria-label="Refresh agents"
-          className="mt-1.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">
+    <div className={SCREEN_CONTENT}>
+      <ScreenHeading title="Agents" description="Install and manage coding agents." action={<button type="button" onClick={() => void refresh()} disabled={loading || working} aria-label="Refresh agents"
+          className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">
           <RefreshCw size={14} className={loading ? "animate-spin" : ""}/>
-        </button>
-      </div>
+        </button>} />
 
-      {error && <div role="alert" className="mt-4 flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-[10.5px] text-destructive">
+      {error && <div role="alert" className="mt-4 flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2 text-[11px] text-destructive">
         <AlertCircle className="mt-0.5 shrink-0" size={12}/><span className="min-w-0 break-words">{error}</span>
         <button type="button" onClick={() => void refresh()} className="ml-auto shrink-0 underline underline-offset-2">Retry</button>
       </div>}
@@ -84,7 +79,7 @@ export function AgentMarketplace() {
         <LoaderCircle className="animate-spin" size={15}/> Loading agents…
       </div>}
 
-      {agents && <div className="mt-6 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+      {agents && <div className="mt-5 divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
         {agents.map(agent => <AgentCard
           key={agent.agentId}
           agent={agent}
@@ -94,7 +89,7 @@ export function AgentMarketplace() {
           onUninstall={() => void run(agent.agentId, "Uninstalling", bridgeApi.uninstallManagedAgent)}
         />)}
       </div>}
-    </main>
+    </div>
   </div>;
 }
 
@@ -110,17 +105,17 @@ function AgentCard({ agent, busy, error, onInstall, onUninstall }: {
   // deleting something the user put there.
   const installed = agent.removable;
 
-  return <article className="flex items-center gap-3.5 rounded-2xl border border-border bg-card px-4 py-3.5" data-testid={`agent-card-${agent.agentId}`}>
+  return <article className="flex items-center gap-3.5 px-4 py-4" data-testid={`agent-card-${agent.agentId}`}>
     <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[13px] border border-border bg-accent font-display text-[13px] font-semibold text-foreground">
       {agent.label.slice(0, 2).toUpperCase()}
     </div>
 
     <div className="min-w-0 flex-1">
       <h3 className="truncate text-[13.5px] font-semibold tracking-[-0.008em] text-foreground">{agent.label}</h3>
-      <p className="mt-0.5 truncate text-[11.5px] text-muted-foreground">
+      <p className="mt-0.5 truncate text-[12px] text-muted-foreground">
         {BLURB[agent.agentId] ?? "Coding agent"}{agent.version ? ` · ${agent.version}` : ""}
       </p>
-      {error && <p role="alert" className="mt-1 text-[10.5px] text-destructive">{error}</p>}
+      {error && <p role="alert" className="mt-1 text-[11px] text-destructive">{error}</p>}
     </div>
 
     {busy
@@ -128,11 +123,11 @@ function AgentCard({ agent, busy, error, onInstall, onUninstall }: {
           className="shrink-0 text-[11px] text-muted-foreground motion-safe:animate-pulse">{busy}…</span>
       : installed
         ? <button type="button" onClick={onUninstall}
-            className="shrink-0 rounded-full border border-input px-4 py-1.5 text-[11.5px] font-medium text-foreground transition-colors hover:bg-accent">
+            className="shrink-0 min-h-8 rounded-lg border border-input px-3 py-1 text-[12px] font-medium text-foreground transition-colors hover:bg-accent">
             Uninstall
           </button>
         : <button type="button" onClick={onInstall}
-            className="shrink-0 rounded-full bg-primary px-4 py-1.5 text-[11.5px] font-medium text-primary-foreground transition-opacity hover:opacity-90">
+            className="shrink-0 min-h-8 rounded-lg bg-primary px-3 py-1 text-[12px] font-medium text-primary-foreground transition-opacity hover:opacity-90">
             Install
           </button>}
   </article>;

@@ -151,6 +151,9 @@ describe("SessionDock", () => {
     mount({ onAction });
     const divider = container.querySelector<HTMLElement>('[role="separator"][aria-orientation="vertical"]')!;
     expect(divider.tabIndex).toBe(0);
+    expect(divider.getAttribute("aria-valuenow")).toBe(String(DEFAULT_DOCK_WIDTH));
+    expect(divider.getAttribute("aria-valuemin")).toBe(String(MIN_DOCK_WIDTH));
+    expect(Number(divider.getAttribute("aria-valuemax"))).toBeGreaterThanOrEqual(DEFAULT_DOCK_WIDTH);
     act(() => {
       divider.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowLeft", bubbles: true }));
     });
@@ -235,12 +238,31 @@ describe("SessionDock", () => {
     expect(activeTab().textContent).toContain("GitHub");
   });
 
-  it("clips the tab strip at its own border and keeps the header buttons", () => {
+  it("scrolls the tab strip inside its own border and keeps the header buttons", () => {
     mount({ state: open({ pane: "github", visited: ["github"], width: MIN_DOCK_WIDTH }), panes: ALL_PANES });
     const list = container.querySelector<HTMLElement>('[role="tablist"]')!;
     expect(list.className).toContain("min-w-0");
-    expect(list.className).toContain("overflow-hidden");
+    expect(list.className).toContain("overflow-x-auto");
     expect(container.querySelector('button[aria-label="Expand dock"]')).not.toBeNull();
     expect(container.querySelector('aside button[aria-label="Close dock"]')).not.toBeNull();
+  });
+});
+
+
+describe("dock keyboard navigation", () => {
+  it("roves through tabs and connects the active tab to its panel", () => {
+    const onAction = vi.fn();
+    mount({ onAction });
+    expect(tabs().filter(tab => tab.tabIndex === 0)).toHaveLength(1);
+    const changes = tabs()[0]; changes.focus();
+    act(() => changes.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })));
+    expect(onAction).toHaveBeenLastCalledWith({ type: "open-pane", pane: "code" });
+    expect(document.activeElement).toBe(tabs()[1]);
+    act(() => tabs()[1].dispatchEvent(new KeyboardEvent("keydown", { key: "End", bubbles: true })));
+    expect(onAction).toHaveBeenLastCalledWith({ type: "open-pane", pane: "terminal" });
+    expect(document.activeElement).toBe(tabs()[2]);
+    act(() => tabs()[2].dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true })));
+    expect(document.activeElement).toBe(changes);
+    expect(document.getElementById(changes.getAttribute("aria-controls")!)?.getAttribute("role")).toBe("tabpanel");
   });
 });

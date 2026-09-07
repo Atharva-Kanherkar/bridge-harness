@@ -6,6 +6,8 @@ import { ancestorPaths, buildFileTree, collapseChains, rankPaths, type TreeNode 
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
+import { Dialog, DialogPopup } from "./ui/dialog";
+import { PaneState } from "./ui/pane";
 import { CodeEditor } from "./editor/CodeEditor";
 import { isDirty, isReadOnly, loadBuffer, saveBuffer, stateAfterEdit, statusLabel, type FileBuffer } from "./editor/fileBuffer";
 import { STATS_REFRESH_DEBOUNCE_MS } from "./ChangesPanel";
@@ -42,13 +44,13 @@ const TreeRow = memo(function TreeRow({ row, active, onToggle, onOpen }: {
     onClick={() => (isDir ? onToggle(row.node.path) : onOpen(row.node.path))}
     aria-expanded={isDir ? row.expanded : undefined}
     className={cn(
-      "flex h-[24px] w-full items-center gap-1 truncate rounded-[5px] pr-2 text-left font-mono text-[11.5px] transition-colors",
+      "flex h-7 w-full items-center gap-1 truncate rounded-[5px] pr-2 text-left font-mono text-[12px] transition-colors",
       active ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
     )}
     style={{ paddingLeft: `${6 + row.depth * 11}px` }}
   >
     {isDir
-      ? <ChevronRight size={11} className={cn("shrink-0 text-muted-foreground/60 transition-transform", row.expanded && "rotate-90")} aria-hidden="true" />
+      ? <ChevronRight size={11} className={cn("shrink-0 text-muted-foreground transition-transform", row.expanded && "rotate-90")} aria-hidden="true" />
       : <span className="w-[11px] shrink-0" aria-hidden="true" />}
     <span className="truncate">{row.node.name}</span>
   </button>;
@@ -62,13 +64,8 @@ function FilePalette({ paths, onPick, onClose }: { paths: string[]; onPick: (pat
   const active = results[Math.min(index, results.length - 1)];
   useEffect(() => setIndex(0), [query]);
 
-  return <div className="absolute inset-0 z-30 flex justify-center bg-background/70 pt-[12vh] backdrop-blur-[2px]" onClick={onClose}>
-    <div
-      role="dialog"
-      aria-label="Open file"
-      className="h-fit max-h-[60vh] w-[min(560px,90%)] overflow-hidden rounded-xl border border-border bg-popover shadow-2xl"
-      onClick={event => event.stopPropagation()}
-    >
+  return <Dialog open onOpenChange={open => { if (!open) onClose(); }}>
+    <DialogPopup aria-label="Open file" showCloseButton={false} className="max-h-[70dvh] max-w-xl overflow-hidden p-0">
       <div className="flex items-center gap-2 border-b border-border px-3">
         <FileSearch size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
         <input
@@ -83,7 +80,7 @@ function FilePalette({ paths, onPick, onClose }: { paths: string[]; onPick: (pat
           }}
           placeholder="Go to file…"
           aria-label="Go to file"
-          className="h-11 flex-1 bg-transparent font-mono text-[12.5px] text-foreground outline-none placeholder:text-muted-foreground/60"
+          className="h-11 flex-1 bg-transparent font-mono text-[12.5px] text-foreground outline-none placeholder:text-muted-foreground"
         />
         <Kbd>esc</Kbd>
       </div>
@@ -98,20 +95,20 @@ function FilePalette({ paths, onPick, onClose }: { paths: string[]; onPick: (pat
               onMouseEnter={() => setIndex(position)}
               onClick={() => onPick(path)}
               className={cn(
-                "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left font-mono text-[11.5px]",
+                "flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left font-mono text-[12px]",
                 path === active ? "bg-accent text-foreground" : "text-muted-foreground",
               )}
             >
               <span className="truncate">
                 <span className="text-foreground">{path.slice(cut)}</span>
-                {cut > 0 && <span className="ml-2 text-muted-foreground/60">{path.slice(0, cut - 1)}</span>}
+                {cut > 0 && <span className="ml-2 text-muted-foreground">{path.slice(0, cut - 1)}</span>}
               </span>
-              {path === active && <CornerDownLeft size={11} className="ml-auto shrink-0 text-muted-foreground/60" aria-hidden="true" />}
+              {path === active && <CornerDownLeft size={11} className="ml-auto shrink-0 text-muted-foreground" aria-hidden="true" />}
             </button>;
           })}
       </div>
-    </div>
-  </div>;
+    </DialogPopup>
+  </Dialog>;
 }
 
 /**
@@ -321,10 +318,10 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
 
   const dirtyCount = open.filter(isDirty).length;
 
-  return <div className="relative flex h-full min-h-0">
-    <aside className="hidden w-[236px] shrink-0 flex-col border-r border-border sm:flex">
-      <div className="flex h-[34px] shrink-0 items-center gap-1 border-b border-border pl-3 pr-1.5">
-        <span className="flex-1 truncate text-[10px] font-semibold uppercase tracking-[0.09em] text-muted-foreground/65">Files</span>
+  return <div className="@container/code relative flex h-full min-h-0">
+    <aside className="hidden w-52 shrink-0 flex-col border-r border-border bg-muted/20 @min-[640px]/code:flex">
+      <div className="flex h-10 shrink-0 items-center gap-1 border-b border-border pl-3 pr-1.5">
+        <span className="flex-1 truncate text-[12px] font-medium text-muted-foreground">Files</span>
         <Button type="button" variant="ghost" size="icon-sm" className="text-muted-foreground" onClick={() => setPaletteOpen(true)} aria-label="Go to file">
           <FileSearch size={13} aria-hidden="true" />
         </Button>
@@ -334,7 +331,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto p-1">
         {treeError
-          ? <p className="px-2 py-3 text-[11.5px] leading-relaxed text-destructive">{treeError}</p>
+          ? <p className="px-2 py-3 text-[12px] leading-relaxed text-destructive">{treeError}</p>
           : rows.map(row => <TreeRow
             key={`${row.node.path}:${row.node.children ? "d" : "f"}`}
             row={row}
@@ -342,12 +339,12 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
             onToggle={toggleDir}
             onOpen={path => void openFile(path)}
           />)}
-        {rows.length >= MAX_TREE_ROWS && <p className="px-2 py-2 text-[11px] text-muted-foreground/70">Showing the first {MAX_TREE_ROWS} rows — use ⌘P to reach the rest.</p>}
+        {rows.length >= MAX_TREE_ROWS && <p className="px-2 py-2 text-[11px] text-muted-foreground">Showing the first {MAX_TREE_ROWS} rows — use ⌘P to reach the rest.</p>}
       </div>
     </aside>
 
     <div className="flex min-w-0 flex-1 flex-col">
-      <div className="flex h-[34px] shrink-0 items-stretch border-b border-border">
+      <div className="flex min-h-10 shrink-0 items-stretch border-b border-border bg-muted/20">
         <div className="flex min-w-0 flex-1 items-stretch overflow-x-auto">
           {open.map(file => {
             const name = file.path.slice(file.path.lastIndexOf("/") + 1);
@@ -355,39 +352,35 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
             return <div
               key={file.path}
               className={cn(
-                "group/tab flex shrink-0 items-center gap-1.5 border-r border-border pl-3 pr-1.5 font-mono text-[11.5px] transition-colors",
+                "group/tab flex shrink-0 items-center gap-1.5 border-r border-border pl-3 pr-1.5 font-mono text-[12px] transition-colors",
                 file.path === activePath ? "bg-code text-foreground" : "text-muted-foreground hover:bg-accent/50",
               )}
             >
-              <button type="button" onClick={() => setActivePath(file.path)} className="max-w-[180px] truncate py-1" title={file.path}>{name}</button>
+              <button type="button" onClick={() => setActivePath(file.path)} className="min-h-8 max-w-[180px] truncate py-1" title={file.path}>{name}</button>
               <button
                 type="button"
                 onClick={() => closeFile(file.path)}
                 aria-label={marked ? `Close ${file.path}, discarding unsaved changes` : `Close ${file.path}`}
                 title={marked ? "Close and discard unsaved changes" : "Close"}
-                className="grid h-4 w-4 shrink-0 place-items-center rounded-[3px] text-muted-foreground/60 hover:bg-accent hover:text-foreground"
+                className="grid h-6 w-6 shrink-0 place-items-center rounded-[3px] text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 {/* The dot is the unsaved marker; it becomes the close affordance on hover. */}
                 {marked
                   ? <>
-                    <span className={cn("h-1.5 w-1.5 rounded-full group-hover/tab:hidden", file.state === "conflict" ? "bg-warning" : "bg-foreground/70")} aria-hidden="true" />
-                    <X size={11} className="hidden group-hover/tab:block" aria-hidden="true" />
+                    <span className={cn("h-1.5 w-1.5 rounded-full group-hover/tab:hidden group-focus-within/tab:hidden", file.state === "conflict" ? "bg-warning" : "bg-foreground/70")} aria-hidden="true" />
+                    <X size={11} className="hidden group-hover/tab:block group-focus-within/tab:block" aria-hidden="true" />
                   </>
-                  : <X size={11} className="opacity-0 transition-opacity group-hover/tab:opacity-100" aria-hidden="true" />}
+                  : <X size={11} className="text-muted-foreground" aria-hidden="true" />}
               </button>
             </div>;
           })}
         </div>
+        <Button type="button" variant="ghost" size="icon-sm" className="my-auto mr-1.5 shrink-0" onClick={() => setPaletteOpen(true)} aria-label="Find a file" title="Go to file · ⌘P"><FileSearch size={15} aria-hidden="true" /></Button>
       </div>
 
-      <div className="relative min-h-0 flex-1 bg-code">
+      <div className="relative flex min-h-0 flex-1 flex-col bg-code">
         {!active
-          ? <div className="grid h-full place-items-center px-6 text-center">
-            <div className="space-y-2">
-              <p className="text-[13px] text-muted-foreground">Pick a file to start editing.</p>
-              <p className="text-[11.5px] text-muted-foreground/70">Press <Kbd>⌘P</Kbd> to jump to any file, <Kbd>⌘S</Kbd> to save.</p>
-            </div>
-          </div>
+          ? <PaneState icon={FileSearch} title="Pick a file to start editing." action={<Button variant="outline" size="sm" onClick={() => setPaletteOpen(true)}>Go to file <Kbd>⌘P</Kbd></Button>}>Browse the project or search for a file. Use <Kbd>⌘S</Kbd> to save your changes.</PaneState>
           : active.state === "error" && !active.baseSha
             ? <p className="p-6 text-[12.5px] leading-relaxed text-destructive">{active.message}</p>
             : active.tooLarge
@@ -407,7 +400,7 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
                 />}
       </div>
 
-      {active && <div className="flex h-[26px] shrink-0 items-center gap-2 border-t border-border px-3 font-mono text-[10.5px] text-muted-foreground">
+      {active && <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-2 border-t border-border px-3 font-mono text-[11px] text-muted-foreground">
         <span className="truncate">{active.path}</span>
         <span className="ml-auto flex shrink-0 items-center gap-2">
           {active.state === "saving" && <LoaderCircle size={11} className="animate-spin" aria-hidden="true" />}

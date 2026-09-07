@@ -1,3 +1,4 @@
+import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import type { ClipboardEvent, KeyboardEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -311,17 +312,8 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   }
 
   return (
-    <div
-      className="absolute inset-0 z-40 flex items-center justify-center bg-scrim p-4 backdrop-blur-[2px] sm:p-8"
-      role="presentation"
-      onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Aside with ${harnessLabel(session.harness)}`}
-        className="u-glass-popover animate-page-enter flex h-full max-h-[720px] w-full max-w-[640px] min-w-0 flex-col overflow-hidden rounded-2xl"
-      >
+    <Dialog open onOpenChange={next => { if (!next && !typeaheadOpenRef.current) onClose(); }}>
+      <DialogPopup showCloseButton={false} initialFocus={inputRef} aria-label={`Aside with ${harnessLabel(session.harness)}`} className="h-[min(720px,84dvh)] max-w-2xl">
         <header className="flex min-h-[3.25rem] shrink-0 select-none items-center gap-2.5 border-b border-border px-4 py-1.5">
           <HarnessMark harness={session.harness} live={working} size={15}/>
           <div className="min-w-0 flex-1">
@@ -351,7 +343,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
                 placement="down"
                 maxWidthClassName="max-w-[220px]"
               />
-              <span className={cn("shrink-0 text-[10px] leading-tight", harnessTintClass(session.harness))}>aside</span>
+              <span className={cn("shrink-0 text-[11px] leading-tight", harnessTintClass(session.harness))}>aside</span>
             </div>
           </div>
           <button
@@ -402,9 +394,9 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
           {composerError && <p className="mb-2 px-1 text-[11px] text-destructive">{composerError}</p>}
           <div className="relative">
             {mentionOpen && <div id="aside-file-mention-listbox" role="listbox" className="u-glass-popover absolute inset-x-0 bottom-full z-20 mb-2 flex max-h-[min(320px,45vh)] flex-col overflow-hidden rounded-2xl">
-              <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">
+              <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-[11px] uppercase tracking-[0.12em] text-muted-foreground">
                 <span>Reference a file</span>
-                <span className="normal-case tracking-normal text-muted-foreground/50">{fileMatches.length}</span>
+                <span className="normal-case tracking-normal text-muted-foreground">{fileMatches.length}</span>
               </div>
               <div ref={mentionListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
                 {fileMatches.map((file, index) => {
@@ -418,15 +410,15 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
               </div>
             </div>}
             {slashOpen && <div id="aside-slash-listbox" role="listbox" className="u-glass-popover absolute inset-x-0 bottom-full z-20 mb-2 flex max-h-[min(320px,45vh)] flex-col overflow-hidden rounded-2xl">
-              <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">
+              <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-[11px] uppercase tracking-[0.12em] text-muted-foreground">
                 <span>Commands & skills</span>
-                <span className="normal-case tracking-normal text-muted-foreground/50">{slashMatches.length}</span>
+                <span className="normal-case tracking-normal text-muted-foreground">{slashMatches.length}</span>
               </div>
               <div ref={slashListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
                 {slashMatches.map((command, index) => <button id={`aside-slash-option-${index}`} key={`${command.harness}:${command.kind}:${command.name}`} type="button" role="option" aria-selected={index === slashIndex} data-slash-index={index} onMouseEnter={() => setSlashIndex(index)} onMouseDown={e => { e.preventDefault(); applySlash(command); }} className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors ${index === slashIndex ? "bg-accent" : "hover:bg-accent"}`}>
                   <span className="whitespace-nowrap font-mono text-[12px] text-foreground">/{command.name}</span>
                   <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-muted-foreground">{command.description}</span>
-                  <span className="shrink-0 rounded border border-border px-1 py-[1px] text-[8.5px] uppercase tracking-[0.06em] text-muted-foreground">{slashOwnershipBadge(command.harness)}</span>
+                  <span className="shrink-0 rounded border border-border px-1 py-[1px] text-[11px] uppercase tracking-[0.06em] text-muted-foreground">{slashOwnershipBadge(command.harness)}</span>
                 </button>)}
               </div>
             </div>}
@@ -461,7 +453,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
             />
           </div>
         </footer>
-      </div>
-    </div>
+      </DialogPopup>
+    </Dialog>
   );
 }

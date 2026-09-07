@@ -1,9 +1,13 @@
-import { useRef } from "react";
+import { useId, useRef } from "react";
 import { FolderGit2, Maximize2, Minimize2, X } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { PaneState } from "./ui/pane";
 import {
   DEFAULT_DOCK_WIDTH,
+  MIN_DOCK_WIDTH,
+  MAX_DOCK_WIDTH,
+  clampDockWidth,
   type DockAction,
   type DockPaneId,
   type DockState,
@@ -63,6 +67,7 @@ const RESIZE_STEP = 16;
 export const DOCK_TAB_LABEL_MIN_WIDTH = 400;
 
 export function SessionDock({ state, panes, availableWidth, sheet, concealed = false, onAction, onConnectFolder, children }: SessionDockProps) {
+  const dockId = useId();
   const dragging = useRef(false);
   // Expanded means the dock is `flex-1` — the whole split, always wider than
   // the threshold — so the label rides along with it.
@@ -99,6 +104,9 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
           role="separator"
           aria-orientation="vertical"
           aria-label="Resize dock"
+          aria-valuenow={state.width}
+          aria-valuemin={MIN_DOCK_WIDTH}
+          aria-valuemax={clampDockWidth(MAX_DOCK_WIDTH, availableWidth)}
           tabIndex={0}
           onPointerDown={startResize}
           onKeyDown={onDividerKeyDown}
@@ -122,7 +130,7 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
       <aside
         aria-label="Dock"
         className={cn(
-          "flex min-w-0 flex-col border-l border-border bg-sidebar",
+          "flex min-w-0 max-w-full flex-col border-l border-border bg-background",
           (concealed || !state.open) && "hidden",
           !concealed && state.open && state.expanded && "flex-1",
           !concealed && state.open && !state.expanded && sheet && "absolute inset-y-0 right-0 z-30 shadow-2xl",
@@ -131,8 +139,8 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
         style={!concealed && state.open && !state.expanded ? { width: state.width } : undefined}
       >
         {state.open && !concealed && (
-          <div className="flex h-11 shrink-0 items-center gap-2 border-b border-border px-2">
-            <div role="tablist" aria-label="Dock panes" className="flex h-7 min-w-0 items-center gap-0.5 overflow-hidden rounded-lg border border-border bg-muted p-0.5">
+          <div className="flex min-h-11 shrink-0 items-center gap-1 border-b border-border bg-muted/30 px-2 py-1">
+            <div role="tablist" aria-label="Dock panes" className="flex min-h-8 min-w-0 flex-1 items-center gap-0.5 overflow-x-auto rounded-lg p-0.5">
               {panes.map((pane, index) => {
                 const active = pane.id === state.pane;
                 const Icon = pane.icon;
@@ -141,24 +149,38 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
                     key={pane.id}
                     type="button"
                     role="tab"
+                    id={`${dockId}-tab-${pane.id}`}
+                    aria-controls={`${dockId}-pane-${pane.id}`}
+                    tabIndex={active ? 0 : -1}
                     aria-selected={active}
                     aria-label={pane.label}
                     title={`${pane.label}  ⌥⌘${index + 1}${pane.available ? "" : ` — ${pane.unavailableReason ?? "unavailable"}`}`}
                     onClick={() => onAction({ type: "open-pane", pane: pane.id })}
+                    onKeyDown={event => {
+                      let next = index;
+                      if (event.key === "ArrowRight") next = (index + 1) % panes.length;
+                      else if (event.key === "ArrowLeft") next = (index - 1 + panes.length) % panes.length;
+                      else if (event.key === "Home") next = 0;
+                      else if (event.key === "End") next = panes.length - 1;
+                      else return;
+                      event.preventDefault();
+                      onAction({ type: "open-pane", pane: panes[next].id });
+                      document.getElementById(`${dockId}-tab-${panes[next].id}`)?.focus();
+                    }}
                     className={cn(
-                      "relative flex h-6 shrink-0 items-center gap-1.5 rounded-md text-[11px] font-medium transition-colors",
+                      "relative flex h-7 min-w-7 shrink-0 items-center justify-center gap-1.5 rounded-md text-[12px] font-medium transition-colors",
                       // Icon-only mode is the narrow one, and the badges still
                       // ride along, so the tabs give up a little padding there
                       // to keep the last one inside the strip at the minimum width.
                       showActiveLabel ? "px-1.5" : "px-1",
-                      active ? "bg-card text-foreground" : "text-muted-foreground hover:text-foreground",
+                      active ? "bg-selection text-selection-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
                       !pane.available && !active && "opacity-40",
                     )}
                   >
                     <Icon size={13} strokeWidth={1.7} aria-hidden="true" />
                     {active && showActiveLabel && <span className="min-w-0 truncate pr-0.5">{pane.label}</span>}
                     {!!pane.badge && pane.available && (
-                      <span className="rounded-full bg-accent px-1 font-mono text-[10px] leading-4 text-muted-foreground">{pane.badge}</span>
+                      <span className="rounded-full bg-accent px-1 font-mono text-[11px] leading-4 text-muted-foreground">{pane.badge}</span>
                     )}
                     {pane.alert && pane.available && (
                       <span data-testid={`dock-alert-${pane.id}`} className="mission-live-accent pointer-events-none absolute right-0 top-0 h-[5px] w-[5px] rounded-full bg-warning" />
@@ -200,23 +222,17 @@ export function SessionDock({ state, panes, availableWidth, sheet, concealed = f
         <div className={cn("min-h-0 flex-1 overflow-hidden", (!state.open || concealed) && "hidden")}>
           {panes.map(pane =>
             state.visited.includes(pane.id) ? (
-              <div key={pane.id} className={cn("h-full", pane.id !== state.pane && "hidden")}>
+              <div key={pane.id} id={`${dockId}-pane-${pane.id}`} role="tabpanel" aria-label={pane.label} className={cn("h-full", pane.id !== state.pane && "hidden")}>
                 {pane.available ? children(pane.id) : (
-                  <div className="flex h-full flex-col items-center justify-center gap-3 px-8 text-center">
-                    <FolderGit2 size={20} strokeWidth={1.5} className="text-muted-foreground/50" aria-hidden="true" />
-                    <p className="max-w-[34ch] text-[12.5px] leading-relaxed text-muted-foreground">
-                      {pane.unavailableReason ?? `${pane.label} is unavailable here.`}
-                    </p>
-                    {onConnectFolder && (
+                  <PaneState icon={FolderGit2} title={`${pane.label} is unavailable`} action={onConnectFolder && (
                       <button
                         type="button"
                         onClick={onConnectFolder}
-                        className="u-surface rounded-lg px-2.5 py-1 text-[11.5px] text-foreground transition-colors hover:bg-accent"
+                        className="u-glass-soft min-h-8 rounded-lg px-3 text-[13px] text-foreground transition-colors hover:bg-accent"
                       >
                         Connect a folder
                       </button>
-                    )}
-                  </div>
+                    )}>{pane.unavailableReason ?? "Connect a project folder to use this inspector."}</PaneState>
                 )}
               </div>
             ) : null,

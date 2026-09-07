@@ -230,10 +230,10 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
   const labelOf = (terminalId: string) => labels.get(terminalId) ?? terminalId.replace(/^t/, "shell ");
 
   return <div className="flex h-full flex-col bg-code">
-    <div className="flex h-8 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-border px-1.5">
+    <div className="flex min-h-10 shrink-0 items-center gap-0.5 overflow-x-auto border-b border-border px-1.5">
       {shells.map(terminalId => {
         const mark = marks.get(terminalId);
-        return <span key={terminalId} className={cn("group/shell flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-[11px]", terminalId === active ? "bg-card text-foreground" : "text-muted-foreground hover:bg-accent")}> 
+        return <span key={terminalId} className={cn("group/shell flex h-8 shrink-0 items-center gap-1 rounded-md px-1.5 text-[11px]", terminalId === active ? "bg-card text-foreground" : "text-muted-foreground hover:bg-accent")}>
           {mark === "exited"
             ? <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/50" title="Shell exited" data-shell-mark="exited" />
             : mark === "output"
@@ -250,14 +250,14 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
                   setRenaming(undefined);
                 }}
                 onKeyDown={event => { if (event.key === "Enter") (event.target as HTMLInputElement).blur(); if (event.key === "Escape") setRenaming(undefined); }}
-                className="h-4 w-16 rounded border border-border bg-background px-1 text-[10.5px] text-foreground outline-none"
+                className="h-7 w-24 rounded-md border border-border bg-background px-1 text-[11px] text-foreground outline-none"
               />
             : <button
                 type="button"
                 onClick={() => { roster.active = terminalId; setActive(terminalId); setMarks(previous => { if (previous.get(terminalId) !== "output") return previous; const next = new Map(previous); next.delete(terminalId); return next; }); }}
                 onDoubleClick={() => setRenaming(terminalId)}
                 title={`${labelOf(terminalId)} — double-click to rename`}
-                className="max-w-[120px] truncate"
+                className="min-h-7 max-w-[120px] truncate"
               >{labelOf(terminalId)}</button>}
           <button
             type="button"
@@ -272,7 +272,7 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
             }}
             aria-label={`Close ${labelOf(terminalId)}`}
             title="Close this shell"
-            className="hidden h-4 w-4 shrink-0 place-items-center rounded text-muted-foreground/60 hover:bg-accent hover:text-foreground group-hover/shell:grid"
+            className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
           ><X size={10} aria-hidden="true" /></button>
         </span>;
       })}
@@ -281,7 +281,7 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
         onClick={() => { roster.counter += 1; openShell(workspaceId, `t${roster.counter}`); }}
         aria-label="New shell"
         title="New shell"
-        className="ml-1 inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+        className="ml-1 inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
       ><Plus size={13} strokeWidth={1.8} aria-hidden="true" /></button>
     </div>
     <div className="relative min-h-0 flex-1">
@@ -296,7 +296,7 @@ export function TerminalPane({ workspaceId, workspacePath, visible = true, onAct
     </div>
     {/* Which checkout am I in should never be a question — and neither should
         how much history this surface keeps. */}
-    <div className="flex h-6 shrink-0 items-center gap-2 border-t border-border px-2.5 font-mono text-[10px] text-muted-foreground">
+    <div className="flex min-h-8 shrink-0 flex-wrap items-center gap-2 border-t border-border px-2.5 font-mono text-[11px] text-muted-foreground">
       <span className="truncate">{workspacePath ?? workspaceId}</span>
       <span className="ml-auto shrink-0">{shells.length} shell{shells.length === 1 ? "" : "s"} · {Math.round(SCROLLBACK_PER_SESSION_LIMIT / 1_000_000)} MB scrollback</span>
     </div>

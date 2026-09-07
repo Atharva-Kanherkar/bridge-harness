@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { AnimatePresence, motion, usePresence } from "framer-motion";
 import { X } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -9,10 +9,9 @@ import { MOTION_DURATION, useMotionTransition } from "../motion";
  * The chrome the two create dialogs share: scrim, floating panel, and a header
  * carrying an icon, a title, a one-line subtitle, and a close button.
  *
- * Only presentation lives here. Focus management and Escape handling stay with
- * each dialog because they differ: the workspace dialog focuses its name field
- * and always closes on Escape, while the orchestrator dialog focuses an action
- * and ignores Escape while a worktree is being created.
+ * The shell traps Tab and restores focus when dismissed. Each caller chooses
+ * its initial field or action; busy dialogs keep Escape and scrim dismissal
+ * disabled until their operation finishes.
  *
  * The shell also owns the open/closed *boundary*. It used to be each dialog's
  * job — `if (!open) return null` — which meant every dialog animated in and then
@@ -61,6 +60,13 @@ function DialogSurface({
   dismissOnScrim = false,
   children,
 }: DialogSurfaceProps) {
+  const surfaceRef = useRef<HTMLDivElement>(null);
+  const returnFocus = useRef(typeof document === "undefined" ? null : document.activeElement as HTMLElement | null);
+  useEffect(() => {
+    const surface = surfaceRef.current;
+    if (surface && !surface.contains(document.activeElement)) surface.querySelector<HTMLElement>("button:not([disabled]), input:not([disabled])")?.focus();
+    return () => { if (returnFocus.current?.isConnected) returnFocus.current.focus(); };
+  }, []);
   const transition = useMotionTransition(MOTION_DURATION.overlay);
   // Once the exit starts the dialog is already logically gone: drop it from the
   // accessibility tree and from hit-testing, so a stray click or focus event in
@@ -74,12 +80,21 @@ function DialogSurface({
   }, [isPresent, safeToRemove]);
   return (
     <motion.div
+      ref={surfaceRef}
       className={cn(
-        "fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-scrim p-4 pt-[6vh] backdrop-blur-md sm:pt-[10vh]",
+        "fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-scrim p-4 pt-[8vh] sm:pt-[12vh]",
         !isPresent && "pointer-events-none",
       )}
-      onClick={dismissOnScrim ? event => { if (event.target === event.currentTarget) onClose(); } : undefined}
-      onKeyDown={dismissOnScrim ? event => { if (event.key === "Escape") onClose(); } : undefined}
+      onClick={dismissOnScrim ? event => { if (!closeDisabled && event.target === event.currentTarget) onClose(); } : undefined}
+      onKeyDown={event => {
+        if (event.defaultPrevented) return;
+        if (event.key === "Escape" && dismissOnScrim && !closeDisabled) { event.stopPropagation(); onClose(); }
+        if (event.key !== "Tab") return;
+        const controls = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex="0"]'));
+        const first = controls[0], last = controls[controls.length - 1];
+        if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+        else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+      }}
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
@@ -92,7 +107,7 @@ function DialogSurface({
       {/* The panel travels a little further than the scrim fades, so the
           dialog reads as leaving rather than merely dimming. */}
       <motion.div
-        className="u-overlay-strong flex max-h-[90dvh] w-full max-w-md flex-col overflow-hidden rounded-3xl"
+        className="u-glass-popover flex max-h-[84dvh] w-full max-w-lg flex-col overflow-hidden rounded-2xl"
         initial={{ opacity: 0, y: 10, scale: 0.985 }}
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: 6, scale: 0.99 }}

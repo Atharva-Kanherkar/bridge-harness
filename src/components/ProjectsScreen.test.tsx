@@ -115,7 +115,7 @@ describe("ProjectsScreen", () => {
       chats: Array.from({ length: 8 }, (_, index) =>
         session(`c${index}`, { title: `Chat ${index}`, startedAt: `2026-08-19T1${index}:00:00Z` })),
     });
-    const titles = [...container.querySelectorAll("section button span:last-child")].map(node => node.textContent);
+    const titles = [...container.querySelectorAll("section button span.truncate")].map(node => node.textContent);
     expect(titles).toEqual(["Chat 7", "Chat 6", "Chat 5", "Chat 4", "Chat 3", "Chat 2"]);
     expect(text()).toContain("+2 more");
   });

@@ -11,7 +11,7 @@
 // is the only one that differs from what was stored.
 
 import { useState } from "react";
-import { ArrowsClockwise, CaretDown, CaretRight } from "@phosphor-icons/react";
+import { RefreshCw as ArrowsClockwise, ChevronDown as CaretDown, ChevronRight as CaretRight } from "lucide-react";
 import {
   advertisedEfforts, availableModelOptions, isOrchestratorPurpose, normalizedEffort,
   profileLabels, profilePurposes,
@@ -102,7 +102,7 @@ export function ModelsPage({ profiles, adapters, version, busy, onSave, onRefres
             ? <>
                 <StatusPill tone="warning">Stale</StatusPill>
                 <GhostButton disabled={refreshing} onClick={() => void refresh()}>
-                  <ArrowsClockwise size={12} weight="regular" aria-hidden="true" className={refreshing ? "animate-spin" : undefined} />Retry
+                  <ArrowsClockwise size={12} strokeWidth={1.7} aria-hidden="true" className={refreshing ? "animate-spin" : undefined} />Retry
                 </GhostButton>
               </>
             : <StatusPill tone="success">Fresh</StatusPill>}
@@ -152,8 +152,8 @@ function ProfileRow({ profile, options, busy, saved, expanded, onToggle, onUpdat
           className="grid size-7 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
           {expanded
-            ? <CaretDown size={12} weight="regular" aria-hidden="true" />
-            : <CaretRight size={12} weight="regular" aria-hidden="true" />}
+            ? <CaretDown size={12} strokeWidth={1.7} aria-hidden="true" />
+            : <CaretRight size={12} strokeWidth={1.7} aria-hidden="true" />}
         </button>
       </>}
     />
