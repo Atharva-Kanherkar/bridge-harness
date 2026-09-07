@@ -139,7 +139,7 @@ describe("theme tokens", () => {
 
   it("locks the graphite and paper grounds", () => {
     expect(tokenValue(":root {", "background")).toBe("#fafaf9");
-    expect(tokenValue(".dark {", "background")).toBe("#272729");
+    expect(tokenValue(".dark {", "background")).toBe("#000000");
   });
 
   it("keeps the ladder rungs distinct within each mode", () => {
@@ -204,7 +204,7 @@ describe("theme tokens", () => {
     expect(css).not.toMatch(/html\[data-tauri\] \.u-vibrancy-canvas\s*\{[^}]*transparent/);
   });
 
-  it("limits the optional native material to navigation", () => {
+  it("keeps light vibrancy in navigation and restores the opt-in dark canvas", () => {
     expect(css).toMatch(
       /html\[data-tauri\]\[data-skin="vibrancy"\] \.u-app-shell\s*\{\s*background:\s*transparent/,
     );
@@ -213,6 +213,9 @@ describe("theme tokens", () => {
     );
     expect(css).toMatch(
       /html\[data-tauri\]\[data-skin="vibrancy"\] \.u-vibrancy-canvas\s*\{\s*background-color:\s*var\(--color-background\)\s*;\s*\}/,
+    );
+    expect(css).toMatch(
+      /html\.dark\[data-tauri\]\[data-skin="vibrancy"\] \.u-vibrancy-canvas\s*\{[^}]*color-mix\(in srgb,\s*var\(--color-background\) 82%,\s*transparent\)/,
     );
   });
 });

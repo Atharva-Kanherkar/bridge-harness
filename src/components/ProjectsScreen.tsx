@@ -50,7 +50,7 @@ export function ProjectsScreen({
   onConnectFolder,
 }: ProjectsScreenProps) {
   return (
-    <div className="h-full overflow-y-auto">
+    <div className="@container/projects h-full overflow-y-auto">
       <div className={SCREEN_CONTENT}>
         <ScreenHeading title="Projects" description="Your repositories, conversations, and changes." action={
           <button
@@ -71,7 +71,7 @@ export function ProjectsScreen({
             </p>
           </div>
         ) : (
-          <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
+          <div className="grid grid-cols-1 gap-4 @min-[640px]/projects:grid-cols-2 @min-[960px]/projects:grid-cols-3">
             {workspaces.map(workspace => {
               const own = chats
                 .filter(chat => chat.workspaceId === workspace.id)
@@ -79,42 +79,24 @@ export function ProjectsScreen({
               const shown = own.slice(0, CHATS_PER_CARD);
               const dirty = workspace.dirtyFiles > 0;
               return (
-                <section key={workspace.id} className="px-4 py-4">
+                <section key={workspace.id} className="flex min-w-0 flex-col rounded-xl border border-border bg-card p-4">
                   <div className="flex min-w-0 items-center gap-2">
                     <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-accent text-muted-foreground"><FolderGit2 size={19} strokeWidth={1.6} aria-hidden="true" /></span>
-                    <h2 className="m-0 min-w-0 flex-1 truncate text-[15px] font-semibold tracking-[-0.01em] text-foreground">{workspace.title}</h2>
-                  <div className="ml-auto flex shrink-0 flex-wrap items-center gap-1.5">
-                    <button
-                      type="button"
-                      disabled={busy}
-                      onClick={() => onNewWorkspaceSession(workspace.id)}
-                      className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"
-                    >
-                      <Sparkles size={11} strokeWidth={1.75} aria-hidden="true" /> New agent
-                    </button>
-                    {!workspace.path && (
-                      <button
-                        type="button"
-                        onClick={() => onConnectFolder(workspace.id)}
-                        className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                      >
-                        <FolderOpen size={11} strokeWidth={1.75} aria-hidden="true" /> Connect folder
-                      </button>
-                    )}
-                  </div>
+                    <h2 title={workspace.title} className="m-0 min-w-0 flex-1 truncate text-[15px] font-semibold tracking-[-0.01em] text-foreground">{workspace.title}</h2>
                   </div>
 
                   <p
-                    className="mt-1 pl-11 truncate text-caption text-muted-foreground"
+                    className="mt-3 truncate text-caption text-muted-foreground"
                     title={workspace.path ?? undefined}
                   >
                     {workspace.path ? shortPath(workspace.path) : "No folder connected"}
                   </p>
 
-                  <p className="mt-1 flex flex-wrap items-center gap-1.5 pl-11 text-caption text-muted-foreground">
-                    <GitBranch size={11} strokeWidth={1.6} aria-hidden="true" />
-                    {workspace.branch ?? "folder"}
-                    <span aria-hidden="true">·</span>
+                  <p className="mt-1 flex min-w-0 items-center gap-1.5 text-caption text-muted-foreground">
+                    <GitBranch size={11} strokeWidth={1.6} className="shrink-0" aria-hidden="true" />
+                    <span className="truncate" title={workspace.branch ?? undefined}>{workspace.branch ?? "folder"}</span>
+                  </p>
+                  <p className="mt-2 flex flex-wrap items-center gap-1.5 text-caption text-muted-foreground">
                     <span>{own.length} {own.length === 1 ? "chat" : "chats"}</span>
                     <span aria-hidden="true">·</span>
                     {dirty ? (
@@ -128,7 +110,7 @@ export function ProjectsScreen({
                     )}
                   </p>
 
-                  <div className="mt-3 min-h-0 pl-10">
+                  <div className="mb-4 mt-3 min-h-0 flex-1 border-t border-border pt-2">
                     {shown.map(chat => (
                       <button
                         key={chat.id}
@@ -154,8 +136,25 @@ export function ProjectsScreen({
                       <p className="px-1.5 text-caption text-muted-foreground">No agents here yet.</p>
                     )}
                   </div>
-
-
+                  <div className="mt-auto flex flex-wrap items-center gap-1.5 border-t border-border pt-3">
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => onNewWorkspaceSession(workspace.id)}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-secondary px-2.5 text-[12px] font-medium text-secondary-foreground transition-colors hover:bg-accent disabled:opacity-40"
+                    >
+                      <Sparkles size={13} strokeWidth={1.75} aria-hidden="true" /> New agent
+                    </button>
+                    {!workspace.path && (
+                      <button
+                        type="button"
+                        onClick={() => onConnectFolder(workspace.id)}
+                        className="inline-flex h-8 items-center gap-1.5 rounded-lg px-2 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                      >
+                        <FolderOpen size={13} strokeWidth={1.75} aria-hidden="true" /> Connect folder
+                      </button>
+                    )}
+                  </div>
                 </section>
               );
             })}

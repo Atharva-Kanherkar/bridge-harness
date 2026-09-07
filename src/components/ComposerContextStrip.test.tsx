@@ -66,28 +66,52 @@ describe("ComposerContextStrip", () => {
     expect(container.querySelector('[aria-label="Chat context"]')).toBeTruthy();
   });
 
-  it("renders the host as a static label while only This Mac exists", () => {
+  it("explains host availability without offering an unsupported switch", () => {
     mount();
-    const host = [...container.querySelectorAll("span, button")].find(node => node.textContent?.trim() === "This Mac" || node.textContent?.includes("This Mac"));
-    expect(host?.tagName).not.toBe("BUTTON");
+    const host = container.querySelector<HTMLButtonElement>('[aria-label="Agent host: This Mac"]')!;
+    act(() => host.click());
+    const menu = document.querySelector('[role="menu"][aria-label="Agent host"]')!;
+    expect(menu.textContent).toContain("Cloud and SSH hosts are not available yet");
+    const options = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')];
+    expect(options.filter(option => !option.disabled).map(option => option.textContent)).toEqual(["This Mac"]);
+    act(() => options[0].click());
     expect(document.querySelector('[role="menu"][aria-label="Agent host"]')).toBeNull();
   });
 
-  it("locks the repo menu and worktree chip after the first turn", () => {
-    const { onToggleWorktree, onSelectWorkspace } = mount({ locked: true });
-    const repo = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("bridge-harness"))!;
-    expect(repo.disabled).toBe(true);
-    const branch = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("feat/cursor-sidebar-dev"))!;
-    expect(branch.disabled).toBe(true);
-    expect(container.querySelector('button[aria-pressed]')).toBeNull();
+  it("opens locked context menus and offers new settings without retargeting the chat", () => {
+    const onNewChat = vi.fn();
+    const { onToggleWorktree, onSelectWorkspace, onSelectBranch, onRequestBranches } = mount({ locked: true, onNewChat });
+    for (const [text, label] of [["bridge-harness", "Repository"], ["feat/cursor-sidebar-dev", "Branch"], ["Work on branch", "Work mode"]]) {
+      const trigger = [...container.querySelectorAll("button")].find(button => button.textContent?.includes(text))!;
+      expect(trigger.disabled).toBe(false);
+      act(() => trigger.click());
+      const menu = document.querySelector(`[role="menu"][aria-label="${label}"]`)!;
+      expect(menu).toBeTruthy();
+      const choices = [...menu.querySelectorAll<HTMLButtonElement>('[role="menuitemradio"]')];
+      expect(choices.every(choice => choice.disabled)).toBe(true);
+      act(() => choices.forEach(choice => choice.click()));
+      const newChat = menu.querySelector<HTMLButtonElement>('[role="menuitem"]')!;
+      act(() => newChat.click());
+      expect(document.querySelector(`[role="menu"][aria-label="${label}"]`)).toBeNull();
+    }
+    expect(onNewChat).toHaveBeenCalledTimes(3);
     expect(onToggleWorktree).not.toHaveBeenCalled();
     expect(onSelectWorkspace).not.toHaveBeenCalled();
+    expect(onSelectBranch).not.toHaveBeenCalled();
+    expect(onRequestBranches).not.toHaveBeenCalled();
   });
 
-  it("toggles worktree while unlocked and a repo can isolate", () => {
+  it("changes work mode only when a different option is selected", () => {
     const { onToggleWorktree } = mount();
+    const trigger = container.querySelector<HTMLButtonElement>('[aria-label="Work mode: Work on branch"]')!;
+    act(() => trigger.click());
+    let choices = [...document.querySelectorAll<HTMLButtonElement>('[role="menu"][aria-label="Work mode"] [role="menuitemradio"]')];
+    act(() => choices[0].click());
+    expect(onToggleWorktree).not.toHaveBeenCalled();
+    act(() => trigger.click());
+    choices = [...document.querySelectorAll<HTMLButtonElement>('[role="menu"][aria-label="Work mode"] [role="menuitemradio"]')];
     act(() => {
-      [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Work on branch"))!.click();
+      choices[1].click();
     });
     expect(onToggleWorktree).toHaveBeenCalledOnce();
   });
@@ -188,8 +212,9 @@ describe("ComposerContextStrip", () => {
     const { onRequestBranches } = mount({ worktree: true });
     const branch = [...container.querySelectorAll<HTMLButtonElement>("button")]
       .find(button => button.textContent?.includes("feat/cursor-sidebar-dev"))!;
-    expect(branch.disabled).toBe(true);
+    expect(branch.disabled).toBe(false);
     act(() => branch.click());
+    expect(document.querySelector('[role="menu"][aria-label="Branch"]')?.textContent).toContain("isolated worktree");
     expect(onRequestBranches).not.toHaveBeenCalled();
   });
 });

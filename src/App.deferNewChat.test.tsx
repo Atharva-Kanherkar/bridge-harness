@@ -55,8 +55,7 @@ const byLabel = (label: string) => [...container.querySelectorAll<HTMLButtonElem
   .find(button => button.getAttribute("aria-label") === label);
 const composerField = () => [...container.querySelectorAll<HTMLTextAreaElement>("textarea")]
   .find(field => field.placeholder.startsWith("Ask Bridge"));
-const worktreeToggle = () => [...container.querySelectorAll<HTMLButtonElement>("button")]
-  .find(button => /Work on branch|Isolated worktree/.test(button.textContent ?? ""));
+const workModeMenu = () => container.querySelector<HTMLButtonElement>('[aria-label^="Work mode:"]');
 
 async function type(field: HTMLTextAreaElement, text: string) {
   const setValue = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
@@ -191,21 +190,26 @@ describe("deferred new-chat creation (#350)", () => {
     expect(call?.[3]).toBe("max");
   });
 
-  it("the worktree decision is held on the draft and applied on submit, not on toggle", async () => {
+  it("the worktree decision is held on the draft and applied on submit, not on selection", async () => {
     await act(async () => byLabel("New Chat")!.click());
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
 
     const creates = spyCreates();
-    const toggle = worktreeToggle();
-    expect(toggle, "the draft surface offers a worktree toggle").toBeTruthy();
-    expect(toggle!.getAttribute("aria-pressed")).toBe("false");
+    const menu = workModeMenu();
+    expect(menu, "the draft surface offers work mode choices").toBeTruthy();
+    expect(menu!.getAttribute("aria-label")).toBe("Work mode: Work on branch");
 
-    await act(async () => toggle!.click());
+    await act(async () => menu!.click());
+    const isolated = [...document.querySelectorAll<HTMLButtonElement>('[role="menu"][aria-label="Work mode"] [role="menuitemradio"]')]
+      .find(option => option.textContent === "Isolated worktree")!;
+    expect(isolated.disabled).toBe(false);
+    expect(isolated.getAttribute("aria-checked")).toBe("false");
+    await act(async () => isolated.click());
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 20)); });
 
-    // Toggling records the decision — it does not start a worktree session.
+    // Choosing a mode records the decision — it does not start a session.
     expect(totalCreates(creates)).toBe(0);
-    expect(worktreeToggle()!.getAttribute("aria-pressed")).toBe("true");
+    expect(workModeMenu()!.getAttribute("aria-label")).toBe("Work mode: Isolated worktree");
 
     const composer = composerField();
     await type(composer!, "isolate this");
