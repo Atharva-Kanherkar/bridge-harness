@@ -8,7 +8,8 @@ import { Activity, Archive, Bot, Braces, CircleDot, Clock3, Code2, FileCode2, Fi
 import { bridgeApi } from "./api";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "./pasteAttachments";
 import { openExternalUrl } from "./externalLinks";
-import { appendAgentEventBatch, queueAgentEvent as queueAgentEventBatch } from "./agentEvents";
+import { appendAgentEventBatch } from "./agentEvents";
+import { createDisplayScheduler } from "./displayScheduler";
 import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
@@ -251,8 +252,6 @@ function AppContent() {
   // forest shows it immediately instead of flashing to empty while the poll
   // refetches. Never read across sessions.
   const forestCacheRef = useRef(new Map<string, SessionForestSnapshot>());
-  const agentEventQueueRef = useRef<AgentEvent[]>([]);
-  const agentEventTimerRef = useRef<number | undefined>(undefined);
   const browserSessionRef = useRef<string>();
   const workQueryError = workBoardQueryError ? errorMessage(workBoardQueryError) : undefined;
   const workError = workBoard === undefined ? workQueryError : undefined;
@@ -302,16 +301,18 @@ function AppContent() {
       setError(errorMessage(value));
       reloadHealth();
     });
-    const queueAgentEvent = (event: AgentEvent) => {
-      agentEventQueueRef.current = queueAgentEventBatch(agentEventQueueRef.current, event);
-      if (agentEventTimerRef.current !== undefined) return;
-      agentEventTimerRef.current = window.setTimeout(() => {
-        const batch = agentEventQueueRef.current.splice(0);
-        agentEventTimerRef.current = undefined;
-        setAgentEvents(current => appendAgentEventBatch(current, batch));
-      }, 50);
-    };
-    void bridgeApi.onAgentEvent(queueAgentEvent).then(fn => offAgent = fn);
+    const display = createDisplayScheduler(batch => {
+      setAgentEvents(current => appendAgentEventBatch(current, batch));
+    }, {
+      frame: callback => window.requestAnimationFrame(callback),
+      cancelFrame: id => window.cancelAnimationFrame(id),
+      timeout: (callback, ms) => window.setTimeout(callback, ms),
+      cancelTimeout: id => window.clearTimeout(id),
+    });
+    void bridgeApi.onAgentEvent(display.push).then(fn => {
+      if (!active) { fn(); return; }
+      offAgent = fn;
+    });
     void bridgeApi.onAccountUsage(payload => {
       const snapshot = extractUsageSnapshot({ rateLimits: payload.rateLimits });
       if (!snapshot) return;
@@ -327,9 +328,7 @@ function AppContent() {
     return () => {
       active = false;
       offState?.(); offAgent?.(); offUsage?.(); offAdapters?.(); offProviderLogin?.();
-      if (agentEventTimerRef.current !== undefined) window.clearTimeout(agentEventTimerRef.current);
-      agentEventTimerRef.current = undefined;
-      agentEventQueueRef.current = [];
+      display.dispose();
     };
   }, [invalidateHealth, reload]);
   useThemePreference();
