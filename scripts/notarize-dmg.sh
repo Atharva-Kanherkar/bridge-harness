@@ -1,45 +1,48 @@
 #!/bin/sh
-# Notarize and staple an already-signed Bridge DMG.
-# Loads ~/.bridge-release/env when present (not in git).
+# Notarize and verify this exact DMG and the app inside it. No publishing.
 set -eu
-
-if [ -f "$HOME/.bridge-release/env" ]; then
-  # shellcheck disable=SC1091
-  . "$HOME/.bridge-release/env"
-fi
-
 project_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-app_version=$(python3 -c 'import json; print(json.load(open("'"$project_root"'/src-tauri/tauri.conf.json"))["version"])')
+. "$project_root/scripts/release-common.sh"
+release_load_env
+release_require_credentials
+
 dmg=${1:-}
-if [ -z "$dmg" ]; then
-  dmg=$(ls -1t "$project_root"/src-tauri/target/release/bundle/dmg/Bridge_"${app_version}"_*.dmg 2>/dev/null | head -n 1 || true)
-fi
 if [ -z "$dmg" ] || [ ! -f "$dmg" ]; then
-  echo "notarize-dmg: pass a Bridge_${app_version}_*.dmg path or build one first" >&2
+  echo "notarize-dmg: pass the exact signed DMG path to notarize." >&2
+  exit 1
+fi
+dmg=$(CDPATH= cd -- "$(dirname -- "$dmg")" && pwd)/$(basename -- "$dmg")
+release_tmp=$(mktemp -d "${TMPDIR:-/tmp}/bridge-notary.XXXXXX")
+mount_path="$release_tmp/mount"
+cleanup() {
+  if [ -d "$mount_path" ]; then
+    if ! hdiutil detach "$mount_path" -quiet; then
+      echo "notarize-dmg: could not detach $mount_path; retained the temporary directory." >&2
+      return
+    fi
+  fi
+  rm -rf "$release_tmp"
+}
+trap cleanup EXIT
+trap 'exit 1' HUP INT TERM
+codesign --verify --strict "$dmg"
+codesign -dv --verbose=4 "$dmg" 2> "$release_tmp/signature.txt"
+if ! grep -q '^Authority=Developer ID Application:' "$release_tmp/signature.txt"; then
+  echo "notarize-dmg: the DMG is not signed with Developer ID Application." >&2
   exit 1
 fi
 
-if [ -z "${APPLE_API_KEY_PATH:-}" ] || [ -z "${APPLE_API_KEY:-}" ]; then
-  echo "notarize-dmg: set APPLE_API_KEY + APPLE_API_KEY_PATH (and APPLE_API_ISSUER for Team keys)" >&2
-  exit 1
-fi
+hdiutil attach "$dmg" -readonly -nobrowse -mountpoint "$mount_path" -quiet
+sh "$project_root/scripts/verify-macos-app.sh" "$mount_path/Bridge.app"
+# A ticket on the enclosing DMG does not staple the app inside it.
+xcrun stapler validate "$mount_path/Bridge.app"
+spctl --assess --type execute --verbose=2 "$mount_path/Bridge.app"
+hdiutil detach "$mount_path" -quiet
+rmdir "$mount_path" 2>/dev/null || true
 
-if [ ! -f "$APPLE_API_KEY_PATH" ]; then
-  echo "notarize-dmg: API key not found at $APPLE_API_KEY_PATH" >&2
-  exit 1
-fi
-
-echo "Notarizing $dmg"
-set -- --key "$APPLE_API_KEY_PATH" --key-id "$APPLE_API_KEY" --wait --timeout 30m
-if [ -n "${APPLE_API_ISSUER:-}" ]; then
-  set -- "$@" --issuer "$APPLE_API_ISSUER"
-fi
-xcrun notarytool submit "$dmg" "$@"
+release_notarize "$dmg" "$release_tmp/dmg-notary.json"
 xcrun stapler staple "$dmg"
-app="$project_root/src-tauri/target/release/bundle/macos/Bridge.app"
-if [ -d "$app" ]; then
-  xcrun stapler staple "$app" || true
-fi
 xcrun stapler validate "$dmg"
+spctl --assess --type open --context context:primary-signature --verbose=2 "$dmg"
 shasum -a 256 "$dmg"
-echo "Notarized: $dmg"
+echo "Notarized and verified: $dmg"
