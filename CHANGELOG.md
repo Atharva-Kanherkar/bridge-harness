@@ -1,6 +1,6 @@
 # Changelog
 
-## [0.5.2] - Unreleased
+## [0.5.2] - 2026-09-08
 
 - Regenerate app icons from the source SVG and verify the visible mark before packaging.
 - Report native startup errors in a dialog instead of panicking through macOS launch callbacks; retain bounded diagnostic logs with the executable path and version.

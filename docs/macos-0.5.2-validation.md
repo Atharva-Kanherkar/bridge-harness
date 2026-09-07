@@ -45,9 +45,34 @@ version, and exact desktop/daemon/browser-host executable bytes were verified.
 Local DMG SHA-256:
 `36ce7c0d8c2ea908e90b343df6cea1ccb86a69e319c8608fd0d9e3ba676e277f`.
 
-This DMG contains an ad-hoc signed app and is **not a public release**. The supplied
-Developer ID certificate imports and validates, but its matching private key
-is absent from this Mac's keychain. The supplied notarization API key also
-returned HTTP 401 without issuer information. Public signing, Apple
-notarization, and GitHub publication remain pending those credentials. The
-strict release script rejects this local test artifact for public release.
+## Signed public artifact
+
+The signing blocker was resolved on September 8. A new Developer ID Application
+certificate was issued against an encrypted key generated on this Mac, imported
+into the login keychain, and verified by actually signing a native binary.
+The existing notarization API key authenticated with its retrieved Issuer ID.
+All credentials and the encrypted PKCS#12 backup are outside the repository.
+
+The complete release gate passed with `RUST_TEST_THREADS=4`. An earlier run
+failed one Grok fixture probe that passed immediately in isolation; no runtime
+cause was established. Three other probe tests were found to silently skip a
+misplaced fixture. Their test-only correction uses isolated fixture wrappers;
+all 18 Grok tests then passed, including those three cases.
+
+The signed app passed fresh setup, repeated native zoom, fullscreen, and Quit
+(exit status 0), without the ad-hoc signing warning or native exceptions.
+
+Apple notarization results:
+
+- App ZIP: `7c11b0bb-15a8-4057-a22a-fe4ae1ec73de` — Accepted.
+- DMG: `b1b4fded-27bb-4832-b26c-68d7c3248d88` — Accepted.
+- Both tickets were stapled and validated. Gatekeeper accepted the app and DMG
+  with `source=Notarized Developer ID`.
+- The DMG was mounted read-only and its bundled app passed the strict public
+  signature, entitlement, icon, version, and sidecar checks.
+
+Public artifact:
+`src-tauri/target/release/bundle/dmg/Bridge_0.5.2_aarch64.dmg`.
+
+SHA-256:
+`e4c995d9fda2af250381066aeed175ae37aa562ad77855cad967a94d917e852c`.
