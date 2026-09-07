@@ -653,6 +653,9 @@ impl BridgeCore {
         if let Some(mut runtime) = self.adapters.lock().unwrap().remove(session_id) {
             runtime.stop(reason);
         }
+        // A model switch's outgoing runtime lives outside the adapter map while
+        // it summarises; stopping the session must not leave it running.
+        crate::switch_summary::stop_for_session(self, session_id, reason);
     }
 
     /// Replay durable session events with a sequence greater than the

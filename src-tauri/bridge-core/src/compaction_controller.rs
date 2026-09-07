@@ -247,6 +247,18 @@ struct CheckpointEvidence {
 
 impl CheckpointEvidence {
     fn from_active_history(db: &Connection, session_id: &str) -> Result<Self, BridgeError> {
+        Self::collect(db, session_id, false)
+    }
+
+    /// The evidence the outgoing model could actually have seen: everything
+    /// since the last compaction up to (not including) its own request. A
+    /// background summary must not be rejected for omitting a decision or file
+    /// the incoming model produced while the summary was being written.
+    fn from_history_before_request(db: &Connection, session_id: &str) -> Result<Self, BridgeError> {
+        Self::collect(db, session_id, true)
+    }
+
+    fn collect(db: &Connection, session_id: &str, stop_at_request: bool) -> Result<Self, BridgeError> {
         let branch = SessionForest::new(db)
             .active_branch(session_id)
             .map_err(|error| BridgeError::Invalid(error.to_string()))?;
@@ -255,11 +267,22 @@ impl CheckpointEvidence {
             .rposition(|entry| entry.kind == "compaction")
             .map(|index| index + 1)
             .unwrap_or(0);
+        let end = if stop_at_request {
+            branch
+                .iter()
+                .rposition(|entry| {
+                    entry.kind == "compaction.requested"
+                        && entry.payload.get("attempt").and_then(Value::as_u64).unwrap_or(0) == 0
+                })
+                .unwrap_or(branch.len())
+        } else {
+            branch.len()
+        };
         let mut evidence = Self {
             decisions: BTreeSet::new(),
             files_touched: BTreeSet::new(),
         };
-        for entry in &branch[start..] {
+        for entry in &branch[start..end.max(start)] {
             if matches!(entry.kind.as_str(), "worker.result" | "checkpoint") {
                 collect_strings(&entry.payload, "decisions", &mut evidence.decisions);
             }
@@ -557,7 +580,11 @@ impl CompactionController {
             Self::record_failure(db, session_id, error, pending.attempt)?;
             return Ok(CheckpointOutcome::Failed);
         }
-        let evidence = CheckpointEvidence::from_active_history(db, session_id)?;
+        let evidence = if pending.background {
+            CheckpointEvidence::from_history_before_request(db, session_id)?
+        } else {
+            CheckpointEvidence::from_active_history(db, session_id)?
+        };
         if let Err(error) = evidence.verify(&checkpoint) {
             return Self::reject_incomplete_checkpoint(db, session_id, &pending, &error);
         }
@@ -1393,6 +1420,30 @@ mod tests {
         assert!(projection.restoration_context.is_none());
         assert!(projection.render_entries.iter().any(|entry| entry.kind == "assistant.message"));
         assert!(projection.render_entries.iter().all(|entry| entry.kind != "checkpoint"));
+    }
+
+    #[test]
+    fn background_evidence_is_scoped_to_what_the_outgoing_model_saw() {
+        let db = database();
+        CompactionController::begin_background(&db, "s", CompactionReason::BeforeDowngrade, 9)
+            .unwrap()
+            .unwrap();
+        let pending = CompactionController::pending(&db, "s").unwrap().unwrap();
+        // The incoming model lands a decision the outgoing model never saw.
+        SessionForest::new(&db).append("s", EntryKind::WorkerResult, json!({
+            "status":"completed","summary":"new work","decisions":["Adopt the new API"],
+            "filesChanged":["src/new.rs"]
+        })).unwrap();
+        let output = json!({
+            "schemaVersion":1,"summary":"the old conversation","decisions":[],"filesTouched":[],
+            "sourceAgent":"s","firstRetainedEntryId":pending.first_retained_entry_id,
+            "tokensBefore":pending.tokens_before,"reason":pending.reason.as_str()
+        }).to_string();
+        let outcome = CompactionController::handle_output(&db, "s", &output).unwrap();
+        assert!(
+            matches!(outcome, CheckpointOutcome::LateCheckpoint { .. }),
+            "evidence the outgoing model could not have seen must not reject its summary: {outcome:?}"
+        );
     }
 
     #[test]

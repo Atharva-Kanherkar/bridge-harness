@@ -174,6 +174,11 @@ pub fn checkpoint_context_with_window(
     }) {
         header.push(format!("checkpoint: {summary}"));
     }
+    // Reserve the header's room first, and bound the header itself: checkpoint
+    // fields have no length limit, and the compiler's ceiling must hold even
+    // for a pathological summary. Cutting the header's *end* keeps the summary
+    // line and the earliest decisions — the front is what carries meaning.
+    let header = bound_header(header, MAX_RESTORATION_BUDGET_BYTES);
     let header_bytes = header.iter().map(|line| line.len() + 1).sum::<usize>();
     let mut remaining = budget.saturating_sub(header_bytes);
     let mut tail = Vec::new();
@@ -215,14 +220,39 @@ pub fn checkpoint_context_with_window(
         return Ok(None);
     }
     tail.reverse();
+    let mut header = header;
     header.extend(tail);
+    // By construction: header ≤ MAX, tail ≤ budget − header ≤ MAX − header.
     let context = header.join("\n");
-    // The header is never dropped, so a pathological summary could still
-    // overrun; the compiler's ceiling is the one bound that must hold.
-    let context = keep_tail(&context, MAX_RESTORATION_BUDGET_BYTES);
     Ok(Some(format!(
         "Bridge checkpoint-restoration context (stored history, not native provider resume):\n{context}"
     )))
+}
+
+/// Keep the header's lines in order until `max_bytes` is spent; the line that
+/// overflows is cut at its end (on a char boundary) and marked, and anything
+/// after it is dropped. The summary line always survives in some form.
+fn bound_header(lines: Vec<String>, max_bytes: usize) -> Vec<String> {
+    let mut kept = Vec::new();
+    let mut used = 0usize;
+    for line in lines {
+        let cost = line.len() + 1;
+        if used + cost <= max_bytes {
+            used += cost;
+            kept.push(line);
+            continue;
+        }
+        let room = max_bytes.saturating_sub(used + 1 + '…'.len_utf8());
+        if room > 0 {
+            let mut end = room.min(line.len());
+            while !line.is_char_boundary(end) {
+                end -= 1;
+            }
+            kept.push(format!("{}…", &line[..end]));
+        }
+        break;
+    }
+    kept
 }
 
 /// The last `max_bytes` of `text`, cut forward to a char boundary.
@@ -562,6 +592,39 @@ mod tests {
         assert!(context.ends_with("FINAL WORDS"), "the newest words survive the head trim");
         let envelope = "Bridge checkpoint-restoration context (stored history, not native provider resume):\n".len();
         assert!(context.len() - envelope <= MIN_RESTORATION_BUDGET_BYTES);
+    }
+
+    #[test]
+    fn an_oversized_header_keeps_its_summary_start_and_the_cap_holds() {
+        use crate::compaction_controller::{CompactionController, CompactionReason};
+        let db = database();
+        let forest = SessionForest::new(&db);
+        forest
+            .append("s", EntryKind::UserMessage, serde_json::json!({"text":"older words"}))
+            .unwrap();
+        // A real compaction boundary whose summary is far over the cap.
+        CompactionController::begin(&db, "s", CompactionReason::Manual, 7).unwrap().unwrap();
+        let pending = CompactionController::pending(&db, "s").unwrap().unwrap();
+        let huge = format!("THE POINT: we chose SQLite. {}", "filler ünïcödé ".repeat(20_000));
+        let output = serde_json::json!({
+            "schemaVersion":1,"summary":huge,"decisions":["first decision","second decision"],
+            "filesTouched":[],"sourceAgent":"s","firstRetainedEntryId":pending.first_retained_entry_id,
+            "tokensBefore":pending.tokens_before,"reason":pending.reason.as_str()
+        })
+        .to_string();
+        CompactionController::handle_output(&db, "s", &output).unwrap();
+        forest
+            .append("s", EntryKind::AssistantMessage, serde_json::json!({"text":"newest words"}))
+            .unwrap();
+        let context = checkpoint_context_with_window(&db, "s", 128_000).unwrap().unwrap();
+        let envelope = "Bridge checkpoint-restoration context (stored history, not native provider resume):\n".len();
+        assert!(context.len() - envelope <= MAX_RESTORATION_BUDGET_BYTES, "{}", context.len());
+        assert!(
+            context.contains("compaction: THE POINT: we chose SQLite."),
+            "the header's start is what survives, never cut from the front"
+        );
+        assert!(context.contains('…'), "the overflowing header line is marked as cut");
+        assert!(!context.contains("second decision"), "what follows the cut header line is dropped, not the summary");
     }
 
     #[test]

@@ -2249,7 +2249,13 @@ fn spawn_reader_thread(
                             &launch_provider_session_id,
                         ) {
                             was_detached = true;
-                            switch_summary::handle_detached_frame(&core, &session_id, &value);
+                            switch_summary::handle_detached_frame(
+                                &core,
+                                &session_id,
+                                launch_process_id,
+                                &launch_provider_session_id,
+                                &value,
+                            );
                         } else {
                             handle_agent_value(&core, &session_id, &current_turn, &value);
                         }
@@ -2269,7 +2275,12 @@ fn spawn_reader_thread(
             // provider going away, not the session ending: record the pending
             // request's fate and forget it, but touch none of the shared row's
             // live-session teardown.
-            switch_summary::on_detached_reader_exit(&core, &session_id);
+            switch_summary::on_detached_reader_exit(
+                &core,
+                &session_id,
+                launch_process_id,
+                &launch_provider_session_id,
+            );
             if !launch_provider_session_id.is_empty() {
                 core.adapter_registry
                     .forget_session(&launch_adapter_id, &launch_provider_session_id);

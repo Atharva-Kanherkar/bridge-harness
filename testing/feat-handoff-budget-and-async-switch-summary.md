@@ -34,7 +34,11 @@ approximate; the functions named there all still exist under the same names.
    `handoff.brief`) walked newest-first, whole entries only, until the byte
    budget is spent. The fixed 12-line stop and the 8 000-byte tail cut are gone.
    If even the newest entry alone exceeds the remaining budget, its head is
-   trimmed on a char boundary so the newest words survive. The envelope line
+   trimmed on a char boundary so the newest words survive. The header itself
+   is bounded to `MAX_RESTORATION_BUDGET_BYTES` by cutting the *end* of the
+   overflowing header line (marked with `…`) and dropping what follows, so the
+   summary's start always survives and the compiler's ceiling holds without
+   any whole-context head trim. The envelope line
    "Bridge checkpoint-restoration context (stored history, not native provider
    resume):" is unchanged.
 4. **The budget comes from the session's own row.** `checkpoint_context(db, session_id)`
@@ -83,7 +87,18 @@ approximate; the functions named there all still exist under the same names.
    (c) never writes
    `sessions.status`, `active_turn_id`, or any conversation entry. If the
    detached reader exits (provider died), the failure "checkpoint turn ended
-   because the adapter exited" is recorded and the detached entry removed.
+   because the adapter exited" is recorded and the launch forgotten.
+   **Retirement:** stopping the detached runtime (waiter finish, abort, session
+   stop) does not forget the launch — it is *retired* and stays recognised by
+   `is_detached_launch` until its reader reaches EOF, so shutdown frames (Cursor
+   and Grok deliver a terminal event on stop) are dropped here rather than
+   handed to the live handler where a stale `turn.completed` would clear the
+   incoming model's turn. A new detach on the same session carries earlier
+   retired launches forward. **Stop and shutdown:** `stop_session_adapter`
+   also tears down the session's detached summary (cancelling the pending
+   request with the shutdown reason), and the daemon's shutdown enumerates
+   `switch_summary::detached_session_ids` beside `core.adapters`, so no
+   outgoing provider outlives its session or the app.
 10. **The new session's reader ignores the background request.**
     `PendingCompaction.background` is parsed from the payload. In
     `handle_agent_value`, `checkpoint_turn_active`, `is_checkpoint_reply`, and
@@ -91,7 +106,10 @@ approximate; the functions named there all still exist under the same names.
     the incoming model's first reply is neither suppressed nor parsed as a
     checkpoint. `CompactionController::begin` still refuses while *any* request
     is pending (a background summary blocks pressure compaction for ≤ 30 s).
-11. **Landing rule.** When the summary validates: if no conversation entry
+11. **Landing rule.** A background summary's durable-evidence check is scoped
+    to what the outgoing model could have seen — the history since the last
+    compaction up to its own request — so a decision or file the incoming model
+    lands mid-summary cannot reject an otherwise valid summary. Then: if no conversation entry
     (`CONVERSATION_KINDS`) has been appended after the request's own
     `compaction.requested` sequence, it is recorded as the normal
     `checkpoint` + `compaction` boundary, so the incoming model's cold start
@@ -109,7 +127,9 @@ approximate; the functions named there all still exist under the same names.
     is recorded; `reconstruct_from_normalized_events_and_git` keeps its
     `PhaseBoundary` behaviour by delegating. If the new session has already
     spoken, reconstruction is skipped — a reconstructed boundary would
-    summarise the new model's turns out of its own projection. The reader-side
+    summarise the new model's turns out of its own projection. The check and
+    the reconstruction share one database lock, so no turn can land between
+    them. The reader-side
     `should_recover_compaction` keeps excluding `BeforeDowngrade`; its comment
     is updated to say recovery for that reason is owned by the waiter.
 13. **Failure paths keep the switch whole.** If no runtime is live, or the
@@ -189,6 +209,13 @@ plumbing into `ModelOption` (a static family table is the source for now).
 - `the_detached_handler_never_touches_session_status_or_turn_state` — the
   incoming model's `status` and `active_turn_id` are unchanged across the
   detached turn's frames.
+- `a_retired_launch_stays_recognised_until_its_reader_exits_and_drops_frames`,
+  `a_provider_crash_mid_summary_records_the_failure_and_forgets_the_launch`,
+  `stopping_the_session_tears_down_a_detached_summary`,
+  `a_new_detach_carries_the_previous_retired_launch` — retirement, crash,
+  stop, and re-detach lifecycles.
+- `compaction_controller::background_evidence_is_scoped_to_what_the_outgoing_model_saw`
+  and `restoration::an_oversized_header_keeps_its_summary_start_and_the_cap_holds`.
 - The "reconstruct only before the new model speaks" decision is covered by
   `compaction_controller::conversation_appended_since_request` and
   `reconstruct_with_reason_records_before_downgrade`; the 30-second waiter loop
