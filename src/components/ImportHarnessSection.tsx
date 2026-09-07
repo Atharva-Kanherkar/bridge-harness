@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
-import { CircleNotch, FileJs, FolderOpen, LockSimple, ShieldCheck, Warning } from "@phosphor-icons/react";
+import { LoaderCircle as CircleNotch, FileJson as FileJs, FolderOpen, Lock as LockSimple, ShieldCheck, TriangleAlert as Warning } from "lucide-react";
 import { bridgeApi } from "../api";
 import type {
   ExternalImportArtifact,
@@ -142,17 +142,17 @@ export function ImportHarnessSection({ onError }: { onError: (message: string) =
   >
     <SettingsGroup label="What this does and does not do">
       <SettingsRow
-        lead={<ShieldCheck size={12} weight="regular" aria-hidden="true" />}
+        lead={<ShieldCheck size={12} strokeWidth={1.7} aria-hidden="true" />}
         label="Local only"
         description="Source content stays on this Mac. There is no background scan, sync, or cloud upload."
       />
       <SettingsRow
-        lead={<LockSimple size={12} weight="regular" aria-hidden="true" />}
+        lead={<LockSimple size={12} strokeWidth={1.7} aria-hidden="true" />}
         label="Secrets excluded"
         description="Credentials and authorization material are removed before preview or persistence."
       />
       <SettingsRow
-        lead={<Warning size={12} weight="regular" aria-hidden="true" />}
+        lead={<Warning size={12} strokeWidth={1.7} aria-hidden="true" />}
         label="Not an encrypted backup"
         description="Bridge's local database follows the app's existing local-state posture and is not an encrypted backup."
       />
@@ -163,13 +163,13 @@ export function ImportHarnessSection({ onError }: { onError: (message: string) =
       note="Bridge reads only what you choose"
     >
       <SettingsRow
-        lead={<FolderOpen size={12} weight="regular" aria-hidden="true" />}
+        lead={<FolderOpen size={12} strokeWidth={1.7} aria-hidden="true" />}
         label="Claude folder"
         description="A project, .claude folder, or Claude home you approve."
         control={<GhostButton disabled={busy} onClick={() => void discover("directory")}>Choose folder</GhostButton>}
       />
       <SettingsRow
-        lead={<FileJs size={12} weight="regular" aria-hidden="true" />}
+        lead={<FileJs size={12} strokeWidth={1.7} aria-hidden="true" />}
         label="JSONL export"
         description="A version-gated Claude Code transcript selected directly."
         control={<GhostButton disabled={busy} onClick={() => void discover("export")}>Choose export</GhostButton>}
@@ -206,7 +206,7 @@ export function ImportHarnessSection({ onError }: { onError: (message: string) =
         <SettingsRow
           label="Nothing is selected by default."
           control={<PrimaryButton disabled={busy || artifactIds.length === 0} onClick={() => void preview()}>
-            {busy && <CircleNotch size={12} weight="regular" className="animate-spin" aria-hidden="true" />}Preview selected
+            {busy && <CircleNotch size={12} strokeWidth={1.7} className="animate-spin" aria-hidden="true" />}Preview selected
           </PrimaryButton>}
         />
       </SettingsGroup>
@@ -222,7 +222,7 @@ export function ImportHarnessSection({ onError }: { onError: (message: string) =
             label={candidate.title}
             disabled={unsupported}
             description={<span className="block">
-              <span className="block truncate font-mono text-[10.5px]">
+              <span className="block truncate font-mono text-[11px]">
                 Claude Code · {candidate.source.sourcePathFingerprint.slice(0, 18)}… · {(candidate.confidenceBps / 100).toFixed(0)}% confidence · {candidate.stability.replaceAll("_", " ")}
               </span>
               {redacted > 0 && <span className="block text-warning">
@@ -301,7 +301,7 @@ export function ImportHarnessSection({ onError }: { onError: (message: string) =
       <SettingsRow
         label={<TextButton disabled={busy} onClick={() => setStage("preview")}>Back to selection</TextButton>}
         control={<PrimaryButton disabled={busy} onClick={() => void commitSelection()}>
-          {busy && <CircleNotch size={12} weight="regular" className="animate-spin" aria-hidden="true" />}
+          {busy && <CircleNotch size={12} strokeWidth={1.7} className="animate-spin" aria-hidden="true" />}
           {dryRun ? "Run validation" : `Import ${selectedCandidates.length} selected`}
         </PrimaryButton>}
       />
@@ -317,7 +317,7 @@ export function ImportHarnessSection({ onError }: { onError: (message: string) =
       {Object.entries(countStatuses(commit)).map(([status, count]) => <SettingsRow
         key={status}
         label={<span className="capitalize">{status.replaceAll("_", " ")}</span>}
-        control={<span className="font-mono text-[10.5px] text-muted-foreground">{count}</span>}
+        control={<span className="font-mono text-[11px] text-muted-foreground">{count}</span>}
       />)}
       {commit.diagnostics.map(diagnostic => <SettingsRow
         key={diagnostic.code}

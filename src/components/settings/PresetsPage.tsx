@@ -11,7 +11,7 @@
 // switches and selects write the stored record with exactly one field replaced.
 
 import { useMemo } from "react";
-import { Plus } from "@phosphor-icons/react";
+import { Plus } from "lucide-react";
 import type { AdapterDescriptor, AgentDefinition, AgentRole, ReasoningEffort } from "../../types";
 import { HarnessMark } from "../harnessMarks";
 import {
@@ -75,7 +75,7 @@ export function PresetsPage({
   return <SettingsPage
     title="Presets"
     description="Named agent configurations. A preset is a role, a runtime, and a system prompt Bridge can start on demand."
-    action={<GhostButton onClick={onNew}><Plus size={12} weight="regular" aria-hidden="true" />New preset</GhostButton>}
+    action={<GhostButton onClick={onNew}><Plus size={12} strokeWidth={1.7} aria-hidden="true" />New preset</GhostButton>}
   >
     <SettingsGroup label="Presets" note={`${agents.length} total`}>
       {agents.map(agent => <SettingsRow

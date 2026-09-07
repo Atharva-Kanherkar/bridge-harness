@@ -56,7 +56,7 @@ async function mount(props: Partial<Parameters<typeof GitHubPane>[0]> = {}) {
 }
 
 const click = async (button: HTMLButtonElement) => { await act(async () => { button.click(); await flush(); }); };
-const buttonByText = (text: string) => [...(host?.querySelectorAll("button") ?? [])].find(candidate => candidate.textContent?.includes(text)) as HTMLButtonElement;
+const buttonByText = (text: string) => [...document.body.querySelectorAll("button")].find(candidate => candidate.textContent?.includes(text)) as HTMLButtonElement;
 
 afterEach(async () => {
   await act(async () => { root?.unmount(); });
@@ -83,6 +83,16 @@ describe("GitHubPane", () => {
     await click(host!.querySelector('button[role="tab"]:nth-of-type(2)') as HTMLButtonElement);
     expect(host!.textContent).toContain("src/api.ts");
     expect(host!.textContent).toContain("Binary file or patch unavailable");
+
+    const tabs = [...host!.querySelectorAll<HTMLButtonElement>('[aria-label="Pull request detail"] [role="tab"]')];
+    tabs[1].focus();
+    await act(async () => { tabs[1].dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })); });
+    expect(tabs[2].getAttribute("aria-selected")).toBe("true");
+    expect(document.activeElement).toBe(tabs[2]);
+    expect(tabs.filter(tab => tab.tabIndex === 0)).toHaveLength(1);
+    expect(host!.querySelector('[role="tabpanel"]')?.getAttribute("aria-labelledby")).toBe(tabs[2].id);
+    await act(async () => { tabs[2].dispatchEvent(new KeyboardEvent("keydown", { key: "Home", bubbles: true })); });
+    expect(tabs[0].getAttribute("aria-selected")).toBe("true");
 
     // Back returns to the list.
     await click(buttonByText("All pull requests"));
@@ -125,7 +135,7 @@ describe("GitHubPane", () => {
     await click(buttonByText("Safe GitHub surface"));
     await click(buttonByText("Manage labels"));
     await click(buttonByText("enhancement"));
-    expect(host!.textContent).toContain('add label "enhancement" to PR #1');
+    expect(document.body.textContent).toContain('add label "enhancement" to PR #1');
     expect(act).not.toHaveBeenCalled();
     await click(buttonByText("Confirm"));
     expect(act).toHaveBeenCalledWith("w", { kind: "label", target: "pullRequest", number: 1, label: "enhancement", operation: "add" }, true);
@@ -282,19 +292,19 @@ describe("GitHubPane", () => {
 
     // Declining runs nothing.
     await click(buttonByText("Check out"));
-    expect(host!.textContent).toContain("check out PR #1 (feat/safe) into a task worktree");
+    expect(document.body.textContent).toContain("check out PR #1 (feat/safe) into a task worktree");
     await click(buttonByText("Cancel"));
     expect(checkout).not.toHaveBeenCalled();
 
     await click(buttonByText("Check out"));
-    await click([...host!.querySelectorAll("button")].filter(candidate => candidate.textContent === "Check out").at(-1) as HTMLButtonElement);
+    await click([...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].filter(candidate => candidate.textContent === "Check out").at(-1) as HTMLButtonElement);
     expect(checkout).toHaveBeenCalledWith("w", 1);
     expect(host!.textContent).toContain("Checked out into a task worktree on ");
     expect(host!.textContent).toContain("/w/github/pr-1-feat-safe");
 
     checkout.mockResolvedValue({ workspaceId: "ws2", path: "/w/github/pr-1-feat-safe", branch: "feat/safe", reused: true });
     await click(buttonByText("Check out"));
-    await click([...host!.querySelectorAll("button")].filter(candidate => candidate.textContent === "Check out").at(-1) as HTMLButtonElement);
+    await click([...document.querySelectorAll<HTMLButtonElement>('[role="dialog"] button')].filter(candidate => candidate.textContent === "Check out").at(-1) as HTMLButtonElement);
     expect(host!.textContent).toContain("Reusing the task worktree already on ");
   });
 

@@ -83,7 +83,7 @@ export function SidebarFilterMenu({ view, agents, allowProjectGrouping, onChange
         aria-label="Filter and group chats"
         title="Filter and group chats"
         className={cn(
-          "inline-flex h-6 w-6 items-center justify-center rounded-md transition-colors",
+          "inline-flex h-7 w-7 items-center justify-center rounded-md transition-colors",
           menu.open || narrowing ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
         )}
       >

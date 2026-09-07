@@ -9,9 +9,8 @@ export type ResolvedTheme = "light" | "dark";
 
 /**
  * The skin is orthogonal to the light/dark mode: it chooses the *character* of
- * the chrome, not its brightness. `graphite` is the opaque pure-black shell;
- * `vibrancy` is the translucent, cursor-style shell that lets AppKit wash the
- * desktop wallpaper through the grounds. Both render every token — only the
+ * the chrome, not its brightness. `graphite` uses opaque neutral surfaces;
+ * `vibrancy` lets AppKit tint the sidebar with the desktop wallpaper. Both render every token — only the
  * `data-skin` attribute on <html> changes at runtime. This is the seed of the
  * user-customisable theme pack; new skins slot in by extending this union.
  */
@@ -35,12 +34,11 @@ export const DEFAULT_SKIN: ThemeSkin = "graphite";
 
 /**
  * Window background for the `theme-color` meta, kept in sync with `--background`
- * in index.css. Dark depends on the skin: graphite grounds are true black,
- * vibrancy lifts them to near-black so the wallpaper wash has a base to tint.
+ * in index.css. Both skins keep the reading canvas opaque; vibrancy affects the sidebar.
  */
-function themeColorFor(resolved: ResolvedTheme, skin: ThemeSkin): string {
+function themeColorFor(resolved: ResolvedTheme, _skin: ThemeSkin): string {
   if (resolved === "light") return "#fafaf9";
-  return skin === "vibrancy" ? "#111111" : "#000000";
+  return "#272729";
 }
 
 /** Reads the skin already stamped on the document, defaulting when absent. */

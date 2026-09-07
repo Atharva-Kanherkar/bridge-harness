@@ -139,7 +139,7 @@ describe("theme tokens", () => {
 
   it("locks the graphite and paper grounds", () => {
     expect(tokenValue(":root {", "background")).toBe("#fafaf9");
-    expect(tokenValue(".dark {", "background")).toBe("#000000");
+    expect(tokenValue(".dark {", "background")).toBe("#272729");
   });
 
   it("keeps the ladder rungs distinct within each mode", () => {
@@ -186,7 +186,7 @@ describe("theme tokens", () => {
   });
 
   it("keeps the default graphite shell fully opaque so no wallpaper tint bleeds through", () => {
-    // The default pure-black shell must not let AppKit's material — and the
+    // The default opaque shell must not let AppKit's material — and the
     // desktop wallpaper's colour — wash the grounds. Both are solid tokens, not
     // a color-mix against transparent. The tight `{ ... }` bounds prove the
     // graphite rule itself carries no transparency.
@@ -204,12 +204,7 @@ describe("theme tokens", () => {
     expect(css).not.toMatch(/html\[data-tauri\] \.u-vibrancy-canvas\s*\{[^}]*transparent/);
   });
 
-  it("offers the translucent cursor-style vibrancy skin, gated behind data-skin", () => {
-    // Pure black cannot host the wallpaper wash, so the skin lifts the dark
-    // grounds back to near-black before letting AppKit's material through.
-    const skinStart = css.indexOf('.dark[data-skin="vibrancy"]');
-    const skinBlock = css.slice(skinStart, css.indexOf("}", skinStart));
-    expect(skinBlock).toMatch(/--background:\s*#111111/);
+  it("limits the optional native material to navigation", () => {
     expect(css).toMatch(
       /html\[data-tauri\]\[data-skin="vibrancy"\] \.u-app-shell\s*\{\s*background:\s*transparent/,
     );
@@ -217,7 +212,7 @@ describe("theme tokens", () => {
       /html\[data-tauri\]\[data-skin="vibrancy"\] \.u-vibrancy-sidebar\s*\{[^}]*color-mix\(in srgb,\s*var\(--color-sidebar\) 60%,\s*transparent\)/,
     );
     expect(css).toMatch(
-      /html\[data-tauri\]\[data-skin="vibrancy"\] \.u-vibrancy-canvas\s*\{[^}]*color-mix\(in srgb,\s*var\(--color-background\) 82%,\s*transparent\)/,
+      /html\[data-tauri\]\[data-skin="vibrancy"\] \.u-vibrancy-canvas\s*\{\s*background-color:\s*var\(--color-background\)\s*;\s*\}/,
     );
   });
 });

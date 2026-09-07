@@ -91,7 +91,7 @@ async function render(
       activeLeafId={source.forestEntries?.at(-1)?.id ?? null}
     />,
   ));
-  const rows = container.querySelector(".max-w-3xl");
+  const rows = container.querySelector("[data-conversation-content]");
   return {
     container,
     digest: [...(rows?.children ?? [])].map(rowDigest),

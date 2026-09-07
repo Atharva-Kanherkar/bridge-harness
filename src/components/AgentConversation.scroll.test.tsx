@@ -245,7 +245,7 @@ describe("AgentConversation scroll placement", () => {
         onAskAside: () => {},
       }, 20);
       expect(el.querySelector("[data-ask-aside-chip], .contents")).not.toBeNull();
-      const content = el.querySelector(".max-w-3xl")!;
+      const content = el.querySelector("[data-conversation-content]")!;
       expect(content).not.toBeNull();
       expect(observed).toContain(content);
       expect(observed).not.toContain(el.querySelector("span.contents"));

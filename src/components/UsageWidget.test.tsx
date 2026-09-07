@@ -25,14 +25,11 @@ describe("UsageWidget", () => {
     expect(html).not.toContain("Resize usage panel");
   });
 
-  it("renders a flat popup that scrolls its own content instead of clipping it", () => {
+  it("renders a material popup that scrolls its own content instead of clipping it", () => {
     const html = renderToStaticMarkup(<UsageWidget usage={{}} />);
-    // Flat surface: the popup carries no shadow-bearing surface class, only a
-    // border on the popover token.
     expect(html).not.toContain("u-overlay");
-    expect(html).not.toContain("u-glass");
     expect(html).not.toContain("shadow");
-    expect(html).toContain("bg-popover");
+    expect(html).toContain("u-glass-popover");
     // Sized by its content, capped at the viewport, scrolling inside.
     expect(html).toContain("max-h-[80dvh]");
     expect(html).toContain("min-h-0 flex-1 overflow-y-auto");
@@ -168,7 +165,7 @@ describe("UsageWidget", () => {
 
   it("renders a compact ring trigger that still carries the full usage panel", () => {
     const html = renderToStaticMarkup(<UsageWidget compact usage={{}} contextPercent={76} contextSource="measured" />);
-    expect(html).not.toContain("w-[390px]");
+    expect(html).not.toContain("w-[440px]");
     expect(html).toContain("rounded-full");
     expect(html).toContain("Open usage health details");
     expect(html).toContain("bottom-full");

@@ -51,6 +51,7 @@ export type {
   BridgeEvent,
   BridgeState,
   BrowserActionRequest,
+  BrowserFrame,
   BrowserRouteDecision,
   BrowserRouteRequest,
   BrowserSkill,

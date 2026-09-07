@@ -53,15 +53,15 @@ export function InlineFileEditor({ workspaceId, path, onDirtyChange, onSaved }: 
     setBuffer(loaded);
   }, [buffer?.seed, path, workspaceId]);
 
-  if (!buffer) return <div className="flex items-center gap-2 px-3.5 py-4 text-[11.5px] text-muted-foreground">
+  if (!buffer) return <div className="flex items-center gap-2 px-3.5 py-4 text-[12px] text-muted-foreground">
     <LoaderCircle size={12} className="animate-spin" aria-hidden="true" /> Opening {path}…
   </div>;
 
   if (buffer.state === "error" && !buffer.baseSha) {
-    return <p className="px-3.5 py-4 text-[11.5px] leading-relaxed text-destructive">{buffer.message}</p>;
+    return <p className="px-3.5 py-4 text-[12px] leading-relaxed text-destructive">{buffer.message}</p>;
   }
   if (isReadOnly(buffer)) {
-    return <p className="px-3.5 py-4 text-[11.5px] leading-relaxed text-muted-foreground">
+    return <p className="px-3.5 py-4 text-[12px] leading-relaxed text-muted-foreground">
       {buffer.tooLarge ? `${Math.round(buffer.sizeBytes / 1024)} KB — too large to open in the editor.` : "Binary file — nothing to edit here."}
     </p>;
   }
@@ -84,7 +84,7 @@ export function InlineFileEditor({ workspaceId, path, onDirtyChange, onSaved }: 
         className="cm-fit"
       />
     </div>
-    <div className="flex h-[28px] items-center gap-2 border-t border-border px-3 font-mono text-[10.5px] text-muted-foreground">
+    <div className="flex min-h-9 flex-wrap items-center gap-2 py-1 border-t border-border px-3 font-mono text-[11px] text-muted-foreground">
       {buffer.state === "saving" && <LoaderCircle size={11} className="animate-spin" aria-hidden="true" />}
       <span className={cn(
         buffer.state === "conflict" && "text-warning",
@@ -93,14 +93,14 @@ export function InlineFileEditor({ workspaceId, path, onDirtyChange, onSaved }: 
       )}>{statusLabel(buffer)}</span>
       <span className="ml-auto flex items-center gap-2">
         {buffer.state === "conflict" && <>
-          <button type="button" onClick={() => void reload()} className="underline decoration-dotted underline-offset-2 hover:text-foreground">Reload</button>
-          <button type="button" onClick={() => void save(true)} className="underline decoration-dotted underline-offset-2 hover:text-foreground">Overwrite</button>
+          <button type="button" onClick={() => void reload()} className="min-h-7 rounded-md px-2 underline decoration-dotted underline-offset-2 hover:text-foreground">Reload</button>
+          <button type="button" onClick={() => void save(true)} className="min-h-7 rounded-md px-2 underline decoration-dotted underline-offset-2 hover:text-foreground">Overwrite</button>
         </>}
         {buffer.state !== "conflict" && <button
           type="button"
           onClick={() => void save()}
           disabled={buffer.state === "clean" || buffer.state === "saving"}
-          className="underline decoration-dotted underline-offset-2 hover:text-foreground disabled:no-underline disabled:opacity-45"
+          className="min-h-7 rounded-md px-2 underline decoration-dotted underline-offset-2 hover:text-foreground disabled:no-underline disabled:opacity-45"
         >Save ⌘S</button>}
       </span>
     </div>

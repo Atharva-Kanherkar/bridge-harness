@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { Check, ChevronDown, RefreshCw, Search } from "lucide-react";
 import type { AdapterDescriptor, Harness } from "../types";
 import { harnessLabel } from "../utils";
@@ -148,23 +148,46 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   // the requested side is too short and the other has more.
   const wrapper = useRef<HTMLDivElement>(null);
   const [fit, setFit] = useState<{ side: "up" | "down"; maxHeight: number } | null>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (!open) { setFit(null); return; }
+    const anchor = wrapper.current;
+    if (!anchor) return;
     const measure = () => {
-      const rect = wrapper.current?.getBoundingClientRect();
+      const rect = anchor.getBoundingClientRect();
       // No box (jsdom, detached) means nothing to fit to: keep the defaults.
-      if (!rect || (rect.width === 0 && rect.height === 0)) { setFit(null); return; }
-      const above = rect.top - VIEWPORT_MARGIN;
-      const below = window.innerHeight - rect.bottom - VIEWPORT_MARGIN;
+      if (rect.width === 0 && rect.height === 0) { setFit(null); return; }
+      let top = 0;
+      let bottom = window.innerHeight;
+      // A viewport-sized popover can still be hidden behind a toolbar or a
+      // scrolling pane. Intersect every clipping ancestor before choosing a side.
+      for (let parent = anchor.parentElement; parent; parent = parent.parentElement) {
+        const overflow = getComputedStyle(parent);
+        if (/(auto|scroll|hidden|clip)/.test(overflow.overflowY || overflow.overflow)) {
+          const bounds = parent.getBoundingClientRect();
+          top = Math.max(top, bounds.top);
+          bottom = Math.min(bottom, bounds.bottom);
+        }
+      }
+      const above = Math.max(0, rect.top - top - VIEWPORT_MARGIN);
+      const below = Math.max(0, bottom - rect.bottom - VIEWPORT_MARGIN);
       let side = placement;
       const room = side === "up" ? above : below;
       const other = side === "up" ? below : above;
       if (room < MIN_POPOVER_HEIGHT && other > room) side = side === "up" ? "down" : "up";
-      setFit({ side, maxHeight: Math.max(MIN_POPOVER_HEIGHT, Math.min(MAX_POPOVER_HEIGHT, side === "up" ? above : below)) });
+      // The preferred minimum is a reason to flip, never a reason to overflow.
+      setFit({ side, maxHeight: Math.min(MAX_POPOVER_HEIGHT, side === "up" ? above : below) });
     };
     measure();
+    const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
+    observer?.observe(anchor);
+    for (let parent = anchor.parentElement; parent; parent = parent.parentElement) observer?.observe(parent);
     window.addEventListener("resize", measure);
-    return () => window.removeEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
   }, [open, placement]);
   const side = fit?.side ?? placement;
   // Escape closes the picker and nothing else. Captured on window so it wins
@@ -241,15 +264,16 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
   const q = query.trim().toLowerCase();
   const matchesQuery = (label: string) => !q || cleanModelLabel(label).toLowerCase().includes(q);
   return <div ref={wrapper} className="relative">
-    <button type="button" disabled={disabled} onClick={() => setOpen(value => !value)} className={cn("flex items-center gap-1.5 rounded-full transition-colors disabled:opacity-45", maxWidthClassName, compact ? "h-8 px-2 text-xs text-muted-foreground hover:bg-accent" : "h-[28px] px-2 text-[11.5px] text-foreground/90 hover:bg-accent")} title={disabled ? disabledReason ?? "Model selection is temporarily unavailable" : compactLabel} aria-label={`${roleLabel} model: ${harnessLabel(activeHarness)} ${modelLabel}`}>
+    <button type="button" disabled={disabled} onClick={() => setOpen(value => !value)} className={cn("flex min-w-0 items-center gap-1.5 rounded-md transition-colors disabled:cursor-default", maxWidthClassName, compact ? "h-8 px-2 text-xs text-muted-foreground enabled:hover:bg-accent" : "h-[28px] px-2 text-[12px] text-foreground/90 enabled:hover:bg-accent")} title={disabled ? disabledReason ?? "Model selection is temporarily unavailable" : compactLabel} aria-expanded={open} aria-haspopup="dialog" aria-label={`${roleLabel} model: ${harnessLabel(activeHarness)} ${modelLabel}`}>
       <HarnessMark harness={activeHarness} size={14} />
       <span className="whitespace-nowrap overflow-hidden text-ellipsis">{compactLabel}</span>
-      <ChevronDown size={compact ? 14 : 12} className={`shrink-0 text-muted-foreground/55 transition-transform ${open ? "rotate-180" : ""}`} aria-hidden="true" />
+      <ChevronDown size={compact ? 14 : 12} className={cn("shrink-0 text-muted-foreground transition-transform", open && "rotate-180", disabled && "opacity-40")} aria-hidden="true" />
     </button>
     {open && <>
       <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
       <div
-        className={cn("u-glass-popover absolute left-0 z-40 flex max-h-[420px] flex-col overflow-hidden rounded-xl border border-border bg-popover", twoPane ? "w-[460px]" : "w-[340px]", side === "down" ? "top-full mt-2" : "bottom-full mb-2")}
+        role="dialog" aria-label="Choose a model"
+        className={cn("@container/model-picker u-glass-popover absolute left-0 z-40 flex max-h-[420px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-xl border border-border bg-popover", twoPane ? "w-[460px]" : "w-[340px]", side === "down" ? "top-full mt-2" : "bottom-full mb-2", fit && fit.maxHeight < MIN_POPOVER_HEIGHT && "overflow-y-auto")}
         style={fit ? { maxHeight: fit.maxHeight } : undefined}
         onKeyDown={event => {
           // Two-pane digit shortcuts live on the popover, not the list: after a
@@ -270,7 +294,7 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
             onChange={event => setQuery(event.target.value)}
             placeholder="Search models"
             aria-label="Search models"
-            className="min-w-0 flex-1 bg-transparent text-[12.5px] text-foreground outline-none placeholder:text-muted-foreground"
+            className="min-w-0 flex-1 bg-transparent text-[13px] text-foreground outline-none placeholder:text-muted-foreground"
           />
           {onRefresh && <button type="button" disabled={refreshing} aria-label="Refresh model catalogues" title="Refresh model catalogues" onClick={() => {
             setRefreshing(true);
@@ -281,8 +305,8 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
           </button>}
         </div>
         {refreshError && <p role="alert" className="px-3 py-2 text-xs text-destructive">{refreshError}</p>}
-        <div className={cn("flex min-h-0 flex-1", !twoPane && "flex-col")}>
-        <div role="listbox" aria-label={`${roleLabel} models`} aria-busy={switchInFlight || undefined} className={cn("min-h-0 flex-1 overflow-y-auto p-1.5", twoPane && "w-[210px] flex-none border-r border-border", switchInFlight && "cursor-progress")}>
+        <div className={cn("flex min-h-0 flex-1 @max-[410px]/model-picker:flex-col", !twoPane && "flex-col", fit && fit.maxHeight < MIN_POPOVER_HEIGHT && "min-h-24 shrink-0")}>
+        <div role="listbox" aria-label={`${roleLabel} models`} aria-busy={switchInFlight || undefined} className={cn("min-h-0 flex-1 overflow-y-auto p-1.5", twoPane && "w-[210px] flex-none border-r border-border @max-[410px]/model-picker:max-h-44 @max-[410px]/model-picker:w-full @max-[410px]/model-picker:border-r-0 @max-[410px]/model-picker:border-b", switchInFlight && "cursor-progress")}>
           {chatAdapters
             .map(adapter => {
               const catalog = adapter.models.length ? adapter.models : [{ id: "", label: "Default", tier: "fast" as const, defaultForTier: true }];
@@ -299,16 +323,16 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
                     flagged, its rows shown but greyed. */}
                 <div className={cn("flex items-center gap-1.5 px-2 pb-1.5 pt-2", index > 0 && "mt-1 border-t border-border/60")}>
                   <HarnessMark harness={adapter.id} size={11} className={cn("opacity-70", !adapter.available && "opacity-30")} />
-                  <span className={cn("text-[9.5px] font-medium uppercase tracking-[0.12em]", adapter.available ? "text-muted-foreground/70" : "text-muted-foreground/40")}>{adapter.label}</span>
-                  {adapter.capabilities.includes("reasoning") && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.08em] text-muted-foreground/60">thinking</span>}
-                  {!adapter.available && <span className="ml-auto text-[10px] text-muted-foreground/40">unavailable</span>}
+                  <span className={cn("text-[11px] font-medium uppercase tracking-[0.12em]", adapter.available ? "text-muted-foreground" : "text-muted-foreground")}>{adapter.label}</span>
+                  {adapter.capabilities.includes("reasoning") && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground">thinking</span>}
+                  {!adapter.available && <span className="ml-auto text-[11px] text-muted-foreground">unavailable</span>}
                 </div>
                 {models.map(option => {
                   const selected = adapter.id === activeHarness && (option.id ? option.id === activeModel : !activeModel);
                   const selectable = adapter.available && option.available !== false && option.compatible !== false;
                   return <button key={`${adapter.id}:${option.id || "default"}`} type="button" role="option" aria-selected={selected} disabled={!selectable} onClick={() => pickModel(adapter.id as Harness, option.id || null)} className={cn("flex h-9 w-full items-center gap-2 rounded-[7px] px-2 text-left transition-colors disabled:opacity-40", selected ? "bg-accent" : "hover:bg-accent", !selectable && "opacity-60")}>
-                    <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[12.5px] text-foreground">{cleanModelLabel(option.label)}</span>
-                    {option.lifecycle === "preview" && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[8px] uppercase text-muted-foreground">preview</span>}
+                    <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[13px] text-foreground">{cleanModelLabel(option.label)}</span>
+                    {option.lifecycle === "preview" && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[11px] uppercase text-muted-foreground">preview</span>}
                     {selected && <Check size={13} className="shrink-0 text-foreground" aria-hidden="true" />}
                   </button>;
                 })}
@@ -316,16 +340,16 @@ export function ChatModelControl({ adapters, harness, model, disabled, disabledR
             ))}
         </div>
         {twoPane && <div className="flex min-w-0 flex-1 flex-col gap-2.5 overflow-y-auto p-3">
-          <div className="flex items-center gap-2 text-[12.5px] font-semibold text-foreground">
+          <div className="flex items-center gap-2 text-[13px] font-semibold text-foreground">
             <HarnessMark harness={activeHarness} size={12} />
             <span className="min-w-0 flex-1 truncate">{modelLabel}</span>
-            {showEffort && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[8px] uppercase tracking-[0.08em] text-muted-foreground/60">thinking</span>}
+            {showEffort && <span className="rounded-full border border-border px-1.5 py-0.5 font-mono text-[11px] uppercase tracking-[0.08em] text-muted-foreground">thinking</span>}
           </div>
-          <div className="text-[9.5px] font-medium uppercase tracking-[0.12em] text-muted-foreground/70">Thinking effort</div>
+          <div className="text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">Thinking effort</div>
           {showEffort
             ? <div data-testid="effort-control"><EffortList {...effortProps} /></div>
-            : <p className="text-[11.5px] leading-5 text-muted-foreground">No thinking control for this model.</p>}
-          {showEffort && <p className="mt-auto pt-1 text-[10.5px] text-faint">1–{Math.min(9, effortLevels.length)} jumps to a level</p>}
+            : <p className="text-[12px] leading-5 text-muted-foreground">No thinking control for this model.</p>}
+          {showEffort && <p className="mt-auto pt-1 text-[11px] text-faint">1–{Math.min(9, effortLevels.length)} jumps to a level</p>}
         </div>}
         </div>
         {!twoPane && showEffort && (

@@ -201,7 +201,7 @@ describe("SettingsPage and SettingsGroup", () => {
         <SettingsGroup label="Provider prompts"><SettingsRow label="Auto-approve" /></SettingsGroup>
       </SettingsPage>,
     );
-    expect(container.querySelector(".max-w-\\[720px\\]")).toBeTruthy();
+    expect(container.querySelector("[data-settings-column]")?.classList.contains("max-w-page")).toBe(true);
     expect(container.querySelector("h2")!.textContent).toBe("Permissions");
     expect(container.textContent).toContain("Provider prompts");
     await unmount();

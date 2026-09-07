@@ -306,6 +306,7 @@ typed_methods![
     (ApproveLearningRun, ApproveLearningRunParams, _),
     // browser bridge
     (BrowserBridgeState, _, _),
+    (BrowserFrame, BrowserFrameParams, BrowserFrameResult),
     (InstallBrowserNativeHost, _, InstallBrowserNativeHostResult),
     (BrowserAction, BrowserActionParams, BrowserActionResult),
     (SetBrowserPermission, SetBrowserPermissionParams, UnitResult),

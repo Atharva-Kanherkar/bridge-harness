@@ -1,5 +1,7 @@
+import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
 import { useEffect, useRef, useState } from "react";
 import { Check, Pencil, Search, X } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
 import { searchRecords } from "../memoryStats";
 import { harnessLabel } from "../utils";
@@ -79,6 +81,7 @@ export function MemoryDialog({
   // read, so a slow earlier call must not land over a fresher one. Same shape
   // as RouterSettingsDialog's learningReadGeneration.
   const readGeneration = useRef(0);
+  const editorRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     if (open) return;
@@ -184,6 +187,8 @@ export function MemoryDialog({
     setEditingId(record.id);
     setBody(record.body);
     setKind(record.kind);
+    editorRef.current?.focus();
+    editorRef.current?.scrollIntoView?.({ block: "center", behavior: "instant" });
   };
   const cancelEdit = () => {
     setEditingId(null);
@@ -199,56 +204,20 @@ export function MemoryDialog({
 
   const fieldClass = "w-full min-w-0 rounded-xl border border-input bg-card px-3 text-sm text-foreground transition-colors disabled:opacity-45";
   const tabClass = (active: boolean) =>
-    `rounded-full px-3 py-1 text-[12px] font-medium transition-colors ${active ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground"}`;
+    `min-h-7 rounded-lg px-3 py-1 text-[12px] font-medium transition-colors ${active ? "bg-card text-foreground shadow-control" : "text-muted-foreground hover:text-foreground"}`;
   const models = adapters.find(adapter => adapter.id === profileHarness)?.models ?? [];
 
   return <div className="h-full overflow-y-auto" aria-labelledby="memory-title">
-    <div className="mx-auto w-full max-w-5xl px-5 py-6 sm:px-8 sm:py-8">
-      <header className="mb-5 flex items-end gap-3" data-tauri-drag-region="deep">
-        <div className="min-w-0 flex-1">
-          <h1 id="memory-title" className="m-0 font-display text-[19px] font-semibold tracking-[-0.02em] text-foreground">Memory</h1>
-          <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">Account memory on this machine. Pins live under <span className="font-mono text-[11px]">account:local</span> and follow you across every chat here — not this chat's history, not the helper picker, and not a provider's <span className="font-mono text-[11px]">/memory</span>.</p>
-        </div>
-      </header>
-      <div className="mb-5 flex flex-wrap items-center gap-1.5">
+    <div className={SCREEN_CONTENT}>
+      <ScreenHeading id="memory-title" title="Memory" description="Details Bridge remembers across your conversations." />
+      <div className="u-segmented mb-5 max-w-full flex-wrap" role="group" aria-label="Memory views">
         <button type="button" aria-pressed={tab === "pins"} className={tabClass(tab === "pins")} onClick={() => setTab("pins")}>About me</button>
         <button type="button" aria-pressed={tab === "queue"} className={tabClass(tab === "queue")} onClick={() => setTab("queue")}>
-          Review queue{queueCount > 0 && <span className="ml-1.5 rounded-full bg-accent px-1 font-mono text-[10px] leading-4 text-muted-foreground">{queueCount}</span>}
+          Review queue{queueCount > 0 && <span className="ml-1.5 rounded-full bg-accent px-1 font-mono text-caption leading-4 text-muted-foreground">{queueCount}</span>}
         </button>
         <button type="button" aria-pressed={tab === "activity"} className={tabClass(tab === "activity")} onClick={() => setTab("activity")}>Activity</button>
       </div>
       {tab === "pins" && <div className="space-y-4">
-        <div className="space-y-2">
-          <textarea
-            className={`${fieldClass} min-h-24 py-2.5`}
-            placeholder="Something Bridge should remember about you or how you work"
-            value={body}
-            disabled={busy}
-            onChange={event => setBody(event.target.value)}
-            aria-label="New pin"
-          />
-          <div className="flex items-center gap-3">
-            <select className={`${fieldClass} h-9 w-36`} value={kind} disabled={busy} onChange={event => setKind(event.target.value)} aria-label="Kind">
-              {KINDS.map(item => <option key={item} value={item}>{item}</option>)}
-            </select>
-            <span className={`shrink-0 text-[11px] tabular-nums ${overLimit ? "text-destructive" : "text-muted-foreground"}`}>{bodyChars} / {MAX_MEMORY_BODY_CHARS}</span>
-            {editingId && (
-              <button
-                type="button"
-                className="ml-auto h-9 shrink-0 rounded-xl border border-border px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-                disabled={busy}
-                onClick={cancelEdit}
-              >Cancel</button>
-            )}
-            <button
-              type="button"
-              className={`h-9 shrink-0 rounded-xl bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity disabled:opacity-45 ${editingId ? "" : "ml-auto"}`}
-              disabled={busy || !trimmed || overLimit}
-              onClick={() => void save()}
-            >{editingId ? "Save edit" : "Save pin"}</button>
-          </div>
-          {overLimit && <p className="text-[12px] text-destructive">Pins are capped at {MAX_MEMORY_BODY_CHARS} characters. Trim the text — nothing is clipped for you.</p>}
-        </div>
         <label className="flex items-center gap-2 text-[12px] text-muted-foreground">
           <input
             type="checkbox"
@@ -263,7 +232,7 @@ export function MemoryDialog({
               });
             }}
           />
-          Use pins in new chats — sessions start with your pins in context, cited by id.
+          Use these pins when starting a new conversation.
         </label>
         <div className="flex flex-wrap items-center gap-1.5">
           <div className="relative mr-1.5 min-w-40 flex-1">
@@ -282,17 +251,17 @@ export function MemoryDialog({
               key={item}
               type="button"
               aria-pressed={filter === item}
-              className={`rounded-full border px-2.5 py-0.5 text-[11px] font-medium transition-colors ${filter === item ? "border-transparent bg-accent text-foreground" : "border-border text-muted-foreground hover:text-foreground"}`}
+              className={`min-h-7 rounded-lg border px-2.5 py-1 text-[12px] font-medium transition-colors ${filter === item ? "border-transparent bg-selection text-selection-foreground" : "border-border text-muted-foreground hover:text-foreground"}`}
               onClick={() => setFilter(current => current === item ? null : item)}
             >{item}</button>
           ))}
         </div>
-        <ul className="space-y-2">
+        <ul className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
           {visible.map(record => (
-            <li key={record.id} className="u-glass-soft flex items-start gap-3 rounded-2xl px-3.5 py-3">
+            <li key={record.id} className="flex items-start gap-3 px-4 py-3">
               <div className="min-w-0 flex-1">
                 <p className="whitespace-pre-wrap break-words text-sm text-foreground">{record.body}</p>
-                <p className="mt-1 text-[11px] text-muted-foreground">
+                <p className="mt-1 text-caption text-muted-foreground">
                   <span className="font-medium">{record.kind}</span> · {new Date(record.createdAt).toLocaleDateString()}
                   {record.provenance === "model_proposal" && <> · suggested</>}
                   {record.confidenceBps != null && <> · {Math.round(record.confidenceBps / 100)}% confident</>}
@@ -304,7 +273,7 @@ export function MemoryDialog({
               </div>
               <button
                 type="button"
-                className="shrink-0 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                className="grid size-8 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                 aria-label="Edit"
                 title="Edit"
                 disabled={busy}
@@ -312,7 +281,7 @@ export function MemoryDialog({
               ><Pencil size={14} aria-hidden="true" /></button>
               <button
                 type="button"
-                className="shrink-0 rounded-lg p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                className="grid size-8 shrink-0 place-items-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
                 aria-label="Forget"
                 title="Forget"
                 disabled={busy}
@@ -321,18 +290,51 @@ export function MemoryDialog({
             </li>
           ))}
           {records !== undefined && visible.length === 0 && (
-            <li className="rounded-2xl border border-dashed border-border px-3.5 py-6 text-center text-[13px] text-muted-foreground">
-              {query.trim() ? "No pins match your search." : filter ? `No ${filter} pins yet.` : "Nothing pinned yet. Save something above, or use /pin in any chat."}
+            <li className="rounded-xl border border-dashed border-border px-3.5 py-6 text-center text-[13px] text-muted-foreground">
+              {query.trim() ? "No pins match your search." : filter ? `No ${filter} pins yet.` : "Nothing pinned yet. Add a memory below, or use /pin in any chat."}
             </li>
           )}
         </ul>
+        <section className="space-y-2 border-t border-border pt-5" aria-label="Memory editor">
+          <h2 className="text-ui font-medium text-foreground">{editingId ? "Edit memory" : "Add a memory"}</h2>
+          <textarea
+            ref={editorRef}
+            className={`${fieldClass} min-h-24 py-2.5`}
+            placeholder="Something Bridge should remember about you or how you work"
+            value={body}
+            disabled={busy}
+            onChange={event => setBody(event.target.value)}
+            aria-label="New pin"
+          />
+          <div className="flex flex-wrap items-center gap-3">
+            <select className={cn(fieldClass, "h-9 w-36")} value={kind} disabled={busy} onChange={event => setKind(event.target.value)} aria-label="Kind">
+              {KINDS.map(item => <option key={item} value={item}>{item}</option>)}
+            </select>
+            <span className={`shrink-0 text-caption tabular-nums ${overLimit ? "text-destructive" : "text-muted-foreground"}`}>{bodyChars} / {MAX_MEMORY_BODY_CHARS}</span>
+            {editingId && (
+              <button
+                type="button"
+                className="ml-auto h-9 shrink-0 rounded-xl border border-border px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                disabled={busy}
+                onClick={cancelEdit}
+              >Cancel</button>
+            )}
+            <button
+              type="button"
+              className={`h-9 shrink-0 rounded-xl bg-primary px-4 text-sm font-medium text-primary-foreground transition-opacity disabled:opacity-45 ${editingId ? "" : "ml-auto"}`}
+              disabled={busy || !trimmed || overLimit}
+              onClick={() => void save()}
+            >{editingId ? "Save edit" : "Save pin"}</button>
+          </div>
+          {overLimit && <p className="text-[12px] text-destructive">Pins are capped at {MAX_MEMORY_BODY_CHARS} characters. Trim the text — nothing is clipped for you.</p>}
+        </section>
         {capabilities && capabilities.providerNative.length > 0 && (
           <div className="border-t border-border pt-3">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Provider-owned memory</p>
+            <p className="text-[12px] font-medium text-muted-foreground">Provider-owned memory</p>
             <ul className="mt-1.5 space-y-1">
               {capabilities.providerNative.map(item => (
                 <li key={`${item.harness}:${item.command}`} className="text-[12px] text-muted-foreground">
-                  <span className="font-mono text-[11px] text-foreground">/{item.command}</span> · {harnessLabel(item.harness)} — {item.description}. Stays on that provider.
+                  <span className="font-mono text-caption text-foreground">/{item.command}</span> · {harnessLabel(item.harness)} — {item.description}. Stays on that provider.
                 </li>
               ))}
             </ul>
@@ -341,7 +343,7 @@ export function MemoryDialog({
       </div>}
       {tab === "queue" && <div className="space-y-4">
         <div className="space-y-2">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">After a chat turn</p>
+          <p className="text-[12px] font-medium text-muted-foreground">After a chat turn</p>
           <div className="flex flex-wrap items-center gap-1.5">
             <button type="button" aria-pressed={settings?.mode === "remember"} className={tabClass(settings?.mode === "remember")} disabled={busy} onClick={() => void setMode("remember")}>Remember</button>
             <button type="button" aria-pressed={settings?.mode === "propose"} className={tabClass(settings?.mode === "propose")} disabled={busy} onClick={() => void setMode("propose")}>Propose</button>
@@ -359,16 +361,16 @@ export function MemoryDialog({
             </select>
           </div>
           {settings?.lastRun && (
-            <p className="text-[11px] tabular-nums text-muted-foreground">
+            <p className="text-caption tabular-nums text-muted-foreground">
               Last run {settings.lastRun.status} · {settings.lastRun.proposalCount} proposed · {settings.lastRun.observedTokens} tokens · ${(settings.lastRun.spendMicrousd / 1_000_000).toFixed(4)}
             </p>
           )}
         </div>
         <ul className="space-y-2">
           {(proposed ?? []).map(record => (
-            <li key={record.id} className="u-glass-soft rounded-2xl px-3.5 py-3">
+            <li key={record.id} className="u-glass-soft rounded-xl px-3.5 py-3">
               <p className="whitespace-pre-wrap break-words text-sm text-foreground">{record.body}</p>
-              <p className="mt-1 text-[11px] text-muted-foreground">
+              <p className="mt-1 text-caption text-muted-foreground">
                 <span className="font-medium">{record.kind}</span>
                 {record.confidenceBps != null && <> · {Math.round(record.confidenceBps / 100)}% confident</>}
                 {record.rationale && <> · {record.rationale}</>}
@@ -390,41 +392,41 @@ export function MemoryDialog({
             </li>
           ))}
           {proposed !== undefined && proposed.length === 0 && (
-            <li className="rounded-2xl border border-dashed border-border px-3.5 py-6 text-center text-[13px] text-muted-foreground">
+            <li className="rounded-xl border border-dashed border-border px-3.5 py-6 text-center text-[13px] text-muted-foreground">
               Nothing to review. Proposals from finished turns land here when Propose is on.
             </li>
           )}
         </ul>
       </div>}
       {tab === "activity" && <div className="space-y-3">
-        <div className="grid grid-cols-2 gap-3">
-          <section className="u-glass-soft rounded-2xl px-3.5 py-3">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Recall · 14 days</p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <section className="u-glass-soft rounded-xl px-3.5 py-3">
+            <p className="text-[12px] font-medium text-muted-foreground">Recall · 14 days</p>
             <Sparkbars values={injections} className="mt-2.5" />
-            <p className="mt-1.5 text-[11px] tabular-nums text-muted-foreground">peak {peakInjections} injections / day</p>
+            <p className="mt-1.5 text-caption tabular-nums text-muted-foreground">peak {peakInjections} injections / day</p>
           </section>
-          <section className="u-glass-soft rounded-2xl px-3.5 py-3">
-            <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Packet budget</p>
+          <section className="u-glass-soft rounded-xl px-3.5 py-3">
+            <p className="text-[12px] font-medium text-muted-foreground">Packet budget</p>
             <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-accent" role="meter" aria-label="Packet budget" aria-valuenow={budgetPct} aria-valuemin={0} aria-valuemax={100}>
               <div className={`h-full rounded-full ${budgetPct > 90 ? "bg-destructive" : "bg-foreground/70"}`} style={{ width: `${Math.min(100, budgetPct)}%` }} />
             </div>
-            <p className="mt-2 text-[11px] tabular-nums text-muted-foreground">
+            <p className="mt-2 text-caption tabular-nums text-muted-foreground">
               {stats?.budgetCharsUsed ?? 0} / {stats?.budgetCharsMax ?? 0} chars · refuses at capacity, never evicts
             </p>
           </section>
         </div>
-        <section className="u-glass-soft rounded-2xl px-3.5 py-3">
-          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">Consolidation log</p>
+        <section className="u-glass-soft rounded-xl px-3.5 py-3">
+          <p className="text-[12px] font-medium text-muted-foreground">Consolidation log</p>
           <ul className="mt-2 space-y-1.5">
             {(log ?? []).map((entry, index) => (
               <li key={index} className="flex items-baseline gap-2 text-[12px]">
-                <span className="w-14 shrink-0 rounded-full border border-border px-1.5 text-center font-mono text-[10px] uppercase leading-4 text-muted-foreground">{entry.op}</span>
+                <span className="w-14 shrink-0 rounded-full border border-border px-1.5 text-center font-mono text-caption uppercase leading-4 text-muted-foreground">{entry.op}</span>
                 <span className="min-w-0 flex-1 truncate text-foreground" title={entry.detail}>{entry.detail}</span>
-                <span className="shrink-0 font-mono text-[10px] tabular-nums text-muted-foreground">{dayAge(entry.day)}</span>
+                <span className="shrink-0 font-mono text-caption tabular-nums text-muted-foreground">{dayAge(entry.day)}</span>
               </li>
             ))}
             {log !== undefined && log.length === 0 && (
-              <li className="rounded-2xl border border-dashed border-border px-3.5 py-6 text-center text-[13px] text-muted-foreground">
+              <li className="rounded-xl border border-dashed border-border px-3.5 py-6 text-center text-[13px] text-muted-foreground">
                 No consolidation runs yet.
               </li>
             )}

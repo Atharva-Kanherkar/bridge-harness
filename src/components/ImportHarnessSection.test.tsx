@@ -56,7 +56,7 @@ describe("ImportHarnessSection", () => {
       await flush();
     });
     // One centered column, like every other settings page.
-    expect(container.querySelector(".max-w-\\[720px\\]")).toBeTruthy();
+    expect(container.querySelector("[data-settings-column]")?.classList.contains("max-w-page")).toBe(true);
     await act(async () => { button(container, "Choose folder").click(); await flush(); });
     expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
     expect(container.querySelectorAll("select")).toHaveLength(0);

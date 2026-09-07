@@ -148,7 +148,7 @@ export function MenuPanel<T extends HTMLElement>({
         width: controller.width,
         maxHeight: `min(${controller.height}px, calc(100dvh - 16px))`,
       }}
-      className={cn("fixed z-50 overflow-y-auto rounded-lg border border-border bg-popover p-1 text-popover-foreground shadow-lg", className)}
+      className={cn("u-glass-popover fixed z-50 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-lg p-1 text-popover-foreground", className)}
     >
       {children}
     </div>,

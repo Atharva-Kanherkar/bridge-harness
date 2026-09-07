@@ -689,6 +689,8 @@ fn browser_payloads_mirror_core() {
         sensitive_kind: Some("password".into()),
         expected_domain: Some("example.test".into()),
         actor: Some("worker-1".into()),
+        expected_lease_id: None,
+        originating_session: None,
     });
     assert_mirrors::<wire::BrowserRouteRequest>(&browser_bridge::BrowserRouteRequest {
         structured_api_available: false,
