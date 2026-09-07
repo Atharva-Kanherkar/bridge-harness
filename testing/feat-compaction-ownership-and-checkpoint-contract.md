@@ -109,6 +109,33 @@ them as omissions:
   that exists today.
 - A forwarded `/compact` writes no `compaction.requested` entry.
 
+### 4b. A forwarded compaction is a turn, and asking costs no lock
+
+Added after review, from two findings on the first push.
+
+- The capability has two halves. The static half, "does this harness have a
+  compaction command at all", is answered through `AdapterRegistry` before the
+  adapters mutex is taken, because Codex answers it by launching
+  `codex app-server generate-json-schema`. Holding the process-wide mutex across
+  that would stall every other session's adapter I/O behind one chat's first
+  `/compact`. The runtime's `native_compaction()` then refines it with
+  per-session state, under a single acquisition that also dispatches.
+- A harness that answers no to the static half never reaches the runtime.
+- A forwarded compaction marks the session `status='working'` before returning.
+  The provider's `turn.started` is asynchronous, and that window is exactly
+  where a message typed immediately after would be routed as a new turn and
+  collide with the compaction in flight. This is the same pessimism
+  `deliver_prepared_input` already applies, and it asserts something true:
+  Claude reads the slash line off its input stream, Codex and OpenCode each run
+  theirs as a turn.
+- It is never `checkpointing`. That status suppresses content frames as
+  protocol traffic, which would hide what the harness says while compacting.
+- The mark is self-healing. A `context.compacted` entry releases it when no
+  turn id is tracked, so a harness that reports a boundary without turn
+  lifecycle cannot leave a session claiming a turn forever, which is the #261
+  shape: queued input waiting on a boundary that never arrives. A boundary
+  during a real turn carries an active turn id and is left alone.
+
 ### 5. The checkpoint contract stops failing on shape
 
 - Bridge fills `sourceAgent`, `firstRetainedEntryId`, `tokensBefore`, `reason`,
