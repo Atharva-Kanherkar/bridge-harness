@@ -1022,7 +1022,7 @@ impl BrowserBridgeSupervisor {
             inner.pending_approval_command = Some(QueuedCommand {
                 id: command_id.clone(),
                 action,
-                kind: sensitive_kind,
+                kind: request.kind.clone(),
                 domain: lease.domain.clone(),
                 started_at: Utc::now(),
                 lease_id: Some(lease.id.clone()),
@@ -2553,6 +2553,56 @@ mod tests {
             (Utc::now() - Duration::seconds(1)).to_rfc3339();
         assert!(supervisor.resolve_approval(&approval.id, true).is_err());
         assert!(receiver.try_recv().is_err());
+        drop(supervisor);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn an_agent_click_rechecks_permission_and_page_safety_after_approval() {
+        for inject_page_warning in [false, true] {
+            let (supervisor, root) = test_supervisor("interact", Utc::now() + Duration::minutes(1));
+            let token = enable_agent(&supervisor, "session-a");
+            let (sender, receiver) = mpsc::channel();
+            *supervisor.outbound.lock().unwrap() = Some((1, sender));
+            supervisor.agent_request("session-a", &token, json!({"kind": "click", "elementId": "e1"})).unwrap();
+            let approval = supervisor.snapshot().pending_approval.unwrap();
+            if inject_page_warning {
+                supervisor.inner.lock().unwrap().prompt_injection_suspected = true;
+            } else {
+                supervisor.set_permission("read_only").unwrap();
+            }
+            let error = supervisor.resolve_approval(&approval.id, true).unwrap_err().to_string();
+            assert!(error.contains(if inject_page_warning { "prompt-injection" } else { "permission changed" }));
+            assert!(receiver.try_recv().is_err());
+            drop(supervisor);
+            let _ = fs::remove_dir_all(root);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_agent_socket_authenticates_the_runtime_and_returns_redacted_content() {
+        let (supervisor, root) = test_supervisor("read_only", Utc::now() + Duration::minutes(1));
+        let token = enable_agent(&supervisor, "session-a");
+        let supervisor = Arc::new(supervisor);
+        for (credential, expected_status) in [("wrong-token", "403 Forbidden"), (token.as_str(), "200 OK")] {
+            let (mut client, server) = UnixStream::pair().unwrap();
+            client.set_read_timeout(Some(StdDuration::from_secs(2))).unwrap();
+            let handler = Arc::clone(&supervisor);
+            let worker = thread::spawn(move || handler.handle_agent_http(server));
+            let body = r#"{"kind":"inspect"}"#;
+            write!(client, "POST /v1/browser HTTP/1.1\r\nAuthorization: Bearer {credential}\r\nX-Bridge-Session: session-a\r\nContent-Length: {}\r\n\r\n{body}", body.len()).unwrap();
+            let mut response = String::new();
+            client.read_to_string(&mut response).unwrap();
+            worker.join().unwrap();
+            assert!(response.starts_with(&format!("HTTP/1.1 {expected_status}")));
+            if expected_status == "200 OK" {
+                let result: Value = serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
+                assert_eq!(result["contentBoundary"], "untrusted_web_content");
+                assert_eq!(result["tab"]["url"], "https://example.com/account");
+                assert_eq!(result["elements"][0]["value"], "[redacted]");
+            }
+        }
         drop(supervisor);
         let _ = fs::remove_dir_all(root);
     }
