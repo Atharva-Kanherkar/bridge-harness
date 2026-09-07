@@ -590,11 +590,16 @@ function AppContent() {
   );
   const conversationStarted = useMemo(() => {
     if (!session) return false;
-    if (session.activeTurnId) return true;
+    if (session.activeTurnId || session.status === "working") return true;
     if (pendingForSession.length > 0) return true;
     const durable = forest?.entries?.length ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [];
     return durable.some(item => item.type === "message" && item.role === "user");
   }, [forest, pendingForSession.length, session]);
+  // Three signals, oldest to newest: the provider acknowledged a turn, Bridge
+  // delivered one and marked the session working, or the send is still on its
+  // way. The middle one is what covers a provider that takes its time between
+  // receiving a message and starting on it.
+  const turnActive = !!session?.activeTurnId || session?.status === "working" || pendingForSession.length > 0;
   const [worktreeOn, setWorktreeOn] = useState(false);
   const [welcomeWorkspaceId, setWelcomeWorkspaceId] = useState<string | null>(null);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -829,21 +834,24 @@ function AppContent() {
   // the request is held and fired the instant the turn is acknowledged; pressed
   // during a live turn it interrupts at once.
   const stopRequestedRef = useRef(false);
+  // The runtime can be interrupted as soon as Bridge has delivered the turn
+  // (the session reads `working`), with or without a provider turn id.
+  const turnDelivered = !!session?.activeTurnId || session?.status === "working";
   const requestStop = useCallback(() => {
     if (!session) return;
     setStopping(true);
-    if (session.activeTurnId) {
+    if (session.activeTurnId || session.status === "working") {
       stopRequestedRef.current = false;
-      void bridgeApi.interruptTurn(session.id);
+      void bridgeApi.interruptTurn(session.id).catch(() => undefined);
     } else {
       stopRequestedRef.current = true;
     }
   }, [session]);
   useEffect(() => {
-    if (session?.activeTurnId) {
-      if (stopRequestedRef.current) {
+    if (turnDelivered) {
+      if (stopRequestedRef.current && session) {
         stopRequestedRef.current = false;
-        void bridgeApi.interruptTurn(session.id);
+        void bridgeApi.interruptTurn(session.id).catch(() => undefined);
       }
       return;
     }
@@ -851,7 +859,7 @@ function AppContent() {
       stopRequestedRef.current = false;
       setStopping(false);
     }
-  }, [session?.id, session?.activeTurnId, pendingForSession.length]);
+  }, [session, turnDelivered, pendingForSession.length]);
 
   useEffect(() => {
     const sessionId = session?.id;
@@ -1940,7 +1948,7 @@ function AppContent() {
         return;
       case "interrupt-turn":
         // Reachable mid-sentence, so it has to be inert when nothing is running.
-        if (session && (session.activeTurnId || pendingForSession.length > 0)) requestStop();
+        if (turnActive) requestStop();
         return;
       case "open-recall":
         if (!session) return;
@@ -2046,7 +2054,6 @@ function AppContent() {
   }, []);
 
   const chromeFullscreen = fullscreen || flushWindow;
-  const turnActive = !!session?.activeTurnId || pendingForSession.length > 0;
   const startupError = error ?? (healthError ? errorMessage(healthError) : modelSetupError ? errorMessage(modelSetupError) : undefined);
   if (!health || !modelSetup) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{startupError ? <><X size={14} className="text-destructive" aria-hidden="true" />{startupError}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
   if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard adapters={health.adapters} onComplete={acceptModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
@@ -2443,7 +2450,7 @@ function AppContent() {
                     } : undefined}
                     suggestion={draftSuggestion?.suggestion}
                     onAcceptSuggestion={acceptSuggestion}
-                    placeholder={session.activeTurnId ? "Send a follow-up…" : "Message Bridge…"}
+                    placeholder={turnActive ? "Send a follow-up…" : "Message Bridge…"}
                     disabled={!session}
                     working={turnActive}
                     activeAction={activeAction}
