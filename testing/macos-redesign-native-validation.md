@@ -31,6 +31,18 @@ The freshly bundled `bridged` daemon used the normal application data directory 
 
 These checks exercise the actual provider adapters and the native methods used by the frontend. They do not claim that the corresponding native UI buttons were clicked: the Mac locked during validation, and the app-control tool could not unlock it.
 
+## Release restart regression
+
+The first release bundle built successfully, was locally signed with the existing app entitlements, passed strict bundle signature verification, and was installed with the previous app preserved. Its daemon reloaded all QA response markers and produced `INSTALLED_RELEASE_QA_OK`, correctly recalling the earlier slug test result.
+
+That restart also exposed a pre-existing shutdown defect: `Daemon::shutdown` stopped live providers without clearing their durable process records. On the next launch, the supervisor classified even ready chats as failed provider orphans. Sending a new message recovered the chat, but the failure state was misleading after an orderly quit.
+
+The shutdown path now records provider teardown transactionally: clear the tracked process, stop unfinished sessions and clear their active turn, append the `app_shutdown` event, and reconcile workspace state. Completed, cancelled, stopped, and failed results are preserved. Model replacement keeps its existing continuation path. If persistence fails, the error is reported and the transaction rolls back so startup recovery remains available.
+
+A daemon restart regression reproduced the bug before the fix (ready became failed), then passed after it. It covers ready, working, waiting, completed, and failed chats, verifies that tracking and active-turn fields are cleared, and rejects false orphan events after restart.
+
+The final production frontend build and full suite passed after this fix: **1,818 frontend tests, 2,190 Rust tests (13 ignored), and 44 sidecar tests (1 skipped)**. An earlier rerun exhausted disk space while creating a Rust archive; generated package artifacts were cleared, including an unusable cached CLI executable, before the successful complete rerun. No test assertions were removed or weakened.
+
 ## External limits
 
 - Native visual inspection of the rebuilt app remains pending an unlocked desktop. Earlier Paper/Graphite and resize walkthroughs used the browser preview. Native VoiceOver, traffic lights, wallpaper vibrancy, and real browser-host/terminal UI operation are not verified by this run.
