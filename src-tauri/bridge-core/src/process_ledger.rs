@@ -610,12 +610,28 @@ mod tests {
 
     #[test]
     fn global_root_registration_round_trips() {
-        let _guard = LEDGER_ROOT_TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        // Booting fixtures elsewhere register the ledger root too; hold the
-        // shared boot lock so this test's root cannot be swapped mid-flight.
-        let _boot_guard = crate::managed_runtime::MANAGED_ROOT_TEST_LOCK
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        // Other tests boot cores and launch background adapters that also use
+        // this global root. A test-only mutex cannot exclude those writers;
+        // exercise the registration in a process with no other fixtures.
+        const CHILD: &str = "BRIDGE_TEST_LEDGER_ROOT_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = Command::new(std::env::current_exe().expect("test executable"))
+                .args([
+                    "--exact",
+                    "process_ledger::tests::global_root_registration_round_trips",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .output()
+                .expect("isolated test starts");
+            assert!(
+                output.status.success(),
+                "isolated ledger test failed:\n{}\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr),
+            );
+            return;
+        }
         let scratch = tempfile::tempdir().expect("tempdir");
         register_ledger_root(scratch.path());
         let mut child = spawn_sleeper();
