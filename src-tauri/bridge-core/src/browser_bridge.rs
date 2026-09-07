@@ -844,7 +844,7 @@ impl BrowserBridgeSupervisor {
             revision: inner.frame_revision,
             lease_id: inner.lease.as_ref()?.id.clone(),
             data_url: inner.screenshot.clone()?,
-            redacted_regions: inner.screenshot_redacted_regions as u64,
+            redacted_regions: inner.screenshot_redacted_regions,
         })
     }
 
