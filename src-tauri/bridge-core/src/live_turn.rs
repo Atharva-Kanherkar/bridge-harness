@@ -2903,11 +2903,8 @@ fn handle_agent_value(
                 && normalized_event.kind == "message.completed"
                 && normalized_event.role.as_deref() == Some("assistant")
                 && pending_compaction.is_some();
-            let suppress_checkpoint_frame = checkpoint_turn_active
-                && !matches!(
-                    normalized_event.kind.as_str(),
-                    "turn.started" | "turn.completed" | "usage.updated" | "error"
-                );
+            let suppress_checkpoint_frame =
+                checkpoint_turn_active && !survives_checkpoint_turn(&normalized_event.kind);
             if suppress_checkpoint_frame {
                 if let Some(data) = normalized_event.data.as_object_mut() {
                     data.insert(
@@ -3633,6 +3630,57 @@ fn run_compaction_recovery(core: &Arc<BridgeCore>, session_id: &str) -> Result<(
 /// reconstruction for `BeforeDowngrade` — doing so from this (incoming model's)
 /// reader would race the switch commit and append old-provider state past the
 /// new model boundary. Other compaction reasons keep the established path.
+/// Whether a frame arriving during Bridge's own checkpoint turn is still the
+/// session's business rather than the maintenance turn's.
+///
+/// Everything else is suppressed before persistence, because a stored-then-
+/// hidden entry is still in the forest and the forest is what a reconnecting
+/// client replays. Turn lifecycle, usage and errors survive because the
+/// supervisor needs them. A native compaction survives because the harness
+/// shrinking its own window is a fact about the session, and a checkpoint turn
+/// is exactly when a full context is most likely to trip native autocompact:
+/// dropping it would discard the only evidence the provider's context shrank.
+fn survives_checkpoint_turn(kind: &str) -> bool {
+    matches!(
+        kind,
+        "turn.started"
+            | "turn.completed"
+            | "usage.updated"
+            | "error"
+            | agent::NATIVE_COMPACTION_KIND
+    )
+}
+
+#[cfg(test)]
+mod checkpoint_turn_visibility_tests {
+    use super::survives_checkpoint_turn;
+    use crate::agent;
+
+    #[test]
+    fn a_checkpoint_turn_hides_its_own_content_but_not_the_session_s_facts() {
+        for maintenance in [
+            "message.completed",
+            "message.delta",
+            "reasoning.delta",
+            "tool.started",
+            "tool.completed",
+        ] {
+            assert!(
+                !survives_checkpoint_turn(maintenance),
+                "{maintenance} during a checkpoint turn is protocol traffic, not conversation"
+            );
+        }
+        for fact in ["turn.started", "turn.completed", "usage.updated", "error"] {
+            assert!(survives_checkpoint_turn(fact), "the supervisor needs {fact}");
+        }
+        assert!(
+            survives_checkpoint_turn(agent::NATIVE_COMPACTION_KIND),
+            "a harness compacting during Bridge's checkpoint turn is the one \
+             moment the evidence matters most, and it must not be dropped"
+        );
+    }
+}
+
 fn should_recover_compaction(
     pending: Option<&compaction_controller::PendingCompaction>,
 ) -> bool {

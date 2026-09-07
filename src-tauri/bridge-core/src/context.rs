@@ -425,6 +425,30 @@ mod tests {
         }
     }
 
+    #[test]
+    fn a_native_compaction_stays_in_the_projection() {
+        // The harness compacting its own window is conversation history, not a
+        // Bridge projection boundary: Bridge's own `compaction` entry is the
+        // only thing that moves where a projection starts. A native boundary
+        // that hid itself here would vanish from a restored transcript.
+        let native = entry(
+            3,
+            "context.compacted",
+            json!({"data":{"harness":"claude","preTokens":180_000,"postTokens":20_000}}),
+        );
+        let projected = project_render_entry(&native).expect("a native boundary is visible");
+        assert_eq!(projected.kind, "context.compacted");
+        assert_eq!(projected.payload["data"]["harness"], "claude");
+
+        // Bridge's own boundary is still excluded from the render stream.
+        for bridge_kind in ["checkpoint", "compaction", "compaction.requested", "compaction.failed"] {
+            assert!(
+                project_render_entry(&entry(4, bridge_kind, json!({"summary":"s","reason":"manual"}))).is_none(),
+                "{bridge_kind} is Bridge bookkeeping, not a rendered turn"
+            );
+        }
+    }
+
     fn checkpoint(summary: &str, retained: &str, decisions: &[&str], source: &str) -> Value {
         json!({
             "schemaVersion": CHECKPOINT_SCHEMA_VERSION,

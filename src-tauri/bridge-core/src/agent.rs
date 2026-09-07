@@ -156,6 +156,9 @@ pub fn normalize_opencode_message_with_state(
         }
         "message.part.updated" => normalize_opencode_part(&properties, state),
         "session.diff" => vec![with_data("diff.updated", &properties, properties.clone())],
+        // OpenCode summarized its own session. The event carries only the
+        // session id, so the record names the harness and nothing else.
+        "session.compacted" => vec![native_compaction("opencode", json!({}))],
         "todo.updated" => {
             let mut event = with_data("plan.updated", &properties, properties.clone());
             event.title = Some("OpenCode plan".into());
@@ -408,6 +411,16 @@ impl NormalizedEvent {
 pub struct CodexStreamState {
     pub active_reasoning_id: Option<String>,
     pub reasoning_counter: usize,
+    /// The turn whose compaction boundary has already been recorded.
+    ///
+    /// Codex describes one boundary two ways: a `contextCompaction` thread
+    /// item, and the `thread/compacted` notification its own schema marks
+    /// deprecated in favour of that item. A build that sends both would put
+    /// two boundaries in history for one compaction, so the first arrival for
+    /// a turn wins and the echo is dropped. The accepted cost is that a turn
+    /// which compacts twice is recorded once; that is a smaller error than
+    /// telling a reader the context shrank twice when it shrank once.
+    pub compacted_turn: Option<String>,
 }
 
 pub fn normalize_codex_message(message: &Value) -> Vec<NormalizedEvent> {
@@ -435,6 +448,7 @@ pub fn normalize_codex_message_with_state(
         }
         "turn/started" => {
             state.active_reasoning_id = None;
+            state.compacted_turn = None;
             let mut event = with_data("turn.started", &params, params.clone());
             event.status = Some("working".into());
             vec![event]
@@ -570,6 +584,16 @@ pub fn normalize_codex_message_with_state(
             data["usage"] = codex_request_usage(&params).unwrap_or_else(|| json!({}));
             vec![with_data("usage.updated", &params, data)]
         }
+        // Codex compacted its own context. Its schema marks this notification
+        // deprecated in favour of the `contextCompaction` thread item, so
+        // whichever of the pair arrives first for a turn is the record and the
+        // other is dropped. Neither carries token figures.
+        "thread/compacted" => {
+            if compaction_already_recorded(state, &params) {
+                return vec![];
+            }
+            vec![native_compaction("codex", json!({}))]
+        }
         "turn/diff/updated" | "item/fileChange/patchUpdated" => {
             vec![with_data("diff.updated", &params, params.clone())]
         }
@@ -643,7 +667,7 @@ pub fn normalize_codex_message_with_state(
                     state.active_reasoning_id = None;
                 }
             }
-            normalize_item(method, &params)
+            normalize_item(method, &params, state)
         }
         _ if is_codex_internal_notification(method) => vec![],
         _ => {
@@ -728,7 +752,6 @@ fn is_codex_internal_notification(method: &str) -> bool {
             | "externalAgentConfig/import/progress"
             | "externalAgentConfig/import/completed"
             | "fs/changed"
-            | "thread/compacted"
             | "model/verification"
             | "turn/moderationMetadata"
             | "model/safetyBuffering/updated"
@@ -795,12 +818,27 @@ pub fn normalize_codex_request(message: &Value) -> Option<NormalizedEvent> {
     Some(event)
 }
 
-fn normalize_item(method: &str, params: &Value) -> Vec<NormalizedEvent> {
+fn normalize_item(
+    method: &str,
+    params: &Value,
+    state: &mut CodexStreamState,
+) -> Vec<NormalizedEvent> {
     let item = params.get("item").cloned().unwrap_or_else(|| json!({}));
     let item_type = item
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or("unknown");
+    if item_type == "contextCompaction" {
+        // The boundary is a completed fact. Its opening half carries nothing a
+        // reader can act on, and recording both halves would put two rows in
+        // history for one compaction.
+        if method == "item/started" || compaction_already_recorded(state, params) {
+            return vec![];
+        }
+        let mut event = native_compaction("codex", json!({}));
+        event.item_id = item.get("id").and_then(Value::as_str).map(str::to_owned);
+        return vec![event];
+    }
     let suffix = if method == "item/started" {
         "started"
     } else {
@@ -1113,6 +1151,25 @@ fn normalize_claude_system(message: &Value) -> Vec<NormalizedEvent> {
                 return vec![event, turn];
             }
             vec![event]
+        }
+        // Claude Code compacted its own context. This is the boundary Bridge
+        // records rather than one it creates, and the only Claude frame that
+        // reports the window actually shrinking: `pre_tokens` and
+        // `post_tokens` are the provider's own figures.
+        "compact_boundary" => {
+            let metadata = message
+                .get("compact_metadata")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            vec![native_compaction(
+                "claude",
+                json!({
+                    "trigger": metadata.get("trigger").cloned(),
+                    "preTokens": metadata.get("pre_tokens").cloned(),
+                    "postTokens": metadata.get("post_tokens").cloned(),
+                    "durationMs": metadata.get("duration_ms").cloned(),
+                }),
+            )]
         }
         // Hooks/notifications are noise in the conversation surface.
         _ => vec![],
@@ -1433,6 +1490,56 @@ fn with_data(kind: &str, params: &Value, data: Value) -> NormalizedEvent {
     event
 }
 
+/// The kind every harness's own compaction boundary normalizes to.
+///
+/// Bridge does not compact a live provider context: the harness that talks to
+/// the model owns its window and shrinks it. This event is Bridge's durable
+/// record that the shrink happened, and it is the only thing the "Context
+/// compacted" card is ever drawn from. A Bridge checkpoint is a separate fact
+/// with its own entry, because on a hot session it frees no provider tokens.
+/// See `docs/compaction-and-resume.md`.
+pub const NATIVE_COMPACTION_KIND: &str = "context.compacted";
+
+/// One native compaction boundary, in the shape the transcript reads.
+///
+/// `facts` carries whatever the provider actually reported. Null members are
+/// dropped rather than stored, so a harness that reports no token figures
+/// produces an entry that says only which harness compacted, and the card
+/// cannot claim a number the provider never sent.
+/// Whether this turn's Codex compaction boundary is already in history.
+///
+/// Claims the turn on the first call, so the caller records the boundary once
+/// however many ways Codex reports it. A frame with no turn id claims the
+/// literal `"unknown"` turn, which still collapses a same-frame pair.
+fn compaction_already_recorded(state: &mut CodexStreamState, params: &Value) -> bool {
+    let turn = params
+        .get("turnId")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_owned();
+    if state.compacted_turn.as_deref() == Some(turn.as_str()) {
+        return true;
+    }
+    state.compacted_turn = Some(turn);
+    false
+}
+
+fn native_compaction(harness: &str, facts: Value) -> NormalizedEvent {
+    let mut data = json!({"harness": harness});
+    if let (Some(target), Some(facts)) = (data.as_object_mut(), facts.as_object()) {
+        for (key, value) in facts {
+            if !value.is_null() {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    let mut event = NormalizedEvent::new(NATIVE_COMPACTION_KIND);
+    event.data = data;
+    event.status = Some("completed".into());
+    event.title = Some("Context compacted".into());
+    event
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1523,6 +1630,120 @@ mod tests {
         assert_eq!(events[1].text.as_deref(), Some("Model hit rate limit or context overload"));
     }
     #[test]
+    fn claude_compact_boundary_becomes_a_durable_context_compaction() {
+        let events = normalize_claude_message(&json!({
+            "type":"system",
+            "subtype":"compact_boundary",
+            "session_id":"s1",
+            "uuid":"u1",
+            "compact_metadata":{
+                "trigger":"auto",
+                "pre_tokens":184_000,
+                "post_tokens":22_500,
+                "duration_ms":4_120
+            }
+        }));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, NATIVE_COMPACTION_KIND);
+        assert_eq!(events[0].status.as_deref(), Some("completed"));
+        assert_eq!(events[0].data["harness"], "claude");
+        assert_eq!(events[0].data["trigger"], "auto");
+        assert_eq!(events[0].data["preTokens"], 184_000);
+        assert_eq!(events[0].data["postTokens"], 22_500);
+        assert_eq!(events[0].data["durationMs"], 4_120);
+    }
+
+    #[test]
+    fn a_compaction_records_only_the_figures_the_provider_sent() {
+        // A boundary that summarized everything reports no `post_tokens`. The
+        // entry must omit the key rather than store a zero the card would then
+        // render as "shrank to nothing".
+        let events = normalize_claude_message(&json!({
+            "type":"system",
+            "subtype":"compact_boundary",
+            "session_id":"s1",
+            "uuid":"u1",
+            "compact_metadata":{"trigger":"manual","pre_tokens":90_000}
+        }));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data["preTokens"], 90_000);
+        assert!(events[0].data.get("postTokens").is_none());
+        assert!(events[0].data.get("durationMs").is_none());
+        assert_eq!(events[0].data["trigger"], "manual");
+    }
+
+    #[test]
+    fn codex_context_compaction_item_is_recorded_once_per_turn() {
+        let mut state = CodexStreamState::default();
+        let started = normalize_codex_message_with_state(
+            &json!({"method":"item/started","params":{"threadId":"t1","turnId":"turn-1",
+                    "item":{"id":"i1","type":"contextCompaction"}}}),
+            &mut state,
+        );
+        assert!(
+            started.is_empty(),
+            "the opening half of a boundary carries nothing to record"
+        );
+        let completed = normalize_codex_message_with_state(
+            &json!({"method":"item/completed","params":{"threadId":"t1","turnId":"turn-1",
+                    "item":{"id":"i1","type":"contextCompaction"}}}),
+            &mut state,
+        );
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].kind, NATIVE_COMPACTION_KIND);
+        assert_eq!(completed[0].data["harness"], "codex");
+        assert_eq!(completed[0].item_id.as_deref(), Some("i1"));
+        assert!(
+            completed[0].data.get("preTokens").is_none(),
+            "Codex reports no token figures with a boundary"
+        );
+
+        // The deprecated notification describes the same boundary.
+        let echo = normalize_codex_message_with_state(
+            &json!({"method":"thread/compacted","params":{"threadId":"t1","turnId":"turn-1"}}),
+            &mut state,
+        );
+        assert!(echo.is_empty(), "one boundary is one entry");
+    }
+
+    #[test]
+    fn codex_thread_compacted_is_no_longer_swallowed() {
+        // The path an older Codex takes: the deprecated notification is the
+        // only report it sends, and it used to be dropped entirely.
+        let mut state = CodexStreamState::default();
+        let events = normalize_codex_message_with_state(
+            &json!({"method":"thread/compacted","params":{"threadId":"t1","turnId":"turn-1"}}),
+            &mut state,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, NATIVE_COMPACTION_KIND);
+        assert_eq!(events[0].data["harness"], "codex");
+
+        // A later turn compacting is its own boundary.
+        let _ = normalize_codex_message_with_state(
+            &json!({"method":"turn/started","params":{"threadId":"t1","turnId":"turn-2"}}),
+            &mut state,
+        );
+        let next = normalize_codex_message_with_state(
+            &json!({"method":"thread/compacted","params":{"threadId":"t1","turnId":"turn-2"}}),
+            &mut state,
+        );
+        assert_eq!(next.len(), 1);
+    }
+
+    #[test]
+    fn opencode_session_compacted_is_not_a_provider_unknown() {
+        let mut state = OpenCodeStreamState::default();
+        let events = normalize_opencode_message_with_state(
+            &json!({"type":"session.compacted","properties":{"sessionID":"s1"}}),
+            &mut state,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, NATIVE_COMPACTION_KIND);
+        assert_eq!(events[0].data["harness"], "opencode");
+    }
+
+    #[test]
     fn codex_internal_notifications_do_not_become_unknown_events() {
         for method in [
             "hook/started",
@@ -1531,7 +1752,6 @@ mod tests {
             "item/commandExecution/terminalInteraction",
             "mcpServer/event/stream/notification",
             "fs/changed",
-            "thread/compacted",
         ] {
             assert!(
                 normalize_codex_message(&json!({"method": method, "params": {"value": 7}}))
