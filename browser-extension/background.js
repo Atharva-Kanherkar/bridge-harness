@@ -18,6 +18,7 @@ let acknowledgedRedactionEpoch = -1;
 let frameInFlight = false;
 let pendingFrame = null;
 let commandQueue = Promise.resolve();
+let offscreenCreation;
 
 async function completedCommands() {
   return (await chrome.storage.session.get("completedCommands")).completedCommands ?? {};
@@ -84,6 +85,8 @@ async function listTabs() {
 async function attach(tabId, requestedLeaseId) {
   const tab = await chrome.tabs.get(tabId);
   if (!tab.id || !/^https?:/.test(tab.url ?? "")) throw new Error("Only HTTP(S) tabs can be attached");
+  if (attachedTabId != null) await detach("tab_switched");
+  await ensureOffscreenDocument();
   attachedTabId = tab.id; attachedTitle = tab.title ?? "Untitled tab"; leaseId = requestedLeaseId ?? crypto.randomUUID();
   snapshotReady = false; snapshotGeneration += 1; acknowledgedRedactionEpoch = -1; sensitiveElements.clear(); latestRedactedFrame = null;
   await chrome.action.setBadgeText({ tabId, text: "ON" });
@@ -215,9 +218,19 @@ async function redactScreenshot(dataUrl, regions, tab, sourceWidth) {
   return `data:image/jpeg;base64,${btoa(binary)}`;
 }
 
+async function ensureOffscreenDocument() {
+  if (!offscreenCreation) {
+    offscreenCreation = (async () => {
+      const contexts = await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"], documentUrls: [chrome.runtime.getURL("offscreen.html")] });
+      if (!contexts.length) await chrome.offscreen.createDocument({ url: "offscreen.html", reasons: ["USER_MEDIA"], justification: "Mirror one user-approved tab inside Bridge" });
+    })();
+  }
+  try { await offscreenCreation; }
+  finally { offscreenCreation = undefined; }
+}
+
 async function startLiveCapture(tabId) {
-  const contexts = await chrome.runtime.getContexts({ contextTypes: ["OFFSCREEN_DOCUMENT"], documentUrls: [chrome.runtime.getURL("offscreen.html")] });
-  if (!contexts.length) await chrome.offscreen.createDocument({ url: "offscreen.html", reasons: ["USER_MEDIA"], justification: "Mirror one user-approved tab inside Bridge" });
+  await ensureOffscreenDocument();
   const streamId = await chrome.tabCapture.getMediaStreamId({ targetTabId: tabId });
   const result = await chrome.runtime.sendMessage({ type: "bridge-start-capture", streamId });
   if (!result?.ok) throw new Error(result?.error ?? "Tab capture failed");

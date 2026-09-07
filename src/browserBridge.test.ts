@@ -1,6 +1,7 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { describe, expect, it } from "vitest";
+import { runInNewContext } from "node:vm";
+import { describe, expect, it, vi } from "vitest";
 // @ts-expect-error jsdom is an existing test dependency without bundled declarations.
 import { JSDOM } from "jsdom";
 
@@ -8,6 +9,41 @@ const root = resolve(import.meta.dirname, "..");
 const read = (path: string) => readFileSync(resolve(root, path), "utf8");
 
 describe("authenticated browser bridge artifacts", () => {
+  it("creates the redaction worker before first attach and stops the old capture before switching tabs", async () => {
+    const events: string[] = [];
+    let offscreenReady = false;
+    const listener = { addListener: vi.fn() };
+    const chrome = {
+      runtime: {
+        connectNative: () => ({ postMessage: vi.fn(), onMessage: listener, onDisconnect: listener }),
+        getManifest: () => ({ version: "test" }), getURL: (path: string) => path,
+        getContexts: async () => offscreenReady ? [{}] : [],
+        onMessage: listener,
+        sendMessage: async (message: { type: string }) => {
+          if (!offscreenReady) throw new Error("Receiving end does not exist");
+          events.push(message.type);
+          return { ok: true };
+        },
+      },
+      offscreen: { createDocument: async () => { events.push("create-offscreen"); offscreenReady = true; } },
+      action: { setBadgeText: async () => {}, setBadgeBackgroundColor: async () => {} },
+      tabs: {
+        get: async (id: number) => ({ id, title: "Example", url: "https://example.com" }),
+        sendMessage: async () => ({ ok: true, result: { elements: [], regions: [], viewport: { width: 100 } } }),
+        onUpdated: listener, onRemoved: listener,
+      },
+      debugger: { onEvent: listener },
+      tabCapture: { getMediaStreamId: async () => "stream-id" },
+    };
+    const context = { chrome, URL, crypto: { randomUUID: () => "lease" }, setTimeout, clearTimeout, testBridge: undefined as unknown as { attach: (id: number) => Promise<unknown> } };
+    runInNewContext(`${read("browser-extension/background.js")}\nglobalThis.testBridge = { attach };`, context);
+    await context.testBridge.attach(1);
+    expect(events).toEqual(["create-offscreen", "bridge-update-redactions", "bridge-start-capture"]);
+    events.length = 0;
+    await context.testBridge.attach(2);
+    expect(events).toEqual(["bridge-stop-capture", "bridge-update-redactions", "bridge-start-capture"]);
+  });
+
   it("omits generic form values and marks displayed secrets for pixel redaction", async () => {
     const dom = new JSDOM('<input id="generic" value="sk_live_abcdefghijklmnopqrstuvwxyz123456"><div>Token sk_live_abcdefghijklmnopqrstuvwxyz123456</div>', { runScripts: "outside-only", url: "https://example.com" });
     const listeners: Array<(message: unknown, sender: unknown, reply: (value: unknown) => void) => boolean | void> = [];
