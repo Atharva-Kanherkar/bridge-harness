@@ -380,6 +380,19 @@ fn build_authenticated_client(server_password: &str) -> Result<Client, BridgeErr
         .map_err(|error| BridgeError::Adapter(format!("Cannot create OpenCode client: {error}")))
 }
 
+/// Whether this runtime can ask OpenCode to summarize.
+///
+/// The endpoint requires the model that writes the summary, so a runtime with
+/// no model selected has nothing to name and would be refused on the wire.
+/// Answering `Unsupported` sends the request to Bridge's own checkpoint
+/// instead of to a call that cannot succeed.
+fn compaction_support(model: Option<&ModelRef>) -> crate::adapters::NativeCompaction {
+    match model {
+        Some(_) => crate::adapters::NativeCompaction::WholeConversation,
+        None => crate::adapters::NativeCompaction::Unsupported,
+    }
+}
+
 /// The body `/session/{id}/summarize` requires.
 ///
 /// `providerID` and `modelID` are not optional on the wire: the endpoint uses
@@ -729,11 +742,7 @@ impl AdapterRuntime for OpenCodeRuntime {
     /// takes no focus, so OpenCode compacts the whole session. Without a known
     /// model there is nothing to name, and the request would be rejected.
     fn native_compaction(&self) -> crate::adapters::NativeCompaction {
-        if self.model.is_some() {
-            crate::adapters::NativeCompaction::WholeConversation
-        } else {
-            crate::adapters::NativeCompaction::Unsupported
-        }
+        compaction_support(self.model.as_ref())
     }
     fn compact_native(&self, _focus: Option<&str>) -> Result<(), BridgeError> {
         let model = self.model.as_ref().ok_or_else(|| {
@@ -1481,6 +1490,24 @@ mod tests {
     /// It is rebuilt on every turn, so anything per-turn folded into it — a
     /// credential contract for a `[secret:]` marker, say — invalidated that
     /// turn's prefix by itself.
+    #[test]
+    fn a_runtime_with_no_model_cannot_summarize() {
+        // The endpoint requires the model that writes the summary. Claiming
+        // the capability here would route /compact to a call that fails on the
+        // wire instead of to the Bridge checkpoint that would have worked.
+        assert_eq!(
+            compaction_support(None),
+            crate::adapters::NativeCompaction::Unsupported
+        );
+        assert_eq!(
+            compaction_support(Some(&ModelRef {
+                provider_id: "anthropic".into(),
+                model_id: "claude-sonnet-4-5".into(),
+            })),
+            crate::adapters::NativeCompaction::WholeConversation
+        );
+    }
+
     #[test]
     fn summarize_names_the_model_that_writes_the_summary() {
         // `providerID` and `modelID` are required on the wire. `auto` stays

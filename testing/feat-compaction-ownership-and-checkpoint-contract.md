@@ -230,6 +230,51 @@ compaction needs a long live session. Covered by the manual notes instead.
   Success must exceed failure. Acceptance criterion 5 of #530 is observational and
   cannot be closed by this PR.
 
+## Divergences from this contract
+
+Recorded after implementation, so the contract keeps its pre-implementation
+shape and the differences are visible rather than quietly reconciled.
+
+**Test names.** Several tests were named for what they pin rather than for the
+mechanism, e.g. `codex_context_compaction_item_surfaces_once` shipped as
+`codex_context_compaction_item_is_recorded_once_per_turn`, and
+`context_compaction_is_durable` as `a_native_compaction_is_durable_history`.
+Coverage matches; the names do not.
+
+**Merged tests.** The `session_forest.rs` read-back check is folded into
+`store::a_native_compaction_is_durable_history`, which writes the entry and
+reads it back through `validate_stored_entry` in one case rather than asserting
+the same thing twice. The two `adapters.rs` default checks are one test plus a
+second on the three-state capability.
+
+**`Checkpoint::parse_and_validate` is deleted, not kept.** The contract said it
+would keep rejecting a wrong `sourceAgent`. Once Bridge fills `sourceAgent`
+itself, ownership is guaranteed by construction and that function had no
+production caller left, so keeping a stricter second parser would have been an
+invitation to reintroduce the whole-message parse. `Checkpoint::validate` still
+enforces the mismatch for any caller that supplies an expected agent, and
+`a_stored_boundary_keeps_its_own_invariants` covers it.
+
+**Two seams extracted to make contract tests possible.**
+`survives_checkpoint_turn` in `live_turn.rs`, `compact_start_params` in
+`codex_adapter.rs`, and `compaction_support` in `opencode_adapter.rs` were
+inline expressions with no way to assert on them. Each is now a named function
+with a test, following the pattern the ACP body-only fold already set.
+
+**Two additions beyond the contract.**
+
+- `openWork` is stored on the boundary and emitted in the restoration header.
+  The contract asked the prompt for open work without saying where it went;
+  asking for it and dropping it would have made the field decoration.
+- The three Codex schema probes are one `schema_declares(predicate)`. Adding a
+  third copy of a process launch and file read was the alternative.
+
+**One pre-existing behaviour recorded rather than changed.** `/compact` on a
+session with no live runtime writes `compaction.requested` and then fails with
+"checkpoint agent process is not running". That predates this work and is
+unchanged; `a_session_with_no_runtime_takes_the_bridge_path_it_always_did`
+pins it so a future reader knows it was seen and left alone.
+
 ## Verification
 
 - `bun run check`

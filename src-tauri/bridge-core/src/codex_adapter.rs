@@ -493,6 +493,12 @@ impl CodexRuntime {
     }
 }
 
+/// The whole of `thread/compact/start`: Codex compacts the thread it is given
+/// and takes no focus, no target size, and no summary instruction.
+fn compact_start_params(thread_id: &str) -> Value {
+    json!({"threadId": thread_id})
+}
+
 fn turn_start_params(
     thread_id: &str,
     text: &str,
@@ -569,10 +575,7 @@ impl AdapterRuntime for CodexRuntime {
         }
     }
     fn compact_native(&self, _focus: Option<&str>) -> Result<(), BridgeError> {
-        self.request(
-            "thread/compact/start",
-            json!({"threadId": self.thread_id}),
-        )
+        self.request("thread/compact/start", compact_start_params(&self.thread_id))
     }
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError> {
         CodexRuntime::respond(self, request_id, decision)
@@ -886,6 +889,17 @@ mod tests {
         assert!(!schema_supports_resume(
             r#"{"method":"thread/start","params":{"$ref":"ThreadStartParams"}}"#
         ));
+    }
+
+    #[test]
+    fn compact_start_request_carries_the_thread_id_and_nothing_else() {
+        let params = compact_start_params("thread-existing");
+        assert_eq!(params["threadId"], "thread-existing");
+        assert_eq!(
+            params.as_object().unwrap().len(),
+            1,
+            "a focus, a target size or a summary instruction would be invented: {params}"
+        );
     }
 
     #[test]
