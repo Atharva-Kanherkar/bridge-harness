@@ -458,7 +458,38 @@ pub fn save_profiles(
     descriptors: &[AdapterDescriptor],
     profiles: &[ModelProfileDraft],
 ) -> Result<ModelSetupState, BridgeError> {
-    validate_profiles(profiles, descriptors)?;
+    // Discovery can replace curated aliases with canonical model IDs between
+    // showing recommendations and saving the wizard. TrackStandard IDs are
+    // snapshots of a provider/tier default, so refresh missing snapshots from
+    // this same catalog before validating and persisting. Pinned selections
+    // still require the exact selected model to remain available.
+    let profiles = profiles
+        .iter()
+        .cloned()
+        .map(|mut profile| {
+            if profile.effective_selection_mode() == ProfileSelectionMode::TrackStandard
+                && !profile.model.trim().is_empty()
+            {
+                if let Some(adapter) = descriptors
+                    .iter()
+                    .find(|adapter| adapter.available && adapter.id == profile.provider)
+                {
+                    let still_available = adapter.models.iter().any(|model| {
+                        model.id == profile.model && model.available && model.compatible
+                    });
+                    if !still_available {
+                        if let Some((_, model)) =
+                            catalog_default(std::slice::from_ref(adapter), profile.purpose.tier())
+                        {
+                            profile.model = model.id.clone();
+                        }
+                    }
+                }
+            }
+            profile
+        })
+        .collect::<Vec<_>>();
+    validate_profiles(&profiles, descriptors)?;
     let transaction = db.unchecked_transaction()?;
     let version: i64 = transaction.query_row(
         "SELECT COALESCE(MAX(version),0)+1 FROM model_profiles",
@@ -466,7 +497,7 @@ pub fn save_profiles(
         |row| row.get(0),
     )?;
     let now = Utc::now().to_rfc3339();
-    for profile in profiles {
+    for profile in &profiles {
         let selection_mode = profile.effective_selection_mode();
         transaction.execute(
             "INSERT INTO model_profiles(version,profile_id,purpose,canonical_role,provider,model,effort,fallback_purpose,pinned,selection_mode,learning_enabled,budget_preference,latency_preference,created_at)
@@ -691,6 +722,70 @@ mod tests {
     }
 
     #[test]
+    fn recommended_aliases_can_be_saved_after_live_catalog_discovery() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        let mut curated = catalog();
+        curated[0].id = "claude".into();
+        for (model, alias) in curated[0]
+            .models
+            .iter_mut()
+            .zip(["haiku", "sonnet", "opus"])
+        {
+            model.id = alias.into();
+        }
+        let recommendations = recommended_profiles(&curated).unwrap();
+        assert_eq!(recommendations[0].model, "sonnet");
+
+        let mut live = curated;
+        for (model, id) in live[0].models.iter_mut().zip([
+            "claude-haiku-4-5",
+            "claude-sonnet-5",
+            "claude-opus-4-7",
+        ]) {
+            model.id = id.into();
+            model.source = crate::model::ModelCatalogSource::RuntimeApi;
+        }
+        let saved = save_profiles(&db, &live, &recommendations).unwrap();
+        assert!(saved.complete);
+        assert_eq!(saved.profiles.len(), ProfilePurpose::ALL.len());
+        for profile in saved.profiles {
+            let (_, expected) = catalog_default(&live, profile.purpose.tier()).unwrap();
+            assert_eq!(profile.provider, "claude");
+            assert_eq!(profile.model, expected.id);
+            assert_eq!(profile.selection_mode, ProfileSelectionMode::TrackStandard);
+        }
+        assert_eq!(
+            recommendations[0].model, "sonnet",
+            "caller drafts must be unchanged"
+        );
+    }
+
+    #[test]
+    fn catalog_refresh_never_rewrites_a_stale_pinned_selection() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        let mut profiles = recommended_profiles(&catalog()).unwrap();
+        profiles[0].selection_mode = Some(ProfileSelectionMode::Pinned);
+        profiles[0].pinned = true;
+        let mut live = catalog();
+        live[0].models[1].id = "standard-v2".into();
+        let error = save_profiles(&db, &live, &profiles).unwrap_err();
+        assert!(error.to_string().contains("standard-default"), "{error}");
+        assert!(!setup_state(&db).unwrap().complete);
+    }
+
+    #[test]
+    fn tracked_profile_refresh_does_not_switch_providers_or_fill_empty_models() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        let mut profiles = recommended_profiles(&catalog()).unwrap();
+        profiles[0].provider = "missing-provider".into();
+        assert!(save_profiles(&db, &catalog(), &profiles).is_err());
+        profiles[0].provider = "catalog-provider".into();
+        profiles[0].model.clear();
+        assert!(save_profiles(&db, &catalog(), &profiles).is_err());
+        assert!(!setup_state(&db).unwrap().complete);
+    }
+
+    #[test]
     fn review_purposes_map_to_verification() {
         assert_eq!(
             ProfilePurpose::Reviewer.canonical_role(),
@@ -874,6 +969,8 @@ mod tests {
         let db = store::open(std::path::Path::new(":memory:")).unwrap();
         let mut profiles = recommended_profiles(&catalog()).unwrap();
         profiles[0].model = "invented".into();
+        profiles[0].selection_mode = Some(ProfileSelectionMode::Pinned);
+        profiles[0].pinned = true;
         assert!(save_profiles(&db, &catalog(), &profiles).is_err());
         let mut profiles = recommended_profiles(&catalog()).unwrap();
         profiles[0].fallback_purpose = Some(profiles[1].purpose);
