@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.5.3] - 2026-09-08
+
+- Settle provider-process ownership during normal app shutdown so completed or idle chats are not falsely marked failed on the next launch.
+
 ## [0.5.2] - 2026-09-08
 
 - Regenerate app icons from the source SVG and verify the visible mark before packaging.

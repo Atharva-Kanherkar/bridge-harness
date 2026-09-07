@@ -5,7 +5,7 @@ members = ["bridge-client", "bridge-core", "bridge-protocol", "bridged"]
 # CARGO_PKG_VERSION in the health endpoint and provider handshakes, so it must
 # never drift from the application version.
 [workspace.package]
-version = "0.5.2"
+version = "0.5.3"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }

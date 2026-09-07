@@ -76,3 +76,28 @@ Public artifact:
 
 SHA-256:
 `e4c995d9fda2af250381066aeed175ae37aa562ad77855cad967a94d917e852c`.
+
+## Downloaded release installed on the user's Mac
+
+On September 8, the published GitHub asset was downloaded again through Safari.
+Its 147,529,174 bytes matched the public SHA-256 above. Safari's quarantine
+attribute was preserved through Finder copying and installation to
+`/Applications/Bridge.app`. Gatekeeper accepted both the downloaded DMG and the
+installed app. The icon was visibly legible in Finder, and installed executable
+bytes matched the mounted download. The disk image was ejected before launch.
+
+The installed copy used the existing default application data, backed up before
+the test. It ran for about nine minutes through native zoom and fullscreen,
+project navigation, a live Codex repository-read task, and a follow-up that
+correctly remembered the file. A duplicate launch exited with status 0 without
+disturbing the primary process. Normal Quit stopped the desktop and daemon;
+the installed copy reopened with its conversation intact. No new native crash
+report or diagnostic exception was recorded.
+
+The restart check exposed a separate lifecycle defect: otherwise successful
+chats were labelled failed on reopening because normal shutdown left durable
+provider-process ownership behind. Recovery emitted
+`Bridge restarted with a tracked provider process; restoration is required before continuation`.
+Sending another message restored the session and correctly recalled the file,
+but the false failure classification requires the 0.5.3 shutdown fix. These
+checks do not establish that every provider or long-running workload is healthy.

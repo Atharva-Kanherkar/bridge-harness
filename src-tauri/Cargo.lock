@@ -391,7 +391,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-client"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "bridge-core",
  "bridge-protocol",
@@ -404,7 +404,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-core"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "agent-client-protocol",
  "async-io",
@@ -435,7 +435,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-deck"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "bridge-client",
  "bridge-core",
@@ -463,7 +463,7 @@ dependencies = [
 
 [[package]]
 name = "bridge-protocol"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "schemars 0.8.22",
  "serde",
@@ -472,7 +472,7 @@ dependencies = [
 
 [[package]]
 name = "bridged"
-version = "0.5.2"
+version = "0.5.3"
 dependencies = [
  "bridge-core",
  "bridge-protocol",
