@@ -42,6 +42,36 @@ left by the previous 0.5.2 installation; historical failure events are retained.
 These are bounded installation and lifecycle checks, not a claim that every
 provider or long-running workload has been validated.
 
+## Public download and installation
+
+After publication, Safari downloaded the DMG from the public `v0.5.3` GitHub
+release. Its size and SHA-256 matched the artifact below. Finder installed it
+over `/Applications/Bridge.app`; Safari quarantine attributes were retained.
+The app's three executables matched those in the mounted public DMG byte for
+byte. The installed app passed strict signature, notarization ticket,
+Gatekeeper, icon, JIT entitlement, version, and bundled-helper checks.
+
+The normal macOS first-open prompt reported that Apple found no malicious
+software. Opening proceeded through that prompt without clearing quarantine
+or disabling Gatekeeper. The Bridge icon was visibly green in Finder.
+
+Using the existing application data, a real Codex turn read only the first
+three lines of the repository README and returned its `Bridge` heading.
+Normal Quit then left the chat `stopped`, cleared process and active-turn
+ownership, retained its provider resume ID, and exited the desktop, daemon,
+and provider. Reopening retained that state and the saved answer. No new
+Bridge crash report appeared during these bounded tests.
+
+### Visual verification remains incomplete
+
+The captured webview remained black, including after a fullscreen round trip,
+window zoom, normal relaunch, and opening settings. The native window controls
+painted and the accessibility tree continued to respond, including the real
+provider turn above. Finder captured normally. These observations establish
+runtime responsiveness but do not establish that the user can see the app.
+Actual-screen confirmation was requested and remained pending when this
+record was written; visual rendering must not be reported as passed.
+
 ## Artifact
 
 `Bridge_0.5.3_aarch64.dmg` — 144,117,658 bytes.
