@@ -542,6 +542,86 @@ impl BridgeCore {
         }
     }
 
+    /// Stop an adapter for a clean host exit and durably retire its process
+    /// claim. A reader whose runtime has been removed skips its usual exit
+    /// cleanup, so the host must finish it here; otherwise an idle, completed
+    /// turn is misreported as an orphan failure at the next launch.
+    pub fn shutdown_session_adapter(&self, session_id: &str) -> Result<(), BridgeError> {
+        let _lifecycle = self.claim_session_lifecycle(session_id, "app shutdown")?;
+        self.deactivate_reader_launch(session_id);
+        let runtime = self.adapters.lock().unwrap().remove(session_id);
+        // Provider shutdown can block and its reader may need the adapter map.
+        // Hold neither the map nor the database while waiting for the process.
+        if let Some(mut runtime) = runtime {
+            runtime.stop(adapters::ShutdownReason::AppShutdown);
+        } else {
+            // A reader removes its runtime before retiring the durable claim.
+            // Let that exit cleanup finish if its process is still alive; if
+            // the process has already exited, the host can settle the claim.
+            // Never discard ownership of a process still known to be running.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+            loop {
+                let claim: Option<(u32, Option<String>)> = self.db.lock().unwrap().query_row(
+                    "SELECT adapter_pid,adapter_process_identity FROM sessions WHERE id=?1 AND adapter_pid IS NOT NULL",
+                    params![session_id], |row| Ok((row.get(0)?, row.get(1)?)),
+                ).optional()?;
+                let Some((pid, expected_identity)) = claim else {
+                    return Ok(());
+                };
+                let live_identity = adapters::process_identity(pid);
+                if live_identity.is_none() || (expected_identity.is_some() && live_identity != expected_identity) {
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(BridgeError::Adapter(format!(
+                        "provider {pid} still has a live process claim after its runtime exited"
+                    )));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+
+        let db = self.db.lock().unwrap();
+        let transaction = db.unchecked_transaction()?;
+        let (previous_status, active_turn): (String, bool) = transaction.query_row(
+            "SELECT status,active_turn_id IS NOT NULL FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        let status = match previous_status.as_str() {
+            "completed" | "cancelled" | "failed" | "stopped" => previous_status.as_str(),
+            _ => "stopped",
+        };
+        session_supervisor::SessionSupervisor::clear_adapter_process(&transaction, session_id)?;
+        transaction.execute(
+            "UPDATE sessions SET status=?2,active_turn_id=NULL,
+             ended_at=CASE WHEN status=?2 THEN ended_at ELSE ?3 END WHERE id=?1",
+            params![session_id, status, chrono::Utc::now().to_rfc3339()],
+        )?;
+        session_forest::append_in_transaction(
+            &transaction,
+            session_id,
+            session_forest::EntryKind::SessionStatus,
+            serde_json::json!({
+                "status": status,
+                "reason": adapters::ShutdownReason::AppShutdown.as_str(),
+                "interrupted": active_turn,
+            }),
+        ).map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        store::event(
+            &transaction,
+            "adapter",
+            "session.shutdown",
+            session_id,
+            adapters::ShutdownReason::AppShutdown.as_str(),
+        )?;
+        // Worker lifecycle/result recovery remains separate: shutting down an
+        // unfinished worker must never manufacture a successful result.
+        session_supervisor::SessionSupervisor::reconcile_workspace_statuses(&transaction)?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     /// Replay durable session events with a sequence greater than the
     /// cursor. This is the recovery path of the notify-then-replay contract:
     /// after a disconnect or a lagged live channel, a client calls this with

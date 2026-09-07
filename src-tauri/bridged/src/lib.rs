@@ -284,11 +284,25 @@ impl Daemon {
                  are still mid-request"
             );
         }
-        let sessions: Vec<String> =
+        let mut sessions: std::collections::HashSet<String> =
             self.core.adapters.lock().unwrap().keys().cloned().collect();
+        // A reader can take its runtime out of the map just before it clears
+        // the durable claim. Include those exits so daemon termination cannot
+        // cut their cleanup short and leave completed chats looking orphaned.
+        let tracked = (|| -> Result<Vec<String>, bridge_core::BridgeError> {
+            let db = self.core.db.lock().unwrap();
+            let mut statement = db.prepare("SELECT id FROM sessions WHERE adapter_pid IS NOT NULL")?;
+            let rows = statement.query_map([], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })();
+        match tracked {
+            Ok(tracked) => sessions.extend(tracked),
+            Err(error) => eprintln!("bridged: could not read provider claims during shutdown: {error}"),
+        }
         for session_id in sessions {
-            self.core
-                .stop_session_adapter(&session_id, bridge_core::adapters::ShutdownReason::AppShutdown);
+            if let Err(error) = self.core.shutdown_session_adapter(&session_id) {
+                eprintln!("bridged: could not settle session {session_id} during shutdown: {error}");
+            }
         }
         let _ = std::fs::remove_file(&self.socket_path);
     }
