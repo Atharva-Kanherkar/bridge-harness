@@ -824,9 +824,34 @@ function AppContent() {
     active?.scrollIntoView({ block: "nearest" });
   }, [mentionOpen, mentionIndex]);
 
+  // Stop is honoured from the moment the user's bubble appears, not from the
+  // moment the backend confirms a turn. Pressed before `activeTurnId` exists,
+  // the request is held and fired the instant the turn is acknowledged; pressed
+  // during a live turn it interrupts at once.
+  const stopRequestedRef = useRef(false);
+  const requestStop = useCallback(() => {
+    if (!session) return;
+    setStopping(true);
+    if (session.activeTurnId) {
+      stopRequestedRef.current = false;
+      void bridgeApi.interruptTurn(session.id);
+    } else {
+      stopRequestedRef.current = true;
+    }
+  }, [session]);
   useEffect(() => {
-    if (!session?.activeTurnId) setStopping(false);
-  }, [session?.activeTurnId]);
+    if (session?.activeTurnId) {
+      if (stopRequestedRef.current) {
+        stopRequestedRef.current = false;
+        void bridgeApi.interruptTurn(session.id);
+      }
+      return;
+    }
+    if (pendingForSession.length === 0) {
+      stopRequestedRef.current = false;
+      setStopping(false);
+    }
+  }, [session?.id, session?.activeTurnId, pendingForSession.length]);
 
   useEffect(() => {
     const sessionId = session?.id;
@@ -1573,10 +1598,15 @@ function AppContent() {
   /// in `sendPrompt` - an aside is pinned to its harness on purpose.
   async function deliverPrompt(target: Session, submittedText: string, sentAttachments?: ComposerAttachment[]): Promise<void> {
     const key = crypto.randomUUID();
-    const prepared = await bridgeApi.prepareTurn(target.id, submittedText);
-    const text = prepared.text;
+    // The bubble lands before the first round-trip, not after it: the user
+    // should see their words the instant they press Send, and the daemon may
+    // take a while to prepare the turn. If preparation rewrites the text, the
+    // same row is updated in place.
+    setPending(current => [...current, { key, sessionId: target.id, text: submittedText, attachment: sentAttachments?.[0]?.dataUri }]);
     try {
-      setPending(current => [...current, { key, sessionId: target.id, text, attachment: sentAttachments?.[0]?.dataUri }]);
+      const prepared = await bridgeApi.prepareTurn(target.id, submittedText);
+      const text = prepared.text;
+      if (text !== submittedText) setPending(current => current.map(item => item.key === key ? { ...item, text } : item));
       if (!liveStatuses.includes(target.status)) {
         startedRef.current.add(target.id);
         setState(await bridgeApi.startChat(target.id));
@@ -1666,14 +1696,17 @@ function AppContent() {
     setComposer("");
     setSlashIndex(0);
     setAttachments([]);
+    // The optimistic row lands synchronously, before the first round-trip: the
+    // user sees their bubble (and the image) the instant they press Send. The
+    // durable row the backend persists carries the same attachment data, so a
+    // reload replays it identically. If preparation rewrites the text, the
+    // same row is updated in place rather than re-added.
+    setPending(current => [...current, { key, sessionId: target.id, text: submittedText, attachment: sentAttachments[0]?.dataUri }]);
     try {
       const prepared = await bridgeApi.prepareTurn(target.id, submittedText);
       const text = prepared.text;
       retryText = text;
-      // The optimistic row shows the image immediately; the durable row the
-      // backend persists carries the same attachment data, so a reload
-      // replays it identically.
-      setPending(current => [...current, { key, sessionId: target.id, text, attachment: sentAttachments[0]?.dataUri }]);
+      if (text !== submittedText) setPending(current => current.map(item => item.key === key ? { ...item, text } : item));
       const resolved = await bridgeApi.resolveSlashCommand(target.id, text).catch(() => null);
       if (resolved?.switchHarness && target.kind === "direct") {
         const adapter = adapters.find(item => item.id === resolved.harness);
@@ -1907,7 +1940,7 @@ function AppContent() {
         return;
       case "interrupt-turn":
         // Reachable mid-sentence, so it has to be inert when nothing is running.
-        if (session?.activeTurnId) void bridgeApi.interruptTurn(session.id);
+        if (session && (session.activeTurnId || pendingForSession.length > 0)) requestStop();
         return;
       case "open-recall":
         if (!session) return;
@@ -2301,7 +2334,7 @@ function AppContent() {
                   highlightEntryId={highlightEntryId}
                   onRemember={rememberMessage}
                   stopping={stopping}
-                  onInterrupt={session ? () => { setStopping(true); void bridgeApi.interruptTurn(session.id); } : undefined}
+                  onInterrupt={session ? requestStop : undefined}
                 />
               </div>
               <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-background to-transparent sm:h-20" />
@@ -2412,10 +2445,10 @@ function AppContent() {
                     onAcceptSuggestion={acceptSuggestion}
                     placeholder={session.activeTurnId ? "Send a follow-up…" : "Message Bridge…"}
                     disabled={!session}
-                    working={!!session?.activeTurnId}
+                    working={turnActive}
                     activeAction={activeAction}
                     stopping={stopping}
-                    onStop={session ? () => { setStopping(true); void bridgeApi.interruptTurn(session.id); } : undefined}
+                    onStop={session ? requestStop : undefined}
                     inputRef={composerRef}
                     onPlusClick={() => void attachFile()}
                     plusIcon="paperclip"
