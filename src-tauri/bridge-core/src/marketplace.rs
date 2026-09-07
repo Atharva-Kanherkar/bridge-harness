@@ -170,17 +170,14 @@ pub fn claude_sdk_configuration() -> ClaudeSdkConfiguration {
     }
 }
 
-/// The native connectors worth handing the SDK explicitly: only the ones
-/// `mcp list` reported as connected.
+/// The native connectors a briefing run may be handed explicitly: only the
+/// ones `mcp list` reported as connected.
 ///
-/// A connector passed through `options.mcpServers` is re-attached on every
-/// turn, and the CLI gives a server that still needs authentication a full
-/// 30-second handshake window before it lets the turn start. With a dozen
-/// claude.ai connectors waiting on sign-in, that was a flat 30 seconds of
-/// silence between pressing Send and the first token, every single turn. The
-/// CLI already knows every claude.ai connector from the account, so leaving
-/// the unauthenticated ones out of the explicit list loses nothing: they still
-/// appear in the session, just not on the turn's critical path.
+/// Chat sessions get no explicit connector list at all — see
+/// `claude_adapter::sidecar_mcp_servers` for why an SDK-scoped copy of a
+/// claude.ai connector costs every turn a 30-second handshake. A briefing
+/// runs under `strictMcpConfig` and needs the list, but a connector that
+/// already needs authentication at discovery time can only stall it.
 fn sdk_connector_configs(mcp_list: &str) -> BTreeMap<String, Value> {
     let health = parse_claude_connector_health(mcp_list);
     parse_claude_native_connector_configs(mcp_list)

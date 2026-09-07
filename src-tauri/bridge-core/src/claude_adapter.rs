@@ -233,7 +233,7 @@ fn launch(
         "instructions": instructions.map(str::trim).filter(|value| !value.is_empty()),
         "writeMode": write_mode.map(write_mode_label),
         "plugins": sdk_configuration.plugins,
-        "mcpServers": sdk_configuration.mcp_servers,
+        "mcpServers": sidecar_mcp_servers(briefing_config.is_some(), &sdk_configuration.mcp_servers),
         // Absent for every non-briefing session, so the sidecar's existing
         // write-mode handling is reached by exactly the same path as before.
         "briefing": briefing_config,
@@ -818,6 +818,28 @@ impl AdapterRuntime for ClaudeRuntime {
     }
 }
 
+/// The connector list a sidecar session is handed explicitly.
+///
+/// A chat session gets none. Claude Code already loads every claude.ai
+/// connector natively, with the account's own sign-in. A copy handed through
+/// `options.mcpServers` is a separate, SDK-scoped instance that never shares
+/// that sign-in: the CLI reports it as needing authentication, re-attaches it
+/// on every turn, and gives it a 30-second handshake window before the turn may
+/// start — a flat 30 seconds of silence after every Send, even for connectors
+/// `mcp list` calls connected. Only a briefing run keeps the explicit list: it
+/// runs under `strictMcpConfig`, so the declared servers are the only ones it
+/// can reach at all.
+fn sidecar_mcp_servers(
+    briefing: bool,
+    discovered: &std::collections::BTreeMap<String, Value>,
+) -> std::collections::BTreeMap<String, Value> {
+    if briefing {
+        discovered.clone()
+    } else {
+        std::collections::BTreeMap::new()
+    }
+}
+
 pub(crate) fn claude_context_inventory(
     lifecycle_phase: ContextLifecyclePhase,
     configuration: &crate::marketplace::ClaudeSdkConfiguration,
@@ -1017,6 +1039,20 @@ mod tests {
             lock_writer(&writer, "Claude"),
             Err(BridgeError::Adapter(_))
         ));
+    }
+
+    #[test]
+    fn chat_sessions_get_no_explicit_connectors_but_briefings_keep_theirs() {
+        // An SDK-scoped connector copy never shares the account sign-in and
+        // costs every turn a 30-second handshake timeout; the CLI already
+        // loads the same connectors natively for a chat. A briefing runs under
+        // strictMcpConfig and would otherwise reach nothing.
+        let discovered = std::collections::BTreeMap::from([(
+            "claude.ai Notion".to_string(),
+            json!({"type": "http", "url": "https://mcp.example/notion"}),
+        )]);
+        assert!(sidecar_mcp_servers(false, &discovered).is_empty());
+        assert_eq!(sidecar_mcp_servers(true, &discovered), discovered);
     }
 
     #[test]
