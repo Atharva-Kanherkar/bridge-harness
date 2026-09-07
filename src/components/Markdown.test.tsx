@@ -355,3 +355,47 @@ describe("file links out of prose", () => {
     expect(container.textContent).toContain("@src/App.tsx");
   });
 });
+
+describe("bare URLs in prose", () => {
+  const render = (text: string) => renderToStaticMarkup(<Markdown text={text} />);
+
+  it("links a URL an agent typed as prose", () => {
+    const html = render("take a look at https://github.com/o/r/pull/341 when you can");
+    expect(html).toContain('href="https://github.com/o/r/pull/341"');
+    expect(html).toMatch(/<a [^>]*>https:\/\/github\.com\/o\/r\/pull\/341<\/a>/);
+  });
+
+  it("links http as well as https", () => {
+    expect(render("see http://example.test/x")).toContain('href="http://example.test/x"');
+  });
+
+  it("leaves sentence punctuation outside the link", () => {
+    const html = render("shipped in https://example.test/a, then https://example.test/b.");
+    expect(html).toContain('href="https://example.test/a"');
+    expect(html).toContain('href="https://example.test/b"');
+    expect(html).not.toContain('href="https://example.test/a,"');
+    expect(html).not.toContain('href="https://example.test/b."');
+  });
+
+  it("does not touch a URL inside a code span", () => {
+    const html = render("run `curl https://example.test/x` first");
+    expect(html).toContain("<code>");
+    expect(html).not.toContain("<a ");
+  });
+
+  it("does not touch a URL inside a fenced code block", () => {
+    const html = render("```\ncurl https://example.test/x\n```");
+    expect(html).not.toContain("<a ");
+  });
+
+  it("leaves a written-out markdown link as the one link", () => {
+    const html = render("see [the PR](https://github.com/o/r/pull/341) please");
+    expect(html).toMatch(/<a [^>]*href="https:\/\/github\.com\/o\/r\/pull\/341"[^>]*>the PR<\/a>/);
+    // The address must not also appear as its own second anchor.
+    expect(html.match(/<a /g)?.length).toBe(1);
+  });
+
+  it("does not link a scheme it would never open", () => {
+    expect(render("javascript:alert(1) and file:///etc/passwd")).not.toContain("<a ");
+  });
+});

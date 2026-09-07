@@ -124,10 +124,28 @@ Every existing case stays green unchanged.
 | 5.2 | The truncated-patch full-diff link is marked | the "view the full diff on GitHub" anchor carries it |
 | 5.3 | A check's log link is marked | the per-check log anchor carries it — a log URL shaped like `/pull/N/checks` must not be swallowed by the pane |
 
+## 6. Bare URLs in prose — `src/components/Markdown.test.tsx` (extended)
+
+An agent that writes an address rather than a markdown link was writing
+something no one could click: only `[text](url)` became an anchor, so a
+pasted URL rendered as inert text and never reached the interceptor at all.
+Prose URLs are linked now, which is what makes the choice above reachable
+from the way an agent actually writes.
+
+| # | Behaviour | Assertion |
+|---|---|---|
+| 6.1 | A URL typed as prose becomes a link | `https://github.com/o/r/pull/341` in a sentence renders an anchor whose href and text are that URL |
+| 6.2 | http links as well as https | an `http://` address renders an anchor |
+| 6.3 | Sentence punctuation stays prose | a trailing `,` or `.` is outside the href, not part of it |
+| 6.4 | A URL inside a code span is code | `` `curl https://…` `` renders `<code>` and no anchor |
+| 6.5 | A URL inside a fenced block is code | a fenced block containing a URL renders no anchor |
+| 6.6 | A written-out link stays one link | `[the PR](url)` renders exactly one anchor, titled by its text |
+| 6.7 | A scheme the app would never open is not linked | `javascript:` and `file://` render no anchor |
+
 Explicitly **not** changed: the pane's own views, data, polling, mutations,
 confirmations and review threads; the `gh`-backed Rust surface and every
 `github/*` RPC shape; the CI toast's payload and its cross-workspace hop; the
-Tauri `shell:allow-open` capability scope; `Markdown`'s anchor rendering; and
+Tauri `shell:allow-open` capability scope; and
 `repoCloneTarget`, which still reads a bare `owner/repo` URL typed into the
 composer as a clone target. Cross-workspace routing — a link whose repository
 some *other* open workspace has checked out — remains out of scope and goes

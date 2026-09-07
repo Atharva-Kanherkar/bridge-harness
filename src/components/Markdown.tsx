@@ -184,10 +184,17 @@ function TextRun({ text }: { text: string }) {
   })}</>;
 }
 
-// Inline tokens, in priority order: code span, \(math\), $math$, bold, italic, link.
+// Inline tokens, in priority order: code span, \(math\), $math$, bold, italic,
+// link, bare URL.
 // The $…$ pattern requires non-space just inside both delimiters and forbids a
 // trailing digit, so ordinary prose ("costs $5 and $10") is not misread as math.
-const INLINE = /(`[^`]+`|\\\([^\n]*?\\\)|\$(?![\s$])(?:[^\n$]*?[^\s$])?\$(?!\d)|~~[^~\n]+~~|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]]+\]\([^)\s]+\))/g;
+// The bare URL is last and only wins where nothing else opens earlier: `split`
+// takes the leftmost match, and a code span or a `[text](url)` both begin
+// before the scheme does. Its tail excludes sentence punctuation, so
+// "see https://x.dev." links the address and leaves the full stop as prose.
+const INLINE = /(`[^`]+`|\\\([^\n]*?\\\)|\$(?![\s$])(?:[^\n$]*?[^\s$])?\$(?!\d)|~~[^~\n]+~~|\*\*[^*]+\*\*|\*[^*\n]+\*|\[[^\]]+\]\([^)\s]+\)|https?:\/\/[^\s<>"'`]*[^\s<>"'`.,;:!?)\]}])/g;
+/** One whole bare URL and nothing else — what a token has to be to become a link. */
+const BARE_URL_ONLY = /^https?:\/\/[^\s<>"'`]*[^\s<>"'`.,;:!?)\]}]$/;
 
 /** Render a LaTeX string to KaTeX HTML, or null if it cannot be parsed. */
 export function renderMathToHtml(tex: string, displayMode: boolean): string | null {
@@ -263,6 +270,10 @@ function renderInline(text: string): React.ReactNode[] {
     if (part.startsWith("*") && part.endsWith("*") && part.length > 2) return <em key={index}>{renderInline(part.slice(1, -1))}</em>;
     const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/);
     if (link) return <a key={index} href={link[2]} target="_blank" rel="noreferrer">{renderInline(link[1])}</a>;
+    // A URL an agent typed as prose is still a link the reader means to follow.
+    // It goes through the same click interceptor as a written-out one, so a
+    // GitHub address gets the same choice of where to open.
+    if (BARE_URL_ONLY.test(part)) return <a key={index} href={part} target="_blank" rel="noreferrer">{part}</a>;
     return <TextRun key={index} text={part} />;
   });
 }
