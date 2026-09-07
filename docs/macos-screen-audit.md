@@ -126,3 +126,9 @@ The September 6 implementation was not the final chat design. The user rejected 
 - Final `bun run build` passed. Final complete frontend run passed: **1,808 tests across 136 files**. Coverage includes cross-provider golden transcripts, large tool runs, scroll retention, live disclosure, Code-pane file links, composer behavior, and long elapsed-time formatting. `git diff --check` passed.
 
 These are frontend checks against the local mock backend. The native/sidecar suite results recorded above belong to the September 6 pass; they were not rerun for this frontend-only revision. Native VoiceOver, window chrome, and actual provider execution remain outside this browser verification.
+
+## Native integration follow-up — September 7, 2026
+
+The approved redesign was subsequently integrated with current `main`. The production frontend build, native debug bundle, and complete test suite passed: **1,818 frontend tests, 2,189 Rust tests (13 ignored), and 44 sidecar tests (1 skipped)**.
+
+Real Cursor Auto chats through the rebuilt native daemon completed two coding fixtures, approvals, a queued follow-up, recovery after a failed Claude request, and Stop followed by a new response. All six fixture tests passed on independent reruns, with only the requested source files changed. Claude Sonnet's live request failed on expired OAuth credentials. Native visual inspection remains pending because the desktop locked; GitHub Actions jobs could not start because of account billing. See [the native validation report](../testing/macos-redesign-native-validation.md) for the exact scope and evidence.
