@@ -1098,7 +1098,10 @@ impl BridgeCore {
                 .as_ref()
                 .map(CarriedContext::describe)
                 .unwrap_or_else(|| "no context carried (summary unavailable)".to_owned());
-            if self.detached_summaries.lock().unwrap().contains_key(session_id) {
+            // `is_detached` asks for a *live* summary: a retired entry (its
+            // runtime already stopped, only its reader still draining) is no
+            // longer preparing anything and must not be claimed as such.
+            if crate::switch_summary::is_detached(self, session_id) {
                 // A background summary from the outgoing model is on its way; the
                 // mechanical projection above is what the new model inherits now.
                 carry_note.push_str("; a handoff summary from the previous model is being prepared in the background");
@@ -3481,8 +3484,13 @@ mod tests {
         // The switch's own audit event is recorded; any checkpoint.turn_started
         // can only come after it, from the background thread post-commit.
         let events = store::state(&core.db.lock().unwrap()).unwrap().events;
-        let model_changed_id = events.iter().find(|event| event.kind == "session.model_changed").map(|event| event.id);
-        assert!(model_changed_id.is_some(), "the switch committed its milestone");
+        let model_changed = events.iter().find(|event| event.kind == "session.model_changed").expect("the switch committed its milestone");
+        let model_changed_id = Some(model_changed.id);
+        assert!(
+            model_changed.body.contains("being prepared in the background"),
+            "the milestone names the live background summary: {}",
+            model_changed.body
+        );
         for event in &events {
             if event.kind == "checkpoint.turn_started" {
                 assert!(event.id > model_changed_id.unwrap(), "a summary turn never precedes the commit");
