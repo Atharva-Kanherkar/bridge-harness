@@ -84,7 +84,18 @@ directory. Archiving a chat is therefore its own operation.
   not.
 
 ### CLI
-- `bridge exec worktrees list --json` and `worktrees sweep --json` for ops.
+
+**Contract corrected during implementation.** No new CLI surface is warranted:
+`bridge exec` already has a generic method invoker that passes the method name
+straight through to the daemon, so both methods are reachable the moment they
+exist in the registry. A bespoke `worktrees` subcommand would be a second way to
+say the same thing, and one more surface to keep in step with the registry.
+
+- `bridge exec --json --method worktrees/list_worktrees`
+- `bridge exec --json --method worktrees/sweep_worktrees`
+
+Verified against `exec_method`, which calls `call_raw(method, …)` without a
+per-method allowlist. Documented rather than reimplemented.
 
 ## Unit Tests
 
@@ -128,7 +139,7 @@ path is the manual equivalent, covered under Manual below.
    retained row showing its reason, and that Reclaim frees the space.
 3. Archive that chat from its own menu; confirm the worktree is gone and the
    reported byte count matches.
-4. `bridge exec worktrees list --json | jq '.[0]'`.
+4. `bridge exec --json --method worktrees/list_worktrees | jq '.result[0]'`.
 
 ## Gates
 
