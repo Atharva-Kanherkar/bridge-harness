@@ -99,6 +99,7 @@ pub mod store;
 pub mod suggestion_engine;
 pub mod switch_summary;
 pub mod verification_pipeline;
+pub mod usage_pricing;
 pub mod verified_catalog;
 pub mod worker_adoption;
 pub mod worker_guard;
