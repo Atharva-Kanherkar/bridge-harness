@@ -486,6 +486,23 @@ impl BridgeCore {
                 "New agent session",
             )?;
             if let Some(created) = &worktree {
+                // The class that used to leak permanently: an orchestrator
+                // checkout was named only by `sessions.cwd`, which no cleanup
+                // path consulted, so nothing could find it — let alone reclaim
+                // it. It gets an owned inventory row here, in the same
+                // transaction as the session that owns it.
+                crate::worktree_registry::register(
+                    &transaction,
+                    &crate::worktree_registry::NewWorktree {
+                        kind: crate::worktree_registry::KIND_ORCHESTRATOR.to_owned(),
+                        repo_root: plan.workspace_path.clone().unwrap_or_default(),
+                        path: created.path.to_string_lossy().to_string(),
+                        branch: Some(created.branch.clone()),
+                        owner_session_id: Some(plan.session_id.clone()),
+                        owner_workspace_id: Some(plan.workspace_id.clone()),
+                        base_commit: None,
+                    },
+                )?;
                 store::event(
                     &transaction,
                     "worktree",

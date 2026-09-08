@@ -24,7 +24,8 @@ use crate::{
     sessions, skill_marketplace, slash, store,
     suggestion_engine, switch_summary, verification_pipeline, verified_catalog, work, work_actions,
     work_observation, work_reconcile, work_task_state, worker_adoption,
-    worker_lifecycle, workspace_files, BridgeCore, BridgeError, RuntimeSession,
+    worker_lifecycle, workspace_files, worktree_registry, BridgeCore, BridgeError,
+    RuntimeSession,
 };
 use bridge_protocol::messages as wire;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -3549,6 +3550,26 @@ pub fn pending_worker_adoptions(
     session_id: &str,
 ) -> Result<Vec<worker_adoption::WorkerRepositoryBinding>, BridgeError> {
     worker_adoption::pending_for_parent(&core.db.lock().unwrap(), session_id)
+}
+
+// --- worktree inventory --------------------------------------------------------
+
+/// Every worktree Bridge knows about, with the last assessment of what may be
+/// done with it. A read: the sweep owns reclaiming.
+pub fn list_worktrees(
+    core: &Arc<BridgeCore>,
+) -> Result<Vec<worktree_registry::WorktreeInventoryEntry>, BridgeError> {
+    worktree_registry::inventory(&core.db.lock().unwrap())
+}
+
+/// What the worktrees cost against the caps in force.
+pub fn worktree_usage(
+    core: &Arc<BridgeCore>,
+) -> Result<worktree_registry::WorktreeUsage, BridgeError> {
+    worktree_registry::usage(
+        &core.db.lock().unwrap(),
+        &worktree_registry::WorktreeRetention::default(),
+    )
 }
 
 /// Merge a worker's isolated worktree into the task checkout. Integration

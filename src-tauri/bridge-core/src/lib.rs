@@ -122,6 +122,7 @@ pub mod work_observation;
 pub mod workspace_files;
 pub mod workspaces;
 pub mod worktree_coordinator;
+pub mod worktree_registry;
 
 pub use runtime::{
     start_health_server, BootConfig, BridgeCore, DelegationState, RuntimeSession,

@@ -452,6 +452,8 @@ pub fn dispatch(
             let p: wire::DiscardWorkerWorktreeParams = decode(method, params)?;
             reply(api::discard_worker_worktree(core, &p.session_id, &p.reason))
         }
+        MethodName::ListWorktrees => reply(api::list_worktrees(core)),
+        MethodName::WorktreeUsageReport => reply(api::worktree_usage(core)),
         MethodName::VerifierCandidates => {
             let p: wire::VerifierCandidatesParams = decode(method, params)?;
             reply(api::verifier_candidates(core, &p.change_labels, p.available_capabilities))

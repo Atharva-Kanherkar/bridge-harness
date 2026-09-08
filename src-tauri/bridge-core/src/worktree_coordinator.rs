@@ -1,3 +1,4 @@
+use crate::worktree_registry::{self, NewWorktree, WorktreeRetention};
 use crate::{git, store, BridgeError};
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
@@ -34,6 +35,18 @@ impl WorktreeCoordinator {
                 owned_paths: serde_json::from_value(lease.owned_paths).unwrap_or_default(),
             })
             .collect::<Vec<_>>();
+        // A checkout is cheap to cut and expensive to forget. The gate is the
+        // policy engine's, so an over-budget repository queues the delegation
+        // rather than growing the disk; this refusal is the backstop for the
+        // paths that reach creation anyway.
+        let repo_root = task_worktree.to_string_lossy().to_string();
+        if let Some(reason) =
+            worktree_registry::over_capacity(db, &repo_root, &WorktreeRetention::default())?
+        {
+            return Err(BridgeError::Invalid(format!(
+                "cannot create an isolated worker worktree: {reason}"
+            )));
+        }
         let branch = format!("{}-worker-{}", task_branch, git::slug(session_id));
         let worktree = git::create_child_worktree(
             task_worktree,
@@ -47,11 +60,41 @@ impl WorktreeCoordinator {
             "UPDATE worker_runtime SET worktree_path=?2,worktree_branch=?3,updated_at=?4 WHERE session_id=?1",
             rusqlite::params![session_id, worktree.path.to_string_lossy(), worktree.branch, chrono::Utc::now().to_rfc3339()],
         )?;
+        worktree_registry::register(
+            db,
+            &NewWorktree {
+                kind: worktree_registry::KIND_WORKER.to_owned(),
+                repo_root,
+                path: worktree.path.to_string_lossy().to_string(),
+                branch: Some(worktree.branch.clone()),
+                owner_session_id: Some(session_id.to_owned()),
+                owner_workspace_id: Some(workspace_id.to_owned()),
+                base_commit: Some(worktree.base_commit.clone()),
+            },
+        )?;
         Ok((worktree.path, worktree.branch))
     }
 
-    pub fn child_worktrees_available(namespace_root: &Path) -> bool {
-        namespace_root.parent().is_some()
+    /// Whether a child worktree may be cut for this task checkout.
+    ///
+    /// This used to ask only whether the namespace root had a parent directory
+    /// — true for every path that is not the filesystem root, so the policy
+    /// engine's `ChildWorktreeUnavailable` refusal could never fire. It now
+    /// asks the inventory whether the repository is inside its budget.
+    pub fn child_worktrees_available(
+        db: &Connection,
+        namespace_root: &Path,
+        task_worktree: &Path,
+    ) -> bool {
+        if namespace_root.parent().is_none() {
+            return false;
+        }
+        worktree_registry::has_capacity(
+            db,
+            &task_worktree.to_string_lossy(),
+            &WorktreeRetention::default(),
+        )
+        .unwrap_or(true)
     }
 
     /// Check a PR head branch out into a task worktree of its own and register
@@ -96,6 +139,18 @@ impl WorktreeCoordinator {
                 git::fetch_branch(source_repo, remote, head_branch)?;
                 git::create_worktree_on_branch(source_repo, &path, head_branch, remote)?;
             }
+            worktree_registry::register(
+                &db.lock().unwrap(),
+                &NewWorktree {
+                    kind: worktree_registry::KIND_GITHUB.to_owned(),
+                    repo_root: source_repo.to_string_lossy().to_string(),
+                    path: path_text.clone(),
+                    branch: Some(head_branch.to_owned()),
+                    owner_session_id: None,
+                    owner_workspace_id: Some(workspace_id.clone()),
+                    base_commit: None,
+                },
+            )?;
             return Ok(PullRequestCheckout {
                 workspace_id,
                 path,
@@ -129,6 +184,18 @@ impl WorktreeCoordinator {
                 path_text,
                 chrono::Utc::now().to_rfc3339(),
             ],
+        )?;
+        worktree_registry::register(
+            &db,
+            &NewWorktree {
+                kind: worktree_registry::KIND_GITHUB.to_owned(),
+                repo_root: source_repo.to_string_lossy().to_string(),
+                path: path_text.clone(),
+                branch: Some(head_branch.to_owned()),
+                owner_session_id: None,
+                owner_workspace_id: Some(workspace_id.clone()),
+                base_commit: None,
+            },
         )?;
         store::event(
             &db,

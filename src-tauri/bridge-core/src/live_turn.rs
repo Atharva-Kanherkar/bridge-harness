@@ -19,7 +19,7 @@ use crate::{
     prompts, provider_limit, restoration, secret_interception, session_context, session_forest, session_input,
     session_recall, session_supervisor, skill_marketplace, slash, store, worker_adoption,
     worker_guard, worker_lifecycle, worker_pool, worker_retry, worker_sandbox, workspace_files,
-    worktree_coordinator,
+    worktree_coordinator, worktree_registry,
     BridgeError, WORKER_APPROVAL_TIMEOUT_SECONDS,
     WORKER_STALL_TIMEOUT_SECONDS,
 };
@@ -1491,6 +1491,10 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
             })
         }
     };
+    // A reclaimed worktree is restored from its recorded branch before the
+    // directory is created, or `create_dir_all` would hand the provider an empty
+    // non-repository where its project used to be.
+    worktree_registry::restore_if_reclaimed(&state.db, Path::new(&cwd));
     std::fs::create_dir_all(&cwd)?;
     let adapter_id: &str = harness.as_str();
     if !agent_config::is_harness_enabled(&state.db.lock().unwrap(), adapter_id) {
@@ -8709,6 +8713,30 @@ pub fn run_history_snapshot_pass(
         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NO_MUTEX,
     )?;
     store::export_history_snapshot_if_stale(&db, &core.snapshot_dir, max_age)
+}
+
+/// How often the worktree inventory is reconciled and swept. Slow on purpose:
+/// the pass shells out to git per repository and measures directory sizes, and
+/// nothing it reclaims is urgent to the second.
+pub const WORKTREE_MAINTENANCE_INTERVAL: Duration = Duration::from_secs(30 * 60);
+
+/// Reconcile the worktree inventory against git and the filesystem, then
+/// reclaim what can be proven expendable.
+///
+/// Not on the boot path, for the reason `start_history_snapshot_maintenance`
+/// documents: this pass walks directories and spawns git, and boot has to reach
+/// a bound socket before the desktop shell's deadline. The first pass runs as
+/// soon as the host is serving, which is where the "at startup" reconcile
+/// actually happens.
+pub fn start_worktree_maintenance(core: Arc<BridgeCore>) {
+    thread::spawn(move || {
+        let retention = worktree_registry::WorktreeRetention::default();
+        worktree_registry::run_maintenance_pass(&core.db, &core.worktrees, &retention);
+        loop {
+            thread::sleep(WORKTREE_MAINTENANCE_INTERVAL);
+            worktree_registry::run_maintenance_pass(&core.db, &core.worktrees, &retention);
+        }
+    });
 }
 
 pub fn start_history_snapshot_maintenance(core: Arc<BridgeCore>) {

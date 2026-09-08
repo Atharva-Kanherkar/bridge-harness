@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 49;
+const LATEST_SCHEMA_VERSION: i64 = 50;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -678,6 +678,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             47 => migration_47_model_profile_selection_mode(&transaction)?,
             48 => migration_48_harness_quota_cooldowns(&transaction)?,
             49 => migration_49_worker_repair_budget(&transaction)?,
+            50 => migration_50_worktree_inventory(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -711,6 +712,107 @@ fn migration_47_model_profile_selection_mode(
 }
 
 /// Persist the repair budget and preserve attempts spent before this migration.
+/// The worktree inventory. Bridge cut worktrees from four places and recorded
+/// them — if at all — in whichever table happened to need one, so no query
+/// could answer "what exists on this disk, and who owns it". Orchestrator
+/// checkouts had no record of any kind: they were named only by `sessions.cwd`,
+/// which nothing consulted, so nothing could ever reclaim one.
+///
+/// Backfill works off recorded paths rather than the data directory, which this
+/// layer does not know. Anything it misses is still found later: the reconcile
+/// pass adopts unrecorded directories under the namespace root.
+fn migration_50_worktree_inventory(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS worktrees (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            repo_root TEXT NOT NULL,
+            path TEXT NOT NULL UNIQUE,
+            branch TEXT,
+            owner_session_id TEXT,
+            owner_workspace_id TEXT,
+            base_commit TEXT,
+            state TEXT NOT NULL,
+            disposition TEXT,
+            retained_reason TEXT,
+            assessed_at TEXT,
+            size_bytes INTEGER,
+            size_measured_at TEXT,
+            created_at TEXT NOT NULL,
+            last_used_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_worktrees_repo ON worktrees(repo_root,state);
+        CREATE INDEX IF NOT EXISTS idx_worktrees_state ON worktrees(state,last_used_at);",
+    )?;
+
+    // Worker checkouts: the adoption row is the richer record (it carries the
+    // task worktree and the base commit), so it wins where both exist.
+    transaction.execute(
+        "INSERT OR IGNORE INTO worktrees(
+            id,kind,repo_root,path,branch,owner_session_id,owner_workspace_id,
+            base_commit,state,retained_reason,created_at,last_used_at)
+         SELECT lower(hex(randomblob(16))),'worker',a.task_worktree_path,a.worktree_path,
+                a.worktree_branch,a.session_id,a.workspace_id,a.base_commit,'idle',
+                'backfilled from an adoption record',a.created_at,a.updated_at
+           FROM worker_worktree_adoptions a
+          WHERE COALESCE(a.worktree_path,'')<>''
+            AND a.worktree_path<>a.task_worktree_path",
+        [],
+    )?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO worktrees(
+            id,kind,repo_root,path,branch,owner_session_id,owner_workspace_id,
+            base_commit,state,retained_reason,created_at,last_used_at)
+         SELECT lower(hex(randomblob(16))),'worker',
+                COALESCE((SELECT w.path FROM sessions s JOIN workspaces w ON w.id=s.workspace_id
+                           WHERE s.id=r.session_id),''),
+                r.worktree_path,r.worktree_branch,r.session_id,
+                (SELECT s.workspace_id FROM sessions s WHERE s.id=r.session_id),
+                NULL,'idle','backfilled from a worker runtime record',
+                COALESCE(r.updated_at,?1),COALESCE(r.last_activity_at,r.updated_at,?1)
+           FROM worker_runtime r
+          WHERE COALESCE(r.worktree_path,'')<>''
+            -- An in-place worker writes into the user's own checkout rather than
+            -- one Bridge cut, so its recorded path can be the repository itself.
+            -- Claiming that would put a main working tree in front of a reclaim
+            -- decision.
+            AND r.worktree_path<>COALESCE(
+                (SELECT w.path FROM sessions s JOIN workspaces w ON w.id=s.workspace_id
+                  WHERE s.id=r.session_id),'')",
+        params![Utc::now().to_rfc3339()],
+    )?;
+
+    // Pull-request checkouts: registered as workspace nodes whose path sits
+    // under the worktrees namespace.
+    transaction.execute(
+        "INSERT OR IGNORE INTO worktrees(
+            id,kind,repo_root,path,branch,owner_session_id,owner_workspace_id,
+            base_commit,state,retained_reason,created_at,last_used_at)
+         SELECT lower(hex(randomblob(16))),'github','',w.path,w.branch,NULL,w.id,NULL,
+                'idle','backfilled from a pull-request checkout',
+                COALESCE(w.created_at,?1),COALESCE(w.created_at,?1)
+           FROM workspaces w
+          WHERE COALESCE(w.path,'')<>'' AND w.path LIKE '%/worktrees/github/%'",
+        params![Utc::now().to_rfc3339()],
+    )?;
+
+    // Orchestrator checkouts, recognisable only by the path convention they
+    // were created with. This is the class that previously leaked permanently.
+    transaction.execute(
+        "INSERT OR IGNORE INTO worktrees(
+            id,kind,repo_root,path,branch,owner_session_id,owner_workspace_id,
+            base_commit,state,retained_reason,created_at,last_used_at)
+         SELECT lower(hex(randomblob(16))),'orchestrator',
+                COALESCE((SELECT w.path FROM workspaces w WHERE w.id=s.workspace_id),''),
+                s.cwd,NULL,s.id,s.workspace_id,NULL,'idle',
+                'backfilled from a session working directory',?1,?1
+           FROM sessions s
+          WHERE COALESCE(s.cwd,'')<>'' AND s.cwd LIKE '%/worktrees/orchestrators/%'",
+        params![Utc::now().to_rfc3339()],
+    )?;
+    Ok(())
+}
+
 fn migration_49_worker_repair_budget(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     add_column_if_missing(
         transaction,
@@ -5125,7 +5227,7 @@ mod tests {
              INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,updated_at)
                  VALUES('spent','parent','working','implementation','key','now'),('fresh','parent','working','implementation','key','now');
              ALTER TABLE worker_runtime DROP COLUMN result_repair_count;
-             DELETE FROM schema_version WHERE version=49;"
+             DELETE FROM schema_version WHERE version>=49;"
         ).unwrap();
         event(
             &db,
@@ -5813,6 +5915,117 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM session_entries", [], |row| row.get(0))
             .unwrap();
         assert_eq!(entries, 2, "backfilled entries survive the Work migration");
+    }
+
+    /// The inventory has to arrive already knowing what the machine holds,
+    /// because the worktrees that motivated it were created long before it
+    /// existed. Backfill works off recorded paths — the data directory is not
+    /// visible from this layer — so each source table contributes its own rows.
+    #[test]
+    fn migration_50_backfills_the_worktrees_it_can_recognise() {
+        let db = open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/repos/demo','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO workspaces(id,project_id,title,branch,path,status,created_at)
+             VALUES('w','p','Task','main','/repos/demo','idle','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO workspaces(id,project_id,title,branch,path,status,created_at)
+             VALUES('pr','p','PR #7','feat/x','/data/worktrees/github/pr-7-feat-x','idle','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,cwd,depth)
+             VALUES('chat','w','codex','Chat','idle','estimated','/data/worktrees/orchestrators/task/chat',0)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth)
+             VALUES('child','w','claude','Worker','completed','reported','chat',1)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO worker_worktree_adoptions(
+                session_id,parent_session_id,workspace_id,worktree_path,worktree_branch,
+                task_worktree_path,state,base_commit,created_at,updated_at)
+             VALUES('child','chat','w','/data/worktrees/workers/task/child','main-worker-child',
+                    '/repos/demo','pending_adoption','abc123','now','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO worker_runtime(
+                session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,
+                worktree_path,worktree_branch,updated_at)
+             VALUES('child','chat','stopped','implementation','claude',
+                    '/data/worktrees/workers/task/child','main-worker-child','now')",
+            [],
+        )
+        .unwrap();
+
+        // Re-run the migration against the populated database: `open` applied it
+        // to an empty one, so this is what an upgrade in place actually does.
+        let mut db = db;
+        let transaction = db.transaction().unwrap();
+        migration_50_worktree_inventory(&transaction).unwrap();
+        transaction.commit().unwrap();
+
+        let rows = |kind: &str| -> Vec<(String, String)> {
+            let mut statement = db
+                .prepare("SELECT path,repo_root FROM worktrees WHERE kind=?1 ORDER BY path")
+                .unwrap();
+            let mapped = statement
+                .query_map(params![kind], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap();
+            mapped.map(Result::unwrap).collect()
+        };
+
+        assert_eq!(
+            rows("worker"),
+            vec![(
+                "/data/worktrees/workers/task/child".to_owned(),
+                "/repos/demo".to_owned()
+            )],
+            "the adoption row wins over the runtime row for the same path",
+        );
+        assert_eq!(
+            rows("orchestrator"),
+            vec![(
+                "/data/worktrees/orchestrators/task/chat".to_owned(),
+                "/repos/demo".to_owned()
+            )],
+            "the class that previously had no record of any kind",
+        );
+        assert_eq!(
+            rows("github"),
+            vec![("/data/worktrees/github/pr-7-feat-x".to_owned(), String::new())],
+        );
+        let base: Option<String> = db
+            .query_row(
+                "SELECT base_commit FROM worktrees WHERE kind='worker'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(base.as_deref(), Some("abc123"));
+
+        // Idempotent: a second pass adds nothing.
+        let transaction = db.transaction().unwrap();
+        migration_50_worktree_inventory(&transaction).unwrap();
+        transaction.commit().unwrap();
+        let total: i64 = db
+            .query_row("SELECT COUNT(*) FROM worktrees", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total, 3);
     }
 
     #[test]

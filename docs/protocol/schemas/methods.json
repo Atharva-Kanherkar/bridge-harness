@@ -639,6 +639,20 @@
       "resultSchema": "worker-repository-binding.json"
     },
     {
+      "command": "list_worktrees",
+      "domain": "worktrees",
+      "method": "worktrees/list_worktrees",
+      "paramsSchema": null,
+      "resultSchema": "worktree-inventory-result.json"
+    },
+    {
+      "command": "worktree_usage",
+      "domain": "worktrees",
+      "method": "worktrees/worktree_usage",
+      "paramsSchema": null,
+      "resultSchema": "worktree-usage.json"
+    },
+    {
       "command": "get_router_preferences",
       "domain": "routing",
       "method": "routing/get_router_preferences",

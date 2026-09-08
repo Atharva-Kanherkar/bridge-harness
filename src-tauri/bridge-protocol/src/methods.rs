@@ -146,6 +146,9 @@ methods![
     (PendingWorkerAdoptions, "worktrees", "pending_worker_adoptions"),
     (AdoptWorkerWorktree, "worktrees", "adopt_worker_worktree"),
     (DiscardWorkerWorktree, "worktrees", "discard_worker_worktree"),
+    // worktree inventory and retention
+    (ListWorktrees, "worktrees", "list_worktrees"),
+    (WorktreeUsageReport, "worktrees", "worktree_usage"),
     // routing
     (GetRouterPreferences, "routing", "get_router_preferences"),
     (UpdateRouterPreferences, "routing", "update_router_preferences"),

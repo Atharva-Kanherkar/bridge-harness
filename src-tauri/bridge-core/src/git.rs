@@ -188,6 +188,140 @@ pub fn create_worktree_on_branch(
     Ok(())
 }
 
+/// One entry of `git worktree list --porcelain`. `prunable` is git's own
+/// verdict that the registration outlived its directory — the state a
+/// reconcile pass exists to clear.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitWorktreeEntry {
+    pub path: PathBuf,
+    pub head: Option<String>,
+    pub branch: Option<String>,
+    pub bare: bool,
+    pub detached: bool,
+    pub prunable: bool,
+}
+
+/// Every worktree git knows about for this repository, main worktree included.
+/// The inventory needs git's own answer rather than a directory walk: a
+/// registration can outlive its directory, and a directory can outlive its
+/// registration, and only the two together say which.
+pub fn list_worktrees(repo: &Path) -> Result<Vec<GitWorktreeEntry>, BridgeError> {
+    let output = run(repo, ["worktree", "list", "--porcelain"])?;
+    let mut entries = Vec::new();
+    let mut current: Option<GitWorktreeEntry> = None;
+    for line in output.lines() {
+        let line = line.trim_end();
+        if let Some(path) = line.strip_prefix("worktree ") {
+            if let Some(entry) = current.take() {
+                entries.push(entry);
+            }
+            current = Some(GitWorktreeEntry {
+                path: PathBuf::from(path),
+                head: None,
+                branch: None,
+                bare: false,
+                detached: false,
+                prunable: false,
+            });
+            continue;
+        }
+        let Some(entry) = current.as_mut() else {
+            continue;
+        };
+        if let Some(head) = line.strip_prefix("HEAD ") {
+            entry.head = Some(head.to_owned());
+        } else if let Some(branch) = line.strip_prefix("branch ") {
+            entry.branch = Some(branch.trim_start_matches("refs/heads/").to_owned());
+        } else if line == "bare" {
+            entry.bare = true;
+        } else if line == "detached" {
+            entry.detached = true;
+        } else if line == "prunable" || line.starts_with("prunable ") {
+            entry.prunable = true;
+        }
+    }
+    if let Some(entry) = current.take() {
+        entries.push(entry);
+    }
+    Ok(entries)
+}
+
+/// Clear registrations whose directories are gone. Safe by construction: git
+/// prunes administrative state only, and only where the checkout it named no
+/// longer exists.
+pub fn prune_worktrees(repo: &Path) -> Result<(), BridgeError> {
+    run(repo, ["worktree", "prune"])?;
+    Ok(())
+}
+
+/// The main checkout backing a linked worktree — where `git worktree remove`
+/// and `git worktree prune` have to run. Derived from the common git dir, so it
+/// holds for a path that is itself a linked worktree.
+pub fn main_worktree_root(path: &Path) -> Option<PathBuf> {
+    let common = run(path, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).ok()?;
+    let common = PathBuf::from(common.trim());
+    if common.as_os_str().is_empty() {
+        return None;
+    }
+    // `<root>/.git` for a normal checkout; a bare repo has no working root.
+    common
+        .parent()
+        .filter(|_| common.file_name().is_some_and(|name| name == ".git"))
+        .map(Path::to_path_buf)
+}
+
+/// The repository a linked worktree belongs to, read straight from its `.git`
+/// pointer file rather than by asking git.
+///
+/// This is the fallback for a checkout whose administrative directory has been
+/// pruned out from under it: every git command in it fails, but the pointer
+/// file still names where it came from. Without this such a checkout has no
+/// attributable repository at all, so it would not count against any budget and
+/// a storage view could not say which repository it belongs to.
+pub fn linked_worktree_repo_root(worktree: &Path) -> Option<PathBuf> {
+    let pointer = std::fs::read_to_string(worktree.join(".git")).ok()?;
+    let gitdir = pointer
+        .lines()
+        .find_map(|line| line.strip_prefix("gitdir:"))?
+        .trim();
+    // `<repo>/.git/worktrees/<name>` — walk back up to `<repo>`.
+    let admin = Path::new(gitdir);
+    let git_dir = admin.parent()?.parent()?;
+    if git_dir.file_name()? != ".git" {
+        return None;
+    }
+    git_dir.parent().map(Path::to_path_buf)
+}
+
+/// HEAD of a checkout, when it resolves at all.
+pub fn head_commit(worktree: &Path) -> Option<String> {
+    run(worktree, ["rev-parse", "HEAD"])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+/// Commits in this checkout that are not reachable from `base`. Zero means
+/// nothing would be lost by discarding the checkout — the precise question a
+/// reclaim decision turns on, answered without consulting any remote.
+pub fn commits_ahead_of(worktree: &Path, base: &str) -> Result<i64, BridgeError> {
+    let range = format!("{base}..HEAD");
+    run(worktree, ["rev-list", "--count", range.as_str()])?
+        .trim()
+        .parse::<i64>()
+        .map_err(|error| BridgeError::Git(format!("could not count commits past {base}: {error}")))
+}
+
+/// Whether any remote-tracking ref contains this commit — the question that
+/// separates "recoverable from the remote" from "exists only on this disk".
+pub fn remote_refs_contain(worktree: &Path, commit: &str) -> Result<bool, BridgeError> {
+    let output = run(
+        worktree,
+        ["branch", "--remotes", "--contains", commit, "--format=%(refname)"],
+    )?;
+    Ok(!output.trim().is_empty())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GitCheckpoint {
