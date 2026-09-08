@@ -172,6 +172,89 @@ pub struct ClearPriceOverrideParams {
     pub model: String,
 }
 
+/// Mirrors `bridge_core::analytics::ImporterCapability`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageImporterCapability {
+    Supported,
+    Unsupported,
+}
+
+/// Mirrors `bridge_core::analytics::CoverageState`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageCoverageState {
+    Complete,
+    Partial,
+    Stale,
+    Unsupported,
+    Unreadable,
+    Empty,
+}
+
+/// A history source the importers know how to look for, with what has been
+/// indexed from it. Mirrors `bridge_core::usage_history::UsageHistorySource`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageHistorySource {
+    pub id: String,
+    pub agent: String,
+    pub provider: String,
+    pub location: String,
+    pub detected_version: Option<String>,
+    pub capability: UsageImporterCapability,
+    pub coverage_state: UsageCoverageState,
+    pub coverage_reason: Option<String>,
+    pub coverage_start_at: Option<String>,
+    pub coverage_end_at: Option<String>,
+    pub records_imported: i64,
+    pub records_skipped: i64,
+    pub last_successful_scan_at: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(transparent)]
+pub struct ListHistorySourcesResult(pub Vec<UsageHistorySource>);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ScanHistoryParams {
+    /// Records to import per source this call, clamped to 1..=10000.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_records: Option<u64>,
+    /// Only these sources; every id must be one `list_history_sources`
+    /// returned. All discovered sources when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ids: Option<Vec<String>>,
+}
+
+/// Mirrors `bridge_core::usage_import::SourceScanOutcome`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageHistoryScanOutcome {
+    pub source_id: String,
+    pub agent: String,
+    pub provider: String,
+    pub location: String,
+    pub capability: UsageImporterCapability,
+    pub coverage: UsageCoverageState,
+    pub records_imported: i64,
+    pub records_skipped: i64,
+    pub next_cursor: Option<String>,
+    pub warning: Option<String>,
+}
+
+/// Mirrors `bridge_core::usage_import::ScanReport`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanHistoryResult {
+    pub sources: Vec<UsageHistoryScanOutcome>,
+    pub records_imported: i64,
+    pub records_skipped: i64,
+    pub duration_ms: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

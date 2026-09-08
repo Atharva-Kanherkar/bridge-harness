@@ -22,7 +22,8 @@ use crate::{
     secret_interception,
     session_recall, session_supervisor,
     sessions, skill_marketplace, slash, store,
-    suggestion_engine, switch_summary, usage_pricing, usage_summary, verification_pipeline,
+    suggestion_engine, switch_summary, usage_history, usage_import, usage_pricing, usage_summary,
+    verification_pipeline,
     verified_catalog, work, work_actions,
     work_observation, work_reconcile, work_task_state, worker_adoption,
     worker_lifecycle, workspace_files, worktree_registry, BridgeCore, BridgeError,
@@ -3608,6 +3609,26 @@ pub fn refresh_usage_rates(
 ) -> Result<usage_pricing::PricingStatus, BridgeError> {
     let document = usage_pricing::fetch_rate_document()?;
     usage_pricing::refresh_rates_from_document(&core.db.lock().unwrap(), &document)
+}
+
+/// The history sources the importers can see on this machine, with what has
+/// been indexed from each. Discovery reads the filesystem, so it runs before
+/// the database lock is taken.
+pub fn list_usage_history_sources(
+    core: &Arc<BridgeCore>,
+) -> Result<Vec<usage_history::UsageHistorySource>, BridgeError> {
+    let env = usage_import::SourceEnv::from_process();
+    usage_history::list_history_sources(&core.db.lock().unwrap(), &env)
+}
+
+/// One bounded, incremental import pass over the chosen history sources.
+pub fn scan_usage_history(
+    core: &Arc<BridgeCore>,
+    max_records: Option<usize>,
+    source_ids: Option<&[String]>,
+) -> Result<usage_import::ScanReport, BridgeError> {
+    let env = usage_import::SourceEnv::from_process();
+    usage_history::scan_history(core, &env, max_records, source_ids)
 }
 
 // --- worktree inventory --------------------------------------------------------

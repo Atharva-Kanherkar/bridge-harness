@@ -709,6 +709,20 @@
       "resultSchema": "usage-pricing-status.json"
     },
     {
+      "command": "list_history_sources",
+      "domain": "usage",
+      "method": "usage/list_history_sources",
+      "paramsSchema": null,
+      "resultSchema": "list-history-sources-result.json"
+    },
+    {
+      "command": "scan_history",
+      "domain": "usage",
+      "method": "usage/scan_history",
+      "paramsSchema": "scan-history-params.json",
+      "resultSchema": "scan-history-result.json"
+    },
+    {
       "command": "get_router_preferences",
       "domain": "routing",
       "method": "routing/get_router_preferences",

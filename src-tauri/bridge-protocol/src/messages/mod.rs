@@ -278,6 +278,8 @@ typed_methods![
     (SetUsagePriceOverride, SetPriceOverrideParams, ListUsagePriceOverridesResult),
     (ClearUsagePriceOverride, ClearPriceOverrideParams, ListUsagePriceOverridesResult),
     (RefreshUsageRates, _, UsagePricingStatus),
+    (ListHistorySources, _, ListHistorySourcesResult),
+    (ScanHistory, ScanHistoryParams, ScanHistoryResult),
     // routing
     (GetRouterPreferences, GetRouterPreferencesParams, RouterPreferences),
     (UpdateRouterPreferences, UpdateRouterPreferencesParams, RouterPreferences),

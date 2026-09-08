@@ -749,6 +749,34 @@ async fn refresh_rates(
 }
 
 #[tauri::command]
+async fn list_history_sources(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Vec<bridge_core::usage_history::UsageHistorySource>, BridgeError> {
+    let core = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || api::list_usage_history_sources(&core))
+        .await
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?
+}
+
+#[tauri::command]
+async fn scan_history(
+    max_records: Option<u64>,
+    source_ids: Option<Vec<String>>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::usage_import::ScanReport, BridgeError> {
+    let core = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        api::scan_usage_history(
+            &core,
+            max_records.map(|max| usize::try_from(max).unwrap_or(usize::MAX)),
+            source_ids.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| BridgeError::Invalid(error.to_string()))?
+}
+
+#[tauri::command]
 async fn register_verifier_manifest(
     source: String,
     manifest: completion::VerifierManifest,
@@ -2178,6 +2206,8 @@ pub fn run() {
             set_price_override,
             clear_price_override,
             refresh_rates,
+            list_history_sources,
+            scan_history,
             register_verifier_manifest,
             verifier_candidates,
             get_router_preferences,

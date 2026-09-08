@@ -108,6 +108,8 @@ export type BridgeMethod =
   | "usage/set_price_override"
   | "usage/clear_price_override"
   | "usage/refresh_rates"
+  | "usage/list_history_sources"
+  | "usage/scan_history"
   | "routing/get_router_preferences"
   | "routing/update_router_preferences"
   | "routing/rollback_routing_policy"
@@ -285,6 +287,8 @@ export const BRIDGE_METHODS = [
   { method: "usage/set_price_override", domain: "usage", command: "set_price_override" },
   { method: "usage/clear_price_override", domain: "usage", command: "clear_price_override" },
   { method: "usage/refresh_rates", domain: "usage", command: "refresh_rates" },
+  { method: "usage/list_history_sources", domain: "usage", command: "list_history_sources" },
+  { method: "usage/scan_history", domain: "usage", command: "scan_history" },
   { method: "routing/get_router_preferences", domain: "routing", command: "get_router_preferences" },
   { method: "routing/update_router_preferences", domain: "routing", command: "update_router_preferences" },
   { method: "routing/rollback_routing_policy", domain: "routing", command: "rollback_routing_policy" },
@@ -522,6 +526,8 @@ export interface BridgeMethodParams {
   "usage/set_price_override": SetPriceOverrideParams;
   "usage/clear_price_override": ClearPriceOverrideParams;
   "usage/refresh_rates": undefined;
+  "usage/list_history_sources": undefined;
+  "usage/scan_history": ScanHistoryParams;
   "routing/get_router_preferences": GetRouterPreferencesParams;
   "routing/update_router_preferences": UpdateRouterPreferencesParams;
   "routing/rollback_routing_policy": RollbackRoutingPolicyParams;
@@ -701,6 +707,8 @@ export interface BridgeMethodResults {
   "usage/set_price_override": ListUsagePriceOverridesResult;
   "usage/clear_price_override": ListUsagePriceOverridesResult;
   "usage/refresh_rates": UsagePricingStatus;
+  "usage/list_history_sources": ListHistorySourcesResult;
+  "usage/scan_history": ScanHistoryResult;
   "routing/get_router_preferences": RouterPreferences;
   "routing/update_router_preferences": RouterPreferences;
   "routing/rollback_routing_policy": unknown;
@@ -1699,6 +1707,40 @@ export interface UsageBucketTotals {
 }
 
 export type UsageCostSource = "provider_reported" | "model_priced" | "unpriced";
+
+export type UsageCoverageState = "complete" | "partial" | "stale" | "unsupported" | "unreadable" | "empty";
+
+export interface UsageHistoryScanOutcome {
+  agent: string;
+  capability: UsageImporterCapability;
+  coverage: UsageCoverageState;
+  location: string;
+  nextCursor?: string | null;
+  provider: string;
+  recordsImported: number;
+  recordsSkipped: number;
+  sourceId: string;
+  warning?: string | null;
+}
+
+export interface UsageHistorySource {
+  agent: string;
+  capability: UsageImporterCapability;
+  coverageEndAt?: string | null;
+  coverageReason?: string | null;
+  coverageStartAt?: string | null;
+  coverageState: UsageCoverageState;
+  detectedVersion?: string | null;
+  id: string;
+  lastError?: string | null;
+  lastSuccessfulScanAt?: string | null;
+  location: string;
+  provider: string;
+  recordsImported: number;
+  recordsSkipped: number;
+}
+
+export type UsageImporterCapability = "supported" | "unsupported";
 
 export interface UsageLedgerRow {
   cacheReadTokens?: JsSafeI64 | null;
@@ -2876,6 +2918,20 @@ export interface SetPriceOverrideParams {
 
 export interface ClearPriceOverrideParams {
   model: string;
+}
+
+export type ListHistorySourcesResult = UsageHistorySource[];
+
+export interface ScanHistoryParams {
+  maxRecords?: number | null;
+  sourceIds?: string[] | null;
+}
+
+export interface ScanHistoryResult {
+  durationMs: number;
+  recordsImported: number;
+  recordsSkipped: number;
+  sources: UsageHistoryScanOutcome[];
 }
 
 export interface GetRouterPreferencesParams {

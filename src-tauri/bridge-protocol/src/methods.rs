@@ -158,6 +158,8 @@ methods![
     (SetUsagePriceOverride, "usage", "set_price_override"),
     (ClearUsagePriceOverride, "usage", "clear_price_override"),
     (RefreshUsageRates, "usage", "refresh_rates"),
+    (ListHistorySources, "usage", "list_history_sources"),
+    (ScanHistory, "usage", "scan_history"),
     // routing
     (GetRouterPreferences, "routing", "get_router_preferences"),
     (UpdateRouterPreferences, "routing", "update_router_preferences"),

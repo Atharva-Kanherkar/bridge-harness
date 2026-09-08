@@ -717,6 +717,56 @@ fn usage_payloads_mirror_core() {
 }
 
 #[test]
+fn usage_history_payloads_mirror_core() {
+    use crate::analytics::{CoverageState, ImporterCapability};
+    for (core, mirror) in [
+        (CoverageState::Complete, wire::UsageCoverageState::Complete),
+        (CoverageState::Partial, wire::UsageCoverageState::Partial),
+        (CoverageState::Stale, wire::UsageCoverageState::Stale),
+        (CoverageState::Unsupported, wire::UsageCoverageState::Unsupported),
+        (CoverageState::Unreadable, wire::UsageCoverageState::Unreadable),
+        (CoverageState::Empty, wire::UsageCoverageState::Empty),
+    ] {
+        assert_same_wire_value(&core, &mirror);
+    }
+    assert_same_wire_value(&ImporterCapability::Supported, &wire::UsageImporterCapability::Supported);
+    assert_same_wire_value(&ImporterCapability::Unsupported, &wire::UsageImporterCapability::Unsupported);
+    assert_mirrors::<wire::ListHistorySourcesResult>(&vec![crate::usage_history::UsageHistorySource {
+        id: "claude-0123456789abcdef".into(),
+        agent: "claude".into(),
+        provider: "anthropic".into(),
+        location: "/Users/me/.claude/projects".into(),
+        detected_version: Some("2.1.261".into()),
+        capability: ImporterCapability::Supported,
+        coverage_state: CoverageState::Partial,
+        coverage_reason: Some("batch limit reached".into()),
+        coverage_start_at: Some("2026-01-01T00:00:00Z".into()),
+        coverage_end_at: Some("2026-02-01T00:00:00Z".into()),
+        records_imported: 120,
+        records_skipped: 3,
+        last_successful_scan_at: Some("2026-02-01T00:00:00Z".into()),
+        last_error: None,
+    }]);
+    assert_mirrors::<wire::ScanHistoryResult>(&crate::usage_import::ScanReport {
+        sources: vec![crate::usage_import::SourceScanOutcome {
+            source_id: "cursor-0123456789abcdef".into(),
+            agent: "cursor".into(),
+            provider: "cursor".into(),
+            location: "/Users/me/.cursor".into(),
+            capability: ImporterCapability::Unsupported,
+            coverage: CoverageState::Unsupported,
+            records_imported: 0,
+            records_skipped: 0,
+            next_cursor: Some("{}".into()),
+            warning: Some("Cursor stores no token counts locally".into()),
+        }],
+        records_imported: 7,
+        records_skipped: 1,
+        duration_ms: 42,
+    });
+}
+
+#[test]
 fn worker_repository_binding_mirrors_core() {
     assert_mirrors::<wire::WorkerRepositoryBinding>(
         &crate::worker_adoption::WorkerRepositoryBinding {

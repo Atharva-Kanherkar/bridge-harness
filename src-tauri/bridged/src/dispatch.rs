@@ -485,6 +485,15 @@ pub fn dispatch(
             reply(api::clear_usage_price_override(core, &p.model))
         }
         MethodName::RefreshUsageRates => reply(api::refresh_usage_rates(core)),
+        MethodName::ListHistorySources => reply(api::list_usage_history_sources(core)),
+        MethodName::ScanHistory => {
+            let p: wire::ScanHistoryParams = decode(method, params)?;
+            reply(api::scan_usage_history(
+                core,
+                p.max_records.map(|max| usize::try_from(max).unwrap_or(usize::MAX)),
+                p.source_ids.as_deref(),
+            ))
+        }
         MethodName::VerifierCandidates => {
             let p: wire::VerifierCandidatesParams = decode(method, params)?;
             reply(api::verifier_candidates(core, &p.change_labels, p.available_capabilities))

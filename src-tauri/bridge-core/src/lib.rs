@@ -103,6 +103,7 @@ pub mod verification_pipeline;
 pub mod usage;
 pub mod usage_pricing;
 pub mod usage_summary;
+pub mod usage_history;
 pub mod verified_catalog;
 pub mod worker_adoption;
 pub mod worker_guard;
