@@ -561,6 +561,53 @@ fn base_branch_divergence_mirrors_core() {
 }
 
 #[test]
+fn worktree_inventory_entry_mirrors_core() {
+    assert_mirrors::<wire::WorktreeInventoryEntry>(
+        &crate::worktree_registry::WorktreeInventoryEntry {
+            id: "wt-1".into(),
+            kind: crate::worktree_registry::KIND_WORKER.into(),
+            repo_root: "/repos/demo".into(),
+            path: "/data/worktrees/workers/oslo/child".into(),
+            branch: Some("bridge/task-worker-child".into()),
+            owner_session_id: Some("child".into()),
+            owner_workspace_id: Some("w".into()),
+            state: crate::worktree_registry::STATE_IDLE.into(),
+            disposition: Some("retained".into()),
+            retained_reason: Some("uncommitted changes".into()),
+            assessed_at: Some("now".into()),
+            size_bytes: Some(4_194_304),
+            size_measured_at: Some("now".into()),
+            created_at: "now".into(),
+            last_used_at: "now".into(),
+            idle_seconds: 86_400,
+        },
+    );
+}
+
+#[test]
+fn worktree_usage_mirrors_core() {
+    assert_mirrors::<wire::WorktreeUsage>(&crate::worktree_registry::WorktreeUsage {
+        total_count: 3,
+        total_bytes: 12_582_912,
+        reclaimable_count: 1,
+        reclaimable_bytes: 4_194_304,
+        retained_count: 2,
+        max_total_bytes: 10 * 1024 * 1024 * 1024,
+        max_per_repo: 12,
+        worker_idle_ttl_seconds: 86_400,
+        orchestrator_idle_ttl_seconds: 604_800,
+        github_idle_ttl_seconds: 604_800,
+        repositories: vec![crate::worktree_registry::WorktreeRepositoryUsage {
+            repo_root: "/repos/demo".into(),
+            count: 3,
+            size_bytes: 12_582_912,
+            reclaimable_bytes: 4_194_304,
+            over_budget: false,
+        }],
+    });
+}
+
+#[test]
 fn worker_repository_binding_mirrors_core() {
     assert_mirrors::<wire::WorkerRepositoryBinding>(
         &crate::worker_adoption::WorkerRepositoryBinding {

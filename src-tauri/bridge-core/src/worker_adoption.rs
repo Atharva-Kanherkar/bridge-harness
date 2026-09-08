@@ -733,6 +733,60 @@ pub fn release_terminal_worktrees(db: &Connection) -> Result<usize, BridgeError>
             released += 1;
         }
     }
+    released += settle_spent_empty_workers(db)?;
+    Ok(released)
+}
+
+/// A worker that *stopped* never settled, so its binding stays
+/// `pending_adoption` and every collector skipped it — the shape that held a
+/// 3.9 GB checkout on the machine this was written on. Being unsettled is not
+/// the same as holding work: when the checkout is clean and nothing landed past
+/// the commit it was cut from, there is nothing for anyone to adopt, and
+/// pretending otherwise leaks a directory to protect an empty diff.
+///
+/// A worker that stopped with real changes is a different case entirely and is
+/// left exactly where it is, for the user to adopt or discard.
+fn settle_spent_empty_workers(db: &Connection) -> Result<usize, BridgeError> {
+    let pending = {
+        let mut statement = db.prepare(&format!("{SELECT} WHERE state=?1"))?;
+        let rows = statement.query_map(params![STATE_PENDING], map_binding)?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    let mut released = 0;
+    for row in pending {
+        let worktree = Path::new(&row.worktree_path);
+        if !row.is_isolated() || !worktree.exists() {
+            continue;
+        }
+        if worker_is_reusable(db, &row.session_id)? {
+            continue;
+        }
+        if !live_borrowers(db, &row)?.is_empty() {
+            continue;
+        }
+        let Some(base) = row.base_commit.as_deref() else {
+            continue;
+        };
+        // Both questions must answer "nothing here", and an unanswerable one
+        // counts as work.
+        if git::worktree_is_dirty(worktree).unwrap_or(true) {
+            continue;
+        }
+        if git::commits_ahead_of(worktree, base).unwrap_or(1) != 0 {
+            continue;
+        }
+        settle(
+            db,
+            &row.session_id,
+            STATE_EMPTY,
+            "the worker stopped without changing anything in its worktree",
+        )?;
+        let settled = binding(db, &row.session_id)?.unwrap_or(row);
+        release_worktree(db, &settled, false)?;
+        if !Path::new(&settled.worktree_path).exists() {
+            released += 1;
+        }
+    }
     Ok(released)
 }
 
@@ -874,6 +928,7 @@ fn release_worktree(
                 "UPDATE worker_worktree_adoptions SET updated_at=?2 WHERE session_id=?1",
                 params![binding_row.session_id, Utc::now().to_rfc3339()],
             )?;
+            let _ = crate::worktree_registry::mark_removed(db, worker, "released on settlement");
             Ok(())
         }
         Err(error) => {
@@ -1026,6 +1081,84 @@ mod tests {
         )
         .unwrap();
         worker.path
+    }
+
+    /// The shape that held 3.9 GB on the machine this was written on: the worker
+    /// *stopped* rather than settling, so its binding stayed `pending_adoption`
+    /// and every collector skipped it — while the checkout held nothing anyone
+    /// could adopt.
+    #[test]
+    fn a_stopped_worker_whose_worktree_holds_nothing_settles_and_releases_it() {
+        let fixture = fixture();
+        let worker = isolated_worker(&fixture);
+        assert_eq!(
+            binding(&fixture.db, "child").unwrap().unwrap().state,
+            STATE_PENDING,
+        );
+
+        let released = release_terminal_worktrees(&fixture.db).unwrap();
+        assert_eq!(released, 1);
+        assert!(!worker.exists(), "the checkout is reclaimed");
+        let settled = binding(&fixture.db, "child").unwrap().unwrap();
+        assert_eq!(settled.state, STATE_EMPTY);
+        assert!(
+            settled
+                .detail
+                .unwrap_or_default()
+                .contains("without changing anything"),
+            "the settlement says why it was safe",
+        );
+    }
+
+    #[test]
+    fn a_stopped_worker_with_real_changes_keeps_its_worktree() {
+        let fixture = fixture();
+        let worker = isolated_worker(&fixture);
+        std::fs::create_dir_all(worker.join("src")).unwrap();
+        std::fs::write(worker.join("src/feature.rs").as_path(), "fn main() {}\n").unwrap();
+        git_cmd(&worker, &["add", "."]);
+        git_cmd(&worker, &["commit", "-q", "-m", "worker output"]);
+
+        let released = release_terminal_worktrees(&fixture.db).unwrap();
+        assert_eq!(released, 0);
+        assert!(worker.is_dir(), "unadopted work is never collected");
+        assert_eq!(
+            binding(&fixture.db, "child").unwrap().unwrap().state,
+            STATE_PENDING,
+            "it stays the user's decision",
+        );
+    }
+
+    #[test]
+    fn a_stopped_worker_with_uncommitted_changes_keeps_its_worktree() {
+        let fixture = fixture();
+        let worker = isolated_worker(&fixture);
+        std::fs::write(worker.join("scratch.txt"), "unsaved\n").unwrap();
+
+        assert_eq!(release_terminal_worktrees(&fixture.db).unwrap(), 0);
+        assert!(worker.is_dir());
+        assert_eq!(
+            binding(&fixture.db, "child").unwrap().unwrap().state,
+            STATE_PENDING,
+        );
+    }
+
+    /// `record_binding` derives the base at launch, so a missing one means the
+    /// derivation failed. There is then no way to prove the checkout is empty,
+    /// and an unprovable claim must not authorize a deletion.
+    #[test]
+    fn a_stopped_worker_with_no_recorded_base_is_left_alone() {
+        let fixture = fixture();
+        let worker = isolated_worker(&fixture);
+        fixture
+            .db
+            .execute(
+                "UPDATE worker_worktree_adoptions SET base_commit=NULL WHERE session_id='child'",
+                [],
+            )
+            .unwrap();
+        assert_eq!(release_terminal_worktrees(&fixture.db).unwrap(), 0);
+        assert!(worker.is_dir());
     }
 
     #[test]

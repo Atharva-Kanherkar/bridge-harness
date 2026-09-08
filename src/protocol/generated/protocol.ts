@@ -98,6 +98,8 @@ export type BridgeMethod =
   | "worktrees/pending_worker_adoptions"
   | "worktrees/adopt_worker_worktree"
   | "worktrees/discard_worker_worktree"
+  | "worktrees/list_worktrees"
+  | "worktrees/worktree_usage"
   | "routing/get_router_preferences"
   | "routing/update_router_preferences"
   | "routing/rollback_routing_policy"
@@ -265,6 +267,8 @@ export const BRIDGE_METHODS = [
   { method: "worktrees/pending_worker_adoptions", domain: "worktrees", command: "pending_worker_adoptions" },
   { method: "worktrees/adopt_worker_worktree", domain: "worktrees", command: "adopt_worker_worktree" },
   { method: "worktrees/discard_worker_worktree", domain: "worktrees", command: "discard_worker_worktree" },
+  { method: "worktrees/list_worktrees", domain: "worktrees", command: "list_worktrees" },
+  { method: "worktrees/worktree_usage", domain: "worktrees", command: "worktree_usage" },
   { method: "routing/get_router_preferences", domain: "routing", command: "get_router_preferences" },
   { method: "routing/update_router_preferences", domain: "routing", command: "update_router_preferences" },
   { method: "routing/rollback_routing_policy", domain: "routing", command: "rollback_routing_policy" },
@@ -492,6 +496,8 @@ export interface BridgeMethodParams {
   "worktrees/pending_worker_adoptions": PendingWorkerAdoptionsParams;
   "worktrees/adopt_worker_worktree": AdoptWorkerWorktreeParams;
   "worktrees/discard_worker_worktree": DiscardWorkerWorktreeParams;
+  "worktrees/list_worktrees": undefined;
+  "worktrees/worktree_usage": undefined;
   "routing/get_router_preferences": GetRouterPreferencesParams;
   "routing/update_router_preferences": UpdateRouterPreferencesParams;
   "routing/rollback_routing_policy": RollbackRoutingPolicyParams;
@@ -661,6 +667,8 @@ export interface BridgeMethodResults {
   "worktrees/pending_worker_adoptions": PendingWorkerAdoptionsResult;
   "worktrees/adopt_worker_worktree": WorkerRepositoryBinding;
   "worktrees/discard_worker_worktree": WorkerRepositoryBinding;
+  "worktrees/list_worktrees": WorktreeInventoryResult;
+  "worktrees/worktree_usage": WorktreeUsage;
   "routing/get_router_preferences": RouterPreferences;
   "routing/update_router_preferences": RouterPreferences;
   "routing/rollback_routing_policy": unknown;
@@ -1910,6 +1918,33 @@ export interface WorkspaceFileChange {
 
 export type WorkspaceRepositoryState = "normal" | "unborn" | "not_git";
 
+export interface WorktreeInventoryEntry {
+  assessedAt?: string | null;
+  branch?: string | null;
+  createdAt: string;
+  disposition?: string | null;
+  id: string;
+  idleSeconds: number;
+  kind: string;
+  lastUsedAt: string;
+  ownerSessionId?: string | null;
+  ownerWorkspaceId?: string | null;
+  path: string;
+  repoRoot: string;
+  retainedReason?: string | null;
+  sizeBytes?: number | null;
+  sizeMeasuredAt?: string | null;
+  state: string;
+}
+
+export interface WorktreeRepositoryUsage {
+  count: number;
+  overBudget: boolean;
+  reclaimableBytes: number;
+  repoRoot: string;
+  sizeBytes: number;
+}
+
 export interface RpcRequest {
   id: RequestId;
   jsonrpc: JsonRpcVersion;
@@ -2661,6 +2696,22 @@ export interface AdoptWorkerWorktreeParams {
 export interface DiscardWorkerWorktreeParams {
   reason: string;
   sessionId: string;
+}
+
+export type WorktreeInventoryResult = WorktreeInventoryEntry[];
+
+export interface WorktreeUsage {
+  githubIdleTtlSeconds: number;
+  maxPerRepo: number;
+  maxTotalBytes: number;
+  orchestratorIdleTtlSeconds: number;
+  reclaimableBytes: number;
+  reclaimableCount: number;
+  repositories: WorktreeRepositoryUsage[];
+  retainedCount: number;
+  totalBytes: number;
+  totalCount: number;
+  workerIdleTtlSeconds: number;
 }
 
 export interface GetRouterPreferencesParams {
