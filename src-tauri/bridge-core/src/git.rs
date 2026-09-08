@@ -301,6 +301,33 @@ pub fn head_commit(worktree: &Path) -> Option<String> {
         .filter(|value| !value.is_empty())
 }
 
+/// The commit a branch points at, if the branch exists.
+pub fn branch_commit(repo: &Path, branch: &str) -> Option<String> {
+    run(repo, ["rev-parse", "--verify", &format!("refs/heads/{branch}")])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+}
+
+/// Whether every commit on `branch` is already reachable from `target`.
+pub fn branch_is_contained_in(
+    repo: &Path,
+    branch: &str,
+    target: &str,
+) -> Result<bool, BridgeError> {
+    is_ancestor(repo, branch, target)
+}
+
+/// Delete a branch ref, refusing anything not already merged.
+///
+/// `-d`, never `-D`: git's own refusal to drop an unmerged branch is the last
+/// line of defence behind the containment check callers make first, and a
+/// forced delete would discard commits that exist nowhere else.
+pub fn delete_merged_branch(repo: &Path, branch: &str) -> Result<(), BridgeError> {
+    run(repo, ["branch", "-d", branch])?;
+    Ok(())
+}
+
 /// Commits in this checkout that are not reachable from `base`. Zero means
 /// nothing would be lost by discarding the checkout — the precise question a
 /// reclaim decision turns on, answered without consulting any remote.

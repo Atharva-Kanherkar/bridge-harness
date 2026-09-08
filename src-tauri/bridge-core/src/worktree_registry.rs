@@ -1510,6 +1510,10 @@ fn settle_empty_binding(db: &Connection, canonical_path: &str) -> Result<(), Bri
             crate::worker_adoption::STATE_EMPTY,
             "the worktree held nothing to adopt and was reclaimed",
         )?;
+        // Same treatment settlement would have given it, under the same guard:
+        // the checkout is gone and its commits are provably elsewhere, so the
+        // scratch ref goes too.
+        crate::worker_adoption::release_branch_for(db, &session_id);
     }
     Ok(())
 }
@@ -2028,7 +2032,7 @@ mod tests {
         let fixture = fixture();
         let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
         commit_in(&path, "worker-output.txt");
-        record_pending_adoption(&fixture, &path);
+        record_pending_adoption(&fixture, &path, "bridge/task-worker-child");
         let disposition = classify_path(&fixture, &path);
         assert!(
             matches!(&disposition, Disposition::Retained(reason) if reason.contains("adopted")),
@@ -2040,7 +2044,7 @@ mod tests {
     fn a_pending_adoption_worktree_with_an_empty_diff_is_reclaimable() {
         let fixture = fixture();
         let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
-        record_pending_adoption(&fixture, &path);
+        record_pending_adoption(&fixture, &path, "bridge/task-worker-child");
         assert_eq!(
             classify_path(&fixture, &path),
             Disposition::Reclaimable,
@@ -2048,7 +2052,11 @@ mod tests {
         );
     }
 
-    fn record_pending_adoption(fixture: &Fixture, path: &Path) {
+    /// Mirrors what `record_binding` writes in production, `base_branch`
+    /// included — the branch-release guard reconstructs the expected worker
+    /// branch name from it, so a fixture that omitted it made the guard look
+    /// broken rather than strict.
+    fn record_pending_adoption(fixture: &Fixture, path: &Path, branch: &str) {
         let db = fixture.db.lock().unwrap();
         db.execute(
             "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,depth)
@@ -2059,9 +2067,9 @@ mod tests {
         db.execute(
             "INSERT INTO worker_worktree_adoptions(
                 session_id,parent_session_id,workspace_id,worktree_path,worktree_branch,
-                task_worktree_path,state,created_at,updated_at)
-             VALUES('child','child','w',?1,'bridge/task-worker-child',?2,'pending_adoption','now','now')",
-            params![path.to_string_lossy(), fixture.repo.to_string_lossy()],
+                task_worktree_path,state,base_branch,created_at,updated_at)
+             VALUES('child','child','w',?1,?3,?2,'pending_adoption','main','now','now')",
+            params![path.to_string_lossy(), fixture.repo.to_string_lossy(), branch],
         )
         .unwrap();
     }
@@ -2481,8 +2489,10 @@ mod tests {
     #[test]
     fn reclaiming_an_empty_unadopted_checkout_settles_its_binding() {
         let fixture = fixture();
-        let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
-        record_pending_adoption(&fixture, &path);
+        // Named the way `prepare_isolated_worker` names it, so the branch guard
+        // recognises it as Bridge's own.
+        let path = worker_worktree(&fixture, "child", "main-worker-child");
+        record_pending_adoption(&fixture, &path, "main-worker-child");
         age(&fixture, &path, 2 * 24 * 60 * 60);
 
         let outcome = sweep(&fixture.db, &fixture.namespace, &WorktreeRetention::default()).unwrap();
@@ -2500,6 +2510,11 @@ mod tests {
         assert_eq!(
             state, "empty",
             "no pending decision is left pointing at a deleted directory",
+        );
+        assert_eq!(
+            git_cmd(&fixture.repo, &["branch", "--list", "--format=%(refname:short)", "main-worker-child"]),
+            "",
+            "and the scratch ref goes with it, as settlement would have done",
         );
     }
 
