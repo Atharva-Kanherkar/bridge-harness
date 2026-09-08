@@ -39,7 +39,7 @@ test("query options load explicit Claude plugins and credential-free connectors"
   assert.equal(options.permissionMode, "default");
   assert.equal(options.permissionPrompts, "none");
   assert.equal(options.allowedTools, undefined);
-  assert.deepEqual(options.tools, ["Read", "Grep", "Glob", "Bash", "Skill", "TodoWrite"]);
+  assert.deepEqual(options.tools, ["Read", "Grep", "Glob", "Skill", "TodoWrite"]);
   assert.deepEqual(options.disallowedTools, ["Edit", "Write", "NotebookEdit", "Task"]);
 });
 
@@ -86,6 +86,7 @@ test("read-only network tools follow the routed network authority", () => {
   assert.ok(!permissionOptions("ReadOnly", false).tools.includes("WebFetch"));
   assert.ok(permissionOptions("ReadOnly", true).tools.includes("WebFetch"));
   assert.ok(permissionOptions("ReadOnly", true).tools.includes("WebSearch"));
+  assert.ok(permissionOptions("ReadOnly", true).tools.includes("Bash"));
 });
 
 test("an explicit plugin launch policy is preserved", () => {

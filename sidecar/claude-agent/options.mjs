@@ -1,10 +1,10 @@
 import { briefingOptions, isBriefing } from "./briefing.mjs";
 import { readOnlyOptions } from "./read-only.mjs";
 
-export function permissionOptions(mode, networkAllowed = false) {
+export function permissionOptions(mode, networkAllowed = false, allowedMcpTools = []) {
   switch (mode) {
     case "ReadOnly":
-      return readOnlyOptions({ networkAllowed });
+      return readOnlyOptions({ networkAllowed, allowedMcpTools });
     case "Shared":
     case "Isolated":
       return { permissionMode: "acceptEdits" };
@@ -27,7 +27,7 @@ export function sdkEffort(effort) {
   return SDK_EFFORT_LEVELS.has(value) ? value : null;
 }
 
-export function buildOptions({ sessionId, model, cwd, resume, instructions, writeMode, networkAllowed = false, plugins = [], mcpServers = {}, briefing = null, effort = null }) {
+export function buildOptions({ sessionId, model, cwd, resume, instructions, writeMode, networkAllowed = false, allowedMcpTools = [], plugins = [], mcpServers = {}, briefing = null, effort = null }) {
   // A briefing run replaces the permission half of these options wholesale. It is
   // not a stricter write mode, so it does not layer on top of one — see
   // briefing.mjs and bridge-core/src/briefing_policy.rs.
@@ -46,7 +46,7 @@ export function buildOptions({ sessionId, model, cwd, resume, instructions, writ
         plugins: plugins.map(plugin => typeof plugin === "string"
           ? { type: "local", path: plugin, skipMcpDiscovery: true }
           : { type: "local", ...plugin }),
-        ...permissionOptions(writeMode, networkAllowed),
+        ...permissionOptions(writeMode, networkAllowed, allowedMcpTools),
       };
   // Reasoning effort is handled natively by the SDK; low/medium are honoured
   // rather than dropped the way the old thinking-budget mapping dropped them.

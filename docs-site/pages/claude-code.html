@@ -105,7 +105,7 @@
               <table>
                 <thead><tr><th>Write mode</th><th>permissionMode</th><th>Built-in tool access</th></tr></thead>
                 <tbody>
-                  <tr><td><code>ReadOnly</code></td><td><code>default</code>, with prompts disabled</td><td>Visible local reads: Read, Grep, Glob, Bash, Skill, TodoWrite. WebFetch/WebSearch appear only with task network authority. A Bridge-owned PreToolUse hook allows read-verb MCP tools and denies mutation or unknown tools.</td></tr>
+                  <tr><td><code>ReadOnly</code></td><td><code>default</code>, with prompts disabled</td><td>Visible local reads: Read, Grep, Glob, Skill, TodoWrite. Bash and WebFetch/WebSearch appear only with task network authority. A Bridge-owned PreToolUse hook allows only exact reviewed MCP identities and denies mutation or unknown tools.</td></tr>
                   <tr><td><code>Shared</code> / <code>Isolated</code></td><td><code>acceptEdits</code></td><td>File edits proceed without a prompt; no explicit allow or deny list.</td></tr>
                   <tr><td><code>Full</code> (or unset)</td><td><code>bypassPermissions</code></td><td><code>allowDangerouslySkipPermissions: true</code> — every tool call proceeds unprompted.</td></tr>
                 </tbody>

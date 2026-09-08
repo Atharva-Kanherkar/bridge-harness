@@ -9,7 +9,7 @@ test("read-only options expose intended reads instead of misusing allowedTools",
   assert.equal(local.permissionMode, "default");
   assert.equal(local.permissionPrompts, "none");
   assert.ok(local.tools.includes("Skill"));
-  assert.ok(local.tools.includes("Bash"));
+  assert.ok(!local.tools.includes("Bash"));
   assert.ok(!local.tools.includes("WebFetch"));
   assert.deepEqual(local.disallowedTools, ["Edit", "Write", "NotebookEdit", "Task"]);
   assert.equal(typeof local.hooks.PreToolUse[0].hooks[0], "function");
@@ -17,11 +17,12 @@ test("read-only options expose intended reads instead of misusing allowedTools",
   const networked = readOnlyOptions({ networkAllowed: true });
   assert.ok(networked.tools.includes("WebFetch"));
   assert.ok(networked.tools.includes("WebSearch"));
+  assert.ok(networked.tools.includes("Bash"));
 });
 
 test("the Bridge hook allows local reads and explicitly denies mutation", async () => {
   const hook = makeReadOnlyHook({ networkAllowed: false });
-  for (const tool_name of ["Read", "Grep", "Glob", "Bash", "Skill", "TodoWrite"]) {
+  for (const tool_name of ["Read", "Grep", "Glob", "Skill", "TodoWrite"]) {
     const output = await hook({ hook_event_name: "PreToolUse", tool_name, tool_input: {} });
     assert.equal(output.hookSpecificOutput.permissionDecision, "allow", tool_name);
   }
@@ -52,7 +53,10 @@ test("MCP matching is fail-closed and network authorization is enforced", async 
     (await offline({ tool_name: "mcp__notion__search" })).hookSpecificOutput.permissionDecision,
     "deny",
   );
-  const online = makeReadOnlyHook({ networkAllowed: true });
+  const online = makeReadOnlyHook({
+    networkAllowed: true,
+    allowedMcpTools: ["mcp__notion__search"],
+  });
   assert.equal(
     (await online({ tool_name: "mcp__notion__search" })).hookSpecificOutput.permissionDecision,
     "allow",
@@ -60,6 +64,12 @@ test("MCP matching is fail-closed and network authorization is enforced", async 
   assert.equal(
     (await online({ tool_name: "mcp__notion__create_page" })).hookSpecificOutput.permissionDecision,
     "deny",
+  );
+  assert.equal(
+    (await makeReadOnlyHook({ networkAllowed: true })({ tool_name: "mcp__notion__search" }))
+      .hookSpecificOutput.permissionDecision,
+    "deny",
+    "a read-looking name is not authority without an exact reviewed identity",
   );
 });
 

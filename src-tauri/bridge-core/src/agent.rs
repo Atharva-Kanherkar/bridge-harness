@@ -1506,7 +1506,11 @@ fn normalize_claude_result(message: &Value) -> Vec<NormalizedEvent> {
     }
     if let Some(denials) = message.get("permission_denials").and_then(Value::as_array) {
         for denial in denials {
-            let mut event = with_data("permission.denied", message, denial.clone());
+            let redacted = json!({
+                "tool_name": denial.get("tool_name").cloned(),
+                "tool_use_id": denial.get("tool_use_id").cloned(),
+            });
+            let mut event = with_data("permission.denied", &redacted, redacted.clone());
             event.status = Some("denied".into());
             event.title = denial
                 .get("tool_name")
@@ -2397,6 +2401,8 @@ mod tests {
         assert_eq!(denied.status.as_deref(), Some("denied"));
         assert_eq!(denied.title.as_deref(), Some("Bridge denied mcp__notion__create_page"));
         assert_eq!(denied.data["tool_use_id"], "tool-1");
+        assert!(denied.data.get("tool_input").is_none());
+        assert!(!denied.data.to_string().contains("blocked"));
     }
 
     #[test]

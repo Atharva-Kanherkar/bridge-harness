@@ -111,6 +111,7 @@ pub fn discover_models() -> Result<Vec<crate::adapters::DiscoveredModel>, Bridge
         }).collect::<Vec<_>>();
         if models.is_empty() { Err(BridgeError::Adapter("Codex returned an empty model catalogue".into())) } else { Ok(models) }
     })();
+    let _ = crate::adapters::terminate_process_group(child.id());
     let _ = child.kill();
     let _ = child.wait();
     result
@@ -166,6 +167,7 @@ fn launch(
         let codex_home = prepare_isolated_codex_home(sandbox)?;
         command
             .env("CODEX_HOME", codex_home)
+            .env("HOME", sandbox.output_dir())
             .env("TMPDIR", sandbox.output_dir())
             .env("BRIDGE_WORKER_OUTPUT_DIR", sandbox.output_dir());
         // The seatbelt cannot use the host keychain; a networked worker (e.g. a

@@ -891,10 +891,10 @@ pub(crate) fn claude_context_inventory(
                 ContextSegmentClass::ToolSchemas,
                 "Claude Agent SDK does not expose the provider-owned tool schemas compiled for the query",
             ),
-            ContextSegmentObservation::measured(
+            ContextSegmentObservation::unavailable_with_names(
                 ContextSegmentClass::McpDynamicTools,
                 &mcp_names,
-                ContextObservedSize::bounded(Some(mcp_names.len() as u64), None, None),
+                "Claude CLI discovery found these connected native servers, but the SDK does not expose which generated tools were actually presented",
             ),
             ContextSegmentObservation::measured(
                 ContextSegmentClass::SkillsPlugins,
@@ -1101,21 +1101,19 @@ mod tests {
                 .iter()
                 .find(|item| item.scope == ContextInventoryScope::Catalog)
                 .unwrap();
-            for class in [
-                ContextSegmentClass::McpDynamicTools,
-                ContextSegmentClass::SkillsPlugins,
-            ] {
-                let observation = catalog
-                    .observations
-                    .iter()
-                    .find(|observation| observation.segment_class == class)
-                    .unwrap();
-                assert!(matches!(
-                    observation.provenance,
-                    ContextObservationProvenance::Measured { .. }
-                ));
-                assert!(observation.names.iter().all(|name| !name.contains(secret)));
-            }
+            let mcp = catalog
+                .observations
+                .iter()
+                .find(|observation| observation.segment_class == ContextSegmentClass::McpDynamicTools)
+                .unwrap();
+            assert!(matches!(mcp.provenance, ContextObservationProvenance::Unavailable { .. }));
+            let plugins = catalog
+                .observations
+                .iter()
+                .find(|observation| observation.segment_class == ContextSegmentClass::SkillsPlugins)
+                .unwrap();
+            assert!(matches!(plugins.provenance, ContextObservationProvenance::Measured { .. }));
+            assert!(mcp.names.iter().chain(&plugins.names).all(|name| !name.contains(secret)));
         }
         let per_turn = claude_turn_presented_inventory(
             ContextLifecyclePhase::PerTurn,

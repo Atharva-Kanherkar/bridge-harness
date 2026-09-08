@@ -356,11 +356,6 @@ pub fn project_read_only_capabilities_with_environment(
                     config.join(".credentials.json"),
                     isolated.join(".credentials.json"),
                 ),
-                entry(
-                    "settings",
-                    config.join("settings.json"),
-                    isolated.join("settings.json"),
-                ),
                 entry("state-and-mcp", state, isolated.join(".claude.json")),
                 entry(
                     "global-instructions",
@@ -419,12 +414,34 @@ pub fn project_read_only_capabilities_with_environment(
     for item in entries {
         project_entry(item, &mut report)?;
     }
+    if harness == CapabilityHarness::Claude {
+        project_sanitized_claude_settings(
+            &config.join("settings.json"),
+            &isolated.join("settings.json"),
+            &mut report,
+        )?;
+    }
     if harness == CapabilityHarness::Codex {
         project_directory_children(
             "skills",
             &config.join("skills"),
             &isolated.join("skills"),
             &[".system"],
+            &mut report,
+        )?;
+        project_directory_children(
+            "agent-skills",
+            &home.join(".agents/skills"),
+            &output.join(".agents/skills"),
+            &[],
+            &mut report,
+        )?;
+        project_entry(
+            entry(
+                "agent-plugins",
+                home.join(".agents/plugins"),
+                output.join(".agents/plugins"),
+            ),
             &mut report,
         )?;
     }
@@ -527,6 +544,53 @@ fn project_directory_children(
         }
         project_entry(entry(kind, child.path(), destination.join(name)), report)?;
     }
+    Ok(())
+}
+
+fn project_sanitized_claude_settings(
+    source: &Path,
+    destination: &Path,
+    report: &mut CapabilityProjectionReport,
+) -> Result<(), BridgeError> {
+    match fs::metadata(source) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            report.unavailable.push(CapabilityProjectionNotice {
+                kind: "settings".into(),
+                path: source.to_string_lossy().into_owned(),
+                reason: "not configured".into(),
+            });
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    }
+    match fs::symlink_metadata(destination) {
+        Ok(metadata) if metadata.file_type().is_symlink() => fs::remove_file(destination)?,
+        Ok(_) if fs::read(destination).ok().as_deref() == Some(b"{}\n") => {}
+        Ok(_) => {
+            report.failures.push(CapabilityProjectionNotice {
+                kind: "settings-sanitized".into(),
+                path: destination.to_string_lossy().into_owned(),
+                reason: "projection destination already exists and was left untouched".into(),
+            });
+            return Ok(());
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    if !destination.exists() {
+        fs::write(destination, b"{}\n")?;
+    }
+    report.projected.push(ProjectedCapability {
+        kind: "settings-sanitized".into(),
+        source: source.to_string_lossy().into_owned(),
+        destination: destination.to_string_lossy().into_owned(),
+    });
+    report.withheld.push(CapabilityProjectionNotice {
+        kind: "user-hooks-permissions-and-env".into(),
+        path: source.to_string_lossy().into_owned(),
+        reason: "read-only workers load an empty settings document; capabilities are projected separately".into(),
+    });
     Ok(())
 }
 
@@ -667,7 +731,11 @@ mod tests {
         fs::create_dir_all(config.join("plugins")).unwrap();
         let secret = "sk-proj-do-not-report-this-secret";
         fs::write(config.join(".credentials.json"), secret).unwrap();
-        fs::write(config.join("settings.json"), "{}").unwrap();
+        fs::write(
+            config.join("settings.json"),
+            r#"{"hooks":{"PreToolUse":[{"command":"curl bad.example"}]},"permissions":{"allow":["Write"]}}"#,
+        )
+        .unwrap();
         fs::write(home.path().join(".claude.json"), "{}").unwrap();
         fs::write(config.join("CLAUDE.md"), "instructions").unwrap();
 
@@ -696,6 +764,14 @@ mod tests {
             fs::read_link(output.path().join(".claude/.claude.json")).unwrap(),
             home.path().join(".claude.json")
         );
+        assert_eq!(
+            fs::read_to_string(output.path().join(".claude/settings.json")).unwrap(),
+            "{}\n"
+        );
+        assert!(first
+            .withheld
+            .iter()
+            .any(|item| item.kind == "user-hooks-permissions-and-env"));
         assert!(!serde_json::to_string(&first).unwrap().contains(secret));
         assert!(!first
             .summary()
@@ -709,6 +785,8 @@ mod tests {
         let output = tempfile::tempdir().unwrap();
         let config = home.path().join(".codex");
         fs::create_dir_all(config.join("skills/review")).unwrap();
+        fs::create_dir_all(home.path().join(".agents/skills/shared")).unwrap();
+        fs::create_dir_all(home.path().join(".agents/plugins")).unwrap();
         fs::write(config.join("auth.json"), "secret-value").unwrap();
         fs::create_dir_all(output.path().join(".codex")).unwrap();
         fs::create_dir_all(output.path().join(".codex/skills")).unwrap();
@@ -731,6 +809,14 @@ mod tests {
             config.join("skills/review")
         );
         fs::create_dir(output.path().join(".codex/skills/.system")).unwrap();
+        assert_eq!(
+            fs::read_link(output.path().join(".agents/skills/shared")).unwrap(),
+            home.path().join(".agents/skills/shared")
+        );
+        assert_eq!(
+            fs::read_link(output.path().join(".agents/plugins")).unwrap(),
+            home.path().join(".agents/plugins")
+        );
         assert_eq!(
             fs::read_to_string(output.path().join(".codex/auth.json")).unwrap(),
             "owned-output"

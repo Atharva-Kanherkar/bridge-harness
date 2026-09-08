@@ -517,7 +517,6 @@ mod tests {
             MethodName::Health,
             MethodName::GetState,
             MethodName::RefreshAccountUsage,
-            MethodName::ListSlashCommands,
             MethodName::GetMemoryCapabilities,
             MethodName::GetExtractionSettings,
             MethodName::GetConsolidationSettings,

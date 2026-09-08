@@ -2,8 +2,8 @@
 // conveniences, but this hook runs before each visible tool and can only narrow
 // the capability surface Bridge selected.
 
-const LOCAL_READ_TOOLS = ["Read", "Grep", "Glob", "Bash", "Skill", "TodoWrite"];
-const NETWORK_READ_TOOLS = ["WebFetch", "WebSearch"];
+const LOCAL_READ_TOOLS = ["Read", "Grep", "Glob", "Skill", "TodoWrite"];
+const NETWORK_CAPABLE_TOOLS = ["Bash", "WebFetch", "WebSearch"];
 const DIRECT_WRITE_TOOLS = ["Edit", "Write", "NotebookEdit", "Task"];
 const READ_TOOL_VERBS = ["search", "read", "list", "get", "query", "fetch", "find"];
 const MUTATION_WORDS = new Set([
@@ -34,9 +34,10 @@ function decision(permissionDecision, permissionDecisionReason) {
   };
 }
 
-export function makeReadOnlyHook({ networkAllowed = false } = {}) {
+export function makeReadOnlyHook({ networkAllowed = false, allowedMcpTools = [] } = {}) {
   const local = new Set(LOCAL_READ_TOOLS);
-  const network = new Set(NETWORK_READ_TOOLS);
+  const network = new Set(NETWORK_CAPABLE_TOOLS);
+  const reviewedMcp = new Set(allowedMcpTools);
   return async function readOnlyPreToolUse(input = {}) {
     const toolName = input.tool_name;
     if (local.has(toolName)) {
@@ -45,8 +46,8 @@ export function makeReadOnlyHook({ networkAllowed = false } = {}) {
     if (networkAllowed && network.has(toolName)) {
       return decision("allow", `Bridge read-only network policy allows ${toolName}`);
     }
-    if (networkAllowed && isMcpRead(toolName)) {
-      return decision("allow", `Bridge read-only policy allows read-verb MCP tool ${toolName}`);
+    if (networkAllowed && reviewedMcp.has(toolName)) {
+      return decision("allow", `Bridge read-only policy allows reviewed MCP tool ${toolName}`);
     }
     const reason = network.has(toolName) || isMcpRead(toolName)
       ? `Bridge read-only policy denied ${toolName} because this task has no network authorization`
@@ -55,9 +56,9 @@ export function makeReadOnlyHook({ networkAllowed = false } = {}) {
   };
 }
 
-export function readOnlyOptions({ networkAllowed = false } = {}) {
+export function readOnlyOptions({ networkAllowed = false, allowedMcpTools = [] } = {}) {
   const tools = networkAllowed
-    ? [...LOCAL_READ_TOOLS, ...NETWORK_READ_TOOLS]
+    ? [...LOCAL_READ_TOOLS, ...NETWORK_CAPABLE_TOOLS]
     : [...LOCAL_READ_TOOLS];
   return {
     permissionMode: "default",
@@ -65,7 +66,7 @@ export function readOnlyOptions({ networkAllowed = false } = {}) {
     tools,
     disallowedTools: [...DIRECT_WRITE_TOOLS],
     hooks: {
-      PreToolUse: [{ hooks: [makeReadOnlyHook({ networkAllowed })] }],
+      PreToolUse: [{ hooks: [makeReadOnlyHook({ networkAllowed, allowedMcpTools })] }],
     },
   };
 }
