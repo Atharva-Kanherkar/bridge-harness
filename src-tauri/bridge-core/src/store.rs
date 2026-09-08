@@ -6808,4 +6808,43 @@ mod tests {
             "device-wide analytics never belong to a workspace and must survive deletion"
         );
     }
+
+    #[test]
+    fn agent_usage_observation_unique_constraint_holds_under_insert_or_ignore() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        db.execute_batch(
+            "INSERT INTO agent_usage_sources(id,agent,provider,location_fingerprint,coverage_state,importer_version,created_at,updated_at)
+                 VALUES('s1','claude','anthropic','sha256:loc','partial','test','now','now');",
+        )
+        .unwrap();
+        let insert = |id: &str, native: &str, tokens: i64| -> usize {
+            db.execute(
+                "INSERT OR IGNORE INTO agent_usage_observations(id,source_id,native_record_id,occurred_at,input_semantics,output_semantics,exact_total_formula,output_tokens,importer_version,created_at)
+                 VALUES(?1,'s1',?2,'t','exclusive','delta','anthropic_exclusive_input_plus_cache_and_output',?3,'test','now')",
+                params![id, native, tokens],
+            )
+            .unwrap()
+        };
+        assert_eq!(insert("o1", "msg_1:req_1", 10), 1);
+        // Same native record under a different row id: refused, silently.
+        assert_eq!(insert("o2", "msg_1:req_1", 999), 0);
+        // A different source may hold the same native id.
+        db.execute_batch(
+            "INSERT INTO agent_usage_sources(id,agent,provider,location_fingerprint,coverage_state,importer_version,created_at,updated_at)
+                 VALUES('s2','claude','anthropic','sha256:other','partial','test','now','now');
+             INSERT INTO agent_usage_observations(id,source_id,native_record_id,occurred_at,input_semantics,output_semantics,exact_total_formula,importer_version,created_at)
+                 VALUES('o3','s2','msg_1:req_1','t','exclusive','delta','anthropic_exclusive_input_plus_cache_and_output','test','now');",
+        )
+        .unwrap();
+        let (rows, kept): (i64, i64) = db
+            .query_row(
+                "SELECT COUNT(*), (SELECT output_tokens FROM agent_usage_observations WHERE id='o1') FROM agent_usage_observations",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(rows, 2);
+        assert_eq!(kept, 10, "the first observation wins");
+    }
 }
