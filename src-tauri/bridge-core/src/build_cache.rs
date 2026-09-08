@@ -3,11 +3,25 @@
 //! Bridge's worktrees are cheap to cut — about 30 MB — and expensive to keep,
 //! because agents build *inside* them. The single largest cost measured on a
 //! real machine was one stopped worker holding 3.9 GB: 3.4 GB of
-//! `src-tauri/target` and 508 MB of `node_modules`, none of it Bridge's own
-//! doing and none of it worth a byte of backup. Capping and reclaiming
+//! `src-tauri/target` and 508 MB of `node_modules`. Capping and reclaiming
 //! checkouts (see [`crate::worktree_registry`]) manages that cost. This module
-//! removes most of it, by pointing the expensive directories at one cache per
-//! repository instead of one per checkout.
+//! reduces it, by pointing what *can* be relocated at one cache per repository
+//! instead of one per checkout.
+//!
+//! ## What this does and does not move
+//!
+//! **Cargo's build directory moves** — `CARGO_TARGET_DIR` relocates the whole
+//! thing, which is the 3.4 GB.
+//!
+//! **JavaScript dependencies do not.** `BUN_INSTALL_CACHE_DIR` and
+//! `npm_config_cache` relocate the *download* caches only: bun documents
+//! `--cache-dir` as "store & load cached data", npm's `cache` likewise, and
+//! neither offers a supported way to put the installed tree anywhere but
+//! `<cwd>/node_modules`. So a second worker's install is fast, but the 508 MB
+//! tree is still created per checkout. Sharing it needs a different mechanism —
+//! a copy-on-write clone taken when the worktree is cut — with its own
+//! correctness question about a branch whose lockfile differs from its source.
+//! That is deliberately not attempted here.
 //!
 //! ## Why per repository, and what it costs
 //!
@@ -41,6 +55,9 @@ use std::sync::RwLock;
 static BUILD_CACHE_ROOT: RwLock<Option<PathBuf>> = RwLock::new(None);
 
 /// Environment variables Bridge redirects, and the subdirectory each gets.
+///
+/// Two of these are download caches rather than installed trees; see the module
+/// docs on what that does and does not buy.
 ///
 /// A variable already set in Bridge's own environment is left alone — an
 /// operator who has pointed `CARGO_TARGET_DIR` somewhere deliberately outranks

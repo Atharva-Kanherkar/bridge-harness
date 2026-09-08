@@ -3590,15 +3590,22 @@ pub fn archive_chat(
     core: &Arc<BridgeCore>,
     session_id: &str,
 ) -> Result<worktree_registry::ArchiveChatResult, BridgeError> {
-    let (status, active_turn): (String, Option<String>) = core.db.lock().unwrap().query_row(
-        "SELECT status,active_turn_id FROM sessions WHERE id=?1",
-        params![session_id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
+    let (status, active_turn, adapter_pid): (String, Option<String>, Option<i64>) =
+        core.db.lock().unwrap().query_row(
+            "SELECT status,active_turn_id,adapter_pid FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+    // A `ready` chat has no turn in flight but still owns a live provider
+    // process. Hiding it would take away the only route to that process while
+    // it goes on holding memory, a port and a model session — and the worktree
+    // would be retained anyway, since the same claim marks it in use. Archiving
+    // has to mean the chat is really finished.
     if active_turn.is_some()
+        || adapter_pid.is_some()
         || matches!(
             status.as_str(),
-            "working" | "waiting" | "starting" | "resuming" | "checkpointing"
+            "working" | "waiting" | "starting" | "resuming" | "checkpointing" | "ready"
         )
     {
         return Err(BridgeError::Invalid(

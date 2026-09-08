@@ -24,8 +24,19 @@ change attacks the cost and then puts the whole thing in front of a person.
   build speed for workers that are not supposed to be building. They keep their
   redirected `HOME`/`TMPDIR` and build into their own output directory if they
   build at all.
-- Expected effect, stated as the goal: a fresh worker worktree stays under
-  100 MB after a full `bun run check`, against ~3.9 GB today.
+- Expected effect. **Corrected during implementation**: the locked goal was
+  "under 100 MB after a full `bun run check`", which is not achievable by
+  environment variables alone. `CARGO_TARGET_DIR` relocates the whole Cargo
+  build directory — the 3.4 GB of the 3.9 GB measured — but
+  `BUN_INSTALL_CACHE_DIR` and `npm_config_cache` are *download* caches, and
+  neither bun nor npm supports putting the installed tree anywhere but
+  `<cwd>/node_modules`. A fresh worker therefore drops from ~3.9 GB to roughly
+  the size of its `node_modules` (~500 MB here), and a second worker's install
+  is fast because the downloads are shared.
+- Sharing the installed tree needs a copy-on-write clone taken when the worktree
+  is cut, which raises a correctness question this change does not answer: a
+  branch whose lockfile differs from the checkout it was cloned from. Left for a
+  follow-up rather than guessed at.
 
 ### Worker scratch-branch cleanup
 - A `<task>-worker-<uuid>` branch is deleted once its worker's binding is
@@ -135,6 +146,8 @@ path is the manual equivalent, covered under Manual below.
 1. Build a release bundle, open a chat with an isolated worktree, ask the agent
    to run `bun run check`, then confirm `src-tauri/target` inside the worktree
    stays empty and the shared cache under the data directory grows instead.
+   `node_modules` *will* be present in the worktree — see the corrected note
+   above — so measure the checkout against ~3.9 GB, not against 100 MB.
 2. Settings → Storage: confirm totals, at least one reclaimable row, one
    retained row showing its reason, and that Reclaim frees the space.
 3. Archive that chat from its own menu; confirm the worktree is gone and the

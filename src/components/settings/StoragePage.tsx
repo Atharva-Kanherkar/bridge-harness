@@ -112,7 +112,11 @@ export function StoragePage({ onError }: { onError?: (message: string) => void }
     }
   };
 
-  const overBudget = usage ? usage.totalBytes >= usage.maxTotalBytes : false;
+  // The caps are per repository; `totalBytes` is the sum across all of them.
+  // Comparing the two labelled two 6 GiB repositories as over a 10 GiB limit
+  // when neither was, and said nothing about a repository over the *count* cap.
+  // The backend already decides this per repository.
+  const overBudget = usage?.repositories.some(repo => repo.overBudget) ?? false;
 
   return <SettingsPage
     title="Storage"

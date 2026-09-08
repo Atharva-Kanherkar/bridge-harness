@@ -2119,6 +2119,7 @@ function AppContent() {
       onOpenMemory={() => setView("memory")}
       onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
+      onArchiveChat={archiveChat}
       collapsed={sidebarCollapsed}
       onCollapsedChange={setSidebarCollapsed}
       showWindowNav
