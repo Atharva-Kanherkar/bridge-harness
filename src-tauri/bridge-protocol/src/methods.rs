@@ -100,6 +100,7 @@ methods![
     (RetryWorkerTask, "sessions", "retry_worker_task"),
     (RefreshAccountUsage, "sessions", "refresh_account_usage"),
     (StopSession, "sessions", "stop_session"),
+    (ArchiveChat, "sessions", "archive_chat"),
     // memory — explicit named-scope pins; not recall, not the router
     (SaveMemoryRecord, "memory", "save_memory_record"),
     (ListMemoryRecords, "memory", "list_memory_records"),

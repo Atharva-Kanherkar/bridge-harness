@@ -1544,6 +1544,17 @@ pub struct WorktreeReclaimResult {
     pub detail: Option<String>,
 }
 
+/// What archiving a chat did.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveChatResult {
+    pub archived: bool,
+    pub bytes_freed: i64,
+    /// Why the chat's checkout was kept, when it was. `None` means there was
+    /// nothing to keep or it was reclaimed.
+    pub worktree_detail: Option<String>,
+}
+
 /// Reclaim one inventoried checkout because a person asked for it.
 ///
 /// The classification is the sweep's, and the refusals are the sweep's: at-risk,
@@ -1635,6 +1646,14 @@ pub fn reclaim(
         disposition: disposition.label().to_owned(),
         detail,
     })
+}
+
+/// The checkout a session owns, if it has one. Archiving a chat reclaims *its*
+/// worktree — never the workspace's, which belongs to every other chat in it.
+pub fn owned_by_session(db: &Connection, session_id: &str) -> Result<Option<WorktreeRecord>, BridgeError> {
+    Ok(records(db)?.into_iter().find(|row| {
+        row.owner_session_id.as_deref() == Some(session_id) && row.is_candidate()
+    }))
 }
 
 /// A full maintenance pass, run because a person asked. Same work the tick does.

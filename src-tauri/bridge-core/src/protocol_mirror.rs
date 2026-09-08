@@ -585,6 +585,15 @@ fn worktree_inventory_entry_mirrors_core() {
 }
 
 #[test]
+fn archive_chat_result_mirrors_core() {
+    assert_mirrors::<wire::ArchiveChatResult>(&crate::worktree_registry::ArchiveChatResult {
+        archived: true,
+        bytes_freed: 0,
+        worktree_detail: Some("uncommitted changes".into()),
+    });
+}
+
+#[test]
 fn worktree_reclaim_result_mirrors_core() {
     assert_mirrors::<wire::WorktreeReclaimResult>(
         &crate::worktree_registry::WorktreeReclaimResult {

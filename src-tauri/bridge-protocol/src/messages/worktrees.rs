@@ -97,3 +97,23 @@ pub struct WorktreeSweepResult {
     pub skipped: usize,
     pub measurements_truncated: usize,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ArchiveChatParams {
+    pub session_id: String,
+}
+
+/// What archiving a chat did. Mirrors
+/// `bridge_core::worktree_registry::ArchiveChatResult`.
+///
+/// `worktreeDetail` is set when the chat's checkout was *kept* — archiving a
+/// conversation does not require first resolving its uncommitted work, so the
+/// reason comes back rather than the archive failing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchiveChatResult {
+    pub archived: bool,
+    pub bytes_freed: i64,
+    pub worktree_detail: Option<String>,
+}

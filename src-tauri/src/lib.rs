@@ -637,6 +637,14 @@ async fn worktree_usage(
 }
 
 #[tauri::command]
+async fn archive_chat(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::worktree_registry::ArchiveChatResult, BridgeError> {
+    api::archive_chat(state.inner(), &session_id)
+}
+
+#[tauri::command]
 async fn reclaim_worktree(
     worktree_id: String,
     state: State<'_, Arc<BridgeCore>>,
@@ -2088,6 +2096,7 @@ pub fn run() {
             pending_worker_adoptions,
             list_worktrees,
             worktree_usage,
+            archive_chat,
             reclaim_worktree,
             sweep_worktrees,
             adopt_worker_worktree,

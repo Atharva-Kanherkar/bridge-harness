@@ -459,6 +459,10 @@ pub fn dispatch(
             reply(api::reclaim_worktree(core, &p.worktree_id))
         }
         MethodName::SweepWorktrees => reply(api::sweep_worktrees(core)),
+        MethodName::ArchiveChat => {
+            let p: wire::ArchiveChatParams = decode(method, params)?;
+            reply(api::archive_chat(core, &p.session_id))
+        }
         MethodName::VerifierCandidates => {
             let p: wire::VerifierCandidatesParams = decode(method, params)?;
             reply(api::verifier_candidates(core, &p.change_labels, p.available_capabilities))

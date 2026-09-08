@@ -63,6 +63,7 @@ export type BridgeMethod =
   | "sessions/retry_worker_task"
   | "sessions/refresh_account_usage"
   | "sessions/stop_session"
+  | "sessions/archive_chat"
   | "memory/save_memory_record"
   | "memory/list_memory_records"
   | "memory/delete_memory_record"
@@ -234,6 +235,7 @@ export const BRIDGE_METHODS = [
   { method: "sessions/retry_worker_task", domain: "sessions", command: "retry_worker_task" },
   { method: "sessions/refresh_account_usage", domain: "sessions", command: "refresh_account_usage" },
   { method: "sessions/stop_session", domain: "sessions", command: "stop_session" },
+  { method: "sessions/archive_chat", domain: "sessions", command: "archive_chat" },
   { method: "memory/save_memory_record", domain: "memory", command: "save_memory_record" },
   { method: "memory/list_memory_records", domain: "memory", command: "list_memory_records" },
   { method: "memory/delete_memory_record", domain: "memory", command: "delete_memory_record" },
@@ -504,6 +506,7 @@ export interface BridgeMethodParams {
   "worktrees/worktree_usage": undefined;
   "worktrees/reclaim_worktree": ReclaimWorktreeParams;
   "worktrees/sweep_worktrees": undefined;
+  "sessions/archive_chat": ArchiveChatParams;
   "routing/get_router_preferences": GetRouterPreferencesParams;
   "routing/update_router_preferences": UpdateRouterPreferencesParams;
   "routing/rollback_routing_policy": RollbackRoutingPolicyParams;
@@ -638,6 +641,7 @@ export interface BridgeMethodResults {
   "sessions/retry_worker_task": UnitResult;
   "sessions/refresh_account_usage": UnitResult;
   "sessions/stop_session": BridgeState;
+  "sessions/archive_chat": ArchiveChatResult;
   "memory/save_memory_record": MemoryRecord;
   "memory/list_memory_records": ListMemoryRecordsResult;
   "memory/delete_memory_record": MemoryRecord;
@@ -2741,6 +2745,16 @@ export interface WorktreeSweepResult {
   retained: number;
   retainedBytes: number;
   skipped: number;
+}
+
+export interface ArchiveChatParams {
+  sessionId: string;
+}
+
+export interface ArchiveChatResult {
+  archived: boolean;
+  bytesFreed: number;
+  worktreeDetail?: string | null;
 }
 
 export interface GetRouterPreferencesParams {

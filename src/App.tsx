@@ -956,6 +956,25 @@ function AppContent() {
     if (opened?.workspaceId) writeLastWorkspaceId(opened.workspaceId);
   }
 
+  // Archiving a chat files the conversation away and reclaims the checkout it
+  // owns — not its workspace's, which belongs to every other chat in that
+  // project. History is kept either way, which is what makes this safe to offer
+  // on a hover button; the confirm exists because the worktree is not kept.
+  const archiveChat = useCallback(async (chat: Session) => {
+    const name = chat.title?.trim() || chat.label || "this chat";
+    if (!window.confirm(`Archive ${name}? Its history is kept, and its worktree is reclaimed if nothing is unsaved there.`)) return;
+    try {
+      const result = await bridgeApi.archiveChat(chat.id);
+      if (result.worktreeDetail) {
+        setError(`${name} was archived, but its worktree was kept: ${result.worktreeDetail}`);
+      }
+      setSelectedSessionId(current => (current === chat.id ? undefined : current));
+      await reload();
+    } catch (value) {
+      setError(errorMessage(value));
+    }
+  }, [reload]);
+
   const openWorkBoard = useCallback(() => {
     setView("work");
     setParadigm("single");

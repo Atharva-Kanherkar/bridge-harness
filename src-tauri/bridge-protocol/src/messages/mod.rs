@@ -269,6 +269,7 @@ typed_methods![
     (WorktreeUsageReport, _, WorktreeUsage),
     (ReclaimWorktree, ReclaimWorktreeParams, WorktreeReclaimResult),
     (SweepWorktrees, _, WorktreeSweepResult),
+    (ArchiveChat, ArchiveChatParams, ArchiveChatResult),
     // routing
     (GetRouterPreferences, GetRouterPreferencesParams, RouterPreferences),
     (UpdateRouterPreferences, UpdateRouterPreferencesParams, RouterPreferences),

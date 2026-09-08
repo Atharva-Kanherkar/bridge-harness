@@ -113,6 +113,7 @@ export type {
   VerifierCandidate,
   VerifierManifest,
   WorkerRepositoryBinding,
+  ArchiveChatResult,
   WorktreeInventoryEntry,
   WorktreeReclaimResult,
   WorktreeSweepResult,

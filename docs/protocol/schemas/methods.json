@@ -394,6 +394,13 @@
       "resultSchema": "bridge-state.json"
     },
     {
+      "command": "archive_chat",
+      "domain": "sessions",
+      "method": "sessions/archive_chat",
+      "paramsSchema": "archive-chat-params.json",
+      "resultSchema": "archive-chat-result.json"
+    },
+    {
       "command": "save_memory_record",
       "domain": "memory",
       "method": "memory/save_memory_record",
