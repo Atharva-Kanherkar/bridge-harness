@@ -37,7 +37,15 @@ change attacks the cost and then puts the whole thing in front of a person.
 
 ### Reclaim on demand
 - `worktrees/reclaim_worktree` reclaims one inventoried checkout by id, running
-  the same classification and refusals as the sweep. It never forces.
+  the same classification as the sweep. It never forces: `at_risk`, `retained`
+  and `unverifiable` are refused with their reason, and the refusal is what the
+  caller receives rather than an error.
+- One deliberate difference from the sweep: an explicit request *does* reclaim a
+  `pushed_unmerged` checkout, which the sweep retains by default. The
+  distinction is who is asking. The sweep runs unattended and defaults to
+  caution; a person clicking Reclaim on a row that says "every commit is on a
+  remote" has been told exactly what they are discarding. Nothing unique to the
+  disk is ever removed on either path.
 - `worktrees/sweep_worktrees` runs a full maintenance pass and returns its
   outcome.
 - Reclaiming a checkout Bridge did not create is refused, naming why.
