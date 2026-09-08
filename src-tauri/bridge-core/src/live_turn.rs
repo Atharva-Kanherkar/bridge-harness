@@ -6877,9 +6877,20 @@ pub fn process_worker_result_output(
             )
             .ok()
             .flatten();
-        return Ok(Some(synthetic_exit_result(
-            child_session_id,
+        // The session label, not the raw id: this result is what the parent and
+        // the UI read, and a failed worker may still have a live adapter, so it
+        // must not claim the process exited either.
+        let label: String = db
+            .query_row(
+                "SELECT label FROM sessions WHERE id=?1",
+                params![child_session_id],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| child_session_id.to_owned());
+        return Ok(Some(synthetic_failure_result(
+            &label,
             context.as_deref(),
+            SyntheticFailure::Failed,
         )));
     }
     if runtime.lifecycle_state != "working" {
@@ -7850,7 +7861,35 @@ fn notify_parent_on_worker_exit(
 /// full tail, so the parent (which reads the typed result as evidence) and
 /// the UI both see the actual cause, never just "ended without reporting".
 fn synthetic_exit_result(label: &str, failure_context: Option<&str>) -> delegation::WorkerResult {
-    let mut risks = vec!["Worker process exited before a typed result was produced".to_owned()];
+    synthetic_failure_result(label, failure_context, SyntheticFailure::Exited)
+}
+
+/// How a worker stopped, which is all that separates the two synthesized
+/// failures. A worker whose lifecycle went `failed` — a provider usage limit,
+/// say — may still have a running adapter, so it must not be reported as an
+/// exited process.
+#[derive(Clone, Copy)]
+enum SyntheticFailure {
+    Exited,
+    Failed,
+}
+
+fn synthetic_failure_result(
+    label: &str,
+    failure_context: Option<&str>,
+    kind: SyntheticFailure,
+) -> delegation::WorkerResult {
+    let (risk, verb) = match kind {
+        SyntheticFailure::Exited => (
+            "Worker process exited before a typed result was produced",
+            "ended",
+        ),
+        SyntheticFailure::Failed => (
+            "Worker failed before a typed result was produced",
+            "failed",
+        ),
+    };
+    let mut risks = vec![risk.to_owned()];
     let summary = match failure_context {
         Some(context) => {
             risks.push(context.to_owned());
@@ -7860,9 +7899,9 @@ fn synthetic_exit_result(label: &str, failure_context: Option<&str>) -> delegati
                 .find(|line| !line.trim().is_empty())
                 .unwrap_or("unknown error")
                 .trim();
-            format!("{label} ended without reporting a result — {last_line}")
+            format!("{label} {verb} without reporting a result — {last_line}")
         }
-        None => format!("{label} ended without reporting a result"),
+        None => format!("{label} {verb} without reporting a result"),
     };
     delegation::WorkerResult {
         schema_version: delegation::SCHEMA_VERSION,
@@ -14907,6 +14946,42 @@ mod retry_settlement_tests {
             )
             .unwrap();
         }
+    }
+
+    #[test]
+    fn failed_worker_result_names_the_label_and_does_not_claim_an_exit() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        let db = core.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at)
+             VALUES('e1','child',NULL,1,'error','{\"text\":\"You have hit your usage limit.\"}','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE worker_runtime SET lifecycle_state='failed' WHERE session_id='child'",
+            [],
+        )
+        .unwrap();
+
+        let result = process_worker_result_output(
+            &db,
+            &mut delegation::ResultRepairTracker::default(),
+            "child",
+            "no fence",
+            |_| panic!("a failed worker must not be asked to repair"),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(result.summary.starts_with("Implementation failed"), "{}", result.summary);
+        assert!(!result.summary.contains("child"), "{}", result.summary);
+        assert!(result.summary.contains("usage limit"), "{}", result.summary);
+        assert!(
+            !result.risks.iter().any(|risk| risk.contains("exited")),
+            "a failed worker may still have a live adapter: {:?}",
+            result.risks
+        );
     }
 
     #[test]
