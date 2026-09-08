@@ -1525,7 +1525,19 @@ fn normalize_claude_result(message: &Value) -> Vec<NormalizedEvent> {
         .unwrap_or(false)
         || subtype.contains("error")
     {
-        let mut error = with_data("error", message, message.clone());
+        let mut redacted = message.clone();
+        if let Some(denials) = redacted
+            .get_mut("permission_denials")
+            .and_then(Value::as_array_mut)
+        {
+            for denial in denials {
+                *denial = json!({
+                    "tool_name": denial.get("tool_name").cloned(),
+                    "tool_use_id": denial.get("tool_use_id").cloned(),
+                });
+            }
+        }
+        let mut error = with_data("error", &redacted, redacted.clone());
         error.status = Some("failed".into());
         error.text = message
             .get("result")
@@ -2403,6 +2415,21 @@ mod tests {
         assert_eq!(denied.data["tool_use_id"], "tool-1");
         assert!(denied.data.get("tool_input").is_none());
         assert!(!denied.data.to_string().contains("blocked"));
+
+        let failed = normalize_claude_message(&json!({
+            "type":"result",
+            "subtype":"error_during_execution",
+            "is_error":true,
+            "result":"denied",
+            "permission_denials":[{
+                "tool_name":"Write",
+                "tool_use_id":"tool-2",
+                "tool_input":{"secret":"must-not-persist"}
+            }]
+        }));
+        let error = failed.iter().find(|event| event.kind == "error").unwrap();
+        assert!(!error.data.to_string().contains("must-not-persist"));
+        assert!(error.data["permission_denials"][0].get("tool_input").is_none());
     }
 
     #[test]

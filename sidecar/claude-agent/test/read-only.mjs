@@ -8,6 +8,10 @@ test("read-only options expose intended reads instead of misusing allowedTools",
   assert.equal(local.allowedTools, undefined);
   assert.equal(local.permissionMode, "default");
   assert.equal(local.permissionPrompts, "none");
+  assert.deepEqual(local.settingSources, ["user"]);
+  assert.equal(local.strictMcpConfig, true);
+  assert.deepEqual(local.mcpServers, {});
+  assert.deepEqual(local.plugins, []);
   assert.ok(local.tools.includes("Skill"));
   assert.ok(!local.tools.includes("Bash"));
   assert.ok(!local.tools.includes("WebFetch"));

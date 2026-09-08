@@ -41,6 +41,34 @@ pub struct StartedCodex {
     pub startup_messages: Vec<Value>,
 }
 
+struct SpawnedChildGuard {
+    child: Option<Child>,
+}
+
+impl SpawnedChildGuard {
+    fn new(child: Child) -> Self {
+        Self { child: Some(child) }
+    }
+
+    fn child_mut(&mut self) -> &mut Child {
+        self.child.as_mut().expect("spawn guard owns child")
+    }
+
+    fn disarm(mut self) -> Child {
+        self.child.take().expect("spawn guard owns child")
+    }
+}
+
+impl Drop for SpawnedChildGuard {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = crate::adapters::terminate_process_group(child.id());
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
 pub fn start(request: StartRequest<'_>) -> Result<StartedCodex, BridgeError> {
     launch(request, None, false)
 }
@@ -191,13 +219,15 @@ fn launch(
         on_progress(crate::adapters::StartupPhase::Spawning);
     }
     let spawned_at = std::time::Instant::now();
-    let mut child = command.spawn()?;
-    let stderr_tail = crate::adapters::StderrTail::capture(&mut child);
+    let mut child = SpawnedChildGuard::new(command.spawn()?);
+    let stderr_tail = crate::adapters::StderrTail::capture(child.child_mut());
     let stdin = child
+        .child_mut()
         .stdin
         .take()
         .ok_or_else(|| BridgeError::Invalid("Codex app-server stdin unavailable".into()))?;
     let stdout = child
+        .child_mut()
         .stdout
         .take()
         .ok_or_else(|| BridgeError::Invalid("Codex app-server stdout unavailable".into()))?;
@@ -250,7 +280,7 @@ fn launch(
     Ok(StartedCodex {
         runtime: CodexRuntime {
             writer,
-            child,
+            child: child.disarm(),
             thread_id,
             current_turn: Arc::new(Mutex::new(None)),
             request_id: AtomicI64::new(10),

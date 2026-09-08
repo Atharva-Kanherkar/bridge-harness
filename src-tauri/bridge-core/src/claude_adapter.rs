@@ -223,7 +223,28 @@ fn launch(
     } else {
         ContextLifecyclePhase::Start
     };
-    let context_inventory = claude_context_inventory(lifecycle_phase, &sdk_configuration)?;
+    let restricted_launch = briefing_config.is_some() || read_only_sandbox.is_some();
+    let launch_plugins = if restricted_launch {
+        Vec::new()
+    } else {
+        sdk_configuration.plugins.clone()
+    };
+    let launch_mcp_servers = sidecar_mcp_servers(
+        briefing_config.is_some(),
+        &sdk_configuration.mcp_servers,
+    );
+    let launch_configuration = crate::marketplace::ClaudeSdkConfiguration {
+        plugins: launch_plugins.clone(),
+        mcp_servers: launch_mcp_servers.clone(),
+        connector_health: sdk_configuration
+            .connector_health
+            .iter()
+            .filter(|(name, _)| launch_mcp_servers.contains_key(*name))
+            .map(|(name, health)| (name.clone(), *health))
+            .collect(),
+        diagnostics: sdk_configuration.diagnostics.clone(),
+    };
+    let context_inventory = claude_context_inventory(lifecycle_phase, &launch_configuration)?;
     let config = json!({
         "sessionId": session_id,
         "model": chosen_model,
@@ -234,8 +255,8 @@ fn launch(
         "instructions": instructions.map(str::trim).filter(|value| !value.is_empty()),
         "writeMode": write_mode.map(write_mode_label),
         "networkAllowed": read_only_sandbox.map(|sandbox| sandbox.network_allowed()).unwrap_or(true),
-        "plugins": sdk_configuration.plugins.clone(),
-        "mcpServers": sidecar_mcp_servers(briefing_config.is_some(), &sdk_configuration.mcp_servers),
+        "plugins": launch_plugins,
+        "mcpServers": launch_mcp_servers,
         // Absent for every non-briefing session, so the sidecar's existing
         // write-mode handling is reached by exactly the same path as before.
         "briefing": briefing_config,

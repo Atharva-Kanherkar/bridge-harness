@@ -169,12 +169,18 @@ test("absent briefing config leaves write-mode options untouched", () => {
   // session must reach exactly the options it reached before this existed.
   for (const writeMode of ["ReadOnly", "Shared", "Isolated", "Full", undefined]) {
     const withoutBriefing = buildOptions({ ...base, writeMode, plugins: ["/tmp/p"], mcpServers: { notion: {} } });
-    assert.deepEqual(withoutBriefing.settingSources, ["user", "project", "local"]);
+    assert.deepEqual(
+      withoutBriefing.settingSources,
+      writeMode === "ReadOnly" ? ["user"] : ["user", "project", "local"],
+    );
     assert.equal(withoutBriefing.skills, "all");
-    assert.equal(withoutBriefing.strictMcpConfig, false);
-    assert.deepEqual(withoutBriefing.plugins, [{ type: "local", path: "/tmp/p", skipMcpDiscovery: true }]);
+    assert.equal(withoutBriefing.strictMcpConfig, writeMode === "ReadOnly");
+    assert.deepEqual(
+      withoutBriefing.plugins,
+      writeMode === "ReadOnly" ? [] : [{ type: "local", path: "/tmp/p", skipMcpDiscovery: true }],
+    );
     assert.equal(withoutBriefing.canUseTool, undefined);
-    assert.deepEqual(withoutBriefing.mcpServers, { notion: {} });
+    assert.deepEqual(withoutBriefing.mcpServers, writeMode === "ReadOnly" ? {} : { notion: {} });
   }
   assert.equal(buildOptions({ ...base, writeMode: "ReadOnly" }).permissionMode, "default");
   assert.equal(buildOptions({ ...base, writeMode: "Shared" }).permissionMode, "acceptEdits");
@@ -229,6 +235,8 @@ test("a scoped gate denies mutating verbs on an in-scope server", async () => {
     "mcp__slack__send_message",
     "mcp__gmail__create_draft",
     "mcp__slack__delete_message",
+    "mcp__slack__get_and_delete",
+    "mcp__slack__search_and_update",
     // Fail closed: an unrecognised verb is not a read.
     "mcp__slack__summarise_channel",
     // A read verb buried mid-name does not count.

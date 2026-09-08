@@ -25,7 +25,7 @@ test("resumed queries use resume without requesting a new session id", () => {
 
 test("query options load explicit Claude plugins and credential-free connectors", () => {
   const mcpServers = { "claude.ai Notion": { type: "http", url: "https://mcp.example/notion" } };
-  const options = buildOptions({ ...base, resume: false, plugins: ["/tmp/claude-plugins/notion"], mcpServers });
+  const options = buildOptions({ ...base, writeMode: "Shared", resume: false, plugins: ["/tmp/claude-plugins/notion"], mcpServers });
   assert.deepEqual(options.settingSources, ["user", "project", "local"]);
   assert.equal(options.skills, "all");
   assert.equal(options.strictMcpConfig, false);
@@ -36,11 +36,11 @@ test("query options load explicit Claude plugins and credential-free connectors"
     preset: "claude_code",
     append: base.instructions,
   });
-  assert.equal(options.permissionMode, "default");
-  assert.equal(options.permissionPrompts, "none");
+  assert.equal(options.permissionMode, "acceptEdits");
+  assert.equal(options.permissionPrompts, undefined);
   assert.equal(options.allowedTools, undefined);
-  assert.deepEqual(options.tools, ["Read", "Grep", "Glob", "Skill", "TodoWrite"]);
-  assert.deepEqual(options.disallowedTools, ["Edit", "Write", "NotebookEdit", "Task"]);
+  assert.equal(options.tools, undefined);
+  assert.equal(options.disallowedTools, undefined);
 });
 
 test("Claude receives the compiled stable prefix before variable context", () => {
@@ -92,6 +92,7 @@ test("read-only network tools follow the routed network authority", () => {
 test("an explicit plugin launch policy is preserved", () => {
   const options = buildOptions({
     ...base,
+    writeMode: "Shared",
     plugins: [{ path: "/tmp/healthy", skipMcpDiscovery: false }],
   });
   assert.deepEqual(options.plugins, [{ type: "local", path: "/tmp/healthy", skipMcpDiscovery: false }]);

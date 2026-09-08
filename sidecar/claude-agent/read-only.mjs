@@ -61,6 +61,13 @@ export function readOnlyOptions({ networkAllowed = false, allowedMcpTools = [] }
     ? [...LOCAL_READ_TOOLS, ...NETWORK_CAPABLE_TOOLS]
     : [...LOCAL_READ_TOOLS];
   return {
+    // The isolated user source contains projected capabilities plus a sanitized
+    // settings document. Project/local settings can contain executable hooks,
+    // so a read-only worker never loads those sources directly.
+    settingSources: ["user"],
+    strictMcpConfig: true,
+    mcpServers: {},
+    plugins: [],
     permissionMode: "default",
     permissionPrompts: "none",
     tools,
