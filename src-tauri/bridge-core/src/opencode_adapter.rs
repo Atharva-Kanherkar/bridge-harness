@@ -182,6 +182,7 @@ fn launch(
         // Piped and tail-captured so a dead server reports its own error
         // instead of a generic exit.
         .stderr(Stdio::piped());
+    crate::build_cache::apply(&mut command, std::path::Path::new(request.cwd));
     crate::adapters::configure_process_group(&mut command);
     if let Some(on_progress) = request.on_progress {
         on_progress(crate::adapters::StartupPhase::Spawning);

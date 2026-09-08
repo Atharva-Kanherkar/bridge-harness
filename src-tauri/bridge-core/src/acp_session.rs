@@ -168,11 +168,18 @@ pub struct AcpLaunch {
 
 impl AcpLaunch {
     pub fn new(executable: impl Into<PathBuf>, cwd: impl Into<PathBuf>) -> Self {
+        let cwd = cwd.into();
         Self {
             executable: executable.into(),
             args: Vec::new(),
-            env: BTreeMap::new(),
-            cwd: cwd.into(),
+            // Shared per-repository build caches, so an ACP harness building in
+            // a worktree does not fill it. Set before any explicit `env` call,
+            // which therefore still wins.
+            env: crate::build_cache::env_for(&cwd)
+                .into_iter()
+                .map(|(key, value)| (key.to_owned(), value.to_string_lossy().into_owned()))
+                .collect(),
+            cwd,
             client_name: "bridge".into(),
             ledger_kind: "acp.session",
             handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,

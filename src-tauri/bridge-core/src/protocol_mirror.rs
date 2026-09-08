@@ -585,6 +585,40 @@ fn worktree_inventory_entry_mirrors_core() {
 }
 
 #[test]
+fn archive_chat_result_mirrors_core() {
+    assert_mirrors::<wire::ArchiveChatResult>(&crate::worktree_registry::ArchiveChatResult {
+        archived: true,
+        bytes_freed: 0,
+        worktree_detail: Some("uncommitted changes".into()),
+    });
+}
+
+#[test]
+fn worktree_reclaim_result_mirrors_core() {
+    assert_mirrors::<wire::WorktreeReclaimResult>(
+        &crate::worktree_registry::WorktreeReclaimResult {
+            reclaimed: false,
+            bytes_freed: 0,
+            disposition: "at_risk".into(),
+            detail: Some("uncommitted changes".into()),
+        },
+    );
+}
+
+#[test]
+fn worktree_sweep_result_mirrors_core() {
+    assert_mirrors::<wire::WorktreeSweepResult>(&crate::worktree_registry::SweepOutcome {
+        removed: 2,
+        removed_bytes: 8_388_608,
+        retained: 3,
+        retained_bytes: 4_194_304,
+        over_budget_bytes: 0,
+        skipped: 1,
+        measurements_truncated: 0,
+    });
+}
+
+#[test]
 fn worktree_usage_mirrors_core() {
     assert_mirrors::<wire::WorktreeUsage>(&crate::worktree_registry::WorktreeUsage {
         total_count: 3,

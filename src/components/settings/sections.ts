@@ -1,4 +1,4 @@
-// The nine settings pages and the four rail groups they sit in.
+// The ten settings pages and the four rail groups they sit in.
 //
 // Ids are wire-stable, not cosmetic: `App.tsx` opens `permissions` from the
 // bypass badge and `prompts` from the usage panel, so renaming either would
@@ -15,7 +15,8 @@ export type Section =
   | "prompts"
   | "harnesses"
   | "work"
-  | "import";
+  | "import"
+  | "storage";
 
 export type RailGroup = "General" | "Agents" | "Runtimes" | "Data";
 
@@ -29,6 +30,7 @@ export const SECTION_LABELS: Record<Section, string> = {
   harnesses: "Harnesses",
   work: "Work briefing",
   import: "Import",
+  storage: "Storage",
 };
 
 /** Rail order. The list is the contract: General, Agents, Runtimes, Data. */
@@ -36,7 +38,7 @@ export const SECTION_ORDER: { group: RailGroup; sections: Section[] }[] = [
   { group: "General", sections: ["appearance", "permissions", "composer"] },
   { group: "Agents", sections: ["agents", "models", "prompts"] },
   { group: "Runtimes", sections: ["harnesses"] },
-  { group: "Data", sections: ["work", "import"] },
+  { group: "Data", sections: ["work", "import", "storage"] },
 ];
 
 export const ALL_SECTIONS: Section[] = SECTION_ORDER.flatMap(group => group.sections);
