@@ -100,6 +100,8 @@ export type BridgeMethod =
   | "worktrees/discard_worker_worktree"
   | "worktrees/list_worktrees"
   | "worktrees/worktree_usage"
+  | "worktrees/reclaim_worktree"
+  | "worktrees/sweep_worktrees"
   | "routing/get_router_preferences"
   | "routing/update_router_preferences"
   | "routing/rollback_routing_policy"
@@ -269,6 +271,8 @@ export const BRIDGE_METHODS = [
   { method: "worktrees/discard_worker_worktree", domain: "worktrees", command: "discard_worker_worktree" },
   { method: "worktrees/list_worktrees", domain: "worktrees", command: "list_worktrees" },
   { method: "worktrees/worktree_usage", domain: "worktrees", command: "worktree_usage" },
+  { method: "worktrees/reclaim_worktree", domain: "worktrees", command: "reclaim_worktree" },
+  { method: "worktrees/sweep_worktrees", domain: "worktrees", command: "sweep_worktrees" },
   { method: "routing/get_router_preferences", domain: "routing", command: "get_router_preferences" },
   { method: "routing/update_router_preferences", domain: "routing", command: "update_router_preferences" },
   { method: "routing/rollback_routing_policy", domain: "routing", command: "rollback_routing_policy" },
@@ -498,6 +502,8 @@ export interface BridgeMethodParams {
   "worktrees/discard_worker_worktree": DiscardWorkerWorktreeParams;
   "worktrees/list_worktrees": undefined;
   "worktrees/worktree_usage": undefined;
+  "worktrees/reclaim_worktree": ReclaimWorktreeParams;
+  "worktrees/sweep_worktrees": undefined;
   "routing/get_router_preferences": GetRouterPreferencesParams;
   "routing/update_router_preferences": UpdateRouterPreferencesParams;
   "routing/rollback_routing_policy": RollbackRoutingPolicyParams;
@@ -669,6 +675,8 @@ export interface BridgeMethodResults {
   "worktrees/discard_worker_worktree": WorkerRepositoryBinding;
   "worktrees/list_worktrees": WorktreeInventoryResult;
   "worktrees/worktree_usage": WorktreeUsage;
+  "worktrees/reclaim_worktree": WorktreeReclaimResult;
+  "worktrees/sweep_worktrees": WorktreeSweepResult;
   "routing/get_router_preferences": RouterPreferences;
   "routing/update_router_preferences": RouterPreferences;
   "routing/rollback_routing_policy": unknown;
@@ -2712,6 +2720,27 @@ export interface WorktreeUsage {
   totalBytes: number;
   totalCount: number;
   workerIdleTtlSeconds: number;
+}
+
+export interface ReclaimWorktreeParams {
+  worktreeId: string;
+}
+
+export interface WorktreeReclaimResult {
+  bytesFreed: number;
+  detail?: string | null;
+  disposition: string;
+  reclaimed: boolean;
+}
+
+export interface WorktreeSweepResult {
+  measurementsTruncated: number;
+  overBudgetBytes: number;
+  removed: number;
+  removedBytes: number;
+  retained: number;
+  retainedBytes: number;
+  skipped: number;
 }
 
 export interface GetRouterPreferencesParams {

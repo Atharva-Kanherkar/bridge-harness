@@ -5,7 +5,7 @@ import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { normalizeAgentToken } from "./agentMention";
 import { createInvokeQueue } from "./invokeQueue";
 import { asWireKind, readWireKind } from "./transcript/wire";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeUsage } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
 import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
@@ -495,7 +495,7 @@ const mockPendingAdoption: WorkerRepositoryBinding = {
 // Three shapes worth seeing without the desktop app: one collectable, one that
 // nothing may touch because its work is unadopted, and one a developer made by
 // hand that Bridge reports but never reclaims.
-const mockWorktrees: WorktreeInventoryEntry[] = [
+let mockWorktrees: WorktreeInventoryEntry[] = [
   {
     id: "wt-1", kind: "worker", repoRoot: "/tmp/bridge/session-supervisor",
     path: "/tmp/bridge/worker-1w", branch: "bridge/worker-1w",
@@ -1376,6 +1376,32 @@ export const bridgeApi = {
   worktreeUsage: async (): Promise<WorktreeUsage> => {
     if (isTauri()) return call("worktrees/worktree_usage");
     return structuredClone(mockWorktreeUsage);
+  },
+  // A refusal is a result, not a thrown error: the caller renders "no, and
+  // here is why" next to the row it asked about.
+  reclaimWorktree: async (worktreeId: string): Promise<WorktreeReclaimResult> => {
+    if (isTauri()) return call("worktrees/reclaim_worktree", { worktreeId });
+    const entry = mockWorktrees.find(item => item.id === worktreeId);
+    if (!entry) throw new Error(`no worktree ${worktreeId} is recorded`);
+    if (entry.disposition !== "reclaimable" && entry.disposition !== "pushed_unmerged") {
+      return { reclaimed: false, bytesFreed: 0, disposition: entry.disposition ?? "retained", detail: entry.retainedReason };
+    }
+    mockWorktrees = mockWorktrees.filter(item => item.id !== worktreeId);
+    return { reclaimed: true, bytesFreed: entry.sizeBytes ?? 0, disposition: entry.disposition, detail: null };
+  },
+  sweepWorktrees: async (): Promise<WorktreeSweepResult> => {
+    if (isTauri()) return call("worktrees/sweep_worktrees");
+    const collectable = mockWorktrees.filter(item => item.disposition === "reclaimable");
+    mockWorktrees = mockWorktrees.filter(item => item.disposition !== "reclaimable");
+    return {
+      removed: collectable.length,
+      removedBytes: collectable.reduce((total, item) => total + (item.sizeBytes ?? 0), 0),
+      retained: mockWorktrees.length,
+      retainedBytes: mockWorktrees.reduce((total, item) => total + (item.sizeBytes ?? 0), 0),
+      overBudgetBytes: 0,
+      skipped: 0,
+      measurementsTruncated: 0,
+    };
   },
   registerVerifierManifest: async (source: string, manifest: VerifierManifest): Promise<void> => {
     if (isTauri()) return unit(call("completion/register_verifier_manifest", { source, manifest }));

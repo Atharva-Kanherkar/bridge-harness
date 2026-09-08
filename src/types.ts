@@ -114,6 +114,8 @@ export type {
   VerifierManifest,
   WorkerRepositoryBinding,
   WorktreeInventoryEntry,
+  WorktreeReclaimResult,
+  WorktreeSweepResult,
   WorktreeRepositoryUsage,
   WorktreeUsage,
   Workspace,

@@ -3572,6 +3572,39 @@ pub fn worktree_usage(
     )
 }
 
+/// Reclaim one checkout because a person asked. A refusal comes back in the
+/// result, with its reason, rather than as an error.
+pub fn reclaim_worktree(
+    core: &Arc<BridgeCore>,
+    worktree_id: &str,
+) -> Result<worktree_registry::WorktreeReclaimResult, BridgeError> {
+    let outcome = worktree_registry::reclaim(
+        &core.db,
+        &core.worktrees,
+        worktree_id,
+        &worktree_registry::WorktreeRetention::default(),
+    )?;
+    if outcome.reclaimed {
+        core.events.publish(CoreEvent::StateChanged);
+    }
+    Ok(outcome)
+}
+
+/// Run the maintenance pass now instead of waiting for the tick.
+pub fn sweep_worktrees(
+    core: &Arc<BridgeCore>,
+) -> Result<worktree_registry::SweepOutcome, BridgeError> {
+    let outcome = worktree_registry::run_requested_pass(
+        &core.db,
+        &core.worktrees,
+        &worktree_registry::WorktreeRetention::default(),
+    )?;
+    if outcome.removed > 0 {
+        core.events.publish(CoreEvent::StateChanged);
+    }
+    Ok(outcome)
+}
+
 /// Merge a worker's isolated worktree into the task checkout. Integration
 /// refuses to run against a dirty or active task worktree, so a rejected call
 /// leaves the work pending rather than losing it.

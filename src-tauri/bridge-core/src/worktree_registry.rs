@@ -867,9 +867,22 @@ pub fn reconcile(
     let mut outcome = ReconcileOutcome::default();
     let known = { candidates(&db.lock().unwrap())? };
 
-    // Every repository worth asking git about. Grows as orphan adoption finds
-    // checkouts whose repository nothing else names.
-    let mut repos: Vec<PathBuf> = Vec::new();
+    // Every repository worth asking git about. Seeded from the repositories
+    // Bridge already knows — its projects and workspaces — not only from rows
+    // that happen to exist, or a fresh install with no Bridge worktrees yet
+    // would never notice a stale registration or report a developer's own
+    // checkout. Grows further as orphan adoption finds repositories nothing
+    // else names.
+    let mut repos: Vec<PathBuf> = {
+        let db = db.lock().unwrap();
+        let mut statement = db.prepare(
+            "SELECT path FROM projects WHERE COALESCE(path,'')<>''
+             UNION
+             SELECT path FROM workspaces WHERE COALESCE(path,'')<>''",
+        )?;
+        let rows = statement.query_map([], |row| row.get::<_, String>(0))?;
+        rows.filter_map(Result::ok).map(PathBuf::from).collect()
+    };
 
     // Rows whose directory is gone: record that, and let git drop the
     // registration it may still be holding.
@@ -1185,7 +1198,8 @@ pub fn human_bytes(bytes: u64) -> String {
 
 // --- sweep --------------------------------------------------------------------
 
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SweepOutcome {
     pub removed: usize,
     pub removed_bytes: u64,
@@ -1516,6 +1530,121 @@ fn settle_empty_binding(db: &Connection, canonical_path: &str) -> Result<(), Bri
         crate::worker_adoption::release_branch_for(db, &session_id);
     }
     Ok(())
+}
+
+/// What an explicit reclaim did, or why it did not.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeReclaimResult {
+    pub reclaimed: bool,
+    pub bytes_freed: i64,
+    /// The disposition the reclaim decided against, fresh.
+    pub disposition: String,
+    /// Why it was refused, in words meant for a person. `None` on success.
+    pub detail: Option<String>,
+}
+
+/// Reclaim one inventoried checkout because a person asked for it.
+///
+/// The classification is the sweep's, and the refusals are the sweep's: at-risk,
+/// retained and unverifiable checkouts come back refused with their reason
+/// rather than as an error, because "no, and here is why" is the useful answer
+/// for a button.
+///
+/// One deliberate difference. A checkout whose every commit is already on a
+/// remote — `pushed_unmerged` — is retained by the unattended sweep and
+/// reclaimed here, because the difference is who is asking: a person clicking
+/// Reclaim on a row that says so has been told what they are discarding. The
+/// sweep has nobody to tell. Nothing unique to this disk is removed on either
+/// path.
+pub fn reclaim(
+    db: &Mutex<Connection>,
+    namespace_root: &Path,
+    worktree_id: &str,
+    retention: &WorktreeRetention,
+) -> Result<WorktreeReclaimResult, BridgeError> {
+    let record = {
+        let db = db.lock().unwrap();
+        records(&db)?
+            .into_iter()
+            .find(|row| row.id == worktree_id)
+            .ok_or_else(|| BridgeError::Invalid(format!("no worktree {worktree_id} is recorded")))?
+    };
+    if !record.is_candidate() {
+        return Ok(WorktreeReclaimResult {
+            reclaimed: false,
+            bytes_freed: 0,
+            disposition: STATE_EXTERNAL.to_owned(),
+            detail: Some(
+                "this checkout is not one Bridge created, so Bridge will not remove it".into(),
+            ),
+        });
+    }
+    if !inside_namespace(record.as_path(), namespace_root) {
+        return Ok(WorktreeReclaimResult {
+            reclaimed: false,
+            bytes_freed: 0,
+            disposition: STATE_EXTERNAL.to_owned(),
+            detail: Some("this checkout sits outside Bridge's worktree namespace".into()),
+        });
+    }
+
+    let explicit = WorktreeRetention {
+        pushed_unmerged: PushedUnmergedPolicy::Delete,
+        ..*retention
+    };
+    let facts = { classification_facts(&db.lock().unwrap(), &record)? };
+    let disposition = classify_with(&record, &facts);
+    if !is_removable(&disposition, &explicit) {
+        let detail = disposition
+            .reason()
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("this checkout is {}", disposition.label()));
+        {
+            let db = db.lock().unwrap();
+            record_assessment(&db, &record.id, &disposition)?;
+        }
+        return Ok(WorktreeReclaimResult {
+            reclaimed: false,
+            bytes_freed: 0,
+            disposition: disposition.label().to_owned(),
+            detail: Some(detail),
+        });
+    }
+
+    let bytes = if record.as_path().is_dir() {
+        directory_size(record.as_path()).0
+    } else {
+        0
+    };
+    // `remove_recorded_worktree` re-decides for itself, so a race between the
+    // classification above and this call still cannot destroy work.
+    let reclaimed = remove_recorded_worktree(db, namespace_root, &record, bytes, &explicit)?;
+    let detail = if reclaimed {
+        None
+    } else {
+        let db = db.lock().unwrap();
+        records(&db)?
+            .into_iter()
+            .find(|row| row.id == worktree_id)
+            .and_then(|row| row.retained_reason)
+    };
+    Ok(WorktreeReclaimResult {
+        reclaimed,
+        bytes_freed: if reclaimed { bytes as i64 } else { 0 },
+        disposition: disposition.label().to_owned(),
+        detail,
+    })
+}
+
+/// A full maintenance pass, run because a person asked. Same work the tick does.
+pub fn run_requested_pass(
+    db: &Mutex<Connection>,
+    namespace_root: &Path,
+    retention: &WorktreeRetention,
+) -> Result<SweepOutcome, BridgeError> {
+    reconcile(db, namespace_root)?;
+    sweep(db, namespace_root, retention)
 }
 
 /// Run a reconcile and a sweep, reporting anything a person would want to know.
@@ -2549,6 +2678,121 @@ mod tests {
         assert_eq!(outcome.removed, 0);
         assert!(outside.is_dir(), "somebody else's worktree survives");
         assert!(outside.join("base.txt").is_file());
+    }
+
+    // --- explicit reclaim -----------------------------------------------------
+
+    #[test]
+    fn reclaim_refuses_a_checkout_bridge_did_not_create() {
+        let fixture = fixture();
+        let outside = fixture._dir.path().join("hand-made");
+        git_cmd(
+            &fixture.repo,
+            &["worktree", "add", "-q", "-b", "chore/hand-made", outside.to_str().unwrap(), "HEAD"],
+        );
+        reconcile(&fixture.db, &fixture.namespace).unwrap();
+        let id = record(&fixture, &outside).id;
+
+        let outcome = reclaim(
+            &fixture.db,
+            &fixture.namespace,
+            &id,
+            &WorktreeRetention::default(),
+        )
+        .unwrap();
+        assert!(!outcome.reclaimed);
+        assert!(
+            outcome.detail.unwrap().contains("not one Bridge created"),
+            "the refusal says why",
+        );
+        assert!(outside.is_dir());
+    }
+
+    #[test]
+    fn reclaim_refuses_work_that_exists_nowhere_else_and_says_why() {
+        let fixture = fixture();
+        let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
+        commit_in(&path, "only-here.txt");
+        let id = record(&fixture, &path).id;
+
+        let outcome = reclaim(
+            &fixture.db,
+            &fixture.namespace,
+            &id,
+            &WorktreeRetention::default(),
+        )
+        .unwrap();
+        assert!(!outcome.reclaimed);
+        assert_eq!(outcome.disposition, "at_risk");
+        assert!(
+            outcome.detail.unwrap().contains("only in this checkout"),
+            "and it is a result, not an error",
+        );
+        assert!(path.is_dir());
+    }
+
+    /// The difference between the sweep and a person: the sweep retains a
+    /// checkout whose commits are all on a remote, and a person who has been
+    /// shown that may discard it.
+    #[test]
+    fn an_explicit_reclaim_may_take_pushed_work_the_sweep_retains() {
+        let fixture = fixture();
+        let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
+        commit_in(&path, "shared.txt");
+        git_cmd(&path, &["push", "-q", "origin", "bridge/task-worker-child"]);
+        age(&fixture, &path, 2 * 24 * 60 * 60);
+        let id = record(&fixture, &path).id;
+
+        assert_eq!(
+            sweep(&fixture.db, &fixture.namespace, &WorktreeRetention::default())
+                .unwrap()
+                .removed,
+            0,
+            "the unattended sweep leaves it alone",
+        );
+        let outcome = reclaim(
+            &fixture.db,
+            &fixture.namespace,
+            &id,
+            &WorktreeRetention::default(),
+        )
+        .unwrap();
+        assert!(outcome.reclaimed, "{outcome:?}");
+        assert!(outcome.bytes_freed > 0);
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn reclaiming_an_unrecorded_id_is_an_error_not_a_silent_success() {
+        let fixture = fixture();
+        let error = reclaim(
+            &fixture.db,
+            &fixture.namespace,
+            "no-such-id",
+            &WorktreeRetention::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, BridgeError::Invalid(_)), "{error:?}");
+    }
+
+    #[test]
+    fn a_requested_pass_reconciles_before_it_sweeps() {
+        let fixture = fixture();
+        let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
+        // No row at all: only the reconcile half can find this.
+        fixture
+            .db
+            .lock()
+            .unwrap()
+            .execute("DELETE FROM worktrees", [])
+            .unwrap();
+
+        run_requested_pass(&fixture.db, &fixture.namespace, &WorktreeRetention::default()).unwrap();
+        assert_eq!(
+            record(&fixture, &path).state,
+            STATE_ORPHANED,
+            "the pass adopted it before deciding anything about it",
+        );
     }
 
     // --- capacity -------------------------------------------------------------

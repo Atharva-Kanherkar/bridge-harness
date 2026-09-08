@@ -653,6 +653,20 @@
       "resultSchema": "worktree-usage.json"
     },
     {
+      "command": "reclaim_worktree",
+      "domain": "worktrees",
+      "method": "worktrees/reclaim_worktree",
+      "paramsSchema": "reclaim-worktree-params.json",
+      "resultSchema": "worktree-reclaim-result.json"
+    },
+    {
+      "command": "sweep_worktrees",
+      "domain": "worktrees",
+      "method": "worktrees/sweep_worktrees",
+      "paramsSchema": null,
+      "resultSchema": "worktree-sweep-result.json"
+    },
+    {
       "command": "get_router_preferences",
       "domain": "routing",
       "method": "routing/get_router_preferences",

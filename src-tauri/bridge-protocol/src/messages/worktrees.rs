@@ -64,3 +64,36 @@ pub struct WorktreeUsage {
     pub github_idle_ttl_seconds: i64,
     pub repositories: Vec<WorktreeRepositoryUsage>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ReclaimWorktreeParams {
+    pub worktree_id: String,
+}
+
+/// What an explicit reclaim did, or why it did not. Mirrors
+/// `bridge_core::worktree_registry::WorktreeReclaimResult`.
+///
+/// A refusal is a *result*, not an error: "no, and here is why" is the useful
+/// answer for a button, and `detail` carries the reason in words.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeReclaimResult {
+    pub reclaimed: bool,
+    pub bytes_freed: i64,
+    pub disposition: String,
+    pub detail: Option<String>,
+}
+
+/// Mirrors `bridge_core::worktree_registry::SweepOutcome`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct WorktreeSweepResult {
+    pub removed: usize,
+    pub removed_bytes: u64,
+    pub retained: usize,
+    pub retained_bytes: u64,
+    pub over_budget_bytes: u64,
+    pub skipped: usize,
+    pub measurements_truncated: usize,
+}

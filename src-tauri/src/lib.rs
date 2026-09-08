@@ -637,6 +637,21 @@ async fn worktree_usage(
 }
 
 #[tauri::command]
+async fn reclaim_worktree(
+    worktree_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::worktree_registry::WorktreeReclaimResult, BridgeError> {
+    api::reclaim_worktree(state.inner(), &worktree_id)
+}
+
+#[tauri::command]
+async fn sweep_worktrees(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::worktree_registry::SweepOutcome, BridgeError> {
+    api::sweep_worktrees(state.inner())
+}
+
+#[tauri::command]
 async fn adopt_worker_worktree(
     session_id: String,
     state: State<'_, Arc<BridgeCore>>,
@@ -2073,6 +2088,8 @@ pub fn run() {
             pending_worker_adoptions,
             list_worktrees,
             worktree_usage,
+            reclaim_worktree,
+            sweep_worktrees,
             adopt_worker_worktree,
             discard_worker_worktree,
             register_verifier_manifest,

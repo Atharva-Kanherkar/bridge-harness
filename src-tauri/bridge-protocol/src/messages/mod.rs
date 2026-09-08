@@ -267,6 +267,8 @@ typed_methods![
     // worktree inventory and retention
     (ListWorktrees, _, WorktreeInventoryResult),
     (WorktreeUsageReport, _, WorktreeUsage),
+    (ReclaimWorktree, ReclaimWorktreeParams, WorktreeReclaimResult),
+    (SweepWorktrees, _, WorktreeSweepResult),
     // routing
     (GetRouterPreferences, GetRouterPreferencesParams, RouterPreferences),
     (UpdateRouterPreferences, UpdateRouterPreferencesParams, RouterPreferences),

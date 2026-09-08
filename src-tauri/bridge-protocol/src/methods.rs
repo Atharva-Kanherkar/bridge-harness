@@ -149,6 +149,8 @@ methods![
     // worktree inventory and retention
     (ListWorktrees, "worktrees", "list_worktrees"),
     (WorktreeUsageReport, "worktrees", "worktree_usage"),
+    (ReclaimWorktree, "worktrees", "reclaim_worktree"),
+    (SweepWorktrees, "worktrees", "sweep_worktrees"),
     // routing
     (GetRouterPreferences, "routing", "get_router_preferences"),
     (UpdateRouterPreferences, "routing", "update_router_preferences"),
