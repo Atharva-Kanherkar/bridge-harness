@@ -7061,6 +7061,37 @@ fn record_provider_limit(db: &Connection, session_id: &str, text: Option<&str>) 
         session_id,
         limit.reset_at,
     );
+    // The provenance marker. Only this function writes it, and only from an
+    // adapter error frame, so it is the one quota claim about a session that
+    // did not come through the worker's own words.
+    let _ = store::event(
+        db,
+        "provider",
+        PROVIDER_LIMIT_OBSERVED,
+        session_id,
+        &limit.signal,
+    );
+}
+
+/// The event that says "the provider itself said it is out", as opposed to a
+/// worker saying so in prose.
+const PROVIDER_LIMIT_OBSERVED: &str = "provider.limit_observed";
+
+/// Whether Bridge watched this session's provider report a usage limit.
+///
+/// The distinction is the difference between reading evidence and taking
+/// dictation. `worker_retry::classify` finds quota wording by substring in the
+/// worker's `summary`, `risks` and `remainingWork` — all worker-authored — so
+/// a compromised or prompt-injected worker can write "usage limit" and have
+/// Bridge act on it. That is tolerable for a cooldown; it is not tolerable for
+/// spawning a process.
+fn provider_limit_was_observed(db: &Connection, child_session_id: &str) -> bool {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM events WHERE entity_id=?1 AND kind=?2)",
+        params![child_session_id, PROVIDER_LIMIT_OBSERVED],
+        |row| row.get::<_, bool>(0),
+    )
+    .unwrap_or(false)
 }
 
 /// The parent a worker reports to, if it has one.
@@ -7428,11 +7459,22 @@ fn settle_worker_after_result(
     // present in the forest, absent from every "is it still running" query.
     if matches!(result.status, delegation::WorkerResultStatus::Cancelled) {
         if current.as_deref() != Some("cancelled") {
-            let _ = session_supervisor::SessionSupervisor::transition(
+            // Not `let _`: a swallowed failure here leaves the worker in its
+            // old state while the caller tears the process down and tells the
+            // parent it ended. A `warm` worker that survives its own
+            // cancellation is still eligible for reuse, so the next matching
+            // objective resumes a session whose process is gone.
+            session_supervisor::SessionSupervisor::transition(
                 &state.db.lock().unwrap(),
                 child_session_id,
                 worker_lifecycle::WorkerLifecycleState::Cancelled,
                 Some("stop_requested"),
+            )?;
+            // Warmth is an offer to reuse this session. A cancelled worker is
+            // not on offer, and the pool reads this column, not the lifecycle.
+            let _ = state.db.lock().unwrap().execute(
+                "UPDATE worker_runtime SET warm_until=NULL,updated_at=?2 WHERE session_id=?1",
+                params![child_session_id, Utc::now().to_rfc3339()],
             );
         }
         return Ok(true);
@@ -7506,9 +7548,16 @@ fn settle_worker_after_result(
     // around: the work is fine, the account is not. Marking the cooldown was
     // only ever half the job — until this, the objective died with a "retry or
     // delegate differently" note and waited for the orchestrator to notice.
-    let failover = quota_signal
-        .as_deref()
-        .map(|signal| fail_over_exhausted_worker(core, child_session_id, signal));
+    // Relaunching an objective starts a process, spends the objective's paid
+    // attempt and moves routing for the whole workspace. That is too much to
+    // hand to a string match on text the worker wrote about itself: a worker
+    // that emits a failed result mentioning "usage limit" would otherwise be
+    // able to spawn its own sibling. Bridge acts on what it watched the
+    // provider do, and treats the worker's account of it as prose.
+    let failover = quota_signal.as_deref().filter(|_| {
+        provider_limit_was_observed(&state.db.lock().unwrap(), child_session_id)
+    })
+    .map(|signal| fail_over_exhausted_worker(core, child_session_id, signal));
     // Retrying the same harness in place is only ever declined here when it
     // was actually about to be retried; a decline `decide` already reached
     // for another reason keeps its own reason.
@@ -15877,6 +15926,129 @@ mod retry_settlement_tests {
             fail_over_exhausted_worker(&core, "child", "usage limit"),
             FailoverOutcome::OutOfBudget
         );
+    }
+
+    /// Failover starts a process and spends the objective's paid attempt, so
+    /// it must not be reachable from text the worker wrote about itself. A
+    /// worker that says "usage limit" in its own result is making a claim,
+    /// not producing evidence.
+    #[test]
+    fn worker_prose_alone_cannot_trigger_a_failover() {
+        let (_fixture, core, sent, _guard) = core_with_working_worker();
+        let result = failed("Request failed: 429 rate limit exceeded, please try again later");
+
+        assert!(settle_worker_after_result(&core, "child", &result).unwrap());
+
+        let db = core.db.lock().unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM events WHERE kind IN ('router.harness_failover','router.no_eligible_route')",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0,
+            "no reroute was attempted on the worker's say-so"
+        );
+        let key = worker_objective_key(&db, "child").unwrap();
+        assert_eq!(
+            worker_retry::attempts_spent(&db, &key).unwrap(),
+            0,
+            "the objective's paid attempt is intact"
+        );
+        drop(db);
+        assert!(sent.lock().unwrap().is_empty(), "and no turn was spent");
+    }
+
+    /// The same wording, once Bridge has watched the provider say it, is
+    /// evidence — and then the reroute is exactly what should happen.
+    #[test]
+    fn an_observed_provider_limit_does_reach_the_failover_path() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        {
+            let db = core.db.lock().unwrap();
+            store::event(&db, "provider", PROVIDER_LIMIT_OBSERVED, "child", "usage limit").unwrap();
+        }
+        let result = failed("Request failed: 429 rate limit exceeded, please try again later");
+
+        assert!(settle_worker_after_result(&core, "child", &result).unwrap());
+
+        assert_eq!(
+            core.db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM events WHERE kind='router.no_eligible_route'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1,
+            "the fixture has no second harness, so the reroute lands on the blocked path"
+        );
+    }
+
+    /// The error frame is the only writer of the provenance marker, so a
+    /// worker cannot forge the evidence that unlocks the failover path.
+    #[test]
+    fn only_the_provider_s_own_frame_writes_the_observation_marker() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        // Frames are parsed per harness, so the session has to be the one
+        // whose shape this frame is.
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET harness='codex' WHERE id='child'", [])
+            .unwrap();
+        let frame = serde_json::json!({
+            "method": "turn/completed",
+            "params": {"turn": {"id": "t", "status": "failed", "error": {
+                "message": "You've hit your usage limit."
+            }}}
+        });
+        let turn = Arc::new(Mutex::new(Some("t".into())));
+        handle_agent_value(&core, "child", &turn, &frame);
+
+        assert!(provider_limit_was_observed(&core.db.lock().unwrap(), "child"));
+    }
+
+    /// `Cancelled` used to be reachable only from `working` and `waiting`, so
+    /// stopping a warm worker tore down its process, told the parent it had
+    /// ended, and left the session `warm` — still on offer to the pool, with
+    /// nothing behind it.
+    #[test]
+    fn stopping_a_warm_worker_retires_it_instead_of_leaving_it_reusable() {
+        for state in ["warm", "starting", "checkpointing", "resuming", "restored"] {
+            let (_fixture, core, _sent, _guard) = core_with_working_worker();
+            core.db
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE worker_runtime SET lifecycle_state=?1,warm_until=?2 WHERE session_id='child'",
+                    params![state, (Utc::now() + chrono::Duration::minutes(5)).to_rfc3339()],
+                )
+                .unwrap();
+
+            stop_worker_session(&core, "child", StopCause::User)
+                .unwrap_or_else(|error| panic!("stopping a {state} worker must succeed: {error}"));
+
+            let db = core.db.lock().unwrap();
+            let runtime = store::worker_runtime(&db, "child").unwrap().unwrap();
+            assert_eq!(runtime.lifecycle_state, "cancelled", "from {state}");
+            assert!(
+                runtime.warm_until.is_none(),
+                "a cancelled worker is not on offer for reuse (from {state})"
+            );
+            assert!(
+                worker_pool::WorkerPool::warm_workers_due(
+                    &db,
+                    Utc::now() + chrono::Duration::hours(1)
+                )
+                .unwrap()
+                .is_empty(),
+                "from {state}"
+            );
+        }
     }
 
     /// When nothing else is installed, the orchestrator has to be told that
