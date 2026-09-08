@@ -4,7 +4,7 @@ import test from "node:test";
 import { isMcpRead, makeReadOnlyHook, readOnlyOptions } from "../read-only.mjs";
 
 test("read-only options expose intended reads instead of misusing allowedTools", () => {
-  const local = readOnlyOptions({ networkAllowed: false });
+  const local = readOnlyOptions({ networkAllowed: false, mcpServers: { notion: {} } });
   assert.equal(local.allowedTools, undefined);
   assert.equal(local.permissionMode, "default");
   assert.equal(local.permissionPrompts, "none");
@@ -18,10 +18,15 @@ test("read-only options expose intended reads instead of misusing allowedTools",
   assert.deepEqual(local.disallowedTools, ["Edit", "Write", "NotebookEdit", "Task"]);
   assert.equal(typeof local.hooks.PreToolUse[0].hooks[0], "function");
 
-  const networked = readOnlyOptions({ networkAllowed: true });
+  const networked = readOnlyOptions({ networkAllowed: true, mcpServers: { notion: {} } });
   assert.ok(networked.tools.includes("WebFetch"));
   assert.ok(networked.tools.includes("WebSearch"));
   assert.ok(networked.tools.includes("Bash"));
+  assert.deepEqual(
+    networked.mcpServers,
+    { notion: {} },
+    "a networked read-only worker keeps the connected servers Bridge projected",
+  );
 });
 
 test("the Bridge hook allows local reads and explicitly denies mutation", async () => {
@@ -52,28 +57,39 @@ test("MCP matching is fail-closed and network authorization is enforced", async 
     "mcp__broken",
   ]) assert.equal(isMcpRead(name), false, name);
 
-  const offline = makeReadOnlyHook({ networkAllowed: false });
+  const offline = makeReadOnlyHook({
+    networkAllowed: false,
+    mcpServers: { notion: {} },
+  });
   assert.equal(
     (await offline({ tool_name: "mcp__notion__search" })).hookSpecificOutput.permissionDecision,
     "deny",
+    "no network route to any MCP server, projected or not",
   );
   const online = makeReadOnlyHook({
     networkAllowed: true,
-    allowedMcpTools: ["mcp__notion__search"],
+    mcpServers: { notion: {} },
   });
   assert.equal(
     (await online({ tool_name: "mcp__notion__search" })).hookSpecificOutput.permissionDecision,
     "allow",
+    "a read verb on a server Bridge actually connected is allowed",
   );
   assert.equal(
     (await online({ tool_name: "mcp__notion__create_page" })).hookSpecificOutput.permissionDecision,
     "deny",
+    "a mutating verb stays denied even on a connected server",
+  );
+  assert.equal(
+    (await online({ tool_name: "mcp__github__list_issues" })).hookSpecificOutput.permissionDecision,
+    "deny",
+    "a read verb on a server Bridge did not connect is not authority",
   );
   assert.equal(
     (await makeReadOnlyHook({ networkAllowed: true })({ tool_name: "mcp__notion__search" }))
       .hookSpecificOutput.permissionDecision,
     "deny",
-    "a read-looking name is not authority without an exact reviewed identity",
+    "a read-looking name is not authority without a reviewed connected server",
   );
 });
 

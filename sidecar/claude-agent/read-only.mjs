@@ -23,6 +23,12 @@ export function isMcpRead(toolName) {
   );
 }
 
+/** The `<server>` in `mcp__<server>__<tool>`, or null for a malformed name. */
+function mcpServerName(toolName) {
+  const split = toolName.indexOf("__", "mcp__".length);
+  return split > "mcp__".length ? toolName.slice("mcp__".length, split) : null;
+}
+
 function decision(permissionDecision, permissionDecisionReason) {
   return {
     continue: true,
@@ -34,10 +40,14 @@ function decision(permissionDecision, permissionDecisionReason) {
   };
 }
 
-export function makeReadOnlyHook({ networkAllowed = false, allowedMcpTools = [] } = {}) {
+export function makeReadOnlyHook({ networkAllowed = false, mcpServers = {} } = {}) {
   const local = new Set(LOCAL_READ_TOOLS);
   const network = new Set(NETWORK_CAPABLE_TOOLS);
-  const reviewedMcp = new Set(allowedMcpTools);
+  // The servers Bridge actually connected and handed to this worker (see
+  // claude_adapter.rs's `launch_mcp_servers`). Reading is scoped to exactly
+  // these — a server nobody projected has no reason to be reachable, and a
+  // mutating verb on a projected server is still denied below.
+  const reviewedServers = new Set(Object.keys(mcpServers));
   return async function readOnlyPreToolUse(input = {}) {
     const toolName = input.tool_name;
     if (local.has(toolName)) {
@@ -46,8 +56,8 @@ export function makeReadOnlyHook({ networkAllowed = false, allowedMcpTools = [] 
     if (networkAllowed && network.has(toolName)) {
       return decision("allow", `Bridge read-only network policy allows ${toolName}`);
     }
-    if (networkAllowed && reviewedMcp.has(toolName)) {
-      return decision("allow", `Bridge read-only policy allows reviewed MCP tool ${toolName}`);
+    if (networkAllowed && isMcpRead(toolName) && reviewedServers.has(mcpServerName(toolName))) {
+      return decision("allow", `Bridge read-only policy allows reviewed MCP server read ${toolName}`);
     }
     const reason = network.has(toolName) || isMcpRead(toolName)
       ? `Bridge read-only policy denied ${toolName} because this task has no network authorization`
@@ -56,24 +66,27 @@ export function makeReadOnlyHook({ networkAllowed = false, allowedMcpTools = [] 
   };
 }
 
-export function readOnlyOptions({ networkAllowed = false, allowedMcpTools = [] } = {}) {
+export function readOnlyOptions({ networkAllowed = false, mcpServers = {} } = {}) {
   const tools = networkAllowed
     ? [...LOCAL_READ_TOOLS, ...NETWORK_CAPABLE_TOOLS]
     : [...LOCAL_READ_TOOLS];
+  // Without network there is no route to any MCP server regardless of what
+  // Bridge projected, so the map is dropped rather than merely left unused.
+  const reviewedMcpServers = networkAllowed ? mcpServers : {};
   return {
     // The isolated user source contains projected capabilities plus a sanitized
     // settings document. Project/local settings can contain executable hooks,
     // so a read-only worker never loads those sources directly.
     settingSources: ["user"],
     strictMcpConfig: true,
-    mcpServers: {},
+    mcpServers: reviewedMcpServers,
     plugins: [],
     permissionMode: "default",
     permissionPrompts: "none",
     tools,
     disallowedTools: [...DIRECT_WRITE_TOOLS],
     hooks: {
-      PreToolUse: [{ hooks: [makeReadOnlyHook({ networkAllowed, allowedMcpTools })] }],
+      PreToolUse: [{ hooks: [makeReadOnlyHook({ networkAllowed, mcpServers: reviewedMcpServers })] }],
     },
   };
 }

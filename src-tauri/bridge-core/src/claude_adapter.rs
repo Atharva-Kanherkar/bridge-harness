@@ -224,13 +224,21 @@ fn launch(
         ContextLifecyclePhase::Start
     };
     let restricted_launch = briefing_config.is_some() || read_only_sandbox.is_some();
+    let network_allowed = read_only_sandbox
+        .map(|sandbox| sandbox.network_allowed())
+        .unwrap_or(true);
     let launch_plugins = if restricted_launch {
         Vec::new()
     } else {
         sdk_configuration.plugins.clone()
     };
+    // Briefings and networked read-only workers both run under `strictMcpConfig:
+    // true` (see read-only.mjs / briefing.mjs), so on-disk MCP config never
+    // reaches them — the discovered/connected server map below is the only way
+    // they ever see a connector. A non-networked read-only sandbox has no route
+    // to reach any MCP server anyway, so it gets none.
     let launch_mcp_servers = sidecar_mcp_servers(
-        briefing_config.is_some(),
+        briefing_config.is_some() || (read_only_sandbox.is_some() && network_allowed),
         &sdk_configuration.mcp_servers,
     );
     let launch_configuration = crate::marketplace::ClaudeSdkConfiguration {
@@ -254,7 +262,7 @@ fn launch(
         // system prompt so the child agent knows its single typed task.
         "instructions": instructions.map(str::trim).filter(|value| !value.is_empty()),
         "writeMode": write_mode.map(write_mode_label),
-        "networkAllowed": read_only_sandbox.map(|sandbox| sandbox.network_allowed()).unwrap_or(true),
+        "networkAllowed": network_allowed,
         "plugins": launch_plugins,
         "mcpServers": launch_mcp_servers,
         // Absent for every non-briefing session, so the sidecar's existing
