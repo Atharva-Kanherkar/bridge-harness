@@ -90,13 +90,14 @@
   <span class="tok-attr">"resume"</span><span class="tok-punct">:</span> <span class="tok-keyword">false</span><span class="tok-punct">,</span>
   <span class="tok-attr">"instructions"</span><span class="tok-punct">:</span> <span class="tok-string">"Follow the worker contract…"</span><span class="tok-punct">,</span>
   <span class="tok-attr">"writeMode"</span><span class="tok-punct">:</span> <span class="tok-string">"Isolated"</span><span class="tok-punct">,</span>
+  <span class="tok-attr">"networkAllowed"</span><span class="tok-punct">:</span> <span class="tok-keyword">true</span><span class="tok-punct">,</span>
   <span class="tok-attr">"plugins"</span><span class="tok-punct">:</span> <span class="tok-punct">[</span><span class="tok-string">"/…/claude-plugins/notion"</span><span class="tok-punct">],</span>
-  <span class="tok-attr">"mcpServers"</span><span class="tok-punct">:</span> <span class="tok-punct">{</span> <span class="tok-attr">"notion"</span><span class="tok-punct">:</span> <span class="tok-punct">{</span> <span class="tok-attr">"type"</span><span class="tok-punct">:</span> <span class="tok-string">"http"</span><span class="tok-punct">,</span> <span class="tok-attr">"url"</span><span class="tok-punct">:</span> <span class="tok-string">"…"</span> <span class="tok-punct">}</span> <span class="tok-punct">},</span>
+  <span class="tok-attr">"mcpServers"</span><span class="tok-punct">:</span> <span class="tok-punct">{},</span>
   <span class="tok-attr">"briefing"</span><span class="tok-punct">:</span> <span class="tok-keyword">null</span>
 <span class="tok-punct">}</span></code></pre></div>
             </div>
 
-            <p><code>options.mjs</code>'s <code>buildOptions</code> turns this into the SDK's own options object. <code>model</code> defaults to <code>"sonnet"</code> whenever the field is missing or blank. <code>effort</code> never reaches the SDK directly — Claude Code has no per-run effort flag, so the adapter's closest real knob is the extended-thinking budget, set through the <code>MAX_THINKING_TOKENS</code> environment variable: <code>16000</code> for <code>high</code>, <code>32000</code> for <code>xhigh</code>, and left alone — Claude Code's own default — for <code>low</code> and <code>medium</code>.</p>
+            <p><code>options.mjs</code>'s <code>buildOptions</code> turns this into the SDK's own options object. <code>model</code> defaults to <code>"sonnet"</code> whenever the field is missing or blank. Supported <code>effort</code> values (<code>low</code> through <code>max</code>) reach the SDK through its native <code>Options.effort</code> field; an unknown value is omitted rather than guessed. Normal sessions load <code>user</code>, <code>project</code>, and <code>local</code> setting sources so installed skills, commands, agents, and native connector sign-in remain visible. Plugin skills still load, but plugin-bundled MCP auto-discovery is disabled unless the launch explicitly opts it back in; this prevents an authentication-required plugin server from stalling every turn.</p>
 
             <p><code>writeMode</code> selects a <code>permissionMode</code>, and for <code>ReadOnly</code>, an explicit built-in tool allow and deny list:</p>
 
@@ -104,14 +105,14 @@
               <table>
                 <thead><tr><th>Write mode</th><th>permissionMode</th><th>Built-in tool access</th></tr></thead>
                 <tbody>
-                  <tr><td><code>ReadOnly</code></td><td><code>dontAsk</code></td><td>Allowed: Read, Grep, Glob, Bash. Denied: Edit, Write, NotebookEdit.</td></tr>
+                  <tr><td><code>ReadOnly</code></td><td><code>default</code>, with prompts disabled</td><td>Visible local reads: Read, Grep, Glob, Skill, TodoWrite. Bash and WebFetch/WebSearch appear only with task network authority. A Bridge-owned PreToolUse hook allows only exact reviewed MCP identities and denies mutation or unknown tools.</td></tr>
                   <tr><td><code>Shared</code> / <code>Isolated</code></td><td><code>acceptEdits</code></td><td>File edits proceed without a prompt; no explicit allow or deny list.</td></tr>
                   <tr><td><code>Full</code> (or unset)</td><td><code>bypassPermissions</code></td><td><code>allowDangerouslySkipPermissions: true</code> — every tool call proceeds unprompted.</td></tr>
                 </tbody>
               </table>
             </div>
 
-            <p><code>ReadOnly</code> still allows Bash. That's a tool-identity allow-list enforced by the SDK's own permission layer, not a sandboxed shell — it stops Claude from calling <code>Edit</code> or <code>Write</code>, not from running a shell command that deletes a file. Bridge's actual filesystem-level containment for an untrusted run is the separate read-only sandbox covered next.</p>
+            <p><code>ReadOnly</code> allows Bash only when the task also has network authority. It loads only Bridge's isolated, sanitized user setting source: project/local hooks, inherited MCP startup, and plugins are withheld. The SDK policy removes direct mutation tools and names every hook denial, while the separate read-only sandbox makes the checkout and projected host capability sources immutable and leaves one per-worker output directory writable.</p>
 
             <p><code>instructions</code> — Bridge's delegation protocol and worker brief — never becomes the whole system prompt. It's appended to Claude Code's own built-in preset: <code>systemPrompt: { type: "preset", preset: "claude_code", append: instructions }</code>. Bridge's own prompt-capability ledger records why precisely: Claude's <code>appendable</code> verdict is <code>Supported</code>, because that's what ships; its <code>replaceable</code> verdict is <code>Unsupported</code>, because nobody has yet proven what a bare-string <code>systemPrompt</code> — which the SDK also accepts, and which would replace the preset outright instead of appending to it — actually does to Claude Code's own tool-use instincts, and Bridge won't claim the capability until a live-credentialed integration test confirms it one way or the other. Its <code>readable</code> verdict is <code>Unsupported</code> for an unrelated reason: the SDK compiles the <code>claude_code</code> preset internally and never exposes the resulting text, so Bridge cannot read back what it actually sent even if it wanted to.</p>
 

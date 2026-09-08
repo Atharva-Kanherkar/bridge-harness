@@ -116,11 +116,27 @@ fn compiled_memory_packet(state: &Arc<BridgeCore>, session_id: &str) -> Option<S
 fn launch_session_context(
     state: &Arc<BridgeCore>,
     session_id: &str,
+    capability_summary: Option<&str>,
 ) -> Option<session_context::SessionContext> {
+    let mut capabilities = state.credential_broker.instructions(session_id);
+    if let Some(summary) = capability_summary.map(str::trim).filter(|value| !value.is_empty()) {
+        capabilities.push_str("\n\n");
+        capabilities.push_str(summary);
+    }
     session_context::build(
-        &state.credential_broker.instructions(session_id),
+        &capabilities,
         compiled_memory_packet(state, session_id).as_deref(),
     )
+}
+
+fn configured_capability_summary(harness: &str, cwd: &str) -> Option<String> {
+    let harness = crate::capability_projection::CapabilityHarness::from_id(harness)?;
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    Some(crate::capability_projection::configured_capability_summary(
+        harness,
+        &home,
+        Some(Path::new(cwd)),
+    ))
 }
 
 fn compile_worker_prompt(
@@ -1121,7 +1137,8 @@ pub fn start_session(
     // Past the hot return: this call is really going to start a process, so the
     // volatile pair is built now rather than for a hot process that is never
     // sent one.
-    let launch_context = launch_session_context(state, &session_id);
+    let capability_summary = configured_capability_summary(adapter_id, &path);
+    let launch_context = launch_session_context(state, &session_id, capability_summary.as_deref());
     let orchestrator_prompt = hot_check_prompt;
     let orchestrator_instructions = orchestrator_prompt.instructions().to_owned();
 
@@ -1691,7 +1708,8 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     // Past the hot return, like start_session: a hot process is never sent a
     // frame, so it must not have a packet built — and an audit written — for
     // one.
-    let launch_context = launch_session_context(state, &session_id);
+    let capability_summary = configured_capability_summary(&dispatch_id, &cwd);
+    let launch_context = launch_session_context(state, &session_id, capability_summary.as_deref());
     let configured_effort = configured_harness
         .and_then(|config| config.effort)
         .map(|value| value.as_str().to_owned());
@@ -5109,6 +5127,7 @@ pub fn launch_worker_outcome(
     }
 
     let mut read_only_sandbox = None;
+    let mut capability_summary = configured_capability_summary(&harness, &reservation.path);
     if directive.write_mode == delegation::WriteMode::ReadOnly {
         match worker_guard::ReadOnlyBaseline::capture(&reservation.path) {
             Ok(baseline) => {
@@ -5138,6 +5157,61 @@ pub fn launch_worker_outcome(
                 let output = sandbox.output_dir().display().to_string();
                 let network_allowed = sandbox.network_allowed();
                 let sandbox_runtime_egress = !sandbox.runtime_network_denied();
+                if let Some(capability_harness) =
+                    crate::capability_projection::CapabilityHarness::from_id(&harness)
+                {
+                    let projection = std::env::var_os("HOME")
+                        .map(PathBuf::from)
+                        .map(|home| {
+                            crate::capability_projection::project_read_only_capabilities(
+                                capability_harness,
+                                &home,
+                                sandbox.output_dir(),
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            Ok(crate::capability_projection::CapabilityProjectionReport::unavailable(
+                                capability_harness,
+                                "user-home",
+                                Path::new("$HOME"),
+                                "HOME is unavailable",
+                            ))
+                        });
+                    match projection {
+                        Ok(report) => {
+                            let projected = report.summary();
+                            capability_summary = Some(match capability_summary.take() {
+                                Some(configured) => format!("{configured}\n\n{projected}"),
+                                None => projected,
+                            });
+                            if let Ok(body) = serde_json::to_string(&report) {
+                                let _ = store::event(
+                                    &state.db.lock().unwrap(),
+                                    "capability-projection",
+                                    "worker.capabilities_projected",
+                                    &reservation.session_id,
+                                    &body,
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            state
+                                .delegations
+                                .lock()
+                                .unwrap()
+                                .read_only_baselines
+                                .remove(&reservation.session_id);
+                            sandbox.cleanup();
+                            fail_reserved_worker(
+                                core,
+                                &reservation.session_id,
+                                &label,
+                                &format!("Could not project read-only capabilities: {error}"),
+                            );
+                            return WorkerLaunchOutcome::Failed;
+                        }
+                    }
+                }
                 state
                     .delegations
                     .lock()
@@ -5210,7 +5284,11 @@ pub fn launch_worker_outcome(
 
     // Past the warm-reuse return: a reused hot worker keeps the frame its own
     // launch delivered, so only a cold launch builds a packet here.
-    let launch_context = launch_session_context(&state, &reservation.session_id);
+    let launch_context = launch_session_context(
+        &state,
+        &reservation.session_id,
+        capability_summary.as_deref(),
+    );
     let compile_restored_prompt = |checkpoint: Option<String>| {
         let restoration_context = checkpoint.unwrap_or_else(|| "Bridge checkpoint-restoration context: prior typed worker result is stored in the session forest.".into());
         compile_worker_prompt(
@@ -9513,13 +9591,18 @@ fn prepare_input(
         .filter(|descriptor| descriptor.available)
         .map(|descriptor| descriptor.id)
         .collect();
-    let session_harness: String = state.db.lock().unwrap().query_row(
-        "SELECT harness FROM sessions WHERE id=?1",
+    let (session_harness, cwd): (String, Option<String>) = state.db.lock().unwrap().query_row(
+        "SELECT harness, cwd FROM sessions WHERE id=?1",
         params![session_id],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
 
-    let dispatch = slash::dispatch(&sanitized_input.text, &session_harness, &available);
+    let dispatch = slash::dispatch_for_project(
+        &sanitized_input.text,
+        &session_harness,
+        &available,
+        cwd.as_deref().map(Path::new),
+    );
     if !allow_session_control && session_input::requires_idle_session(&dispatch) {
         return Err(BridgeError::Invalid(
             "That command changes the chat itself, so it needs an idle turn. Stop the current turn first, or send it as a message.".into(),

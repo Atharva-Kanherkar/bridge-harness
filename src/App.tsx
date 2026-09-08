@@ -939,8 +939,17 @@ function AppContent() {
     });
   }, [agentEvents, forest, session?.id]);
 
-  // Load available slash commands + skills from signed-in providers.
-  useEffect(() => { void bridgeApi.listSlashCommands().then(setSlashCommands).catch(() => undefined); }, [adaptersReady]);
+  // Load available slash commands + skills from signed-in providers. Guarded
+  // against staleness: switching sessions while a slower scan is still in
+  // flight must not let its response land after a newer session's, which
+  // would leave the menu showing the wrong session's commands.
+  useEffect(() => {
+    let active = true;
+    void bridgeApi.listSlashCommands(session?.id)
+      .then(commands => { if (active) setSlashCommands(commands); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [adaptersReady, session?.id]);
 
   // Always land on the Agent tab: focusing a session (especially a blocked
   // worker from Mission Control) must reveal its conversation and approval card,

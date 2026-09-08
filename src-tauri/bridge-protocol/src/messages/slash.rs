@@ -5,6 +5,13 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListSlashCommandsParams {
+    /// Optional because Bridge can still list global capabilities before a chat exists.
+    pub session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResolveSlashCommandParams {
     /// The composer text to resolve; a non-slash string resolves to nothing.
     pub text: String,
@@ -90,6 +97,20 @@ mod tests {
             json!({"text": "/review", "sessionId": "s-1"})
         );
         assert_eq!(round_trip(&resolve), resolve);
+    }
+
+    #[test]
+    fn slash_listing_may_be_global_or_scoped_to_a_session() {
+        let global = ListSlashCommandsParams { session_id: None };
+        assert_eq!(serde_json::to_value(&global).unwrap(), json!({"sessionId": null}));
+        assert_eq!(round_trip(&global), global);
+
+        let scoped = ListSlashCommandsParams { session_id: Some("s-1".into()) };
+        assert_eq!(
+            serde_json::to_value(&scoped).unwrap(),
+            json!({"sessionId": "s-1"})
+        );
+        assert_eq!(round_trip(&scoped), scoped);
     }
 
     #[test]

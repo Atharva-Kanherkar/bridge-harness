@@ -249,7 +249,7 @@ typed_methods![
     (CloseTerminal, CloseTerminalParams, UnitResult),
     (ListTerminals, ListTerminalsParams, ListTerminalsResult),
     // slash commands
-    (ListSlashCommands, _, SlashCommandsResult),
+    (ListSlashCommands, ListSlashCommandsParams, SlashCommandsResult),
     (ResolveSlashCommand, ResolveSlashCommandParams, SlashCommandResolveResult),
     // completion / verification
     (CreateCompletionPlan, CreateCompletionPlanParams, CompletionSummary),
@@ -517,7 +517,6 @@ mod tests {
             MethodName::Health,
             MethodName::GetState,
             MethodName::RefreshAccountUsage,
-            MethodName::ListSlashCommands,
             MethodName::GetMemoryCapabilities,
             MethodName::GetExtractionSettings,
             MethodName::GetConsolidationSettings,

@@ -32,6 +32,10 @@ function allow(toolUseID) {
 // is the authority, and a test on each side pins the same vocabulary. Fail
 // closed: an unrecognised verb is not a read.
 const READ_TOOL_VERBS = ["search", "read", "list", "get", "query", "fetch", "find"];
+const MUTATION_WORDS = new Set([
+  "add", "approve", "create", "delete", "edit", "merge", "patch", "post", "publish",
+  "put", "reject", "remove", "send", "set", "update", "write",
+]);
 
 /** Is `mcp__<server>__<tool>` a read-verb tool on a scoped server? */
 function isScopedRead(toolName, readScopeServers) {
@@ -40,8 +44,10 @@ function isScopedRead(toolName, readScopeServers) {
   const split = rest.indexOf("__");
   if (split <= 0) return false;
   const server = rest.slice(0, split);
-  const bare = rest.slice(split + 2).toLowerCase();
+  const original = rest.slice(split + 2);
+  const bare = original.toLowerCase();
   if (!bare || !readScopeServers.has(server)) return false;
+  if (original !== bare || bare.split(/[_-]/).some((word) => MUTATION_WORDS.has(word))) return false;
   return READ_TOOL_VERBS.some(
     (verb) => bare === verb || (bare.startsWith(verb) && ["_", "-"].includes(bare[verb.length])),
   );
