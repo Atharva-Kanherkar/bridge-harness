@@ -4691,6 +4691,52 @@ mod tests {
         assert!(fixture.chat_worktree.is_dir());
     }
 
+    /// A `ready` chat has no turn in flight but still owns a live provider
+    /// process. Archiving it would hide the only route to that process while it
+    /// went on holding memory and a model session — and the worktree would be
+    /// retained anyway, since the same claim marks it in use.
+    #[test]
+    fn archiving_refuses_a_chat_whose_adapter_is_still_alive() {
+        let fixture = chat_fixture();
+        fixture
+            .core
+            .db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET status='ready',adapter_pid=4242,
+                    adapter_process_identity='claude:4242' WHERE id='chat'",
+                [],
+            )
+            .unwrap();
+        let error = super::archive_chat(&fixture.core, "chat").unwrap_err();
+        assert!(error.to_string().contains("Stop this chat"), "{error:?}");
+        assert!(fixture.chat_worktree.is_dir());
+        let archived: Option<String> = fixture
+            .core
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT archived_at FROM sessions WHERE id='chat'", [], |row| row.get(0))
+            .unwrap();
+        assert!(archived.is_none(), "and it is not hidden");
+    }
+
+    /// Boot recovery clears the claim for a process that is really gone, so a
+    /// `ready` row left by a crashed run must not block archiving forever.
+    #[test]
+    fn archiving_a_ready_chat_with_no_live_adapter_still_works() {
+        let fixture = chat_fixture();
+        fixture
+            .core
+            .db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET status='idle',adapter_pid=NULL WHERE id='chat'", [])
+            .unwrap();
+        assert!(super::archive_chat(&fixture.core, "chat").unwrap().archived);
+    }
+
     #[test]
     fn archiving_refuses_a_chat_that_is_still_running() {
         let fixture = chat_fixture();

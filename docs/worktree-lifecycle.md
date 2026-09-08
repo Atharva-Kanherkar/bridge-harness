@@ -25,6 +25,16 @@ the repository's main worktree, so every checkout of a project shares one cache
 and a second worker starts warm — dependencies dominate a build directory and
 they are identical across branches.
 
+**What moves, and what does not.** `CARGO_TARGET_DIR` relocates the whole Cargo
+build directory: that is the 3.4 GB of the 3.9 GB measured. The other two are
+*download* caches — bun documents `--cache-dir` as "store & load cached data",
+npm's `cache` likewise, and neither offers a supported way to put the installed
+tree anywhere but `<cwd>/node_modules`. So a second worker's install is fast,
+but its `node_modules` still lives in its own checkout. Sharing that needs a
+copy-on-write clone taken when the worktree is cut, which raises a question this
+does not answer — a branch whose lockfile differs from the checkout it was
+cloned from — so it is left for a follow-up rather than guessed at.
+
 Two costs are paid knowingly. Concurrent builds of one repository serialize on
 cargo's lock rather than building in parallel, which is the right trade against
 a multi-gigabyte target directory per worker (`max_concurrent_workers` is 2).
@@ -228,8 +238,10 @@ History is kept — the session row, its forest entries and its evidence all
 survive, and the projection simply stops listing the chat and its descendants. A
 checkout that cannot be proven expendable is kept rather than blocking the
 archive, and the reason is reported: putting a conversation away should not
-require first resolving its uncommitted work. A running chat is refused until it
-is stopped.
+require first resolving its uncommitted work. A chat is refused while it is
+running *or* while it still holds a live adapter process: a `ready` chat has no
+turn in flight but its provider is up, and hiding it would take away the only
+route to a process that goes on holding memory and a model session.
 
 This is the affordance whose absence caused the accumulation in the first place.
 
