@@ -1797,6 +1797,11 @@ function AppContent() {
   // Re-run a failed worker's objective because the user asked. The reason it
   // failed is on the card next to this action, which is the point: Bridge no
   // longer spends this turn on a cause it cannot show has changed.
+  // Stopping a worker goes through the same seam the user's "End session"
+  // does, so a worker ends one way regardless of which surface asked.
+  const stopWorker = useCallback(async (childSessionId: string) => {
+    setState(await bridgeApi.stopSession(childSessionId));
+  }, []);
   const retryWorkerTask = useCallback(async (childSessionId: string) => {
     await bridgeApi.retryWorkerTask(childSessionId);
     await reload();
@@ -2319,6 +2324,7 @@ function AppContent() {
                   onWaiveCompletion={waiveCompletion}
                   onRefreshBase={refreshWorkspaceBase}
                   onRetryWorker={retryWorkerTask}
+                  onStopWorker={stopWorker}
                   onRetryCompaction={() => retryCompaction(session.id)}
                   pendingAdoptions={pendingAdoptions}
                   onResolveAdoption={resolveAdoption}
@@ -2505,6 +2511,7 @@ function AppContent() {
                 onOpenSession={openSession}
                 onExpandWorker={setExpandedWorkerId}
                 onRetryWorker={id => void retryWorkerTask(id)}
+                onStopWorker={id => void stopWorker(id)}
                 onOpenTerminal={() => dispatchDock({ type: "open-pane", pane: "terminal" })}
               />;
               if (pane === "browser") return <BrowserSurface

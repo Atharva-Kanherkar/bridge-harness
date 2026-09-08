@@ -1,5 +1,5 @@
 import { PaneState } from "@/components/ui/pane";
-import { ChevronRight, CircleAlert, Clock3, ListTree, RotateCcw, TerminalSquare, X } from "lucide-react";
+import { ChevronRight, CircleAlert, Clock3, ListTree, RotateCcw, Square, TerminalSquare, X } from "lucide-react";
 import type { Session, WorkerRuntimeRecord } from "../types";
 import type { QueuedWorkerRequest } from "../protocol/generated/protocol";
 import { cn } from "@/lib/utils";
@@ -47,7 +47,12 @@ function queueObjective(request: unknown): string | undefined {
   return typeof value === "string" ? value : undefined;
 }
 
-export function TasksPane({ sessions, runtimes = [], queue = [], terminalActivity, acknowledged, onAcknowledge, onOpenSession, onExpandWorker, onRetryWorker, onOpenTerminal }: {
+/// Lifecycles with nothing left to stop. Everything else — including the
+/// starting, warm, resuming and checkpointing states the old session-view gate
+/// excluded — can still be ended.
+const TERMINAL_LIFECYCLES = ["completed", "cancelled", "stopped"];
+
+export function TasksPane({ sessions, runtimes = [], queue = [], terminalActivity, acknowledged, onAcknowledge, onOpenSession, onExpandWorker, onRetryWorker, onStopWorker, onOpenTerminal }: {
   sessions: Session[];
   runtimes?: WorkerRuntimeRecord[];
   queue?: QueuedWorkerRequest[];
@@ -59,6 +64,7 @@ export function TasksPane({ sessions, runtimes = [], queue = [], terminalActivit
   onOpenSession?: (sessionId: string) => void;
   onExpandWorker?: (sessionId: string) => void;
   onRetryWorker?: (sessionId: string) => void;
+  onStopWorker?: (sessionId: string) => void;
   onOpenTerminal?: () => void;
 }) {
   const workerRows = runtimes.flatMap(runtime => {
@@ -102,6 +108,16 @@ export function TasksPane({ sessions, runtimes = [], queue = [], terminalActivit
               {status.detail ? ` · ${status.detail}` : ""}
             </small>
           </button>
+          {/* Offered in every non-terminal state, including the `starting`,
+              `warm` and `checkpointing` ones the old session-view gate left
+              with no way out at all. */}
+          {!broken && onStopWorker && !TERMINAL_LIFECYCLES.includes(runtime.lifecycleState) && <button
+            type="button"
+            onClick={() => onStopWorker(runtime.sessionId)}
+            aria-label={`Stop worker ${session.label}`}
+            title="Stop this worker"
+            className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+          ><Square size={10} strokeWidth={1.8} aria-hidden="true" /></button>}
           {broken && onRetryWorker && <button
             type="button"
             onClick={() => onRetryWorker(runtime.sessionId)}
