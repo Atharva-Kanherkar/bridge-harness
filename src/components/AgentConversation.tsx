@@ -1,7 +1,7 @@
 import { recordStreamCommit, recordStreamPaintProxy } from "../streamTiming";
 import { memo, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "framer-motion";
-import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Maximize2, MessageSquarePlus, Navigation, Pencil, Pin, RotateCcw, Search, SquareTerminal, Wrench, X } from "lucide-react";
+import { AlertTriangle, Brain, Check, ChevronDown, ChevronRight, Circle, CornerDownRight, FilePlus2, FileText, Gauge, GitFork, Globe, ListChecks, LoaderCircle, Maximize2, MessageSquarePlus, Navigation, Pencil, Pin, RotateCcw, Search, Square, SquareTerminal, Wrench, X } from "lucide-react";
 import { alignTurns, attachmentUris, delegationChildSessionId, delegationFacet, foldWorkerDelegations, groupItems, isToolItem, mergeConversationProjections, projectSessionConversation, reduceConversation, sameItem, sameItems, toolCallDisplay, type ConversationItem, type ToolGlyph, type ToolVerb } from "../conversation";
 import { humanizeApprovalReason, humanizeCheckKind, humanizeCheckStatus, humanizeResolution } from "../humanize";
 import { pickGreeting, type GreetingPart } from "../greetings";
@@ -546,7 +546,7 @@ function StallNotice({ onStop }: { onStop?: () => void }) {
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onExpandWorker, onWaiveCompletion, onRefreshBase, onRetryWorker, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onExpandWorker, onWaiveCompletion, onRefreshBase, onRetryWorker, onStopWorker, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void }) {
   const paintFrames = useRef<{ first?: number; second?: number; ids: string[] }>({ ids: [] });
   useLayoutEffect(() => {
     const pending = paintFrames.current;
@@ -676,7 +676,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
               entryId={entry.item.entryId}
               className={highlightEntryId && entry.item.entryId === highlightEntryId ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
             >
-              <ItemView item={entry.item} workers={workers} now={now} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRefreshBase={onRefreshBase} onRetryWorker={onRetryWorker} onRetryCompaction={onRetryCompaction} onRemember={onRemember} errorContext={errorContext}/>
+              <ItemView item={entry.item} workers={workers} now={now} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRefreshBase={onRefreshBase} onRetryWorker={onRetryWorker} onStopWorker={onStopWorker} onRetryCompaction={onRetryCompaction} onRemember={onRemember} errorContext={errorContext}/>
             </TranscriptRow>)}
         {optimisticBubbles.map(bubble => <TranscriptRow key={bubble.key}><div className={BUBBLE}>
           {bubble.text ? <MentionText text={bubble.text}/> : null}
@@ -1085,7 +1085,7 @@ const MessageRow = memo(function MessageRow({ item, onRemember }: { item: Conver
   </div>;
 }, (previous, next) => previous.onRemember === next.onRemember && sameItem(previous.item, next.item));
 
-function ItemView({ item, workers, now, onResolve, onAnswerQuestion, onOpenSession, onExpandWorker, onRefreshBase, onRetryWorker, onRetryCompaction, onRemember, errorContext }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
+function ItemView({ item, workers, now, onResolve, onAnswerQuestion, onOpenSession, onExpandWorker, onRefreshBase, onRetryWorker, onStopWorker, onRetryCompaction, onRemember, errorContext }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
   if (item.type === "message") return <MessageRow item={item} onRemember={onRemember}/>;
   if (item.data.staleBase === true) return <StaleBaseCard item={item} onRefresh={onRefreshBase}/>;
   if (item.type === "reasoning") return <Reasoning item={item}/>;
@@ -1093,7 +1093,7 @@ function ItemView({ item, workers, now, onResolve, onAnswerQuestion, onOpenSessi
   if (item.type === "approval") return <ApprovalCard item={item} onResolve={onResolve}/>;
   if (item.type === "permission") return <PermissionCard item={item} onResolve={onResolve}/>;
   if (item.type === "question") return <QuestionCard item={item} onResolve={onAnswerQuestion}/>;
-  if (item.type === "delegation") return <DelegationRow item={item} workers={workers} now={now} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRetryWorker={onRetryWorker}/>;
+  if (item.type === "delegation") return <DelegationRow item={item} workers={workers} now={now} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRetryWorker={onRetryWorker} onStopWorker={onStopWorker}/>;
   if (item.type === "checkpoint" || item.type === "compaction" || item.type === "context-compacted" || item.type === "branch-summary") return <ForestCard item={item} onRetryCompaction={onRetryCompaction}/>;
   if (item.type === "model-change") return <ModelChangedRow item={item}/>;
   if (item.type === "raw") return <RawEvent item={item}/>;
@@ -1521,7 +1521,7 @@ function StaleBaseCard({ item, onRefresh }: { item: ConversationItem; onRefresh?
   </div>;
 }
 
-function DelegationRow({ item, workers, now, onOpenSession, onExpandWorker, onRetryWorker }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onRetryWorker?: (childSessionId: string) => Promise<void> }) {
+function DelegationRow({ item, workers, now, onOpenSession, onExpandWorker, onRetryWorker, onStopWorker }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; onOpenSession?: (sessionId: string) => void; onExpandWorker?: (sessionId: string) => void; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void> }) {
   // Every hook before the first early return: an item's facet changes under it
   // (a spawn becomes a result when the envelope lands), so the hook count must
   // not depend on which branch renders.
@@ -1606,6 +1606,7 @@ function DelegationRow({ item, workers, now, onOpenSession, onExpandWorker, onRe
       now={now}
       onOpenSession={onOpenSession}
       onExpandWorker={onExpandWorker}
+      onStopWorker={onStopWorker}
     />;
   }
   return <div className="my-3 min-w-0">
@@ -1663,7 +1664,7 @@ function useLiveClock(active: boolean, override?: number): number {
 /// "Delegating to a worker…" line while the actual work happened somewhere they
 /// were not looking. Same card carries the run and the outcome, so a worker is
 /// one place in the transcript rather than two.
-function WorkerPanel({ model, objective, modelLabel, effort, now, onOpenSession, onExpandWorker }: {
+function WorkerPanel({ model, objective, modelLabel, effort, now, onOpenSession, onExpandWorker, onStopWorker }: {
   model: WorkerPanelModel;
   objective?: string;
   modelLabel?: string;
@@ -1671,6 +1672,7 @@ function WorkerPanel({ model, objective, modelLabel, effort, now, onOpenSession,
   now?: number;
   onOpenSession?: (sessionId: string) => void;
   onExpandWorker?: (sessionId: string) => void;
+  onStopWorker?: (childSessionId: string) => Promise<void>;
 }) {
   const live = !model.reported;
   const clock = useLiveClock(live, now);
@@ -1690,6 +1692,7 @@ function WorkerPanel({ model, objective, modelLabel, effort, now, onOpenSession,
       {modelLabel && <em className="hidden flex-none rounded border border-border px-1.5 py-0.5 font-mono text-[11px] not-italic text-muted-foreground sm:inline">{modelLabel}{effort ? ` · ${effort}` : ""}</em>}
       {model.retryCount > 0 && <span className="inline-flex shrink-0 items-center gap-0.5 font-mono text-[11px] text-muted-foreground"><RotateCcw size={9} aria-hidden="true"/>retry {model.retryCount}</span>}
       <span className="shrink-0 font-mono text-[11px] text-muted-foreground">{formatElapsed(model.startedAt, elapsedAt)}</span>
+      {live && onStopWorker && <StopWorkerButton sessionId={model.session.id} name={name} onStopWorker={onStopWorker}/>}
     </header>
 
     {objective && <p className="px-3.5 pb-2 text-[12px] leading-relaxed text-muted-foreground">{objective}</p>}
@@ -1744,6 +1747,44 @@ function SteerChip({ item, onOpenSession }: { item: ConversationItem; onOpenSess
 /// The old card collapsed every outcome into "Subagent finished" and let the
 /// orchestrator silently retry. Naming the classified cause is what lets the
 /// person reading decide whether another attempt is worth anything.
+/// Stop a running worker from the card the user is already watching it on.
+///
+/// Previously the only stop was "End session" inside the worker's own session
+/// view, gated on a status list that excluded `starting`, `warm`, `resuming`
+/// and `checkpointing` — so the states where a worker is most obviously stuck
+/// were the states with no way to end it. Here it is offered for as long as
+/// the worker has not reported.
+function StopWorkerButton({ sessionId, name, onStopWorker }: {
+  sessionId: string;
+  name: string;
+  onStopWorker: (childSessionId: string) => Promise<void>;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string>();
+  return <button
+    type="button"
+    disabled={busy}
+    title={error ?? `Stop ${name}`}
+    aria-label={`Stop ${name}`}
+    className={cn(
+      "inline-flex shrink-0 items-center gap-1 rounded border px-1.5 py-0.5 font-mono text-[11px] transition-colors",
+      error
+        ? "border-destructive/40 text-destructive"
+        : "border-border text-muted-foreground hover:border-foreground/30 hover:text-foreground",
+      busy && "opacity-60",
+    )}
+    onClick={() => {
+      setBusy(true);
+      setError(undefined);
+      void onStopWorker(sessionId)
+        .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+        .finally(() => setBusy(false));
+    }}
+  >
+    <Square size={8} aria-hidden="true"/>{busy ? "stopping" : "stop"}
+  </button>;
+}
+
 function WorkerFailureRow({ title, summary, cause, failureClass, childSessionId, onOpenSession, onRetryWorker }: {
   title: string;
   summary: string;

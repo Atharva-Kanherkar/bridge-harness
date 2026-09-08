@@ -188,11 +188,18 @@ pub struct DelegationState {
     pub invalid_request_corrections: HashMap<String, u32>,
     /// A peek is emitted before the provider's separate turn-completed frame;
     /// hold it until that boundary so its reply starts a clean turn.
-    pub pending_worker_peeks: HashMap<String, delegation::PeekRequest>,
+    ///
+    /// A queue rather than one slot: a turn can carry several assistant
+    /// messages, and a single slot silently dropped every request but the
+    /// last — the model was told nothing, and the user saw nothing.
+    pub pending_worker_peeks: HashMap<String, Vec<delegation::PeekRequest>>,
     /// A steer is held for the same reason a peek is: it arrives on the
     /// assistant frame, and delivering it before the parent's turn completes
     /// would race the reply into a turn that is still running.
-    pub pending_worker_steers: HashMap<String, delegation::SteerRequest>,
+    pub pending_worker_steers: HashMap<String, Vec<delegation::SteerRequest>>,
+    /// A stop is queued like a steer, but it is a decision rather than
+    /// guidance: it settles the worker whether or not the worker cooperates.
+    pub pending_worker_stops: HashMap<String, Vec<delegation::StopRequest>>,
     /// Read-only worker session → tracked Git state captured before process start.
     pub read_only_baselines: HashMap<String, worker_guard::ReadOnlyBaseline>,
     /// OS-level boundary and output directory retained until the worker exits.

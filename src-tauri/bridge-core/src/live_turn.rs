@@ -2485,9 +2485,11 @@ fn handle_agent_value_timed(
     let state = core.clone();
     let mut pending_directives: Vec<(delegation::DelegationRequest, String)> = Vec::new();
     let mut pending_invalid_delegations: Vec<String> = Vec::new();
-    let mut pending_peek: Option<delegation::PeekRequest> = None;
-    let mut pending_steer: Option<delegation::SteerRequest> = None;
+    let mut pending_peeks: Vec<delegation::PeekRequest> = Vec::new();
+    let mut pending_steers: Vec<delegation::SteerRequest> = Vec::new();
+    let mut pending_stops: Vec<delegation::StopRequest> = Vec::new();
     let mut pending_invalid_steer: Option<String> = None;
+    let mut pending_invalid_stop: Option<String> = None;
     // A policy-granted approval is answered after the correctness lock, through
     // the same call a human click makes. Holds the persisted sequence, which is
     // the id `resolve_approval` answers by.
@@ -3083,7 +3085,7 @@ fn handle_agent_value_timed(
                 if let Some(text) = normalized_event.text.clone() {
                     match delegation::parse_peek_request(&text) {
                         delegation::ParseOutcome::Parsed(peek) => {
-                            pending_peek = Some(peek);
+                            pending_peeks.push(peek);
                             let stripped = delegation::strip_peek(&text);
                             normalized_event.text = Some(if stripped.is_empty() {
                                 "_Checking on workers…_".to_owned()
@@ -3096,7 +3098,7 @@ fn handle_agent_value_timed(
                             // with the default digest rather than a correction
                             // loop.
                             let _ = store::event(&db, "delegation", "delegation.peek.invalid", session_id, &reason);
-                            pending_peek = Some(delegation::PeekRequest::default());
+                            pending_peeks.push(delegation::PeekRequest::default());
                             let stripped = delegation::strip_peek(&text);
                             if !stripped.is_empty() {
                                 normalized_event.text = Some(stripped);
@@ -3111,7 +3113,7 @@ fn handle_agent_value_timed(
                 if let Some(text) = normalized_event.text.clone() {
                     match delegation::parse_steer_request(&text) {
                         delegation::ParseOutcome::Parsed(steer) => {
-                            pending_steer = Some(steer);
+                            pending_steers.push(steer);
                             let stripped = delegation::strip_steer(&text);
                             normalized_event.text = Some(if stripped.is_empty() {
                                 "_Steering a worker…_".to_owned()
@@ -3128,6 +3130,40 @@ fn handle_agent_value_timed(
                             let stripped = delegation::strip_steer(&text);
                             normalized_event.text = Some(if stripped.is_empty() {
                                 format!("_Steer rejected: {reason}._")
+                            } else {
+                                stripped
+                            });
+                        }
+                        delegation::ParseOutcome::Absent => {}
+                    }
+                }
+                // A stop ends a worker. Unlike a steer it does not ask the
+                // worker for anything, so it lands even on a provider with no
+                // mid-turn steering and even on a worker that has stopped
+                // reading its input.
+                if let Some(text) = normalized_event.text.clone() {
+                    match delegation::parse_stop_request(&text) {
+                        delegation::ParseOutcome::Parsed(stop) => {
+                            pending_stops.push(stop);
+                            let stripped = delegation::strip_stop(&text);
+                            normalized_event.text = Some(if stripped.is_empty() {
+                                "_Stopping a worker…_".to_owned()
+                            } else {
+                                stripped
+                            });
+                        }
+                        delegation::ParseOutcome::Invalid { reason, .. } => {
+                            let _ = store::event(
+                                &db,
+                                "delegation",
+                                "delegation.stop.invalid",
+                                session_id,
+                                &reason,
+                            );
+                            pending_invalid_stop = Some(reason.clone());
+                            let stripped = delegation::strip_stop(&text);
+                            normalized_event.text = Some(if stripped.is_empty() {
+                                format!("_Stop rejected: {reason}._")
                             } else {
                                 stripped
                             });
@@ -3370,48 +3406,80 @@ fn handle_agent_value_timed(
     for (directive, turn_id) in &pending_directives {
         let _ = launch_worker(core, session_id, turn_id, directive, true);
     }
-    if let Some(peek) = pending_peek {
+    if !pending_peeks.is_empty() {
         state
             .delegations
             .lock()
             .unwrap()
             .pending_worker_peeks
-            .insert(session_id.to_owned(), peek);
+            .entry(session_id.to_owned())
+            .or_default()
+            .extend(pending_peeks);
     }
-    if let Some(steer) = pending_steer {
+    if !pending_steers.is_empty() {
         state
             .delegations
             .lock()
             .unwrap()
             .pending_worker_steers
-            .insert(session_id.to_owned(), steer);
+            .entry(session_id.to_owned())
+            .or_default()
+            .extend(pending_steers);
+    }
+    if !pending_stops.is_empty() {
+        state
+            .delegations
+            .lock()
+            .unwrap()
+            .pending_worker_stops
+            .entry(session_id.to_owned())
+            .or_default()
+            .extend(pending_stops);
     }
     // The assistant message and turn completion are separate provider frames.
     // Reply only after completion instead of racing active-turn steering.
+    //
+    // `turn_completed` is set by the error frame too, which is the point: a
+    // turn that fails still ends the turn, and a request stranded because the
+    // provider errored is a request the orchestrator was never told about.
     if turn_completed {
-        let peek = state
-            .delegations
-            .lock()
-            .unwrap()
-            .pending_worker_peeks
-            .remove(session_id);
-        if let Some(peek) = peek {
-            deliver_worker_activity_digest(core, session_id, &peek);
+        let (peeks, steers, stops) = {
+            let mut delegations = state.delegations.lock().unwrap();
+            (
+                delegations
+                    .pending_worker_peeks
+                    .remove(session_id)
+                    .unwrap_or_default(),
+                delegations
+                    .pending_worker_steers
+                    .remove(session_id)
+                    .unwrap_or_default(),
+                delegations
+                    .pending_worker_stops
+                    .remove(session_id)
+                    .unwrap_or_default(),
+            )
+        };
+        for peek in &peeks {
+            deliver_worker_activity_digest(core, session_id, peek);
         }
-        let steer = state
-            .delegations
-            .lock()
-            .unwrap()
-            .pending_worker_steers
-            .remove(session_id);
-        if let Some(steer) = steer {
-            deliver_orchestrator_steer(core, session_id, &steer);
+        for steer in &steers {
+            deliver_orchestrator_steer(core, session_id, steer);
+        }
+        // Stops last: a steer queued alongside a stop for the same worker was
+        // guidance written before the decision to end it, and delivering it
+        // after the stop would resume a worker the orchestrator just ended.
+        for stop in &stops {
+            deliver_orchestrator_stop(core, session_id, stop);
         }
     }
     // A steer Bridge could not even parse is fed back rather than dropped: the
     // orchestrator asked to redirect a worker and has to learn that it did not.
     if let Some(reason) = &pending_invalid_steer {
         refuse_orchestrator_steer(core, session_id, reason);
+    }
+    if let Some(reason) = &pending_invalid_stop {
+        refuse_orchestrator_stop(core, session_id, reason);
     }
     // This is the phase boundary. Anything the user typed while the turn was
     // running is delivered here, before Bridge spends a model turn on its own
@@ -6614,7 +6682,9 @@ fn fail_reserved_worker(core: &Arc<BridgeCore>, session_id: &str, label: &str, r
         suggested_task: None,
     };
     match settle_worker_after_result(core, session_id, &result) {
-        Ok(true) => report_to_parent(core, session_id, &result),
+        Ok(true) => {
+            report_to_parent(core, session_id, &result);
+        }
         Ok(false) | Err(_) => {
             let parent_session_id = state
                 .db
@@ -6995,6 +7065,37 @@ fn record_provider_limit(db: &Connection, session_id: &str, text: Option<&str>) 
         session_id,
         limit.reset_at,
     );
+    // The provenance marker. Only this function writes it, and only from an
+    // adapter error frame, so it is the one quota claim about a session that
+    // did not come through the worker's own words.
+    let _ = store::event(
+        db,
+        "provider",
+        PROVIDER_LIMIT_OBSERVED,
+        session_id,
+        &limit.signal,
+    );
+}
+
+/// The event that says "the provider itself said it is out", as opposed to a
+/// worker saying so in prose.
+const PROVIDER_LIMIT_OBSERVED: &str = "provider.limit_observed";
+
+/// Whether Bridge watched this session's provider report a usage limit.
+///
+/// The distinction is the difference between reading evidence and taking
+/// dictation. `worker_retry::classify` finds quota wording by substring in the
+/// worker's `summary`, `risks` and `remainingWork` — all worker-authored — so
+/// a compromised or prompt-injected worker can write "usage limit" and have
+/// Bridge act on it. That is tolerable for a cooldown; it is not tolerable for
+/// spawning a process.
+fn provider_limit_was_observed(db: &Connection, child_session_id: &str) -> bool {
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM events WHERE entity_id=?1 AND kind=?2)",
+        params![child_session_id, PROVIDER_LIMIT_OBSERVED],
+        |row| row.get::<_, bool>(0),
+    )
+    .unwrap_or(false)
 }
 
 /// The parent a worker reports to, if it has one.
@@ -7027,6 +7128,195 @@ fn worker_objective_key(db: &Connection, child_session_id: &str) -> Option<Strin
         .map(|request| request.objective)
         .unwrap_or_else(|| child_session_id.to_owned());
     Some(worker_retry::objective_key(&parent, &role, &objective))
+}
+
+/// What Bridge did about an exhausted provider.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum FailoverOutcome {
+    /// The objective is running again, on a harness that still has quota.
+    Relaunched { harness: String },
+    /// Nothing else installed can serve it. The orchestrator is told when the
+    /// exhausted one comes back, because waiting is now the only option.
+    NoRoute { reason: String },
+    /// The objective already spent its one automatic attempt. Failing over
+    /// would be a second, and the budget is per objective, not per cause.
+    OutOfBudget,
+}
+
+/// Relaunch an objective whose worker died of provider exhaustion, on whatever
+/// harness this workspace has left.
+///
+/// The substitution itself is the router's existing hard-supply-gap path, and
+/// slice 2's cooldown row is what makes it fire — so this clears the harness
+/// hint and the model (a model name belongs to the harness that offered it)
+/// and lets routing answer. It does not pick a harness itself; a second
+/// opinion about eligibility is a second thing to keep correct.
+fn fail_over_exhausted_worker(
+    core: &Arc<BridgeCore>,
+    child_session_id: &str,
+    signal: &str,
+) -> FailoverOutcome {
+    let state = core.clone();
+    let prepared = {
+        let db = state.db.lock().unwrap();
+        let Some(parent) = worker_parent_session(&db, child_session_id) else {
+            return FailoverOutcome::NoRoute {
+                reason: "the worker has no parent to report a reroute to".into(),
+            };
+        };
+        // One automatic attempt per objective, whatever spends it. A failover
+        // is Bridge choosing to pay for the work again, which is exactly what
+        // that budget counts — checked before anything else, because an
+        // objective with nothing left to spend is not worth rebuilding a
+        // request for.
+        let key = worker_objective_key(&db, child_session_id);
+        let spent = key
+            .as_deref()
+            .map(|key| worker_retry::attempts_spent(&db, key).unwrap_or(0))
+            .unwrap_or(0);
+        if spent >= worker_retry::MAX_AUTOMATIC_ATTEMPTS_PER_OBJECTIVE {
+            return FailoverOutcome::OutOfBudget;
+        }
+        let request = spawned_request(&db, &parent, child_session_id);
+        if let Some(key) = &key {
+            let _ = worker_retry::consume_attempt(&db, key, &parent, signal);
+        }
+        let exhausted: String = db
+            .query_row(
+                "SELECT harness FROM sessions WHERE id=?1",
+                params![child_session_id],
+                |row| row.get(0),
+            )
+            .unwrap_or_default();
+        let until = learning_router::session_harness_cooldown(&db, child_session_id)
+            .map(|(_, until)| until);
+        (parent, request, exhausted, until)
+    };
+    let (parent, request, exhausted, until) = prepared;
+    // Without the original request there is nothing to relaunch — but the
+    // objective is still blocked on an exhausted provider, and an orchestrator
+    // told nothing simply waits.
+    let Some(mut request) = request else {
+        let reason = match until {
+            Some(until) => format!(
+                "{exhausted} is out of quota until {until}, and Bridge has no record of the request this worker was launched with, so the objective could not be rerouted"
+            ),
+            None => format!(
+                "{exhausted} is out of quota, and Bridge has no record of the request this worker was launched with, so the objective could not be rerouted"
+            ),
+        };
+        announce_failover(core, &parent, child_session_id, &reason, None);
+        return FailoverOutcome::NoRoute { reason };
+    };
+    // Cleared, not repointed: the router owns which harness is eligible, and
+    // a stale model id would pin the request to a provider that cannot run it.
+    request.harness = None;
+    request.model = None;
+    let turn_id = format!("failover-{}", Uuid::new_v4());
+    match launch_worker_outcome(core, &parent, &turn_id, &request, true) {
+        WorkerLaunchOutcome::Failed => {
+            let reason = match until {
+                Some(until) => format!(
+                    "{exhausted} is out of quota until {until} and no other installed harness can take this objective"
+                ),
+                None => format!(
+                    "{exhausted} is out of quota and no other installed harness can take this objective"
+                ),
+            };
+            announce_failover(core, &parent, child_session_id, &reason, None);
+            FailoverOutcome::NoRoute { reason }
+        }
+        _ => {
+            let harness = {
+                let db = state.db.lock().unwrap();
+                latest_child_harness(&db, &parent, &turn_id).unwrap_or_else(|| "another harness".into())
+            };
+            let notice = match until {
+                Some(until) => format!(
+                    "{exhausted} hit its usage limit (signal: {signal}) and is unavailable until {until}. The same objective was relaunched on {harness} under the same approved scope; this used the objective's one automatic attempt."
+                ),
+                None => format!(
+                    "{exhausted} hit its usage limit (signal: {signal}). The same objective was relaunched on {harness} under the same approved scope; this used the objective's one automatic attempt."
+                ),
+            };
+            announce_failover(core, &parent, child_session_id, &notice, Some(&harness));
+            FailoverOutcome::Relaunched { harness }
+        }
+    }
+}
+
+/// The harness a just-launched child ended up on.
+fn latest_child_harness(db: &Connection, parent: &str, turn_id: &str) -> Option<String> {
+    db.query_row(
+        "SELECT s.harness FROM sessions s
+         JOIN worker_runtime r ON r.session_id=s.id
+         WHERE r.parent_session_id=?1 AND s.id IN (
+             SELECT json_extract(payload,'$.childSessionId') FROM session_entries
+             WHERE session_id=?1 AND json_extract(payload,'$.turnId')=?2
+         )
+         ORDER BY s.created_at DESC LIMIT 1",
+        params![parent, turn_id],
+        |row| row.get(0),
+    )
+    .ok()
+}
+
+/// Tell the orchestrator — and the user — what moved and why.
+///
+/// A reroute the orchestrator cannot see is a reroute it will undo: it still
+/// believes the objective failed, and re-delegates work that is already
+/// running somewhere else.
+fn announce_failover(
+    core: &Arc<BridgeCore>,
+    parent_session_id: &str,
+    child_session_id: &str,
+    text: &str,
+    substituted: Option<&str>,
+) {
+    let notice = serde_json::json!({
+        "type": "bridge-worker-rerouted",
+        "childSessionId": child_session_id,
+        "substitutedHarness": substituted,
+        "detail": text,
+        "instruction": if substituted.is_some() {
+            "Bridge already relaunched this objective. Do not re-delegate it; wait for the new worker's typed result."
+        } else {
+            "Bridge could not reroute this objective. Wait for the stated reset, delegate it differently, or tell the user it is blocked."
+        },
+    })
+    .to_string();
+    let delivered = core
+        .adapters
+        .lock()
+        .unwrap()
+        .get(parent_session_id)
+        .is_some_and(|runtime| runtime.send_turn(&notice).is_ok());
+    let db = core.db.lock().unwrap();
+    let _ = session_forest::SessionForest::new(&db).append(
+        parent_session_id,
+        session_forest::EntryKind::DelegationRejected,
+        serde_json::json!({
+            "requestId": child_session_id,
+            "status": if substituted.is_some() { "rerouted" } else { "blocked" },
+            "reason": "provider_quota_exhausted",
+            "title": if substituted.is_some() { "Worker rerouted" } else { "No harness available" },
+            "text": text,
+            "willRetry": false,
+            "orchestratorNotified": delivered,
+            "childSessionId": child_session_id,
+        }),
+    );
+    let _ = store::event(
+        &db,
+        "router",
+        if substituted.is_some() {
+            "router.harness_failover"
+        } else {
+            "router.no_eligible_route"
+        },
+        parent_session_id,
+        text,
+    );
 }
 
 /// The delegation request a worker was launched with.
@@ -7166,6 +7456,33 @@ fn settle_worker_after_result(
         )?;
         return Ok(true);
     }
+    // A cancellation is a decision about the worker, not a report from it, so
+    // it settles from whatever state the worker is in. `Waiting → Cancelled`
+    // is a legal transition that this early return used to skip, leaving a
+    // cancelled worker sitting in `waiting` with `result_status='reported'` —
+    // present in the forest, absent from every "is it still running" query.
+    if matches!(result.status, delegation::WorkerResultStatus::Cancelled) {
+        if current.as_deref() != Some("cancelled") {
+            // Not `let _`: a swallowed failure here leaves the worker in its
+            // old state while the caller tears the process down and tells the
+            // parent it ended. A `warm` worker that survives its own
+            // cancellation is still eligible for reuse, so the next matching
+            // objective resumes a session whose process is gone.
+            session_supervisor::SessionSupervisor::transition(
+                &state.db.lock().unwrap(),
+                child_session_id,
+                worker_lifecycle::WorkerLifecycleState::Cancelled,
+                Some("stop_requested"),
+            )?;
+            // Warmth is an offer to reuse this session. A cancelled worker is
+            // not on offer, and the pool reads this column, not the lifecycle.
+            let _ = state.db.lock().unwrap().execute(
+                "UPDATE worker_runtime SET warm_until=NULL,updated_at=?2 WHERE session_id=?1",
+                params![child_session_id, Utc::now().to_rfc3339()],
+            );
+        }
+        return Ok(true);
+    }
     if current.as_deref() != Some("working") {
         return Ok(true);
     }
@@ -7231,15 +7548,34 @@ fn settle_worker_after_result(
             );
         }
     }
+    // An exhausted provider is the one failure Bridge can actually route
+    // around: the work is fine, the account is not. Marking the cooldown was
+    // only ever half the job — until this, the objective died with a "retry or
+    // delegate differently" note and waited for the orchestrator to notice.
+    // Relaunching an objective starts a process, spends the objective's paid
+    // attempt and moves routing for the whole workspace. That is too much to
+    // hand to a string match on text the worker wrote about itself: a worker
+    // that emits a failed result mentioning "usage limit" would otherwise be
+    // able to spawn its own sibling. Bridge acts on what it watched the
+    // provider do, and treats the worker's account of it as prose.
+    let failover = quota_signal.as_deref().filter(|_| {
+        provider_limit_was_observed(&state.db.lock().unwrap(), child_session_id)
+    })
+    .map(|signal| fail_over_exhausted_worker(core, child_session_id, signal));
     // Retrying the same harness in place is only ever declined here when it
     // was actually about to be retried; a decline `decide` already reached
     // for another reason keeps its own reason.
     let decision = match decision {
         worker_retry::RetryDecision::Retry { signal } if quota_signal.is_some() => {
             worker_retry::RetryDecision::Decline {
-                reason: format!(
-                    "provider quota exhausted (signal: {signal}); retrying the same harness immediately would repeat the failure, so it was marked unavailable for new delegations in this workspace instead"
-                ),
+                reason: match &failover {
+                    Some(FailoverOutcome::Relaunched { harness }) => format!(
+                        "provider quota exhausted (signal: {signal}); the objective was relaunched on {harness} instead of retrying the same exhausted harness"
+                    ),
+                    _ => format!(
+                        "provider quota exhausted (signal: {signal}); retrying the same harness immediately would repeat the failure, so it was marked unavailable for new delegations in this workspace instead"
+                    ),
+                },
             }
         }
         other => other,
@@ -7490,6 +7826,31 @@ fn fleet_digest(db: &Connection, parent_session_id: &str) -> serde_json::Value {
     serde_json::Value::Array(rows)
 }
 
+/// Why a peek found nothing, told apart rather than flattened.
+///
+/// The three cases need three different reactions from the orchestrator:
+/// wait, read the result it already has, or fix the session id it invented.
+fn peek_miss_reason(db: &Connection, parent_session_id: &str, target: &str) -> String {
+    let owned: Option<(String, String, String)> = db
+        .query_row(
+            "SELECT s.label,r.lifecycle_state,r.result_status FROM worker_runtime r
+             JOIN sessions s ON s.id=r.session_id
+             WHERE r.session_id=?1 AND r.parent_session_id=?2",
+            params![target, parent_session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .ok();
+    match owned {
+        Some((label, lifecycle, result_status)) if result_status == "reported" => format!(
+            "{label} has already reported its typed result ({lifecycle}); read the result you were given rather than peeking again"
+        ),
+        Some((label, lifecycle, _)) => format!(
+            "{label} is {lifecycle} and has no activity to report yet"
+        ),
+        None => format!("{target} is not one of your workers"),
+    }
+}
+
 /// The reply to a `bridge-peek`: the fleet rows plus each worker's most
 /// recent durable tool calls and messages, head-truncated. Host-built and
 /// bounded — the raw transcript never crosses this seam.
@@ -7505,12 +7866,24 @@ fn worker_activity_digest(
     if let Some(target) = &peek.session_id {
         workers.retain(|row| row.get("sessionId").and_then(|value| value.as_str()) == Some(target));
         if workers.is_empty() {
+            // "Not a live worker" was one sentence covering three different
+            // situations, and only one of them was a mistake. A worker that
+            // finished normally is not the same answer as a session id that
+            // belongs to someone else, and telling the orchestrator they are
+            // sent it re-delegating work that had already been done.
             return serde_json::json!({
                 "type": "bridge-worker-activity",
-                "error": format!("{target} is not a live worker of this session"),
+                "error": peek_miss_reason(db, parent_session_id, target),
                 "workers": [],
             });
         }
+    }
+    if workers.is_empty() {
+        return serde_json::json!({
+            "type": "bridge-worker-activity",
+            "error": "You have no live workers right now. Nothing is running, so there is nothing to report.",
+            "workers": [],
+        });
     }
     let limit = peek.entry_limit();
     for worker in &mut workers {
@@ -7603,21 +7976,84 @@ fn refuse_orchestrator_steer(core: &Arc<BridgeCore>, session_id: &str, reason: &
         "instruction": "No worker was redirected. Correct the block and re-emit it, or leave the worker alone; do not assume the guidance landed."
     })
     .to_string();
+    refuse_orchestrator_request(core, session_id, reason, &notice, RefusedRequest::Steer);
+}
+
+fn refuse_orchestrator_stop(core: &Arc<BridgeCore>, session_id: &str, reason: &str) {
+    let notice = serde_json::json!({
+        "type": "bridge-stop-rejected",
+        "reason": reason,
+        "instruction": "No worker was stopped. Correct the block and re-emit it if you still want it stopped; do not assume it ended."
+    })
+    .to_string();
+    refuse_orchestrator_request(core, session_id, reason, &notice, RefusedRequest::Stop);
+}
+
+#[derive(Clone, Copy)]
+enum RefusedRequest {
+    Steer,
+    Stop,
+}
+
+impl RefusedRequest {
+    fn noun(self) -> &'static str {
+        match self {
+            Self::Steer => "steer",
+            Self::Stop => "stop",
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Steer => "Steer refused",
+            Self::Stop => "Stop refused",
+        }
+    }
+}
+
+/// Tell the orchestrator its request did not land — and tell the person
+/// watching, too.
+///
+/// A refusal that only reached the model was invisible whenever it mattered
+/// most: if the orchestrator's own adapter is gone, the notice goes nowhere
+/// and the only trace was a ledger row nothing renders. The forest entry is
+/// what the UI replays, so the refusal survives the adapter that could not
+/// hear it.
+fn refuse_orchestrator_request(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    reason: &str,
+    notice: &str,
+    kind: RefusedRequest,
+) {
     let delivered = core
         .adapters
         .lock()
         .unwrap()
         .get(session_id)
-        .is_some_and(|runtime| runtime.send_turn(&notice).is_ok());
+        .is_some_and(|runtime| runtime.send_turn(notice).is_ok());
     let db = core.db.lock().unwrap();
+    let _ = session_forest::SessionForest::new(&db).append(
+        session_id,
+        session_forest::EntryKind::DelegationRejected,
+        serde_json::json!({
+            "requestId": Uuid::new_v4().to_string(),
+            "status": "failed",
+            "reason": format!("{}_refused", kind.noun()),
+            "title": kind.title(),
+            "text": reason,
+            "willRetry": false,
+            "orchestratorNotified": delivered,
+        }),
+    );
     let _ = store::event(
         &db,
         "delegation",
-        if delivered {
-            "delegation.steer.refused"
-        } else {
-            "delegation.steer.undeliverable"
-        },
+        &format!(
+            "delegation.{}.{}",
+            kind.noun(),
+            if delivered { "refused" } else { "undeliverable" }
+        ),
         session_id,
         reason,
     );
@@ -7693,7 +8129,19 @@ fn deliver_orchestrator_steer(
         .unwrap()
         .get(&steer.session_id)
         .is_some_and(|runtime| runtime.supports_active_turn_steering());
-    let turn_active = turn_is_active(core, &steer.session_id).unwrap_or(true);
+    // Guessing here is what made a database hiccup look like a delivered
+    // steer: `unwrap_or(true)` routed to the queue, and a queue nobody drains
+    // is indistinguishable from success to the orchestrator.
+    let Ok(turn_active) = turn_is_active(core, &steer.session_id) else {
+        refuse_orchestrator_steer(
+            core,
+            parent_session_id,
+            &format!(
+                "Bridge could not read whether {label} is mid-turn, so nothing was steered"
+            ),
+        );
+        return;
+    };
     let route = session_input::route(turn_active, steering_capable);
     let envelope = orchestrator_steer_envelope(steer.guidance());
     let reached = match route {
@@ -7769,6 +8217,74 @@ fn deliver_orchestrator_steer(
             orchestrator_notified: true,
         },
     );
+}
+
+/// End one of the orchestrator's own workers.
+///
+/// The verb `bridge-steer` was being used as. A steer is words a worker may
+/// or may not act on, delivered at a turn boundary the worker controls; a
+/// stop is a decision Bridge carries out. The target check is the same as a
+/// steer's, because a model-supplied session id is untrusted input either way.
+fn deliver_orchestrator_stop(
+    core: &Arc<BridgeCore>,
+    parent_session_id: &str,
+    stop: &delegation::StopRequest,
+) {
+    let state = core.clone();
+    let target: Option<(String, String)> = state
+        .db
+        .lock()
+        .unwrap()
+        .query_row(
+            "SELECT s.label,r.lifecycle_state FROM worker_runtime r
+             JOIN sessions s ON s.id=r.session_id
+             WHERE r.session_id=?1 AND r.parent_session_id=?2",
+            params![stop.session_id, parent_session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .ok();
+    let Some((label, lifecycle_state)) = target else {
+        refuse_orchestrator_stop(
+            core,
+            parent_session_id,
+            &format!(
+                "{} is not one of your workers, so nothing was stopped",
+                stop.session_id
+            ),
+        );
+        return;
+    };
+    // Unlike a steer, a stop has no live-adapter requirement: a worker with no
+    // process still holds a lease, a worktree and an outstanding-child slot,
+    // and those are exactly what stopping it releases.
+    if lifecycle_state
+        .parse::<worker_lifecycle::WorkerLifecycleState>()
+        .is_ok_and(worker_lifecycle::WorkerLifecycleState::is_terminal)
+    {
+        refuse_orchestrator_stop(
+            core,
+            parent_session_id,
+            &format!("{label} has already finished ({lifecycle_state}); there was nothing to stop"),
+        );
+        return;
+    }
+    match stop_worker_session(core, &stop.session_id, StopCause::Orchestrator(stop.cause())) {
+        Ok(()) => {
+            let db = state.db.lock().unwrap();
+            let _ = store::event(
+                &db,
+                "delegation",
+                "delegation.stop.delivered",
+                parent_session_id,
+                &format!("{} stopped: {}", stop.session_id, stop.cause()),
+            );
+        }
+        Err(error) => refuse_orchestrator_stop(
+            core,
+            parent_session_id,
+            &format!("{label} could not be stopped: {error}"),
+        ),
+    }
 }
 
 /// The wrapper an orchestrator's correction wears on its way into a worker.
@@ -8071,7 +8587,7 @@ fn report_to_parent(
     core: &Arc<BridgeCore>,
     child_session_id: &str,
     result: &delegation::WorkerResult,
-) {
+) -> bool {
     let state = core.clone();
     // Check the claim against the repository *before* it becomes canonical. A
     // `completed` write-mode result with no matching commit or dirty path is
@@ -8143,8 +8659,10 @@ fn report_to_parent(
         .ok()
         .flatten()
     };
+    // `false` when the result seam was already claimed: the caller decides
+    // whether that silence is acceptable. For a cancellation it is not.
     let Some(report) = report else {
-        return;
+        return false;
     };
     let direct_dispatch = spawned_turn_id(
         &state.db.lock().unwrap(),
@@ -8311,6 +8829,7 @@ fn report_to_parent(
             dispatch_next_queued_worker(&core, &workspace_id);
         }
     });
+    true
 }
 
 fn dispatch_next_queued_worker(core: &Arc<BridgeCore>, workspace_id: &str) {
@@ -10418,6 +10937,138 @@ pub fn resolve_policy_delegation_approval(
     })
 }
 
+/// Who ended a worker, and why. The reason is not decoration: it is what the
+/// parent's typed result and the user's timeline say instead of "cancelled".
+#[derive(Clone, Copy)]
+pub enum StopCause<'a> {
+    User,
+    Orchestrator(&'a str),
+}
+
+impl StopCause<'_> {
+    fn summary(self) -> String {
+        match self {
+            Self::User => "Worker cancelled by user".to_owned(),
+            Self::Orchestrator(reason) => format!("Worker stopped by its orchestrator: {reason}"),
+        }
+    }
+
+    fn shutdown(self) -> adapters::ShutdownReason {
+        match self {
+            Self::User => adapters::ShutdownReason::UserCancelled,
+            Self::Orchestrator(_) => adapters::ShutdownReason::Completed,
+        }
+    }
+}
+
+/// Stop one worker: interrupt it, settle it `Cancelled`, tear the process
+/// down, and tell its parent.
+///
+/// One path for both callers. The user's "End session" and the orchestrator's
+/// `bridge-stop` used to be different amounts of thorough, which is how a
+/// worker could end up cancelled in the forest and still holding a lease.
+pub fn stop_worker_session(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+    cause: StopCause<'_>,
+) -> Result<(), BridgeError> {
+    let state = core.clone();
+    if let Some(runtime) = state.adapters.lock().unwrap().get(session_id) {
+        // Only a session with a live adapter to interrupt can have that
+        // interrupt provoke a stop-induced error frame, so only that case
+        // needs the marker — an adapterless stop leaves nothing for a
+        // later resume's genuine error to be mistaken for.
+        state
+            .user_stop_requested
+            .lock()
+            .unwrap()
+            .insert(session_id.to_owned());
+        let _ = runtime.interrupt();
+    }
+    let result = delegation::WorkerResult {
+        schema_version: delegation::SCHEMA_VERSION,
+        status: delegation::WorkerResultStatus::Cancelled,
+        summary: cause.summary(),
+        files_changed: vec![],
+        tests: vec![],
+        decisions: vec![],
+        risks: vec![],
+        remaining_work: vec!["Cancelled work was not completed".into()],
+        suggested_next_action: delegation::SuggestedNextAction::Finish,
+        suggested_role: None,
+        suggested_task: None,
+    };
+    if !settle_worker_after_result(core, session_id, &result)? {
+        return Err(BridgeError::Invalid(
+            "cancelled worker cannot be retried".into(),
+        ));
+    }
+    // A cancellation the parent is never told about is the worst of both
+    // worlds: the worker is gone and the orchestrator is still waiting on it.
+    // `report_to_parent` claims once and returns `None` for an already-reported
+    // worker, so cancelling one that had reported used to be swallowed
+    // entirely — the forest gained a cancellation nobody was informed of.
+    if !report_to_parent(core, session_id, &result) {
+        announce_worker_cancellation(core, session_id, &result.summary);
+    }
+    deactivate_reader_launch(&state, session_id);
+    if let Some(mut runtime) = state.adapters.lock().unwrap().remove(session_id) {
+        runtime.stop(cause.shutdown());
+    }
+    verify_read_only_worker(core, session_id);
+    let db = state.db.lock().unwrap();
+    session_supervisor::SessionSupervisor::clear_adapter_process(&db, session_id)?;
+    let workspace_id: String = db.query_row(
+        "SELECT workspace_id FROM sessions WHERE id=?1",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('starting','working','waiting','warm','checkpointing','resuming','restored')) THEN 'working' ELSE 'ready' END WHERE id=?1",params![workspace_id])?;
+    drop(db);
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(())
+}
+
+/// Tell a parent about a cancellation that `report_to_parent` would swallow.
+///
+/// The result was already claimed, so the typed-result seam is closed; this is
+/// a plain notice on the parent's own transcript, which is the surface the
+/// user reads anyway.
+fn announce_worker_cancellation(core: &Arc<BridgeCore>, child_session_id: &str, summary: &str) {
+    let state = core.clone();
+    let db = state.db.lock().unwrap();
+    let Some(parent) = worker_parent_session(&db, child_session_id) else {
+        return;
+    };
+    let label: String = db
+        .query_row(
+            "SELECT label FROM sessions WHERE id=?1",
+            params![child_session_id],
+            |row| row.get(0),
+        )
+        .unwrap_or_else(|_| child_session_id.to_owned());
+    let _ = session_forest::SessionForest::new(&db).append(
+        &parent,
+        session_forest::EntryKind::DelegationRejected,
+        serde_json::json!({
+            "requestId": child_session_id,
+            "status": "cancelled",
+            "reason": "worker_cancelled_after_reporting",
+            "title": format!("{label} stopped"),
+            "text": summary,
+            "willRetry": false,
+            "childSessionId": child_session_id,
+        }),
+    );
+    let _ = store::event(
+        &db,
+        "delegation",
+        "delegation.cancel.announced",
+        &parent,
+        summary,
+    );
+}
+
 pub fn stop_session(
     core: &Arc<BridgeCore>,
     session_id: String,
@@ -10431,51 +11082,8 @@ pub fn stop_session(
         |row| row.get::<_, bool>(0),
     )?;
     if is_worker {
-        if let Some(runtime) = state.adapters.lock().unwrap().get(&session_id) {
-            // Only a session with a live adapter to interrupt can have that
-            // interrupt provoke a stop-induced error frame, so only that case
-            // needs the marker — an adapterless stop leaves nothing for a
-            // later resume's genuine error to be mistaken for.
-            state
-                .user_stop_requested
-                .lock()
-                .unwrap()
-                .insert(session_id.clone());
-            let _ = runtime.interrupt();
-        }
-        let result = delegation::WorkerResult {
-            schema_version: delegation::SCHEMA_VERSION,
-            status: delegation::WorkerResultStatus::Cancelled,
-            summary: "Worker cancelled by user".into(),
-            files_changed: vec![],
-            tests: vec![],
-            decisions: vec![],
-            risks: vec![],
-            remaining_work: vec!["Cancelled work was not completed".into()],
-            suggested_next_action: delegation::SuggestedNextAction::Finish,
-            suggested_role: None,
-            suggested_task: None,
-        };
-        if !settle_worker_after_result(&core, &session_id, &result)? {
-            return Err(BridgeError::Invalid(
-                "cancelled worker cannot be retried".into(),
-            ));
-        }
-        report_to_parent(&core, &session_id, &result);
-        deactivate_reader_launch(state, &session_id);
-        if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
-            runtime.stop(adapters::ShutdownReason::UserCancelled);
-        }
-        verify_read_only_worker(&core, &session_id);
+        stop_worker_session(core, &session_id, StopCause::User)?;
         let db = state.db.lock().unwrap();
-        session_supervisor::SessionSupervisor::clear_adapter_process(&db, &session_id)?;
-        let workspace_id: String = db.query_row(
-            "SELECT workspace_id FROM sessions WHERE id=?1",
-            params![session_id],
-            |row| row.get(0),
-        )?;
-        db.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=?1 AND status IN ('starting','working','waiting','warm','checkpointing','resuming','restored')) THEN 'working' ELSE 'ready' END WHERE id=?1",params![workspace_id])?;
-        core.events.publish(CoreEvent::StateChanged);
         return store::state(&db);
     }
     let has_process = state.adapters.lock().unwrap().contains_key(&session_id);
@@ -15130,6 +15738,384 @@ mod retry_settlement_tests {
         assert!(
             !core.adapters.lock().unwrap().contains_key("child"),
             "a worker that cannot checkpoint is still retired, not held open"
+        );
+    }
+
+    /// The verb the vocabulary was missing. A stop is carried out by Bridge,
+    /// so it lands whether or not the worker cooperates.
+    #[test]
+    fn an_orchestrator_stop_cancels_the_worker_and_tells_the_parent() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        let stop = delegation::StopRequest {
+            session_id: "child".into(),
+            reason: "the user no longer wants this".into(),
+        };
+
+        deliver_orchestrator_stop(&core, "parent", &stop);
+
+        let db = core.db.lock().unwrap();
+        let runtime = store::worker_runtime(&db, "child").unwrap().unwrap();
+        assert_eq!(runtime.lifecycle_state, "cancelled");
+        assert_eq!(runtime.result_status, "reported");
+        let summary = runtime.last_result.unwrap().to_string();
+        assert!(
+            summary.contains("the user no longer wants this"),
+            "the reason is what makes a cancellation readable later: {summary}"
+        );
+        drop(db);
+        assert!(
+            !core.adapters.lock().unwrap().contains_key("child"),
+            "a stopped worker does not keep its provider process"
+        );
+    }
+
+    /// A model-supplied session id is untrusted input. Stopping a worker that
+    /// belongs to someone else would be a cross-session kill.
+    #[test]
+    fn a_stop_aimed_outside_the_orchestrator_s_own_workers_is_refused_visibly() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        let stop = delegation::StopRequest {
+            session_id: "someone-elses-worker".into(),
+            reason: "nope".into(),
+        };
+
+        deliver_orchestrator_stop(&core, "parent", &stop);
+
+        let db = core.db.lock().unwrap();
+        assert_eq!(
+            store::worker_runtime(&db, "child")
+                .unwrap()
+                .unwrap()
+                .lifecycle_state,
+            "working",
+            "the orchestrator's real worker is untouched"
+        );
+        let refusal: String = db
+            .query_row(
+                "SELECT COALESCE(json_extract(payload,'$.text'),'') FROM session_entries
+                 WHERE session_id='parent' AND kind='delegation.rejected'
+                 ORDER BY sequence DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("a refusal the user can see, not just a ledger row");
+        assert!(refusal.contains("not one of your workers"), "{refusal}");
+    }
+
+    /// `Waiting → Cancelled` is a legal transition the settle path used to
+    /// skip, leaving a cancelled worker parked in `waiting` — gone from the
+    /// UI, still counted as live by every "is anything running" query.
+    #[test]
+    fn cancelling_a_waiting_worker_actually_cancels_it() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE worker_runtime SET lifecycle_state='waiting' WHERE session_id='child'",
+                [],
+            )
+            .unwrap();
+
+        stop_worker_session(&core, "child", StopCause::User).unwrap();
+
+        assert_eq!(
+            store::worker_runtime(&core.db.lock().unwrap(), "child")
+                .unwrap()
+                .unwrap()
+                .lifecycle_state,
+            "cancelled"
+        );
+    }
+
+    /// `report_to_parent` claims the result seam once. A worker cancelled
+    /// after it had already reported used to vanish silently: the forest
+    /// gained a cancellation and the orchestrator was told nothing.
+    #[test]
+    fn cancelling_an_already_reported_worker_still_reaches_the_parent() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE worker_runtime SET result_status='reported' WHERE session_id='child'",
+                [],
+            )
+            .unwrap();
+
+        stop_worker_session(&core, "child", StopCause::Orchestrator("overtaken")).unwrap();
+
+        let announced: String = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COALESCE(json_extract(payload,'$.text'),'') FROM session_entries
+                 WHERE session_id='parent' AND kind='delegation.rejected'
+                 ORDER BY sequence DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the parent hears about it even though the seam was closed");
+        assert!(announced.contains("overtaken"), "{announced}");
+    }
+
+    /// One slot per session dropped every request but the last, and told
+    /// nobody. A turn can carry several assistant messages.
+    #[test]
+    fn every_queued_steer_in_one_turn_is_delivered_not_just_the_last() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        {
+            let mut delegations = core.delegations.lock().unwrap();
+            delegations.pending_worker_steers.insert(
+                "parent".into(),
+                vec![
+                    delegation::SteerRequest {
+                        session_id: "child".into(),
+                        message: "first correction".into(),
+                    },
+                    delegation::SteerRequest {
+                        session_id: "child".into(),
+                        message: "second correction".into(),
+                    },
+                ],
+            );
+        }
+        let steers = core
+            .delegations
+            .lock()
+            .unwrap()
+            .pending_worker_steers
+            .remove("parent")
+            .unwrap();
+        for steer in &steers {
+            deliver_orchestrator_steer(&core, "parent", steer);
+        }
+
+        let delivered: i64 = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM events WHERE kind IN ('delegation.steer.delivered','delegation.steer.queued')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(delivered, 2, "both corrections reached the worker");
+    }
+
+    /// "Not a live worker" was one sentence for three situations. Only one of
+    /// them is the orchestrator's mistake, and the other two need different
+    /// reactions than "fix the id".
+    #[test]
+    fn a_peek_that_finds_nothing_says_which_kind_of_nothing() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        let db = core.db.lock().unwrap();
+
+        assert!(peek_miss_reason(&db, "parent", "made-up-id").contains("not one of your workers"));
+
+        db.execute(
+            "UPDATE worker_runtime SET result_status='reported',lifecycle_state='completed' WHERE session_id='child'",
+            [],
+        )
+        .unwrap();
+        let reported = peek_miss_reason(&db, "parent", "child");
+        assert!(
+            reported.contains("already reported"),
+            "a finished worker is not a missing one: {reported}"
+        );
+
+        db.execute(
+            "UPDATE worker_runtime SET result_status='pending',lifecycle_state='starting' WHERE session_id='child'",
+            [],
+        )
+        .unwrap();
+        let starting = peek_miss_reason(&db, "parent", "child");
+        assert!(
+            starting.contains("starting") && starting.contains("no activity"),
+            "a worker still booting is not a missing one: {starting}"
+        );
+    }
+
+    /// The failover budget is per objective, not per cause. A worker that
+    /// already spent the objective's one automatic attempt does not get a
+    /// second one just because this failure was a quota wall.
+    #[test]
+    fn a_failover_does_not_buy_a_second_automatic_attempt() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        {
+            let db = core.db.lock().unwrap();
+            let key = worker_objective_key(&db, "child").expect("the objective has a key");
+            worker_retry::consume_attempt(&db, &key, "parent", "usage limit").unwrap();
+        }
+
+        assert_eq!(
+            fail_over_exhausted_worker(&core, "child", "usage limit"),
+            FailoverOutcome::OutOfBudget
+        );
+    }
+
+    /// Failover starts a process and spends the objective's paid attempt, so
+    /// it must not be reachable from text the worker wrote about itself. A
+    /// worker that says "usage limit" in its own result is making a claim,
+    /// not producing evidence.
+    #[test]
+    fn worker_prose_alone_cannot_trigger_a_failover() {
+        let (_fixture, core, sent, _guard) = core_with_working_worker();
+        let result = failed("Request failed: 429 rate limit exceeded, please try again later");
+
+        assert!(settle_worker_after_result(&core, "child", &result).unwrap());
+
+        let db = core.db.lock().unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM events WHERE kind IN ('router.harness_failover','router.no_eligible_route')",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0,
+            "no reroute was attempted on the worker's say-so"
+        );
+        let key = worker_objective_key(&db, "child").unwrap();
+        assert_eq!(
+            worker_retry::attempts_spent(&db, &key).unwrap(),
+            0,
+            "the objective's paid attempt is intact"
+        );
+        drop(db);
+        assert!(sent.lock().unwrap().is_empty(), "and no turn was spent");
+    }
+
+    /// The same wording, once Bridge has watched the provider say it, is
+    /// evidence — and then the reroute is exactly what should happen.
+    #[test]
+    fn an_observed_provider_limit_does_reach_the_failover_path() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        {
+            let db = core.db.lock().unwrap();
+            store::event(&db, "provider", PROVIDER_LIMIT_OBSERVED, "child", "usage limit").unwrap();
+        }
+        let result = failed("Request failed: 429 rate limit exceeded, please try again later");
+
+        assert!(settle_worker_after_result(&core, "child", &result).unwrap());
+
+        assert_eq!(
+            core.db
+                .lock()
+                .unwrap()
+                .query_row(
+                    "SELECT COUNT(*) FROM events WHERE kind='router.no_eligible_route'",
+                    [],
+                    |row| row.get::<_, i64>(0)
+                )
+                .unwrap(),
+            1,
+            "the fixture has no second harness, so the reroute lands on the blocked path"
+        );
+    }
+
+    /// The error frame is the only writer of the provenance marker, so a
+    /// worker cannot forge the evidence that unlocks the failover path.
+    #[test]
+    fn only_the_provider_s_own_frame_writes_the_observation_marker() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        // Frames are parsed per harness, so the session has to be the one
+        // whose shape this frame is.
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET harness='codex' WHERE id='child'", [])
+            .unwrap();
+        let frame = serde_json::json!({
+            "method": "turn/completed",
+            "params": {"turn": {"id": "t", "status": "failed", "error": {
+                "message": "You've hit your usage limit."
+            }}}
+        });
+        let turn = Arc::new(Mutex::new(Some("t".into())));
+        handle_agent_value(&core, "child", &turn, &frame);
+
+        assert!(provider_limit_was_observed(&core.db.lock().unwrap(), "child"));
+    }
+
+    /// `Cancelled` used to be reachable only from `working` and `waiting`, so
+    /// stopping a warm worker tore down its process, told the parent it had
+    /// ended, and left the session `warm` — still on offer to the pool, with
+    /// nothing behind it.
+    #[test]
+    fn stopping_a_warm_worker_retires_it_instead_of_leaving_it_reusable() {
+        for state in ["warm", "starting", "checkpointing", "resuming", "restored"] {
+            let (_fixture, core, _sent, _guard) = core_with_working_worker();
+            core.db
+                .lock()
+                .unwrap()
+                .execute(
+                    "UPDATE worker_runtime SET lifecycle_state=?1,warm_until=?2 WHERE session_id='child'",
+                    params![state, (Utc::now() + chrono::Duration::minutes(5)).to_rfc3339()],
+                )
+                .unwrap();
+
+            stop_worker_session(&core, "child", StopCause::User)
+                .unwrap_or_else(|error| panic!("stopping a {state} worker must succeed: {error}"));
+
+            let db = core.db.lock().unwrap();
+            let runtime = store::worker_runtime(&db, "child").unwrap().unwrap();
+            assert_eq!(runtime.lifecycle_state, "cancelled", "from {state}");
+            assert!(
+                runtime.warm_until.is_none(),
+                "a cancelled worker is not on offer for reuse (from {state})"
+            );
+            assert!(
+                worker_pool::WorkerPool::warm_workers_due(
+                    &db,
+                    Utc::now() + chrono::Duration::hours(1)
+                )
+                .unwrap()
+                .is_empty(),
+                "from {state}"
+            );
+        }
+    }
+
+    /// When nothing else is installed, the orchestrator has to be told that
+    /// waiting is the only option — with the reset time, so "wait" is
+    /// actionable rather than indefinite.
+    #[test]
+    fn a_failover_with_no_eligible_harness_says_so_with_the_reset_time() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        {
+            let db = core.db.lock().unwrap();
+            learning_router::mark_harness_quota_exhausted(&db, "w", "claude", "usage limit", "child")
+                .unwrap();
+        }
+
+        let outcome = fail_over_exhausted_worker(&core, "child", "usage limit");
+
+        assert!(
+            matches!(outcome, FailoverOutcome::NoRoute { .. }),
+            "no other harness is installed in this fixture: {outcome:?}"
+        );
+        let db = core.db.lock().unwrap();
+        let announced: String = db
+            .query_row(
+                "SELECT COALESCE(json_extract(payload,'$.text'),'') FROM session_entries
+                 WHERE session_id='parent' AND kind='delegation.rejected'
+                 ORDER BY sequence DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the block is visible, not just logged");
+        assert!(announced.contains("out of quota"), "{announced}");
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM events WHERE kind='router.no_eligible_route'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1
         );
     }
 
