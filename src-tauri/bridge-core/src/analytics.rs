@@ -194,6 +194,7 @@ const NUMERIC_USAGE_FIELDS: &[&str] = &[
     "prompt_token_count",
     "candidates_token_count",
     "tool_use_prompt_token_count",
+    "model_context_window",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
