@@ -41,6 +41,7 @@ pub fn discover_models() -> Result<Vec<crate::adapters::DiscoveredModel>, Bridge
     let node = binary::resolve("node").ok_or_else(|| BridgeError::Invalid("Node.js is required to discover Claude models".into()))?;
     let sidecar = sidecar_entry()?;
     let mut command = Command::new(node);
+    binary::hydrate_command_path(&mut command);
     command.arg(sidecar).arg(serde_json::json!({ "catalog": true }).to_string())
         .env_remove("NODE_OPTIONS").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     configure_sdk_environment(&mut command);
@@ -233,7 +234,7 @@ fn launch(
         "instructions": instructions.map(str::trim).filter(|value| !value.is_empty()),
         "writeMode": write_mode.map(write_mode_label),
         "networkAllowed": read_only_sandbox.map(|sandbox| sandbox.network_allowed()).unwrap_or(true),
-        "plugins": sdk_configuration.plugins,
+        "plugins": sdk_configuration.plugins.clone(),
         "mcpServers": sidecar_mcp_servers(briefing_config.is_some(), &sdk_configuration.mcp_servers),
         // Absent for every non-briefing session, so the sidecar's existing
         // write-mode handling is reached by exactly the same path as before.
@@ -245,6 +246,7 @@ fn launch(
         "effort": effort.map(str::trim).filter(|value| !value.is_empty()),
     });
     let mut command = crate::worker_sandbox::command(&node, read_only_sandbox)?;
+    binary::hydrate_command_path(&mut command);
     command
         .arg(&sidecar)
         .arg(config.to_string())
@@ -323,7 +325,7 @@ fn launch(
         .ok_or_else(|| BridgeError::Invalid("Claude stdout unavailable".into()))?;
     let writer = Arc::new(Mutex::new(stdin));
     let reader = BufReader::new(stdout);
-    let startup_messages = vec![json!({
+    let mut startup_messages = vec![json!({
         "type": "system",
         "subtype": "session_ready",
         "session_id": session_id,
@@ -331,6 +333,13 @@ fn launch(
         "model": chosen_model,
         "resumed": resume_session_id.is_some(),
     })];
+    if !sdk_configuration.diagnostics.is_empty() {
+        startup_messages.push(json!({
+            "type": "system",
+            "subtype": "capability_discovery",
+            "diagnostics": sdk_configuration.diagnostics.clone(),
+        }));
+    }
     // Boundary named honestly: this is the fork plus the pipe handoff, not the
     // sidecar becoming usable, which this call never waits for.
     crate::process_ledger::log_spawn_to_ready("claude", "process_spawned", spawned_at);
@@ -1083,6 +1092,7 @@ mod tests {
                 json!({"type": "http", "url": "http://127.0.0.1"}),
             )]),
             connector_health: Default::default(),
+            diagnostics: Vec::new(),
         };
         for phase in [ContextLifecyclePhase::Start, ContextLifecyclePhase::Resume] {
             let inventories = claude_context_inventory(phase, &configuration).unwrap();

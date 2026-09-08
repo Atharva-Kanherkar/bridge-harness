@@ -21,6 +21,8 @@ use std::{
 };
 use uuid::Uuid;
 
+const MINIMUM_VERSION: (u64, u64, u64) = (0, 153, 4);
+
 pub struct CodexRuntime {
     pub writer: Arc<Mutex<ChildStdin>>,
     pub child: Child,
@@ -62,8 +64,11 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedCodex, BridgeError> {
 
 pub fn discover_models() -> Result<Vec<crate::adapters::DiscoveredModel>, BridgeError> {
     let binary = resolve_runtime().ok_or_else(|| BridgeError::Invalid("Codex binary is not installed".into()))?;
-    let mut child = Command::new(binary).args(["app-server", "--listen", "stdio://"])
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?;
+    ensure_supported_version(&binary)?;
+    let mut command = crate::adapters::supervised_command(&binary, ["app-server", "--listen", "stdio://"]);
+    binary::hydrate_command_path(&mut command);
+    crate::adapters::configure_process_group(&mut command);
+    let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?;
     let stdin = child.stdin.take().ok_or_else(|| BridgeError::Adapter("Codex catalogue stdin unavailable".into()))?;
     let stdout = child.stdout.take().ok_or_else(|| BridgeError::Adapter("Codex catalogue stdout unavailable".into()))?;
     let writer = Arc::new(Mutex::new(stdin));
@@ -139,7 +144,9 @@ fn launch(
     }
     let binary = resolve_runtime()
         .ok_or_else(|| BridgeError::Invalid("Codex binary is not installed".into()))?;
+    ensure_supported_version(&binary)?;
     let mut command = crate::worker_sandbox::command(&binary, read_only_sandbox)?;
+    binary::hydrate_command_path(&mut command);
     let sandbox_policy = read_only_sandbox.map(|sandbox| {
         json!({
             "type": "workspaceWrite",
@@ -656,6 +663,46 @@ pub fn binary_version() -> Option<String> {
     binary::version_at(&resolve_runtime()?)
 }
 
+pub fn is_supported_version(version: &str) -> bool {
+    version
+        .split_whitespace()
+        .find_map(|token| {
+            let token = token.strip_prefix('v').unwrap_or(token);
+            let parts = token.split('.').collect::<Vec<_>>();
+            if parts.len() != 3
+                || parts.iter().any(|part| {
+                    part.is_empty()
+                        || !part
+                            .chars()
+                            .all(|character| character.is_ascii_digit())
+                })
+            {
+                return None;
+            }
+            Some((
+                parts[0].parse::<u64>().ok()?,
+                parts[1].parse::<u64>().ok()?,
+                parts[2].parse::<u64>().ok()?,
+            ))
+        })
+        .is_some_and(|version| version >= MINIMUM_VERSION)
+}
+
+fn ensure_supported_version(executable: &std::path::Path) -> Result<(), BridgeError> {
+    let version = binary::version_at(executable).ok_or_else(|| {
+        BridgeError::Invalid(format!(
+            "Cannot read Codex version from {}",
+            executable.display()
+        ))
+    })?;
+    if is_supported_version(&version) {
+        return Ok(());
+    }
+    Err(BridgeError::Invalid(format!(
+        "Codex {version} is incompatible with Bridge. Upgrade to Codex 0.153.4 or newer."
+    )))
+}
+
 /// Whether `~/.codex/auth.json` parses with a non-empty token payload —
 /// independent of whether the `codex` binary itself resolves.
 pub fn auth_state() -> AuthState {
@@ -800,6 +847,17 @@ mod tests {
         let orchestrator = thread_start_params("/tmp/work", None, None, None, None);
         assert_eq!(orchestrator["sandbox"], "danger-full-access");
         assert_eq!(orchestrator["approvalPolicy"], "never");
+    }
+
+    #[test]
+    fn codex_version_gate_is_strict_and_matches_the_certified_runtime() {
+        assert!(!is_supported_version("codex-cli 0.153.3"));
+        assert!(is_supported_version("codex-cli 0.153.4"));
+        assert!(is_supported_version("codex-cli 0.200.0"));
+        assert!(is_supported_version("codex-cli 1.0.0"));
+        assert!(!is_supported_version("build 9"));
+        assert!(!is_supported_version("codex-cli 0.153"));
+        assert!(!is_supported_version("codex-cli 0.153.4-beta.1"));
     }
 
     #[test]

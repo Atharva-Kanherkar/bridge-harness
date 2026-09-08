@@ -129,6 +129,16 @@ fn launch_session_context(
     )
 }
 
+fn configured_capability_summary(harness: &str, cwd: &str) -> Option<String> {
+    let harness = crate::capability_projection::CapabilityHarness::from_id(harness)?;
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    Some(crate::capability_projection::configured_capability_summary(
+        harness,
+        &home,
+        Some(Path::new(cwd)),
+    ))
+}
+
 fn compile_worker_prompt(
     stack: &prompt_sections::ResolvedPromptStack,
     directive: &delegation::DelegationRequest,
@@ -1127,7 +1137,8 @@ pub fn start_session(
     // Past the hot return: this call is really going to start a process, so the
     // volatile pair is built now rather than for a hot process that is never
     // sent one.
-    let launch_context = launch_session_context(state, &session_id, None);
+    let capability_summary = configured_capability_summary(adapter_id, &path);
+    let launch_context = launch_session_context(state, &session_id, capability_summary.as_deref());
     let orchestrator_prompt = hot_check_prompt;
     let orchestrator_instructions = orchestrator_prompt.instructions().to_owned();
 
@@ -1697,7 +1708,8 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     // Past the hot return, like start_session: a hot process is never sent a
     // frame, so it must not have a packet built — and an audit written — for
     // one.
-    let launch_context = launch_session_context(state, &session_id, None);
+    let capability_summary = configured_capability_summary(&dispatch_id, &cwd);
+    let launch_context = launch_session_context(state, &session_id, capability_summary.as_deref());
     let configured_effort = configured_harness
         .and_then(|config| config.effort)
         .map(|value| value.as_str().to_owned());
@@ -5115,7 +5127,7 @@ pub fn launch_worker_outcome(
     }
 
     let mut read_only_sandbox = None;
-    let mut capability_summary = None;
+    let mut capability_summary = configured_capability_summary(&harness, &reservation.path);
     if directive.write_mode == delegation::WriteMode::ReadOnly {
         match worker_guard::ReadOnlyBaseline::capture(&reservation.path) {
             Ok(baseline) => {
@@ -5145,17 +5157,33 @@ pub fn launch_worker_outcome(
                 let output = sandbox.output_dir().display().to_string();
                 let network_allowed = sandbox.network_allowed();
                 let sandbox_runtime_egress = !sandbox.runtime_network_denied();
-                if let (Some(capability_harness), Some(home)) = (
-                    crate::capability_projection::CapabilityHarness::from_id(&harness),
-                    std::env::var_os("HOME").map(PathBuf::from),
-                ) {
-                    match crate::capability_projection::project_read_only_capabilities(
-                        capability_harness,
-                        &home,
-                        sandbox.output_dir(),
-                    ) {
+                if let Some(capability_harness) =
+                    crate::capability_projection::CapabilityHarness::from_id(&harness)
+                {
+                    let projection = std::env::var_os("HOME")
+                        .map(PathBuf::from)
+                        .map(|home| {
+                            crate::capability_projection::project_read_only_capabilities(
+                                capability_harness,
+                                &home,
+                                sandbox.output_dir(),
+                            )
+                        })
+                        .unwrap_or_else(|| {
+                            Ok(crate::capability_projection::CapabilityProjectionReport::unavailable(
+                                capability_harness,
+                                "user-home",
+                                Path::new("$HOME"),
+                                "HOME is unavailable",
+                            ))
+                        });
+                    match projection {
                         Ok(report) => {
-                            capability_summary = Some(report.summary());
+                            let projected = report.summary();
+                            capability_summary = Some(match capability_summary.take() {
+                                Some(configured) => format!("{configured}\n\n{projected}"),
+                                None => projected,
+                            });
                             if let Ok(body) = serde_json::to_string(&report) {
                                 let _ = store::event(
                                     &state.db.lock().unwrap(),

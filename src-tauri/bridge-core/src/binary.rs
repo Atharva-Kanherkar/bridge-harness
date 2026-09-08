@@ -1,8 +1,51 @@
 use std::{
-    env, fs,
+    collections::HashSet,
+    env,
+    ffi::{OsStr, OsString},
+    fs,
     path::{Path, PathBuf},
     process::Command,
 };
+
+fn fallback_directories(home: Option<&Path>) -> Vec<PathBuf> {
+    let mut directories = Vec::new();
+    if let Some(home) = home {
+        directories.extend([
+            home.join(".local/bin"),
+            home.join(".cargo/bin"),
+            home.join("bin"),
+        ]);
+    }
+    directories.extend([
+        PathBuf::from("/opt/homebrew/bin"),
+        PathBuf::from("/usr/local/bin"),
+        PathBuf::from("/usr/bin"),
+    ]);
+    directories
+}
+
+fn hydrated_path_from(existing: Option<&OsStr>, home: Option<&Path>) -> Option<OsString> {
+    let mut directories = existing
+        .map(env::split_paths)
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    directories.extend(fallback_directories(home));
+    let mut seen = HashSet::new();
+    directories.retain(|directory| seen.insert(directory.clone()));
+    env::join_paths(directories).ok()
+}
+
+/// Give provider children the same executable reachability Bridge uses itself.
+/// Existing PATH order wins; standard GUI-missing locations are appended once.
+pub fn hydrate_command_path(command: &mut Command) {
+    if let Some(path) = hydrated_path_from(
+        env::var_os("PATH").as_deref(),
+        env::var_os("HOME").as_deref().map(Path::new),
+    ) {
+        command.env("PATH", path);
+    }
+}
 
 /// Resolve a CLI binary even when Bridge is launched as a macOS .app without a login-shell PATH.
 pub fn resolve(name: &str) -> Option<PathBuf> {
@@ -10,19 +53,10 @@ pub fn resolve(name: &str) -> Option<PathBuf> {
         return Some(path);
     }
     let home = env::var_os("HOME").map(PathBuf::from);
-    let mut candidates: Vec<PathBuf> = Vec::new();
-    if let Some(home) = &home {
-        candidates.extend([
-            home.join(".local/bin").join(name),
-            home.join(".cargo/bin").join(name),
-            home.join("bin").join(name),
-        ]);
-    }
-    candidates.extend([
-        PathBuf::from("/opt/homebrew/bin").join(name),
-        PathBuf::from("/usr/local/bin").join(name),
-        PathBuf::from("/usr/bin").join(name),
-    ]);
+    let mut candidates = fallback_directories(home.as_deref())
+        .into_iter()
+        .map(|directory| directory.join(name))
+        .collect::<Vec<_>>();
     if let Ok(path) = env::var("PATH") {
         for dir in env::split_paths(&path) {
             candidates.push(dir.join(name));
@@ -110,6 +144,59 @@ mod tests {
     #[test]
     fn resolve_skips_missing_binaries() {
         assert!(resolve("bridge-definitely-missing-binary-xyz").is_none());
+    }
+
+    #[test]
+    fn hydrated_path_preserves_existing_order_and_appends_fallbacks_once() {
+        let existing = env::join_paths(["/custom/bin", "/usr/bin", "/path with spaces"]).unwrap();
+        let hydrated = hydrated_path_from(
+            Some(&existing),
+            Some(Path::new("/Users/test user")),
+        )
+        .unwrap();
+        let directories = env::split_paths(&hydrated).collect::<Vec<_>>();
+        assert_eq!(
+            &directories[..3],
+            &[
+                PathBuf::from("/custom/bin"),
+                PathBuf::from("/usr/bin"),
+                PathBuf::from("/path with spaces"),
+            ]
+        );
+        assert_eq!(directories.iter().filter(|path| **path == Path::new("/usr/bin")).count(), 1);
+        assert!(directories.contains(&PathBuf::from("/Users/test user/.local/bin")));
+        assert!(directories.contains(&PathBuf::from("/opt/homebrew/bin")));
+    }
+
+    #[test]
+    fn hydrated_path_handles_a_minimal_gui_environment_without_home() {
+        let hydrated = hydrated_path_from(Some(OsStr::new("/bin")), None).unwrap();
+        let directories = env::split_paths(&hydrated).collect::<Vec<_>>();
+        assert_eq!(directories[0], PathBuf::from("/bin"));
+        assert!(directories.contains(&PathBuf::from("/usr/local/bin")));
+        assert!(directories.contains(&PathBuf::from("/usr/bin")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_bare_child_command_resolves_from_the_hydrated_gui_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        let bin = home.path().join(".local/bin");
+        fs::create_dir_all(&bin).unwrap();
+        let fixture = bin.join("bridge-path-probe");
+        fs::write(&fixture, "#!/bin/sh\nprintf hydrated").unwrap();
+        let mut permissions = fs::metadata(&fixture).unwrap().permissions();
+        permissions.set_mode(0o700);
+        fs::set_permissions(&fixture, permissions).unwrap();
+
+        let path = hydrated_path_from(Some(OsStr::new("/usr/bin:/bin")), Some(home.path())).unwrap();
+        let output = Command::new("bridge-path-probe")
+            .env("PATH", path)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"hydrated");
     }
 
     /// The identity crosses process and toolchain boundaries, so it has to be

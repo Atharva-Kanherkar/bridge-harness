@@ -1195,6 +1195,12 @@ fn normalize_claude_system(message: &Value) -> Vec<NormalizedEvent> {
             }
             vec![event]
         }
+        "capability_discovery" => {
+            let mut event = with_data("capability.discovery", message, message.clone());
+            event.status = Some("degraded".into());
+            event.title = Some("Claude capability discovery was incomplete".into());
+            vec![event]
+        }
         // Claude Code compacted its own context. This is the boundary Bridge
         // records rather than one it creates, and the only Claude frame that
         // reports the window actually shrinking: `pre_tokens` and
@@ -2391,6 +2397,19 @@ mod tests {
         assert_eq!(denied.status.as_deref(), Some("denied"));
         assert_eq!(denied.title.as_deref(), Some("Bridge denied mcp__notion__create_page"));
         assert_eq!(denied.data["tool_use_id"], "tool-1");
+    }
+
+    #[test]
+    fn claude_capability_discovery_diagnostics_are_not_dropped_as_hook_noise() {
+        let events = normalize_claude_message(&json!({
+            "type":"system",
+            "subtype":"capability_discovery",
+            "diagnostics":[{"stage":"plugins","status":"malformed","message":"invalid JSON"}]
+        }));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "capability.discovery");
+        assert_eq!(events[0].status.as_deref(), Some("degraded"));
+        assert_eq!(events[0].data["diagnostics"][0]["stage"], "plugins");
     }
 
     #[test]

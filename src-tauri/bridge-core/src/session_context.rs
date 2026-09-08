@@ -1,11 +1,11 @@
 //! The volatile half of Bridge's application context, and when a provider
 //! thread is owed it.
 //!
-//! Two things Bridge must tell a harness change for reasons that have nothing
-//! to do with the conversation: the credential-proxy capability contract
-//! (`credential_broker::instructions`, whose token is two fresh UUIDs on every
-//! Bridge process start) and the memory packet (re-ranked on every memory
-//! edit). Both used to be variable sections of the compiled prompt, which is
+//! Bridge must tell a harness some things that change for reasons unrelated to
+//! the conversation: the credential-proxy capability contract (whose token is
+//! regenerated on every Bridge process start), the actual harness capability
+//! roots selected for this launch, and the memory packet (re-ranked on every
+//! memory edit). Volatile context used to be a variable section of the compiled prompt, which is
 //! Claude's `systemPrompt.append`, Codex's `developerInstructions` and
 //! OpenCode's `system` — i.e. inside the block that precedes every message in
 //! a prefix cache. A few changed bytes there re-write the whole conversation.

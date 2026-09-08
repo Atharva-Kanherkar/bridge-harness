@@ -4,6 +4,7 @@
 //! boundary is what prevents shell tools from writing the checked-out tree.
 use crate::{delegation::DelegationRequest, BridgeError};
 use std::{
+    ffi::OsString,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -93,7 +94,10 @@ impl ReadOnlySandbox {
 /// deliberately return an error instead of silently falling back to audit-only.
 pub fn command(program: &Path, sandbox: Option<&ReadOnlySandbox>) -> Result<Command, BridgeError> {
     let Some(sandbox) = sandbox else {
-        return Ok(Command::new(program));
+        return Ok(crate::adapters::supervised_command(
+            program,
+            std::iter::empty::<OsString>(),
+        ));
     };
     #[cfg(target_os = "macos")]
     {
@@ -101,13 +105,15 @@ pub fn command(program: &Path, sandbox: Option<&ReadOnlySandbox>) -> Result<Comm
         if !runner.is_file() {
             return Err(BridgeError::Invalid("Read-only workers require macOS sandbox-exec, but it is unavailable; refusing to start without isolation".into()));
         }
-        let mut command = Command::new(runner);
-        command
-            .arg("-f")
-            .arg(&sandbox.profile_path)
-            .arg("--")
-            .arg(program);
-        Ok(command)
+        Ok(crate::adapters::supervised_command(
+            runner,
+            [
+                OsString::from("-f"),
+                sandbox.profile_path.as_os_str().to_owned(),
+                OsString::from("--"),
+                program.as_os_str().to_owned(),
+            ],
+        ))
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -303,6 +309,35 @@ mod tests {
         sandbox.cleanup();
         sandbox.cleanup();
         assert!(!root.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provider_commands_use_the_parent_death_watchdog_with_and_without_seatbelt() {
+        if std::env::var_os(crate::adapters::PARENT_WATCHDOG_DISABLE_ENV).is_some() {
+            return;
+        }
+        let direct = command(Path::new("/bin/sh"), None).unwrap();
+        assert_eq!(direct.get_program(), Path::new("/bin/sh"));
+        let direct_args = direct
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(direct_args.iter().any(|value| value == "bridge-watchdog"));
+
+        #[cfg(target_os = "macos")]
+        {
+            let workspace = tempfile::tempdir().unwrap();
+            let sandbox = ReadOnlySandbox::create("watchdog", workspace.path(), &request()).unwrap();
+            let wrapped = command(Path::new("/bin/sh"), Some(&sandbox)).unwrap();
+            let args = wrapped
+                .get_args()
+                .map(|value| value.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            assert!(args.iter().any(|value| value == "/usr/bin/sandbox-exec"));
+            assert!(args.iter().any(|value| value == "/bin/sh"));
+            sandbox.cleanup();
+        }
     }
 
     #[cfg(target_os = "macos")]

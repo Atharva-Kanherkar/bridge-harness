@@ -196,6 +196,29 @@ fn stable_deduplicate(paths: Vec<PathBuf>) -> Vec<PathBuf> {
         .collect()
 }
 
+pub fn configured_capability_summary(
+    harness: CapabilityHarness,
+    home: &Path,
+    project: Option<&Path>,
+) -> String {
+    let loaded_skills = skill_discovery_roots(harness, home, project)
+        .into_iter()
+        .filter(|path| path.is_dir())
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let loaded_commands = command_discovery_roots(harness, home, project)
+        .into_iter()
+        .filter(|path| path.is_dir())
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    format!(
+        "Harness capability inventory: provider={}; skill roots={}; command roots={}. Use capabilities from these roots and the tools presented by the harness. Do not claim an absent capability is installed.",
+        harness.as_str(),
+        if loaded_skills.is_empty() { "none".into() } else { loaded_skills.join(", ") },
+        if loaded_commands.is_empty() { "none".into() } else { loaded_commands.join(", ") },
+    )
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectedCapability {
@@ -233,6 +256,16 @@ impl CapabilityProjectionReport {
             unavailable: Vec::new(),
             failures: Vec::new(),
         }
+    }
+
+    pub fn unavailable(harness: CapabilityHarness, kind: &str, path: &Path, reason: &str) -> Self {
+        let mut report = Self::new(harness);
+        report.unavailable.push(CapabilityProjectionNotice {
+            kind: kind.into(),
+            path: path.to_string_lossy().into_owned(),
+            reason: reason.into(),
+        });
+        report
     }
 
     pub fn summary(&self) -> String {
@@ -410,13 +443,24 @@ fn project_entry(
     entry: ProjectionEntry,
     report: &mut CapabilityProjectionReport,
 ) -> Result<(), BridgeError> {
-    if fs::symlink_metadata(&entry.source).is_err() {
-        report.unavailable.push(CapabilityProjectionNotice {
-            kind: entry.kind.into(),
-            path: entry.source.to_string_lossy().into_owned(),
-            reason: "not configured".into(),
-        });
-        return Ok(());
+    match fs::symlink_metadata(&entry.source) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            report.unavailable.push(CapabilityProjectionNotice {
+                kind: entry.kind.into(),
+                path: entry.source.to_string_lossy().into_owned(),
+                reason: "not configured".into(),
+            });
+            return Ok(());
+        }
+        Err(error) => {
+            report.failures.push(CapabilityProjectionNotice {
+                kind: entry.kind.into(),
+                path: entry.source.to_string_lossy().into_owned(),
+                reason: format!("source inspection failed: {}", error.kind()),
+            });
+            return Ok(());
+        }
     }
     match fs::symlink_metadata(&entry.destination) {
         Ok(metadata) if metadata.file_type().is_symlink() => {
@@ -587,6 +631,28 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[test]
+    fn configured_summary_is_deterministic_and_reports_only_existing_roots() {
+        let home = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        fs::create_dir_all(home.path().join(".agents/skills/review")).unwrap();
+        fs::create_dir_all(project.path().join(".codex/prompts")).unwrap();
+        let first = configured_capability_summary(
+            CapabilityHarness::Codex,
+            home.path(),
+            Some(project.path()),
+        );
+        let second = configured_capability_summary(
+            CapabilityHarness::Codex,
+            home.path(),
+            Some(project.path()),
+        );
+        assert_eq!(first, second);
+        assert!(first.contains(home.path().join(".agents/skills").to_string_lossy().as_ref()));
+        assert!(first.contains(project.path().join(".codex/prompts").to_string_lossy().as_ref()));
+        assert!(!first.contains(".codex/skills"));
     }
 
     #[cfg(unix)]
