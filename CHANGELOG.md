@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.5.4] - 2026-09-08
+
+- Integrate main through `65b00ad`, retaining the signed-release, startup, native window, icon, and daemon ownership fixes from 0.5.2 and 0.5.3.
+- Show immediate send feedback and improve streaming delivery, transcript updates, and Claude thinking-block completion.
+- Bound failed worker-result repair loops and give reused workers a fresh repair budget.
+- Improve model-switch handoffs, compaction ownership, provider resume, and context checkpoints.
+- Include the updated macOS navigation, settings, model controls, and dark appearance.
+- Settle detached model-switch summaries alongside tracked providers during clean shutdown.
+
 ## [0.5.3] - 2026-09-08
 
 - Settle provider-process ownership during normal app shutdown so completed or idle chats are not falsely marked failed on the next launch.
