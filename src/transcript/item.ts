@@ -11,7 +11,8 @@ import type { ToolCallDisplay } from "./toolCall";
 export type ConversationItemType =
   | "message" | "reasoning" | "activity" | "plan" | "approval" | "permission"
   | "question" | "error" | "diff" | "artifact" | "delegation" | "checkpoint"
-  | "compaction" | "branch-summary" | "raw";
+  | "compaction" | "context-compacted" | "branch-summary" | "model-change"
+  | "raw";
 
 export interface ConversationItem {
   key: string;

@@ -18,6 +18,11 @@ function button(container: HTMLElement, label: string) {
   return result as HTMLButtonElement;
 }
 
+/** The wizard's selection controls are switches now, not native checkboxes. */
+function switches(container: HTMLElement) {
+  return [...container.querySelectorAll<HTMLButtonElement>('[role="switch"]')];
+}
+
 describe("ImportHarnessSection", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -39,9 +44,22 @@ describe("ImportHarnessSection", () => {
     const html = renderToStaticMarkup(<ImportHarnessSection onError={() => undefined} />);
     expect(html).toContain("Local only");
     expect(html).toContain("nothing is stored until the final confirmation");
-    expect(html).toContain("never changes the source files or starts Claude Code");
+    expect(html).toContain("Bridge reads only what you choose");
     expect(html).toContain("Secrets excluded");
     expect(html).toContain("Not an encrypted backup");
+  });
+
+  it("adopts the settings chrome without a native checkbox or select", async () => {
+    openMock.mockResolvedValue("/mock/.claude");
+    await act(async () => {
+      root.render(<ImportHarnessSection onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    // One centered column, like every other settings page.
+    expect(container.querySelector("[data-settings-column]")?.classList.contains("max-w-page")).toBe(true);
+    await act(async () => { button(container, "Choose folder").click(); await flush(); });
+    expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
+    expect(container.querySelectorAll("select")).toHaveLength(0);
   });
 
   it("requires conservative selection and a final confirmation before commit", async () => {
@@ -52,25 +70,23 @@ describe("ImportHarnessSection", () => {
     });
 
     await act(async () => {
-      button(container, "Choose Claude folder").click();
+      button(container, "Choose folder").click();
       await flush();
     });
-    expect(container.textContent).toContain("Discovery metadata");
+    expect(container.textContent).toContain("Discovered");
     expect(container.textContent).toContain("Nothing is selected by default");
     expect(button(container, "Preview selected").disabled).toBe(true);
 
-    const artifacts = container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]');
-    await act(async () => {
-      artifacts[2].click();
-      button(container, "Preview selected").click();
-      await flush();
-    });
-    expect(container.textContent).toContain("Select what Bridge may import");
+    // Two acts: the switch has to have re-rendered before Preview stops being
+    // disabled, and a disabled button swallows the click.
+    await act(async () => { switches(container)[2].click(); await flush(); });
+    await act(async () => { button(container, "Preview selected").click(); await flush(); });
+    expect(container.textContent).toContain("Candidates");
     expect(container.textContent).toContain("Historical Claude session");
     expect(button(container, "Review exact commit").disabled).toBe(true);
 
     await act(async () => {
-      container.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click();
+      switches(container)[0].click();
       await flush();
     });
     await act(async () => button(container, "Review exact commit").click());

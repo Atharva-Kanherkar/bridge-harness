@@ -226,6 +226,27 @@ export interface CompactionReported extends Framed {
   status?: string;
 }
 
+/**
+ * The harness compacted its own context window.
+ *
+ * Its own variant rather than a `CompactionReported` phase, because it is a
+ * different fact with a different owner: Bridge records this, it does not cause
+ * it, and it must not touch the maintenance fold that a Bridge checkpoint
+ * request opens. `preTokens` and `postTokens` are present only when the
+ * provider reported them, so a card can say the window shrank by a number only
+ * when a number was actually sent. See `docs/compaction-and-resume.md`.
+ */
+export interface ContextCompacted extends Framed {
+  type: "context.compacted";
+  harness?: string;
+  trigger?: string;
+  preTokens?: number;
+  postTokens?: number;
+  title: string;
+  text: string;
+  status?: string;
+}
+
 export interface BranchSummary extends Framed {
   type: "branch.summary";
   title: string;
@@ -244,9 +265,9 @@ export interface TranscriptError extends Framed {
 
 /**
  * A frame Bridge knows about that has no card of its own: a handoff brief, a
- * model switch, a stale base warning, a settled ACP approval. It draws as an
- * activity row. Distinct from `unknown`, which is a kind nothing here has a
- * name for.
+ * stale base warning, a settled ACP approval. It draws as an activity row.
+ * Distinct from `unknown`, which is a kind nothing here has a name for.
+ * (A model switch used to land here too; it has its own card now, below.)
  */
 export interface TranscriptNotice extends Framed {
   type: "notice";
@@ -254,6 +275,18 @@ export interface TranscriptNotice extends Framed {
   text: string;
   status?: string;
   role?: MessageRole;
+}
+
+/**
+ * A model/harness switch: the milestone divider that reports what the next
+ * provider inherits. Normalized to its own type so grouping and rendering key
+ * off `type`, never off a payload field.
+ */
+export interface ModelChanged extends Framed {
+  type: "model.change";
+  title?: string;
+  text: string;
+  status?: string;
 }
 
 export interface TurnStarted extends Framed {
@@ -320,9 +353,11 @@ export type TranscriptEvent =
   | ArtifactReady
   | CheckpointRecorded
   | CompactionReported
+  | ContextCompacted
   | BranchSummary
   | TranscriptError
   | TranscriptNotice
+  | ModelChanged
   | TurnStarted
   | TurnCompleted
   | SessionLifecycle

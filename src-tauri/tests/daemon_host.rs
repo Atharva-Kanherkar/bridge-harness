@@ -197,15 +197,14 @@ fn daemon_notifications_reach_the_webview_with_unchanged_names_and_payloads() {
     loop {
         let emitted = host.emitted.lock().unwrap().clone();
         let output = emitted.iter().find(|(kind, _)| kind == "session-output");
-        if let Some((_, payload)) = output {
+        let state_changed = emitted.iter().find(|(kind, _)| kind == "state-changed");
+        // These notifications are forwarded independently. The first can be
+        // visible while the supervisor has not emitted the second one yet.
+        if let (Some((_, payload)), Some((_, state_payload))) = (output, state_changed) {
             assert_eq!(payload["sessionId"], "s1");
             assert_eq!(payload["data"], "hello");
             // state-changed keeps its null payload, as the webview expects.
-            let state_changed = emitted
-                .iter()
-                .find(|(kind, _)| kind == "state-changed")
-                .expect("state-changed forwarded");
-            assert_eq!(state_changed.1, Value::Null);
+            assert_eq!(*state_payload, Value::Null);
             break;
         }
         assert!(Instant::now() < deadline, "notifications never arrived: {emitted:?}");

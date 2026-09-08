@@ -1,5 +1,5 @@
 use crate::{
-    adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest},
+    adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest, TurnContext},
     binary,
     context_inventory::{
         AdapterContextInventory, ContextInventoryScope, ContextLifecyclePhase, ContextSegmentClass,
@@ -380,6 +380,32 @@ fn build_authenticated_client(server_password: &str) -> Result<Client, BridgeErr
         .map_err(|error| BridgeError::Adapter(format!("Cannot create OpenCode client: {error}")))
 }
 
+/// Whether this runtime can ask OpenCode to summarize.
+///
+/// The endpoint requires the model that writes the summary, so a runtime with
+/// no model selected has nothing to name and would be refused on the wire.
+/// Answering `Unsupported` sends the request to Bridge's own checkpoint
+/// instead of to a call that cannot succeed.
+fn compaction_support(model: Option<&ModelRef>) -> crate::adapters::NativeCompaction {
+    match model {
+        Some(_) => crate::adapters::NativeCompaction::WholeConversation,
+        None => crate::adapters::NativeCompaction::Unsupported,
+    }
+}
+
+/// The body `/session/{id}/summarize` requires.
+///
+/// `providerID` and `modelID` are not optional on the wire: the endpoint uses
+/// them to pick the model that writes the summary. `auto` stays false, because
+/// this request is always something the user asked for by hand.
+fn summarize_body(model: &ModelRef) -> Value {
+    json!({
+        "providerID": model.provider_id,
+        "modelID": model.model_id,
+        "auto": false,
+    })
+}
+
 /// Backoff between readiness probes: short while the server is most likely
 /// still booting, ramping up to the steady 100ms poll once it has had time to
 /// come up. `attempt` is zero-based (the delay taken *after* probe `attempt`).
@@ -678,19 +704,19 @@ impl AdapterRuntime for OpenCodeRuntime {
         self.context_inventory.lock().unwrap().clone()
     }
     fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
-        self.send_turn_with_context(text, "")
+        self.send_turn_with_context(text, TurnContext::default())
     }
     fn send_turn_with_context(
         &self,
         text: &str,
-        application_context: &str,
+        context: TurnContext<'_>,
     ) -> Result<(), BridgeError> {
         let body = prompt_body(
             self.model.as_ref(),
             self.variant.as_deref(),
             self.instructions.as_deref(),
             text,
-            application_context,
+            context,
         );
         self.request(
             reqwest::Method::POST,
@@ -710,6 +736,23 @@ impl AdapterRuntime for OpenCodeRuntime {
             &format!("/session/{}/abort", self.session_id),
             None,
             "interrupt OpenCode turn",
+        )
+    }
+    /// `/session/{id}/summarize` names the model that writes the summary and
+    /// takes no focus, so OpenCode compacts the whole session. Without a known
+    /// model there is nothing to name, and the request would be rejected.
+    fn native_compaction(&self) -> crate::adapters::NativeCompaction {
+        compaction_support(self.model.as_ref())
+    }
+    fn compact_native(&self, _focus: Option<&str>) -> Result<(), BridgeError> {
+        let model = self.model.as_ref().ok_or_else(|| {
+            BridgeError::Invalid("OpenCode needs a selected model to summarize".into())
+        })?;
+        self.request(
+            reqwest::Method::POST,
+            &format!("/session/{}/summarize", self.session_id),
+            Some(summarize_body(model)),
+            "compact the OpenCode session",
         )
     }
     fn respond(&self, request_id: Value, decision: &str) -> Result<(), BridgeError> {
@@ -771,24 +814,25 @@ fn prompt_body(
     variant: Option<&str>,
     instructions: Option<&str>,
     text: &str,
-    application_context: &str,
+    context: TurnContext<'_>,
 ) -> Value {
-    let mut body = json!({
-        "parts": [{"type":"text", "text": text}],
-    });
+    // `system` is rebuilt every turn, so it has to be a function of the launch
+    // alone: folding per-turn context in here made a turn carrying a
+    // `[secret:]` marker bust its own prefix. Bridge's per-turn words are
+    // parts, ahead of the user's text, exactly like every other provider.
+    let mut parts = context
+        .entries()
+        .map(|entry| json!({"type":"text", "text": entry.value}))
+        .collect::<Vec<_>>();
+    parts.push(json!({"type":"text", "text": text}));
+    let mut body = json!({ "parts": parts });
     if let Some(model) = model {
         body["model"] = json!({"providerID": model.provider_id, "modelID": model.model_id});
     }
     if let Some(variant) = variant {
         body["variant"] = json!(variant);
     }
-    let system = [instructions.unwrap_or_default(), application_context]
-        .into_iter()
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n\n");
-    if !system.is_empty() {
+    if let Some(system) = instructions.map(str::trim).filter(|value| !value.is_empty()) {
         body["system"] = json!(system);
     }
     body
@@ -1442,6 +1486,74 @@ mod tests {
     use super::*;
     use crate::context_inventory::ContextObservationProvenance;
 
+    /// G9: the turn's `system` value must be a function of the launch alone.
+    /// It is rebuilt on every turn, so anything per-turn folded into it — a
+    /// credential contract for a `[secret:]` marker, say — invalidated that
+    /// turn's prefix by itself.
+    #[test]
+    fn a_runtime_with_no_model_cannot_summarize() {
+        // The endpoint requires the model that writes the summary. Claiming
+        // the capability here would route /compact to a call that fails on the
+        // wire instead of to the Bridge checkpoint that would have worked.
+        assert_eq!(
+            compaction_support(None),
+            crate::adapters::NativeCompaction::Unsupported
+        );
+        assert_eq!(
+            compaction_support(Some(&ModelRef {
+                provider_id: "anthropic".into(),
+                model_id: "claude-sonnet-4-5".into(),
+            })),
+            crate::adapters::NativeCompaction::WholeConversation
+        );
+    }
+
+    #[test]
+    fn summarize_names_the_model_that_writes_the_summary() {
+        // `providerID` and `modelID` are required on the wire. `auto` stays
+        // false: this request only ever exists because a user asked by hand.
+        let body = summarize_body(&ModelRef {
+            provider_id: "anthropic".into(),
+            model_id: "claude-sonnet-4-5".into(),
+        });
+        assert_eq!(body["providerID"], "anthropic");
+        assert_eq!(body["modelID"], "claude-sonnet-4-5");
+        assert_eq!(body["auto"], false);
+        assert!(body.get("focus").is_none(), "the endpoint takes no focus");
+    }
+
+    #[test]
+    fn the_system_value_is_identical_with_and_without_turn_context() {
+        let body = |context| {
+            prompt_body(
+                None,
+                None,
+                Some("bridge instructions"),
+                "verify [secret:sec_reference]",
+                context,
+            )
+        };
+        let plain = body(TurnContext::default());
+        let with_context = body(TurnContext {
+            session: Some("<bridge-session-context schema=\"1\">frame</bridge-session-context>"),
+            credentials: Some("trusted broker capability"),
+        });
+        assert_eq!(plain["system"], with_context["system"]);
+        assert_eq!(with_context["system"], "bridge instructions");
+
+        // The context went to the parts instead, ahead of the user's text and
+        // without changing it.
+        let parts = with_context["parts"].as_array().unwrap();
+        assert_eq!(parts.len(), 3);
+        assert_eq!(
+            parts[0]["text"],
+            "<bridge-session-context schema=\"1\">frame</bridge-session-context>"
+        );
+        assert_eq!(parts[1]["text"], "trusted broker capability");
+        assert_eq!(parts[2]["text"], "verify [secret:sec_reference]");
+        assert_eq!(plain["parts"].as_array().unwrap().len(), 1);
+    }
+
     #[test]
     fn readiness_probe_backoff_ramps_then_flattens() {
         let observed: Vec<u64> = (0..7).map(|attempt| probe_backoff(attempt).as_millis() as u64).collect();
@@ -1455,9 +1567,9 @@ mod tests {
             None,
             Some("bridge instructions"),
             "hello",
-            "application context",
+            TurnContext::default(),
         );
-        assert_eq!(body["system"], "bridge instructions\n\napplication context");
+        assert_eq!(body["system"], "bridge instructions");
         for phase in [
             ContextLifecyclePhase::Start,
             ContextLifecyclePhase::Resume,

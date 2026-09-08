@@ -88,57 +88,52 @@ afterEach(() => {
 });
 
 const text = () => host.textContent ?? "";
-const checkboxes = () => Array.from(host.querySelectorAll<HTMLInputElement>("input[type=checkbox]"));
-const checkboxIn = (labelText: string) =>
-  Array.from(host.querySelectorAll("label"))
-    .find(label => label.textContent?.includes(labelText))
-    ?.querySelector<HTMLInputElement>("input[type=checkbox]");
-const saveButton = () =>
-  Array.from(host.querySelectorAll("button")).find(button => button.textContent?.includes("Save Work settings"))!;
+/** The switch belonging to a row, found by the row's own label. */
+const switchFor = (label: string) =>
+  host.querySelector<HTMLButtonElement>(`[role="switch"][aria-label="${label}"]`);
+const click = (element: HTMLElement | null | undefined) => act(async () => element?.click());
 
-describe("what it reads", () => {
+describe("Work briefing", () => {
+  // Every control on this page persists on change, so the page carries no save
+  // bar and no native input at all.
+  it("uses switches and listboxes, never a native checkbox or select", async () => {
+    await render();
+    expect(host.querySelectorAll('input[type="checkbox"]')).toHaveLength(0);
+    expect(host.querySelectorAll("select")).toHaveLength(0);
+    expect(text()).not.toContain("Save Work settings");
+  });
+
   it("offers only the harness's own connectors, defaulting to everything", async () => {
     await render();
     expect(text()).toContain("What it reads");
-    expect(checkboxIn("Everything connected")?.checked).toBe(true);
+    expect(switchFor("Everything connected")?.getAttribute("aria-checked")).toBe("true");
     // The individual list is folded away while everything is selected.
     expect(text()).not.toContain("claude.ai Slack");
   });
 
-  it("narrowing starts from every signed-in tool and saves the picked ids", async () => {
+  it("narrowing starts from every signed-in tool and persists the picked ids", async () => {
     await render();
-    await act(async () => {
-      checkboxIn("Everything connected")?.click();
-    });
-    // All three appear; the signed-in two start checked, Gmail cannot be picked.
+    await click(switchFor("Everything connected"));
+    // All three appear; the signed-in two start on, Gmail cannot be picked.
     expect(text()).toContain("claude.ai Slack");
-    const gmail = checkboxIn("claude.ai Gmail");
-    expect(gmail?.disabled).toBe(true);
-    expect(text()).toContain("needs sign-in in Claude Code");
+    expect(switchFor("claude.ai Gmail")?.disabled).toBe(true);
+    expect(text()).toContain("Needs sign-in in Claude Code");
+    expect(writeWorkSettings.mock.calls.at(-1)![0].enabledConnectorInstances)
+      .toEqual(["claude.ai Slack", "claude.ai GitHub"]);
 
-    await act(async () => {
-      checkboxIn("claude.ai GitHub")?.click();
-    });
-    await act(async () => {
-      saveButton().click();
-    });
-    expect(writeWorkSettings).toHaveBeenCalledTimes(1);
-    expect(writeWorkSettings.mock.calls[0][0].enabledConnectorInstances).toEqual(["claude.ai Slack"]);
+    await click(switchFor("claude.ai GitHub"));
+    expect(writeWorkSettings.mock.calls.at(-1)![0].enabledConnectorInstances).toEqual(["claude.ai Slack"]);
   });
 
-  it("refuses to save a narrowing with nothing in it", async () => {
+  it("refuses to persist a narrowing with nothing in it", async () => {
     await render();
-    await act(async () => {
-      checkboxIn("Everything connected")?.click();
-    });
-    await act(async () => {
-      checkboxIn("claude.ai Slack")?.click();
-    });
-    await act(async () => {
-      checkboxIn("claude.ai GitHub")?.click();
-    });
+    await click(switchFor("Everything connected"));
+    await click(switchFor("claude.ai Slack"));
+    const before = writeWorkSettings.mock.calls.length;
+    await click(switchFor("claude.ai GitHub"));
     expect(text()).toContain("Pick at least one tool");
-    expect(saveButton().disabled).toBe(true);
+    // The empty narrowing is held locally rather than sent and bounced.
+    expect(writeWorkSettings.mock.calls).toHaveLength(before);
   });
 
   it("switching back to everything stores the empty list, not the full one", async () => {
@@ -147,26 +142,38 @@ describe("what it reads", () => {
       settings: settings({ enabledConnectorInstances: ["claude.ai Slack"] }),
     });
     await render();
-    // A stored narrowing renders as narrowed with the stored id checked.
-    expect(checkboxIn("Everything connected")?.checked).toBe(false);
-    expect(checkboxIn("claude.ai Slack")?.checked).toBe(true);
-    expect(checkboxIn("claude.ai GitHub")?.checked).toBe(false);
+    // A stored narrowing renders as narrowed with the stored id on.
+    expect(switchFor("Everything connected")?.getAttribute("aria-checked")).toBe("false");
+    expect(switchFor("claude.ai Slack")?.getAttribute("aria-checked")).toBe("true");
+    expect(switchFor("claude.ai GitHub")?.getAttribute("aria-checked")).toBe("false");
 
-    await act(async () => {
-      checkboxIn("Everything connected")?.click();
-    });
-    await act(async () => {
-      saveButton().click();
-    });
-    expect(writeWorkSettings.mock.calls[0][0].enabledConnectorInstances).toEqual([]);
+    await click(switchFor("Everything connected"));
+    expect(writeWorkSettings.mock.calls.at(-1)![0].enabledConnectorInstances).toEqual([]);
   });
 
-  it("shows no connector block for a refused harness or when briefing is off", async () => {
+  it("shows no connector group for a refused harness or when briefing is off", async () => {
     readWorkSettings.mockResolvedValue({ configured: true, settings: settings({ briefing: null }) });
     await render();
     expect(text()).not.toContain("What it reads");
     expect(text()).toContain("Codex");
     expect(text()).toContain("no per-tool authority");
-    expect(checkboxes().length).toBeGreaterThan(0);
+    // Off is still a reachable, stored choice, so the switch is still there.
+    expect(switchFor("Suggested work")?.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("keeps cadence and refresh on focus, and persists each on change", async () => {
+    await render();
+    await click(switchFor("Refresh on focus"));
+    expect(writeWorkSettings.mock.calls.at(-1)![0].refreshOnFocus).toBe(true);
+
+    const cadence = host.querySelector<HTMLButtonElement>('button[aria-label="Cadence"]')!;
+    await click(cadence);
+    const hourly = [...document.querySelectorAll<HTMLElement>('[role="listbox"][aria-label="Cadence"] [role="option"]')]
+      .find(option => option.textContent?.includes("Every hour"))!;
+    await act(async () => {
+      hourly.dispatchEvent(new MouseEvent("pointerdown", { bubbles: true }));
+      hourly.click();
+    });
+    expect(writeWorkSettings.mock.calls.at(-1)![0].refreshIntervalMinutes).toBe(60);
   });
 });

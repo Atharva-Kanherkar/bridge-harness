@@ -152,6 +152,30 @@ describe("projectUsageExhaustion", () => {
   });
 });
 
+describe("extractUsageSnapshot over normalized Codex usage", () => {
+  it("reads the per-request breakdown the adapter now emits", () => {
+    // The raw `thread/tokenUsage/updated` frame nests everything under
+    // `tokenUsage`, which this function never looked at; the adapter now puts a
+    // normalized `usage` object beside it.
+    const snapshot = extractUsageSnapshot({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      tokenUsage: { total: { inputTokens: 800, outputTokens: 100 }, last: { inputTokens: 80, outputTokens: 10 }, modelContextWindow: 272_000 },
+      usage: { input_tokens: 80, output_tokens: 10, cache_read_tokens: 70, cache_write_tokens: 5, total_tokens: 90 },
+    });
+    expect(snapshot?.totalTokens).toBe(90);
+    expect(snapshot?.source).toBe("reported");
+  });
+
+  it("stays null for a frame carrying only the raw nested shape", () => {
+    expect(extractUsageSnapshot({
+      threadId: "thread-1",
+      turnId: "turn-1",
+      tokenUsage: { total: { inputTokens: 800 }, last: { inputTokens: 80 } },
+    })).toBeNull();
+  });
+});
+
 describe("buildUsageHistory", () => {
   it("ties newest-first records to work units, harnesses, models, outcomes, and sources", () => {
     const session: Session = { id: "s1", workspaceId: "w", harness: "codex", label: "Worker", status: "completed", startedAt: null, endedAt: null, contextPercent: 72, usagePercent: null, metricSource: "reported", model: "gpt-5", restorationMode: "fresh", continuationFidelity: "native", kind: "worker" };
@@ -199,6 +223,28 @@ describe("buildCacheDiagnostics", () => {
     expect(missing.writeAmortization).toBeUndefined();
     expect(zero.cacheHitRatio).toBeUndefined();
     expect(zero.writeAmortization).toBeUndefined();
+  });
+
+  it("reports a real Codex hit ratio once the adapter records cache tokens", () => {
+    // Codex rows used to carry no cache figure at all, so the only signal that
+    // reached this function was uncached input and every Codex group showed a
+    // 0% hit rate. These are the numbers the normalized `tokenUsage.last`
+    // breakdown now produces.
+    const [diagnostic] = buildCacheDiagnostics([
+      ledger({ id: 1, harness: "codex", model: "gpt-5", source: "provider.codex", cacheReadTokens: 70, cacheWriteTokens: 5, uncachedInputTokens: 5 }),
+    ]);
+    expect(diagnostic.harness).toBe("codex");
+    expect(diagnostic.cacheHitRatio).toBeCloseTo(0.875);
+    expect(diagnostic.writeAmortization).toBe(14);
+  });
+
+  it("computes write amortization for OpenCode now that cache writes are reported", () => {
+    const [diagnostic] = buildCacheDiagnostics([
+      ledger({ id: 1, harness: "opencode", model: "sonnet", source: "provider.opencode", cacheReadTokens: 60, cacheWriteTokens: 20, uncachedInputTokens: 20 }),
+    ]);
+    expect(diagnostic.harness).toBe("opencode");
+    expect(diagnostic.writeAmortization).toBe(3);
+    expect(diagnostic.cacheHitRatio).toBeCloseTo(0.6);
   });
 
   it("bounds aggregation to the most recent provider rows", () => {

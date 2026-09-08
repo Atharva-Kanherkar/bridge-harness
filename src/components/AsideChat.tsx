@@ -1,3 +1,4 @@
+import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import type { ClipboardEvent, KeyboardEvent } from "react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -11,9 +12,9 @@ import { bridgeApi } from "../api";
 import { mergeForestSnapshot } from "../forest";
 import { startSerialPoll } from "../polling";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "../fileMentions";
-import { harnessShortcutQuery } from "../harnessShortcut";
 import { scheduleSuggestion } from "../suggestionTypeahead";
 import { activeTurnAction } from "../sessionInput";
+import { SIDE_CHAT_COMMANDS } from "../sideChat";
 import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, mediaTypeOf, readAsDataUri } from "../pasteAttachments";
 import { cn } from "@/lib/utils";
 import type { AdapterDescriptor, AgentEvent, ApprovalDecision, Harness, Session, SessionForestSnapshot, SlashCommand } from "../types";
@@ -70,15 +71,12 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [mentionIndex, setMentionIndex] = useState(0);
   const [mentionDismissed, setMentionDismissed] = useState(false);
-  const [harnessShortcutIndex, setHarnessShortcutIndex] = useState(0);
-  const [harnessShortcutDismissed, setHarnessShortcutDismissed] = useState(false);
   const [suggestionSettings, setSuggestionSettings] = useState<SuggestionSettingsSnapshot>();
   const [draftSuggestion, setDraftSuggestion] = useState<SuggestCompletionResult>();
   const suggestionGeneration = useRef(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const slashListRef = useRef<HTMLDivElement>(null);
   const mentionListRef = useRef<HTMLDivElement>(null);
-  const harnessShortcutListRef = useRef<HTMLDivElement>(null);
   const forestKeyRef = useRef("");
   const typeaheadOpenRef = useRef(false);
   const ownEvents = events.filter(event => event.sessionId === session.id);
@@ -87,7 +85,11 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   const slashMatches = useMemo(() => {
     if (slashQuery == null) return [];
     const query = slashQuery.toLowerCase();
+    // A side chat cannot open a side chat of its own: the panel is a single
+    // overlay and the aside is pinned to its harness, so Bridge's /btw and
+    // /side are hidden here instead of offered and then refused on send.
     return slashCommands
+      .filter(command => !SIDE_CHAT_COMMANDS.includes(command.name.toLowerCase()))
       .filter(command => !query || command.name.toLowerCase().includes(query) || command.description.toLowerCase().includes(query))
       .sort((a, b) => {
         const aName = a.name.toLowerCase();
@@ -124,22 +126,6 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   }, [mentionQuery, workspaceFileOptions]);
   const mentionOpen = mentionQuery != null && fileMatches.length > 0 && !mentionDismissed;
 
-  const harnessShortcutQueryValue = harnessShortcutQuery(draft);
-  const harnessShortcutMatches = useMemo(() => {
-    if (harnessShortcutQueryValue == null) return [];
-    const query = harnessShortcutQueryValue.toLowerCase();
-    return adapters
-      .filter(adapter => adapter.available && adapter.id.toLowerCase().includes(query))
-      .sort((a, b) => {
-        const aPrefix = Number(a.id.toLowerCase().startsWith(query));
-        const bPrefix = Number(b.id.toLowerCase().startsWith(query));
-        if (aPrefix !== bPrefix) return bPrefix - aPrefix;
-        return a.id.localeCompare(b.id);
-      });
-  }, [harnessShortcutQueryValue, adapters]);
-  const harnessShortcutOpen = harnessShortcutQueryValue != null && harnessShortcutMatches.length > 0 && !harnessShortcutDismissed;
-  typeaheadOpenRef.current = mentionOpen || slashOpen || harnessShortcutOpen;
-
   useEffect(() => {
     if (initialDraft) setDraft(current => current || initialDraft);
   }, [initialDraft]);
@@ -173,12 +159,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
     root.querySelector<HTMLElement>(`[data-slash-index="${slashIndex}"]`)?.scrollIntoView?.({ block: "nearest" });
   }, [slashOpen, slashIndex]);
 
-  useEffect(() => {
-    if (!harnessShortcutOpen) return;
-    const root = harnessShortcutListRef.current;
-    if (!root) return;
-    root.querySelector<HTMLElement>(`[data-harness-shortcut-index="${harnessShortcutIndex}"]`)?.scrollIntoView?.({ block: "nearest" });
-  }, [harnessShortcutOpen, harnessShortcutIndex]);
+  typeaheadOpenRef.current = mentionOpen || slashOpen;
 
   // The durable side of the transcript: without it the handoff brief the aside
   // was created around is invisible, because the brief is a forest entry and
@@ -295,12 +276,6 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
     setMentionDismissed(true);
   }
 
-  function applyHarnessShortcut(adapter: AdapterDescriptor) {
-    setDraft(`$${adapter.id} `);
-    setHarnessShortcutIndex(0);
-    setHarnessShortcutDismissed(true);
-  }
-
   function onComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
     if (event.nativeEvent.isComposing) return;
     if (mentionOpen) {
@@ -308,12 +283,6 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
       if (event.key === "ArrowUp") { event.preventDefault(); setMentionIndex(index => Math.max(index - 1, 0)); return; }
       if (event.key === "Escape") { event.preventDefault(); setMentionDismissed(true); return; }
       if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") { event.preventDefault(); applyMention(fileMatches[Math.min(mentionIndex, fileMatches.length - 1)]); return; }
-    }
-    if (harnessShortcutOpen) {
-      if (event.key === "ArrowDown") { event.preventDefault(); setHarnessShortcutIndex(index => Math.min(index + 1, harnessShortcutMatches.length - 1)); return; }
-      if (event.key === "ArrowUp") { event.preventDefault(); setHarnessShortcutIndex(index => Math.max(index - 1, 0)); return; }
-      if (event.key === "Escape") { event.preventDefault(); setHarnessShortcutDismissed(true); return; }
-      if ((event.key === "Enter" && !event.shiftKey) || event.key === "Tab") { event.preventDefault(); applyHarnessShortcut(harnessShortcutMatches[Math.min(harnessShortcutIndex, harnessShortcutMatches.length - 1)]); return; }
     }
     if (slashOpen) {
       if (event.key === "ArrowDown") { event.preventDefault(); setSlashIndex(index => Math.min(index + 1, slashMatches.length - 1)); return; }
@@ -343,17 +312,8 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
   }
 
   return (
-    <div
-      className="absolute inset-0 z-40 flex items-center justify-center bg-scrim p-4 backdrop-blur-[2px] sm:p-8"
-      role="presentation"
-      onMouseDown={event => { if (event.target === event.currentTarget) onClose(); }}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-label={`Aside with ${harnessLabel(session.harness)}`}
-        className="u-glass-popover animate-page-enter flex h-full max-h-[720px] w-full max-w-[640px] min-w-0 flex-col overflow-hidden rounded-2xl"
-      >
+    <Dialog open onOpenChange={next => { if (!next && !typeaheadOpenRef.current) onClose(); }}>
+      <DialogPopup showCloseButton={false} initialFocus={inputRef} aria-label={`Aside with ${harnessLabel(session.harness)}`} className="h-[min(720px,84dvh)] max-w-2xl">
         <header className="flex min-h-[3.25rem] shrink-0 select-none items-center gap-2.5 border-b border-border px-4 py-1.5">
           <HarnessMark harness={session.harness} live={working} size={15}/>
           <div className="min-w-0 flex-1">
@@ -383,7 +343,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
                 placement="down"
                 maxWidthClassName="max-w-[220px]"
               />
-              <span className={cn("shrink-0 text-[10px] leading-tight", harnessTintClass(session.harness))}>aside</span>
+              <span className={cn("shrink-0 text-[11px] leading-tight", harnessTintClass(session.harness))}>aside</span>
             </div>
           </div>
           <button
@@ -422,7 +382,9 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
 
         <footer className="shrink-0 border-t border-border p-3">
           {lifecycle?.handoffStatus && <p className="mb-2 px-1 text-[11px] text-muted-foreground">
-            {lifecycle.handoffStatus === "carried" ? "Context carried" : "No prior context available"}
+            {lifecycle.handoffStatus === "forked"
+              ? "Native fork of the conversation it was asked from"
+              : lifecycle.handoffStatus === "carried" ? "Context carried" : "No prior context available"}
             {lifecycle.fidelity === "projected_at_boundary" ? " · projected at the handoff boundary" : ""}
           </p>}
           {lifecycle?.phase === "switching" && <p className="mb-2 px-1 text-[11px] text-muted-foreground">Preparing a handoff and switching models. This can take up to 30 seconds…</p>}
@@ -432,9 +394,9 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
           {composerError && <p className="mb-2 px-1 text-[11px] text-destructive">{composerError}</p>}
           <div className="relative">
             {mentionOpen && <div id="aside-file-mention-listbox" role="listbox" className="u-glass-popover absolute inset-x-0 bottom-full z-20 mb-2 flex max-h-[min(320px,45vh)] flex-col overflow-hidden rounded-2xl">
-              <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">
+              <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-[11px] uppercase tracking-[0.12em] text-muted-foreground">
                 <span>Reference a file</span>
-                <span className="normal-case tracking-normal text-muted-foreground/50">{fileMatches.length}</span>
+                <span className="normal-case tracking-normal text-muted-foreground">{fileMatches.length}</span>
               </div>
               <div ref={mentionListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
                 {fileMatches.map((file, index) => {
@@ -448,27 +410,15 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
               </div>
             </div>}
             {slashOpen && <div id="aside-slash-listbox" role="listbox" className="u-glass-popover absolute inset-x-0 bottom-full z-20 mb-2 flex max-h-[min(320px,45vh)] flex-col overflow-hidden rounded-2xl">
-              <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">
+              <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-[11px] uppercase tracking-[0.12em] text-muted-foreground">
                 <span>Commands & skills</span>
-                <span className="normal-case tracking-normal text-muted-foreground/50">{slashMatches.length}</span>
+                <span className="normal-case tracking-normal text-muted-foreground">{slashMatches.length}</span>
               </div>
               <div ref={slashListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
                 {slashMatches.map((command, index) => <button id={`aside-slash-option-${index}`} key={`${command.harness}:${command.kind}:${command.name}`} type="button" role="option" aria-selected={index === slashIndex} data-slash-index={index} onMouseEnter={() => setSlashIndex(index)} onMouseDown={e => { e.preventDefault(); applySlash(command); }} className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors ${index === slashIndex ? "bg-accent" : "hover:bg-accent"}`}>
                   <span className="whitespace-nowrap font-mono text-[12px] text-foreground">/{command.name}</span>
                   <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-muted-foreground">{command.description}</span>
-                  <span className="shrink-0 rounded border border-border px-1 py-[1px] text-[8.5px] uppercase tracking-[0.06em] text-muted-foreground">{slashOwnershipBadge(command.harness)}</span>
-                </button>)}
-              </div>
-            </div>}
-            {harnessShortcutOpen && <div id="aside-harness-shortcut-listbox" role="listbox" className="u-glass-popover absolute inset-x-0 bottom-full z-20 mb-2 flex max-h-[min(320px,45vh)] flex-col overflow-hidden rounded-2xl">
-              <div className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-1.5 text-[9px] uppercase tracking-[0.12em] text-muted-foreground/70">
-                <span>Talk to a harness directly</span>
-                <span className="normal-case tracking-normal text-muted-foreground/50">{harnessShortcutMatches.length}</span>
-              </div>
-              <div ref={harnessShortcutListRef} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-                {harnessShortcutMatches.map((adapter, index) => <button id={`aside-harness-shortcut-option-${index}`} key={adapter.id} type="button" role="option" aria-selected={index === harnessShortcutIndex} data-harness-shortcut-index={index} onMouseEnter={() => setHarnessShortcutIndex(index)} onMouseDown={e => { e.preventDefault(); applyHarnessShortcut(adapter); }} className={`flex w-full items-center gap-2 px-3 py-2 text-left transition-colors ${index === harnessShortcutIndex ? "bg-accent" : "hover:bg-accent"}`}>
-                  <span className="whitespace-nowrap font-mono text-[12px] text-foreground">${adapter.id}</span>
-                  <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[11px] text-muted-foreground">Starts a new {adapter.label} chat with what follows</span>
+                  <span className="shrink-0 rounded border border-border px-1 py-[1px] text-[11px] uppercase tracking-[0.06em] text-muted-foreground">{slashOwnershipBadge(command.harness)}</span>
                 </button>)}
               </div>
             </div>}
@@ -476,7 +426,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
               layout="dock"
               className="mx-0 max-w-none px-0 pb-0 pt-0 sm:px-0 sm:pb-0"
               value={draft}
-              onChange={value => { setDraft(value); setSlashDismissed(false); setSlashIndex(0); setMentionDismissed(false); setMentionIndex(0); setHarnessShortcutDismissed(false); setHarnessShortcutIndex(0); }}
+              onChange={value => { setDraft(value); setSlashDismissed(false); setSlashIndex(0); setMentionDismissed(false); setMentionIndex(0); }}
               onSubmit={() => void send()}
               onKeyDown={onComposerKeyDown}
               onPaste={handlePaste}
@@ -488,9 +438,6 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
               } : slashOpen ? {
                 controls: "aside-slash-listbox",
                 activeDescendant: `aside-slash-option-${slashIndex}`,
-              } : harnessShortcutOpen ? {
-                controls: "aside-harness-shortcut-listbox",
-                activeDescendant: `aside-harness-shortcut-option-${harnessShortcutIndex}`,
               } : undefined}
               suggestion={draftSuggestion?.suggestion}
               onAcceptSuggestion={() => {
@@ -506,7 +453,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
             />
           </div>
         </footer>
-      </div>
-    </div>
+      </DialogPopup>
+    </Dialog>
   );
 }

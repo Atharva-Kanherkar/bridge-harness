@@ -4,7 +4,7 @@
   "version": "0.5.3",
   "identifier": "dev.bridge.deck",
   "build": {
-    "beforeDevCommand": "bun run prepare:browser-host:dev && bun run prepare:daemon:dev && bun run dev",
+    "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
     "beforeBuildCommand": "npm run generate:icons && npm run build && npm run prepare:browser-host && npm run prepare:daemon && npm run prepare:claude-sidecar",
     "frontendDist": "../dist"

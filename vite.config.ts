@@ -2,6 +2,7 @@ import path from "node:path";
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
+import { configDefaults } from "vitest/config";
 
 export default defineConfig(({ mode }) => ({
   plugins: [react(), tailwindcss()],
@@ -17,10 +18,18 @@ export default defineConfig(({ mode }) => ({
   // Bridge and its coding agents create task worktrees inside the repo
   // (.worktrees/ and .claude/worktrees/). They are checkouts of other
   // branches, so their tests belong to those branches, not to this run.
+  // Keep Vitest's recursive dependency exclusions: packaging stages SDKs with
+  // their own tests under resources/ and target/, not just root node_modules/.
   test: {
-    // Release staging also contains dependency tests. The sidecar and release
-    // scripts have their own runners; Vitest owns the frontend source only.
+    // The sidecar and release scripts have dedicated runners.
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
-    exclude: ["node_modules/**", "dist/**", ".worktrees/**", ".claude/worktrees/**", ".codex-worktrees/**"]
+    exclude: [
+      ...configDefaults.exclude,
+      "src-tauri/target/**",
+      "src-tauri/resources/**",
+      ".worktrees/**",
+      ".claude/worktrees/**",
+      ".codex-worktrees/**",
+    ],
   }
 }));

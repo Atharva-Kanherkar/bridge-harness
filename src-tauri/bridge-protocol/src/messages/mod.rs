@@ -194,6 +194,7 @@ typed_methods![
     (ReplaySessionEvents, ReplaySessionEventsParams, ReplaySessionEventsResult),
     (ActivateSessionEntry, ActivateSessionEntryParams, SessionForestSnapshot),
     (CreateChat, CreateChatParams, BridgeState),
+    (CreateChatId, CreateChatIdParams, CreateChatIdResult),
     (CreateAsideChat, CreateAsideChatParams, CreateAsideChatResult),
     (CreateWorkspaceSession, CreateWorkspaceSessionParams, BridgeState),
     (StartSession, StartSessionParams, BridgeState),
@@ -305,6 +306,7 @@ typed_methods![
     (ApproveLearningRun, ApproveLearningRunParams, _),
     // browser bridge
     (BrowserBridgeState, _, _),
+    (BrowserFrame, BrowserFrameParams, BrowserFrameResult),
     (InstallBrowserNativeHost, _, InstallBrowserNativeHostResult),
     (BrowserAction, BrowserActionParams, BrowserActionResult),
     (SetBrowserPermission, SetBrowserPermissionParams, UnitResult),

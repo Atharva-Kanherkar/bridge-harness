@@ -1,5 +1,6 @@
+import { PaneState } from "@/components/ui/pane";
 import { Suspense, lazy, useCallback, useEffect, useRef, useState, useMemo } from "react";
-import { Check, ChevronDown, Code2, Quote } from "lucide-react";
+import { Check, ChevronDown, Code2, Quote, FileDiff, FolderGit2, CircleAlert } from "lucide-react";
 import type { RiskTier, Workspace, WorkspaceChangesResult, WorkspaceFileChange } from "../types";
 import { bridgeApi } from "../api";
 import { errorMessage } from "../errors";
@@ -27,8 +28,8 @@ const IMPORTANCE_BADGE: Record<RiskTier, { label: string; variant: "error" | "wa
 };
 
 function FileDiffView({ patch, patchTruncated, binary, path, onQuoteHunk }: { patch: string; patchTruncated: boolean; binary: boolean; path: string; onQuoteHunk?: (range: HunkRange) => void }) {
-  if (binary) return <div className="px-3.5 py-4 text-[11.5px] text-muted-foreground">Binary file — no diff to show.</div>;
-  if (!patch.trim()) return <div className="px-3.5 py-4 text-[11.5px] text-muted-foreground">
+  if (binary) return <div className="px-3.5 py-4 text-[12px] text-muted-foreground">Binary file — no diff to show.</div>;
+  if (!patch.trim()) return <div className="px-3.5 py-4 text-[12px] text-muted-foreground">
     {patchTruncated ? "Patch preview omitted because the changeset reached its size limit. Open the file to review it." : "No diff content."}
   </div>;
   return <>
@@ -75,22 +76,21 @@ function ChangeFileRow({ file, viewed, expanded, workspaceId, onToggleViewed, on
   const cut = file.path.lastIndexOf("/") + 1;
   const kindLabel = file.changeKind === "mode_only" ? "mode" : file.changeKind;
   return <div className={cn("transition-opacity", viewed && !expanded && "opacity-55")}>
-    <div className="group flex items-center gap-2 px-2 py-1">
-      <button type="button" onClick={onToggleExpanded} aria-expanded={expanded} className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left hover:bg-accent">
-        <ChevronDown size={13} className={cn("shrink-0 text-muted-foreground/60 transition-transform", !expanded && "-rotate-90")} aria-hidden="true" />
-        <span className="truncate font-mono text-[12px]">
-          {file.previousPath && <span className="text-muted-foreground/70">{file.previousPath} → </span>}
-          {cut > 0 && <span className="text-muted-foreground/70">{file.path.slice(0, cut)}</span>}
-          <span className="text-foreground">{file.path.slice(cut)}</span>
+    <div className="group flex flex-wrap items-center gap-x-2 gap-y-1 px-2 py-2">
+      <button type="button" onClick={onToggleExpanded} aria-expanded={expanded} aria-label={file.path} title={file.previousPath ? `${file.previousPath} → ${file.path}` : file.path} className="flex min-w-0 flex-1 items-center gap-1.5 rounded-md px-1.5 py-1.5 text-left hover:bg-accent @max-[560px]/changes:basis-full">
+        <ChevronDown size={13} className={cn("shrink-0 text-muted-foreground transition-transform", !expanded && "-rotate-90")} aria-hidden="true" />
+        <span className="flex min-w-0 font-mono text-[12px]">
+          {(file.previousPath || cut > 0) && <span className="truncate text-muted-foreground">{file.previousPath && `${file.previousPath} → `}{file.path.slice(0, cut)}</span>}
+          <span className="max-w-full shrink-0 truncate text-foreground">{file.path.slice(cut)}</span>
         </span>
       </button>
-      {dirty && <span className="shrink-0 text-[10.5px] text-warning" title="This file has unsaved edits in the inline editor">unsaved</span>}
+      {dirty && <span className="shrink-0 text-[11px] text-warning" title="This file has unsaved edits in the inline editor">unsaved</span>}
       {onQuote && <button
         type="button"
         onClick={() => onQuote(file.path)}
         aria-label={`Reference ${file.path} in the composer`}
         title="Reference in the composer"
-        className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-muted-foreground/70 opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
+        className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
       >
         <Quote size={11} strokeWidth={1.8} aria-hidden="true" />
       </button>}
@@ -99,14 +99,14 @@ function ChangeFileRow({ file, viewed, expanded, workspaceId, onToggleViewed, on
         onClick={() => onOpenFile(file.path)}
         aria-label={`Open ${file.path} in the Code pane`}
         title="Open in the Code pane"
-        className="grid h-6 w-6 shrink-0 place-items-center rounded-md text-muted-foreground/70 opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100"
+        className="grid h-7 w-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
       >
         <Code2 size={11} strokeWidth={1.8} aria-hidden="true" />
       </button>}
       {file.changeKind !== "modified" && <Badge variant="outline" size="sm" className="shrink-0">{kindLabel}</Badge>}
       {file.labels.map(label => <Badge key={`${file.path}:${label}`} variant="outline" size="sm" className="shrink-0" title={`Path label: ${label}`}>{label}</Badge>)}
       {badge && <Badge variant={badge.variant} size="sm" className="hidden shrink-0 sm:inline-flex">{badge.label}</Badge>}
-      <span className="hidden shrink-0 items-center gap-1.5 font-mono text-[10.5px] tabular-nums sm:flex">
+      <span className="hidden shrink-0 items-center gap-1.5 font-mono text-[11px] tabular-nums sm:flex">
         <span className="text-success">+{file.additions}</span>
         <span className="text-destructive">−{file.deletions}</span>
         <DiffStatBar additions={file.additions} deletions={file.deletions} />
@@ -118,8 +118,8 @@ function ChangeFileRow({ file, viewed, expanded, workspaceId, onToggleViewed, on
         title={viewed ? "Mark as not viewed" : "Mark as viewed"}
         aria-label={viewed ? `Mark ${file.path} as not viewed` : `Mark ${file.path} as viewed`}
         className={cn(
-          "grid h-6 w-6 shrink-0 place-items-center rounded-md border transition-colors",
-          viewed ? "border-success/40 bg-success/10 text-success" : "border-border text-muted-foreground/60 hover:bg-accent hover:text-foreground",
+          "grid h-7 w-7 shrink-0 place-items-center rounded-md border transition-colors",
+          viewed ? "border-success/40 bg-success/10 text-success" : "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
         )}
       >
         <Check size={12} aria-hidden="true" />
@@ -133,7 +133,7 @@ function ChangeFileRow({ file, viewed, expanded, workspaceId, onToggleViewed, on
           onClick={() => { setMode(option); if (option === "edit") setEverEdited(true); }}
           aria-pressed={mode === option}
           className={cn(
-            "h-[20px] rounded-[5px] px-2 text-[10.5px] capitalize transition-colors",
+            "h-7 rounded-md px-2 text-[12px] capitalize transition-colors",
             mode === option ? "bg-accent text-foreground" : "text-muted-foreground hover:text-foreground",
           )}
         >{option}</button>)}
@@ -142,7 +142,7 @@ function ChangeFileRow({ file, viewed, expanded, workspaceId, onToggleViewed, on
         <FileDiffView patch={file.patch} patchTruncated={file.patchTruncated} binary={file.binary} path={file.path} onQuoteHunk={onQuote ? range => onQuote(file.path, range) : undefined} />
       </div>
       {everEdited && editable && <div className={cn(mode !== "edit" && "hidden")}>
-        <Suspense fallback={<div className="px-3.5 py-4 text-[11.5px] text-muted-foreground">Opening editor…</div>}>
+        <Suspense fallback={<div className="px-3.5 py-4 text-[12px] text-muted-foreground">Opening editor…</div>}>
           <InlineFileEditor workspaceId={workspaceId} path={file.path} onDirtyChange={setDirty} onSaved={onSaved} />
         </Suspense>
       </div>}
@@ -211,21 +211,9 @@ export function ChangesPanel({ workspace, onQuote, onOpenFile }: {
     return next;
   });
 
-  if (loadError) return <div className="p-[38px_28px]">
-    <div className="text-muted-foreground/65 text-[10.5px] font-semibold tracking-[0.1em]">CHANGES</div>
-    <p className="mt-2.5 text-destructive text-[13px]">{loadError}</p>
-  </div>;
-
-  if (!changes) return <div className="p-[38px_28px]">
-    <div className="text-muted-foreground/65 text-[10.5px] font-semibold tracking-[0.1em]">CHANGES</div>
-    <p className="mt-2.5 text-muted-foreground text-[13px]">Loading changes…</p>
-  </div>;
-
-  if (changes.repositoryState === "not_git") return <div className="p-[38px_28px]">
-    <div className="text-muted-foreground/65 text-[10.5px] font-semibold tracking-[0.1em]">CHANGES</div>
-    <h2 className="my-1.5 font-heading text-[16px] tracking-[-0.015em] text-foreground">No Git repository</h2>
-    <p className="text-[13px] leading-relaxed text-muted-foreground">This folder is available in Code, but Changes needs a Git repository.</p>
-  </div>;
+  if (loadError) return <PaneState icon={CircleAlert} title="Could not load changes" role="alert" action={<button type="button" onClick={() => void reloadChanges()} className="min-h-8 rounded-lg border border-border bg-card px-3 text-[13px] hover:bg-accent">Try again</button>}>{loadError}</PaneState>;
+  if (!changes) return <PaneState icon={FileDiff} title="Loading changes…" role="status" />;
+  if (changes.repositoryState === "not_git") return <PaneState icon={FolderGit2} title="No Git repository">This folder is available in Code, but Changes needs a Git repository.</PaneState>;
 
   const totalAdditions = changes.files.reduce((sum, file) => sum + file.additions, 0);
   const totalDeletions = changes.files.reduce((sum, file) => sum + file.deletions, 0);
@@ -236,18 +224,18 @@ export function ChangesPanel({ workspace, onQuote, onOpenFile }: {
     ? `${workspace.branch} · before first commit (against empty repository)`
     : `${workspace.branch} · uncommitted vs HEAD${changes.baseCommit ? ` (${changes.baseCommit.slice(0, 8)})` : ""}`;
 
-  return <div className="h-full w-full overflow-y-auto px-3 py-4 sm:px-4">
-    <div className="text-[10.5px] font-semibold tracking-[0.1em] text-muted-foreground/65">CHANGES</div>
-    <h2 className="my-1.5 font-heading text-[16px] tracking-[-0.015em] text-foreground">{changes.files.length ? `${fileCountLabel} file${reportedFileCount === 1 ? "" : "s"} changed` : changes.repositoryState === "unborn" ? "No changes before first commit" : "Workspace is clean"}</h2>
+  return <div className="@container/changes h-full w-full overflow-y-auto px-3 py-4 sm:px-4">
+    <div className="text-[12px] font-medium text-muted-foreground">CHANGES</div>
+    <h2 className="my-1.5 font-heading text-[20px] tracking-[-0.015em] text-foreground">{changes.files.length ? `${fileCountLabel} file${reportedFileCount === 1 ? "" : "s"} changed` : changes.repositoryState === "unborn" ? "No changes before first commit" : "Workspace is clean"}</h2>
     {/* What this diff is measured against — with worktree isolation, "which
         checkout am I looking at" should never be a question. */}
-    <p className="mb-2 font-mono text-[10.5px] text-muted-foreground">
+    <p className="mb-2 font-mono text-[11px] text-muted-foreground">
       {diffBasis}
     </p>
     {changes.files.length === 0
       ? <p className="text-[13px] leading-relaxed text-muted-foreground">{changes.repositoryState === "unborn" ? "Create or stage a file to begin the first review." : "No uncommitted changes against HEAD."}</p>
       : <>
-        <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 font-mono text-[11.5px]">
+        <div className="mb-3 flex flex-wrap items-center gap-x-3 gap-y-1.5 font-mono text-[12px]">
           <span className="text-success">+{totalAdditions}</span>
           <span className="text-destructive">−{totalDeletions}</span>
           <DiffStatBar additions={totalAdditions} deletions={totalDeletions} className="w-24" />
@@ -274,7 +262,7 @@ export function ChangesPanel({ workspace, onQuote, onOpenFile }: {
             onOpenFile={onOpenFile}
           />)}
         </div>
-        {lowSignalCount > 0 && <button type="button" onClick={() => setShowLowSignal(value => !value)} className="mt-2.5 px-1.5 py-1 text-left text-[11.5px] text-muted-foreground transition-colors hover:text-foreground">
+        {lowSignalCount > 0 && <button type="button" onClick={() => setShowLowSignal(value => !value)} className="mt-2.5 px-1.5 py-1 text-left text-[12px] text-muted-foreground transition-colors hover:text-foreground">
           {showLowSignal ? "Hide low-signal files" : `${lowSignalCount} low-signal file${lowSignalCount === 1 ? "" : "s"} hidden — show`}
         </button>}
       </>}

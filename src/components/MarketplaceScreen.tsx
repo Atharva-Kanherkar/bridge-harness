@@ -1,3 +1,4 @@
+import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Check, ChevronLeft, ChevronRight, ExternalLink, LoaderCircle, Package, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Unplug, X } from "lucide-react";
 import { bridgeApi } from "../api";
@@ -38,16 +39,16 @@ function ServiceIcon({ service, size = "md" }: { service: MarketplaceService; si
   const initials = service.name.trim().split(/\s+/).slice(0, 2).map(word => word[0]).join("").toUpperCase() || "P";
   const icon = [service.variants.find(variant => variant.iconDataUrl)?.iconDataUrl, verifiedBrandLogoUrl(service)]
     .find(candidate => candidate && !failedIcons.includes(candidate));
-  const dimensions = size === "sm" ? "h-8 w-8" : size === "lg" ? "h-16 w-16" : "h-11 w-11";
-  const rounding = size === "lg" ? "rounded-[20px]" : "rounded-[14px]";
-  const text = size === "sm" ? "text-[10px]" : size === "lg" ? "text-lg" : "text-[13px]";
+  const dimensions = size === "sm" ? "h-8 w-8" : size === "lg" ? "h-12 w-12" : "h-9 w-9";
+  const rounding = size === "lg" ? "rounded-xl" : "rounded-lg";
+  const text = size === "sm" ? "text-[11px]" : size === "lg" ? "text-lg" : "text-[13px]";
   if (icon) return <span className={`inline-flex shrink-0 items-center justify-center overflow-hidden ${rounding} border border-border bg-muted p-1.5 ${dimensions}`} aria-hidden="true"><img src={icon} alt="" referrerPolicy="no-referrer" onError={() => setFailedIcons(current => current.includes(icon) ? current : [...current, icon])} className="h-full w-full object-contain" /></span>;
   return <span className={`inline-flex shrink-0 items-center justify-center ${rounding} border border-border bg-accent font-display font-semibold text-foreground ${dimensions} ${text}`} aria-hidden="true">{initials}</span>;
 }
 
 function Status({ variant }: { variant: MarketplaceVariant }) {
   const auth = authenticationLabel(variant.authenticationState);
-  return <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[10.5px] text-muted-foreground">
+  return <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
     <span className="inline-flex items-center gap-1.5">
       <span className={`h-1.5 w-1.5 rounded-full ${variant.installed ? "bg-success" : "bg-muted-foreground/40"}`} />
       {variant.installed ? "Installed" : "Available"}
@@ -70,8 +71,8 @@ function ServiceRow({ service, busyKey, onOpen, onInstall }: {
 }) {
   const installable = service.variants.some(variant => !variant.installed);
   const working = busyKey === `${service.id}:install`;
-  return <article className="group rounded-2xl border border-border bg-card transition-colors duration-200 hover:border-input hover:bg-accent">
-    <div className="flex min-h-[76px] items-center gap-3.5 px-4 py-3.5">
+  return <article className="group transition-colors hover:bg-accent">
+    <div className="flex min-h-18 items-center gap-3.5 px-4 py-3.5">
       <button type="button" className="flex min-w-0 flex-1 items-center gap-3.5 rounded-xl text-left" onClick={onOpen}>
         <ServiceIcon service={service} />
         <span className="min-w-0 flex-1">
@@ -79,12 +80,12 @@ function ServiceRow({ service, busyKey, onOpen, onInstall }: {
             <span className="truncate text-[13.5px] font-semibold tracking-[-0.008em] text-foreground">{service.name}</span>
             {service.variants.every(variant => variant.installed) && <Check size={12} className="shrink-0 text-success" aria-label="Installed" />}
           </span>
-          <span className="mt-1 truncate block text-[11.5px] leading-[1.5] text-muted-foreground">{service.description || "Provider plugin for Bridge agents"}</span>
+          <span className="mt-1 line-clamp-2 block text-[13px] leading-[1.5] text-muted-foreground">{service.description || "Provider plugin for Bridge agents"}</span>
         </span>
       </button>
       {installable
         ? <Button size="xs" variant="secondary" disabled={!!busyKey} onClick={onInstall}>{working ? <LoaderCircle className="animate-spin" size={12} /> : "Install"}</Button>
-        : <ChevronRight size={15} className="shrink-0 text-muted-foreground/70 transition-colors group-hover:text-foreground" aria-hidden="true" />}
+        : <ChevronRight size={15} className="shrink-0 text-muted-foreground transition-colors group-hover:text-foreground" aria-hidden="true" />}
     </div>
   </article>;
 }
@@ -110,16 +111,16 @@ function PluginDetailPage({ service, busyKey, target, results, onBack, onTarget,
   const capabilities = [...new Set(service.variants.flatMap(variant => variant.capabilities))];
 
   return <div className="h-full min-h-0 overflow-y-auto">
-    <main className="animate-page-enter mx-auto w-full max-w-3xl px-3 pb-16 pt-6 sm:px-6 sm:pt-8">
-      <button type="button" onClick={onBack} className="inline-flex items-center gap-0.5 rounded-full py-1 pl-1 pr-3 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
+    <div className={SCREEN_CONTENT}>
+      <button type="button" onClick={onBack} className="inline-flex items-center gap-0.5 min-h-8 rounded-lg py-1 pl-1 pr-3 text-[12px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">
         <ChevronLeft size={14} aria-hidden="true" /> Plugins
       </button>
 
-      <header className="mt-6 flex flex-wrap items-start gap-4">
+      <header className="mt-4 flex flex-wrap items-center gap-4">
         <ServiceIcon service={service} size="lg" />
         <div className="min-w-0 flex-1 basis-48 pt-1">
-          <h1 className="font-display text-[22px] font-semibold tracking-[-0.02em] text-foreground break-words sm:text-[26px]">{service.name}</h1>
-          {sourceUrl && <a className="mt-1.5 flex max-w-full items-center gap-1 truncate text-[11.5px] text-muted-foreground transition-colors hover:text-foreground" href={sourceUrl} target="_blank" rel="noreferrer"><span className="truncate">{sourceUrl.replace(/^https?:\/\//, "")}</span> <ExternalLink size={10} className="shrink-0" /></a>}
+          <h1 className="font-display text-title font-semibold tracking-tight text-foreground break-words">{service.name}</h1>
+          {sourceUrl && <a className="mt-1.5 flex max-w-full items-center gap-1 truncate text-[12px] text-muted-foreground transition-colors hover:text-foreground" href={sourceUrl} target="_blank" rel="noreferrer"><span className="truncate">{sourceUrl.replace(/^https?:\/\//, "")}</span> <ExternalLink size={10} className="shrink-0" /></a>}
         </div>
         <div className="shrink-0 pt-2">
           {installable
@@ -131,19 +132,19 @@ function PluginDetailPage({ service, busyKey, target, results, onBack, onTarget,
       <div className="mt-5 flex flex-wrap items-center gap-1.5">
         {hasCodex && <Badge variant="secondary" size="sm">Codex</Badge>}
         {hasClaude && <Badge variant="secondary" size="sm">Claude Code</Badge>}
-        {labels.map(label => <span key={label} className={`rounded-full border px-2 py-0.5 text-[9.5px] ${label === "Separate login required" ? "border-warning/30 bg-warning/10 text-warning" : "border-border text-muted-foreground"}`}>{label}</span>)}
+        {labels.map(label => <span key={label} className={`rounded-full border px-2 py-0.5 text-[11px] ${label === "Separate login required" ? "border-warning/30 bg-warning/10 text-warning" : "border-border text-muted-foreground"}`}>{label}</span>)}
       </div>
 
-      <section className="mt-8">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">About</h2>
+      <section className="mt-5">
+        <h2 className="text-[12px] font-medium text-muted-foreground">About</h2>
         <p className="mt-3 text-[13.5px] leading-[1.7] text-foreground">{service.description || "Provider plugin for Bridge agents"}</p>
         {capabilities.length > 0 && <div className="mt-4 flex flex-wrap gap-1.5">
-          {capabilities.map(capability => <span key={capability} className="rounded-full border border-border bg-muted px-2.5 py-1 text-[10.5px] text-muted-foreground">{capability}</span>)}
+          {capabilities.map(capability => <span key={capability} className="rounded-full border border-border bg-muted px-2.5 py-1 text-[11px] text-muted-foreground">{capability}</span>)}
         </div>}
       </section>
 
-      <section className="mt-8">
-        <h2 className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Providers</h2>
+      <section className="mt-5">
+        <h2 className="text-[12px] font-medium text-muted-foreground">Providers</h2>
         <div className="mt-3 grid gap-3">
           {service.variants.map(variant => {
             const key = `${service.id}:${variant.provider}`;
@@ -155,7 +156,7 @@ function PluginDetailPage({ service, busyKey, target, results, onBack, onTarget,
             return <div key={`${variant.provider}:${variant.pluginId}`} className="u-surface rounded-2xl p-4">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
                 <div className="min-w-0 flex-1">
-                  <div className="mb-1 text-[12.5px] font-semibold text-foreground">{providerLabel(variant.provider)} {variant.version && <span className="ml-1 font-mono text-[10px] font-normal text-muted-foreground">v{variant.version}</span>}</div>
+                  <div className="mb-1 text-[13px] font-semibold text-foreground">{providerLabel(variant.provider)} {variant.version && <span className="ml-1 font-mono text-[11px] font-normal text-muted-foreground">v{variant.version}</span>}</div>
                   <Status variant={variant} />
                 </div>
                 <div className="flex flex-wrap items-center gap-1.5">
@@ -175,7 +176,7 @@ function PluginDetailPage({ service, busyKey, target, results, onBack, onTarget,
           <div className="u-segmented">
             {(["codex", "claude", "both"] as InstallTarget[]).map(value => {
               const disabled = (value === "codex" && !hasCodex) || (value === "claude" && !hasClaude) || (value === "both" && (!hasCodex || !hasClaude));
-              return <button key={value} type="button" data-active={target === value} disabled={disabled} onClick={() => onTarget(value)} className="u-segmented-item disabled:opacity-25">{value === "both" ? "Both" : providerLabel(value)}</button>;
+              return <button key={value} type="button" data-active={target === value} aria-pressed={target === value} disabled={disabled} onClick={() => onTarget(value)} className="u-segmented-item disabled:opacity-25">{value === "both" ? "Both" : providerLabel(value)}</button>;
             })}
           </div>
           <Button size="sm" disabled={!!busyKey} onClick={onInstall}>{working ? <LoaderCircle className="animate-spin" size={12} /> : <Package size={12} />} Install for {target === "both" ? "both" : providerLabel(target)}</Button>
@@ -188,7 +189,7 @@ function PluginDetailPage({ service, busyKey, target, results, onBack, onTarget,
           {!!failed.length && <Button size="xs" variant="secondary" className="mt-2" disabled={!!busyKey} onClick={onRetry}><RefreshCw size={10} /> Retry failed provider</Button>}
         </div>
       </section>}
-    </main>
+    </div>
   </div>;
 }
 
@@ -266,32 +267,29 @@ function PluginMarketplace() {
   }
 
   return <div className="h-full min-h-0 overflow-y-auto">
-    <main className="mx-auto w-full max-w-5xl px-3 pb-16 pt-8 sm:px-6 sm:pt-12">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="min-w-0"><h1 className="font-display text-[26px] font-semibold tracking-[-0.025em] text-foreground sm:text-[32px]">Plugins</h1><p className="mt-1.5 text-[13.5px] leading-relaxed text-muted-foreground">Work with your favorite tools across Codex and Claude Code</p></div>
-        <button type="button" onClick={() => void refresh()} disabled={loading} aria-label="Refresh plugins" className="mt-1.5 inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /></button>
-      </div>
-      <div className="relative mt-6"><Search className="pointer-events-none absolute left-3.5 top-1/2 z-10 -translate-y-1/2 text-muted-foreground" size={14} /><Input value={query} onChange={event => setQuery(event.target.value)} placeholder="Search plugins" className="h-10 rounded-full pl-10 text-[13px]" /></div>
+    <div className={SCREEN_CONTENT}>
+      <ScreenHeading title="Plugins" description="Connect your tools to Codex and Claude Code." action={<button type="button" onClick={() => void refresh()} disabled={loading} aria-label="Refresh plugins" className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /></button>} />
+      <div className="relative mt-4"><Search className="pointer-events-none absolute left-3.5 top-1/2 z-10 -translate-y-1/2 text-muted-foreground" size={14} /><Input value={query} onChange={event => setQuery(event.target.value)} aria-label="Search plugins" placeholder="Search plugins" className="h-8 rounded-lg pl-10 text-[13px]" /></div>
 
-      {catalog?.providers.map(item => item.error && <div key={item.provider} className="mt-3 flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-[10.5px] text-warning"><AlertCircle className="mt-0.5 shrink-0" size={12} /><span className="min-w-0 break-words"><b>{providerLabel(item.provider)}:</b> {item.error}</span></div>)}
+      {catalog?.providers.map(item => item.error && <div key={item.provider} className="mt-3 flex items-start gap-2 rounded-xl border border-warning/30 bg-warning/10 px-3 py-2 text-[11px] text-warning"><AlertCircle className="mt-0.5 shrink-0" size={12} /><span className="min-w-0 break-words"><b>{providerLabel(item.provider)}:</b> {item.error}</span></div>)}
       {loading && !catalog && <div className="flex min-h-56 items-center justify-center gap-2 text-xs text-muted-foreground"><LoaderCircle className="animate-spin" size={15} /> Discovering provider marketplaces…</div>}
 
       {!!catalog && <>
-        <section className="mt-8" aria-labelledby="installed-heading">
-          <div className="flex items-center justify-between gap-3"><h2 id="installed-heading" className="text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">Installed</h2><span className="shrink-0 text-[10px] text-muted-foreground/70">{installed.length} plugins</span></div>
-          {installed.length ? <div className="mt-3.5 flex flex-wrap gap-2.5">{installed.map(service => <button key={service.id} type="button" title={service.name} aria-label={`Open ${service.name}`} onClick={() => setSelectedId(service.id)} className="rounded-[14px] transition-transform hover:-translate-y-0.5"><ServiceIcon service={service} size="sm" /></button>)}</div> : <p className="mt-3 text-[11px] text-muted-foreground/70">No plugins installed yet.</p>}
+        <section className="mt-5" aria-labelledby="installed-heading">
+          <div className="flex items-center justify-between gap-3"><h2 id="installed-heading" className="text-[12px] font-medium text-muted-foreground">Installed</h2><span className="shrink-0 text-[11px] text-muted-foreground">{installed.length} plugins</span></div>
+          {installed.length ? <div className="mt-3.5 flex flex-wrap gap-2.5">{installed.map(service => <button key={service.id} type="button" title={service.name} aria-label={`Open ${service.name}`} onClick={() => setSelectedId(service.id)} className="inline-flex items-center gap-2 rounded-lg border border-border bg-card p-1 pr-3 text-ui transition-colors hover:bg-accent"><ServiceIcon service={service} size="sm" /><span>{service.name}</span></button>)}</div> : <p className="mt-3 text-[11px] text-muted-foreground">No plugins installed yet.</p>}
         </section>
 
-        <section className="mt-9" aria-labelledby="catalog-heading">
+        <section className="mt-6" aria-labelledby="catalog-heading">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="u-segmented">{(["public", "personal"] as CatalogScope[]).map(value => <button key={value} type="button" data-active={scope === value} onClick={() => setScope(value)} className="u-segmented-item capitalize">{value}</button>)}</div>
-            <div className="flex items-center gap-2 text-muted-foreground"><SlidersHorizontal size={12} aria-hidden="true" /><div className="u-segmented">{(["all", "codex", "claude"] as const).map(value => <button key={value} type="button" data-active={provider === value} onClick={() => setProvider(value)} className="u-segmented-item">{value === "all" ? "All" : providerLabel(value)}</button>)}</div></div>
+            <div className="u-segmented">{(["public", "personal"] as CatalogScope[]).map(value => <button key={value} type="button" data-active={scope === value} aria-pressed={scope === value} onClick={() => setScope(value)} className="u-segmented-item capitalize">{value}</button>)}</div>
+            <div className="flex items-center gap-2 text-muted-foreground"><SlidersHorizontal size={12} aria-hidden="true" /><div className="u-segmented">{(["all", "codex", "claude"] as const).map(value => <button key={value} type="button" data-active={provider === value} aria-pressed={provider === value} onClick={() => setProvider(value)} className="u-segmented-item">{value === "all" ? "All" : providerLabel(value)}</button>)}</div></div>
           </div>
-          <h2 id="catalog-heading" className="mt-7 text-[11px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">{query ? "Search results" : scope === "public" ? "Featured" : "Personal plugins"}</h2>
-          {services.length ? <div className="mt-3.5 grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">{services.map(service => <ServiceRow key={service.id} service={service} busyKey={busyKey} onOpen={() => setSelectedId(service.id)} onInstall={() => void install(service)} />)}</div> : <div className="u-surface mt-3.5 flex min-h-44 flex-col items-center justify-center rounded-2xl px-4 text-center"><Unplug className="mb-2.5 text-muted-foreground/70" size={22} /><p className="text-[13px] font-medium text-foreground">No matching plugins</p><p className="mt-1 text-[11px] text-muted-foreground">Try another search, scope, or provider.</p></div>}
+          <h2 id="catalog-heading" className="mt-5 text-ui font-medium text-muted-foreground">{query ? "Search results" : scope === "public" ? "Featured" : "Personal plugins"}</h2>
+          {services.length ? <div className="mt-3 divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">{services.map(service => <ServiceRow key={service.id} service={service} busyKey={busyKey} onOpen={() => setSelectedId(service.id)} onInstall={() => void install(service)} />)}</div> : <div className="u-surface mt-3.5 flex min-h-44 flex-col items-center justify-center rounded-2xl px-4 text-center"><Unplug className="mb-2.5 text-muted-foreground" size={22} /><p className="text-[13px] font-medium text-foreground">No matching plugins</p><p className="mt-1 text-[11px] text-muted-foreground">Try another search, scope, or provider.</p></div>}
         </section>
       </>}
-    </main>
+    </div>
   </div>;
 }
 
@@ -304,12 +302,13 @@ export function MarketplaceScreen() {
   // Agents remain the catalog default: plugins and skills run inside them.
   const [resource, setResource] = useState<CatalogResource>("agents");
   return <div className="flex h-full min-h-0 flex-col">
-    <nav className="flex h-14 shrink-0 items-center justify-center border-b border-border px-3" aria-label="Marketplace sections" data-tauri-drag-region="deep">
+    <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 border-b border-border px-5 py-2 sm:px-8"><nav className="flex items-center gap-4" aria-label="Marketplace sections" data-tauri-drag-region="deep">
       <div className="u-segmented">
-        {(["catalog", "automations"] as MarketplaceSection[]).map(value => <button key={value} type="button" data-active={section === value} onClick={() => setSection(value)} className="u-segmented-item capitalize">{value}</button>)}
+        {(["catalog", "automations"] as MarketplaceSection[]).map(value => <button key={value} type="button" data-active={section === value} aria-pressed={section === value} onClick={() => setSection(value)} className="u-segmented-item capitalize">{value}</button>)}
       </div>
     </nav>
-    {section === "catalog" && <nav className="flex h-11 shrink-0 items-center justify-center border-b border-border px-3" aria-label="Catalog sections"><div className="u-segmented">{CATALOG_RESOURCES.map(value => <button key={value} type="button" data-active={resource === value} onClick={() => setResource(value)} className="u-segmented-item capitalize">{value}</button>)}</div></nav>}
+    {section === "catalog" && <nav className="flex items-center border-l border-border pl-4" aria-label="Catalog sections"><div className="u-segmented">{CATALOG_RESOURCES.map(value => <button key={value} type="button" data-active={resource === value} aria-pressed={resource === value} onClick={() => setResource(value)} className="u-segmented-item capitalize">{value}</button>)}</div></nav>}
+    </div>
     <div className="min-h-0 flex-1">{section === "automations" ? <AutomationsPanel/> : <>{resource === "agents" && <AgentMarketplace/>}{resource === "plugins" && <PluginMarketplace/>}{resource === "skills" && <SkillMarketplace/>}</>}</div>
   </div>;
 }

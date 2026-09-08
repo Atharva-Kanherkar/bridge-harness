@@ -11,13 +11,14 @@ use crate::events::CoreEvent;
 use crate::model::*;
 use crate::runtime::BridgeCore;
 use crate::sessions;
+use crate::switch_summary;
 use crate::{
     adapters, agent, agent_config, backend_binding, check_runner, compaction_controller,
     completion, delegation, git, handoff, learning_job, learning_router, managed_agents,
     memory_ledger, orchestrator, policy, policy_coordinator, prompt_compiler, prompt_sections,
-    prompts, restoration, secret_interception, session_forest, session_input, session_recall,
-    session_supervisor, skill_marketplace, slash, store, worker_adoption, worker_guard,
-    worker_lifecycle, worker_pool, worker_retry, worker_sandbox, workspace_files,
+    prompts, restoration, secret_interception, session_context, session_forest, session_input,
+    session_recall, session_supervisor, skill_marketplace, slash, store, worker_adoption,
+    worker_guard, worker_lifecycle, worker_pool, worker_retry, worker_sandbox, workspace_files,
     worktree_coordinator,
     BridgeError, WORKER_APPROVAL_TIMEOUT_SECONDS,
     WORKER_STALL_TIMEOUT_SECONDS,
@@ -26,7 +27,6 @@ use bridge_protocol::messages as wire;
 use chrono::Utc;
 use rusqlite::{params, Connection};
 use std::{
-    collections::HashMap,
     io::BufRead,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -60,21 +60,28 @@ pub fn live_available_capabilities(state: &BridgeCore) -> std::collections::Hash
     capabilities
 }
 
+/// Every compiled prompt here carries only what is fixed for the launch.
+///
+/// The session's capability contract and its memory packet used to be variable
+/// sections, but this string becomes Claude's `systemPrompt.append`, Codex's
+/// `developerInstructions` and OpenCode's `system` — the head of a prefix
+/// cache. The proxy token inside the capability contract is regenerated on
+/// every Bridge process start and the packet is re-ranked on every memory
+/// edit, so a native resume after a restart differed by a few bytes there and
+/// re-wrote the entire conversation to cache. Both are delivered in the
+/// conversation tail now; see `session_context`.
+///
+/// `restoration_context` stays: it is fixed for the launch and is genuinely
+/// part of the system context the launch is restoring into.
 fn compile_orchestrator_prompt(
     stack: &prompt_sections::ResolvedPromptStack,
     configured_prompt: &str,
-    credential_context: &str,
     checkpoint_context: Option<&str>,
-    memory_packet: Option<&str>,
 ) -> Result<prompt_compiler::CompiledPrompt, BridgeError> {
     let mut compiler = compiler_for_stack(stack, prompts::PromptTarget::Orchestrator)?
-        .project_rule("configured_project_rules", configured_prompt)
-        .variable_section("session_capabilities", credential_context);
+        .project_rule("configured_project_rules", configured_prompt);
     if let Some(context) = checkpoint_context {
         compiler = compiler.variable_section("restoration_context", context);
-    }
-    if let Some(packet) = memory_packet {
-        compiler = compiler.variable_section("memory_packet", packet);
     }
     compiler.compile()
 }
@@ -82,29 +89,38 @@ fn compile_orchestrator_prompt(
 fn compile_session_prompt(
     stack: &prompt_sections::ResolvedPromptStack,
     configured_prompt: &str,
-    credential_context: &str,
     checkpoint_context: Option<&str>,
-    memory_packet: Option<&str>,
 ) -> Result<prompt_compiler::CompiledPrompt, BridgeError> {
     let mut compiler = compiler_for_stack(stack, prompts::PromptTarget::DirectSession)?
-        .project_rule("configured_project_rules", configured_prompt)
-        .variable_section("session_capabilities", credential_context);
+        .project_rule("configured_project_rules", configured_prompt);
     if let Some(context) = checkpoint_context {
         compiler = compiler.variable_section("restoration_context", context);
-    }
-    if let Some(packet) = memory_packet {
-        compiler = compiler.variable_section("memory_packet", packet);
     }
     compiler.compile()
 }
 
-/// The packet at its compile boundary: best-effort, because memory must never
+/// The packet at its delivery boundary: best-effort, because memory must never
 /// keep a session from starting. Skipped-on-error is consistent — no packet
 /// injected, no audit claiming one.
+///
+/// Called only past a hot return, so no retrieval audit is ever written for a
+/// process Bridge does not launch.
 fn compiled_memory_packet(state: &Arc<BridgeCore>, session_id: &str) -> Option<String> {
     crate::memory_packet::for_compile(&state.db.lock().unwrap(), session_id)
         .ok()
         .flatten()
+}
+
+/// The frame a launch owes its provider thread, built where the packet is
+/// built. `None` means there is nothing volatile to say.
+fn launch_session_context(
+    state: &Arc<BridgeCore>,
+    session_id: &str,
+) -> Option<session_context::SessionContext> {
+    session_context::build(
+        &state.credential_broker.instructions(session_id),
+        compiled_memory_packet(state, session_id).as_deref(),
+    )
 }
 
 fn compile_worker_prompt(
@@ -113,9 +129,7 @@ fn compile_worker_prompt(
     branch: &str,
     evidence: &[delegation::WorkerEvidence],
     configured_prompt: &str,
-    credential_context: &str,
     checkpoint_context: Option<&str>,
-    memory_packet: Option<&str>,
 ) -> Result<prompt_compiler::CompiledPrompt, BridgeError> {
     let mut compiler = compiler_for_stack(
         stack,
@@ -125,13 +139,9 @@ fn compile_worker_prompt(
     .variable_section(
         "task_context",
         delegation::worker_task_context(directive, branch, evidence),
-    )
-    .variable_section("session_capabilities", credential_context);
+    );
     if let Some(context) = checkpoint_context {
         compiler = compiler.variable_section("restoration_context", context);
-    }
-    if let Some(packet) = memory_packet {
-        compiler = compiler.variable_section("memory_packet", packet);
     }
     compiler.compile()
 }
@@ -242,28 +252,22 @@ mod prompt_section_tests {
 
     fn legacy_orchestrator_prompt(
         configured_prompt: &str,
-        credential_context: &str,
         checkpoint_context: Option<&str>,
     ) -> prompt_compiler::CompiledPrompt {
         let mut compiler = prompt_compiler::PromptCompiler::new("orchestrator")
             .stable_section("bridge_role", orchestrator::briefing())
             .stable_section("delegation_protocol", delegation::protocol(0))
-            .project_rule("configured_project_rules", configured_prompt)
-            .variable_section("session_capabilities", credential_context);
+            .project_rule("configured_project_rules", configured_prompt);
         if let Some(context) = checkpoint_context {
             compiler = compiler.variable_section("restoration_context", context);
         }
         compiler.compile().unwrap()
     }
 
-    fn legacy_session_prompt(
-        configured_prompt: &str,
-        credential_context: &str,
-    ) -> prompt_compiler::CompiledPrompt {
+    fn legacy_session_prompt(configured_prompt: &str) -> prompt_compiler::CompiledPrompt {
         prompt_compiler::PromptCompiler::new("session")
             .stable_section("rendering_note", prompts::RENDERING_NOTE)
             .project_rule("configured_project_rules", configured_prompt)
-            .variable_section("session_capabilities", credential_context)
             .compile()
             .unwrap()
     }
@@ -273,7 +277,6 @@ mod prompt_section_tests {
         depth: i64,
         branch: &str,
         configured_prompt: &str,
-        credential_context: &str,
         checkpoint_context: Option<&str>,
     ) -> prompt_compiler::CompiledPrompt {
         let mut compiler = prompt_compiler::PromptCompiler::new(format!(
@@ -288,25 +291,122 @@ mod prompt_section_tests {
         .variable_section(
             "task_context",
             delegation::worker_task_context(directive, branch, &[]),
-        )
-        .variable_section("session_capabilities", credential_context);
+        );
         if let Some(context) = checkpoint_context {
             compiler = compiler.variable_section("restoration_context", context);
         }
         compiler.compile().unwrap()
     }
 
+    /// G2, the headline: two launches that differ only in the proxy token and
+    /// the memory packet must hand the provider the same system bytes.
+    ///
+    /// The proxy token is two fresh UUIDs on every Bridge process start and the
+    /// packet is re-ranked on every memory edit, so while both were compiled
+    /// into the prompt, a native resume after a restart differed by a few bytes
+    /// at the head of the provider's prefix cache and re-wrote the whole
+    /// conversation. They ride in the turn frame now, and the compiled prompt
+    /// cannot see them at all.
+    #[test]
+    fn a_restarted_launch_compiles_the_same_system_bytes() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        let configured = "Repository-specific rule";
+
+        // What two consecutive Bridge processes would build for one session.
+        let first_launch = session_context::build(
+            "Authorize the call with the request header `x-bridge-proxy-auth: aaaa`.",
+            Some("[a1] preference: prefers tabs"),
+        )
+        .unwrap();
+        let second_launch = session_context::build(
+            "Authorize the call with the request header `x-bridge-proxy-auth: bbbb`.",
+            Some("[a2] preference: prefers spaces"),
+        )
+        .unwrap();
+        assert_ne!(
+            first_launch.digest(),
+            second_launch.digest(),
+            "the volatile pair really did change between the two launches"
+        );
+
+        let volatile = [
+            "x-bridge-proxy-auth",
+            "session_capabilities",
+            "memory_packet",
+            "prefers tabs",
+            "aaaa",
+        ];
+        let mut compiled = Vec::new();
+        for checkpoint in [None, Some("Restore this checkpoint")] {
+            let orchestrator_stack =
+                prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
+            compiled.push(
+                compile_orchestrator_prompt(&orchestrator_stack, configured, checkpoint)
+                    .unwrap()
+                    .instructions()
+                    .to_owned(),
+            );
+            let direct_stack =
+                prompt_sections::resolve(&db, prompts::PromptTarget::DirectSession, 0).unwrap();
+            compiled.push(
+                compile_session_prompt(&direct_stack, configured, checkpoint)
+                    .unwrap()
+                    .instructions()
+                    .to_owned(),
+            );
+            let directive = directive(delegation::WorkerRole::Implementation);
+            let worker_stack =
+                prompt_sections::resolve(&db, prompts::PromptTarget::Worker(directive.role), 1)
+                    .unwrap();
+            compiled.push(
+                compile_worker_prompt(
+                    &worker_stack,
+                    &directive,
+                    "bridge/task",
+                    &[],
+                    configured,
+                    checkpoint,
+                )
+                .unwrap()
+                .instructions()
+                .to_owned(),
+            );
+        }
+        for instructions in &compiled {
+            for needle in volatile {
+                assert!(
+                    !instructions.contains(needle),
+                    "`{needle}` must not reach the compiled prompt"
+                );
+            }
+        }
+
+        // Nothing the launch is handed can move those bytes, so compiling
+        // again in the second "process" is the same string.
+        let orchestrator_stack =
+            prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
+        assert_eq!(
+            compile_orchestrator_prompt(&orchestrator_stack, configured, None)
+                .unwrap()
+                .instructions(),
+            compiled[0].as_str()
+        );
+
+        // And the frame that does carry them is a separate string with its own
+        // identity, which is what the delivery ledger compares on.
+        assert!(first_launch.text().contains("x-bridge-proxy-auth"));
+        assert!(first_launch.text().contains("prefers tabs"));
+    }
+
     #[test]
     fn session_prompt_injects_restoration_context_like_the_orchestrator() {
         let db = store::open(Path::new(":memory:")).unwrap();
         let configured = "Repository-specific rule";
-        let credential = "Use [secret:sec_example] through /credential-proxy/session/ref";
         let context = "Bridge checkpoint-restoration context (stored history, not native provider resume):\nuser.message: we decided to change src/app.ts";
 
         let stack = prompt_sections::resolve(&db, prompts::PromptTarget::DirectSession, 0).unwrap();
-        let with_context =
-            compile_session_prompt(&stack, configured, credential, Some(context), None).unwrap();
-        let without = compile_session_prompt(&stack, configured, credential, None, None).unwrap();
+        let with_context = compile_session_prompt(&stack, configured, Some(context)).unwrap();
+        let without = compile_session_prompt(&stack, configured, None).unwrap();
 
         assert!(with_context.instructions().contains("restoration_context"));
         // Sections serialize as JSON, so newlines arrive escaped; a phrase
@@ -325,26 +425,70 @@ mod prompt_section_tests {
     }
 
     #[test]
+    fn root_chat_reuse_marker_compares_against_the_sessions_own_last_compilation() {
+        let db = store::open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/reuse','now')",
+            [],
+        )
+        .unwrap();
+        db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Kyoto','Task','bridge/task','/tmp/reuse-ws','idle','now')", []).unwrap();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('chat','w','codex','Chat','idle','reported')", []).unwrap();
+
+        // A session's first launch has nothing to carry over from.
+        assert_eq!(root_chat_reuse_marker(&db, "chat", "codex"), "not_applicable");
+
+        let mut compilation = PromptCompilationRecord {
+            id: 0,
+            session_id: "chat".into(),
+            turn_id: None,
+            prefix_id: "bridge-prompt-v1-a".into(),
+            prefix_hash: "a".into(),
+            schema_version: 1,
+            prefix_bytes: 10,
+            prefix_token_estimate: 3,
+            harness: "codex".into(),
+            model: Some("gpt-5".into()),
+            role: "orchestrator".into(),
+            task_family: "orchestration".into(),
+            restoration_mode: "fresh".into(),
+            cross_harness_reuse: "not_applicable".into(),
+            created_at: "now".into(),
+            sections_json: None,
+            stable_bytes: None,
+            variable_bytes: None,
+            stable_token_estimate: None,
+            variable_token_estimate: None,
+            token_estimate_source: None,
+        };
+        store::record_prompt_compilation(&db, &compilation).unwrap();
+
+        // Relaunching on the same harness — including a same-harness model
+        // switch — can reuse the prefix.
+        assert_eq!(root_chat_reuse_marker(&db, "chat", "codex"), "same_harness");
+        // Switching harness cannot, and that is exactly what the literal used
+        // to hide.
+        assert_eq!(root_chat_reuse_marker(&db, "chat", "claude"), "incompatible");
+
+        // The newest compilation is the one that counts, not the first.
+        compilation.prefix_id = "bridge-prompt-v1-b".into();
+        compilation.harness = "claude".into();
+        store::record_prompt_compilation(&db, &compilation).unwrap();
+        assert_eq!(root_chat_reuse_marker(&db, "chat", "claude"), "same_harness");
+        assert_eq!(root_chat_reuse_marker(&db, "chat", "codex"), "incompatible");
+    }
+
+    #[test]
     fn default_target_stacks_match_legacy_live_bytes() {
         let db = store::open(Path::new(":memory:")).unwrap();
         let configured = "Repository-specific rule";
-        let credential = "Use [secret:sec_example] through /credential-proxy/session/ref";
 
         let orchestrator_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
         for checkpoint in [None, Some("Restore this orchestrator checkpoint")] {
-            let compiled = compile_orchestrator_prompt(
-                &orchestrator_stack,
-                configured,
-                credential,
-                checkpoint,
-                None,
-            )
-            .unwrap();
-            assert_eq!(
-                compiled,
-                legacy_orchestrator_prompt(configured, credential, checkpoint)
-            );
+            let compiled =
+                compile_orchestrator_prompt(&orchestrator_stack, configured, checkpoint).unwrap();
+            assert_eq!(compiled, legacy_orchestrator_prompt(configured, checkpoint));
             assert_eq!(
                 compiled
                     .instructions()
@@ -356,9 +500,8 @@ mod prompt_section_tests {
 
         let direct_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::DirectSession, 0).unwrap();
-        let direct =
-            compile_session_prompt(&direct_stack, configured, credential, None, None).unwrap();
-        assert_eq!(direct, legacy_session_prompt(configured, credential));
+        let direct = compile_session_prompt(&direct_stack, configured, None).unwrap();
+        assert_eq!(direct, legacy_session_prompt(configured));
         assert!(!direct.instructions().contains("bridge-delegate"));
         assert!(!direct.instructions().contains("worker_contract"));
 
@@ -383,9 +526,7 @@ mod prompt_section_tests {
                     "bridge/prompt-studio",
                     &[],
                     configured,
-                    credential,
                     checkpoint,
-                    None,
                 )
                 .unwrap();
                 assert_eq!(
@@ -395,7 +536,6 @@ mod prompt_section_tests {
                         1,
                         "bridge/prompt-studio",
                         configured,
-                        credential,
                         checkpoint,
                     )
                 );
@@ -413,9 +553,7 @@ mod prompt_section_tests {
             1,
         )
         .unwrap();
-        let compiled =
-            compile_worker_prompt(&stack, &directive, "main", &[], "", "capabilities", None, None)
-                .unwrap();
+        let compiled = compile_worker_prompt(&stack, &directive, "main", &[], "", None).unwrap();
         assert!(!compiled
             .instructions()
             .contains("Rich rendering in the Bridge chat UI"));
@@ -431,36 +569,32 @@ mod prompt_section_tests {
         .unwrap();
         let baseline_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
-        let baseline = compile_orchestrator_prompt(&baseline_stack, "", "capabilities", None, None)
-            .unwrap();
+        let baseline = compile_orchestrator_prompt(&baseline_stack, "", None).unwrap();
 
         let overridden =
             prompt_sections::save_override(&db, &key, "Custom orchestrator policy").unwrap();
         let override_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
-        let override_prompt =
-            compile_orchestrator_prompt(&override_stack, "", "capabilities", None, None).unwrap();
+        let override_prompt = compile_orchestrator_prompt(&override_stack, "", None).unwrap();
         assert!(override_prompt.stable_prefix.contains("Custom orchestrator policy"));
         assert!(!override_prompt.stable_prefix.contains("starter orchestrator"));
 
         prompt_sections::delete_section(&db, &key).unwrap();
         let deleted_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
-        let deleted =
-            compile_orchestrator_prompt(&deleted_stack, "", "capabilities", None, None).unwrap();
+        let deleted = compile_orchestrator_prompt(&deleted_stack, "", None).unwrap();
         assert!(!deleted.stable_prefix.contains("\"bridge_role\""));
 
         prompt_sections::reset_section(&db, &key).unwrap();
         let reset_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
-        let reset = compile_orchestrator_prompt(&reset_stack, "", "capabilities", None, None).unwrap();
+        let reset = compile_orchestrator_prompt(&reset_stack, "", None).unwrap();
         assert_eq!(reset, baseline);
 
         prompt_sections::restore_revision(&db, &key, overridden.id).unwrap();
         let restored_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
-        let restored =
-            compile_orchestrator_prompt(&restored_stack, "", "capabilities", None, None).unwrap();
+        let restored = compile_orchestrator_prompt(&restored_stack, "", None).unwrap();
         assert_eq!(restored, override_prompt);
     }
 
@@ -469,8 +603,7 @@ mod prompt_section_tests {
         let db = store::open(Path::new(":memory:")).unwrap();
         let orchestrator_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
-        let error =
-            compile_session_prompt(&orchestrator_stack, "", "capabilities", None, None).unwrap_err();
+        let error = compile_session_prompt(&orchestrator_stack, "", None).unwrap_err();
         assert!(error.to_string().contains("cannot compile as direct_session"));
     }
 
@@ -484,8 +617,7 @@ mod prompt_section_tests {
         .unwrap();
         let baseline_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
-        let baseline = compile_orchestrator_prompt(&baseline_stack, "", "capabilities", None, None)
-            .unwrap();
+        let baseline = compile_orchestrator_prompt(&baseline_stack, "", None).unwrap();
         let previous = PromptCompilationRecord {
             id: 1,
             session_id: "session".into(),
@@ -519,8 +651,7 @@ mod prompt_section_tests {
         prompt_sections::save_override(&db, &key, "Changed policy").unwrap();
         let changed_stack =
             prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0).unwrap();
-        let changed = compile_orchestrator_prompt(&changed_stack, "", "capabilities", None, None)
-            .unwrap();
+        let changed = compile_orchestrator_prompt(&changed_stack, "", None).unwrap();
         assert!(!prompt_compilation_matches(
             &previous,
             "codex",
@@ -676,6 +807,30 @@ pub fn persist_prompt_compilation(
     )
 }
 
+/// Whether a root chat's stable prefix carries over from its own last launch.
+///
+/// `cross_harness_reuse_marker` answers this for a worker by comparing against
+/// its parent session. A root chat has no parent, and passing the literal
+/// `not_applicable` made every harness switch on a live chat invisible in the
+/// ledger. The comparison that means something for a root chat is against its
+/// own previous compilation, which is still the newest row here because the
+/// caller resolves this before recording the new one.
+fn root_chat_reuse_marker(db: &Connection, session_id: &str, harness: &str) -> &'static str {
+    match db
+        .query_row(
+            "SELECT harness FROM prompt_compilations WHERE session_id=?1 ORDER BY id DESC LIMIT 1",
+            params![session_id],
+            |row| row.get::<_, String>(0),
+        )
+        .ok()
+        .as_deref()
+    {
+        Some(previous) if previous == harness => "same_harness",
+        Some(_) => "incompatible",
+        None => "not_applicable",
+    }
+}
+
 pub fn cross_harness_reuse_marker(
     db: &Connection,
     parent_session_id: &str,
@@ -693,6 +848,97 @@ pub fn cross_harness_reuse_marker(
         Some(parent) if parent == child_harness => "same_harness",
         Some(_) => "incompatible",
         None => "not_applicable",
+    }
+}
+
+fn select_start_model(
+    descriptor: &AdapterDescriptor,
+    model: Option<&str>,
+) -> Result<Option<ModelOption>, BridgeError> {
+    if let Some(requested) = model.filter(|value| !value.trim().is_empty()) {
+        return descriptor
+            .models
+            .iter()
+            .find(|option| option.id.eq_ignore_ascii_case(requested.trim()))
+            .cloned()
+            .map(Some)
+            .ok_or_else(|| {
+                BridgeError::Invalid(format!(
+                    "{} does not offer model {requested}",
+                    descriptor.label
+                ))
+            });
+    }
+    // Some providers publish their catalog only after session/new. Passing None
+    // lets that first user-owned session use the provider's default; discovery
+    // must not create a session or invent a model identifier to break the cycle.
+    if descriptor.models.is_empty() {
+        return Ok(None);
+    }
+    descriptor
+        .models
+        .iter()
+        .find(|option| option.tier == CapabilityTier::Standard && option.default_for_tier)
+        .or_else(|| {
+            descriptor
+                .models
+                .iter()
+                .find(|option| option.tier == CapabilityTier::Standard)
+        })
+        .cloned()
+        .map(Some)
+        .ok_or_else(|| {
+            BridgeError::Invalid(format!("{} has no standard model", descriptor.label))
+        })
+}
+
+#[cfg(test)]
+mod start_model_tests {
+    use super::*;
+
+    fn descriptor(models: serde_json::Value) -> AdapterDescriptor {
+        serde_json::from_value(serde_json::json!({
+            "id": "cursor", "label": "Cursor", "available": true,
+            "authState": "unknown", "capabilities": [], "models": models
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn an_unpopulated_catalog_uses_the_provider_default() {
+        let descriptor = descriptor(serde_json::json!([]));
+        assert_eq!(select_start_model(&descriptor, None).unwrap(), None);
+        assert_eq!(select_start_model(&descriptor, Some("  ")).unwrap(), None);
+        assert!(select_start_model(&descriptor, Some("invented-model")).is_err());
+    }
+
+    #[test]
+    fn a_populated_catalog_keeps_standard_and_explicit_model_selection() {
+        let descriptor = descriptor(serde_json::json!([
+            {"id": "fast", "label": "Fast", "tier": "fast", "defaultForTier": true},
+            {"id": "standard-other", "label": "Other", "tier": "standard", "defaultForTier": false},
+            {"id": "standard-default", "label": "Default", "tier": "standard", "defaultForTier": true}
+        ]));
+        assert_eq!(
+            select_start_model(&descriptor, None).unwrap().unwrap().id,
+            "standard-default"
+        );
+        assert_eq!(
+            select_start_model(&descriptor, Some(" FAST ")).unwrap().unwrap().id,
+            "fast"
+        );
+        assert!(select_start_model(&descriptor, Some("unknown")).is_err());
+    }
+
+    #[test]
+    fn a_missing_standard_tier_is_not_an_unpopulated_catalog() {
+        let descriptor = descriptor(serde_json::json!([
+            {"id": "fast", "label": "Fast", "tier": "fast", "defaultForTier": true}
+        ]));
+        assert!(select_start_model(&descriptor, None)
+            .unwrap_err()
+            .to_string()
+            .contains("no standard model"));
     }
 }
 
@@ -732,40 +978,11 @@ pub fn start_session(
                     .unwrap_or_else(|| format!("{} is unavailable", descriptor.label)),
             ));
         }
-        let selected = if let Some(requested) =
-            model.as_deref().filter(|value| !value.trim().is_empty())
-        {
-            descriptor
-                .models
-                .iter()
-                .find(|option| option.id.eq_ignore_ascii_case(requested.trim()))
-                .cloned()
-                .ok_or_else(|| {
-                    BridgeError::Invalid(format!(
-                        "{} does not offer model {requested}",
-                        descriptor.label
-                    ))
-                })?
-        } else {
-            descriptor
-                .models
-                .iter()
-                .find(|option| option.tier == CapabilityTier::Standard && option.default_for_tier)
-                .or_else(|| {
-                    descriptor
-                        .models
-                        .iter()
-                        .find(|option| option.tier == CapabilityTier::Standard)
-                })
-                .cloned()
-                .ok_or_else(|| {
-                    BridgeError::Invalid(format!("{} has no standard model", descriptor.label))
-                })?
-        };
+        let selected = select_start_model(&descriptor, model.as_deref())?;
         sessions::OrchestratorSelection {
             adapter_id: adapter_id.clone(),
-            model: selected.id,
-            tier: selected.tier,
+            model: selected.as_ref().map(|option| option.id.clone()),
+            tier: selected.map_or(CapabilityTier::Standard, |option| option.tier),
             effort: agent_config::harness_config(&db, &adapter_id).and_then(|config| config.effort),
             label: agent_config::default_orchestrator(&db)
                 .map(|agent| agent.name)
@@ -777,7 +994,7 @@ pub fn start_session(
     };
     let adapter_id = selection.adapter_id.as_str();
     let session_label = selection.label.as_str();
-    let chosen_model = Some(selection.model.clone());
+    let chosen_model = selection.model.clone();
     let chosen_effort = selection.effort;
     let chosen_effort_name = chosen_effort.map(|effort| effort.as_str());
     let db = state.db.lock().unwrap();
@@ -836,19 +1053,11 @@ pub fn start_session(
             prompt_sections::resolve(&db, prompts::PromptTarget::Orchestrator, 0)?,
         )
     };
-    let credential_context = state.credential_broker.instructions(&session_id);
-    // Compiled without the packet first, on purpose. The packet is a variable
-    // section and cannot move `prefix_hash`, so the hot-compatibility check
-    // below does not need it — and building it here would write a retrieval
-    // audit for a packet a hot process is never sent. The real prompt, packet
-    // included, is compiled past the early return.
-    let hot_check_prompt = compile_orchestrator_prompt(
-        &prompt_stack,
-        &configured_prompt,
-        &credential_context,
-        None,
-        None,
-    )?;
+    // Neither the capability contract nor the memory packet is compiled any
+    // more, so this is the prompt a hot process was launched with and the one
+    // a cold launch will deliver. The volatile pair is built past the early
+    // return, where it becomes the session-context frame.
+    let hot_check_prompt = compile_orchestrator_prompt(&prompt_stack, &configured_prompt, None)?;
     let process_is_hot = state.adapters.lock().unwrap().contains_key(&session_id);
     if process_is_hot {
         let current_model: Option<String> = state
@@ -893,7 +1102,7 @@ pub fn start_session(
                 "orchestrator",
                 "orchestration",
                 RestorationMode::Hot,
-                "not_applicable",
+                root_chat_reuse_marker(&db, &session_id, adapter_id),
                 &hot_check_prompt,
             )?;
             return store::state(&db);
@@ -910,16 +1119,10 @@ pub fn start_session(
     }
 
     // Past the hot return: this call is really going to start a process, so the
-    // packet is built now and every audit it writes names a prompt that is
-    // actually delivered.
-    let memory_packet = compiled_memory_packet(state, &session_id);
-    let orchestrator_prompt = compile_orchestrator_prompt(
-        &prompt_stack,
-        &configured_prompt,
-        &credential_context,
-        None,
-        memory_packet.as_deref(),
-    )?;
+    // volatile pair is built now rather than for a hot process that is never
+    // sent one.
+    let launch_context = launch_session_context(state, &session_id);
+    let orchestrator_prompt = hot_check_prompt;
     let orchestrator_instructions = orchestrator_prompt.instructions().to_owned();
 
     // The orchestrator is depth 0. It gets the routing briefing plus the shared
@@ -928,7 +1131,9 @@ pub fn start_session(
         false,
         stored_provider_id.as_deref(),
         state.adapter_registry.supports_native_resume(dispatch_id),
+        false,
         checkpoint_context.is_some(),
+        false,
     );
     let start_fresh = |instructions: &str| {
         state.adapter_registry.start(
@@ -948,17 +1153,16 @@ pub fn start_session(
     let checkpoint_instructions = checkpoint_context
         .as_deref()
         .map(|context| {
-            compile_orchestrator_prompt(
-                &prompt_stack,
-                &configured_prompt,
-                &credential_context,
-                Some(context),
-                memory_packet.as_deref(),
-            )
-            .map(|prompt| prompt.instructions().to_owned())
+            compile_orchestrator_prompt(&prompt_stack, &configured_prompt, Some(context))
+                .map(|prompt| prompt.instructions().to_owned())
         })
         .transpose()?;
     let (mut started, restoration_mode, resume_eligibility) = match plan {
+        // Aside creation leaves the fork instruction on the head; a workspace
+        // orchestrator never carries one, so this plan cannot be selected here.
+        restoration::RestorationPlan::NativeFork => {
+            unreachable!("orchestrator sessions never request a native fork")
+        }
         restoration::RestorationPlan::Native => {
             let provider_id = stored_provider_id
                 .as_deref()
@@ -967,6 +1171,7 @@ pub fn start_session(
                 dispatch_id,
                 adapters::ResumeRequest {
                     provider_session_id: provider_id,
+                    fork: false,
                     cwd: &path,
                     model: chosen_model.as_deref(),
                     effort: chosen_effort_name,
@@ -1113,7 +1318,7 @@ pub fn start_session(
         "orchestrator",
         "orchestration",
         restoration_mode,
-        "not_applicable",
+        root_chat_reuse_marker(&db, &session_id, adapter_id),
         &orchestrator_prompt,
     ) {
         let _ = db.execute(
@@ -1138,8 +1343,17 @@ pub fn start_session(
         resume_eligibility,
         Some(&thread_id),
     )?;
+    // The thread this launch actually got is what decides whether the frame is
+    // owed: a resume onto the same thread already holds it, a fresh one cannot.
+    state
+        .session_context
+        .lock()
+        .unwrap()
+        .arm(&session_id, &thread_id, launch_context);
     let continuation_fidelity = match restoration_mode {
-        RestorationMode::Hot | RestorationMode::Native => ContinuationFidelity::Native,
+        RestorationMode::Hot | RestorationMode::Native | RestorationMode::NativeFork => {
+            ContinuationFidelity::Native
+        }
         RestorationMode::CheckpointRestored => ContinuationFidelity::ProjectedAtBoundary,
         RestorationMode::Fresh if existing.is_some() => ContinuationFidelity::ProjectedMidTurn,
         RestorationMode::Fresh => ContinuationFidelity::Native,
@@ -1215,9 +1429,10 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     // switch flow tears the adapter down across an await, and a start
     // interleaving into that window would be orphaned by its commit.
     let _lifecycle = state.claim_session_lifecycle(&session_id, "session start")?;
-    let (harness, kind, model, cwd_col, workspace_id, provider_id, effort): (
+    let (harness, kind, model, cwd_col, workspace_id, provider_id, effort, head_mode): (
         String,
         String,
+        Option<String>,
         Option<String>,
         Option<String>,
         Option<String>,
@@ -1226,9 +1441,9 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     ) = {
         let db = state.db.lock().unwrap();
         db.query_row(
-            "SELECT harness,kind,model,cwd,workspace_id,provider_session_id,effort FROM sessions WHERE id=?1",
+            "SELECT s.harness,s.kind,s.model,s.cwd,s.workspace_id,s.provider_session_id,s.effort,h.restoration_mode FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id WHERE s.id=?1",
             params![session_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?, r.get(7)?)),
         )?
     };
     // The one lifecycle entry point every start path reaches, including the
@@ -1333,9 +1548,27 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
             }
         })
         .or_else(|| {
-            configured_harness
+            let requested = configured_harness
                 .as_ref()
-                .and_then(|config| config.default_model.clone())
+                .and_then(|config| config.default_model.as_ref())?;
+            // Settings can outlive the discovered catalogue. Only apply their
+            // default when it resolves against the current models; otherwise
+            // leave an unpinned cold start to the provider's own default.
+            let resolution = state
+                .adapter_registry
+                .resolve_pinned_model(adapter_id, requested)
+                .ok()?;
+            if let Some(warning) = resolution.warning {
+                let db = state.db.lock().unwrap();
+                let _ = store::event(
+                    &db,
+                    "capability",
+                    "capability.model_pin_fallback",
+                    &session_id,
+                    &warning,
+                );
+            }
+            Some(resolution.actual_model)
         })
         .or_else(|| {
             state
@@ -1344,7 +1577,6 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                 .ok()
                 .map(|resolution| resolution.actual_model)
         });
-    let proxy_instructions = state.credential_broker.instructions(&session_id);
     let (configured_prompt, prompt_stack) = {
         let db = state.db.lock().unwrap();
         let target = if is_orchestrator {
@@ -1359,7 +1591,6 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
         };
         (configured_prompt, prompt_sections::resolve(&db, target, 0)?)
     };
-    let memory_packet = compiled_memory_packet(state, &session_id);
     // A chat with stored history but no resumable provider thread — the state a
     // model/harness switch leaves behind — must not start empty. Project the
     // active branch now, exactly like start_session does, so the cold path can
@@ -1381,21 +1612,9 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     // its early-return audit must describe what the already-running process was
     // actually launched with, not what a future cold start would deliver.
     let hot_check_prompt = if is_orchestrator {
-        compile_orchestrator_prompt(
-            &prompt_stack,
-            &configured_prompt,
-            &proxy_instructions,
-            None,
-            memory_packet.as_deref(),
-        )?
+        compile_orchestrator_prompt(&prompt_stack, &configured_prompt, None)?
     } else {
-        compile_session_prompt(
-            &prompt_stack,
-            &configured_prompt,
-            &proxy_instructions,
-            None,
-            memory_packet.as_deref(),
-        )?
+        compile_session_prompt(&prompt_stack, &configured_prompt, None)?
     };
     let process_is_hot = state.adapters.lock().unwrap().contains_key(&session_id);
     if process_is_hot {
@@ -1441,7 +1660,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                     "direct"
                 },
                 RestorationMode::Hot,
-                "not_applicable",
+                root_chat_reuse_marker(&db, &session_id, adapter_id),
                 &hot_check_prompt,
             )?;
             return store::state(&db);
@@ -1465,6 +1684,10 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     // by). One compilation serves both, like start_session's base prompt.
     let compiled_prompt = hot_check_prompt;
     let runtime_instructions = compiled_prompt.instructions().to_owned();
+    // Past the hot return, like start_session: a hot process is never sent a
+    // frame, so it must not have a packet built — and an audit written — for
+    // one.
+    let launch_context = launch_session_context(state, &session_id);
     let configured_effort = configured_harness
         .and_then(|config| config.effort)
         .map(|value| value.as_str().to_owned());
@@ -1477,12 +1700,19 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
     let launch_model = chosen_model.clone();
     // Same decision ladder as the orchestrator launch: native resume when the
     // stored thread can be resumed, otherwise project the stored branch, and
-    // only a genuinely empty chat starts fresh.
+    // only a genuinely empty chat starts fresh. A `native_fork` head mode is
+    // the aside's explicit instruction to fork the stored thread instead of
+    // resuming it — resuming would continue the source conversation the aside
+    // must never write to, so the raw instruction is passed un-gated and the
+    // ladder vetoes plain resume for it in every branch.
+    let head_says_fork = head_mode.as_deref() == Some(RestorationMode::NativeFork.as_str());
     let plan = restoration::select_plan(
         false,
         provider_id.as_deref(),
         state.adapter_registry.supports_native_resume(&dispatch_id),
+        state.adapter_registry.supports_native_fork(&dispatch_id),
         checkpoint_context.is_some(),
+        head_says_fork,
     );
     // Narration for the cold path only: a hot return already left above, so
     // every phase published here is a real launch boundary this call is
@@ -1512,25 +1742,82 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
         .as_deref()
         .map(|context| {
             if is_orchestrator {
-                compile_orchestrator_prompt(
-                    &prompt_stack,
-                    &configured_prompt,
-                    &proxy_instructions,
-                    Some(context),
-                    memory_packet.as_deref(),
-                )
+                compile_orchestrator_prompt(&prompt_stack, &configured_prompt, Some(context))
             } else {
-                compile_session_prompt(
-                    &prompt_stack,
-                    &configured_prompt,
-                    &proxy_instructions,
-                    Some(context),
-                    memory_packet.as_deref(),
-                )
+                compile_session_prompt(&prompt_stack, &configured_prompt, Some(context))
             }
             .map(|prompt| prompt.instructions().to_owned())
         })
         .transpose()?;    let (mut started, mode, eligibility) = match plan {
+        restoration::RestorationPlan::NativeFork => {
+            let provider = provider_id
+                .as_deref()
+                .expect("native-fork plan has a provider id");
+            match registry.resume(
+                &launch_adapter_id,
+                adapters::ResumeRequest {
+                    provider_session_id: provider,
+                    fork: true,
+                    cwd: &launch_cwd,
+                    model: launch_model.as_deref(),
+                    effort: chosen_effort.as_deref(),
+                    instructions: Some(&runtime_instructions),
+                    write_mode: None,
+                    read_only_sandbox: None,
+                    briefing: None,
+                    on_progress: Some(&on_startup_progress),
+                },
+            ) {
+                // The fork IS the aside's own thread from here: the runtime
+                // hands back the new forked thread id, which the persistence
+                // below stores as this session's provider session, so the
+                // source conversation is never resumed or appended to.
+                Ok(started) => (started, RestorationMode::Native, ResumeEligibility::Native),
+                Err(error) => {
+                    let db = state.db.lock().unwrap();
+                    restoration::record_resume_failed(&db, &session_id, &error.to_string())?;
+                    drop(db);
+                    match restoration::fallback_after_failure(
+                        restoration::RestorationPlan::NativeFork,
+                        checkpoint_instructions.is_some(),
+                    ) {
+                        Some(restoration::RestorationPlan::CheckpointRestored) => {
+                            match start_fresh(
+                                checkpoint_instructions
+                                    .as_deref()
+                                    .expect("checkpoint fallback has stored context"),
+                            ) {
+                                Ok(started) => (
+                                    started,
+                                    RestorationMode::CheckpointRestored,
+                                    ResumeEligibility::CheckpointRestored,
+                                ),
+                                Err(error) => {
+                                    let db = state.db.lock().unwrap();
+                                    restoration::record_checkpoint_restore_failed(
+                                        &db,
+                                        &session_id,
+                                        &error.to_string(),
+                                    )?;
+                                    drop(db);
+                                    (
+                                        start_fresh(&runtime_instructions)?,
+                                        RestorationMode::Fresh,
+                                        ResumeEligibility::Fresh,
+                                    )
+                                }
+                            }
+                        }
+                        Some(restoration::RestorationPlan::Fresh) => (
+                            start_fresh(&runtime_instructions)?,
+                            RestorationMode::Fresh,
+                            ResumeEligibility::Fresh,
+                        ),
+                        _ => unreachable!("native-fork failure has a deterministic fallback"),
+                    }
+                }
+            }
+        }
         restoration::RestorationPlan::Native => {
             let provider = provider_id
                 .as_deref()
@@ -1539,6 +1826,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                 &launch_adapter_id,
                 adapters::ResumeRequest {
                     provider_session_id: provider,
+                    fork: false,
                     cwd: &launch_cwd,
                     model: launch_model.as_deref(),
                     effort: chosen_effort.as_deref(),
@@ -1672,7 +1960,7 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
                 "direct"
             },
             mode,
-            "not_applicable",
+            root_chat_reuse_marker(&db, &session_id, adapter_id),
             &compiled_prompt,
         ) {
             let _ = db.execute(
@@ -1693,6 +1981,14 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
             return Err(error);
         }
         restoration::set_head_state(&db, &session_id, mode, eligibility, Some(&thread_id))?;
+        // The thread this launch actually got is what decides whether the frame
+        // is owed: a resume onto the same thread already holds it, a fresh one
+        // cannot.
+        state
+            .session_context
+            .lock()
+            .unwrap()
+            .arm(&session_id, &thread_id, launch_context);
         // Say how much of the conversation the new provider actually inherits.
         // A fresh start over existing history is a projection, not a resume —
         // the same honesty rule start_session records by.
@@ -1700,7 +1996,9 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
             &db,
             &session_id,
             match mode {
-                RestorationMode::Hot | RestorationMode::Native => ContinuationFidelity::Native,
+                RestorationMode::Hot
+                | RestorationMode::Native
+                | RestorationMode::NativeFork => ContinuationFidelity::Native,
                 RestorationMode::CheckpointRestored => ContinuationFidelity::ProjectedAtBoundary,
                 RestorationMode::Fresh if has_prior_history => {
                     ContinuationFidelity::ProjectedMidTurn
@@ -1917,11 +2215,16 @@ fn spawn_reader_thread(
         if tracks_worker {
             record_worker_activity(&core, &session_id);
         }
+        // Set once this launch is observed serving a detached model-switch
+        // summary, so its exit skips live-session teardown even after the
+        // detached entry has been cleaned up.
+        let mut was_detached = false;
         loop {
             let mut line = String::new();
             match reader.read_line(&mut line) {
                 Ok(0) | Err(_) => break,
                 Ok(_) => {
+                    let frame_timing = FrameTiming::received();
                     // Check the gate without holding it across handler work:
                     // handle_agent_value may complete a worker, which calls
                     // deactivate_reader_launch and re-locks the same mutex.
@@ -1935,10 +2238,62 @@ fn spawn_reader_thread(
                         record_worker_activity(&core, &session_id);
                     }
                     if let Ok(value) = serde_json::from_str::<serde_json::Value>(line.trim()) {
-                        handle_agent_value(&core, &session_id, &current_turn, &value);
+                        // A detached model-switch summary runtime shares this
+                        // session id with the incoming model. Its frames drive
+                        // only the checkpoint pipeline and must never reach the
+                        // live handler, which would write the shared row's turn
+                        // state out from under the new model.
+                        if switch_summary::is_detached_launch(
+                            &core,
+                            &session_id,
+                            launch_process_id,
+                            &launch_provider_session_id,
+                        ) {
+                            was_detached = true;
+                            switch_summary::handle_detached_frame(
+                                &core,
+                                &session_id,
+                                launch_process_id,
+                                &launch_provider_session_id,
+                                &value,
+                            );
+                        } else {
+                            handle_agent_value_timed(&core, &session_id, &current_turn, &value, frame_timing);
+                        }
                     }
                 }
             }
+        }
+        if was_detached
+            || switch_summary::is_detached_launch(
+                &core,
+                &session_id,
+                launch_process_id,
+                &launch_provider_session_id,
+            )
+        {
+            // This reader served a detached summary. Its exit is the outgoing
+            // provider going away, not the session ending: record the pending
+            // request's fate and forget it, but touch none of the shared row's
+            // live-session teardown.
+            switch_summary::on_detached_reader_exit(
+                &core,
+                &session_id,
+                launch_process_id,
+                &launch_provider_session_id,
+            );
+            if !launch_provider_session_id.is_empty() {
+                core.adapter_registry
+                    .forget_session(&launch_adapter_id, &launch_provider_session_id);
+            }
+            let mut launches = core.reader_launches.lock().unwrap();
+            if launches
+                .get(&session_id)
+                .is_some_and(|current| Arc::ptr_eq(current, &launch_gate))
+            {
+                launches.remove(&session_id);
+            }
+            return;
         }
         {
             let mut launches = core.reader_launches.lock().unwrap();
@@ -2086,11 +2441,35 @@ pub fn agent_event_changes_bridge_state(event: &agent::NormalizedEvent) -> bool 
     ) || (event.kind == "error" && event.status.as_deref() == Some("failed"))
 }
 
+/// Opt-in, content-free live diagnostics. Durations share a native monotonic
+/// clock; the webview records its own durations and correlates by frameId.
+struct FrameTiming {
+    id: String,
+    received: std::time::Instant,
+}
+
+impl FrameTiming {
+    fn received() -> Option<Self> {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        ENABLED.get_or_init(|| std::env::var("BRIDGE_STREAM_TIMING").as_deref() == Ok("1"))
+            .then(|| Self { id: Uuid::new_v4().to_string(), received: std::time::Instant::now() })
+    }
+    fn elapsed_ms(&self) -> f64 { self.received.elapsed().as_secs_f64() * 1000.0 }
+}
+
+#[cfg(test)]
 fn handle_agent_value(
+    core: &Arc<BridgeCore>, session_id: &str, current_turn: &Arc<Mutex<Option<String>>>, value: &serde_json::Value,
+) {
+    handle_agent_value_timed(core, session_id, current_turn, value, None);
+}
+
+fn handle_agent_value_timed(
     core: &Arc<BridgeCore>,
     session_id: &str,
     current_turn: &Arc<Mutex<Option<String>>>,
     value: &serde_json::Value,
+    frame_timing: Option<FrameTiming>,
 ) {
     // Codex account rate-limit frames (the reply to `account/rateLimits/read`
     // and its rolling push) are subscription telemetry, not conversation. Route
@@ -2117,6 +2496,10 @@ fn handle_agent_value(
     let mut child_left_waiting: Option<&'static str> = None;
     let mut pending_telemetry: Vec<store::TelemetrySpan> = Vec::new();
     let mut turn_completed = false;
+    // Set when a native boundary released the optimistic `working` mark a
+    // forwarded `/compact` wrote. The release's side effects run after the
+    // database guard is dropped, because draining takes the lock itself.
+    let mut native_compaction_released = false;
     let mut checkpoint_prompt_after_turn: Option<String> = None;
     let mut checkpoint_response_seen = false;
     let mut checkpoint_turn_handled = false;
@@ -2126,7 +2509,9 @@ fn handle_agent_value(
     let bridge_state_changed;
 
     {
+        let lock_requested = std::time::Instant::now();
         let db = state.db.lock().unwrap();
+        let db_wait_ms = lock_requested.elapsed().as_secs_f64() * 1000.0;
         // The reader's first gate check precedes database acquisition. A clean
         // shutdown may retire this launch while a frame is waiting on the DB;
         // recheck under the same lock as durable shutdown settlement so that
@@ -2148,6 +2533,14 @@ fn handle_agent_value(
         else {
             return;
         };
+        // Ignore buffered provider frames once a worker is terminal. They must
+        // not revive session status or cause another result/repair cycle.
+        if own_depth > 0 && db.query_row(
+            "SELECT lifecycle_state IN ('completed','cancelled') FROM worker_runtime WHERE session_id=?1",
+            params![session_id], |row| row.get::<_, bool>(0),
+        ).unwrap_or(false) {
+            return;
+        }
         // Direct chats are single-agent: no worker delegation and no auto-compaction.
         let is_direct = session_kind == "direct";
         let mut observed_turn_id = current_turn
@@ -2167,7 +2560,8 @@ fn handle_agent_value(
         // The exact composer text is persisted locally at submission time.
         // Provider echoes may include hidden user-role file context, so do not
         // duplicate them into the visible conversation.
-        let normalized = state
+        let normalization_started = std::time::Instant::now();
+        let mut normalized = state
             .adapter_registry
             .normalize(&adapter_id, value)
             .into_iter()
@@ -2175,16 +2569,42 @@ fn handle_agent_value(
                 event.role.as_deref() != Some("user") || !event.kind.starts_with("message.")
             })
             .collect::<Vec<_>>();
+        let normalization_ms = normalization_started.elapsed().as_secs_f64() * 1000.0;
+        // Interrupting a provider to honor a user's Stop click routinely makes
+        // it emit an "error" frame (an aborted turn, a broken pipe, a non-zero
+        // exit) that looks identical to a genuine crash. That is not a failure
+        // to report — the user asked for exactly this — so once `stop_session`
+        // has flagged the session, swallow the error frames it provoked rather
+        // than let them fail the turn or render an error card. Codex and
+        // Claude both pair that error with a failed "turn.completed" sibling
+        // in the same frame; left in, its handler still flips the session
+        // (and workspace) back to "ready" as though the turn finished
+        // normally, undoing the "stopped" status `stop_session` already
+        // recorded synchronously. Drop that sibling too, so nothing here
+        // fights the stop.
+        if normalized.iter().any(|event| event.kind == "error")
+            && state.user_stop_requested.lock().unwrap().remove(session_id)
+        {
+            normalized.retain(|event| {
+                event.kind != "error"
+                    && !(event.kind == "turn.completed"
+                        && matches!(event.status.as_deref(), Some("failed") | Some("error")))
+            });
+        }
         // A maintenance turn uses the same provider process as the user chat,
         // but none of its content is conversation. `pending` covers the normal
         // path; the durable session status keeps the boundary alive after a
         // timeout records `compaction.failed` and until `turn.completed` closes
         // the provider turn.
+        // A background pending is a detached model-switch summary's request,
+        // answered by the outgoing runtime on a different reader; it must not
+        // make this (incoming model's) reader treat its own turn as a
+        // checkpoint. Only a foreground pending counts here.
         let checkpoint_turn_active =
             compaction_controller::CompactionController::pending(&db, session_id)
                 .ok()
                 .flatten()
-                .is_some()
+                .is_some_and(|pending| !pending.background)
                 || db
                     .query_row(
                         "SELECT status='checkpointing' FROM sessions WHERE id=?1",
@@ -2204,6 +2624,11 @@ fn handle_agent_value(
             }
             match event.kind.as_str() {
                 "turn.started" => {
+                    // A genuinely new turn starting retires any stale
+                    // user-stop flag from a previous turn on this session, so
+                    // a real failure in the new turn is never mistaken for
+                    // fallout from a stop the user already got.
+                    state.user_stop_requested.lock().unwrap().remove(session_id);
                     let turn_id = event
                         .data
                         .pointer("/turn/id")
@@ -2321,6 +2746,18 @@ fn handle_agent_value(
                             params![workspace_id],
                         );
                     }
+                }
+                // The harness finished compacting its own window. When the
+                // only reason this session reads as busy is the optimistic
+                // mark a forwarded `/compact` wrote, this boundary releases
+                // it, so a harness that reports a boundary without turn
+                // lifecycle cannot leave the session claiming a turn forever
+                // (the #261 shape: queued input waiting on a boundary that
+                // never arrives). A boundary during a real turn carries an
+                // active turn id, and that turn's own completion owns the
+                // status instead.
+                agent::NATIVE_COMPACTION_KIND => {
+                    native_compaction_released |= release_native_compaction(&db, session_id);
                 }
                 "usage.updated" => {
                     let scope = workspace_id.as_deref().unwrap_or(session_id);
@@ -2522,16 +2959,14 @@ fn handle_agent_value(
             let pending_compaction =
                 compaction_controller::CompactionController::pending(&db, session_id)
                     .ok()
-                    .flatten();
+                    .flatten()
+                    .filter(|pending| !pending.background);
             let is_checkpoint_reply = checkpoint_turn_active
                 && normalized_event.kind == "message.completed"
                 && normalized_event.role.as_deref() == Some("assistant")
                 && pending_compaction.is_some();
-            let suppress_checkpoint_frame = checkpoint_turn_active
-                && !matches!(
-                    normalized_event.kind.as_str(),
-                    "turn.started" | "turn.completed" | "usage.updated" | "error"
-                );
+            let suppress_checkpoint_frame =
+                checkpoint_turn_active && !survives_checkpoint_turn(&normalized_event.kind);
             if suppress_checkpoint_frame {
                 if let Some(data) = normalized_event.data.as_object_mut() {
                     data.insert(
@@ -2551,6 +2986,7 @@ fn handle_agent_value(
                         checkpoint_prompt_after_turn = Some(prompt);
                     }
                     Ok(outcome @ (compaction_controller::CheckpointOutcome::Completed { .. }
+                    | compaction_controller::CheckpointOutcome::LateCheckpoint { .. }
                     | compaction_controller::CheckpointOutcome::Failed)) => {
                         recover_compaction = matches!(
                             outcome,
@@ -2703,7 +3139,8 @@ fn handle_agent_value(
             // forest is what a reconnecting client replays. This includes
             // streamed text/reasoning and late output after cancellation.
             if !suppress_checkpoint_frame {
-                if let Ok(event) = store::session_event(
+                let persistence_started = std::time::Instant::now();
+                if let Ok(mut event) = store::session_event(
                     &db,
                     session_id,
                     &normalized_event,
@@ -2726,6 +3163,17 @@ fn handle_agent_value(
                     // Publish while the database mutex is still held. This keeps
                     // durable live delivery in commit/sequence order: another
                     // thread cannot persist and publish sequence N+1 before N.
+                    if let Some(timing) = &frame_timing {
+                        // Attach after persistence: live diagnostics never enter the forest.
+                        event.provider_meta["bridgeStreamTiming"] = serde_json::json!({
+                            "frameId": timing.id,
+                            "eventId": format!("{}:{}:{}", timing.id, event.kind, event.item_id.as_deref().unwrap_or("")),
+                            "dbWaitMs": db_wait_ms,
+                            "normalizationMs": normalization_ms,
+                            "persistenceMs": persistence_started.elapsed().as_secs_f64() * 1000.0,
+                            "receiptToPublicationMs": timing.elapsed_ms(),
+                        });
+                    }
                     state.events.publish(CoreEvent::Agent(event));
                 }
             }
@@ -2740,8 +3188,10 @@ fn handle_agent_value(
             }
         }
         if turn_completed && checkpoint_prompt_after_turn.is_none() {
-            if let Ok(Some(pending)) =
-                compaction_controller::CompactionController::pending(&db, session_id)
+            if let Some(pending) = compaction_controller::CompactionController::pending(&db, session_id)
+                .ok()
+                .flatten()
+                .filter(|pending| !pending.background)
             {
                 if pending.attempt == 1 {
                     let repair_already_scheduled = db
@@ -2772,13 +3222,17 @@ fn handle_agent_value(
                             session_id,
                             &pending.requested_at,
                         );
-                        checkpoint_prompt_after_turn = Some(
-                            compaction_controller::CompactionController::checkpoint_prompt(
+                        // The evidence read is best-effort here: a repair that
+                        // cannot list what to account for is still worth
+                        // sending, and this path cannot fail a turn.
+                        checkpoint_prompt_after_turn =
+                            compaction_controller::CompactionController::repair_prompt(
+                                &db,
                                 session_id,
                                 &pending,
-                                Some("repair the invalid checkpoint response"),
-                            ),
-                        );
+                                "the previous reply could not be read as that object",
+                            )
+                            .ok();
                     }
                 } else if checkpoint_turn_active && !checkpoint_response_seen {
                     checkpoint_turn_handled = true;
@@ -2820,6 +3274,19 @@ fn handle_agent_value(
                 chrono::Utc::now(),
             );
         }
+    }
+
+    // A released compaction owes what a turn's end owes. The status change
+    // alone leaves the composer busy and leaves anything the user typed while
+    // the compaction ran sitting in the queue: that input was queued *because*
+    // the forward marked the session working, so the release is what has to let
+    // it through. `drain_queued_input` re-checks idleness itself, so this is a
+    // no-op if anything else has since claimed the session.
+    // `turn_completed` runs the same finish work further down, so a batch that
+    // carries both must not deliver two queued rows for one boundary.
+    if native_compaction_released && !turn_completed {
+        drain_queued_input(core, session_id);
+        state.events.publish(CoreEvent::StateChanged);
     }
 
     // Telemetry is deliberately flushed only after the correctness database
@@ -3247,11 +3714,197 @@ fn run_compaction_recovery(core: &Arc<BridgeCore>, session_id: &str) -> Result<(
     Ok(())
 }
 
-/// Model-switch compaction has its own safe fallback: the incoming model gets
-/// Bridge's mechanical projection. Starting generic reconstruction after that
-/// failure races the switch commit and can append old-provider state past the
-/// new model boundary. Other compaction reasons retain the established
-/// recovery path.
+/// Model-switch compaction has its own safe fallback owned by the background
+/// waiter ([`crate::switch_summary`]): on a failed summary it reconstructs a
+/// `before_downgrade` checkpoint itself, but only while the incoming model has
+/// not spoken. The live reader must therefore never start generic
+/// reconstruction for `BeforeDowngrade` — doing so from this (incoming model's)
+/// reader would race the switch commit and append old-provider state past the
+/// new model boundary. Other compaction reasons keep the established path.
+/// Whether a frame arriving during Bridge's own checkpoint turn is still the
+/// session's business rather than the maintenance turn's.
+///
+/// Everything else is suppressed before persistence, because a stored-then-
+/// hidden entry is still in the forest and the forest is what a reconnecting
+/// client replays. Turn lifecycle, usage and errors survive because the
+/// supervisor needs them. A native compaction survives because the harness
+/// shrinking its own window is a fact about the session, and a checkpoint turn
+/// is exactly when a full context is most likely to trip native autocompact:
+/// dropping it would discard the only evidence the provider's context shrank.
+fn survives_checkpoint_turn(kind: &str) -> bool {
+    matches!(
+        kind,
+        "turn.started"
+            | "turn.completed"
+            | "usage.updated"
+            | "error"
+            | agent::NATIVE_COMPACTION_KIND
+    )
+}
+
+#[cfg(test)]
+mod native_compaction_release_tests {
+    use super::{drain_queued_input, release_native_compaction, STARTED_IDLE_STATUS};
+    use crate::{runtime::BridgeCore, session_input};
+    use rusqlite::params;
+    use std::sync::Arc;
+
+    fn seeded(status: &str, active_turn: Option<&str>) -> (tempfile::TempDir, Arc<BridgeCore>) {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = Arc::new(BridgeCore::for_tests(scratch.path()));
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "INSERT INTO sessions(id,harness,label,status,metric_source,active_turn_id)
+                 VALUES('s','codex','Chat',?1,'reported',?2)",
+                params![status, active_turn],
+            )
+            .unwrap();
+        (scratch, core)
+    }
+
+    fn status(core: &BridgeCore) -> String {
+        core.db
+            .lock()
+            .unwrap()
+            .query_row("SELECT status FROM sessions WHERE id='s'", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    fn release(core: &BridgeCore) -> bool {
+        release_native_compaction(&core.db.lock().unwrap(), "s")
+    }
+
+    #[test]
+    fn a_boundary_releases_the_optimistic_mark_a_forwarded_compact_wrote() {
+        let (_scratch, core) = seeded("working", None);
+        assert!(release(&core), "the release fired, so it owes the finish work");
+        assert_eq!(
+            status(&core),
+            STARTED_IDLE_STATUS,
+            "a session left busy only by the forward must not stay busy forever"
+        );
+        assert!(
+            !release(&core),
+            "a second boundary has nothing left to release"
+        );
+    }
+
+    #[test]
+    fn a_boundary_during_a_real_turn_leaves_that_turn_alone() {
+        // Autocompact mid-turn. The turn owns the status, and its own
+        // completion is what ends it.
+        let (_scratch, core) = seeded("working", Some("turn-1"));
+        assert!(!release(&core));
+        assert_eq!(status(&core), "working");
+    }
+
+    #[test]
+    fn a_boundary_never_disturbs_a_session_that_is_not_working() {
+        for held in ["checkpointing", "waiting", "idle", "failed"] {
+            let (_scratch, core) = seeded(held, None);
+            assert!(!release(&core), "{held} is not the forward's mark to clear");
+            assert_eq!(status(&core), held);
+        }
+    }
+
+    #[test]
+    fn the_release_is_what_lets_queued_input_through() {
+        // The bug this closes: a forwarded `/compact` marks the session
+        // working, so a message typed while it runs is queued rather than
+        // started. Nothing else will release that queue, because no
+        // `turn.completed` is coming for a harness that reports a boundary
+        // without turn lifecycle.
+        let (_scratch, core) = seeded("working", None);
+        {
+            let db = core.db.lock().unwrap();
+            session_input::enqueue(&db, "s", "typed while compacting", "typed while compacting")
+                .unwrap();
+        }
+        assert!(
+            !drain_queued_input(&core, "s"),
+            "while the forward's mark stands, the queue is correctly held"
+        );
+        assert!(
+            session_input::next_queued(&core.db.lock().unwrap(), "s")
+                .unwrap()
+                .is_some(),
+            "and the row is still waiting"
+        );
+
+        assert!(release(&core));
+        // The drain declines only for want of a live adapter now, which is the
+        // documented #252 behaviour: the row stays unclaimed for the next
+        // user-initiated send rather than spawning a process here. What matters
+        // is that the session is no longer the thing blocking it.
+        let idle_for_delivery: bool = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT active_turn_id IS NULL AND status NOT IN ('working','checkpointing')
+                 FROM sessions WHERE id='s'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert!(
+            idle_for_delivery,
+            "after the release the session reads deliverable to the drain"
+        );
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_turn_visibility_tests {
+    use super::survives_checkpoint_turn;
+    use crate::agent;
+
+    #[test]
+    fn a_checkpoint_turn_hides_its_own_content_but_not_the_session_s_facts() {
+        for maintenance in [
+            "message.completed",
+            "message.delta",
+            "reasoning.delta",
+            "tool.started",
+            "tool.completed",
+        ] {
+            assert!(
+                !survives_checkpoint_turn(maintenance),
+                "{maintenance} during a checkpoint turn is protocol traffic, not conversation"
+            );
+        }
+        for fact in ["turn.started", "turn.completed", "usage.updated", "error"] {
+            assert!(survives_checkpoint_turn(fact), "the supervisor needs {fact}");
+        }
+        assert!(
+            survives_checkpoint_turn(agent::NATIVE_COMPACTION_KIND),
+            "a harness compacting during Bridge's checkpoint turn is the one \
+             moment the evidence matters most, and it must not be dropped"
+        );
+    }
+}
+
+/// Release the optimistic `working` mark a forwarded `/compact` wrote, if that
+/// mark is still the only reason this session reads as busy.
+///
+/// Returns whether it fired, because a release owes what a turn's end owes:
+/// the composer has to stop showing busy, and anything the user typed while the
+/// compaction ran has to be let through. That input was queued *because* the
+/// forward marked the session working, so nothing else will release it.
+///
+/// A boundary that lands during a real turn carries an active turn id and is
+/// left alone: that turn owns the status and its own completion ends it.
+fn release_native_compaction(db: &Connection, session_id: &str) -> bool {
+    db.execute(
+        "UPDATE sessions SET status=?2 WHERE id=?1
+         AND status='working' AND active_turn_id IS NULL",
+        params![session_id, STARTED_IDLE_STATUS],
+    )
+    .is_ok_and(|rows| rows > 0)
+}
+
 fn should_recover_compaction(
     pending: Option<&compaction_controller::PendingCompaction>,
 ) -> bool {
@@ -4148,19 +4801,13 @@ pub fn launch_worker_outcome(
             return WorkerLaunchOutcome::Failed;
         }
     };
-    let credential_context = state
-        .credential_broker
-        .instructions(&reservation.session_id);
-    let memory_packet = compiled_memory_packet(&state, &reservation.session_id);
     let compiled_prompt = match compile_worker_prompt(
         &prompt_stack,
         directive,
         &reservation.branch,
         &evidence,
         &configured_prompt,
-        &credential_context,
         None,
-        memory_packet.as_deref(),
     ) {
         Ok(prompt) => prompt,
         Err(error) => {
@@ -4490,7 +5137,9 @@ pub fn launch_worker_outcome(
     // `sessions.harness` holds and what `handoff::assess` compares against.
     let dispatch_id = launch_plan.adapter_id.clone();
 
-    let memory_packet = compiled_memory_packet(&state, &reservation.session_id);
+    // Past the warm-reuse return: a reused hot worker keeps the frame its own
+    // launch delivered, so only a cold launch builds a packet here.
+    let launch_context = launch_session_context(&state, &reservation.session_id);
     let compile_restored_prompt = |checkpoint: Option<String>| {
         let restoration_context = checkpoint.unwrap_or_else(|| "Bridge checkpoint-restoration context: prior typed worker result is stored in the session forest.".into());
         compile_worker_prompt(
@@ -4499,9 +5148,7 @@ pub fn launch_worker_outcome(
             &reservation.branch,
             &evidence,
             &configured_prompt,
-            &credential_context,
             Some(&restoration_context),
-            memory_packet.as_deref(),
         )
         .map(|prompt| prompt.instructions().to_owned())
     };
@@ -4544,6 +5191,7 @@ pub fn launch_worker_outcome(
                     &dispatch_id,
                     adapters::ResumeRequest {
                         provider_session_id,
+                        fork: false,
                         cwd: &reservation.path,
                         model: Some(model.as_str()),
                         effort: Some(&effort),
@@ -4776,6 +5424,13 @@ pub fn launch_worker_outcome(
         );
         return WorkerLaunchOutcome::Failed;
     }
+    // The objective delivered below is this worker's first turn, so that is
+    // what carries the frame.
+    state
+        .session_context
+        .lock()
+        .unwrap()
+        .arm(&session_id, &thread_id, launch_context);
 
     {
         let db = state.db.lock().unwrap();
@@ -4922,7 +5577,7 @@ pub fn launch_worker_outcome(
         current_turn,
         reader,
     );
-    if let Err(error) = deliver_worker_objective(&state.adapters, &session_id, &directive.objective)
+    if let Err(error) = deliver_worker_objective(&state, &session_id, &directive.objective)
     {
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
             runtime.stop(adapters::ShutdownReason::Failed);
@@ -5875,19 +6530,33 @@ pub fn record_actual_execution_best_effort(
     }
 }
 
+/// A worker's first turn is its objective, so that is where the launch's
+/// session-context frame rides — the same seam a chat's first user turn uses.
 pub fn deliver_worker_objective(
-    adapters: &Mutex<HashMap<String, Box<dyn adapters::AdapterRuntime>>>,
+    core: &Arc<BridgeCore>,
     session_id: &str,
     objective: &str,
 ) -> Result<(), BridgeError> {
-    adapters
+    let session_frame = core.session_context.lock().unwrap().pending(session_id);
+    let context = adapters::TurnContext {
+        session: session_frame.as_ref().map(session_context::SessionContext::text),
+        credentials: None,
+    };
+    core.adapters
         .lock()
         .unwrap()
         .get(session_id)
         .ok_or_else(|| {
             BridgeError::Invalid("Worker runtime disappeared before objective delivery".into())
-        })?
-        .send_turn(objective)
+        })
+        .and_then(|runtime| deliver_sanitized_turn(runtime.as_ref(), objective, context))?;
+    if let Some(frame) = &session_frame {
+        core.session_context
+            .lock()
+            .unwrap()
+            .record_delivered(session_id, frame.digest());
+    }
+    Ok(())
 }
 
 fn launch_worker(
@@ -6086,6 +6755,15 @@ fn forward_turn_result(core: &Arc<BridgeCore>, child_session_id: &str) {
     if parent.is_none() {
         return;
     }
+    // A queued terminal frame must never reopen a reported worker's budget.
+    let reported = state.db.lock().unwrap().query_row(
+        "SELECT result_status='reported' FROM worker_runtime WHERE session_id=?1",
+        params![child_session_id], |row| row.get::<_, bool>(0),
+    ).unwrap_or(false);
+    if reported {
+        stop_terminal_worker_adapter(core, child_session_id);
+        return;
+    }
     let raw_output = {
         let db = state.db.lock().unwrap();
         latest_worker_output(&db, child_session_id)
@@ -6143,18 +6821,37 @@ fn forward_turn_result(core: &Arc<BridgeCore>, child_session_id: &str) {
         }
     }
     report_to_parent(core, child_session_id, &result);
+    stop_terminal_worker_adapter(core, child_session_id);
+}
+
+fn stop_terminal_worker_adapter(state: &Arc<BridgeCore>, child_session_id: &str) {
     let terminal = state
         .db
         .lock()
         .unwrap()
         .query_row(
-            "SELECT lifecycle_state IN ('completed','cancelled') FROM worker_runtime WHERE session_id=?1",
+            "SELECT lifecycle_state IN ('completed','cancelled','failed') FROM worker_runtime WHERE session_id=?1",
             params![child_session_id],
             |row| row.get::<_, bool>(0),
         )
         .unwrap_or(false);
     if terminal {
-        deactivate_reader_launch(&state, child_session_id);
+        {
+            let db = state.db.lock().unwrap();
+            if store::worker_runtime(&db, child_session_id)
+                .ok()
+                .flatten()
+                .is_some_and(|runtime| runtime.lifecycle_state == "failed")
+            {
+                let _ = session_supervisor::SessionSupervisor::transition(
+                    &db,
+                    child_session_id,
+                    worker_lifecycle::WorkerLifecycleState::Completed,
+                    Some("terminal_failure_cleanup"),
+                );
+            }
+        }
+        deactivate_reader_launch(state, child_session_id);
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(child_session_id) {
             runtime.stop(adapters::ShutdownReason::Completed);
         }
@@ -6172,7 +6869,64 @@ pub fn process_worker_result_output(
     raw_output: &str,
     send_same_session_repair: impl FnOnce(&str) -> bool,
 ) -> Result<Option<delegation::WorkerResult>, BridgeError> {
-    match tracker.process(child_session_id, raw_output, send_same_session_repair) {
+    let runtime = store::worker_runtime(db, child_session_id)?;
+    let Some(runtime) = runtime else {
+        return Ok(None);
+    };
+    if runtime.result_status == "reported" {
+        return Ok(None);
+    }
+    if runtime.lifecycle_state == "failed" {
+        let context: Option<String> = db
+            .query_row(
+                "SELECT json_extract(payload,'$.text') FROM session_entries
+             WHERE session_id=?1 AND kind='error' ORDER BY sequence DESC LIMIT 1",
+                params![child_session_id],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+        // The session label, not the raw id: this result is what the parent and
+        // the UI read, and a failed worker may still have a live adapter, so it
+        // must not claim the process exited either.
+        let label: String = db
+            .query_row(
+                "SELECT label FROM sessions WHERE id=?1",
+                params![child_session_id],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| child_session_id.to_owned());
+        return Ok(Some(synthetic_failure_result(
+            &label,
+            context.as_deref(),
+            SyntheticFailure::Failed,
+        )));
+    }
+    if runtime.lifecycle_state != "working" {
+        return Ok(None);
+    }
+    // Claim before sending. A crash, fresh tracker, failed delivery, or duplicate
+    // output must never refund the worker's single formatting-repair attempt.
+    let mut claim_error = None;
+    let action = tracker.process(child_session_id, raw_output, |prompt| {
+        match db.execute(
+            "UPDATE worker_runtime SET result_repair_count=result_repair_count+1,updated_at=?2
+             WHERE session_id=?1 AND lifecycle_state='working' AND result_status='pending'
+               AND result_repair_count=0",
+            params![child_session_id, Utc::now().to_rfc3339()],
+        ) {
+            Ok(1) => send_same_session_repair(prompt),
+            Ok(_) => false,
+            Err(error) => {
+                claim_error = Some(error);
+                false
+            }
+        }
+    });
+    if let Some(error) = claim_error {
+        return Err(error.into());
+    }
+    match action {
         delegation::WorkerOutputAction::Structured(result) => Ok(Some(result)),
         delegation::WorkerOutputAction::AwaitingRepair { reason } => {
             store::event(
@@ -6365,7 +7119,9 @@ fn settle_worker_after_result(
     if current.as_deref() == Some("failed")
         && matches!(
             result.status,
-            delegation::WorkerResultStatus::Failed | delegation::WorkerResultStatus::Blocked
+            delegation::WorkerResultStatus::Failed
+                | delegation::WorkerResultStatus::Blocked
+                | delegation::WorkerResultStatus::ProtocolInvalid
         )
     {
         session_supervisor::SessionSupervisor::transition(
@@ -6396,6 +7152,63 @@ fn settle_worker_after_result(
             .unwrap()
             .contains_key(child_session_id);
         worker_retry::decide(result, retry_count, hot, spent)
+    };
+    // A quota/rate-limit failure will not clear by asking the same process to
+    // try again seconds later — it will just hit the same wall a second time,
+    // at full price. Mark the harness exhausted for this workspace instead,
+    // so the *next* delegation (the parent re-delegating this objective)
+    // routes around it via the hard supply-gap check in `learning_router`.
+    //
+    // This has to run off `classify` directly, independent of what `decide`
+    // above concluded: a quota signal on a worker that has already used its
+    // retry, lost its hot process, or spent its objective budget still means
+    // the harness is out of quota right now, and still has to be marked —
+    // `decide` returning `Decline` for one of those other reasons must not
+    // suppress it, or the exhaustion this whole path exists to record would
+    // simply never get written.
+    let quota_signal = matches!(
+        result.status,
+        delegation::WorkerResultStatus::Failed | delegation::WorkerResultStatus::ProtocolInvalid
+    )
+    .then(|| worker_retry::classify(result))
+    .and_then(|class| match class {
+        worker_retry::FailureClass::Transient { signal } if worker_retry::is_quota_signal(&signal) => {
+            Some(signal)
+        }
+        _ => None,
+    });
+    if let Some(signal) = &quota_signal {
+        let db = state.db.lock().unwrap();
+        if let Some((workspace_id, harness)) = db
+            .query_row(
+                "SELECT workspace_id,harness FROM sessions WHERE id=?1",
+                params![child_session_id],
+                |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+            )
+            .ok()
+            .and_then(|(workspace_id, harness)| workspace_id.map(|w| (w, harness)))
+        {
+            let _ = learning_router::mark_harness_quota_exhausted(
+                &db,
+                &workspace_id,
+                &harness,
+                signal,
+                child_session_id,
+            );
+        }
+    }
+    // Retrying the same harness in place is only ever declined here when it
+    // was actually about to be retried; a decline `decide` already reached
+    // for another reason keeps its own reason.
+    let decision = match decision {
+        worker_retry::RetryDecision::Retry { signal } if quota_signal.is_some() => {
+            worker_retry::RetryDecision::Decline {
+                reason: format!(
+                    "provider quota exhausted (signal: {signal}); retrying the same harness immediately would repeat the failure, so it was marked unavailable for new delegations in this workspace instead"
+                ),
+            }
+        }
+        other => other,
     };
     if let worker_retry::RetryDecision::Retry { signal } = &decision {
         {
@@ -6527,7 +7340,9 @@ fn settle_worker_after_result(
     )?;
     if matches!(
         result.status,
-        delegation::WorkerResultStatus::Failed | delegation::WorkerResultStatus::Blocked
+        delegation::WorkerResultStatus::Failed
+            | delegation::WorkerResultStatus::Blocked
+            | delegation::WorkerResultStatus::ProtocolInvalid
     ) {
         session_supervisor::SessionSupervisor::transition(
             &state.db.lock().unwrap(),
@@ -7055,7 +7870,35 @@ fn notify_parent_on_worker_exit(
 /// full tail, so the parent (which reads the typed result as evidence) and
 /// the UI both see the actual cause, never just "ended without reporting".
 fn synthetic_exit_result(label: &str, failure_context: Option<&str>) -> delegation::WorkerResult {
-    let mut risks = vec!["Worker process exited before a typed result was produced".to_owned()];
+    synthetic_failure_result(label, failure_context, SyntheticFailure::Exited)
+}
+
+/// How a worker stopped, which is all that separates the two synthesized
+/// failures. A worker whose lifecycle went `failed` — a provider usage limit,
+/// say — may still have a running adapter, so it must not be reported as an
+/// exited process.
+#[derive(Clone, Copy)]
+enum SyntheticFailure {
+    Exited,
+    Failed,
+}
+
+fn synthetic_failure_result(
+    label: &str,
+    failure_context: Option<&str>,
+    kind: SyntheticFailure,
+) -> delegation::WorkerResult {
+    let (risk, verb) = match kind {
+        SyntheticFailure::Exited => (
+            "Worker process exited before a typed result was produced",
+            "ended",
+        ),
+        SyntheticFailure::Failed => (
+            "Worker failed before a typed result was produced",
+            "failed",
+        ),
+    };
+    let mut risks = vec![risk.to_owned()];
     let summary = match failure_context {
         Some(context) => {
             risks.push(context.to_owned());
@@ -7065,9 +7908,9 @@ fn synthetic_exit_result(label: &str, failure_context: Option<&str>) -> delegati
                 .find(|line| !line.trim().is_empty())
                 .unwrap_or("unknown error")
                 .trim();
-            format!("{label} ended without reporting a result — {last_line}")
+            format!("{label} {verb} without reporting a result — {last_line}")
         }
-        None => format!("{label} ended without reporting a result"),
+        None => format!("{label} {verb} without reporting a result"),
     };
     delegation::WorkerResult {
         schema_version: delegation::SCHEMA_VERSION,
@@ -7634,6 +8477,21 @@ fn maintain_worker_pool(core: &Arc<BridgeCore>) {
         let _ = worker_adoption::release_terminal_worktrees(&db);
     }
 
+    // A reported failure is terminal. Unreported failures may be between the
+    // Failed -> Resuming retry transitions, so only reap those after silence.
+    let live_ids: Vec<String> = state.adapters.lock().unwrap().keys().cloned().collect();
+    for id in live_ids {
+        let status: Option<String> = state.db.lock().unwrap().query_row(
+            "SELECT result_status FROM worker_runtime WHERE session_id=?1 AND lifecycle_state='failed'",
+            params![id], |row| row.get(0),
+        ).ok();
+        if status.as_deref() == Some("reported")
+            || (status.is_some() && worker_silence_secs(&state, &id)
+                .is_some_and(|silent| silent >= WORKER_STALL_TIMEOUT_SECONDS)) {
+            forward_turn_result(core, &id);
+        }
+    }
+
     // Stall watchdog. Detection is driven off the in-memory heartbeat map, so
     // the common case (no silent sessions) touches neither the adapter map nor
     // the DB. Only sessions already silent past the timeout are confirmed — via
@@ -7850,11 +8708,12 @@ pub fn prepare_turn(
 pub fn deliver_sanitized_turn(
     runtime: &dyn adapters::AdapterRuntime,
     text: &str,
-    application_context: Option<&str>,
+    context: adapters::TurnContext<'_>,
 ) -> Result<(), BridgeError> {
-    match application_context {
-        Some(context) => runtime.send_turn_with_context(text, context),
-        None => runtime.send_turn(text),
+    if context.is_empty() {
+        runtime.send_turn(text)
+    } else {
+        runtime.send_turn_with_context(text, context)
     }
 }
 
@@ -7950,7 +8809,8 @@ struct PreparedInput {
 /// and the one that got skipped would be the one that leaked a secret.
 ///
 /// `allow_session_control` is false while a turn is running. `/clear` drops the
-/// provider process, `/compact` starts a checkpoint turn, `/usage` re-reads the
+/// provider process, `/compact` reaches the harness's own compaction (or starts
+/// a Bridge checkpoint turn where the harness has none), `/usage` re-reads the
 /// account: none of those are safe underneath a live turn, so they are refused
 /// with a reason rather than quietly reinterpreted as prose.
 fn prepare_input(
@@ -8067,13 +8927,90 @@ fn prepare_input(
             emit_local_assistant(core, &session_id, &session_harness, &text)?;
             return Ok(InputPreparation::Handled { interceptions });
         }
-        slash::SlashDispatch::Compact { .. } => {
+        slash::SlashDispatch::Compact { focus } => {
+            // The harness owns its live context window, so `/compact` is its
+            // command wherever it has one. Only a harness with no compaction
+            // of its own falls back to a Bridge checkpoint, which summarises
+            // history for a later cold start without freeing a single
+            // provider token. See `docs/compaction-and-resume.md`.
+            //
+            // The static half of the capability is asked here, off the
+            // adapters mutex, because answering it can cost a process launch:
+            // Codex reads its app-server schema, and doing that while holding
+            // the mutex would stall every other session's adapter I/O behind
+            // one chat's first `/compact`.
+            let harness_compacts = state
+                .adapter_registry
+                .supports_native_compaction(&session_harness);
+            let requested = if harness_compacts {
+                let adapters = state.adapters.lock().unwrap();
+                match adapters.get(session_id) {
+                    // The runtime refines the static answer with what only a
+                    // live process knows, then serves the request under the
+                    // same acquisition so nothing can slip in between.
+                    Some(runtime) => {
+                        let support = runtime.native_compaction();
+                        if support.is_supported() {
+                            runtime.compact_native(
+                                focus.as_deref().filter(|_| support.accepts_focus()),
+                            )?;
+                        }
+                        support
+                    }
+                    // The process went away between the two questions. Falling
+                    // through to the Bridge checkpoint is the honest answer:
+                    // it reports the missing process rather than inventing a
+                    // compaction that never happened.
+                    None => adapters::NativeCompaction::Unsupported,
+                }
+            } else {
+                adapters::NativeCompaction::Unsupported
+            };
+            if requested.is_supported() {
+                // A forwarded compaction is a turn the provider is now
+                // running: Claude reads the slash line off its input stream,
+                // Codex and OpenCode each run theirs as a turn of their own.
+                // Marking it before returning closes the window between this
+                // dispatch and the provider's `turn.started`, which is exactly
+                // where a message typed immediately after would otherwise be
+                // routed as a new turn and collide with the compaction. The
+                // provider's own `turn.completed` clears it, as it does for
+                // any other turn. See `turn_is_active`.
+                let _ = state.db.lock().unwrap().execute(
+                    "UPDATE sessions SET status='working' WHERE id=?1",
+                    params![session_id],
+                );
+                let focus_ignored = focus
+                    .as_deref()
+                    .map(str::trim)
+                    .is_some_and(|value| !value.is_empty())
+                    && !requested.accepts_focus();
+                if focus_ignored {
+                    // Naming what was ignored, rather than letting the reader
+                    // believe a focus they typed was applied.
+                    emit_local_assistant(
+                        core,
+                        session_id,
+                        &session_harness,
+                        &format!(
+                            "{} compacts the whole conversation, so the focus was not applied.",
+                            crate::model::Harness::from_stored(&session_harness).label()
+                        ),
+                    )?;
+                }
+                core.events.publish(CoreEvent::StateChanged);
+                return Ok(InputPreparation::Handled { interceptions });
+            }
             let prompt = state.begin_manual_compaction(session_id)?;
             send_internal_checkpoint_turn(core, session_id, &prompt)?;
             return Ok(InputPreparation::Handled { interceptions });
         }
         slash::SlashDispatch::Clear => {
             state.credential_broker.clear_session(session_id);
+            state.browser_bridge.revoke_session(session_id);
+            // The conversation that held the frame is gone, so the claim that
+            // it was delivered goes with it.
+            state.session_context.lock().unwrap().forget(session_id);
             if let Some(mut runtime) = state.adapters.lock().unwrap().remove(session_id) {
                 runtime.stop(adapters::ShutdownReason::UserStopped);
             }
@@ -8105,6 +9042,24 @@ fn prepare_input(
                 "Cleared this chat’s provider session. Send a message to start fresh.",
             )?;
             core.events.publish(CoreEvent::StateChanged);
+            return Ok(InputPreparation::Handled { interceptions });
+        }
+        slash::SlashDispatch::SideChat { command, .. } => {
+            // The composer opens the side chat before anything is submitted, so
+            // reaching this arm means the command came from somewhere a side
+            // chat cannot be opened from — inside one, or from a client that
+            // skipped the composer. Say so instead of forwarding `/btw` to the
+            // provider as literal text.
+            emit_local_assistant(
+                core,
+                session_id,
+                &session_harness,
+                &format!(
+                    "`/{command}` opens a side chat beside a conversation, so it cannot run inside this one. \
+                     Send it from a chat composer in Bridge: the side chat reads that conversation's context \
+                     and never writes to it."
+                ),
+            )?;
             return Ok(InputPreparation::Handled { interceptions });
         }
         slash::SlashDispatch::Unsupported { name, harness } => {
@@ -8184,6 +9139,10 @@ fn deliver_prepared_input(
     delivery: DeliveryMode,
 ) -> Result<(), BridgeError> {
     let state = core;
+    // Read the owed frame and let the ledger lock go before the adapter map is
+    // taken. Both delivery seams acquire in this order — ledger, then adapters
+    // — and `arm` never reaches for the adapter map, so no pair can invert.
+    let session_frame = state.session_context.lock().unwrap().pending(session_id);
     let adapters = state.adapters.lock().unwrap();
     let runtime = adapters
         .get(session_id)
@@ -8191,6 +9150,15 @@ fn deliver_prepared_input(
     let credential_context = state
         .credential_broker
         .turn_context(session_id, &prepared.outbound);
+    let browser_context = state.browser_bridge.capability_context(session_id, runtime.process_id());
+    let application_context = match (credential_context, browser_context) {
+        (Some(credentials), Some(browser)) => Some(format!("{credentials}\n\n{browser}")),
+        (credentials, browser) => credentials.or(browser),
+    };
+    let turn_context = adapters::TurnContext {
+        session: session_frame.as_ref().map(session_context::SessionContext::text),
+        credentials: application_context.as_deref(),
+    };
     let has_images = !prepared.images.is_empty();
     if has_images && !runtime.supports_images() {
         // Refuse before touching the provider: a capability gap is a routing
@@ -8209,9 +9177,9 @@ fn deliver_prepared_input(
         } else {
             prepared.provider_text.as_str()
         };
-        runtime.send_turn_with_images(provider_text, credential_context.as_deref(), &prepared.images)
+        runtime.send_turn_with_images(provider_text, turn_context, &prepared.images)
     } else {
-        deliver_sanitized_turn(runtime.as_ref(), &prepared.provider_text, credential_context.as_deref())
+        deliver_sanitized_turn(runtime.as_ref(), &prepared.provider_text, turn_context)
     };
     if let Err(error) = delivered {
         drop(adapters);
@@ -8219,6 +9187,16 @@ fn deliver_prepared_input(
         return Err(error);
     }
     drop(adapters);
+    // Only now, and only for the exact frame this turn carried: a frame Bridge
+    // failed to hand over is still owed, and a newer one armed while this send
+    // was in flight is not this send's to acknowledge.
+    if let Some(frame) = &session_frame {
+        state
+            .session_context
+            .lock()
+            .unwrap()
+            .record_delivered(session_id, frame.digest());
+    }
     let db = state.db.lock().unwrap();
     // Claude stream-json does not reliably echo the submitted user turn; persist
     // it locally. A queued follow-up was already persisted at submission time.
@@ -9376,6 +10354,7 @@ pub fn stop_session(
 ) -> Result<BridgeState, BridgeError> {
     let state = core;
     void_orphaned_questions(&state.db.lock().unwrap(), &session_id, "session_stopped");
+    state.browser_bridge.revoke_session(&session_id);
     let is_worker = state.db.lock().unwrap().query_row(
         "SELECT parent_session_id IS NOT NULL FROM sessions WHERE id=?1",
         params![session_id],
@@ -9383,6 +10362,15 @@ pub fn stop_session(
     )?;
     if is_worker {
         if let Some(runtime) = state.adapters.lock().unwrap().get(&session_id) {
+            // Only a session with a live adapter to interrupt can have that
+            // interrupt provoke a stop-induced error frame, so only that case
+            // needs the marker — an adapterless stop leaves nothing for a
+            // later resume's genuine error to be mistaken for.
+            state
+                .user_stop_requested
+                .lock()
+                .unwrap()
+                .insert(session_id.clone());
             let _ = runtime.interrupt();
         }
         let result = delegation::WorkerResult {
@@ -9487,6 +10475,11 @@ pub fn stop_session(
     // so the blocking abort request — up to ~10s for OpenCode — never holds the
     // adapters mutex.
     if let Some(mut runtime) = state.adapters.lock().unwrap().remove(&session_id) {
+        state
+            .user_stop_requested
+            .lock()
+            .unwrap()
+            .insert(session_id.clone());
         let _ = runtime.interrupt();
         runtime.stop(adapters::ShutdownReason::UserStopped);
     }
@@ -9544,6 +10537,348 @@ fn record_shutdown_reason(
         session_id,
         reason.as_str(),
     )
+}
+
+#[cfg(test)]
+mod compact_routing_tests {
+    use super::prepare_input;
+    use crate::{
+        adapters::{
+            AdapterRegistry, AdapterRuntime, HarnessAdapter, NativeCompaction, ResumeRequest,
+            ShutdownReason, StartRequest, StartedAdapter,
+        },
+        model::{AdapterDescriptor, ModelCatalogDiagnostics},
+        runtime::BridgeCore,
+        BridgeError,
+    };
+    use serde_json::Value;
+    use std::any::Any;
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc, Mutex,
+    };
+
+    /// The static half of the capability, which the routing asks through the
+    /// registry rather than through the runtime so a schema probe cannot run
+    /// while the adapters mutex is held.
+    struct CompactingHarness {
+        supports_compaction: bool,
+    }
+
+    impl HarnessAdapter for CompactingHarness {
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+        fn descriptor(&self) -> AdapterDescriptor {
+            AdapterDescriptor {
+                sandbox_modes: crate::model::SandboxMode::ALL.to_vec(),
+                id: "codex".into(),
+                label: "Codex".into(),
+                available: true,
+                auth_state: crate::model::AuthState::Unknown,
+                version: Some("1".into()),
+                capabilities: vec!["messages".into()],
+                unavailable_reason: None,
+                models: vec![],
+                default_model: None,
+                model_catalog: ModelCatalogDiagnostics::curated(),
+            }
+        }
+        fn start(&self, _request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+            Err(BridgeError::Invalid("not launched in this test".into()))
+        }
+        fn resume(&self, _request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+            Err(BridgeError::Invalid("not resumed in this test".into()))
+        }
+        fn supports_native_resume(&self) -> bool {
+            false
+        }
+        fn supports_native_compaction(&self) -> bool {
+            self.supports_compaction
+        }
+        fn normalize(&self, _value: &Value) -> Vec<crate::agent::NormalizedEvent> {
+            vec![]
+        }
+    }
+
+    /// A runtime that records what `/compact` reached it as.
+    struct CompactingRuntime {
+        support: NativeCompaction,
+        calls: Arc<Mutex<Vec<Option<String>>>>,
+        turns: Arc<AtomicUsize>,
+    }
+
+    impl AdapterRuntime for CompactingRuntime {
+        fn process_id(&self) -> u32 {
+            0
+        }
+        fn provider_session_id(&self) -> &str {
+            "provider-1"
+        }
+        fn current_turn(&self) -> Arc<Mutex<Option<String>>> {
+            Arc::new(Mutex::new(None))
+        }
+        fn send_turn(&self, _text: &str) -> Result<(), BridgeError> {
+            self.turns.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+        fn interrupt(&self) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn respond(&self, _request_id: Value, _decision: &str) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn native_compaction(&self) -> NativeCompaction {
+            self.support
+        }
+        fn compact_native(&self, focus: Option<&str>) -> Result<(), BridgeError> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(focus.map(str::to_owned));
+            Ok(())
+        }
+        fn stop(&mut self, _reason: ShutdownReason) {}
+    }
+
+    /// One idle session with enough history that a Bridge checkpoint would be
+    /// allowed, so a test that sees no `compaction.requested` row is seeing a
+    /// forwarded compaction rather than a suppressed one.
+    fn seeded(support: NativeCompaction) -> (
+        tempfile::TempDir,
+        Arc<BridgeCore>,
+        Arc<Mutex<Vec<Option<String>>>>,
+    ) {
+        seeded_with_harness(support, true)
+    }
+
+    fn seeded_with_harness(
+        support: NativeCompaction,
+        harness_compacts: bool,
+    ) -> (
+        tempfile::TempDir,
+        Arc<BridgeCore>,
+        Arc<Mutex<Vec<Option<String>>>>,
+    ) {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut core = BridgeCore::for_tests(scratch.path());
+        let mut registry = AdapterRegistry::empty();
+        registry
+            .register(Box::new(CompactingHarness {
+                supports_compaction: harness_compacts,
+            }))
+            .unwrap();
+        core.adapter_registry = Arc::new(registry);
+        let core = Arc::new(core);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,provider_session_id)
+                 VALUES('s',NULL,'codex','Chat','idle','reported','direct','provider-1')",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at)
+                 VALUES('e1','s',NULL,1,'assistant.message','{\"text\":\"real work happened here\"}','now')",
+                [],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO session_heads(session_id,active_entry_id,restoration_mode,updated_at)
+                 VALUES('s','e1','fresh','now')",
+                [],
+            )
+            .unwrap();
+        }
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        core.adapters.lock().unwrap().insert(
+            "s".into(),
+            Box::new(CompactingRuntime {
+                support,
+                calls: calls.clone(),
+                turns: Arc::new(AtomicUsize::new(0)),
+            }),
+        );
+        (scratch, core, calls)
+    }
+
+    fn bridge_requests(core: &Arc<BridgeCore>) -> i64 {
+        core.db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT COUNT(*) FROM session_entries WHERE session_id='s' AND kind='compaction.requested'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    fn local_replies(core: &Arc<BridgeCore>) -> Vec<String> {
+        let db = core.db.lock().unwrap();
+        let mut statement = db
+            .prepare(
+                "SELECT json_extract(payload,'$.text') FROM session_entries
+                 WHERE session_id='s' AND kind='assistant.message' AND sequence>1 ORDER BY sequence",
+            )
+            .unwrap();
+        let rows = statement
+            .query_map([], |row| row.get::<_, Option<String>>(0))
+            .unwrap()
+            .filter_map(|value| value.ok().flatten())
+            .collect();
+        rows
+    }
+
+    #[test]
+    fn a_focus_accepting_harness_gets_the_focus_and_bridge_stays_out_of_it() {
+        let (_scratch, core, calls) = seeded(NativeCompaction::WithFocus);
+        prepare_input(&core, "s", "/compact the auth refactor", true).unwrap();
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            [Some("the auth refactor".to_owned())]
+        );
+        assert_eq!(
+            bridge_requests(&core),
+            0,
+            "a forwarded compaction is the harness's work, so Bridge writes no boundary of its own"
+        );
+        assert!(
+            local_replies(&core).is_empty(),
+            "nothing to explain when the focus was honoured"
+        );
+    }
+
+    #[test]
+    fn a_whole_conversation_harness_says_the_focus_was_not_applied() {
+        let (_scratch, core, calls) = seeded(NativeCompaction::WholeConversation);
+        prepare_input(&core, "s", "/compact the auth refactor", true).unwrap();
+        assert_eq!(
+            calls.lock().unwrap().as_slice(),
+            [None],
+            "a focus is never handed to a harness that cannot honour it"
+        );
+        assert_eq!(bridge_requests(&core), 0);
+        let replies = local_replies(&core);
+        assert_eq!(replies.len(), 1, "{replies:?}");
+        assert!(
+            replies[0].contains("Codex") && replies[0].contains("focus was not applied"),
+            "the reader is told which harness ignored the focus: {}",
+            replies[0]
+        );
+        assert!(!replies[0].contains('\u{2014}'), "no em dashes in UI copy");
+    }
+
+    #[test]
+    fn a_bare_compact_on_a_whole_conversation_harness_explains_nothing() {
+        let (_scratch, core, calls) = seeded(NativeCompaction::WholeConversation);
+        prepare_input(&core, "s", "/compact", true).unwrap();
+        assert_eq!(calls.lock().unwrap().as_slice(), [None]);
+        assert_eq!(bridge_requests(&core), 0);
+        assert!(
+            local_replies(&core).is_empty(),
+            "there is nothing to report when no focus was asked for"
+        );
+    }
+
+    #[test]
+    fn a_harness_with_no_compaction_command_falls_back_to_a_bridge_checkpoint() {
+        let (_scratch, core, calls) = seeded(NativeCompaction::Unsupported);
+        prepare_input(&core, "s", "/compact", true).unwrap();
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "an unsupported harness is never asked"
+        );
+        assert_eq!(
+            bridge_requests(&core),
+            1,
+            "the checkpoint that already existed is the fallback"
+        );
+    }
+
+    fn session_status(core: &Arc<BridgeCore>) -> String {
+        core.db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT status FROM sessions WHERE id='s'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    #[test]
+    fn a_forwarded_compaction_marks_the_turn_it_started() {
+        // The provider is now running a turn, and its `turn.started` is
+        // asynchronous. Until this was marked, a message typed in that window
+        // read the session as idle and was routed as a new turn, which lands
+        // on Claude and Codex either as a rejection or as a turn against
+        // half-compacted context.
+        for support in [NativeCompaction::WithFocus, NativeCompaction::WholeConversation] {
+            let (_scratch, core, _calls) = seeded(support);
+            assert_eq!(session_status(&core), "idle", "the fixture starts idle");
+            prepare_input(&core, "s", "/compact", true).unwrap();
+            assert_eq!(
+                session_status(&core),
+                "working",
+                "{support:?} must not leave the session claiming to be idle"
+            );
+            assert!(
+                super::turn_is_active(&core, "s").unwrap(),
+                "and the input router must see a turn in flight"
+            );
+        }
+    }
+
+    #[test]
+    fn a_forwarded_compaction_is_not_a_bridge_maintenance_turn() {
+        // `checkpointing` is the marker that suppresses content frames as
+        // protocol traffic. A native compaction is the harness's own work, so
+        // claiming that status would hide whatever it says while compacting.
+        let (_scratch, core, _calls) = seeded(NativeCompaction::WholeConversation);
+        prepare_input(&core, "s", "/compact", true).unwrap();
+        assert_ne!(session_status(&core), "checkpointing");
+    }
+
+    #[test]
+    fn a_harness_without_the_command_is_never_asked_through_the_runtime() {
+        // The static half of the capability is read off the registry, before
+        // the adapters mutex is taken, because answering it costs Codex a
+        // process launch. A harness that answers no there must not reach the
+        // runtime at all.
+        let (_scratch, core, calls) =
+            seeded_with_harness(NativeCompaction::WithFocus, false);
+        prepare_input(&core, "s", "/compact the auth refactor", true).unwrap();
+        assert!(
+            calls.lock().unwrap().is_empty(),
+            "the runtime was consulted for a harness with no compaction command"
+        );
+        assert_eq!(
+            bridge_requests(&core),
+            1,
+            "and the request became the Bridge checkpoint instead"
+        );
+    }
+
+    #[test]
+    fn a_session_with_no_runtime_takes_the_bridge_path_it_always_did() {
+        // Nothing to forward to, so the request routes to the Bridge
+        // checkpoint, which then reports that there is no process to ask.
+        // Recorded here because it is unchanged by the ownership split: a
+        // cold session's `/compact` failed this way before it too.
+        let (_scratch, core, calls) = seeded(NativeCompaction::WithFocus);
+        core.adapters.lock().unwrap().remove("s");
+        let Err(error) = prepare_input(&core, "s", "/compact", true) else {
+            panic!("a cold session has no process to compact");
+        };
+        assert!(
+            error.to_string().contains("not running"),
+            "the reason names the missing process: {error}"
+        );
+        assert!(calls.lock().unwrap().is_empty());
+    }
 }
 
 #[cfg(test)]
@@ -10127,6 +11462,12 @@ mod submit_input_tests {
         /// trait default so the refusal path stays reachable in tests.
         images: bool,
         sent: Arc<Mutex<Vec<String>>>,
+        /// The trusted context values each turn carried, in delivery order —
+        /// one entry per turn, empty for a turn that carried none. Recorded
+        /// rather than discarded because "the frame reached the provider
+        /// beside the message, not inside the system prompt" is the whole
+        /// assertion for #528.
+        contexts: Arc<Mutex<Vec<Vec<String>>>>,
         /// Image blocks the provider actually received, as
         /// `[{mediaType, base64Data}]` — recorded rather than discarded so a
         /// test can assert the exact payload.
@@ -10150,6 +11491,7 @@ mod submit_input_tests {
 
     pub(super) struct FakeHandles {
         pub(super) sent: Arc<Mutex<Vec<String>>>,
+        pub(super) contexts: Arc<Mutex<Vec<Vec<String>>>>,
         pub(super) sent_images: Arc<Mutex<Vec<serde_json::Value>>>,
         pub(super) responded: Arc<Mutex<Vec<(serde_json::Value, String)>>>,
         pub(super) answered: Arc<Mutex<Vec<(serde_json::Value, serde_json::Value)>>>,
@@ -10172,6 +11514,7 @@ mod submit_input_tests {
 
         fn build(steering: bool, images: bool) -> (Box<dyn adapters::AdapterRuntime>, FakeHandles) {
             let sent = Arc::new(Mutex::new(Vec::new()));
+            let contexts = Arc::new(Mutex::new(Vec::new()));
             let sent_images = Arc::new(Mutex::new(Vec::new()));
             let responded = Arc::new(Mutex::new(Vec::new()));
             let answered = Arc::new(Mutex::new(Vec::new()));
@@ -10183,6 +11526,7 @@ mod submit_input_tests {
                 steering,
                 images,
                 sent: sent.clone(),
+                contexts: contexts.clone(),
                 sent_images: sent_images.clone(),
                 responded: responded.clone(),
                 answered: answered.clone(),
@@ -10195,6 +11539,7 @@ mod submit_input_tests {
                 Box::new(runtime),
                 FakeHandles {
                     sent,
+                    contexts,
                     sent_images,
                     responded,
                     answered,
@@ -10218,10 +11563,23 @@ mod submit_input_tests {
             Arc::new(Mutex::new(None))
         }
         fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
+            self.send_turn_with_context(text, adapters::TurnContext::default())
+        }
+        fn send_turn_with_context(
+            &self,
+            text: &str,
+            context: adapters::TurnContext<'_>,
+        ) -> Result<(), BridgeError> {
             if self.refuse.load(Ordering::SeqCst) {
                 return Err(BridgeError::Adapter("provider pipe is closed".into()));
             }
             self.sent.lock().unwrap().push(text.to_owned());
+            self.contexts.lock().unwrap().push(
+                context
+                    .entries()
+                    .map(|entry| entry.value.to_owned())
+                    .collect(),
+            );
             Ok(())
         }
         fn supports_active_turn_steering(&self) -> bool {
@@ -10233,13 +11591,19 @@ mod submit_input_tests {
         fn send_turn_with_images(
             &self,
             text: &str,
-            _application_context: Option<&str>,
+            context: adapters::TurnContext<'_>,
             images: &[bridge_protocol::messages::TurnImage],
         ) -> Result<(), BridgeError> {
             if self.refuse.load(Ordering::SeqCst) {
                 return Err(BridgeError::Adapter("provider pipe is closed".into()));
             }
             self.sent.lock().unwrap().push(text.to_owned());
+            self.contexts.lock().unwrap().push(
+                context
+                    .entries()
+                    .map(|entry| entry.value.to_owned())
+                    .collect(),
+            );
             self.sent_images
                 .lock()
                 .unwrap()
@@ -10352,6 +11716,101 @@ mod submit_input_tests {
         handles
     }
 
+    // -- session-context frame (#528) ---------------------------------------
+
+    /// The frame reaches the provider beside the message, once, and only while
+    /// it is owed. Everything the compiled prompt gave up has to arrive here.
+    #[test]
+    fn the_first_turn_after_a_launch_carries_the_session_frame() {
+        let (_dir, core, _guard) = core_with_chat("ready");
+        let handles = attach_handles(&core, false);
+        let frame = session_context::build(
+            "Authorize the call with the request header `x-bridge-proxy-auth: aaaa`.",
+            Some("[a1] preference: prefers tabs"),
+        )
+        .unwrap();
+        // What a cold launch onto the fake's thread would have armed.
+        core.session_context
+            .lock()
+            .unwrap()
+            .arm("chat", "fake", Some(frame.clone()));
+
+        send_turn(&core, "chat".into(), "first message".into()).unwrap();
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET status='ready' WHERE id='chat'", [])
+            .unwrap();
+        send_turn(&core, "chat".into(), "second message".into()).unwrap();
+
+        assert_eq!(
+            handles.sent.lock().unwrap().as_slice(),
+            ["first message", "second message"],
+            "the user's words are untouched"
+        );
+        let contexts = handles.contexts.lock().unwrap().clone();
+        assert_eq!(contexts[0], vec![frame.text().to_owned()]);
+        assert!(
+            contexts[1].is_empty(),
+            "the thread holds the frame now; re-sending it every turn is what the tail delivery avoids"
+        );
+    }
+
+    /// A relaunch onto the same thread with unchanged bytes owes nothing — the
+    /// slice-2 same-harness model switch, which resumes the provider session.
+    #[test]
+    fn a_same_thread_relaunch_sends_no_second_frame() {
+        let (_dir, core, _guard) = core_with_chat("ready");
+        let handles = attach_handles(&core, false);
+        let frame = session_context::build("capability contract", Some("packet")).unwrap();
+        core.session_context
+            .lock()
+            .unwrap()
+            .arm("chat", "fake", Some(frame.clone()));
+        send_turn(&core, "chat".into(), "first".into()).unwrap();
+
+        core.session_context
+            .lock()
+            .unwrap()
+            .arm("chat", "fake", Some(frame.clone()));
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET status='ready' WHERE id='chat'", [])
+            .unwrap();
+        send_turn(&core, "chat".into(), "after the switch".into()).unwrap();
+
+        let contexts = handles.contexts.lock().unwrap().clone();
+        assert_eq!(contexts[0], vec![frame.text().to_owned()]);
+        assert!(contexts[1].is_empty());
+    }
+
+    /// A frame Bridge could not hand over is still owed. Otherwise a provider
+    /// that dropped the turn would lose the capability contract for good.
+    #[test]
+    fn a_failed_send_leaves_the_frame_owed() {
+        let (_dir, core, _guard) = core_with_chat("ready");
+        let handles = attach_handles(&core, false);
+        let frame = session_context::build("capability contract", Some("packet")).unwrap();
+        core.session_context
+            .lock()
+            .unwrap()
+            .arm("chat", "fake", Some(frame.clone()));
+
+        handles.refuse.store(true, Ordering::SeqCst);
+        assert!(send_turn(&core, "chat".into(), "first".into()).is_err());
+        handles.refuse.store(false, Ordering::SeqCst);
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET status='ready' WHERE id='chat'", [])
+            .unwrap();
+        send_turn(&core, "chat".into(), "retry".into()).unwrap();
+
+        let contexts = handles.contexts.lock().unwrap().clone();
+        assert_eq!(contexts.last().unwrap(), &vec![frame.text().to_owned()]);
+    }
+
     // -- stop / interrupt ----------------------------------------------------
 
     /// Clicking Stop on a mid-turn top-level session must ask the provider to
@@ -10389,6 +11848,59 @@ mod submit_input_tests {
         assert!(
             !core.adapters.lock().unwrap().contains_key("chat"),
             "Stop should still tear the adapter down after interrupting"
+        );
+    }
+
+    /// Interrupting a provider to honor Stop routinely makes it report the
+    /// turn it was just told to abort as a failure (Codex's "turn aborted",
+    /// Claude's SDK exception on interrupt). That is not a crash to report —
+    /// the user asked for exactly this — so the resulting "error" frame must
+    /// never reach the transcript or flip the session to "failed" once
+    /// `stop_session` has already flagged it as user-requested.
+    #[test]
+    fn a_provider_error_provoked_by_the_users_own_stop_is_not_reported_as_a_failure() {
+        let (fixture, core, _managed_root) = core_with_chat("working");
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')",
+                params![fixture.path().to_string_lossy()],
+            )
+            .unwrap();
+            db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task',?1,'working','now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute(
+                "UPDATE sessions SET workspace_id='w',harness='codex' WHERE id='chat'",
+                [],
+            )
+            .unwrap();
+        }
+        attach_handles(&core, false);
+        let current_turn = Arc::new(Mutex::new(Some("turn-1".into())));
+
+        super::stop_session(&core, "chat".into()).unwrap();
+        assert_eq!(session_status(&core), "stopped");
+
+        // The reader thread races teardown: the interrupt Bridge just sent
+        // makes the (already-torn-down) provider report the turn as failed.
+        handle_agent_value(&core, "chat", &current_turn, &codex_turn_aborted());
+
+        assert_eq!(
+            core.db
+                .lock()
+                .unwrap()
+                .query_row::<i64, _, _>(
+                    "SELECT COUNT(*) FROM session_entries WHERE session_id='chat' AND kind='error'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap(),
+            0,
+            "a self-inflicted abort error must not be persisted to the transcript"
+        );
+        assert_eq!(
+            session_status(&core),
+            "stopped",
+            "the failed turn.completed paired with the swallowed error must not flip the session back to ready, undoing the stop"
         );
     }
 
@@ -10437,6 +11949,35 @@ mod submit_input_tests {
             )
             .unwrap();
         assert_eq!(status, "stopped");
+    }
+
+    /// A session with no live adapter to interrupt has nothing that can turn
+    /// its own abort into a stray "error" frame, so it must not be flagged —
+    /// a stale flag would sit there until this session id is reused (e.g. a
+    /// resumed send), ready to swallow a completely unrelated, genuine error
+    /// as if it were fallout from a stop that, on this path, never even
+    /// touched a process.
+    #[test]
+    fn stopping_a_session_with_no_live_adapter_leaves_no_stale_stop_marker() {
+        let (fixture, core, _managed_root) = core_with_chat("ready");
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')",
+                params![fixture.path().to_string_lossy()],
+            )
+            .unwrap();
+            db.execute("INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','Oslo','Task','bridge/task',?1,'ready','now')", params![fixture.path().to_string_lossy()]).unwrap();
+            db.execute("UPDATE sessions SET workspace_id='w' WHERE id='chat'", [])
+                .unwrap();
+        }
+
+        super::stop_session(&core, "chat".into()).unwrap();
+
+        assert!(
+            !core.user_stop_requested.lock().unwrap().contains("chat"),
+            "no adapter was interrupted, so nothing should be waiting to be swallowed"
+        );
     }
 
     // -- image attachments ---------------------------------------------------
@@ -10639,6 +12180,19 @@ mod submit_input_tests {
         })
     }
 
+    fn codex_turn_aborted() -> serde_json::Value {
+        serde_json::json!({
+            "method": "turn/completed",
+            "params": {
+                "turn": {
+                    "id": "turn-1",
+                    "status": "failed",
+                    "error": { "message": "Turn aborted" },
+                }
+            }
+        })
+    }
+
     fn begin_checkpoint(core: &Arc<BridgeCore>) -> compaction_controller::PendingCompaction {
         let db = core.db.lock().unwrap();
         compaction_controller::CompactionController::begin(
@@ -10662,6 +12216,7 @@ mod submit_input_tests {
             tokens_before: 42,
             requested_at: "now".into(),
             first_retained_entry_id: "retained".into(),
+            background: false,
         };
         assert!(!should_recover_compaction(Some(&switching)));
         switching.reason = compaction_controller::CompactionReason::Manual;
@@ -10756,6 +12311,31 @@ mod submit_input_tests {
     }
 
     #[test]
+    fn stream_timing_correlates_publication_without_persisting_diagnostics() {
+        let (_fixture, core, _managed_root) = core_with_chat("working");
+        core.db.lock().unwrap().execute("UPDATE sessions SET harness='codex' WHERE id='chat'", []).unwrap();
+        let mut published = core.events.subscribe();
+        handle_agent_value_timed(&core, "chat", &Arc::new(Mutex::new(Some("turn-1".into()))),
+            &codex_agent_message("answer"), Some(FrameTiming { id: "frame-test".into(), received: std::time::Instant::now() }));
+        let mut found = false;
+        while let Ok(event) = published.try_recv() {
+            if let CoreEvent::Agent(event) = event {
+                let timing = &event.provider_meta["bridgeStreamTiming"];
+                assert_eq!(timing["frameId"], "frame-test");
+                for key in ["dbWaitMs", "normalizationMs", "persistenceMs", "receiptToPublicationMs"] {
+                    assert!(timing[key].as_f64().unwrap() >= 0.0);
+                }
+                assert!(timing["receiptToPublicationMs"].as_f64().unwrap() >= timing["dbWaitMs"].as_f64().unwrap());
+                found = true;
+            }
+        }
+        assert!(found);
+        let db = core.db.lock().unwrap();
+        let leaked: bool = db.query_row("SELECT EXISTS(SELECT 1 FROM session_entries WHERE payload LIKE '%bridgeStreamTiming%')", [], |row| row.get(0)).unwrap();
+        assert!(!leaked);
+    }
+
+    #[test]
     fn checkpoint_reply_is_consumed_without_entering_the_conversation() {
         let (_fixture, core, _managed_root) = core_with_chat("ready");
         core.db
@@ -10798,6 +12378,51 @@ mod submit_input_tests {
             "the consumed reply still completes the checkpoint"
         );
         assert!(published.try_recv().is_err(), "the raw reply must not be published live");
+    }
+
+    #[test]
+    fn a_background_request_does_not_make_the_new_readers_reply_a_checkpoint() {
+        // A detached model-switch summary leaves a background `compaction.requested`
+        // on the shared session. The incoming model's live reader must treat its
+        // OWN reply as ordinary chat, never as an answer to that request.
+        let (_fixture, core, _managed_root) = core_with_chat("ready");
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET harness='codex' WHERE id='chat'", [])
+            .unwrap();
+        {
+            let db = core.db.lock().unwrap();
+            compaction_controller::CompactionController::begin_background(
+                &db,
+                "chat",
+                compaction_controller::CompactionReason::BeforeDowngrade,
+                100,
+            )
+            .unwrap()
+            .expect("a background request begins");
+        }
+
+        handle_agent_value(
+            &core,
+            "chat",
+            &Arc::new(Mutex::new(Some("turn-1".into()))),
+            &codex_agent_message("Sure — the retry lives in src/billing/retry.ts."),
+        );
+
+        assert_eq!(
+            assistant_message_count(&core),
+            1,
+            "the incoming model's reply is ordinary chat, not swallowed as a checkpoint"
+        );
+        let pending = compaction_controller::CompactionController::pending(
+            &core.db.lock().unwrap(),
+            "chat",
+        )
+        .unwrap()
+        .expect("the background request is still pending, untouched by the live reply");
+        assert!(pending.background);
+        assert_eq!(pending.attempt, 0, "the live reply neither settled nor repaired it");
     }
 
     #[test]
@@ -13177,7 +14802,9 @@ mod retry_settlement_tests {
         fn respond(&self, _: serde_json::Value, _: &str) -> Result<(), BridgeError> {
             Ok(())
         }
-        fn stop(&mut self, _: adapters::ShutdownReason) {}
+        fn stop(&mut self, _: adapters::ShutdownReason) {
+            self.sent.lock().unwrap().push("STOPPED".into());
+        }
     }
 
     type WorkerFixture = (
@@ -13268,6 +14895,162 @@ mod retry_settlement_tests {
     }
 
     #[test]
+    fn quota_frames_never_repair_and_stop_the_adapter_once() {
+        let (_fixture, core, sent, _guard) = core_with_working_worker();
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET harness='codex' WHERE id='child'", [])
+            .unwrap();
+        let frame = serde_json::json!({
+            "method": "turn/completed",
+            "params": {"turn": {"id": "turn-limit", "status": "failed", "error": {
+                "message": "You've hit your usage limit. Try again at Sep 7th, 11:35 AM."
+            }}}
+        });
+        let turn = Arc::new(Mutex::new(Some("turn-limit".into())));
+        for _ in 0..8 {
+            handle_agent_value(&core, "child", &turn, &frame);
+        }
+        assert_eq!(*sent.lock().unwrap(), vec!["STOPPED"]);
+        assert!(!core.adapters.lock().unwrap().contains_key("child"));
+        let db = core.db.lock().unwrap();
+        let runtime = store::worker_runtime(&db, "child").unwrap().unwrap();
+        assert_eq!(runtime.lifecycle_state, "completed");
+        assert_eq!(runtime.result_status, "reported");
+        assert!(runtime
+            .last_result
+            .unwrap()
+            .to_string()
+            .contains("usage limit"));
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM events WHERE kind='worker.result.repair_requested'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn durable_repair_budget_survives_tracker_reset_and_delivery_failure() {
+        for delivered in [true, false] {
+            let (_fixture, core, _sent, _guard) = core_with_working_worker();
+            let db = core.db.lock().unwrap();
+            let mut calls = 0;
+            for _ in 0..8 {
+                let mut tracker = delegation::ResultRepairTracker::default();
+                process_worker_result_output(&db, &mut tracker, "child", "no fence", |_| {
+                    calls += 1;
+                    delivered
+                })
+                .unwrap();
+            }
+            assert_eq!(calls, 1);
+            assert_eq!(
+                db.query_row(
+                    "SELECT result_repair_count FROM worker_runtime WHERE session_id='child'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn non_working_or_reported_workers_cannot_repair() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        let db = core.db.lock().unwrap();
+        for (lifecycle, status) in [
+            ("waiting", "pending"),
+            ("starting", "pending"),
+            ("failed", "pending"),
+            ("working", "reported"),
+            ("completed", "reported"),
+        ] {
+            db.execute("UPDATE worker_runtime SET lifecycle_state=?1,result_status=?2 WHERE session_id='child'", params![lifecycle, status]).unwrap();
+            process_worker_result_output(
+                &db,
+                &mut delegation::ResultRepairTracker::default(),
+                "child",
+                "no fence",
+                |_| panic!("repair on {lifecycle}/{status}"),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn failed_worker_result_names_the_label_and_does_not_claim_an_exit() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        let db = core.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at)
+             VALUES('e1','child',NULL,1,'error','{\"text\":\"You have hit your usage limit.\"}','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE worker_runtime SET lifecycle_state='failed' WHERE session_id='child'",
+            [],
+        )
+        .unwrap();
+
+        let result = process_worker_result_output(
+            &db,
+            &mut delegation::ResultRepairTracker::default(),
+            "child",
+            "no fence",
+            |_| panic!("a failed worker must not be asked to repair"),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(result.summary.starts_with("Implementation failed"), "{}", result.summary);
+        assert!(!result.summary.contains("child"), "{}", result.summary);
+        assert!(result.summary.contains("usage limit"), "{}", result.summary);
+        assert!(
+            !result.risks.iter().any(|risk| risk.contains("exited")),
+            "a failed worker may still have a live adapter: {:?}",
+            result.risks
+        );
+    }
+
+    #[test]
+    fn invalid_repair_stops_and_duplicate_completion_cannot_restart_it() {
+        let (_fixture, core, sent, _guard) = core_with_working_worker();
+        for _ in 0..8 {
+            forward_turn_result(&core, "child");
+        }
+        let sent = sent.lock().unwrap();
+        assert_eq!(sent.len(), 2);
+        assert!(sent[0].contains("one repair turn"));
+        assert_eq!(sent[1], "STOPPED");
+        let db = core.db.lock().unwrap();
+        let runtime = store::worker_runtime(&db, "child").unwrap().unwrap();
+        assert_eq!(runtime.lifecycle_state, "completed");
+        assert_eq!(runtime.result_status, "reported");
+    }
+
+    #[test]
+    fn maintenance_reaps_failed_adapters_even_after_reporting() {
+        for status in ["pending", "reported"] {
+            let (_fixture, core, sent, _guard) = core_with_working_worker();
+            core.db.lock().unwrap().execute("UPDATE worker_runtime SET lifecycle_state='failed',result_status=?1 WHERE session_id='child'", params![status]).unwrap();
+            core.worker_activity.lock().unwrap().insert(
+                "child".into(), std::time::Instant::now() - Duration::from_secs(WORKER_STALL_TIMEOUT_SECONDS + 1),
+            );
+            maintain_worker_pool(&core);
+            assert_eq!(*sent.lock().unwrap(), vec!["STOPPED"]);
+            assert!(!core.adapters.lock().unwrap().contains_key("child"));
+        }
+    }
+
+    #[test]
     fn an_unexplained_failure_spends_no_turn_and_says_why() {
         let (_fixture, core, sent, _managed_root) = core_with_working_worker();
         let settled = settle_worker_after_result(&core, "child", &failed("Could not finish")).unwrap();
@@ -13353,6 +15136,84 @@ mod retry_settlement_tests {
             sent_before,
             "one automatic attempt per objective, not one per result"
         );
+    }
+
+    /// A rate-limited provider will not answer differently seconds later just
+    /// because Bridge asked again on the same process — that retry is
+    /// guaranteed to fail a second time, at full price. So unlike a network
+    /// blip, this must not be retried in place; instead the harness is marked
+    /// out of quota for the workspace, so the *next* delegation (a fresh
+    /// re-delegation from the parent) routes to a different provider instead
+    /// of repeating the same failure.
+    #[test]
+    fn a_quota_exhausted_failure_declines_the_same_harness_retry_and_marks_it_exhausted() {
+        let (_fixture, core, sent, _managed_root) = core_with_working_worker();
+        let result = failed("Request failed: 429 rate limit exceeded, please try again later");
+
+        assert!(
+            settle_worker_after_result(&core, "child", &result).unwrap(),
+            "a quota failure is terminal for this worker, not a same-harness retry"
+        );
+        assert!(
+            sent.lock().unwrap().is_empty(),
+            "retrying the same rate-limited harness immediately would just repeat the failure"
+        );
+        let reason = declined_reason(&core).expect("the decline is recorded");
+        assert!(reason.contains("provider quota exhausted"), "{reason}");
+
+        let (harness, cooldown_set): (String, bool) = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT harness, cooldown_until > exhausted_at FROM harness_quota_cooldowns WHERE workspace_id='w'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("the exhaustion is recorded durably, outliving this worker's session");
+        assert_eq!(harness, "claude");
+        assert!(cooldown_set);
+    }
+
+    /// A quota signal must be marked even when `decide` was always going to
+    /// decline the in-place retry for some other reason (already retried
+    /// once, here) — the harness is still out of quota right now, and the
+    /// next delegation still needs to route around it.
+    #[test]
+    fn a_quota_signal_is_marked_exhausted_even_when_the_retry_is_declined_for_another_reason() {
+        let (_fixture, core, sent, _managed_root) = core_with_working_worker();
+        core.db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE worker_runtime SET retry_count=1 WHERE session_id='child'",
+                [],
+            )
+            .unwrap();
+        let result = failed("Request failed: 429 rate limit exceeded, please try again later");
+
+        assert!(settle_worker_after_result(&core, "child", &result).unwrap());
+        assert!(
+            sent.lock().unwrap().is_empty(),
+            "already retried once, so no further attempt is sent"
+        );
+        let reason = declined_reason(&core).expect("the decline is recorded");
+        assert!(
+            reason.contains("already been retried"),
+            "decide's own reason is kept, not overwritten: {reason}"
+        );
+
+        let harness: String = core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT harness FROM harness_quota_cooldowns WHERE workspace_id='w'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("the quota signal is marked regardless of why the retry itself was declined");
+        assert_eq!(harness, "claude");
     }
 }
 

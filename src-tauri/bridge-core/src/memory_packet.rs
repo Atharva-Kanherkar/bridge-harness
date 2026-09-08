@@ -1,12 +1,15 @@
 //! The one gate through which memory reaches a prompt.
 //!
-//! Delivery is the frozen snapshot: the packet is compiled into the variable
-//! suffix at session start, restore, and worker spawn — never the stable
-//! prefix, so provider prompt caching keeps its bytes. Eligibility and rank
-//! are deterministic, the budget is a hard cap that drops whole records, and
-//! every built packet writes one retrieval-audit row naming what was selected,
-//! what was excluded and why, and who received it. Off means no packet and no
-//! audit — the setting is the record of why.
+//! Delivery is the frozen snapshot: the packet is built at session start,
+//! restore, and worker spawn and handed to the provider inside the
+//! session-context frame (`session_context`), in the conversation tail. It is
+//! in no part of the compiled prompt — not the stable prefix and, since #528,
+//! not the variable suffix either, because that suffix is inside the system
+//! block and a re-ranked packet there re-writes the provider's whole prefix
+//! cache. Eligibility and rank are deterministic, the budget is a hard cap
+//! that drops whole records, and every built packet writes one retrieval-audit
+//! row naming what was selected, what was excluded and why, and who received
+//! it. Off means no packet and no audit — the setting is the record of why.
 
 use crate::memory_ledger;
 use crate::BridgeError;
@@ -428,7 +431,7 @@ pub fn latest_audit(
     Ok(Some(PacketAudit { selected, token_estimate, created_at }))
 }
 
-/// The compile-path helper: account scope, swallowing nothing silently — an
+/// The launch-path helper: account scope, swallowing nothing silently — an
 /// error surfaces, a disabled or empty scope is simply no section.
 pub fn for_compile(db: &Connection, session_id: &str) -> Result<Option<String>, BridgeError> {
     Ok(for_session(db, ACCOUNT_MEMORY_SCOPE, session_id)?.map(|packet| packet.text))
@@ -757,8 +760,13 @@ mod tests {
         );
         assert_eq!(
             live_turn.matches("compiled_memory_packet(").count(),
-            5,
-            "the helper definition plus its four compile sites"
+            2,
+            "the helper definition plus the single frame builder that calls it"
+        );
+        assert_eq!(
+            live_turn.matches("launch_session_context(").count(),
+            4,
+            "the frame builder plus one arming site per launch: orchestrator, chat, worker"
         );
         assert_eq!(
             live_turn.matches("memory_ledger::list").count(),
@@ -768,18 +776,22 @@ mod tests {
     }
 
     #[test]
-    fn the_packet_moves_only_the_variable_suffix() {
-        let one = crate::prompt_compiler::PromptCompiler::new("session")
-            .stable_section("bridge_role", "stable text")
-            .variable_section("memory_packet", "packet one")
-            .compile()
-            .unwrap();
-        let two = crate::prompt_compiler::PromptCompiler::new("session")
-            .stable_section("bridge_role", "stable text")
-            .variable_section("memory_packet", "packet two, entirely different")
-            .compile()
-            .unwrap();
-        assert_eq!(one.stable_prefix, two.stable_prefix, "prefix bytes never move with memory");
-        assert_ne!(one.instructions(), two.instructions());
+    fn the_packet_never_reaches_the_compiled_prompt_at_all() {
+        // It used to be a variable section, which kept `prefix_hash` still but
+        // not the provider's cache: the variable suffix is inside the system
+        // block. The packet is a turn frame now, so a re-ranked packet moves
+        // no compiled byte in either region.
+        let compile = || {
+            crate::prompt_compiler::PromptCompiler::new("session")
+                .stable_section("bridge_role", "stable text")
+                .compile()
+                .unwrap()
+        };
+        assert_eq!(compile(), compile());
+
+        let one = crate::session_context::build("", Some("packet one")).unwrap();
+        let two = crate::session_context::build("", Some("packet two, entirely different")).unwrap();
+        assert_ne!(one.digest(), two.digest(), "the frame is what carries it now");
+        assert!(one.text().contains("packet one"));
     }
 }

@@ -98,7 +98,11 @@ pub fn carry_brief(
             return Ok(false);
         }
     }
-    let Some(context) = restoration::checkpoint_context(db, source_session_id)? else {
+    // Sized by the TARGET: the brief is what the new chat's model reads.
+    let window = restoration::session_context_window_tokens(db, target_session_id)?;
+    let Some(context) =
+        restoration::checkpoint_context_with_window(db, source_session_id, window)?
+    else {
         return Ok(false);
     };
     let source_harness: String = db.query_row(
@@ -110,11 +114,7 @@ pub fn carry_brief(
         .append(
             target_session_id,
             EntryKind::HandoffBrief,
-            json!({
-                "text": context,
-                "sourceSessionId": source_session_id,
-                "sourceHarness": source_harness,
-            }),
+            brief_payload(&context, source_session_id, &source_harness),
         )
         .map_err(|error| BridgeError::Invalid(error.to_string()))?;
     store::event(
@@ -141,20 +141,50 @@ pub fn carry_brief_in_transaction(
         )?;
         if exists != 1 { return Ok(false); }
     }
-    let Some(context) = restoration::checkpoint_context(transaction, source_session_id)? else { return Ok(false); };
+    let window = restoration::session_context_window_tokens(transaction, target_session_id)?;
+    let Some(context) = restoration::checkpoint_context_with_window(transaction, source_session_id, window)? else { return Ok(false); };
     let source_harness: String = transaction.query_row(
         "SELECT harness FROM sessions WHERE id=?1", params![source_session_id], |row| row.get(0),
     )?;
-    append_in_transaction(transaction, target_session_id, EntryKind::HandoffBrief, json!({
-        "text": context,
-        "sourceSessionId": source_session_id,
-        "sourceHarness": source_harness,
-    })).map_err(|error| BridgeError::Invalid(error.to_string()))?;
+    append_in_transaction(transaction, target_session_id, EntryKind::HandoffBrief, brief_payload(&context, source_session_id, &source_harness))
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?;
     store::event(
         transaction, "chat", "chat.handoff_carried", target_session_id,
         &format!("Carried projected context from session {source_session_id}"),
     )?;
     Ok(true)
+}
+
+/// Longest `summary` a brief carries for a UI card. `text` is the full
+/// budgeted context and can now run to tens of kilobytes; a card wants a line.
+pub const BRIEF_SUMMARY_MAX_CHARS: usize = 200;
+
+/// The `handoff.brief` payload: the full carried context as `text` (required
+/// by the forest) plus a one-line `summary` for any card that renders it.
+fn brief_payload(context: &str, source_session_id: &str, source_harness: &str) -> serde_json::Value {
+    json!({
+        "text": context,
+        "summary": brief_summary(context),
+        "sourceSessionId": source_session_id,
+        "sourceHarness": source_harness,
+    })
+}
+
+/// The first content line after the restoration envelope, cut to
+/// [`BRIEF_SUMMARY_MAX_CHARS`] characters.
+fn brief_summary(context: &str) -> String {
+    let line = context
+        .lines()
+        .skip(1)
+        .map(str::trim)
+        .find(|line| !line.is_empty())
+        .or_else(|| context.lines().next())
+        .unwrap_or_default();
+    let mut summary: String = line.chars().take(BRIEF_SUMMARY_MAX_CHARS).collect();
+    if summary.chars().count() < line.chars().count() {
+        summary.push('…');
+    }
+    summary
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -251,6 +281,37 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("SQLite token store"));
+        let summary = brief.payload["summary"].as_str().unwrap();
+        assert!(summary.contains("SQLite token store"), "{summary}");
+        assert!(!summary.contains("Bridge checkpoint-restoration"), "the envelope is not the summary");
+        assert!(summary.chars().count() <= BRIEF_SUMMARY_MAX_CHARS + 1);
+    }
+
+    #[test]
+    fn a_long_carried_context_yields_a_one_line_summary_and_a_target_sized_text() {
+        let db = database(&["source", "target"]);
+        let forest = SessionForest::new(&db);
+        for turn in 0..40 {
+            forest
+                .append(
+                    "source",
+                    EntryKind::UserMessage,
+                    json!({"text": format!("turn {turn:02}: {}", "we chose the SQLite token store. ".repeat(10))}),
+                )
+                .unwrap();
+        }
+        // The target is a Claude chat: its window, not the source's, sizes the brief.
+        db.execute("UPDATE sessions SET harness='claude', model='claude-opus-4-6' WHERE id='target'", [])
+            .unwrap();
+        assert!(carry_brief(&db, "target", "source").unwrap());
+        let entries = store::session_entries(&db, "target").unwrap();
+        let brief = entries.last().unwrap();
+        let text = brief.payload["text"].as_str().unwrap();
+        assert!(text.len() > 8_000, "the brief is no longer capped at 8 KB: {}", text.len());
+        assert!(text.contains("turn 39:"), "the newest turn is carried verbatim");
+        let summary = brief.payload["summary"].as_str().unwrap();
+        assert!(summary.chars().count() <= BRIEF_SUMMARY_MAX_CHARS + 1, "{summary}");
+        assert!(!summary.contains('\n'));
     }
 
     #[test]

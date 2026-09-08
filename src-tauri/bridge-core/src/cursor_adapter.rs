@@ -838,6 +838,17 @@ impl AdapterRuntime for CursorRuntime {
     /// outright is published as a runtime failure rather than dropped, because
     /// a turn that neither streams nor ends is indistinguishable from a hang.
     fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
+        self.send_turn_with_context(text, crate::adapters::TurnContext::default())
+    }
+
+    /// ACP has no system channel: the compiled prompt already reaches the
+    /// agent folded into the first user message. Bridge's per-turn context
+    /// joins that same preamble, which is the only channel there is.
+    fn send_turn_with_context(
+        &self,
+        text: &str,
+        context: crate::adapters::TurnContext<'_>,
+    ) -> Result<(), BridgeError> {
         if self.session.is_closed() {
             return Err(self.closed());
         }
@@ -858,11 +869,11 @@ impl AdapterRuntime for CursorRuntime {
         events
             .send(encode_event(&started))
             .map_err(|_| self.closed())?;
-        let preamble = self.pending_instructions.lock().unwrap().take();
-        let text = match preamble {
-            Some(instructions) => format!("{instructions}\n\n{text}"),
-            None => text.to_owned(),
-        };
+        let text = crate::adapters::folded_message(
+            self.pending_instructions.lock().unwrap().take(),
+            context,
+            text,
+        );
         let session = self.session.clone();
         thread::Builder::new()
             .name("cursor-turn".into())
@@ -2677,6 +2688,7 @@ mod tests {
         assert!(!adapter.supports_native_resume());
         let Err(error) = adapter.resume(ResumeRequest {
             provider_session_id: "cursor-session",
+            fork: false,
             cwd: "/workspace",
             model: None,
             effort: None,

@@ -1,32 +1,40 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { bridgeApi } from "../api";
 import type {
   ManagedAgentOperationResult,
   ManagedAgentStatus,
 } from "../protocol/generated/protocol";
+import { HarnessMark } from "./harnessMarks";
+import {
+  GhostButton, SettingsGroup, SettingsRow, StatusPill, TextButton, type PillTone,
+} from "./settings/kit";
 
 /**
  * Install and remove the built-in agent runtimes.
  *
- * Holds no installation or ownership logic: every question this panel answers is
+ * Holds no installation or ownership logic: every question this answers is
  * answered by a field in the `agents` RPC response. In particular removal is
  * offered if and only if `status.removable` is true — the API's own answer to
  * "is this Bridge's to remove". Deriving that from the state string is how a
  * user's own runtime ends up with a Remove button next to it.
  *
- * # What this panel deliberately does not do
+ * # Shape
+ *
+ * The state, the operations, and the confirmation dialog live in
+ * `useManagedAgents`, so the Harnesses list and a single harness's detail page
+ * read one copy rather than fetching twice and disagreeing about what happened.
+ *
+ * # What this deliberately does not do
  *
  * **No Start action.** Starting an agent means starting a session with it, which
  * already has a surface: the composer and new-chat flow. A second Start here
  * would either create a session and leave the user sitting in Settings, or need
- * routing this panel has no business owning. Issue #170's acceptance says Start
- * happens "through the unchanged integration", which is that existing flow.
+ * routing this panel has no business owning.
  *
  * **No progress bar and no cancel.** The RPC runs each operation to completion
  * and exposes neither a progress stream nor a cancel, so an in-flight operation
  * shows an indeterminate busy state. An invented percentage, or a cancel that
- * silently does nothing, would be worse than their absence. Both arrive with the
- * background job, which is a new result shape rather than a UI change.
+ * silently does nothing, would be worse than their absence.
  */
 
 /** How a backing is described, so a user runtime is never presented as Bridge's. */
@@ -38,24 +46,47 @@ const SOURCE_LABEL: Record<ManagedAgentStatus["backing"], string> = {
   none: "Not installed",
 };
 
-function stateLabel(status: ManagedAgentStatus): string {
-  switch (status.state) {
-    case "ready": return "Ready";
-    case "installed": return "Installed";
-    case "repairable": return "Needs repair";
-    case "broken": return "Unavailable";
-    case "running": return "Running";
-    case "external": return "Working";
-    case "not_installed": return "Not installed";
-    default: return status.state;
-  }
+const STATE_PILL: Record<string, { label: string; tone: PillTone }> = {
+  ready: { label: "Ready", tone: "success" },
+  installed: { label: "Installed", tone: "success" },
+  external: { label: "Working", tone: "success" },
+  running: { label: "Running", tone: "info" },
+  repairable: { label: "Needs repair", tone: "warning" },
+  broken: { label: "Unavailable", tone: "destructive" },
+  not_installed: { label: "Not installed", tone: "neutral" },
+};
+
+export function stateLabel(status: ManagedAgentStatus): string {
+  return STATE_PILL[status.state]?.label ?? status.state;
 }
 
-export function ManagedAgentsPanel({ initialAgents }: { initialAgents?: ManagedAgentStatus[] }) {
+function stateTone(status: ManagedAgentStatus): PillTone {
+  return STATE_PILL[status.state]?.tone ?? "neutral";
+}
+
+/** Source and version on one line, which is what a row has room for. */
+export function sourceLine(agent: ManagedAgentStatus): string {
+  return agent.version ? `${SOURCE_LABEL[agent.backing]} · ${agent.version}` : SOURCE_LABEL[agent.backing];
+}
+
+export type ManagedAgents = {
+  agents: ManagedAgentStatus[] | null;
+  listError: string | null;
+  busy: Record<string, string>;
+  errors: Record<string, string>;
+  reload: () => void;
+  install: (agent: ManagedAgentStatus) => void;
+  repair: (agent: ManagedAgentStatus) => void;
+  requestRemove: (agent: ManagedAgentStatus) => void;
+  /** Rendered wherever the caller wants; null when nothing is being confirmed. */
+  confirmation: ReactNode;
+};
+
+export function useManagedAgents(initialAgents?: ManagedAgentStatus[]): ManagedAgents {
   const [agents, setAgents] = useState<ManagedAgentStatus[] | null>(initialAgents ?? null);
-  // Keyed by agent id: two cards can be working at once, and a single slot let
-  // one card's completion clear another's busy state while its call was still
-  // in flight, re-enabling actions mid-operation.
+  // Keyed by agent id: two runtimes can be working at once, and a single slot
+  // let one completion clear another's busy state while its call was still in
+  // flight, re-enabling actions mid-operation.
   const [busy, setBusy] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [listError, setListError] = useState<string | null>(null);
@@ -103,35 +134,17 @@ export function ManagedAgentsPanel({ initialAgents }: { initialAgents?: ManagedA
 
   const closeConfirm = useCallback(() => setConfirming(null), []);
 
-  if (listError) {
-    return (
-      <div className="flex items-center gap-3">
-        <p role="alert" className="text-sm text-destructive">{listError}</p>
-        <button type="button" className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs transition-colors hover:bg-accent" onClick={() => void load()}>
-          Retry
-        </button>
-      </div>
-    );
-  }
-  if (!agents) {
-    return <p className="text-sm text-muted-foreground">Loading agents…</p>;
-  }
-
-  return (
-    <div className="flex flex-col gap-3">
-      {agents.map(agent => (
-        <AgentCard
-          key={agent.agentId}
-          agent={agent}
-          busy={busy[agent.agentId] ?? null}
-          error={errors[agent.agentId]}
-          onInstall={() => void run(agent, "Installing", bridgeApi.installManagedAgent)}
-          onRepair={() => void run(agent, "Repairing", bridgeApi.repairManagedAgent)}
-          onRemove={() => setConfirming(agent)}
-        />
-      ))}
-      {confirming && (
-        <RemoveConfirmation
+  return {
+    agents,
+    listError,
+    busy,
+    errors,
+    reload: () => void load(),
+    install: agent => void run(agent, "Installing", bridgeApi.installManagedAgent),
+    repair: agent => void run(agent, "Repairing", bridgeApi.repairManagedAgent),
+    requestRemove: agent => setConfirming(agent),
+    confirmation: confirming
+      ? <RemoveConfirmation
           agent={confirming}
           onCancel={closeConfirm}
           onConfirm={() => {
@@ -140,138 +153,147 @@ export function ManagedAgentsPanel({ initialAgents }: { initialAgents?: ManagedA
             void run(agent, "Removing", bridgeApi.uninstallManagedAgent);
           }}
         />
-      )}
-    </div>
-  );
+      : null,
+  };
 }
 
-function AgentCard({ agent, busy, error, onInstall, onRepair, onRemove }: {
-  agent: ManagedAgentStatus;
-  busy: string | null;
-  error?: string;
-  onInstall: () => void;
-  onRepair: () => void;
-  onRemove: () => void;
-}) {
-  const running = agent.state === "running";
-  const needsRepair = agent.state === "repairable" || agent.state === "broken";
-  const absent = agent.state === "not_installed" && agent.backing === "none";
-  const errorId = useId();
-  const reasonId = useId();
-  // Every action carries the card's error, so a screen reader reaches the reason
-  // from the control that failed rather than having to hunt for it.
-  const describedBy = [error ? errorId : null].filter(Boolean).join(" ") || undefined;
+/** Whether Bridge has nothing at all for this runtime. */
+export function isAbsent(agent: ManagedAgentStatus): boolean {
+  return agent.state === "not_installed" && agent.backing === "none";
+}
 
-  return (
-    <article
-      className="u-surface flex flex-col gap-2 rounded-xl p-4"
-      aria-labelledby={`${agent.agentId}-title`}
-      data-testid={`agent-card-${agent.agentId}`}
-    >
-      <header className="flex items-baseline justify-between gap-3">
-        {/* h4: nested under the section's "Agent runtimes" h3. */}
-        <h4 id={`${agent.agentId}-title`} className="text-sm font-medium text-foreground">
-          {agent.label}
-        </h4>
-        <span className="text-xs text-muted-foreground" data-testid={`agent-state-${agent.agentId}`}>
-          {stateLabel(agent)}
-        </span>
-      </header>
+function needsRepair(agent: ManagedAgentStatus): boolean {
+  return agent.state === "repairable" || agent.state === "broken";
+}
 
-      <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs text-muted-foreground">
-        <dt>Source</dt>
-        <dd data-testid={`agent-source-${agent.agentId}`}>{SOURCE_LABEL[agent.backing]}</dd>
-        {agent.version && (<><dt>Version</dt><dd>{agent.version}</dd></>)}
-        {agent.executable && (
-          <>
-            <dt>Path</dt>
-            {/* title, because the path is truncated and it is the thing a user
-                needs to read to know which copy this is. */}
-            <dd className="truncate font-mono" title={agent.executable}>{agent.executable}</dd>
-          </>
-        )}
-      </dl>
+/** The action a runtime offers on a list row: Install, Repair, or nothing. */
+function RowAction({ agent, state }: { agent: ManagedAgentStatus; state: ManagedAgents }) {
+  const busy = state.busy[agent.agentId];
+  if (busy) {
+    return <span
+      role="status"
+      aria-live="polite"
+      className="shrink-0 text-[11px] text-muted-foreground motion-safe:animate-pulse"
+      data-testid={`agent-busy-${agent.agentId}`}
+    >{busy}…</span>;
+  }
+  if (isAbsent(agent)) return <GhostButton onClick={() => state.install(agent)}>Install</GhostButton>;
+  if (needsRepair(agent)) return <GhostButton onClick={() => state.repair(agent)}>Repair</GhostButton>;
+  return null;
+}
 
-      {/* Verbatim vendor guidance. Bridge surfaces it and owns none of it: there
-          is no field to type a credential into anywhere in this panel. */}
-      {agent.vendorMessage && (
-        <p className="text-xs text-warning" data-testid={`agent-vendor-${agent.agentId}`}>
+/** The Installed / Available groups of the Harnesses list. */
+export function ManagedAgentRows({ state, onOpen }: { state: ManagedAgents; onOpen?: (agentId: string) => void }) {
+  const groups = useMemo(() => {
+    const agents = state.agents ?? [];
+    return [
+      { label: "Installed", note: "Bridge can start these now", agents: agents.filter(agent => !isAbsent(agent)) },
+      { label: "Available", note: "Installed from the vendor's official source", agents: agents.filter(isAbsent) },
+    ].filter(group => group.agents.length > 0);
+  }, [state.agents]);
+
+  if (state.listError) {
+    return <SettingsGroup label="Installed">
+      <SettingsRow
+        label={<span role="alert" className="text-destructive">{state.listError}</span>}
+        control={<GhostButton onClick={state.reload}>Retry</GhostButton>}
+      />
+    </SettingsGroup>;
+  }
+  if (!state.agents) {
+    return <SettingsGroup label="Installed"><SettingsRow label="Loading agents…" /></SettingsGroup>;
+  }
+
+  return <>
+    {groups.map(group => <SettingsGroup key={group.label} label={group.label} note={group.note}>
+      {group.agents.map(agent => <div key={agent.agentId} data-testid={`agent-card-${agent.agentId}`}>
+        <SettingsRow
+          lead={<HarnessMark harness={agent.agentId} size={14} />}
+          label={agent.label}
+          openLabel={`Configure ${agent.label}`}
+          description={<span data-testid={`agent-source-${agent.agentId}`}>{sourceLine(agent)}</span>}
+          onOpen={onOpen && (() => onOpen(agent.agentId))}
+          control={<>
+            <StatusPill tone={stateTone(agent)}>
+              <span data-testid={`agent-state-${agent.agentId}`}>{stateLabel(agent)}</span>
+            </StatusPill>
+            <RowAction agent={agent} state={state} />
+          </>}
+        />
+        {agent.vendorMessage && <p className="px-3.5 pb-2.5 text-[12px] text-warning" data-testid={`agent-vendor-${agent.agentId}`}>
           {agent.vendorMessage}
-        </p>
-      )}
+        </p>}
+        {state.errors[agent.agentId] && <p role="alert" className="px-3.5 pb-2.5 text-[12px] text-destructive">
+          {state.errors[agent.agentId]}
+        </p>}
+      </div>)}
+    </SettingsGroup>)}
+  </>;
+}
 
-      {error && <p id={errorId} role="alert" className="text-xs text-destructive">{error}</p>}
+/**
+ * The runtime block of a harness detail page: what Bridge has, and what it can
+ * do about it. Remove appears here and nowhere else, because a destructive
+ * action belongs on the page about the thing, not in a list of nine.
+ */
+export function ManagedAgentDetail({ state, agentId }: { state: ManagedAgents; agentId: string }) {
+  const reasonId = useId();
+  const agent = state.agents?.find(item => item.agentId === agentId);
+  if (!agent) return null;
+  const busy = state.busy[agentId];
+  const running = agent.state === "running";
 
-      <div className="flex flex-wrap items-center gap-2">
-        {busy ? (
-          // Indeterminate on purpose: the RPC reports completion, not progress.
-          <span
-            role="status"
-            aria-live="polite"
-            className="text-xs text-muted-foreground motion-safe:animate-pulse"
-            data-testid={`agent-busy-${agent.agentId}`}
-          >
-            {busy}…
-          </span>
-        ) : (
-          <>
-            {absent && (
-              <button type="button" className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs transition-colors hover:bg-accent"
-                onClick={onInstall} aria-describedby={describedBy}>
-                Install
-              </button>
-            )}
-            {needsRepair && (
-              <button type="button" className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs transition-colors hover:bg-accent"
-                onClick={onRepair} aria-describedby={describedBy}>
-                Repair
-              </button>
-            )}
-            {!absent && !needsRepair && agent.backing !== "managed" && (
-              <>
-                <span className="text-xs text-muted-foreground">
-                  Bridge uses this copy. Nothing to install.
-                </span>
-                {/* Deliberately quiet: the agent already works, so this is an
-                    opt-in, not a call to action. #170 calls it optional, and
-                    making it the only button on the card read as "this needs
-                    installing" for an agent the user can already chat with. */}
-                <button
-                  type="button"
-                  className="ml-auto text-xs text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground"
-                  onClick={onInstall}
-                  aria-describedby={describedBy}
-                  title="Downloads a separate copy that Bridge can update and remove on its own. Your install stays where it is."
-                >
-                  Let Bridge manage its own copy
-                </button>
-              </>
-            )}
-
+  return <SettingsGroup label="Runtime" note={<StatusPill tone={stateTone(agent)}>
+    <span data-testid={`agent-state-${agent.agentId}`}>{stateLabel(agent)}</span>
+  </StatusPill>}>
+    <SettingsRow
+      lead={<HarnessMark harness={agent.agentId} size={14} />}
+      label={agent.label}
+      description={<span data-testid={`agent-source-${agent.agentId}`}>{sourceLine(agent)}</span>}
+      control={busy
+        ? <span role="status" aria-live="polite" className="text-[11px] text-muted-foreground motion-safe:animate-pulse" data-testid={`agent-busy-${agent.agentId}`}>{busy}…</span>
+        : <>
+            {isAbsent(agent) && <GhostButton onClick={() => state.install(agent)}>Install</GhostButton>}
+            {needsRepair(agent) && <GhostButton onClick={() => state.repair(agent)}>Repair</GhostButton>}
+            {/* Deliberately quiet: the agent already works, so a managed copy is
+                an opt-in, not a call to action. Making it the only button read
+                as "this needs installing" for an agent the user can already
+                chat with. */}
+            {!isAbsent(agent) && !needsRepair(agent) && agent.backing !== "managed" && <TextButton onClick={() => state.install(agent)}>
+              Let Bridge manage its own copy
+            </TextButton>}
             {/* The one gate on removal: the API said whether this is Bridge's.
                 A state string the UI does not recognize can never open it. */}
-            {agent.removable && (
-              <button
-                type="button"
-                className="rounded-lg px-3 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10 disabled:opacity-50"
-                onClick={onRemove}
-                disabled={running}
-                aria-describedby={[running ? reasonId : null, error ? errorId : null]
-                  .filter(Boolean).join(" ") || undefined}
-              >
-                Remove
-              </button>
-            )}
-            {agent.removable && running && (
-              <span id={reasonId} className="text-xs text-muted-foreground">
-                Stop {agent.label} before removing it
-              </span>
-            )}
-          </>
-        )}
-      </div>
-    </article>
-  );
+            {agent.removable && <TextButton
+              tone="destructive"
+              disabled={running}
+              onClick={() => state.requestRemove(agent)}
+            >Remove</TextButton>}
+          </>}
+    />
+    {agent.executable && <SettingsRow label="Path" description={agent.executable} mono />}
+    {!isAbsent(agent) && !needsRepair(agent) && agent.backing !== "managed" && <SettingsRow
+      label="Nothing to install"
+      description="Bridge uses this copy. A managed copy is a separate download Bridge can update and remove on its own; yours stays where it is."
+    />}
+    {agent.removable && running && <SettingsRow label={<span id={reasonId}>Stop {agent.label} before removing it</span>} />}
+    {/* Verbatim vendor guidance. Bridge surfaces it and owns none of it: there
+        is no field to type a credential into anywhere here. */}
+    {agent.vendorMessage && <SettingsRow label={<span className="text-warning" data-testid={`agent-vendor-${agent.agentId}`}>{agent.vendorMessage}</span>} />}
+    {state.errors[agentId] && <SettingsRow label={<span role="alert" className="text-destructive">{state.errors[agentId]}</span>} />}
+  </SettingsGroup>;
+}
+
+/** The list on its own, for callers that want the runtimes and nothing else. */
+export function ManagedAgentsPanel({ initialAgents, onOpen }: {
+  initialAgents?: ManagedAgentStatus[];
+  onOpen?: (agentId: string) => void;
+}) {
+  const state = useManagedAgents(initialAgents);
+  return <div className="space-y-[26px]">
+    <ManagedAgentRows state={state} onOpen={onOpen} />
+    {state.confirmation}
+  </div>;
 }
 
 /**
@@ -301,7 +323,7 @@ function RemoveConfirmation({ agent, onCancel, onConfirm }: {
       if (event.key === "Escape") { onCancel(); return; }
       if (event.key !== "Tab") return;
       // A real trap, since this claims aria-modal: Tab cycles within the dialog
-      // instead of wandering into the card actions behind the overlay.
+      // instead of wandering into the row actions behind the overlay.
       const focusable = [...(dialog.current?.querySelectorAll<HTMLButtonElement>("button") ?? [])];
       if (focusable.length === 0) return;
       const first = focusable[0];
@@ -321,23 +343,23 @@ function RemoveConfirmation({ agent, onCancel, onConfirm }: {
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-scrim p-4 pt-[6vh] backdrop-blur-md sm:pt-[10vh]"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-scrim p-4 pt-[8vh] sm:pt-[10vh]"
       role="dialog"
       aria-modal="true"
       aria-labelledby={titleId}
       data-testid="remove-confirmation"
     >
-      <div ref={dialog} className="u-overlay-strong flex max-h-[90dvh] w-full max-w-md flex-col gap-2 overflow-y-auto rounded-xl p-4">
-        <h4 id={titleId} className="text-sm font-medium text-foreground">
+      <div ref={dialog} className="u-glass-popover flex max-h-[84dvh] w-full max-w-md flex-col gap-2 overflow-y-auto rounded-xl p-4">
+        <h4 id={titleId} className="text-[13px] font-medium text-foreground">
           Remove the Bridge-managed {agent.label}
           {agent.version ? ` ${agent.version}` : ""}?
         </h4>
         {agent.executable && (
-          <p className="truncate font-mono text-xs text-muted-foreground" title={agent.executable}>
+          <p className="truncate font-mono text-[11px] text-muted-foreground" title={agent.executable}>
             {agent.executable}
           </p>
         )}
-        <p className="text-xs text-muted-foreground">
+        <p className="text-[12px] text-muted-foreground">
           Your conversation history, vendor configuration, sign-in, and any copy you
           installed yourself are left untouched. You can reinstall at any time.
         </p>
@@ -345,18 +367,12 @@ function RemoveConfirmation({ agent, onCancel, onConfirm }: {
           <button
             type="button"
             data-autofocus
-            className="rounded-lg border border-border bg-card px-3 py-1.5 text-xs transition-colors hover:bg-accent"
+            className="inline-flex h-7 items-center rounded-lg border border-border-card bg-popover px-2.5 text-xs text-foreground transition-colors hover:bg-accent"
             onClick={onCancel}
           >
             Keep it
           </button>
-          <button
-            type="button"
-            className="rounded-lg border border-destructive/30 bg-destructive/10 px-3 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/20"
-            onClick={onConfirm}
-          >
-            Remove
-          </button>
+          <TextButton tone="destructive" onClick={onConfirm}>Remove</TextButton>
         </div>
       </div>
     </div>

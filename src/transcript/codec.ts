@@ -21,6 +21,7 @@
 import type { AgentEvent, SessionEntry } from "../types";
 import { readWireKind } from "./wire";
 import { readToolCall, type ToolCallDisplay } from "./toolCall";
+import { harnessLabel } from "../utils";
 import type {
   MessageRole,
   ToolSurface,
@@ -104,6 +105,16 @@ function errorText(payload: Record<string, unknown>): string {
 
 /* ── The vocabulary ────────────────────────────────────────────────────── */
 
+/**
+ * The kind every harness's own compaction boundary arrives as.
+ *
+ * Mirrors `NATIVE_COMPACTION_KIND` in `bridge-core/src/agent.rs`. This is the
+ * only kind the "Context compacted" card is drawn from: a Bridge checkpoint on
+ * a hot session frees no provider tokens, so it says "Checkpoint saved"
+ * instead. See `docs/compaction-and-resume.md`.
+ */
+const NATIVE_COMPACTION_KIND = "context.compacted";
+
 /** Families the Rust side owns. A new member of one of these is not unknown. */
 const KNOWN_PREFIXES = [
   "message.", "reasoning.", "tool.", "command.", "file_change.", "diff.",
@@ -111,6 +122,7 @@ const KNOWN_PREFIXES = [
   "compaction.", "turn.", "session.", "worker.", "workspace.", "provider.",
   "raw.", "model.", "mode.", "config.", "commands.", "todo.", "extension.",
   "usage.", "branch.", "handoff.", "runtime.", "effort.", "checkpoint.",
+  "context.",
   // Codex's fallback family: `normalize_item` in `bridge-core/src/agent.rs`
   // (around line 757) maps any Codex item type outside its named set — a
   // `readFile`, for instance — to `item.started`/`item.completed`. Live, not
@@ -273,6 +285,9 @@ export function normalizeAgentEvent(raw: AgentEvent): TranscriptEvent {
   if (kind === "checkpoint") {
     return { type: "checkpoint", envelope, title: "Checkpoint", text: text || stringValue(data.summary) || "", status };
   }
+  if (kind === NATIVE_COMPACTION_KIND) {
+    return contextCompactedEvent(envelope, data, status);
+  }
   if (kind === "compaction" || kind.startsWith("compaction.")) {
     return compactionEvent(kind, envelope, { ...data, text, status }, text, status);
   }
@@ -285,6 +300,12 @@ export function normalizeAgentEvent(raw: AgentEvent): TranscriptEvent {
   if (kind === "turn.started") return { type: "turn.started", envelope };
   if (kind.startsWith("turn.")) return { type: "turn.completed", envelope, status };
   if (kind === "usage.updated") return { type: "usage", envelope };
+  if (kind === "session.model_changed") {
+    // The switch milestone is its own row, live and replayed alike: the
+    // backend publishes this event on the bus at commit time, so the divider
+    // appears immediately rather than only after a reload.
+    return { type: "model.change", envelope, title, text, status };
+  }
   if (kind.startsWith("session.")) {
     return { type: "session.lifecycle", envelope, settles: kind === "session.idle" };
   }
@@ -343,6 +364,56 @@ function interactionKind(kind: string): "permission" | "question" | undefined {
   return undefined;
 }
 
+/**
+ * The harness's own compaction boundary.
+ *
+ * The card names a token figure only when the provider sent one. Codex and
+ * OpenCode report a boundary with no numbers at all, and inventing a zero
+ * would read as "the context shrank to nothing".
+ */
+function contextCompactedEvent(
+  envelope: TranscriptEnvelope,
+  data: Record<string, unknown>,
+  status: string | undefined,
+): TranscriptEvent {
+  const harness = stringValue(data.harness);
+  const preTokens = numberValue(data.preTokens);
+  const postTokens = numberValue(data.postTokens);
+  return {
+    type: "context.compacted",
+    envelope,
+    harness,
+    trigger: stringValue(data.trigger),
+    preTokens,
+    postTokens,
+    title: "Context compacted",
+    text: contextCompactedText(harness, preTokens, postTokens),
+    status: status ?? "completed",
+  };
+}
+
+function contextCompactedText(
+  harness: string | undefined,
+  preTokens: number | undefined,
+  postTokens: number | undefined,
+): string {
+  const who = harness ? harnessLabel(harness) : "The harness";
+  if (preTokens !== undefined && postTokens !== undefined) {
+    return `${who} summarised its context, ${tokens(preTokens)} down to ${tokens(postTokens)}.`;
+  }
+  if (preTokens !== undefined) {
+    return `${who} summarised its context at ${tokens(preTokens)}.`;
+  }
+  return `${who} summarised its own context.`;
+}
+
+/** A token count at the precision a reader can hold in their head. */
+function tokens(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}M tokens`;
+  if (value >= 1_000) return `${Math.round(value / 1_000)}k tokens`;
+  return `${value} tokens`;
+}
+
 function compactionEvent(
   kind: string,
   envelope: TranscriptEnvelope,
@@ -372,11 +443,17 @@ function compactionEvent(
       status: "failed",
     };
   }
+  // A committed Bridge boundary. It is not "Context compacted": committing a
+  // checkpoint writes forest entries and moves the session head without
+  // touching the adapter, so on a hot session the provider's context is
+  // exactly as full as it was. What it did do is save a summary the next cold
+  // start or model handoff will read. The harness's own boundary is a
+  // different entry with a different card.
   return {
     type: "compaction",
     envelope,
     phase: "completed",
-    title: "Context compacted",
+    title: "Checkpoint saved",
     text: stringValue(payload.summary) ?? text,
     status,
   };
@@ -442,6 +519,9 @@ export function normalizeSessionEntry(entry: SessionEntry): TranscriptEvent | nu
   if (kind === "checkpoint") {
     return { type: "checkpoint", envelope: carded, title: "Checkpoint", text: stringValue(payload.summary) ?? "", status };
   }
+  if (kind === NATIVE_COMPACTION_KIND) {
+    return contextCompactedEvent(carded, nested, status);
+  }
   if (kind === "compaction" || kind.startsWith("compaction.")) {
     return compactionEvent(kind, carded, payload, text, status);
   }
@@ -477,10 +557,12 @@ export function normalizeSessionEntry(entry: SessionEntry): TranscriptEvent | nu
   // Everything below reads the flattened wrapper: the inner event data (tool
   // input, command, output…) wins, so a replayed row renders like a live one.
   const title = stringValue(payload.title) ?? humanizeKind(kind);
+  // Sparse tool updates must preserve the start title when the reducer joins them.
+  const toolTitle = stringValue(payload.title);
   const body = stringValue(payload.text) ?? stringValue(payload.summary) ?? stringValue(payload.reason) ?? "";
   const role = payload.role ? messageRole(payload.role) : undefined;
   const tool = (surface: ToolSurface): ToolCallDisplay =>
-    readToolCall({ title, text: body, status, surface, data: flat });
+    readToolCall({ title: toolTitle, text: body, status, surface, data: flat });
 
   if (kind === "approval.requested") {
     return { type: "approval.requested", envelope, title, text: body, status: status ?? "pending" };
@@ -522,18 +604,22 @@ export function normalizeSessionEntry(entry: SessionEntry): TranscriptEvent | nu
   if (kind === "turn.started") return { type: "turn.started", envelope };
   if (kind.startsWith("turn.")) return { type: "turn.completed", envelope, status };
   if (kind === "usage.updated") return { type: "usage", envelope };
+  if (kind === "session.model_changed") {
+    // The switch milestone is its own row: grouping and rendering key off the
+    // normalized type, never off a payload field.
+    return { type: "model.change", envelope, title, text: body, status };
+  }
   if (kind.startsWith("session.") && kind !== "session.model_changed") {
-    // Deliberately narrower than the live filter: `session.model_changed` is a
-    // bespoke row that reports what the switch carried, and it exists only in
-    // replay.
+    // Deliberately narrower than the live filter: every other `session.*`
+    // frame is lifecycle plumbing with no row of its own.
     return null;
   }
   if (isToolKind(kind)) {
     const surface = surfaceFor(kind, flat);
     const started = kind.endsWith(".started");
     return started
-      ? { type: "tool.started", envelope, surface, title, text: body, status, role, tool: tool(surface) }
-      : { type: "tool.completed", envelope, surface, title, text: body, status, role, tool: tool(surface) };
+      ? { type: "tool.started", envelope, surface, title: toolTitle, text: body, status, role, tool: tool(surface) }
+      : { type: "tool.completed", envelope, surface, title: toolTitle, text: body, status, role, tool: tool(surface) };
   }
   if (isKnownKind(kind)) {
     return { type: "notice", envelope, title, text: body, status, role };

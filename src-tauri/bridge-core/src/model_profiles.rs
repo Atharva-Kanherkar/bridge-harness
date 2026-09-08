@@ -88,6 +88,14 @@ impl ProfilePurpose {
         }
     }
 
+    /// The orchestrator is the model the user talks to, not a delegated worker.
+    /// Its model is a direct user choice (a pinned catalog model), so the
+    /// recommended default pins it instead of tracking a tier. Worker roles keep
+    /// the `fast`/`standard`/`strong` tier vocabulary for routing.
+    pub fn is_orchestrator(self) -> bool {
+        matches!(self, Self::StandardOrchestrator | Self::PremiumOrchestrator)
+    }
+
     fn tier(self) -> CapabilityTier {
         match self {
             Self::PremiumOrchestrator | Self::Planner | Self::Reviewer | Self::Evaluator => {
@@ -268,15 +276,23 @@ pub fn recommended_profiles(
                         purpose.as_str()
                     ))
                 })?;
+            // The orchestrator is the user's own model: pin it to a concrete
+            // catalog model they can see and change directly. Worker roles keep
+            // tracking their tier's standard default and stay learning-eligible.
+            let orchestrator = purpose.is_orchestrator();
             Ok(ModelProfileDraft {
                 purpose,
                 provider: adapter.id.clone(),
                 model: model.id.clone(),
                 effort: purpose.effort(),
                 fallback_purpose: purpose.fallback(),
-                selection_mode: Some(ProfileSelectionMode::TrackStandard),
-                pinned: false,
-                learning_enabled: true,
+                selection_mode: Some(if orchestrator {
+                    ProfileSelectionMode::Pinned
+                } else {
+                    ProfileSelectionMode::TrackStandard
+                }),
+                pinned: orchestrator,
+                learning_enabled: !orchestrator,
                 budget_preference: None,
                 latency_preference: None,
             })
@@ -722,7 +738,7 @@ mod tests {
     }
 
     #[test]
-    fn recommended_aliases_can_be_saved_after_live_catalog_discovery() {
+    fn tracked_aliases_can_be_saved_after_live_catalog_discovery() {
         let db = store::open(std::path::Path::new(":memory:")).unwrap();
         let mut curated = catalog();
         curated[0].id = "claude".into();
@@ -733,7 +749,13 @@ mod tests {
         {
             model.id = alias.into();
         }
-        let recommendations = recommended_profiles(&curated).unwrap();
+        let mut recommendations = recommended_profiles(&curated).unwrap();
+        // Exercise explicit tier tracking, including an opted-in orchestrator.
+        // The default pinned orchestrator behavior has separate coverage.
+        for profile in &mut recommendations {
+            profile.selection_mode = Some(ProfileSelectionMode::TrackStandard);
+            profile.pinned = false;
+        }
         assert_eq!(recommendations[0].model, "sonnet");
 
         let mut live = curated;
@@ -783,6 +805,34 @@ mod tests {
         profiles[0].model.clear();
         assert!(save_profiles(&db, &catalog(), &profiles).is_err());
         assert!(!setup_state(&db).unwrap().complete);
+    }
+
+    #[test]
+    fn recommended_orchestrator_is_pinned_workers_track_tiers() {
+        let profiles = recommended_profiles(&catalog()).unwrap();
+        for profile in &profiles {
+            if profile.purpose.is_orchestrator() {
+                // The user's own model is a direct, pinned choice — not tier-tracked.
+                assert_eq!(
+                    profile.selection_mode,
+                    Some(ProfileSelectionMode::Pinned),
+                    "{} should default to a pinned model",
+                    profile.purpose.as_str()
+                );
+                assert!(profile.pinned, "{}", profile.purpose.as_str());
+                assert!(!profile.learning_enabled, "{}", profile.purpose.as_str());
+            } else {
+                // Delegated workers keep the fast/standard/strong tier vocabulary.
+                assert_eq!(
+                    profile.selection_mode,
+                    Some(ProfileSelectionMode::TrackStandard),
+                    "{} should track its tier default",
+                    profile.purpose.as_str()
+                );
+                assert!(!profile.pinned, "{}", profile.purpose.as_str());
+                assert!(profile.learning_enabled, "{}", profile.purpose.as_str());
+            }
+        }
     }
 
     #[test]

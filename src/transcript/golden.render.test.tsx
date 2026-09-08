@@ -4,7 +4,7 @@ import { createRoot } from "react-dom/client";
 import { describe, expect, it } from "vitest";
 import { AgentConversation } from "../components/AgentConversation";
 import { normalizeAgentEvent } from "./codec";
-import { durableEntries, HARNESSES, harnessStream, type GoldenHarness } from "./golden";
+import { acpOtherStream, durableEntriesFrom, durableEntries, HARNESSES, harnessStream, type GoldenHarness } from "./golden";
 import type { AgentEvent, SessionEntry, Session } from "../types";
 
 /**
@@ -77,7 +77,7 @@ function rowDigest(row: Element): string {
 async function render(
   harness: GoldenHarness,
   source: { events?: AgentEvent[]; forestEntries?: SessionEntry[] },
-): Promise<{ digest: string[]; unmount: () => Promise<void> }> {
+): Promise<{ container: HTMLDivElement; digest: string[]; unmount: () => Promise<void> }> {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   const container = document.createElement("div");
   document.body.append(container);
@@ -91,8 +91,9 @@ async function render(
       activeLeafId={source.forestEntries?.at(-1)?.id ?? null}
     />,
   ));
-  const rows = container.querySelector(".max-w-3xl");
+  const rows = container.querySelector("[data-conversation-content]");
   return {
+    container,
     digest: [...(rows?.children ?? [])].map(rowDigest),
     unmount: async () => { await act(async () => root.unmount()); container.remove(); },
   };
@@ -161,4 +162,22 @@ describe("golden streams, rendered", () => {
       expect(durable, `${harness} replays as a different transcript than it streamed`).toEqual(live);
     }
   });
+});
+
+
+it("renders a distinct finished cue for an ACP action, including replay", async () => {
+  const frames = acpOtherStream();
+  for (const completed of [false, true]) {
+    const events = completed ? frames : frames.slice(0, 2);
+    for (const source of [{ events }, { forestEntries: durableEntriesFrom("cursor", events) }]) {
+      const view = await render("cursor", source);
+      try {
+        for (const button of view.container.querySelectorAll('button[aria-expanded="false"]')) {
+          if (/steps?/.test(button.textContent ?? "")) await act(async () => button.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+        }
+        expect(view.container.textContent).toContain(`${completed ? "Finished" : "Running"}: Resolve project context`);
+        expect(view.container.textContent).not.toContain(`${completed ? "Running" : "Finished"}: Resolve project context`);
+      } finally { await view.unmount(); }
+    }
+  }
 });

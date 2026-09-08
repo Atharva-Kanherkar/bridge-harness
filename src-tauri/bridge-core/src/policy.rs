@@ -591,6 +591,7 @@ impl UsageReport {
                     "cacheReadTokens",
                     "cached_input_tokens",
                     "cache_read_input_tokens",
+                    "cachedInputTokens",
                 ],
             ),
             cache_write_tokens: integer_alias(
@@ -599,6 +600,7 @@ impl UsageReport {
                     "cache_write_tokens",
                     "cacheWriteTokens",
                     "cache_creation_input_tokens",
+                    "cacheWriteInputTokens",
                 ],
             ),
             uncached_input_tokens: integer_alias(
@@ -739,6 +741,24 @@ pub fn record_provider_usage(
         row.task_family = Some(prompt.task_family);
         row.restoration_mode = Some(prompt.restoration_mode);
         row.cross_harness_reuse = Some(prompt.cross_harness_reuse);
+    }
+    // A compilation binds to one turn per launch, while a session runs many
+    // turns, so most rows find no match above and used to land with every
+    // dimension NULL — 13,178 of them locally. Harness and model are the two
+    // the session itself already knows; the rest genuinely belong to a
+    // compilation and stay NULL rather than being invented here.
+    if row.harness.is_none() {
+        if let Some((harness, model)) = store::session_harness_and_model(db, session_id)? {
+            row.harness = Some(harness);
+            // The model of record is the one Bridge asked for. If the provider
+            // reroutes mid-turn — Codex emits `model/rerouted`, which nothing
+            // persists — this attributes the usage to the requested model. That
+            // is the same attribution `prompt_compilations.model` already gives
+            // every bound row, so the fallback is consistent rather than newly
+            // wrong; correcting it means carrying a per-request serving model,
+            // which is its own change.
+            row.model = row.model.or(model);
+        }
     }
     store::append_usage_ledger(db, &row)?;
     Ok(true)
@@ -1619,6 +1639,156 @@ mod tests {
         .unwrap());
         let rows = store::usage_ledger(&db, "w", Some("parent")).unwrap();
         assert_eq!(rows[2].uncached_input_tokens, Some(5));
+    }
+
+    #[test]
+    fn codex_usage_reports_the_request_not_the_thread_total() {
+        let events = crate::agent::normalize_codex_message(&json!({
+            "method":"thread/tokenUsage/updated",
+            "params":{
+                "threadId":"thread-1",
+                "turnId":"turn-1",
+                "tokenUsage":{
+                    "total":{"totalTokens":900,"inputTokens":800,"cachedInputTokens":700,"cacheWriteInputTokens":50,"outputTokens":100,"reasoningOutputTokens":40},
+                    "last":{"totalTokens":90,"inputTokens":80,"cachedInputTokens":70,"cacheWriteInputTokens":5,"outputTokens":10,"reasoningOutputTokens":4},
+                    "modelContextWindow":272000
+                }
+            }
+        }));
+        let data = &events
+            .iter()
+            .find(|event| event.kind == "usage.updated")
+            .unwrap()
+            .data;
+        let report = UsageReport::from_normalized(data).unwrap();
+        assert_eq!(report.input_tokens, Some(80));
+        assert_eq!(report.output_tokens, Some(10));
+        assert_eq!(report.cache_read_tokens, Some(70));
+        assert_eq!(report.cache_write_tokens, Some(5));
+        // Codex reports no uncached figure of its own; `record_provider_usage`
+        // derives it, because `inputTokens` is inclusive of both cache figures.
+        assert_eq!(report.uncached_input_tokens, None);
+    }
+
+    #[test]
+    fn a_codex_frame_without_a_last_breakdown_records_nothing() {
+        // The regression this guards: the normalizer preserves the raw frame so
+        // `modelContextWindow` stays readable, and without an explicit `usage`
+        // key the recursive alias search reaches `tokenUsage.total` and books
+        // the cumulative thread counter as if it were one request.
+        let events = crate::agent::normalize_codex_message(&json!({
+            "method":"thread/tokenUsage/updated",
+            "params":{
+                "threadId":"thread-1",
+                "turnId":"turn-1",
+                "tokenUsage":{
+                    "total":{"totalTokens":900,"inputTokens":800,"cachedInputTokens":700,"outputTokens":100},
+                    "modelContextWindow":272000
+                }
+            }
+        }));
+        let data = &events
+            .iter()
+            .find(|event| event.kind == "usage.updated")
+            .unwrap()
+            .data;
+        assert!(UsageReport::from_normalized(data).is_none());
+
+        let db = database();
+        assert!(!record_provider_usage(&db, "w", "parent", Some("turn-1"), "provider.codex", data)
+            .unwrap());
+        assert!(store::usage_ledger(&db, "w", Some("parent")).unwrap().is_empty());
+    }
+
+    #[test]
+    fn camel_case_codex_cache_aliases_resolve() {
+        let report = UsageReport::from_normalized(&json!({
+            "usage": {"cachedInputTokens": 12, "cacheWriteInputTokens": 3}
+        }))
+        .unwrap();
+        assert_eq!(report.cache_read_tokens, Some(12));
+        assert_eq!(report.cache_write_tokens, Some(3));
+    }
+
+    #[test]
+    fn provider_usage_falls_back_to_the_session_harness() {
+        let db = database();
+        // No compilation is bound to this turn, which is the common case once a
+        // session runs more than one turn per launch.
+        assert!(record_provider_usage(
+            &db,
+            "w",
+            "parent",
+            Some("turn-unbound"),
+            "provider.codex",
+            &json!({"usage":{"input_tokens":10,"cache_read_tokens":4,"cache_write_tokens":1}}),
+        )
+        .unwrap());
+        let rows = store::usage_ledger(&db, "w", Some("parent")).unwrap();
+        assert_eq!(rows[0].harness.as_deref(), Some("codex"));
+        // Only the session's own dimensions are filled in; the rest still
+        // belong to a compilation.
+        assert_eq!(rows[0].stable_prefix_id, None);
+        assert_eq!(rows[0].role, None);
+        assert_eq!(rows[0].restoration_mode, None);
+        assert_eq!(rows[0].cross_harness_reuse, None);
+        // input includes both cache figures for Codex, so uncached nets out.
+        assert_eq!(rows[0].uncached_input_tokens, Some(5));
+
+        // A matching compilation still wins over the session row.
+        let compilation = crate::model::PromptCompilationRecord {
+            id: 0,
+            session_id: "parent".into(),
+            turn_id: None,
+            prefix_id: "bridge-prompt-v1-deadbeef".into(),
+            prefix_hash: "deadbeef".into(),
+            schema_version: 1,
+            prefix_bytes: 400,
+            prefix_token_estimate: 100,
+            harness: "claude".into(),
+            model: Some("sonnet".into()),
+            role: "orchestrator".into(),
+            task_family: "orchestration".into(),
+            restoration_mode: "fresh".into(),
+            cross_harness_reuse: "not_applicable".into(),
+            created_at: "now".into(),
+            sections_json: None,
+            stable_bytes: None,
+            variable_bytes: None,
+            stable_token_estimate: None,
+            variable_token_estimate: None,
+            token_estimate_source: None,
+        };
+        store::record_prompt_compilation(&db, &compilation).unwrap();
+        assert!(store::bind_latest_prompt_compilation_to_turn(&db, "parent", "turn-bound").unwrap());
+        assert!(record_provider_usage(
+            &db,
+            "w",
+            "parent",
+            Some("turn-bound"),
+            "provider.claude",
+            &json!({"usage":{"input_tokens":4}}),
+        )
+        .unwrap());
+        let rows = store::usage_ledger(&db, "w", Some("parent")).unwrap();
+        assert_eq!(rows[1].harness.as_deref(), Some("claude"));
+        assert_eq!(rows[1].model.as_deref(), Some("sonnet"));
+    }
+
+    #[test]
+    fn uncached_input_never_goes_negative() {
+        let db = database();
+        assert!(record_provider_usage(
+            &db,
+            "w",
+            "parent",
+            None,
+            "provider.codex",
+            &json!({"usage":{"input_tokens":3,"cache_read_tokens":4,"cache_write_tokens":2}}),
+        )
+        .unwrap());
+        let rows = store::usage_ledger(&db, "w", Some("parent")).unwrap();
+        assert_eq!(rows[0].uncached_input_tokens, Some(0));
     }
 
     fn database() -> Connection {

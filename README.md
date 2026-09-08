@@ -140,6 +140,12 @@ To run the complete desktop application with the Rust shell, provider supervisio
 bun run tauri dev
 ```
 
+The package script stages the native browser host and daemon before starting
+Tauri's dev-server readiness timer. This allows a cold Rust build to finish even
+when it takes more than three minutes. Use this package script for desktop
+development; direct Tauri CLI invocations require the native helpers to be staged
+first.
+
 When debugging provider discovery, confirm the binaries are visible to the same environment that launches the app:
 
 ```sh

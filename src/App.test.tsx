@@ -224,6 +224,22 @@ describe("the dock in the session view", () => {
     expect(welcomeCalls.some(args => args[1] === "Build session supervisor")).toBe(false);
   });
 
+  it("cancels new orchestrator setup without creating a session", async () => {
+    await mountApp();
+    await click(container.querySelector<HTMLButtonElement>('button[aria-label="Projects"]')!);
+    const create = vi.spyOn(bridgeApi, "createWorkspaceSession");
+    const open = () => click([...container.querySelectorAll<HTMLButtonElement>("button")].find(button => button.textContent?.trim() === "New agent")!);
+    await open();
+    expect(container.querySelector('[aria-labelledby="orchestrator-create-title"]')).not.toBeNull();
+    await click(container.querySelector<HTMLButtonElement>('button[aria-label="Cancel new orchestrator"]')!);
+    expect(create).not.toHaveBeenCalled();
+    await open();
+    await key({ key: "Escape" });
+    expect(create).not.toHaveBeenCalled();
+    expect(container.querySelector('[aria-labelledby="orchestrator-create-title"]:not([aria-hidden="true"])')).toBeNull();
+    create.mockRestore();
+  });
+
   it("keeps the conversation and an open pane on screen together, with the composer usable", async () => {
     await mountApp();
     await openWorkspaceSession("4 files");
@@ -580,7 +596,7 @@ describe("the dock in the session view", () => {
   // AppTitleBar is the only <header> in the flush/no-brand form the shell
   // mounts it in; other components (worker cards, plan cards, …) also render
   // a bare <header>, so this pins on the flush-specific class instead.
-  const appTitleBar = () => container.querySelector("header.bg-transparent");
+  const appTitleBar = () => container.querySelector('header[data-tauri-drag-region="deep"]');
 
   it("collapses to one chrome row on the session view — no second AppTitleBar strip", async () => {
     await mountApp();
@@ -619,7 +635,7 @@ describe("the dock in the session view", () => {
       box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     });
     await settle(4);
-    const aside = container.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Claude"]')!;
+    const aside = document.body.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Claude"]')!;
     expect(aside).not.toBeNull();
     expect(aside.textContent).toContain("is the plan sound?");
     // The chat underneath never moved.
@@ -628,7 +644,7 @@ describe("the dock in the session view", () => {
     // Promote: the aside becomes the active chat and the panel goes away.
     const promote = [...aside.querySelectorAll("button")].find(button => button.textContent?.includes("Open as chat"))!;
     await click(promote);
-    expect(container.querySelector('div[role="dialog"][aria-label^="Aside"]')).toBeNull();
+    expect(document.body.querySelector('div[role="dialog"][aria-label^="Aside"]')).toBeNull();
     expect(container.querySelector("h1")!.textContent).toContain("is the plan sound?");
   });
 
@@ -654,7 +670,7 @@ describe("the dock in the session view", () => {
     await type("$claude review the plan");
     const createSpy = vi.spyOn(bridgeApi, "createAsideChat");
     await type("$codex sanity check");
-    const aside = container.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Codex"]');
+    const aside = document.body.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Codex"]');
     expect(aside).not.toBeNull();
     expect(createSpy).toHaveBeenCalledWith(expect.any(String), "codex", "gpt-5.6-terra", expect.anything());
   });
@@ -672,7 +688,7 @@ describe("the dock in the session view", () => {
     });
     await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
     await settle(8);
-    const aside = container.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Claude"]')!;
+    const aside = document.body.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Claude"]')!;
     const pill = aside.querySelector<HTMLButtonElement>('[aria-label^="Aside model:"]')!;
     expect(pill).not.toBeNull();
     const updateSpy = vi.spyOn(bridgeApi, "updateChatModel");
@@ -682,6 +698,166 @@ describe("the dock in the session view", () => {
     const asideId = updateSpy.mock.calls[0]?.[0];
     expect(updateSpy).toHaveBeenCalledWith(asideId, "claude", "opus");
     expect(asideId).not.toBe("session-1");
+  });
+
+  // Contract: the /btw side chat. The command is Bridge's, not a turn for the
+  // open chat: the question opens beside this conversation with its context,
+  // the chat underneath keeps its selection, its forest, and its composer —
+  // and the turn is delivered to the aside session, never to the parent.
+  it("opens /btw as a side chat that reads the parent and never writes to it", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    const titleBefore = container.querySelector("h1")!.textContent;
+    const createSpy = vi.spyOn(bridgeApi, "createAsideChat");
+    const submitSpy = vi.spyOn(bridgeApi, "submitInput");
+    const type = async (text: string) => {
+      const box = composer()!;
+      await act(async () => {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+        setter.call(box, text);
+        box.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+      await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+      await settle(4);
+    };
+    await type("/btw is the plan sound?");
+    const aside = document.body.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Claude"]');
+    expect(aside).not.toBeNull();
+    expect(aside!.textContent).toContain("is the plan sound?");
+    // The parent chat never moved and its composer is clean.
+    expect(container.querySelector("h1")!.textContent).toBe(titleBefore);
+    expect(composer()!.value).toBe("");
+    // The turn went to the aside session, never to the consulted chat.
+    const sourceId = createSpy.mock.calls[0]?.[0];
+    expect(sourceId).toBeTruthy();
+    expect(submitSpy).toHaveBeenCalled();
+    for (const call of submitSpy.mock.calls) expect(call[0]).not.toBe(sourceId);
+  });
+
+  it("treats /side as the same side-chat command", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    const box = composer()!;
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "/side what did we pick?");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await settle(4);
+    expect(document.body.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Claude"]')).not.toBeNull();
+    expect(composer()!.value).toBe("");
+  });
+
+  it("answers a bare /btw with guidance instead of opening an empty aside", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    const box = composer()!;
+    // A refused ask costs nothing: the image stays on the composer with the
+    // draft, because it was never handed to an aside.
+    const file = new File(["fake-image-bytes"], "refused.png", { type: "image/png" });
+    const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, "clipboardData", {
+      value: { items: [{ kind: "file", type: "image/png", getAsFile: () => file }] },
+    });
+    await act(async () => { box.dispatchEvent(pasteEvent); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "/btw");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await settle(4);
+    expect(document.body.querySelector('div[role="dialog"][aria-label^="Aside"]')).toBeNull();
+    expect(container.textContent).toContain("Ask a side question");
+    // The draft and its attachment survive the refusal for the retry.
+    expect(box.value).toBe("/btw");
+    expect(container.querySelectorAll("img").length).toBeGreaterThan(0);
+  });
+
+  // Contract: selection opens a side chat. Selecting prose in the transcript
+  // raises an "Ask aside" chip; clicking it opens the side chat with the
+  // excerpt quoted as its first message — the parent conversation untouched.
+  it("offers Ask aside on a transcript selection and quotes the excerpt", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    const transcriptRow = container.querySelector<HTMLElement>("[id^='forest-entry-']");
+    const selectable = transcriptRow
+      ?? [...container.querySelectorAll("h1, h2, p")].find(node => (node.textContent ?? "").trim().length > 3);
+    expect(selectable).toBeTruthy();
+    const range = document.createRange();
+    range.selectNodeContents(selectable!);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    await act(async () => { document.dispatchEvent(new Event("selectionchange")); });
+    await settle(2);
+    const chip = container.querySelector<HTMLButtonElement>("[data-ask-aside-chip]");
+    expect(chip).not.toBeNull();
+    await click(chip!);
+    await settle(4);
+    const aside = document.body.querySelector<HTMLElement>('div[role="dialog"][aria-label^="Aside with"]')!;
+    expect(aside).not.toBeNull();
+    const expectedQuote = (selectable!.textContent ?? "").trim();
+    expect(aside.textContent).toContain(expectedQuote);
+    // The selection is spent and the chip gone.
+    expect(window.getSelection()!.isCollapsed).toBe(true);
+    expect(container.querySelector("[data-ask-aside-chip]")).toBeNull();
+  });
+
+  // The chip speaks only for its own transcript: the parent conversation stays
+  // mounted under an aside panel, and the chrome carries selectable text of
+  // its own, so a selection anchored outside the transcript must not raise it.
+  it("does not offer Ask aside for selections outside the transcript", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    const title = [...container.querySelectorAll("h1, h2")].find(node => (node.textContent ?? "").trim().length > 3);
+    expect(title).toBeTruthy();
+    const range = document.createRange();
+    range.selectNodeContents(title!);
+    const selection = window.getSelection()!;
+    selection.removeAllRanges();
+    selection.addRange(range);
+    await act(async () => { document.dispatchEvent(new Event("selectionchange")); });
+    await settle(2);
+    expect(container.querySelector("[data-ask-aside-chip]")).toBeNull();
+  });
+
+  // An image on the composer is not stranded by the side-chat command: the
+  // attachments ride along as the aside's first-message attachments — the same
+  // delivery the aside's own composer uses — and the parent composer is left
+  // clean.
+  it("carries composer attachments with the /btw side chat's first message", async () => {
+    await mountApp();
+    await openWorkspaceSession("4 files");
+    const box = composer()!;
+    const file = new File(["fake-image-bytes"], "side.png", { type: "image/png" });
+    const pasteEvent = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(pasteEvent, "clipboardData", {
+      value: { items: [{ kind: "file", type: "image/png", getAsFile: () => file }] },
+    });
+    await act(async () => { box.dispatchEvent(pasteEvent); });
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
+    const submitSpy = vi.spyOn(bridgeApi, "submitInput");
+    const createSpy = vi.spyOn(bridgeApi, "createAsideChat");
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
+      setter.call(box, "/btw what does this screenshot break?");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => { box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true })); });
+    await settle(6);
+    const aside = document.body.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Claude"]')!;
+    expect(aside).not.toBeNull();
+    expect(aside.textContent).toContain("what does this screenshot break?");
+    const sourceId = createSpy.mock.calls[0]?.[0];
+    const carried = submitSpy.mock.calls.find(([id, , attachments]) => id !== sourceId && attachments && attachments.length === 1);
+    expect(carried).toBeTruthy();
+    // The parent composer is clean: every rendered image lives inside the
+    // aside panel (its pending bubble), none on the chat underneath.
+    const outside = [...container.querySelectorAll("img")].filter(img => !aside.contains(img));
+    expect(outside).toHaveLength(0);
   });
 
   it("keeps AppTitleBar unchanged on every other view", async () => {

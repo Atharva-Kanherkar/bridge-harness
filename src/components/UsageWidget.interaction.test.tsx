@@ -173,16 +173,13 @@ describe("UsageWidget panel shell", () => {
     MotionGlobalConfig.skipAnimations = false;
   });
 
-  it("is a flat surface that scrolls its own content rather than clipping it", async () => {
+  it("uses a material surface that scrolls its own content rather than clipping it", async () => {
     await act(async () => {
       root.render(<UsageWidget compact usage={{}} />);
     });
     const card = container.querySelector<HTMLElement>("#usage-health-panel > div")!;
-    expect(card.className).toContain("bg-popover");
-    expect(card.className).toContain("border-border");
-    // No elevation: nothing here carries a drop shadow.
+    expect(card.className).toContain("u-glass-popover");
     expect(card.className).not.toContain("u-overlay");
-    expect(card.className).not.toContain("u-glass");
     expect(card.className).not.toContain("shadow");
     // Content-sized, capped at the viewport, scrolling inside the cap.
     expect(card.className).toContain("max-h-[80dvh]");
@@ -194,13 +191,30 @@ describe("UsageWidget panel shell", () => {
     expect(container.querySelector('[role="separator"]')).toBeNull();
   });
 
+  it("keeps a tall context popover between its composer and the toolbar on resize", async () => {
+    await act(async () => {
+      root.render(<main><div data-composer-frame><UsageWidget compact usage={{}} /></div></main>);
+    });
+    const frame = container.querySelector<HTMLElement>("[data-composer-frame]")!;
+    const main = container.querySelector("main")!;
+    const frameRect = vi.spyOn(frame, "getBoundingClientRect").mockReturnValue({ top: 520 } as DOMRect);
+    const mainRect = vi.spyOn(main, "getBoundingClientRect").mockReturnValue({ top: 44 } as DOMRect);
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-controls="usage-health-panel"]')!.click(); });
+    const card = container.querySelector<HTMLElement>("#usage-health-panel > div")!;
+    expect(card.style.maxHeight).toBe("464px");
+    frameRect.mockReturnValue({ top: 360 } as DOMRect);
+    await act(async () => { window.dispatchEvent(new Event("resize")); });
+    expect(card.style.maxHeight).toBe("304px");
+    frameRect.mockRestore(); mainRect.mockRestore();
+  });
+
   it("caps and scrolls the non-compact panel the same way", async () => {
     await act(async () => {
       root.render(<UsageWidget usage={{}} />);
     });
     const card = container.querySelector<HTMLElement>("#usage-health-panel > div")!;
     expect(card.className).toContain("max-h-[80dvh]");
-    expect(card.className).toContain("w-[390px]");
+    expect(card.className).toContain("w-[440px]");
     expect(card.className).not.toContain("shadow");
     expect((card.firstElementChild as HTMLElement).className).toContain("overflow-y-auto");
   });

@@ -49,9 +49,50 @@ export function stripWorkerResultBlocks(text: string): string {
   return kept.join("\n").trim();
 }
 
+class StreamingCandidates {
+  private nodes = new Map<ConversationItem, { previous?: ConversationItem; next?: ConversationItem }>();
+  private tail?: ConversationItem;
+  private order = new WeakMap<ConversationItem, number>();
+  private nextOrder = 0;
+
+  register(item: ConversationItem): void { this.order.set(item, this.nextOrder++); }
+
+  update(item: ConversationItem): void {
+    if (item.status !== "streaming") { this.delete(item); return; }
+    if (this.nodes.has(item)) return;
+    if (!this.order.has(item)) this.register(item);
+    let previous = this.tail;
+    let next: ConversationItem | undefined;
+    while (previous && this.order.get(previous)! > this.order.get(item)!) {
+      next = previous;
+      previous = this.nodes.get(previous)?.previous;
+    }
+    this.nodes.set(item, { previous, next });
+    if (previous) this.nodes.get(previous)!.next = item;
+    if (next) this.nodes.get(next)!.previous = item;
+    else this.tail = item;
+  }
+
+  delete(item: ConversationItem): void {
+    const node = this.nodes.get(item);
+    if (!node) return;
+    if (node.previous) this.nodes.get(node.previous)!.next = node.next;
+    if (node.next) this.nodes.get(node.next)!.previous = node.previous;
+    if (this.tail === item) this.tail = node.previous;
+    this.nodes.delete(item);
+  }
+
+  *reverse(): Generator<ConversationItem> {
+    let item = this.tail;
+    while (item) { yield item; item = this.nodes.get(item)?.previous; }
+  }
+}
+
 /** Working state. One object so every step is visibly a fold over it. */
 interface Fold {
   items: Map<string, ConversationItem>;
+  assistantCandidates: StreamingCandidates;
+  thinkingCandidates: StreamingCandidates;
   /** Requests an answer can name, keyed `<scope>:<requestEventId>`. */
   requests: Map<string, ConversationItem>;
   /** Rows a later lifecycle half can join, keyed by provider item id. */
@@ -93,6 +134,8 @@ interface Fold {
 export function reduceTranscript(events: TranscriptEvent[]): ConversationItem[] {
   const fold: Fold = {
     items: new Map(),
+    assistantCandidates: new StreamingCandidates(),
+    thinkingCandidates: new StreamingCandidates(),
     requests: new Map(),
     byItemId: new Map(),
     internal: new Set(),
@@ -169,6 +212,7 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
       item.text += event.text;
       item.status = "streaming";
       item.eventId = envelope.eventId;
+      if (item.role !== "user") fold.assistantCandidates.update(item);
       if (internalProse) fold.internal.add(item);
       return;
     }
@@ -196,6 +240,8 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
       if (adopted && envelope.key && item.key !== envelope.key) rekey(fold, item, envelope.key);
       if (envelope.itemId) item.itemId = envelope.itemId;
       if (internalProse) fold.internal.add(item);
+      if (item.role !== "user") fold.assistantCandidates.update(item);
+      else fold.assistantCandidates.delete(item);
       return;
     }
 
@@ -210,6 +256,7 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
       item.status = "streaming";
       item.eventId = envelope.eventId;
       if (envelope.itemId) index(fold, item, envelope.itemId, true);
+      fold.thinkingCandidates.update(item);
       return;
     }
 
@@ -221,6 +268,7 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
       const target = held ?? adopted;
       if (target) {
         target.status = event.status;
+        fold.thinkingCandidates.update(target);
         if (event.text) target.text = event.text;
         else if (!target.text && event.summary) target.text = event.summary;
         if (event.type === "thinking.completed" && event.title) target.title = event.title;
@@ -344,11 +392,13 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
 
     case "checkpoint":
     case "compaction":
+    case "context.compacted":
     case "branch.summary":
     case "error":
     case "notice": {
       const type: ConversationItemType = event.type === "checkpoint" ? "checkpoint"
         : event.type === "compaction" ? "compaction"
+        : event.type === "context.compacted" ? "context-compacted"
         : event.type === "branch.summary" ? "branch-summary"
         : event.type === "error" ? "error"
         : "activity";
@@ -356,6 +406,17 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
       item.status = event.status ?? item.status;
       item.title = event.title || item.title;
       item.role = event.type === "notice" ? event.role ?? item.role : item.role;
+      if (event.text) item.text = event.text;
+      item.data = { ...item.data, ...envelope.providerData };
+      return;
+    }
+
+    case "model.change": {
+      // The switch milestone: its own item type, so grouping and rendering
+      // never branch on a payload field to find it.
+      const item = upsert(fold, event, "model-change", { title: event.title, status: event.status });
+      item.status = event.status ?? item.status;
+      item.title = event.title || item.title;
       if (event.text) item.text = event.text;
       item.data = { ...item.data, ...envelope.providerData };
       return;
@@ -393,6 +454,14 @@ function applyEvent(fold: Fold, event: TranscriptEvent): void {
 function place(fold: Fold, seed: Omit<ConversationItem, "turn">): ConversationItem {
   const item: ConversationItem = { ...seed, turn: fold.turn };
   fold.items.set(item.key, item);
+  if (item.type === "reasoning") {
+    fold.thinkingCandidates.register(item);
+    fold.thinkingCandidates.update(item);
+  }
+  if (item.type === "message") {
+    fold.assistantCandidates.register(item);
+    if (item.role !== "user") fold.assistantCandidates.update(item);
+  }
   // What tells a turn marker's empty turn apart from a turn that has run.
   fold.turnHasContent = true;
   return item;
@@ -427,6 +496,10 @@ function rekey(fold: Fold, item: ConversationItem, key: string): void {
   fold.items.delete(item.key);
   item.key = key;
   fold.items.set(key, item);
+  const candidates = item.type === "reasoning" ? fold.thinkingCandidates : fold.assistantCandidates;
+  candidates.delete(item);
+  candidates.register(item);
+  candidates.update(item);
 }
 
 /**
@@ -482,12 +555,15 @@ function settleThinking(fold: Fold): void {
   // `thinking.started` frame to "streaming", but a provider or an older
   // durable entry may still label it "inProgress".
   for (const item of fold.items.values()) {
-    if (item.type === "reasoning" && (item.status === "streaming" || item.status === "inProgress")) item.status = "completed";
+    if (item.type === "reasoning" && (item.status === "streaming" || item.status === "inProgress")) {
+      item.status = "completed";
+      fold.thinkingCandidates.delete(item);
+    }
   }
 }
 
 function lastStreamingThinking(fold: Fold): ConversationItem | undefined {
-  for (const candidate of [...fold.items.values()].reverse()) {
+  for (const candidate of fold.thinkingCandidates.reverse()) {
     if (candidate.type === "reasoning" && candidate.status === "streaming") return candidate;
   }
   return undefined;
@@ -501,7 +577,7 @@ function adoptStreamingAssistant(
   if (role === "user") return undefined;
   const completed = text.trim();
   if (!completed) return undefined;
-  for (const candidate of [...fold.items.values()].reverse()) {
+  for (const candidate of fold.assistantCandidates.reverse()) {
     if (candidate.type !== "message" || candidate.role === "user" || candidate.status !== "streaming") continue;
     const streamed = candidate.text.trim();
     if (streamed && (completed === streamed || completed.startsWith(streamed))) return candidate;

@@ -213,7 +213,7 @@ describe("copy affordances (interactive)", () => {
     // become its `position: fixed` containing block and clip it to the bubble.
     // It therefore lives outside the message container, not inside it.
     expect(container.querySelector('[aria-label="Exit fullscreen"]')).toBeNull();
-    const overlay = document.body.querySelector('.fixed.inset-0') as HTMLElement;
+    const overlay = document.body.querySelector('[role="dialog"][aria-label="HTML preview"]') as HTMLElement;
     expect(overlay).toBeTruthy();
     expect(container.contains(overlay)).toBe(false);
     const iframe = overlay.querySelector("iframe") as HTMLIFrameElement;

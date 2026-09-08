@@ -24,7 +24,10 @@ pub enum SlashDispatch {
     Expand { text: String },
     /// Bridge-handled: refresh account usage for the session harness.
     Usage,
-    /// Bridge-handled: run forest compaction.
+    /// Bridge-routed: ask the harness to compact its own context, falling
+    /// back to a Bridge checkpoint only where the harness has no compaction
+    /// command. `focus` is forwarded where the harness accepts one and
+    /// reported as not applied where it does not.
     Compact { focus: Option<String> },
     /// Bridge-handled: clear provider session / start fresh in this chat.
     Clear,
@@ -36,6 +39,11 @@ pub enum SlashDispatch {
     Pins,
     /// Bridge-handled: tombstone an `account:local` pin.
     Unpin { selector: String },
+    /// Bridge-handled: open a side chat beside this conversation. The side
+    /// chat reads the parent's projected context in its own session and never
+    /// appends to the parent; the composer intercepts the command, so this arm
+    /// only answers clients that submit it directly.
+    SideChat { command: String, query: String },
     /// Known TUI-only command — tell the user it isn't available here.
     Unsupported { name: String, harness: String },
 }
@@ -45,6 +53,12 @@ pub fn list_commands(available: &std::collections::HashSet<String>) -> Vec<Slash
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     let mut out: Vec<SlashCommand> = vec![
+        SlashCommand {
+            name: "btw".into(),
+            description: "Open a side chat that reads this chat's context without touching it".into(),
+            harness: "bridge".into(),
+            kind: "builtin".into(),
+        },
         SlashCommand {
             name: "recall".into(),
             description: "Search this chat's history (this session only)".into(),
@@ -60,6 +74,12 @@ pub fn list_commands(available: &std::collections::HashSet<String>) -> Vec<Slash
         SlashCommand {
             name: "pins".into(),
             description: "List this machine's about-me pins".into(),
+            harness: "bridge".into(),
+            kind: "builtin".into(),
+        },
+        SlashCommand {
+            name: "side".into(),
+            description: "Open a side chat that reads this chat's context without touching it".into(),
             harness: "bridge".into(),
             kind: "builtin".into(),
         },
@@ -175,7 +195,13 @@ pub fn dispatch(
         .map(str::trim)
         .filter(|value| !value.is_empty());
 
-    match name {
+    match name.to_ascii_lowercase().as_str() {
+        "btw" | "side" => {
+            return SlashDispatch::SideChat {
+                command: name.to_ascii_lowercase(),
+                query: args.unwrap_or("").to_string(),
+            };
+        }
         "usage" | "cost" | "stats" => return SlashDispatch::Usage,
         "recall" => {
             return SlashDispatch::Recall {
@@ -266,8 +292,9 @@ pub fn dispatch(
 /// True when Bridge handles the slash locally and must never auto-switch harness.
 pub fn is_bridge_local(name: &str) -> bool {
     matches!(
-        name,
-        "usage"
+        name.to_ascii_lowercase().as_str(),
+        "btw" | "side"
+            | "usage"
             | "cost"
             | "stats"
             | "compact"
@@ -292,7 +319,6 @@ fn is_forwardable_builtin(harness: &str, name: &str) -> bool {
         "security-review",
         "simplify",
         "memory",
-        "btw",
         "doctor",
         "debug",
         "insights",
@@ -307,7 +333,7 @@ fn is_forwardable_builtin(harness: &str, name: &str) -> bool {
         "design-sync",
     ];
     const CODEX: &[&str] = &[
-        "init", "plan", "review", "diff", "mention", "btw", "side", "goal",
+        "init", "plan", "review", "diff", "mention", "goal",
     ];
     match harness {
         "claude" => CLAUDE.iter().any(|value| *value == name),
@@ -477,7 +503,6 @@ fn claude_builtins() -> Vec<SlashCommand> {
             "branch",
             "Branch the conversation to try a different direction",
         ),
-        ("btw", "Ask a side question without adding to history"),
         ("cd", "Move this session to a new working directory"),
         ("chrome", "Configure Claude in Chrome"),
         ("claude-api", "Load Claude API reference material"),
@@ -595,7 +620,6 @@ fn codex_builtins() -> Vec<SlashCommand> {
         ),
         ("apps", "Browse apps/connectors and insert them"),
         ("archive", "Archive the current session and exit"),
-        ("btw", "Start an ephemeral side conversation"),
         ("clear", "Clear the terminal and start a fresh task"),
         ("compact", "Summarize the conversation to free tokens"),
         ("copy", "Copy the latest completed Codex output"),
@@ -634,11 +658,7 @@ fn codex_builtins() -> Vec<SlashCommand> {
             "sandbox-add-read-dir",
             "Grant sandbox read access to a directory",
         ),
-        (
-            "setup-default-sandbox",
-            "Set up the elevated Windows sandbox",
-        ),
-        ("side", "Start an ephemeral side conversation"),
+        ("setup-default-sandbox", "Set up the elevated Windows sandbox"),
         ("skills", "Browse and use skills"),
         ("status", "Display session configuration and token usage"),
         ("statusline", "Configure TUI status-line fields"),
@@ -721,9 +741,16 @@ mod tests {
             dispatch("/clear", "claude", &available),
             SlashDispatch::Clear
         ));
+        // The focus is carried, not merely present: it is forwarded to a
+        // harness that accepts one and reported as ignored by one that does
+        // not, so losing the text here would silently lose the instruction.
         assert!(matches!(
             dispatch("/compact focus on errors", "claude", &available),
-            SlashDispatch::Compact { focus: Some(_) }
+            SlashDispatch::Compact { focus: Some(focus) } if focus == "focus on errors"
+        ));
+        assert!(matches!(
+            dispatch("/compact", "claude", &available),
+            SlashDispatch::Compact { focus: None }
         ));
         assert!(matches!(
             dispatch("/recall what did we decide", "claude", &available),
@@ -749,5 +776,44 @@ mod tests {
         assert!(catalog
             .iter()
             .any(|command| command.name == "pin" && command.harness == "bridge"));
+    }
+
+    #[test]
+    fn side_chat_commands_are_bridge_owned_on_every_harness() {
+        let available = HashSet::from(["claude".into(), "codex".into(), "opencode".into()]);
+        for harness in ["claude", "codex", "opencode"] {
+            assert!(
+                matches!(
+                    dispatch("/btw is the plan sound?", harness, &available),
+                    SlashDispatch::SideChat { command, query }
+                        if command == "btw" && query == "is the plan sound?"
+                ),
+                "/btw must open a side chat, not forward to {harness}"
+            );
+            assert!(matches!(
+                dispatch("/SIDE what did we pick?", harness, &available),
+                SlashDispatch::SideChat { command, .. } if command == "side"
+            ));
+            assert!(is_bridge_local("btw") && is_bridge_local("side"));
+        }
+        // Bare command: still a side-chat request, with an empty question the
+        // caller turns into usage guidance.
+        assert!(matches!(
+            dispatch("/btw", "claude", &available),
+            SlashDispatch::SideChat { query, .. } if query.is_empty()
+        ));
+    }
+
+    #[test]
+    fn side_chat_commands_cannot_be_forwarded_as_provider_builtins() {
+        let available = HashSet::from(["claude".into(), "codex".into(), "opencode".into()]);
+        let catalog = list_commands(&available);
+        for name in ["btw", "side"] {
+            let entries: Vec<_> = catalog.iter().filter(|c| c.name == name).collect();
+            assert_eq!(entries.len(), 1, "{name} must appear exactly once in the catalog");
+            assert_eq!(entries[0].harness, "bridge", "{name} is Bridge-owned, not a provider builtin");
+            assert!(!is_forwardable_builtin("claude", name));
+            assert!(!is_forwardable_builtin("codex", name));
+        }
     }
 }

@@ -23,6 +23,99 @@ use std::{
     time::Duration,
 };
 
+/// Trusted, application-owned context for one turn: Bridge's own words, never
+/// folded into the visible user message.
+///
+/// Two named things rather than one blob, because they are owed for different
+/// reasons and a provider that can name its context entries must not label one
+/// as the other. `session` is the launch's session-context frame
+/// (`session_context.rs`) — capabilities and memory, delivered in the
+/// conversation tail so the system prompt stays byte-stable across restarts.
+/// `credentials` is the per-turn capability contract, present only when the
+/// visible text carries a `[secret:]` marker registered to this session.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TurnContext<'a> {
+    pub session: Option<&'a str>,
+    pub credentials: Option<&'a str>,
+}
+
+/// One present context entry. `name` is the wire key for providers that carry
+/// named context entries (Codex's `additionalContext`); providers whose only
+/// channel is the message body use `value` alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TurnContextEntry<'a> {
+    pub name: &'static str,
+    pub value: &'a str,
+}
+
+impl<'a> TurnContext<'a> {
+    /// The entries actually present, in delivery order: the session frame
+    /// first, because it is the standing contract the per-turn note refines.
+    pub fn entries(&self) -> impl Iterator<Item = TurnContextEntry<'a>> {
+        [
+            ("bridge.session", self.session),
+            ("bridge.credentials", self.credentials),
+        ]
+        .into_iter()
+        .filter_map(|(name, value)| {
+            let value = value.map(str::trim).filter(|value| !value.is_empty())?;
+            Some(TurnContextEntry { name, value })
+        })
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries().next().is_none()
+    }
+}
+
+/// The message a provider gets when the message body is its only channel.
+///
+/// ACP has no system prompt: Cursor and Grok already receive the compiled
+/// prompt folded into their first user message, so Bridge's per-turn context
+/// has nowhere else to go either. Order matters — the launch's instructions,
+/// then the session frame, then the per-turn note, then the user's words,
+/// which stay last and unedited.
+pub fn folded_message(
+    pending_instructions: Option<String>,
+    context: TurnContext<'_>,
+    text: &str,
+) -> String {
+    let mut parts = Vec::new();
+    parts.extend(pending_instructions);
+    parts.extend(context.entries().map(|entry| entry.value.to_owned()));
+    if parts.is_empty() {
+        return text.to_owned();
+    }
+    parts.push(text.to_owned());
+    parts.join("\n\n")
+}
+
+/// What a harness can do with a `/compact` Bridge hands it.
+///
+/// Three states rather than a bool, because the difference between the two
+/// supported ones is something the reply has to say out loud: a harness that
+/// compacts the whole conversation cannot honour a focus, and dropping the
+/// focus in silence would leave the user believing it was applied.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NativeCompaction {
+    /// No command exists. Bridge writes its own checkpoint instead.
+    Unsupported,
+    /// The harness compacts its context and takes a focus instruction.
+    WithFocus,
+    /// The harness compacts its whole context. A focus cannot be forwarded.
+    WholeConversation,
+}
+
+impl NativeCompaction {
+    pub fn is_supported(self) -> bool {
+        !matches!(self, Self::Unsupported)
+    }
+
+    pub fn accepts_focus(self) -> bool {
+        matches!(self, Self::WithFocus)
+    }
+}
+
 pub trait AdapterRuntime: Send {
     fn process_id(&self) -> u32;
     fn provider_session_id(&self) -> &str;
@@ -44,7 +137,7 @@ pub trait AdapterRuntime: Send {
     fn send_turn_with_context(
         &self,
         text: &str,
-        _application_context: &str,
+        _context: TurnContext<'_>,
     ) -> Result<(), BridgeError> {
         self.send_turn(text)
     }
@@ -63,7 +156,7 @@ pub trait AdapterRuntime: Send {
     fn send_turn_with_images(
         &self,
         _text: &str,
-        _application_context: Option<&str>,
+        _context: TurnContext<'_>,
         _images: &[bridge_protocol::messages::TurnImage],
     ) -> Result<(), BridgeError> {
         Err(BridgeError::Invalid(
@@ -122,6 +215,26 @@ pub trait AdapterRuntime: Send {
     /// Providers without an on-demand usage query keep the default no-op.
     fn read_usage(&self) -> Result<(), BridgeError> {
         Ok(())
+    }
+    /// What this harness does with a compaction request Bridge forwards.
+    ///
+    /// The harness owns its live context window, so `/compact` belongs to it
+    /// wherever it has a command for the job. The default is `Unsupported`,
+    /// which is what routes the request to a Bridge checkpoint instead. See
+    /// `docs/compaction-and-resume.md`.
+    fn native_compaction(&self) -> NativeCompaction {
+        NativeCompaction::Unsupported
+    }
+    /// Ask the harness to compact its own context.
+    ///
+    /// `focus` is only ever passed to a runtime that answered
+    /// [`NativeCompaction::WithFocus`]. The default errs rather than returning
+    /// `Ok`: a provider with no compaction command must fail at this seam, not
+    /// report success for a compaction that never happened.
+    fn compact_native(&self, _focus: Option<&str>) -> Result<(), BridgeError> {
+        Err(BridgeError::Invalid(
+            "This provider has no compaction command".into(),
+        ))
     }
     /// Why the provider process died, once it has: exit status plus a bounded
     /// stderr tail. `None` while it is still running or when nothing useful
@@ -232,10 +345,13 @@ pub const PARENT_WATCHDOG_DISABLE_ENV: &str = "BRIDGE_DISABLE_PARENT_WATCHDOG";
 #[cfg(unix)]
 const PARENT_WATCHDOG_SCRIPT: &str = r#"cmd="$1"; shift
 # POSIX shells may attach /dev/null to an asynchronous command's stdin when
-# job control is unavailable. Override that default: ACP is stdio-framed and
-# must inherit the supervisor pipe exactly.
-"$cmd" "$@" <&0 &
+# job control is unavailable. Save the real pipe before spawning: dash applies
+# that default before <&0, so duplicating fd 0 in the child just keeps /dev/null.
+# Close the extra descriptor in both processes after wiring the child's stdin.
+exec 3<&0
+"$cmd" "$@" <&3 3<&- &
 child=$!
+exec 3<&-
 trap 'trap "" TERM INT; /bin/kill -TERM -- -$$ 2>/dev/null' TERM INT
 while kill -0 "$child" 2>/dev/null; do
   ppid=$(ps -o ppid= -p $$ 2>/dev/null | tr -d ' ')
@@ -481,6 +597,11 @@ impl std::fmt::Debug for StartRequest<'_> {
 #[derive(Clone, Copy)]
 pub struct ResumeRequest<'a> {
     pub provider_session_id: &'a str,
+    /// Fork `provider_session_id` into a NEW thread instead of resuming it in
+    /// place. Codex-only (`thread/fork`); other adapters ignore it — which is
+    /// why the native-fork restoration plan refuses adapters without native
+    /// fork support before ever building this request.
+    pub fork: bool,
     pub cwd: &'a str,
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
@@ -497,6 +618,7 @@ impl std::fmt::Debug for ResumeRequest<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("ResumeRequest")
             .field("provider_session_id", &self.provider_session_id)
+            .field("fork", &self.fork)
             .field("cwd", &self.cwd)
             .field("model", &self.model)
             .field("effort", &self.effort)
@@ -521,6 +643,22 @@ pub trait HarnessAdapter: Send + Sync + Any {
     fn start(&self, request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError>;
     fn resume(&self, request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError>;
     fn supports_native_resume(&self) -> bool;
+    /// Whether [`ResumeRequest::fork`] can fork a stored provider thread into
+    /// a new one. Defaults to false: only harnesses with an explicit fork verb
+    /// (Codex `thread/fork`) opt in.
+    fn supports_native_fork(&self) -> bool {
+        false
+    }
+    /// Whether this harness has a compaction command at all.
+    ///
+    /// The static half of the capability, asked without the adapters mutex
+    /// held, because answering it can cost a process launch: Codex reads its
+    /// app-server schema exactly as it does for resume and fork. The runtime's
+    /// [`AdapterRuntime::native_compaction`] refines this with per-session
+    /// state that only the live process knows.
+    fn supports_native_compaction(&self) -> bool {
+        false
+    }
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent>;
     /// Drop any normalization state kept for `provider_session_id`. Called
     /// when the session's runtime is gone; adapters without per-session state
@@ -745,6 +883,11 @@ impl AdapterRegistry {
         let adapter = self.adapters.get(id).ok_or_else(|| {
             BridgeError::Invalid(format!("No structured adapter is registered for {id}"))
         })?;
+        if request.fork && !adapter.supports_native_fork() {
+            return Err(BridgeError::Invalid(format!(
+                "Adapter {id} does not support native thread forks"
+            )));
+        }
         if !adapter.supports_native_resume() {
             return Err(BridgeError::Invalid(format!(
                 "Adapter {id} does not support native resume"
@@ -759,6 +902,18 @@ impl AdapterRegistry {
         self.adapters
             .get(id)
             .is_some_and(|adapter| adapter.supports_native_resume())
+    }
+
+    pub fn supports_native_fork(&self, id: &str) -> bool {
+        self.adapters
+            .get(id)
+            .is_some_and(|adapter| adapter.supports_native_fork())
+    }
+
+    pub fn supports_native_compaction(&self, id: &str) -> bool {
+        self.adapters
+            .get(id)
+            .is_some_and(|adapter| adapter.supports_native_compaction())
     }
 
     pub fn normalize(&self, id: &str, value: &Value) -> Vec<agent::NormalizedEvent> {
@@ -1215,6 +1370,9 @@ impl HarnessAdapter for OpenCodeAdapter {
     fn supports_native_resume(&self) -> bool {
         self.catalog.read().unwrap().is_some()
     }
+    fn supports_native_compaction(&self) -> bool {
+        true
+    }
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent> {
         let session_key = value
             .pointer("/properties/sessionID")
@@ -1393,6 +1551,11 @@ impl HarnessAdapter for CodexAdapter {
     }
     fn descriptor(&self) -> AdapterDescriptor {
         let version = codex_adapter::binary_version();
+        // One owned snapshot releases the read lock before building the
+        // descriptor. Re-entering it can deadlock behind a pending refresh
+        // writer while an earlier field's temporary guard is still alive.
+        let catalog = self.models.read().unwrap().clone();
+        let default_model = promoted_default_model(&catalog.models, "gpt-5.6-luna");
         AdapterDescriptor {
             id: "codex".into(),
             label: "Codex".into(),
@@ -1420,12 +1583,9 @@ impl HarnessAdapter for CodexAdapter {
             unavailable_reason: codex_adapter::resolve_runtime()
                 .is_none()
                 .then(|| "Codex binary is not installed".into()),
-            models: self.models.read().unwrap().models.clone(),
-            default_model: promoted_default_model(
-                &self.models.read().unwrap().models,
-                "gpt-5.6-luna",
-            ),
-            model_catalog: self.models.read().unwrap().diagnostics.clone(),
+            models: catalog.models,
+            default_model,
+            model_catalog: catalog.diagnostics,
         }
     }
     fn refresh_availability(&self) {
@@ -1481,6 +1641,12 @@ impl HarnessAdapter for CodexAdapter {
     }
     fn supports_native_resume(&self) -> bool {
         codex_adapter::supports_native_resume()
+    }
+    fn supports_native_compaction(&self) -> bool {
+        codex_adapter::supports_native_compaction()
+    }
+    fn supports_native_fork(&self) -> bool {
+        codex_adapter::supports_native_fork()
     }
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent> {
         if value.get("id").is_some() && value.get("method").is_some() {
@@ -1549,6 +1715,10 @@ impl HarnessAdapter for ClaudeAdapter {
     }
     fn descriptor(&self) -> AdapterDescriptor {
         let version = claude_adapter::binary_version();
+        // Keep the model list, default, and diagnostics from the same read,
+        // without recursively locking against a concurrent discovery writer.
+        let catalog = self.models.read().unwrap().clone();
+        let default_model = promoted_default_model(&catalog.models, claude_adapter::DEFAULT_MODEL);
         AdapterDescriptor {
             id: "claude".into(),
             label: "Claude Code".into(),
@@ -1579,12 +1749,9 @@ impl HarnessAdapter for ClaudeAdapter {
             .collect(),
             sandbox_modes: SandboxMode::ALL.to_vec(),
             unavailable_reason: claude_adapter::unavailable_reason(),
-            models: self.models.read().unwrap().models.clone(),
-            default_model: promoted_default_model(
-                &self.models.read().unwrap().models,
-                claude_adapter::DEFAULT_MODEL,
-            ),
-            model_catalog: self.models.read().unwrap().diagnostics.clone(),
+            models: catalog.models,
+            default_model,
+            model_catalog: catalog.diagnostics,
         }
     }
     fn refresh_availability(&self) {
@@ -1641,6 +1808,9 @@ impl HarnessAdapter for ClaudeAdapter {
     fn supports_native_resume(&self) -> bool {
         claude_adapter::supports_native_resume()
     }
+    fn supports_native_compaction(&self) -> bool {
+        true
+    }
     fn normalize(&self, value: &Value) -> Vec<agent::NormalizedEvent> {
         let session_key = value
             .get("session_id")
@@ -1663,6 +1833,167 @@ impl HarnessAdapter for ClaudeAdapter {
 mod tests {
     use super::*;
     use crate::model::ModelCatalogDiagnostics;
+
+    fn descriptor_completes_during_catalog_refresh(
+        make_adapter: impl FnOnce(Arc<RwLock<model_catalog::ResolvedCatalog>>) -> Box<dyn HarnessAdapter>,
+    ) {
+        let candidates = (0..model_catalog::MAX_CATALOG_ENTRIES)
+            .map(|index| CatalogCandidate::stable(
+                format!("test-model-{index}"),
+                format!("Test model {index}"),
+                CapabilityTier::Standard,
+                index as i64,
+            ))
+            .collect();
+        let models = Arc::new(RwLock::new(model_catalog::resolve(
+            "test", Ok(candidates), &[], None, chrono::Utc::now(),
+        )));
+        let adapter = make_adapter(models.clone());
+        let stop = Arc::new(AtomicBool::new(false));
+        let start = Arc::new(std::sync::Barrier::new(2));
+        let writer = {
+            let stop = stop.clone();
+            let start = start.clone();
+            thread::spawn(move || {
+                start.wait();
+                let mut generation = 0;
+                while !stop.load(Ordering::Acquire) {
+                    {
+                        let mut current = models.write().unwrap();
+                        let label = generation.to_string();
+                        current.models[0].label = label.clone();
+                        current.diagnostics.last_error = Some(label);
+                    }
+                    generation += 1;
+                    thread::yield_now();
+                }
+            })
+        };
+        let (done, completed) = std::sync::mpsc::channel();
+        let reader = thread::spawn(move || {
+            start.wait();
+            for _ in 0..64 {
+                let descriptor = adapter.descriptor();
+                assert_eq!(descriptor.models.len(), model_catalog::MAX_CATALOG_ENTRIES);
+                assert!(descriptor.models.iter().any(|model| {
+                    Some(&model.id) == descriptor.default_model.as_ref()
+                }));
+                if let Some(generation) = descriptor.model_catalog.last_error {
+                    assert_eq!(descriptor.models[0].label, generation);
+                }
+            }
+            done.send(()).unwrap();
+        });
+        // A recursive read can deadlock behind the pending refresh writer on
+        // Linux. Bound the regression itself so it fails instead of hanging CI.
+        let result = completed.recv_timeout(Duration::from_secs(30));
+        stop.store(true, Ordering::Release);
+        result.expect("descriptor reads must complete while the catalog is refreshed");
+        reader.join().unwrap();
+        writer.join().unwrap();
+    }
+
+    #[test]
+    fn a_provider_with_no_compaction_command_says_so_at_the_seam() {
+        // The default must not be a silent Ok: reporting success for a
+        // compaction that never happened would leave the reader believing a
+        // full context had been relieved.
+        struct Bare;
+        impl AdapterRuntime for Bare {
+            fn process_id(&self) -> u32 { 0 }
+            fn provider_session_id(&self) -> &str { "s" }
+            fn current_turn(&self) -> Arc<Mutex<Option<String>>> { Arc::new(Mutex::new(None)) }
+            fn send_turn(&self, _text: &str) -> Result<(), BridgeError> { Ok(()) }
+            fn interrupt(&self) -> Result<(), BridgeError> { Ok(()) }
+            fn respond(&self, _request_id: Value, _decision: &str) -> Result<(), BridgeError> { Ok(()) }
+            fn stop(&mut self, _reason: ShutdownReason) {}
+        }
+        let bare = Bare;
+        assert_eq!(bare.native_compaction(), NativeCompaction::Unsupported);
+        assert!(!bare.native_compaction().is_supported());
+        assert!(!bare.native_compaction().accepts_focus());
+        assert!(bare.compact_native(None).is_err());
+        assert!(bare.compact_native(Some("the failing test")).is_err());
+    }
+
+    #[test]
+    fn the_static_capability_defaults_to_no_command() {
+        // Read through the registry, off the adapters mutex, because a harness
+        // may have to launch a process to answer. A harness that has not opted
+        // in must answer no without being asked to prove it.
+        struct Bare;
+        impl HarnessAdapter for Bare {
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+            fn descriptor(&self) -> AdapterDescriptor {
+                AdapterDescriptor {
+                    sandbox_modes: crate::model::SandboxMode::ALL.to_vec(),
+                    id: "bare".into(),
+                    label: "Bare".into(),
+                    available: true,
+                    auth_state: crate::model::AuthState::Unknown,
+                    version: Some("1".into()),
+                    capabilities: vec!["messages".into()],
+                    unavailable_reason: None,
+                    models: vec![],
+                    default_model: None,
+                    model_catalog: ModelCatalogDiagnostics::curated(),
+                }
+            }
+            fn start(&self, _request: StartRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+                Err(BridgeError::Invalid("not launched".into()))
+            }
+            fn resume(&self, _request: ResumeRequest<'_>) -> Result<StartedAdapter, BridgeError> {
+                Err(BridgeError::Invalid("not resumed".into()))
+            }
+            fn supports_native_resume(&self) -> bool {
+                false
+            }
+            fn normalize(&self, _value: &Value) -> Vec<agent::NormalizedEvent> {
+                vec![]
+            }
+        }
+        assert!(!Bare.supports_native_compaction());
+        let mut registry = AdapterRegistry::empty();
+        registry.register(Box::new(Bare)).unwrap();
+        assert!(!registry.supports_native_compaction("bare"));
+        assert!(
+            !registry.supports_native_compaction("not-registered"),
+            "an unknown harness answers no rather than panicking"
+        );
+    }
+
+    #[test]
+    fn only_a_focus_accepting_harness_reports_that_it_takes_one() {
+        assert!(NativeCompaction::WithFocus.is_supported());
+        assert!(NativeCompaction::WithFocus.accepts_focus());
+        assert!(NativeCompaction::WholeConversation.is_supported());
+        assert!(
+            !NativeCompaction::WholeConversation.accepts_focus(),
+            "a whole-conversation harness must not claim a focus it cannot honour"
+        );
+    }
+
+    #[test]
+    fn codex_descriptors_complete_during_catalog_refresh() {
+        descriptor_completes_during_catalog_refresh(|models| Box::new(CodexAdapter {
+            streams: Mutex::new(HashMap::new()),
+            models,
+            notify: None,
+            refreshing: Arc::new(AtomicBool::new(false)),
+        }));
+    }
+
+    #[test]
+    fn claude_descriptors_complete_during_catalog_refresh() {
+        descriptor_completes_during_catalog_refresh(|models| Box::new(ClaudeAdapter {
+            streams: Mutex::new(HashMap::new()),
+            models,
+            notify: None,
+            refreshing: Arc::new(AtomicBool::new(false)),
+        }));
+    }
 
     fn discovered(id: &str, label: &str) -> DiscoveredModel {
         DiscoveredModel {
@@ -2076,9 +2407,14 @@ mod tests {
             .unwrap();
         let tail = StderrTail::capture(&mut child);
         child.wait().unwrap();
-        // The capture thread races the wait; poll briefly for the tail.
+        // Waiting for the child does not drain the capture thread. Seeing the
+        // first line ("boot") is not evidence that its final error arrived.
         let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        while tail.snapshot().is_none() && std::time::Instant::now() < deadline {
+        while tail
+            .snapshot()
+            .is_none_or(|text| !text.contains("API error: connection refused"))
+            && std::time::Instant::now() < deadline
+        {
             thread::sleep(Duration::from_millis(10));
         }
         let context = process_failure_context(&mut child, &tail).expect("context after exit");
@@ -2174,6 +2510,36 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn watchdog_preserves_piped_input_in_posix_shells() {
+        use std::io::Write;
+
+        let mut shells = vec![PathBuf::from("/bin/sh")];
+        // macOS's /bin/sh is bash; exercise dash there too when available.
+        // Linux CI already exercises dash through /bin/sh.
+        if let Ok(dash) = which::which("dash") {
+            shells.push(dash);
+        }
+        for shell in shells {
+            let mut command = Command::new(&shell);
+            command
+                .args(["-c", PARENT_WATCHDOG_SCRIPT, "bridge-watchdog", "/bin/cat"])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped());
+            configure_process_group(&mut command);
+            let mut child = command.spawn().unwrap();
+            let input = b"first protocol frame\nsecond protocol frame\n";
+            // Drop the writer before waiting so the real child observes EOF.
+            let write_result = child.stdin.take().unwrap().write_all(input);
+            let output = child.wait_with_output().unwrap();
+            assert!(write_result.is_ok(), "{} closed its input: {write_result:?}", shell.display());
+            assert!(output.status.success(), "{}: {:?}", shell.display(), output);
+            assert_eq!(output.stdout, input, "{} discarded the provider's stdin", shell.display());
+        }
+    }
+
     /// The wrapped child — and anything it forked into the group — must die
     /// when the supervisor is SIGKILLed, the path where no destructor, drain,
     /// or boot recovery can help; and everything must stay up while the
@@ -2258,5 +2624,57 @@ mod tests {
         // The intermediate's own `sleep 600` shares its group; sweep it so
         // the test leaves nothing behind.
         let _ = terminate_process_group(supervisor.id());
+    }
+}
+
+#[cfg(test)]
+mod turn_context_tests {
+    use super::*;
+
+    #[test]
+    fn entries_are_ordered_and_blank_values_are_absent() {
+        let both = TurnContext {
+            session: Some("frame"),
+            credentials: Some("contract"),
+        };
+        assert_eq!(
+            both.entries().collect::<Vec<_>>(),
+            vec![
+                TurnContextEntry { name: "bridge.session", value: "frame" },
+                TurnContextEntry { name: "bridge.credentials", value: "contract" },
+            ]
+        );
+        assert!(!both.is_empty());
+
+        let blank = TurnContext {
+            session: Some("   \n "),
+            credentials: None,
+        };
+        assert!(blank.is_empty(), "whitespace is absence, not an empty claim");
+        assert!(TurnContext::default().is_empty());
+    }
+
+    #[test]
+    fn a_body_only_provider_keeps_the_user_text_last_and_unedited() {
+        let context = TurnContext {
+            session: Some("<bridge-session-context>frame</bridge-session-context>"),
+            credentials: Some("contract"),
+        };
+        let folded = folded_message(Some("compiled prompt".into()), context, "ship it");
+        assert_eq!(
+            folded,
+            "compiled prompt\n\n<bridge-session-context>frame</bridge-session-context>\n\ncontract\n\nship it"
+        );
+
+        // Nothing to prepend must not reshape the message at all: that is the
+        // wire every turn after the first one takes.
+        assert_eq!(
+            folded_message(None, TurnContext::default(), "ship it"),
+            "ship it"
+        );
+        assert_eq!(
+            folded_message(None, context, "ship it"),
+            "<bridge-session-context>frame</bridge-session-context>\n\ncontract\n\nship it"
+        );
     }
 }

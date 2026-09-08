@@ -98,7 +98,7 @@ describe("CreateDialogShell", () => {
 
   it("leaves the entrance to Framer rather than the CSS class", () => {
     render();
-    const panel = host.querySelector(".u-overlay-strong");
+    const panel = host.querySelector(".u-glass-popover");
     expect(panel).not.toBeNull();
     expect(panel?.className).not.toContain("animate-page-enter");
   });
@@ -154,5 +154,29 @@ describe("dialogs built on the shell", () => {
     expect(dialog()).not.toBeNull();
     await settle();
     expect(dialog()).toBeNull();
+  });
+});
+
+
+describe("creation dialog keyboard behavior", () => {
+  it("wraps Tab at both ends and restores the opener on dismissal", async () => {
+    const opener = document.createElement("button"); document.body.append(opener); opener.focus();
+    render();
+    const close = dialog()!.querySelector<HTMLButtonElement>("button")!;
+    const forward = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    act(() => { close.focus(); close.dispatchEvent(forward); });
+    expect(forward.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(close);
+    const backward = new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true });
+    act(() => close.dispatchEvent(backward));
+    expect(backward.defaultPrevented).toBe(true);
+    render({ open: false }); await settle();
+    expect(document.activeElement).toBe(opener); opener.remove();
+  });
+
+  it("ignores scrim and Escape dismissal while creation is busy", () => {
+    const onClose = vi.fn(); render({ closeDisabled: true, dismissOnScrim: true, onClose });
+    act(() => { dialog()!.click(); dialog()!.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

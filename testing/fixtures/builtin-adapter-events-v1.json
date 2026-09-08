@@ -6,8 +6,9 @@
       "messages": [
         { "type": "system", "subtype": "session_ready", "session_id": "claude-session" },
         { "type": "stream_event", "session_id": "claude-session", "event": { "type": "message_start", "message": { "id": "msg-1" } } },
-        { "type": "stream_event", "session_id": "claude-session", "event": { "type": "content_block_delta", "delta": { "type": "text_delta", "text": "hello" } } },
-        { "type": "stream_event", "session_id": "claude-session", "event": { "type": "content_block_delta", "delta": { "type": "thinking_delta", "thinking": "considering" } } },
+        { "type": "stream_event", "session_id": "claude-session", "event": { "type": "content_block_delta", "index": 0, "delta": { "type": "text_delta", "text": "hello" } } },
+        { "type": "stream_event", "session_id": "claude-session", "event": { "type": "content_block_delta", "index": 1, "delta": { "type": "thinking_delta", "thinking": "considering" } } },
+        { "type": "stream_event", "session_id": "claude-session", "event": { "type": "content_block_stop", "index": 1 } },
         { "type": "stream_event", "session_id": "claude-session", "event": { "type": "content_block_start", "content_block": { "type": "tool_use", "id": "tool-1", "name": "Bash" } } },
         { "type": "assistant", "message": { "id": "msg-edit", "content": [{ "type": "tool_use", "id": "tool-3", "name": "Edit", "input": { "file_path": "src/lib.rs", "old_string": "fn a() {}", "new_string": "fn a() { 1 }" } }] } },
         { "type": "control_request", "request_id": "permission-1", "request": { "subtype": "can_use_tool", "tool_use_id": "tool-1", "tool_name": "Bash", "tool_input": { "command": "pwd" } } },
@@ -21,7 +22,8 @@
       "expected": [
         { "kind": "session.started", "status": "ready" },
         { "kind": "message.delta", "itemId": "msg-1", "role": "assistant", "status": "streaming", "text": "hello" },
-        { "kind": "reasoning.delta", "itemId": "reasoning-msg-1", "status": "streaming", "text": "considering" },
+        { "kind": "reasoning.delta", "itemId": "reasoning-msg-1-block-1", "status": "streaming", "text": "considering" },
+        { "kind": "reasoning.completed", "itemId": "reasoning-msg-1-block-1", "status": "completed", "text": "considering" },
         { "kind": "command.started", "itemId": "tool-1", "status": "inProgress", "title": "Bash" },
         { "kind": "file_change.started", "itemId": "tool-3", "status": "inProgress", "title": "Edit" },
         { "kind": "permission.requested", "itemId": "tool-1", "status": "pending", "title": "Run this command?", "text": "pwd", "requestId": "permission-1" },
@@ -29,7 +31,7 @@
         { "kind": "file_change.completed", "itemId": "tool-3", "status": "completed", "text": "edited" },
         { "kind": "tool.completed", "itemId": "tool-2", "status": "failed", "text": "failed", "isError": true },
         { "kind": "message.completed", "itemId": "msg-1", "role": "assistant", "status": "completed", "text": "hello" },
-        { "kind": "reasoning.completed", "itemId": "reasoning-msg-1", "status": "completed", "text": "considered" },
+        { "kind": "reasoning.completed", "itemId": "reasoning-msg-1-block-1", "status": "completed", "text": "considered" },
         { "kind": "turn.completed", "status": "completed" },
         { "kind": "usage.updated", "inputTokens": 10, "outputTokens": 2 },
         { "kind": "turn.completed", "status": "error_during_execution" },
@@ -53,7 +55,7 @@
         { "method": "error", "params": { "error": { "message": "boom" }, "willRetry": false } },
         { "method": "future/event", "params": { "value": 1 } },
         { "method": "turn/completed", "params": { "turn": { "status": "completed" } } },
-        { "method": "thread/tokenUsage/updated", "params": { "inputTokens": 10, "outputTokens": 2 } }
+        { "method": "thread/tokenUsage/updated", "params": { "threadId": "thread-1", "turnId": "turn-1", "tokenUsage": { "total": { "totalTokens": 120, "inputTokens": 100, "cachedInputTokens": 60, "cacheWriteInputTokens": 8, "outputTokens": 20, "reasoningOutputTokens": 5 }, "last": { "totalTokens": 12, "inputTokens": 10, "cachedInputTokens": 6, "cacheWriteInputTokens": 1, "outputTokens": 2, "reasoningOutputTokens": 1 }, "modelContextWindow": 272000 } } }
       ],
       "expected": [
         { "kind": "session.started" },
@@ -70,7 +72,7 @@
         { "kind": "error", "status": "failed", "text": "boom", "willRetry": false },
         { "kind": "provider.unknown", "title": "future/event" },
         { "kind": "turn.completed", "status": "completed" },
-        { "kind": "usage.updated", "inputTokens": 10, "outputTokens": 2 }
+        { "kind": "usage.updated", "turnId": "turn-1", "inputTokens": 10, "outputTokens": 2, "cachedInputTokens": 6, "cacheWriteTokens": 1, "reasoningTokens": 1 }
       ]
     },
     {
@@ -78,7 +80,7 @@
       "messages": [
         { "type": "session.created", "properties": { "sessionID": "session-1" } },
         { "id": "turn-1", "type": "session.status", "properties": { "sessionID": "session-1", "status": { "type": "busy" } } },
-        { "type": "message.updated", "properties": { "sessionID": "session-1", "info": { "id": "msg-1", "role": "assistant", "tokens": { "input": 10, "output": 2, "reasoning": 1, "cache": { "read": 3 } }, "modelID": "model", "providerID": "provider" } } },
+        { "type": "message.updated", "properties": { "sessionID": "session-1", "info": { "id": "msg-1", "role": "assistant", "tokens": { "input": 10, "output": 2, "reasoning": 1, "cache": { "read": 3, "write": 2 } }, "modelID": "model", "providerID": "provider" } } },
         { "type": "message.part.delta", "properties": { "sessionID": "session-1", "messageID": "msg-1", "partID": "part-1", "field": "text", "delta": "hello" } },
         { "type": "message.part.delta", "properties": { "sessionID": "session-1", "messageID": "msg-1", "partID": "reasoning-1", "field": "reasoning", "delta": "considering" } },
         { "type": "message.part.updated", "properties": { "sessionID": "session-1", "part": { "id": "part-1", "messageID": "msg-1", "type": "text", "text": "hello", "time": { "end": 1 } } } },
@@ -93,7 +95,7 @@
       "expected": [
         { "kind": "session.started" },
         { "kind": "turn.started", "status": "working", "turnId": "turn-1" },
-        { "kind": "usage.updated", "itemId": "msg-1", "inputTokens": 10, "outputTokens": 2, "cachedInputTokens": 3, "reasoningTokens": 1, "model": "model", "provider": "provider" },
+        { "kind": "usage.updated", "itemId": "msg-1", "inputTokens": 10, "outputTokens": 2, "cachedInputTokens": 3, "cacheWriteTokens": 2, "reasoningTokens": 1, "model": "model", "provider": "provider" },
         { "kind": "message.delta", "itemId": "part-1", "role": "assistant", "text": "hello" },
         { "kind": "reasoning.delta", "itemId": "reasoning-1", "role": "assistant", "text": "considering" },
         { "kind": "message.completed", "itemId": "part-1", "role": "assistant", "status": "completed", "text": "hello" },

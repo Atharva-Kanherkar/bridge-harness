@@ -23,15 +23,24 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 use uuid::Uuid;
 
-/// How long a model switch waits for the outgoing provider to produce its
-/// handoff summary before falling back to the mechanical projection. Tighter
-/// than [`compaction_controller::CHECKPOINT_TIMEOUT_SECONDS`] because the user
-/// is actively waiting on the switch — and because on the daemon host the wait
-/// holds one pooled connection for its duration. Still long enough for a real
-/// summarisation turn over meaningful history: at the original 6 seconds
-/// nearly every switch with a hot provider timed out, recording a spurious
-/// `compaction.failed` and handing the next model nothing.
-pub const SWITCH_SUMMARY_TIMEOUT_SECONDS: i64 = 20;
+/// Whether a new aside may open as a native Codex thread fork of its source:
+/// same harness (the fork verb belongs to the thread's owner), a stored
+/// non-empty provider thread id to fork from, no turn in flight on the source
+/// (forking a live turn is a race), and an installed Codex that exposes
+/// `thread/fork`. Pure so every caller — and every test — gets the same answer.
+fn aside_fork_eligible(
+    aside_harness: &str,
+    source_harness: &str,
+    source_thread: Option<&str>,
+    source_turn_active: bool,
+    codex_supports_fork: bool,
+) -> bool {
+    aside_harness == "codex"
+        && source_harness == "codex"
+        && source_thread.is_some_and(|thread| !thread.trim().is_empty())
+        && !source_turn_active
+        && codex_supports_fork
+}
 
 /// Below this many tokens on the active branch, a model switch asks for no
 /// handoff summary.
@@ -134,7 +143,8 @@ fn carried_context(db: &Connection, session_id: &str) -> Option<CarriedContext> 
 #[derive(Debug, Clone)]
 pub struct OrchestratorSelection {
     pub adapter_id: String,
-    pub model: String,
+    /// None leaves model selection to the provider when its catalog is not yet available.
+    pub model: Option<String>,
     pub tier: CapabilityTier,
     pub effort: Option<crate::delegation::Effort>,
     pub label: String,
@@ -189,13 +199,29 @@ pub struct ChatModelChange {
     kind: String,
     previous_harness: String,
     previous_model: Option<String>,
-    selected: ModelOption,
+    selected: Option<ModelOption>,
+    tier: CapabilityTier,
+    /// Whether the next turn can resume the stored provider thread under the
+    /// new model. Decided at plan time, when the session row and the adapter
+    /// registry are both in hand: the harness must be unchanged, the adapter
+    /// must support native resume, and a thread must actually be stored.
+    /// Harness equality alone is not enough — an adapter without native
+    /// resume, or a chat that never started, still needs the summary and the
+    /// projection path, or the switch would promise a continuation the next
+    /// start cannot deliver.
+    native_continuation: bool,
 }
 
 impl ChatModelChange {
     /// The model the plan selected (visible for logging and tests).
-    pub fn selected_model(&self) -> &str {
-        &self.selected.id
+    pub fn selected_model(&self) -> Option<&str> {
+        self.selected.as_ref().map(|model| model.id.as_str())
+    }
+
+    /// Whether this change resumes the stored provider thread under the new
+    /// model instead of handing over a summary and starting fresh.
+    pub fn resumes_natively(&self) -> bool {
+        self.native_continuation
     }
 }
 
@@ -252,31 +278,99 @@ impl BridgeCore {
 
     /// Create a source-scoped aside and carry its handoff in the same
     /// transaction. The exact inserted id is returned to prevent races.
+    ///
+    /// Context rides the best channel available. When the aside targets the
+    /// same Codex harness as its source, the source has a stored provider
+    /// thread, that thread is not mid-turn, and the installed Codex exposes
+    /// `thread/fork`, the aside is created already pointed at a NATIVE FORK of
+    /// the source thread: its first cold start forks the source into a new
+    /// thread, so the aside reads the parent conversation's full provider
+    /// history and every write lands on the fork — the parent conversation is
+    /// never appended to, provider-side or forest-side. Anything else falls
+    /// back to the projected handoff brief (stored checkpoint context), which
+    /// is also the fallback ladder's first stop when a fork fails at start
+    /// time.
     pub fn create_aside_chat_id(
         &self,
         source_session_id: &str,
         harness: &Harness,
         model: Option<&str>,
         title: Option<&str>,
-    ) -> Result<(String, bool), BridgeError> {
+    ) -> Result<(String, bool, bool), BridgeError> {
         let adapter_id = store::harness_name(harness);
         let id = Uuid::new_v4().to_string();
         let label = chat_label(title);
+        // Discovered before the database lock: the first call may shell out to
+        // the Codex binary to read its schema, and holding the core lock under
+        // a subprocess would stall every other session operation.
+        let codex_can_fork = adapter_id.as_ref() == "codex" && crate::codex_adapter::supports_native_fork();
         let mut db = self.db.lock().unwrap();
         let transaction = db.transaction()?;
-        let (workspace_id, source_cwd): (Option<String>, Option<String>) = transaction.query_row(
-            "SELECT workspace_id,cwd FROM sessions WHERE id=?1", params![source_session_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+        let (workspace_id, source_cwd, source_harness, source_thread, source_turn): (
+            Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
+            Option<String>,
+        ) = transaction.query_row(
+            "SELECT workspace_id,cwd,harness,provider_session_id,active_turn_id FROM sessions WHERE id=?1",
+            params![source_session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
         ).optional()?.ok_or_else(|| BridgeError::Invalid("Aside source session does not exist".into()))?;
         let cwd = source_cwd.unwrap_or_else(|| self.chat_scratch_dir(&id).to_string_lossy().into_owned());
-        transaction.execute(
-            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,'direct',?6,?7,0)",
-            params![id, workspace_id, adapter_id, label, model, title, cwd],
-        )?;
+        // A fork must target the same harness that owns the thread, on a
+        // source with a resumable thread id and no turn in flight.
+        let native_fork = aside_fork_eligible(
+            adapter_id.as_ref(),
+            &source_harness,
+            source_thread.as_deref(),
+            source_turn.is_some(),
+            codex_can_fork,
+        );
+        let insert_thread = native_fork.then(|| source_thread.clone()).flatten();
+        match insert_thread.as_deref() {
+            Some(thread) => {
+                transaction.execute(
+                    "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth,provider_session_id,continuation_fidelity) VALUES(?1,?2,?3,?4,'idle','estimated',?5,'direct',?6,?7,0,?8,'native')",
+                    params![id, workspace_id, adapter_id, label, model, title, cwd, thread],
+                )?;
+            }
+            None => {
+                transaction.execute(
+                    "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,model,kind,title,cwd,depth) VALUES(?1,?2,?3,?4,'idle','estimated',?5,'direct',?6,?7,0)",
+                    params![id, workspace_id, adapter_id, label, model, title, cwd],
+                )?;
+            }
+        }
         store::event(&transaction, "chat", "aside.created", &id, &format!("Created aside {label} from {source_session_id}"))?;
+        if native_fork {
+            restoration::set_head_state(
+                &transaction,
+                &id,
+                RestorationMode::NativeFork,
+                ResumeEligibility::Native,
+                source_thread.as_deref(),
+            )?;
+            store::event(
+                &transaction,
+                "chat",
+                "aside.native_fork",
+                &id,
+                &format!("Aside {label} will fork Codex thread {thread} on its first turn", thread = source_thread.as_deref().unwrap_or_default()),
+            )?;
+        }
         let carried = handoff::carry_brief_in_transaction(&transaction, &id, source_session_id)?;
+        // The brief is carried either way: it is the fork's checkpoint
+        // fallback if the native fork fails at start time, and the whole
+        // context channel when no fork applies.
+        if !native_fork {
+            transaction.execute(
+                "UPDATE sessions SET continuation_fidelity=?2 WHERE id=?1",
+                params![id, if carried { "projected_at_boundary" } else { "native" }],
+            )?;
+        }
         transaction.commit()?;
-        Ok((id, carried))
+        Ok((id, carried, native_fork))
     }
 
     /// Move a session's conversation head. Publishes the state-changed
@@ -419,7 +513,7 @@ impl BridgeCore {
         persisted
     }
 
-    /// Validate a chat model switch and select the concrete model. Returns
+    /// Validate a chat model switch, allowing provider defaults before discovery. Returns
     /// `None` when the chat already runs the requested harness/model.
     pub fn plan_chat_model_change(
         &self,
@@ -434,14 +528,15 @@ impl BridgeCore {
                 harness.label()
             )));
         }
-        let (kind, previous_harness, previous_model, active_turn_id, parent_session_id): (
+        let (kind, previous_harness, previous_model, provider_session_id, active_turn_id, parent_session_id): (
             String,
             String,
+            Option<String>,
             Option<String>,
             Option<String>,
             Option<String>,
         ) = self.db.lock().unwrap().query_row(
-            "SELECT kind,harness,model,active_turn_id,parent_session_id FROM sessions WHERE id=?1",
+            "SELECT kind,harness,model,provider_session_id,active_turn_id,parent_session_id FROM sessions WHERE id=?1",
             params![session_id],
             |row| {
                 Ok((
@@ -450,6 +545,7 @@ impl BridgeCore {
                     row.get(2)?,
                     row.get(3)?,
                     row.get(4)?,
+                    row.get(5)?,
                 ))
             },
         )?;
@@ -489,12 +585,16 @@ impl BridgeCore {
                 .iter()
                 .find(|option| option.id.eq_ignore_ascii_case(requested.trim()))
                 .cloned()
+                .map(Some)
                 .ok_or_else(|| {
                     BridgeError::Invalid(format!(
                         "{} does not offer model {requested}",
                         descriptor.label
                     ))
                 })?
+        } else if descriptor.models.is_empty() {
+            // The first user-owned session may be what publishes the catalog.
+            None
         } else {
             descriptor
                 .models
@@ -508,6 +608,7 @@ impl BridgeCore {
                         .find(|option| option.tier == default_tier)
                 })
                 .cloned()
+                .map(Some)
                 .ok_or_else(|| {
                     BridgeError::Invalid(format!(
                         "{} has no {} model",
@@ -516,20 +617,32 @@ impl BridgeCore {
                     ))
                 })?
         };
-        if !selected.available || !selected.compatible {
-            return Err(BridgeError::Invalid(format!("{} is not available for this session", selected.label)));
+        if let Some(selected) = &selected {
+            if !selected.available || !selected.compatible {
+                return Err(BridgeError::Invalid(format!("{} is not available for this session", selected.label)));
+            }
         }
-        if previous_harness == adapter_id && previous_model.as_deref() == Some(selected.id.as_str())
+        if previous_harness == adapter_id && previous_model.as_deref() == selected.as_ref().map(|model| model.id.as_str())
         {
             return Ok(None);
         }
+        // Native continuation is an eligibility check, not a harness
+        // comparison: `start_chat` gates `RestorationPlan::Native` on the
+        // adapter's resume support and a stored thread id, so the switch must
+        // apply the same gate before skipping the summary and claiming the
+        // conversation continues. Anything else takes the handover path.
+        let native_continuation = previous_harness == adapter_id
+            && self.adapter_registry.supports_native_resume(adapter_id.as_ref())
+            && provider_session_id.is_some();
         Ok(Some(ChatModelChange {
             session_id: session_id.to_owned(),
             adapter_id: adapter_id.into_owned(),
             kind,
             previous_harness,
             previous_model,
+            tier: selected.as_ref().map_or(default_tier, |model| model.tier),
             selected,
+            native_continuation,
         }))
     }
 
@@ -540,6 +653,9 @@ impl BridgeCore {
         if let Some(mut runtime) = self.adapters.lock().unwrap().remove(session_id) {
             runtime.stop(reason);
         }
+        // A model switch's outgoing runtime lives outside the adapter map while
+        // it summarises; stopping the session must not leave it running.
+        crate::switch_summary::stop_for_session(self, session_id, reason);
     }
 
     /// Stop an adapter for a clean host exit and durably retire its process
@@ -549,6 +665,15 @@ impl BridgeCore {
     pub fn shutdown_session_adapter(&self, session_id: &str) -> Result<(), BridgeError> {
         let _lifecycle = self.claim_session_lifecycle(session_id, "app shutdown")?;
         self.deactivate_reader_launch(session_id);
+        // A model switch can leave only an outgoing summary, with no attached
+        // runtime or durable process claim. Cancel and stop it before any early
+        // return, while retaining its launch identity until the reader exits.
+        let had_detached_summary = crate::switch_summary::is_detached(self, session_id);
+        crate::switch_summary::stop_for_session(
+            self,
+            session_id,
+            adapters::ShutdownReason::AppShutdown,
+        );
         let runtime = self.adapters.lock().unwrap().remove(session_id);
         // Provider shutdown can block and its reader may need the adapter map.
         // Hold neither the map nor the database while waiting for the process.
@@ -566,6 +691,9 @@ impl BridgeCore {
                     params![session_id], |row| Ok((row.get(0)?, row.get(1)?)),
                 ).optional()?;
                 let Some((pid, expected_identity)) = claim else {
+                    if had_detached_summary {
+                        break;
+                    }
                     return Ok(());
                 };
                 let live_identity = adapters::process_identity(pid);
@@ -619,6 +747,7 @@ impl BridgeCore {
         // unfinished worker must never manufacture a successful result.
         session_supervisor::SessionSupervisor::reconcile_workspace_statuses(&transaction)?;
         transaction.commit()?;
+        self.events.publish(crate::events::CoreEvent::StateChanged);
         Ok(())
     }
 
@@ -813,7 +942,10 @@ impl BridgeCore {
         }
         let tokens =
             compaction_controller::active_token_estimate(&db, session_id)?;
-        let Some(prompt) = compaction_controller::CompactionController::begin(
+        // Background: the request is answered by the outgoing runtime *after*
+        // the switch commits, on a reader that shares this session id with the
+        // incoming model, so the live reader must never treat it as its own.
+        let Some(prompt) = compaction_controller::CompactionController::begin_background(
             &db,
             session_id,
             compaction_controller::CompactionReason::BeforeDowngrade,
@@ -868,13 +1000,17 @@ impl BridgeCore {
         }
         let kind: Option<String> = db
             .query_row(
-                "SELECT kind FROM session_entries WHERE session_id=?1 AND sequence > ?2 AND kind IN ('compaction','compaction.failed') ORDER BY sequence DESC LIMIT 1",
+                "SELECT kind FROM session_entries WHERE session_id=?1 AND sequence > ?2 AND kind IN ('compaction','compaction.failed','checkpoint') ORDER BY sequence DESC LIMIT 1",
                 params![request.session_id, request.after_sequence],
                 |row| row.get(0),
             )
             .optional()?;
         match kind.as_deref() {
-            Some("compaction") => Ok(SwitchSummaryOutcome::Summarised),
+            // `checkpoint` alone is a late background landing (the new model had
+            // already spoken, so no boundary moved); paired, it precedes the
+            // `compaction` this query finds first. Either way the request was
+            // answered.
+            Some("compaction") | Some("checkpoint") => Ok(SwitchSummaryOutcome::Summarised),
             _ => Ok(SwitchSummaryOutcome::Failed),
         }
     }
@@ -996,9 +1132,10 @@ impl BridgeCore {
             &transaction,
             session_id,
             &change.adapter_id,
-            &change.selected.id,
-            change.selected.tier,
+            change.selected_model(),
+            change.tier,
             (&change.previous_harness, change.previous_model.as_deref()),
+            change.resumes_natively(),
         )? != 1
         {
             return Err(BridgeError::Invalid(
@@ -1006,34 +1143,71 @@ impl BridgeCore {
                     .into(),
             ));
         }
-        restoration::set_head_state(
-            &transaction,
-            session_id,
-            RestorationMode::Fresh,
-            ResumeEligibility::Fresh,
-            None,
-        )?;
+        let resumes_natively = change.resumes_natively();
+        if resumes_natively {
+            // The stored thread is still this agent's own, so the next turn
+            // resumes it under the new model. `set_head_state` coalesces a
+            // `None` id, which is what keeps the identity here.
+            restoration::set_head_state(
+                &transaction,
+                session_id,
+                RestorationMode::Native,
+                ResumeEligibility::Native,
+                None,
+            )?;
+        } else {
+            // A different agent cannot resume this thread, and leaving the id
+            // on the head surfaced a dead thread in the forest snapshot long
+            // after `sessions.provider_session_id` was cleared.
+            restoration::clear_head_state_for_new_provider(
+                &transaction,
+                session_id,
+                RestorationMode::Fresh,
+                ResumeEligibility::Fresh,
+            )?;
+        }
         // Say what the next provider will actually inherit. The projection is
         // read before any switch bookkeeping appends, so it describes exactly
-        // what start_chat's cold path will inject.
-        let carried = carried_context(&transaction, session_id);
+        // what start_chat's cold path will inject. A natively resumed change
+        // inherits everything through the provider thread, so there is nothing
+        // to project and nothing to claim.
+        let carried = (!resumes_natively)
+            .then(|| carried_context(&transaction, session_id))
+            .flatten();
         let subject = if change.kind == "orchestrator" {
             "Orchestrator"
         } else {
             "Chat"
         };
-        let carry_note = carried
-            .as_ref()
-            .map(CarriedContext::describe)
-            .unwrap_or_else(|| "no context carried (summary unavailable)".to_owned());
-        let detail = format!(
-            "{subject} runtime changed from {}/{} to {}/{}. The next message starts a fresh provider session; {}.",
-            change.previous_harness,
-            change.previous_model.as_deref().unwrap_or("automatic"),
-            change.adapter_id,
-            change.selected.id,
-            carry_note,
-        );
+        let detail = if resumes_natively {
+            format!(
+                "{subject} model changed from {} to {}. The conversation continues on the same {} session.",
+                change.previous_model.as_deref().unwrap_or("automatic"),
+                change.selected_model().unwrap_or("default"),
+                change.adapter_id,
+            )
+        } else {
+            let mut carry_note = carried
+                .as_ref()
+                .map(CarriedContext::describe)
+                .unwrap_or_else(|| "no context carried (summary unavailable)".to_owned());
+            // `is_detached` asks for a *live* summary: a retired entry (its
+            // runtime already stopped, only its reader still draining) is no
+            // longer preparing anything and must not be claimed as such.
+            if crate::switch_summary::is_detached(self, session_id) {
+                // A background summary from the outgoing model is on its way; the
+                // mechanical projection above is what the new model inherits now.
+                carry_note.push_str("; a handoff summary from the previous model is being prepared in the background");
+            }
+            format!(
+                "{subject} runtime changed from {}/{} to {}/{}. The next message starts a fresh provider session; {}.",
+                change.previous_harness,
+                change.previous_model.as_deref().unwrap_or("automatic"),
+                change.adapter_id,
+                change.selected_model().unwrap_or("default"),
+                carry_note,
+            )
+        };
         store::event(
             &transaction,
             "chat",
@@ -1051,21 +1225,31 @@ impl BridgeCore {
                 status: Some("ready".into()),
                 title: Some(format!("{subject} model changed")),
                 text: Some(detail),
-                data: serde_json::json!({
-                    "previousHarness": change.previous_harness,
-                    "previousModel": change.previous_model,
-                    "harness": change.adapter_id,
-                    "model": change.selected.id,
-                    "modelLabel": change.selected.label,
-                    "tier": change.selected.tier,
-                    "freshProviderSession": true,
-                    "carriedContext": carried.map(|carried| serde_json::json!({
-                        "summary": carried.summary,
-                        "decisions": carried.decisions,
-                        "filesTouched": carried.files_touched,
-                        "recentEntries": carried.recent_entries,
-                    })),
-                }),
+                data: {
+                    let mut obj = serde_json::json!({
+                        "previousHarness": change.previous_harness,
+                        "previousModel": change.previous_model,
+                        "harness": change.adapter_id,
+                        "model": change.selected_model(),
+                        "modelLabel": change.selected.as_ref().map(|model| model.label.as_str()).unwrap_or("Provider default"),
+                        "tier": change.tier,
+                        // The milestone marker every model change carries, and
+                        // the separate claim about whether the provider session
+                        // survived it. They used to be the same field, so making
+                        // the claim truthful would have hidden the row.
+                        "modelChanged": true,
+                        "freshProviderSession": !resumes_natively,
+                    });
+                    if let Some(carried) = carried {
+                        obj["carriedContext"] = serde_json::json!({
+                            "summary": carried.summary,
+                            "decisions": carried.decisions,
+                            "filesTouched": carried.files_touched,
+                            "recentEntries": carried.recent_entries,
+                        });
+                    }
+                    obj
+                },
             },
             &serde_json::json!({"source": "user-selection"}),
         )?;
@@ -1216,9 +1400,10 @@ pub(crate) fn persist_chat_model_selection(
     db: &Connection,
     session_id: &str,
     adapter_id: &str,
-    model: &str,
+    model: Option<&str>,
     tier: CapabilityTier,
     (previous_harness, previous_model): (&str, Option<&str>),
+    resumes_natively: bool,
 ) -> Result<usize, BridgeError> {
     // A harness change is a different agent, so the backend binding goes the
     // way of the provider session id: `read_binding` composes the binding's
@@ -1233,6 +1418,24 @@ pub(crate) fn persist_chat_model_selection(
             params![session_id, adapter_id, model, tier.as_str(), previous_harness, previous_model],
         )?);
     }
+    if resumes_natively {
+        // The provider session survives a model change the next turn can
+        // actually resume. The cache miss is unavoidable — provider caches are
+        // per model — but the conversation is not: the Claude Agent SDK sets
+        // `resume` and `model` independently, and Codex `thread/resume`
+        // carries `model`. Clearing the id here is what forced a Sonnet→Opus
+        // switch to restart from an 8 KB projection as if it had crossed
+        // harnesses.
+        return Ok(db.execute(
+            "UPDATE sessions SET harness=?2,model=?3,requested_tier=?4,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator') AND harness=?5 AND model IS ?6 AND active_turn_id IS NULL",
+            params![session_id, adapter_id, model, tier.as_str(), previous_harness, previous_model],
+        )?);
+    }
+    // Same harness, but nothing the next turn can resume — an adapter without
+    // native resume, or a chat that never started a thread. The dead id is
+    // cleared exactly as a harness change clears it, so nothing later mistakes
+    // it for a resumable session; the backend binding stays, since the same
+    // agent still serves the session.
     Ok(db.execute(
         "UPDATE sessions SET harness=?2,model=?3,requested_tier=?4,provider_session_id=NULL,status='idle',active_turn_id=NULL,ended_at=NULL WHERE id=?1 AND parent_session_id IS NULL AND kind IN ('direct','orchestrator') AND harness=?5 AND model IS ?6 AND active_turn_id IS NULL",
         params![session_id, adapter_id, model, tier.as_str(), previous_harness, previous_model],
@@ -1304,7 +1507,7 @@ pub fn resolve_orchestrator_selection(
                 ) {
                     return Ok(OrchestratorSelection {
                         adapter_id: agent.harness.clone(),
-                        model: resolution.actual_model,
+                        model: Some(resolution.actual_model),
                         tier: CapabilityTier::Standard,
                         effort: harness_config
                             .and_then(|config| config.effort)
@@ -1326,7 +1529,7 @@ pub fn resolve_orchestrator_selection(
             registry.resolve_model(&profile.provider, profile.tier, Some(&profile.model))?;
         return Ok(OrchestratorSelection {
             adapter_id: profile.provider,
-            model: resolution.actual_model,
+            model: Some(resolution.actual_model),
             tier: profile.tier,
             effort: configured_agent
                 .as_ref()
@@ -1345,7 +1548,7 @@ pub fn resolve_orchestrator_selection(
         if let Ok(resolution) = registry.resolve_model(&descriptor.id, orchestrator::TIER, None) {
             return Ok(OrchestratorSelection {
                 adapter_id: descriptor.id.clone(),
-                model: resolution.actual_model,
+                model: Some(resolution.actual_model),
                 tier: orchestrator::TIER,
                 effort: None,
                 label: orchestrator::SESSION_LABEL.into(),
@@ -1364,13 +1567,16 @@ mod tests {
 
     /// A registered, available harness with Standard and Fast models, so
     /// selection logic can run without real provider binaries.
-    struct StubAdapter;
+    struct StubAdapter {
+        catalog_empty: bool,
+        expected_model: Option<&'static str>,
+    }
     impl adapters::HarnessAdapter for StubAdapter {
         fn as_any(&self) -> &dyn std::any::Any {
             self
         }
         fn descriptor(&self) -> AdapterDescriptor {
-            AdapterDescriptor {
+            let mut descriptor = AdapterDescriptor {
                 sandbox_modes: crate::model::SandboxMode::ALL.to_vec(),
                 id: "codex".into(),
                 label: "Codex".into(),
@@ -1405,12 +1611,24 @@ mod tests {
                 ],
                 default_model: None,
                 model_catalog: crate::model::ModelCatalogDiagnostics::curated(),
+            };
+            if self.catalog_empty {
+                descriptor.id = "cursor".into();
+                descriptor.label = "Cursor".into();
+                descriptor.models.clear();
             }
+            descriptor
         }
         fn start(
             &self,
-            _: adapters::StartRequest<'_>,
+            request: adapters::StartRequest<'_>,
         ) -> Result<adapters::StartedAdapter, BridgeError> {
+            if self.catalog_empty {
+                assert_eq!(request.model, None, "the provider must choose its own default");
+                assert_eq!(request.effort, None, "do not carry another provider's effort");
+            } else if let Some(expected) = self.expected_model {
+                assert_eq!(request.model, Some(expected));
+            }
             Err(BridgeError::Adapter("stub adapter cannot start".into()))
         }
         fn resume(
@@ -1431,7 +1649,100 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         let mut core = BridgeCore::for_tests(scratch.path());
         let mut registry = adapters::AdapterRegistry::empty();
-        registry.register(Box::new(StubAdapter)).unwrap();
+        registry
+            .register(Box::new(StubAdapter {
+                catalog_empty: false,
+                expected_model: None,
+            }))
+            .unwrap();
+        registry
+            .register(Box::new(StubAdapter {
+                catalog_empty: true,
+                expected_model: None,
+            }))
+            .unwrap();
+        core.adapter_registry = std::sync::Arc::new(registry);
+        (scratch, core)
+    }
+
+    /// The codex stub, plus a resume-capable harness, so a switch that can
+    /// natively resume has somewhere to run. `StubAdapter` deliberately
+    /// reports no resume support — production Cursor and Grok do the same —
+    /// which is what makes the fallback path testable beside the native one.
+    struct ResumableStubAdapter;
+    impl adapters::HarnessAdapter for ResumableStubAdapter {
+        fn as_any(&self) -> &dyn std::any::Any {
+            self
+        }
+        fn descriptor(&self) -> AdapterDescriptor {
+            AdapterDescriptor {
+                sandbox_modes: crate::model::SandboxMode::ALL.to_vec(),
+                id: "claude".into(),
+                label: "Claude".into(),
+                available: true,
+                auth_state: crate::model::AuthState::Unknown,
+                version: None,
+                capabilities: Vec::new(),
+                unavailable_reason: None,
+                models: vec![
+                    ModelOption {
+                        id: "stub-sonnet".into(),
+                        label: "Stub Sonnet".into(),
+                        tier: CapabilityTier::Fast,
+                        available: true,
+                        compatible: true,
+                        lifecycle: crate::model::ModelLifecycle::Stable,
+                        source: crate::model::ModelCatalogSource::CuratedFallback,
+                        supported_effort_levels: Vec::new(),
+                        default_for_tier: true,
+                    },
+                    ModelOption {
+                        id: "stub-opus".into(),
+                        label: "Stub Opus".into(),
+                        tier: CapabilityTier::Standard,
+                        available: true,
+                        compatible: true,
+                        lifecycle: crate::model::ModelLifecycle::Stable,
+                        source: crate::model::ModelCatalogSource::CuratedFallback,
+                        supported_effort_levels: Vec::new(),
+                        default_for_tier: true,
+                    },
+                ],
+                default_model: None,
+                model_catalog: crate::model::ModelCatalogDiagnostics::curated(),
+            }
+        }
+        fn start(
+            &self,
+            _: adapters::StartRequest<'_>,
+        ) -> Result<adapters::StartedAdapter, BridgeError> {
+            Err(BridgeError::Adapter("stub adapter cannot start".into()))
+        }
+        fn resume(
+            &self,
+            _: adapters::ResumeRequest<'_>,
+        ) -> Result<adapters::StartedAdapter, BridgeError> {
+            Err(BridgeError::Adapter("stub adapter cannot resume".into()))
+        }
+        fn supports_native_resume(&self) -> bool {
+            true
+        }
+        fn normalize(&self, _: &Value) -> Vec<agent::NormalizedEvent> {
+            Vec::new()
+        }
+    }
+
+    fn resume_fixture() -> (tempfile::TempDir, BridgeCore) {
+        let scratch = tempfile::tempdir().unwrap();
+        let mut core = BridgeCore::for_tests(scratch.path());
+        let mut registry = adapters::AdapterRegistry::empty();
+        registry
+            .register(Box::new(StubAdapter {
+                catalog_empty: false,
+                expected_model: None,
+            }))
+            .unwrap();
+        registry.register(Box::new(ResumableStubAdapter)).unwrap();
         core.adapter_registry = std::sync::Arc::new(registry);
         (scratch, core)
     }
@@ -1457,6 +1768,102 @@ mod tests {
     }
 
     #[test]
+    fn welcome_chat_can_switch_to_an_undiscovered_provider_default_then_start() {
+        let (_scratch, core) = fixture();
+        seed_workspace(&core, false);
+        let plan = core.plan_workspace_session("w", false).unwrap();
+        core.persist_workspace_session(plan, None).unwrap();
+        let id = only_session_id(&core);
+        let core = std::sync::Arc::new(core);
+
+        // The welcome composer creates the configured orchestrator first, then
+        // applies the user's Cursor/Default choice before starting any provider.
+        crate::api::update_chat_model(&core, &id, &Harness::Cursor, None, None).unwrap();
+        let stored: (String, Option<String>, Option<String>) = core.db.lock().unwrap()
+            .query_row("SELECT harness,model,effort FROM sessions WHERE id=?1", params![id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?))).unwrap();
+        assert_eq!(stored, ("cursor".into(), None, None));
+        // Re-selecting Default is a no-op even before the catalog is discovered.
+        crate::api::update_chat_model(&core, &id, &Harness::Cursor, None, None).unwrap();
+        let error = crate::live_turn::start_chat(&core, id).unwrap_err();
+        assert!(error.to_string().contains("stub adapter cannot start"), "{error}");
+    }
+
+    #[test]
+    fn configured_model_does_not_override_an_undiscovered_provider_default() {
+        for orchestrator in [false, true] {
+            let (_scratch, core) = fixture();
+            let id = if orchestrator {
+                seed_workspace(&core, false);
+                let plan = core.plan_workspace_session("w", false).unwrap();
+                core.persist_workspace_session(plan, None).unwrap();
+                only_session_id(&core)
+            } else {
+                core.create_chat_id(&Harness::Codex, Some("stub-fast"), None)
+                    .unwrap()
+            };
+            {
+                let db = core.db.lock().unwrap();
+                let mut config = agent_config::harness_config(&db, "cursor").unwrap();
+                config.default_model = Some("retired-cursor-model".into());
+                agent_config::save_harness(&db, config).unwrap();
+            }
+            let core = std::sync::Arc::new(core);
+            crate::api::update_chat_model(&core, &id, &Harness::Cursor, None, None).unwrap();
+            // The stub asserts that the adapter receives None, despite the
+            // saved setting, for both a direct chat and the welcome composer.
+            let error = crate::live_turn::start_chat(&core, id).unwrap_err();
+            assert!(
+                error.to_string().contains("stub adapter cannot start"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn configured_model_resolves_against_a_known_catalog_unless_the_session_has_a_pin() {
+        for (stored, configured, expected) in [
+            (None, "stub-fast", "stub-fast"),
+            (Some("stub-standard"), "stub-fast", "stub-standard"),
+            (None, "retired-model", "stub-standard"),
+        ] {
+            let (_scratch, mut core) = fixture();
+            let mut registry = adapters::AdapterRegistry::empty();
+            registry
+                .register(Box::new(StubAdapter {
+                    catalog_empty: false,
+                    expected_model: Some(expected),
+                }))
+                .unwrap();
+            core.adapter_registry = std::sync::Arc::new(registry);
+            {
+                let db = core.db.lock().unwrap();
+                let mut config = agent_config::harness_config(&db, "codex").unwrap();
+                config.default_model = Some(configured.into());
+                agent_config::save_harness(&db, config).unwrap();
+            }
+            let id = core.create_chat_id(&Harness::Codex, stored, None).unwrap();
+            let error = crate::live_turn::start_chat(&std::sync::Arc::new(core), id).unwrap_err();
+            assert!(
+                error.to_string().contains("stub adapter cannot start"),
+                "{error}"
+            );
+        }
+    }
+
+    #[test]
+    fn undiscovered_catalog_does_not_accept_unverified_model_or_effort_choices() {
+        let (_scratch, core) = fixture();
+        let id = core.create_chat_id(&Harness::Claude, None, None).unwrap();
+        let core = std::sync::Arc::new(core);
+        assert!(crate::api::update_chat_model(&core, &id, &Harness::Cursor, Some("invented"), None).is_err());
+        assert!(crate::api::update_chat_model(&core, &id, &Harness::Cursor, None, Some("high")).is_err());
+        let harness: String = core.db.lock().unwrap()
+            .query_row("SELECT harness FROM sessions WHERE id=?1", params![id], |row| row.get(0)).unwrap();
+        assert_eq!(harness, "claude", "a refused switch must leave the chat intact");
+    }
+
+    #[test]
     fn aside_creation_returns_exact_id_and_inherits_source_scope_atomically() {
         let (_scratch, core) = fixture();
         seed_workspace(&core, true);
@@ -1470,10 +1877,13 @@ mod tests {
                 serde_json::json!({"text":"Keep the repository context"}),
             ).unwrap();
         }
-        let (aside_id, carried) = core.create_aside_chat_id(
+        let (aside_id, carried, native_fork) = core.create_aside_chat_id(
             "source", &Harness::Codex, Some("stub-standard"), Some("Check"),
         ).unwrap();
+        // The stub codex adapter cannot fork (no app-server schema on the test
+        // path), so the aside falls back to the projected handoff brief.
         assert!(carried);
+        assert!(!native_fork);
         let db = core.db.lock().unwrap();
         let (workspace_id, cwd): (Option<String>, Option<String>) = db.query_row(
             "SELECT workspace_id,cwd FROM sessions WHERE id=?1", params![aside_id],
@@ -1486,6 +1896,78 @@ mod tests {
             params![aside_id], |row| row.get(0),
         ).unwrap();
         assert_eq!(handoffs, 1);
+    }
+
+    #[test]
+    fn fork_eligibility_belongs_to_codex_on_a_stored_idle_thread() {
+        assert!(aside_fork_eligible(
+            "codex", "codex", Some("parent-thread"), false, true,
+        ));
+        // The fork verb belongs to the thread's owner: a Claude aside from a
+        // Codex chat reads the projected brief instead.
+        assert!(!aside_fork_eligible(
+            "claude", "codex", Some("parent-thread"), false, true,
+        ));
+        assert!(!aside_fork_eligible(
+            "codex", "claude", Some("parent-thread"), false, true,
+        ));
+        // No stored thread, nothing to fork.
+        assert!(!aside_fork_eligible("codex", "codex", None, false, true));
+        assert!(!aside_fork_eligible("codex", "codex", Some("  "), false, true));
+        // A turn in flight is a fork race: wait for the boundary.
+        assert!(!aside_fork_eligible(
+            "codex", "codex", Some("parent-thread"), true, true,
+        ));
+        // An installed Codex without thread/fork cannot fork.
+        assert!(!aside_fork_eligible(
+            "codex", "codex", Some("parent-thread"), false, false,
+        ));
+    }
+
+    #[test]
+    fn aside_fork_points_the_head_at_the_source_thread_for_a_native_start() {
+        let (_scratch, core) = fixture();
+        seed_workspace(&core, true);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,cwd,kind,depth,provider_session_id) VALUES('forksource','w','codex','Source','idle','estimated','/tmp/sessions-demo','orchestrator',0,'parent-thread')",
+                [],
+            ).unwrap();
+            session_forest::SessionForest::new(&db).append(
+                "forksource", session_forest::EntryKind::UserMessage,
+                serde_json::json!({"text":"Keep the repository context"}),
+            ).unwrap();
+        }
+        let (aside_id, _carried, native_fork) = core.create_aside_chat_id(
+            "forksource", &Harness::Codex, Some("stub-standard"), Some("Check"),
+        ).unwrap();
+        let can_fork_here = aside_fork_eligible(
+            "codex", "codex", Some("parent-thread"), false,
+            crate::codex_adapter::supports_native_fork(),
+        );
+        assert_eq!(native_fork, can_fork_here, "eligibility is decided by the installed codex, not the test");
+        let db = core.db.lock().unwrap();
+        let (provider_id, head_mode, fidelity): (Option<String>, String, String) = db.query_row(
+            "SELECT s.provider_session_id, COALESCE(h.restoration_mode,'fresh'), s.continuation_fidelity FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id WHERE s.id=?1",
+            params![aside_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        if native_fork {
+            assert_eq!(provider_id.as_deref(), Some("parent-thread"));
+            assert_eq!(head_mode, "native_fork");
+            assert_eq!(fidelity, "native");
+        } else {
+            // No fork support on this machine: the aside still carries the
+            // projected brief and nothing claims a native thread.
+            assert_eq!(provider_id, None);
+            assert_ne!(head_mode, "native_fork");
+        }
+        // Either way the parent session was never written to.
+        let source_entries: i64 = db.query_row(
+            "SELECT COUNT(*) FROM session_entries WHERE session_id='forksource'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(source_entries, 1, "the source conversation must not gain entries from an aside");
     }
 
     #[test]
@@ -1774,9 +2256,10 @@ mod tests {
         let plan = core.plan_workspace_session("w", false).unwrap();
         assert_eq!(plan.selection.adapter_id, "codex");
         assert!(
-            plan.selection.model.starts_with("stub-"),
+            plan.selection.model.as_deref()
+                .is_some_and(|model| model.starts_with("stub-")),
             "selection must come from the registered adapter, got {}",
-            plan.selection.model
+            plan.selection.model.as_deref().unwrap_or("default")
         );
         assert_eq!(plan.workspace_title, "Payments API");
         assert!(plan.worktree_source.is_none());
@@ -1926,9 +2409,10 @@ mod tests {
             &core.db.lock().unwrap(),
             &session_id,
             "claude",
-            "opus",
+            Some("opus"),
             CapabilityTier::Fast,
             ("claude", None),
+            true,
         )
         .unwrap();
         assert_eq!(read_backend().as_deref(), Some("claude.agent-sdk"));
@@ -1938,9 +2422,10 @@ mod tests {
             &core.db.lock().unwrap(),
             &session_id,
             "codex",
-            "gpt-5.3-codex",
+            Some("gpt-5.3-codex"),
             CapabilityTier::Fast,
             ("claude", Some("opus")),
+            false,
         )
         .unwrap();
         assert_eq!(read_backend(), None, "a different agent has nothing to continue");
@@ -2327,6 +2812,263 @@ mod tests {
     }
 
     #[test]
+    fn a_resumable_same_harness_change_keeps_the_provider_session() {
+        let (_scratch, core) = resume_fixture();
+        core.create_chat(&Harness::Claude, Some("stub-sonnet"), None).unwrap();
+        let session_id = only_session_id(&core);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "UPDATE sessions SET provider_session_id='thread-1',backend_id='claude.agent-sdk',backend_version='1.2.3' WHERE id=?1",
+                params![session_id],
+            )
+            .unwrap();
+            restoration::set_head_state(
+                &db,
+                &session_id,
+                RestorationMode::Native,
+                ResumeEligibility::Native,
+                Some("thread-1"),
+            )
+            .unwrap();
+            // Something worth summarising, so a skipped summary is a decision
+            // rather than an empty-conversation no-op.
+            session_forest::SessionForest::new(&db)
+                .append(
+                    &session_id,
+                    session_forest::EntryKind::UserMessage,
+                    serde_json::json!({"text":"we decided to change src/app.ts"}),
+                )
+                .unwrap();
+        }
+
+        let change = core
+            .plan_chat_model_change(&session_id, &Harness::Claude, Some("stub-opus"))
+            .unwrap()
+            .expect("stub-sonnet -> stub-opus is a real change");
+        assert!(change.resumes_natively());
+        let event = core.commit_chat_model_change(change).unwrap();
+
+        let db = core.db.lock().unwrap();
+        let (provider, backend, model): (Option<String>, Option<String>, Option<String>) = db
+            .query_row(
+                "SELECT provider_session_id,backend_id,model FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        // The whole point: the thread survives so the next turn resumes it.
+        assert_eq!(provider.as_deref(), Some("thread-1"));
+        assert_eq!(backend.as_deref(), Some("claude.agent-sdk"));
+        assert_eq!(model.as_deref(), Some("stub-opus"));
+
+        let (mode, eligibility, native): (String, String, Option<String>) = db
+            .query_row(
+                "SELECT restoration_mode,resume_eligibility,native_provider_session_id FROM session_heads WHERE session_id=?1",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(mode, "native");
+        assert_eq!(eligibility, "native");
+        assert_eq!(native.as_deref(), Some("thread-1"));
+
+        // And a plan built on that state resumes rather than projecting.
+        assert_eq!(
+            restoration::select_plan(false, provider.as_deref(), true, false, true, false),
+            restoration::RestorationPlan::Native
+        );
+
+        // The milestone still renders, and it no longer claims a fresh session.
+        assert_eq!(event.data["modelChanged"], true);
+        assert_eq!(event.data["freshProviderSession"], false);
+        assert!(event.data["carriedContext"].is_null());
+        let text = event.text.unwrap_or_default();
+        assert!(text.contains("continues on the same claude session"), "{text}");
+        assert!(!text.contains("fresh provider session"), "{text}");
+    }
+
+    #[test]
+    fn a_same_harness_change_without_resume_support_takes_the_handover_path() {
+        // The codex stub reports no native resume — production Cursor and
+        // Grok do the same — so a model change there must summarise and start
+        // fresh, exactly as a harness change does, rather than promise a
+        // continuation the next start cannot deliver.
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Codex, Some("stub-fast"), None).unwrap();
+        let session_id = only_session_id(&core);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "UPDATE sessions SET provider_session_id='thread-1',backend_id='codex.app-server' WHERE id=?1",
+                params![session_id],
+            )
+            .unwrap();
+            restoration::set_head_state(
+                &db,
+                &session_id,
+                RestorationMode::Native,
+                ResumeEligibility::Native,
+                Some("thread-1"),
+            )
+            .unwrap();
+            session_forest::SessionForest::new(&db)
+                .append(
+                    &session_id,
+                    session_forest::EntryKind::UserMessage,
+                    serde_json::json!({"text":"we decided to change src/app.ts"}),
+                )
+                .unwrap();
+        }
+
+        let change = core
+            .plan_chat_model_change(&session_id, &Harness::Codex, Some("stub-standard"))
+            .unwrap()
+            .expect("stub-fast -> stub-standard is a real change");
+        assert!(!change.resumes_natively());
+        let event = core.commit_chat_model_change(change).unwrap();
+
+        let db = core.db.lock().unwrap();
+        let (provider, backend): (Option<String>, Option<String>) = db
+            .query_row(
+                "SELECT provider_session_id,backend_id FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        // Nobody can resume this thread, so it is cleared; the backend
+        // binding stays, since the same agent still serves the session.
+        assert_eq!(provider, None);
+        assert_eq!(backend.as_deref(), Some("codex.app-server"));
+
+        let (mode, native): (String, Option<String>) = db
+            .query_row(
+                "SELECT restoration_mode,native_provider_session_id FROM session_heads WHERE session_id=?1",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(mode, "fresh");
+        assert_eq!(native, None);
+
+        // And the transcript says fresh, with the projection to show for it.
+        assert_eq!(event.data["modelChanged"], true);
+        assert_eq!(event.data["freshProviderSession"], true);
+        assert!(event.data["carriedContext"].is_object());
+        let text = event.text.unwrap_or_default();
+        assert!(text.contains("fresh provider session"), "{text}");
+    }
+
+    #[test]
+    fn a_same_harness_change_with_no_stored_thread_takes_the_handover_path() {
+        // A chat that never started has no thread to resume, even on a
+        // resume-capable harness: the switch still hands over the projection.
+        let (_scratch, core) = resume_fixture();
+        core.create_chat(&Harness::Claude, Some("stub-sonnet"), None).unwrap();
+        let session_id = only_session_id(&core);
+
+        let change = core
+            .plan_chat_model_change(&session_id, &Harness::Claude, Some("stub-opus"))
+            .unwrap()
+            .expect("stub-sonnet -> stub-opus is a real change");
+        assert!(!change.resumes_natively());
+        let event = core.commit_chat_model_change(change).unwrap();
+        assert_eq!(event.data["freshProviderSession"], true);
+        let text = event.text.unwrap_or_default();
+        assert!(text.contains("fresh provider session"), "{text}");
+    }
+
+    #[test]
+    fn a_cross_harness_change_clears_the_provider_session_and_the_stale_native_id() {
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Claude, None, None).unwrap();
+        let session_id = only_session_id(&core);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "UPDATE sessions SET provider_session_id='claude-session',backend_id='claude.agent-sdk' WHERE id=?1",
+                params![session_id],
+            )
+            .unwrap();
+            restoration::set_head_state(
+                &db,
+                &session_id,
+                RestorationMode::Native,
+                ResumeEligibility::Native,
+                Some("claude-session"),
+            )
+            .unwrap();
+        }
+
+        let change = core
+            .plan_chat_model_change(&session_id, &Harness::Codex, None)
+            .unwrap()
+            .expect("claude -> codex is a real change");
+        assert!(!change.resumes_natively());
+        let event = core.commit_chat_model_change(change).unwrap();
+
+        let db = core.db.lock().unwrap();
+        let (provider, backend): (Option<String>, Option<String>) = db
+            .query_row(
+                "SELECT provider_session_id,backend_id FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(provider, None);
+        assert_eq!(backend, None);
+
+        let (mode, native): (String, Option<String>) = db
+            .query_row(
+                "SELECT restoration_mode,native_provider_session_id FROM session_heads WHERE session_id=?1",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(mode, "fresh");
+        // G10: this used to keep pointing at a thread nothing would ever resume.
+        assert_eq!(native, None);
+        assert_eq!(event.data["modelChanged"], true);
+        assert_eq!(event.data["freshProviderSession"], true);
+    }
+
+    #[test]
+    fn persist_chat_model_selection_still_guards_against_a_row_that_moved() {
+        let (_scratch, core) = fixture();
+        core.create_chat(&Harness::Codex, Some("stub-fast"), None).unwrap();
+        let session_id = only_session_id(&core);
+        let db = core.db.lock().unwrap();
+        db.execute(
+            "UPDATE sessions SET provider_session_id='thread-1' WHERE id=?1",
+            params![session_id],
+        )
+        .unwrap();
+        // The guard reads the model the plan saw; a different one means the row
+        // changed underneath and the switch must not clobber it.
+        assert_eq!(
+            persist_chat_model_selection(
+                &db,
+                &session_id,
+                "codex",
+                Some("stub-standard"),
+                CapabilityTier::Standard,
+                ("codex", Some("someone-else-switched")),
+                true,
+            )
+            .unwrap(),
+            0
+        );
+        let provider: Option<String> = db
+            .query_row(
+                "SELECT provider_session_id FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(provider.as_deref(), Some("thread-1"));
+    }
+
+    #[test]
     fn chat_model_changes_are_validated_planned_and_committed() {
         let (_scratch, core) = fixture();
         core.create_chat(&Harness::Claude, None, None).unwrap();
@@ -2380,7 +3122,7 @@ mod tests {
             .plan_chat_model_change(&session_id, &Harness::Codex, None)
             .unwrap()
             .expect("switching claude -> codex is a real change");
-        assert_eq!(change.selected_model(), "stub-fast");
+        assert_eq!(change.selected_model(), Some("stub-fast"));
         let mut events = core.events.subscribe();
         let event = core.commit_chat_model_change(change).unwrap();
         assert_eq!(event.kind, "session.model_changed");
@@ -2470,9 +3212,10 @@ mod tests {
             &db,
             "orchestrator",
             "claude",
-            "opus",
+            Some("opus"),
             CapabilityTier::Strong,
             ("codex", Some("old-model")),
+            false,
         )
         .unwrap();
         assert_eq!(changed, 1);
@@ -2499,9 +3242,10 @@ mod tests {
             &db,
             "orchestrator",
             "codex",
-            "other",
+            Some("other"),
             CapabilityTier::Standard,
             ("codex", Some("old-model")),
+            false,
         )
         .unwrap();
         assert_eq!(stale, 0, "a stale plan must not clobber a changed session");
@@ -2523,6 +3267,84 @@ mod tests {
             .unwrap();
         drop(claim);
         core.claim_session_lifecycle("s", "session start").unwrap();
+    }
+
+    #[test]
+    fn app_shutdown_settles_a_detached_summary_with_or_without_an_incoming_runtime() {
+        for incoming_runtime in [false, true] {
+            let (_scratch, core) = fixture();
+            let session_id = core
+                .create_chat_id(&Harness::Codex, Some("stub-fast"), None)
+                .unwrap();
+            core.adapters.lock().unwrap().insert(
+                session_id.clone(),
+                Box::new(RecordingRuntime {
+                    interrupted: Default::default(),
+                    usage_requested: Default::default(),
+                }),
+            );
+            let request = {
+                let db = core.db.lock().unwrap();
+                let prompt = compaction_controller::CompactionController::begin_background(
+                    &db,
+                    &session_id,
+                    compaction_controller::CompactionReason::BeforeDowngrade,
+                    100,
+                )
+                .unwrap()
+                .unwrap();
+                SwitchSummaryRequest {
+                    session_id: session_id.clone(),
+                    prompt,
+                    after_sequence: 0,
+                }
+            };
+            assert!(crate::switch_summary::detach(&core, &session_id, request));
+            if incoming_runtime {
+                core.adapters.lock().unwrap().insert(
+                    session_id.clone(),
+                    Box::new(RecordingRuntime {
+                        interrupted: Default::default(),
+                        usage_requested: Default::default(),
+                    }),
+                );
+            }
+            core.db.lock().unwrap().execute(
+                "UPDATE sessions SET status=?2,active_turn_id=?3,
+                 provider_session_id='incoming-thread',adapter_pid=?4,
+                 adapter_process_identity=?5 WHERE id=?1",
+                params![
+                    session_id,
+                    if incoming_runtime { "working" } else { "ready" },
+                    incoming_runtime.then_some("incoming-turn"),
+                    incoming_runtime.then_some(0),
+                    incoming_runtime.then_some("fixture"),
+                ],
+            ).unwrap();
+            let mut events = core.events.subscribe();
+
+            core.shutdown_session_adapter(&session_id).unwrap();
+
+            assert!(!core.adapters.lock().unwrap().contains_key(&session_id));
+            assert!(!crate::switch_summary::is_detached(&core, &session_id));
+            assert!(crate::switch_summary::is_detached_launch(&core, &session_id, 0, "recording"),
+                "the outgoing reader must remain recognisable while its final frames drain");
+            let db = core.db.lock().unwrap();
+            assert!(compaction_controller::CompactionController::pending(&db, &session_id)
+                .unwrap().is_none());
+            let saved: (String, Option<String>, Option<i64>, Option<String>, String) = db.query_row(
+                "SELECT status,active_turn_id,adapter_pid,adapter_process_identity,provider_session_id
+                 FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            ).unwrap();
+            assert_eq!(saved, ("stopped".into(), None, None, None, "incoming-thread".into()));
+            let entries = store::session_entries(&db, &session_id).unwrap();
+            assert!(entries.iter().any(|entry| entry.kind == "compaction.failed"
+                && entry.payload["reason"].as_str().is_some_and(|reason| reason.contains("app_shutdown"))));
+            assert_eq!(entries.last().unwrap().payload["interrupted"], incoming_runtime);
+            assert!(matches!(events.try_recv().unwrap(), crate::events::CoreEvent::StateChanged));
+        }
     }
 
     #[test]
@@ -2732,6 +3554,124 @@ mod tests {
             )
             .unwrap();
         assert_eq!(active.as_deref(), Some("user-turn"), "a live turn is not cleared");
+    }
+
+    #[test]
+    fn a_natively_resumable_switch_appends_no_handover_summary_through_the_api() {
+        // The plan/commit halves are covered above; this drives the real
+        // `update_chat_model` path, where skipping the summary is what keeps a
+        // 20-second budget and a `compaction.failed` row out of every
+        // same-harness switch.
+        let (_scratch, core) = resume_fixture();
+        seed_workspace(&core, false);
+        let core = std::sync::Arc::new(core);
+        core.db.lock().unwrap().execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,model,provider_session_id) VALUES('switch-chat','w','claude','Chat','idle','estimated','direct','stub-sonnet','thread-1')", [],
+        ).unwrap();
+        core.adapters.lock().unwrap().insert("switch-chat".into(), Box::new(RecordingRuntime {
+            interrupted: Default::default(), usage_requested: Default::default(),
+        }));
+        {
+            let db = core.db.lock().unwrap();
+            let forest = session_forest::SessionForest::new(&db);
+            for index in 0..8 {
+                forest.append(
+                    "switch-chat",
+                    session_forest::EntryKind::UserMessage,
+                    serde_json::json!({"text": format!("{index}: {}", "we decided to change src/app.ts. ".repeat(40))}),
+                ).unwrap();
+            }
+        }
+        // Control: every gate `plan_switch_summary` checks is satisfied, so a
+        // zero below is a decision and not an empty-conversation no-op.
+        assert!(core.plan_switch_summary("switch-chat").unwrap().is_some());
+        core.cancel_switch_summary("switch-chat", "control", 1).unwrap();
+        let before: i64 = core.db.lock().unwrap().query_row(
+            "SELECT COUNT(*) FROM session_entries WHERE session_id='switch-chat' AND kind='compaction.requested'",
+            [], |row| row.get(0),
+        ).unwrap();
+
+        crate::api::update_chat_model(&core, "switch-chat", &Harness::Claude, Some("stub-opus"), None).unwrap();
+
+        let db = core.db.lock().unwrap();
+        let after: i64 = db.query_row(
+            "SELECT COUNT(*) FROM session_entries WHERE session_id='switch-chat' AND kind='compaction.requested'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(after, before, "a natively resumable switch must not ask for a handover summary");
+        let (model, provider): (String, Option<String>) = db.query_row(
+            "SELECT model,provider_session_id FROM sessions WHERE id='switch-chat'", [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(model, "stub-opus");
+        assert_eq!(provider.as_deref(), Some("thread-1"), "the thread survives the switch");
+    }
+
+    #[test]
+    fn a_cross_harness_switch_commits_before_the_summary_turn_starts() {
+        // The whole point of #529: a cross-harness switch must return without
+        // waiting on the outgoing model's checkpoint. It commits on the
+        // mechanical projection and detaches the old runtime to summarise in
+        // the background.
+        let (_scratch, core) = resume_fixture();
+        seed_workspace(&core, false);
+        let core = std::sync::Arc::new(core);
+        core.db.lock().unwrap().execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,model,provider_session_id) VALUES('x','w','claude','Chat','idle','estimated','direct','stub-sonnet','thread-1')", [],
+        ).unwrap();
+        core.adapters.lock().unwrap().insert("x".into(), Box::new(RecordingRuntime {
+            interrupted: Default::default(), usage_requested: Default::default(),
+        }));
+        {
+            let db = core.db.lock().unwrap();
+            let forest = session_forest::SessionForest::new(&db);
+            for index in 0..8 {
+                forest.append(
+                    "x",
+                    session_forest::EntryKind::UserMessage,
+                    serde_json::json!({"text": format!("{index}: {}", "we decided to change src/app.ts. ".repeat(40))}),
+                ).unwrap();
+            }
+        }
+
+        crate::api::update_chat_model(&core, "x", &Harness::Codex, Some("stub-standard"), None).unwrap();
+
+        // The switch committed: the row is the incoming model, and the outgoing
+        // runtime is detached (out of the adapter slot, in the summary map),
+        // with a BACKGROUND pending request the incoming reader will ignore.
+        let (harness, model): (String, String) = core.db.lock().unwrap().query_row(
+            "SELECT harness,model FROM sessions WHERE id='x'", [], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(harness, "codex");
+        assert_eq!(model, "stub-standard");
+        assert!(crate::switch_summary::is_detached(&core, "x"), "the outgoing runtime is detached");
+        assert!(!core.adapters.lock().unwrap().contains_key("x"), "the adapter slot is free for the incoming model");
+        let pending = compaction_controller::CompactionController::pending(&core.db.lock().unwrap(), "x")
+            .unwrap()
+            .expect("a summary request is pending");
+        assert!(pending.background, "the request is a background one");
+        assert_eq!(pending.reason, compaction_controller::CompactionReason::BeforeDowngrade);
+
+        // The switch's own audit event is recorded; any checkpoint.turn_started
+        // can only come after it, from the background thread post-commit.
+        let events = store::state(&core.db.lock().unwrap()).unwrap().events;
+        let model_changed = events.iter().find(|event| event.kind == "session.model_changed").expect("the switch committed its milestone");
+        let model_changed_id = Some(model_changed.id);
+        assert!(
+            model_changed.body.contains("being prepared in the background"),
+            "the milestone names the live background summary: {}",
+            model_changed.body
+        );
+        for event in &events {
+            if event.kind == "checkpoint.turn_started" {
+                assert!(event.id > model_changed_id.unwrap(), "a summary turn never precedes the commit");
+            }
+        }
+
+        // Settle the request so the background waiter exits promptly instead of
+        // polling for its full budget.
+        core.cancel_switch_summary("x", "test teardown", 1).unwrap();
+        crate::switch_summary::abort(&core, "x");
     }
 
     #[test]

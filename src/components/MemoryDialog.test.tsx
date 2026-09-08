@@ -153,14 +153,12 @@ afterEach(() => {
 });
 
 describe("MemoryDialog", () => {
-  it("lists account pins and names what this surface is not", async () => {
+  it("lists account pins and explains their scope", async () => {
     mount();
     await flush();
     expect(container.textContent).toContain("Prefers tabs over spaces");
     expect(container.textContent).toContain("Works in IST");
-    expect(container.textContent).toContain("not the helper picker");
-    expect(container.textContent).toContain("not this chat's history");
-    expect(container.textContent).toContain("account:local");
+    expect(container.textContent).toContain("remembers across your conversations");
   });
 
   it("fills the main canvas like Projects, not a floating overlay", async () => {
@@ -174,7 +172,7 @@ describe("MemoryDialog", () => {
     expect(page.className).not.toContain("inset-0");
     expect(page.className).not.toContain("bg-scrim");
     const inner = page.firstElementChild as HTMLElement;
-    expect(inner.className).toContain("max-w-5xl");
+    expect(inner.className).toContain("max-w-page");
     expect(inner.className).not.toContain("max-w-2xl");
     expect(inner.className).not.toContain("rounded-3xl");
     expect(inner.className).not.toContain("u-overlay-strong");

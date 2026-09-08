@@ -144,28 +144,27 @@ export function ComposerPill({
   }, [value, isHero]);
 
   return (
-    <div className={cn("w-full", isHero ? "mx-auto max-w-2xl" : "mx-auto max-w-2xl px-3 pb-4 pt-3 sm:px-6 sm:pb-6", className)}>
+    <div className={cn("w-full", isHero ? "mx-auto max-w-3xl" : "mx-auto max-w-conversation-frame px-4 pb-3 pt-2 sm:px-8 sm:pb-4", className)}>
       {/* The pill's own box, and the anchor a `leading` control can portal a
           panel onto — `data-composer-frame` is how the usage panel matches the
           composer's width instead of guessing at it. */}
       <div data-composer-frame className="relative">
         <form
           className={cn(
-            "relative flex flex-col rounded-2xl",
+            "relative flex flex-col rounded-xl",
             // Resting surface: one ladder step above the canvas, no blur. The
             // hairline is the composer/input tone, a touch above the plain border.
-            "border border-border-card bg-card",
+            "border border-border-card bg-card shadow-control",
             "transition-colors duration-200",
-            "focus-within:border-ring",
+            "focus-within:border-ring focus-within:ring-2 focus-within:ring-ring/20",
           )}
           onSubmit={event => {
             event.preventDefault();
             if (canSend) onSubmit();
           }}
         >
-          {/* Input + controls live in the padded region; the footer is full-bleed
-              inside the same frame so the composer reads as one box. */}
-          <div className={cn("flex flex-col gap-1.5", isHero ? "px-4 py-3.5 sm:px-5 sm:py-4" : "px-3.5 py-2.5 sm:px-4 sm:py-3")}>
+          {/* Keep workspace metadata outside the writing surface. */}
+          <div className={cn("flex flex-col gap-1", isHero ? "px-4 py-3.5 sm:px-5 sm:py-4" : "px-3 py-2")}>
           {hasAttachments && (
             <div className="flex flex-wrap items-center gap-2 px-1 pt-0.5">
               {attachments!.map(attachment => (
@@ -182,7 +181,7 @@ export function ComposerPill({
                     <button
                       type="button"
                       onClick={() => onRemoveAttachment(attachment.id)}
-                      className="absolute right-0.5 top-0.5 grid h-4.5 w-4.5 place-items-center rounded-full bg-background/80 text-foreground opacity-90 transition-opacity hover:opacity-100"
+                      className="absolute right-0.5 top-0.5 grid h-6 w-6 place-items-center rounded-full bg-background/80 text-foreground opacity-90 transition-opacity hover:opacity-100"
                       aria-label="Remove attached image"
                     >
                       <X className="h-3 w-3" strokeWidth={2} aria-hidden="true" />
@@ -203,7 +202,7 @@ export function ComposerPill({
                 aria-hidden="true"
                 className={cn(
                   "pointer-events-none absolute inset-0 max-h-44 min-h-[28px] w-full overflow-hidden whitespace-pre-wrap break-words text-[15px] leading-relaxed tracking-[-0.006em]",
-                  isHero ? "px-1 py-1" : "px-1 py-0.5",
+                  isHero ? "min-h-16 px-1 py-1" : "px-1 py-0.5",
                 )}
               >
                 <span className="invisible">{value}</span>
@@ -216,6 +215,7 @@ export function ComposerPill({
                 if (inputRef) inputRef.current = node;
               }}
               value={value}
+              aria-label="Message Bridge"
               rows={1}
               placeholder={placeholder}
               disabled={locked}
@@ -250,13 +250,13 @@ export function ComposerPill({
                 }
               }}
               className={cn(
-                "relative z-10 max-h-44 min-h-[28px] w-full resize-none bg-transparent text-[15px] leading-relaxed tracking-[-0.006em] text-foreground outline-none placeholder:text-muted-foreground/70",
-                isHero ? "px-1 py-1" : "px-1 py-0.5",
+                "relative z-10 max-h-44 min-h-[28px] w-full resize-none bg-transparent text-[15px] leading-relaxed tracking-[-0.006em] text-foreground outline-none placeholder:text-muted-foreground",
+                isHero ? "min-h-16 px-1 py-1" : "px-1 py-0.5",
               )}
             />
           </div>
 
-          <div className="flex min-h-[30px] items-center justify-between gap-2">
+          <div className="flex min-h-8 items-center justify-between gap-2">
             {/* Leading edge of the controls row: the model chip, then the access
                 control behind a hairline divider. */}
             <div className="flex min-w-0 items-center gap-1.5">
@@ -269,7 +269,7 @@ export function ComposerPill({
               {trailing}
               <button
                 type="button"
-                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-95 disabled:opacity-40"
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground active:scale-95 disabled:opacity-40"
                 onClick={onPlusClick}
                 disabled={disabled || !onPlusClick || !!plusUnavailableReason}
                 aria-label={plusLabel}
@@ -288,7 +288,7 @@ export function ComposerPill({
                   type="button"
                   onClick={onStop}
                   disabled={stopping}
-                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-border-card bg-card text-foreground transition-colors duration-150 active:scale-95 hover:bg-accent disabled:opacity-70"
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-border-card bg-card text-foreground transition-colors duration-150 active:scale-95 hover:bg-accent disabled:opacity-70"
                   aria-label={stopping ? "Stopping…" : "Stop"}
                 >
                   <Square className="h-3.5 w-3.5 fill-current" aria-hidden="true" />
@@ -315,13 +315,9 @@ export function ComposerPill({
             </div>
           </div>
           </div>
-          {footer && (
-            <div className="overflow-hidden rounded-b-2xl bg-background">
-              {footer}
-            </div>
-          )}
         </form>
       </div>
+      {footer && <div className="pt-1.5">{footer}</div>}
     </div>
   );
 }

@@ -1,5 +1,5 @@
 use crate::{
-    adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest},
+    adapters::{AdapterRuntime, ResumeRequest, ShutdownReason, StartRequest, TurnContext},
     binary,
     context_inventory::{
         AdapterContextInventory, ContextInventoryScope, ContextLifecyclePhase, ContextObservedSize,
@@ -233,7 +233,7 @@ fn launch(
         "instructions": instructions.map(str::trim).filter(|value| !value.is_empty()),
         "writeMode": write_mode.map(write_mode_label),
         "plugins": sdk_configuration.plugins,
-        "mcpServers": sdk_configuration.mcp_servers,
+        "mcpServers": sidecar_mcp_servers(briefing_config.is_some(), &sdk_configuration.mcp_servers),
         // Absent for every non-briefing session, so the sidecar's existing
         // write-mode handling is reached by exactly the same path as before.
         "briefing": briefing_config,
@@ -615,9 +615,19 @@ pub fn supports_native_resume() -> bool {
 /// unit-testable without a provider process.
 fn user_turn_frame(
     text: &str,
+    context: TurnContext<'_>,
     images: &[bridge_protocol::messages::TurnImage],
 ) -> serde_json::Value {
     let mut content = Vec::with_capacity(1 + images.len());
+    // Bridge's own words first, as their own blocks, so they are never folded
+    // into the user's text. This is the tail delivery that lets the compiled
+    // prompt — Claude's `systemPrompt.append`, and therefore the head of the
+    // cached prefix — stay byte-stable across restarts.
+    content.extend(
+        context
+            .entries()
+            .map(|entry| json!({"type": "text", "text": entry.value})),
+    );
     content.push(json!({"type": "text", "text": text}));
     content.extend(images.iter().map(|image| {
         json!({
@@ -648,8 +658,8 @@ impl ClaudeRuntime {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
-    pub fn start_turn(&self, text: &str) -> Result<(), BridgeError> {
-        self.start_turn_with_images(text, &[])
+    pub fn start_turn(&self, text: &str, context: TurnContext<'_>) -> Result<(), BridgeError> {
+        self.start_turn_with_images(text, context, &[])
     }
 
     /// Start a turn whose user message carries image attachments beside the
@@ -659,11 +669,12 @@ impl ClaudeRuntime {
     pub fn start_turn_with_images(
         &self,
         text: &str,
+        context: TurnContext<'_>,
         images: &[bridge_protocol::messages::TurnImage],
     ) -> Result<(), BridgeError> {
         let turn_id = format!("turn-{}", self.request_id.fetch_add(1, Ordering::Relaxed));
         *self.current_turn.lock().unwrap() = Some(turn_id.clone());
-        write_value(&self.writer, &user_turn_frame(text, images))?;
+        write_value(&self.writer, &user_turn_frame(text, context, images))?;
         let (mcp_names, plugin_names) = {
             let inventory = self.context_inventory.lock().unwrap();
             let catalog = inventory
@@ -726,6 +737,17 @@ impl ClaudeRuntime {
     }
 }
 
+/// The `/compact` line a harness reads off its input stream.
+///
+/// A blank focus is dropped rather than sent as a trailing space, so a bare
+/// `/compact` and `/compact "   "` are the same request.
+fn compact_command(focus: Option<&str>) -> String {
+    match focus.map(str::trim).filter(|value| !value.is_empty()) {
+        Some(focus) => format!("/compact {focus}"),
+        None => "/compact".into(),
+    }
+}
+
 impl AdapterRuntime for ClaudeRuntime {
     fn process_id(&self) -> u32 {
         self.child.id()
@@ -740,7 +762,28 @@ impl AdapterRuntime for ClaudeRuntime {
         self.context_inventory.lock().unwrap().clone()
     }
     fn send_turn(&self, text: &str) -> Result<(), BridgeError> {
-        self.start_turn(text)
+        self.start_turn(text, TurnContext::default())
+    }
+    /// The streaming-input frame is an array of content blocks, so Bridge's
+    /// trusted context rides as its own blocks ahead of the user's text —
+    /// the tail channel that keeps `systemPrompt.append` byte-stable.
+    fn send_turn_with_context(
+        &self,
+        text: &str,
+        context: TurnContext<'_>,
+    ) -> Result<(), BridgeError> {
+        self.start_turn(text, context)
+    }
+    /// Claude Code reads slash commands off its own input stream, and its
+    /// `/compact` takes a focus instruction.
+    fn native_compaction(&self) -> crate::adapters::NativeCompaction {
+        crate::adapters::NativeCompaction::WithFocus
+    }
+    /// The command travels as an ordinary user frame: the streaming-input
+    /// `query()` the sidecar feeds is exactly where the SDK expects to find a
+    /// slash command, which is why this needs no control channel of its own.
+    fn compact_native(&self, focus: Option<&str>) -> Result<(), BridgeError> {
+        self.send_turn(&compact_command(focus))
     }
     /// Vision-capable transport: the SDK message content is a content-block
     /// array, so image blocks ride beside text natively.
@@ -750,10 +793,10 @@ impl AdapterRuntime for ClaudeRuntime {
     fn send_turn_with_images(
         &self,
         text: &str,
-        _application_context: Option<&str>,
+        context: TurnContext<'_>,
         images: &[bridge_protocol::messages::TurnImage],
     ) -> Result<(), BridgeError> {
-        self.start_turn_with_images(text, images)
+        self.start_turn_with_images(text, context, images)
     }
     /// The sidecar feeds one long-lived streaming-input `query()`, so a user
     /// message written while a turn is running is picked up by that turn — the
@@ -772,6 +815,28 @@ impl AdapterRuntime for ClaudeRuntime {
     }
     fn stop(&mut self, _reason: ShutdownReason) {
         self.terminate();
+    }
+}
+
+/// The connector list a sidecar session is handed explicitly.
+///
+/// A chat session gets none. Claude Code already loads every claude.ai
+/// connector natively, with the account's own sign-in. A copy handed through
+/// `options.mcpServers` is a separate, SDK-scoped instance that never shares
+/// that sign-in: the CLI reports it as needing authentication, re-attaches it
+/// on every turn, and gives it a 30-second handshake window before the turn may
+/// start — a flat 30 seconds of silence after every Send, even for connectors
+/// `mcp list` calls connected. Only a briefing run keeps the explicit list: it
+/// runs under `strictMcpConfig`, so the declared servers are the only ones it
+/// can reach at all.
+fn sidecar_mcp_servers(
+    briefing: bool,
+    discovered: &std::collections::BTreeMap<String, Value>,
+) -> std::collections::BTreeMap<String, Value> {
+    if briefing {
+        discovered.clone()
+    } else {
+        std::collections::BTreeMap::new()
     }
 }
 
@@ -951,6 +1016,19 @@ mod tests {
     use super::*;
     use crate::context_inventory::ContextObservationProvenance;
     #[test]
+    fn compact_forwards_the_focus_on_the_input_stream() {
+        // The SDK reads slash commands off the same streaming-input query that
+        // carries user turns, which is why forwarding needs no control frame.
+        assert_eq!(compact_command(None), "/compact");
+        assert_eq!(compact_command(Some("the auth refactor")), "/compact the auth refactor");
+        // A blank focus is the same request as no focus, not a trailing space.
+        assert_eq!(compact_command(Some("   ")), "/compact");
+        assert_eq!(compact_command(Some("")), "/compact");
+        // Surrounding whitespace is the user's typing, not part of the focus.
+        assert_eq!(compact_command(Some("  keep the failing test  ")), "/compact keep the failing test");
+    }
+
+    #[test]
     fn poisoned_writer_is_a_typed_adapter_error() {
         let writer = Mutex::new(());
         let _ = std::panic::catch_unwind(|| {
@@ -961,6 +1039,20 @@ mod tests {
             lock_writer(&writer, "Claude"),
             Err(BridgeError::Adapter(_))
         ));
+    }
+
+    #[test]
+    fn chat_sessions_get_no_explicit_connectors_but_briefings_keep_theirs() {
+        // An SDK-scoped connector copy never shares the account sign-in and
+        // costs every turn a 30-second handshake timeout; the CLI already
+        // loads the same connectors natively for a chat. A briefing runs under
+        // strictMcpConfig and would otherwise reach nothing.
+        let discovered = std::collections::BTreeMap::from([(
+            "claude.ai Notion".to_string(),
+            json!({"type": "http", "url": "https://mcp.example/notion"}),
+        )]);
+        assert!(sidecar_mcp_servers(false, &discovered).is_empty());
+        assert_eq!(sidecar_mcp_servers(true, &discovered), discovered);
     }
 
     #[test]
@@ -1040,13 +1132,46 @@ mod tests {
     #[test]
     fn a_plain_text_turn_emits_exactly_todays_frame() {
         assert_eq!(
-            user_turn_frame("ship it", &[]),
+            user_turn_frame("ship it", TurnContext::default(), &[]),
             json!({
                 "type": "user",
                 "message": {"role": "user", "content": [{"type": "text", "text": "ship it"}]}
             }),
             "image support must not reshape the no-image wire"
         );
+    }
+
+    #[test]
+    fn bridge_context_rides_as_its_own_blocks_before_the_user_text() {
+        let images = vec![bridge_protocol::messages::TurnImage {
+            media_type: "image/png".into(),
+            base64_data: "iVBORw0".into(),
+        }];
+        let frame = user_turn_frame(
+            "verify [secret:sec_reference]",
+            TurnContext {
+                session: Some("<bridge-session-context schema=\"1\">frame</bridge-session-context>"),
+                credentials: Some("trusted broker capability"),
+            },
+            &images,
+        );
+        let content = frame["message"]["content"].as_array().unwrap();
+        assert_eq!(content.len(), 4, "two context blocks, the user text, one image");
+        assert_eq!(
+            content[0],
+            json!({"type": "text", "text": "<bridge-session-context schema=\"1\">frame</bridge-session-context>"})
+        );
+        assert_eq!(
+            content[1],
+            json!({"type": "text", "text": "trusted broker capability"})
+        );
+        // The user's own words are untouched and still precede the images they
+        // reference positionally.
+        assert_eq!(
+            content[2],
+            json!({"type": "text", "text": "verify [secret:sec_reference]"})
+        );
+        assert_eq!(content[3]["type"], "image");
     }
 
     #[test]
@@ -1061,7 +1186,7 @@ mod tests {
                 base64_data: "/9j/4AAQ".into(),
             },
         ];
-        let frame = user_turn_frame("what are these?", &images);
+        let frame = user_turn_frame("what are these?", TurnContext::default(), &images);
         let content = frame["message"]["content"].as_array().unwrap();
         assert_eq!(content.len(), 3, "one text block, then one block per image");
         assert_eq!(content[0], json!({"type": "text", "text": "what are these?"}));
@@ -1150,7 +1275,10 @@ mod tests {
         let mut runtime = started.runtime;
         let mut reader = started.reader;
         runtime
-            .start_turn("Reply exactly BRIDGE_CLAUDE_OK. Do not use tools.")
+            .start_turn(
+                "Reply exactly BRIDGE_CLAUDE_OK. Do not use tools.",
+                TurnContext::default(),
+            )
             .unwrap();
         let (sender, receiver) = mpsc::channel();
         thread::spawn(move || loop {
@@ -1191,7 +1319,10 @@ mod tests {
         use std::io::BufRead;
 
         fn run_turn(started: &mut StartedClaude, prompt: &str) -> String {
-            started.runtime.start_turn(prompt).unwrap();
+            started
+                .runtime
+                .start_turn(prompt, TurnContext::default())
+                .unwrap();
             let mut transcript = String::new();
             loop {
                 let mut line = String::new();
@@ -1222,6 +1353,7 @@ mod tests {
         started.runtime.stop(ShutdownReason::AppShutdown);
 
         let mut resumed = resume(ResumeRequest {
+            fork: false,
             cwd,
             model: None,
             effort: None,

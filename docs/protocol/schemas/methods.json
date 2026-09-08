@@ -275,6 +275,13 @@
       "resultSchema": "bridge-state.json"
     },
     {
+      "command": "create_chat_id",
+      "domain": "sessions",
+      "method": "sessions/create_chat_id",
+      "paramsSchema": "create-chat-id-params.json",
+      "resultSchema": "create-chat-id-result.json"
+    },
+    {
       "command": "create_aside_chat",
       "domain": "sessions",
       "method": "sessions/create_aside_chat",
@@ -898,6 +905,13 @@
       "resultDeferred": "bridge_core::browser_bridge::BrowserBridgeSnapshot"
     },
     {
+      "command": "browser_frame",
+      "domain": "browser",
+      "method": "browser/browser_frame",
+      "paramsSchema": "browser-frame-params.json",
+      "resultSchema": "browser-frame-result.json"
+    },
+    {
       "command": "install_browser_native_host",
       "domain": "browser",
       "method": "browser/install_browser_native_host",
@@ -1145,7 +1159,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 5
+    "minor": 6
   },
   "reserved": {
     "cancel": "$/cancel",

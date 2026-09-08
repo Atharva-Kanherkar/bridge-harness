@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { availableModelOptions, modelProfilesChanged, profileDraftsFromSetup, recommendedProfileDrafts, resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
+import { advertisedEfforts, availableModelOptions, modelProfilesChanged, normalizedEffort, profileDraftsFromSetup, recommendedProfileDrafts, resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
 import type { AdapterDescriptor, ModelSetupState } from "./types";
 
 const adapters: AdapterDescriptor[] = [{
@@ -75,11 +75,26 @@ describe("model profile catalog helpers", () => {
     const refreshed = structuredClone(adapters);
     refreshed[0].models.find(model => model.id === "balanced")!.defaultForTier = false;
     refreshed[0].models.push({ id: "balanced-v2", label: "Balanced v2", tier: "standard", defaultForTier: true, available: true, compatible: true, lifecycle: "stable", source: "runtime_api" });
-    expect(resolveProfileOption("standard_orchestrator", setup, refreshed)?.value).toBe("catalog:balanced-v2");
-    const pinned = setup.profiles.find(profile => profile.purpose === "standard_orchestrator")!;
-    pinned.selectionMode = "pinned";
-    pinned.pinned = true;
+    // A tracking worker (standard tier) follows the newly promoted default.
+    expect(resolveProfileOption("implementer", setup, refreshed)?.value).toBe("catalog:balanced-v2");
+    // The orchestrator is pinned by default, so it holds its exact model across promotion.
     expect(resolveProfileOption("standard_orchestrator", setup, refreshed)?.value).toBe("catalog:balanced");
+  });
+
+  it("narrows advertised efforts and treats an empty list as no effort knob", () => {
+    // Unstorable levels are dropped; order and de-duplication are preserved.
+    expect(advertisedEfforts({ supportedEffortLevels: ["low", "high", "ultra", "high"] })).toEqual(["low", "high"]);
+    // Empty / absent means the model has no effort knob — never a fabricated set.
+    expect(advertisedEfforts({ supportedEffortLevels: [] })).toEqual([]);
+    expect(advertisedEfforts(undefined)).toEqual([]);
+  });
+
+  it("normalizes effort when a newly chosen model advertises a disjoint set", () => {
+    const highOnly = { supportedEffortLevels: ["high", "xhigh"] };
+    expect(normalizedEffort("medium", highOnly)).toBe("high"); // disjoint → first advertised
+    expect(normalizedEffort("xhigh", highOnly)).toBe("xhigh");  // already supported → kept
+    // A model with no effort knob leaves the value inert and unchanged.
+    expect(normalizedEffort("medium", { supportedEffortLevels: [] })).toBe("medium");
   });
 
   it("does not trap users in setup when no adapter is available", () => {

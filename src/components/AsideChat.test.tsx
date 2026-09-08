@@ -54,7 +54,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-const dialog = () => container.querySelector<HTMLElement>('div[role="dialog"]')!;
+const dialog = () => document.body.querySelector<HTMLElement>('div[role="dialog"]')!;
 
 const makeEvent = (sequence: number): AgentEvent => ({
   id: sequence, sessionId: "aside-1", sequence, protocolVersion: 1, kind: asWireKind("assistant.delta"), itemId: null, role: "assistant", status: null, title: null, text: "…", data: {}, providerMeta: {}, createdAt: "now",
@@ -110,12 +110,12 @@ describe("AsideChat", () => {
   it("offers Steer mid-turn when the aside's harness advertises steering", async () => {
     const steering = [{ ...adapters[0], capabilities: ["steering"] }];
     await mount({ adapters: steering, working: true });
-    expect([...container.querySelectorAll("button")].some(button => button.textContent?.trim() === "Steer")).toBe(true);
+    expect([...document.body.querySelectorAll("button")].some(button => button.textContent?.trim() === "Steer")).toBe(true);
   });
 
   it("keeps Queue mid-turn when the harness cannot steer", async () => {
     await mount({ working: true });
-    expect([...container.querySelectorAll("button")].some(button => button.textContent?.trim() === "Queue")).toBe(true);
+    expect([...document.body.querySelectorAll("button")].some(button => button.textContent?.trim() === "Queue")).toBe(true);
   });
 
   it("disables the model control while the aside is working", async () => {
@@ -129,8 +129,8 @@ describe("AsideChat", () => {
     await mount({ onClose });
     await act(async () => { window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true })); });
     expect(onClose).toHaveBeenCalledTimes(1);
-    const scrim = container.querySelector<HTMLElement>('div[role="presentation"]')!;
-    await act(async () => { scrim.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
+    const scrim = document.body.querySelector<HTMLElement>('[data-slot="dialog-backdrop"]')!;
+    await act(async () => { scrim.dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); scrim.dispatchEvent(new MouseEvent("mouseup", { bubbles: true })); scrim.click(); });
     expect(onClose).toHaveBeenCalledTimes(2);
     // A click that starts inside the panel must not close it.
     await act(async () => { dialog().dispatchEvent(new MouseEvent("mousedown", { bubbles: true })); });
@@ -154,7 +154,7 @@ describe("AsideChat", () => {
   it("promotes through its header button", async () => {
     const onPromote = vi.fn();
     await mount({ onPromote });
-    const promote = [...container.querySelectorAll("button")].find(button => button.textContent?.includes("Open as chat"))!;
+    const promote = [...document.body.querySelectorAll("button")].find(button => button.textContent?.includes("Open as chat"))!;
     await act(async () => { promote.click(); });
     expect(onPromote).toHaveBeenCalledTimes(1);
   });
@@ -162,7 +162,7 @@ describe("AsideChat", () => {
   it("sends a follow-up on Enter and clears the box", async () => {
     const onSend = vi.fn(async () => undefined);
     await mount({ onSend });
-    const box = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    const box = document.body.querySelector<HTMLTextAreaElement>("textarea")!;
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
       setter.call(box, "and the failure mode?");
@@ -179,7 +179,7 @@ describe("AsideChat", () => {
     let rejectSend: ((reason: Error) => void) | undefined;
     const onSend = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectSend = reject; }));
     await mount({ working: false, onSend });
-    const box = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    const box = document.body.querySelector<HTMLTextAreaElement>("textarea")!;
     const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
     await act(async () => {
       setter.call(box, "keep this retry");
@@ -211,7 +211,7 @@ describe("AsideChat", () => {
 
     await act(async () => { rejectSend?.(new Error("provider refused the send")); });
     expect(box.value).toBe("keep this retry");
-    expect(container.querySelectorAll("img")).toHaveLength(1);
+    expect(document.body.querySelectorAll("img")).toHaveLength(1);
     expect(dialog().textContent).toContain("provider refused the send");
   });
 
@@ -219,7 +219,7 @@ describe("AsideChat", () => {
     let resolveSend: (() => void) | undefined;
     const onSend = vi.fn((_text: string, _attachments?: ComposerAttachment[]) => new Promise<void>(resolve => { resolveSend = resolve; }));
     await mount({ working: false, onSend });
-    const box = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    const box = document.body.querySelector<HTMLTextAreaElement>("textarea")!;
     const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
 
     await act(async () => {
@@ -242,14 +242,14 @@ describe("AsideChat", () => {
     });
     await act(async () => { box.dispatchEvent(pasteEvent); });
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
-    expect(container.querySelectorAll("img")).toHaveLength(1);
+    expect(document.body.querySelectorAll("img")).toHaveLength(1);
 
     await act(async () => {
       box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     });
     expect(onSend).toHaveBeenCalledTimes(1);
     expect(dialog().textContent).toContain("1 follow-up queued");
-    expect(container.querySelectorAll("img")).toHaveLength(0);
+    expect(document.body.querySelectorAll("img")).toHaveLength(0);
 
     await act(async () => { resolveSend?.(); });
     expect(onSend).toHaveBeenCalledTimes(2);
@@ -265,7 +265,7 @@ describe("AsideChat", () => {
       onResolve,
       events: [{ id: 7, sessionId: "aside-1", sequence: 7, protocolVersion: 1, kind: asWireKind("approval.requested"), itemId: null, role: null, status: "pending", title: "Run bun test", text: "bun test", data: {}, providerMeta: {}, createdAt: "now" }],
     });
-    const approve = [...container.querySelectorAll("button")].find(button => /approve|allow|accept/i.test(button.textContent ?? ""))!;
+    const approve = [...document.body.querySelectorAll("button")].find(button => /approve|allow|accept/i.test(button.textContent ?? ""))!;
     expect(approve).toBeTruthy();
     await act(async () => { approve.click(); });
     expect(onResolve).toHaveBeenCalled();
@@ -275,7 +275,7 @@ describe("AsideChat", () => {
   it("attaches a pasted image as a removable chip and sends it with the message", async () => {
     const onSend = vi.fn(async (_text: string, _attachments?: ComposerAttachment[]) => undefined);
     await mount({ onSend });
-    const box = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    const box = document.body.querySelector<HTMLTextAreaElement>("textarea")!;
 
     const file = new File(["fake-image-bytes"], "shot.png", { type: "image/png" });
     const items = [{ kind: "file", type: "image/png", getAsFile: () => file }];
@@ -285,8 +285,8 @@ describe("AsideChat", () => {
     // Let the FileReader promise resolve into attachment state.
     await act(async () => { await new Promise(resolve => setTimeout(resolve, 50)); });
 
-    expect(container.querySelectorAll("img")).toHaveLength(1);
-    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Remove attached image"]')).toBeTruthy();
+    expect(document.body.querySelectorAll("img")).toHaveLength(1);
+    expect(document.body.querySelector<HTMLButtonElement>('button[aria-label="Remove attached image"]')).toBeTruthy();
 
     await act(async () => {
       box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
@@ -297,12 +297,12 @@ describe("AsideChat", () => {
     expect(attachments).toHaveLength(1);
     expect(attachments![0].mediaType).toBe("image/png");
     // The chip clears once the send that carried it has gone out.
-    expect(container.querySelectorAll("img")).toHaveLength(0);
+    expect(document.body.querySelectorAll("img")).toHaveLength(0);
   });
 
   it("offers the same @ mention typeahead as the main composer", async () => {
     await mount({ workspaceFiles: ["src/App.tsx", "src/api.ts"] });
-    const box = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    const box = document.body.querySelector<HTMLTextAreaElement>("textarea")!;
     const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
     await act(async () => {
       setter.call(box, "@App");
@@ -316,13 +316,13 @@ describe("AsideChat", () => {
     expect(box.value).toBe("@src/App.tsx ");
   });
 
-  it("completes slash and $harness tokens without sending", async () => {
+  it("completes slash tokens without sending, and never offers a $harness shortcut", async () => {
     const onSend = vi.fn(async () => undefined);
     await mount({
       onSend,
       slashCommands: [{ name: "review", description: "Review the current change", harness: "claude", kind: "prompt" }],
     });
-    const box = container.querySelector<HTMLTextAreaElement>("textarea")!;
+    const box = document.body.querySelector<HTMLTextAreaElement>("textarea")!;
     const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, "value")!.set!;
     await act(async () => {
       setter.call(box, "/rev");
@@ -335,16 +335,21 @@ describe("AsideChat", () => {
     expect(box.value).toBe("/review ");
     expect(onSend).not.toHaveBeenCalled();
 
+    // The aside is pinned to its harness: typing `$` must not offer "talk to a
+    // harness directly" — completing that token used to insert `$claude` text
+    // that was then delivered to the pinned harness as a literal message.
     await act(async () => {
       setter.call(box, "$cl");
       box.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    expect(dialog().textContent).toContain("Talk to a harness directly");
+    expect(dialog().textContent).not.toContain("Talk to a harness directly");
+    // A side chat cannot open a side chat: Bridge's own commands stay out of
+    // the aside picker even when the host catalog carries them.
     await act(async () => {
-      box.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+      setter.call(box, "/bt");
+      box.dispatchEvent(new Event("input", { bubbles: true }));
     });
-    expect(box.value).toBe("$claude ");
-    expect(onSend).not.toHaveBeenCalled();
+    expect(dialog().textContent).not.toContain("/btw");
   });
 
   it("polls the forest by digest instead of refetching the full snapshot on every streamed event", async () => {

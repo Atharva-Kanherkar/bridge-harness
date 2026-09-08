@@ -184,6 +184,14 @@ async fn browser_bridge_state(
 }
 
 #[tauri::command]
+async fn browser_frame(
+    state: State<'_, Arc<BridgeCore>>,
+    after_revision: u64,
+) -> Result<Option<browser_bridge::BrowserFrame>, BridgeError> {
+    api::browser_frame(state.inner(), after_revision)
+}
+
+#[tauri::command]
 async fn install_browser_native_host(state: State<'_, Arc<BridgeCore>>) -> Result<String, BridgeError> {
     let core = state.inner().clone();
     blocking("Native host registration", move || api::install_browser_native_host(&core)).await
@@ -1061,6 +1069,17 @@ async fn create_chat(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<BridgeState, BridgeError> {
     api::create_chat(state.inner(), &harness, model.as_deref(), title.as_deref())
+}
+
+/// Create a direct chat and return the exact identity committed by this call.
+#[tauri::command]
+async fn create_chat_id(
+    harness: Harness,
+    model: Option<String>,
+    title: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<wire::CreateChatIdResult, BridgeError> {
+    api::create_chat_id(state.inner(), &harness, model.as_deref(), title.as_deref())
 }
 
 /// Create a source-scoped aside and return the exact session id that was
@@ -2010,6 +2029,7 @@ pub fn run() -> i32 {
             github_review,
             github_checkout,
             browser_bridge_state,
+            browser_frame,
             install_browser_native_host,
             browser_action,
             set_browser_permission,
@@ -2102,6 +2122,7 @@ pub fn run() -> i32 {
             add_project,
             create_workspace,
             create_chat,
+            create_chat_id,
             create_aside_chat,
             create_workspace_session,
             connect_workspace_folder,
@@ -2328,7 +2349,7 @@ mod tests {
         model_profiles::save_profiles(&db, &descriptors, &profiles).unwrap();
         let selected = sessions::resolve_orchestrator_selection(&db, &registry).unwrap();
         assert_eq!(selected.adapter_id, expected_provider);
-        assert_eq!(selected.model, expected_model);
+        assert_eq!(selected.model, Some(expected_model));
         assert_eq!(selected.effort, Some(delegation::Effort::High));
         assert_eq!(selected.tier, CapabilityTier::Standard);
     }
@@ -2930,12 +2951,21 @@ mod tests {
 
     #[test]
     fn worker_objective_delivery_failure_is_not_reported_as_launched() {
-        let adapters = Mutex::new(HashMap::from([(
+        let scratch = tempfile::tempdir().unwrap();
+        let core = Arc::new(
+            BridgeCore::boot(BootConfig {
+                data_dir: scratch.path().to_path_buf(),
+                browser_extension_path: scratch.path().join("no-extension"),
+                events: None,
+            })
+            .unwrap(),
+        );
+        core.adapters.lock().unwrap().insert(
             "worker".into(),
             Box::new(RejectingRuntime) as Box<dyn adapters::AdapterRuntime>,
-        )]));
-        assert!(deliver_worker_objective(&adapters, "worker", "do work").is_err());
-        assert!(deliver_worker_objective(&adapters, "missing", "do work").is_err());
+        );
+        assert!(deliver_worker_objective(&core, "worker", "do work").is_err());
+        assert!(deliver_worker_objective(&core, "missing", "do work").is_err());
     }
 
     #[test]
@@ -2945,7 +2975,7 @@ mod tests {
         let sent = Arc::new(Mutex::new(Vec::new()));
         let runtime = RecordingRuntime { sent: sent.clone() };
 
-        deliver_sanitized_turn(&runtime, &prepared.text, None).unwrap();
+        deliver_sanitized_turn(&runtime, &prepared.text, adapters::TurnContext::default()).unwrap();
 
         let delivered = sent.lock().unwrap().first().cloned().unwrap();
         assert!(!delivered.contains(canary));
@@ -3329,7 +3359,9 @@ mod tests {
 
     #[test]
     fn repair_and_fallback_store_audit_events() {
-        let db = store::open(Path::new(":memory:")).unwrap();
+        let db = policy_fixture();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,parent_session_id,depth) VALUES('worker','w','codex','Worker','working','parent',1)", []).unwrap();
+        db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,updated_at) VALUES('worker','parent','working','implementation','key','now')", []).unwrap();
         let mut tracker = delegation::ResultRepairTracker::default();
         let first = process_worker_result_output(
             &db,

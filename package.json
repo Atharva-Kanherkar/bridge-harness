@@ -23,7 +23,7 @@
     "check:builtin-adapters": "sh scripts/check-builtin-adapters.sh",
     "smoke:builtin-adapters": "sh scripts/smoke-builtin-adapters.sh",
     "test": "npm run test:release && npm test --prefix sidecar/claude-agent && vitest run && cargo test --manifest-path src-tauri/Cargo.toml --workspace",
-    "tauri": "tauri",
+    "tauri": "sh scripts/tauri.sh",
     "generate:icons": "node scripts/generate-icons.mjs",
     "verify:icons": "node scripts/verify-icons.mjs",
     "test:release": "node --test scripts/test/*.test.mjs && PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/test -p 'test_*.py'"
@@ -59,6 +59,7 @@
     "@fontsource/bricolage-grotesque": "^5.2.10",
     "@fontsource/dm-sans": "^5.2.8",
     "@lezer/highlight": "^1.2.3",
+    "@phosphor-icons/react": "^2.1.10",
     "@tanstack/react-form": "^1.33.5",
     "@tanstack/react-query": "^5.102.8",
     "@tauri-apps/api": "^2.8.0",

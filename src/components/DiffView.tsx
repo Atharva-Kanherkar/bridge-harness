@@ -21,7 +21,7 @@ const ROW_STYLE: Record<DiffRowKind, { tint: string; marker: string; markerClass
   add: { tint: "bg-success/8", marker: "+", markerClass: "text-success" },
   del: { tint: "bg-destructive/8", marker: "−", markerClass: "text-destructive" },
   hunk: { tint: "bg-info/8 text-info", marker: "", markerClass: "" },
-  meta: { tint: "text-muted-foreground/55", marker: "", markerClass: "" },
+  meta: { tint: "text-muted-foreground", marker: "", markerClass: "" },
   context: { tint: "", marker: "", markerClass: "" },
 };
 
@@ -33,8 +33,8 @@ function DiffLine({ row, numbered, onQuoteHunk }: { row: DiffRow; numbered: bool
   return <div className="group/hunk flex">
     <span className="sticky left-0 z-10 flex shrink-0 select-none bg-code">
       {numbered && <>
-        <span className="w-9 px-1.5 text-right text-[10.5px] tabular-nums text-muted-foreground/40">{row.oldLine ?? ""}</span>
-        <span className="w-9 px-1.5 text-right text-[10.5px] tabular-nums text-muted-foreground/40">{row.newLine ?? ""}</span>
+        <span className="w-9 px-1.5 text-right text-[11px] tabular-nums text-muted-foreground">{row.oldLine ?? ""}</span>
+        <span className="w-9 px-1.5 text-right text-[11px] tabular-nums text-muted-foreground">{row.newLine ?? ""}</span>
       </>}
       <span className={cn("w-3.5 pl-1 text-left", style.markerClass)}>{style.marker}</span>
     </span>
@@ -45,7 +45,7 @@ function DiffLine({ row, numbered, onQuoteHunk }: { row: DiffRow; numbered: bool
         onClick={() => onQuoteHunk?.(range)}
         aria-label={`Reference lines ${range.start}-${range.end} in the composer`}
         title="Reference this hunk in the composer"
-        className="ml-2 inline-flex h-4 items-center gap-1 rounded px-1 align-middle text-[10px] text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/hunk:opacity-100"
+        className="ml-2 inline-flex h-4 items-center gap-1 rounded px-1 align-middle text-[11px] text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/hunk:opacity-100"
       >
         <Quote size={9} strokeWidth={1.8} aria-hidden="true" />
         quote
@@ -121,7 +121,7 @@ export function PatchView({ patch, path = "", className, foldAfterHunks, onQuote
   if (!rows.length) return null;
   // A column, so a caller's `max-h-*` bounds the rows and leaves the fold bar
   // pinned below them rather than scrolling away with the code.
-  return <div className={cn("stx flex flex-col overflow-hidden font-mono text-[11.5px] leading-[1.6]", className)}>
+  return <div className={cn("stx flex flex-col overflow-hidden font-mono text-[12px] leading-[1.6]", className)}>
     <div className="min-h-0 flex-1 overflow-auto py-2">
       <div className="w-max min-w-full">
         {shown.map((row, index) => <DiffLine key={index} row={row} numbered={numbered} onQuoteHunk={onQuoteHunk} />)}
@@ -130,7 +130,7 @@ export function PatchView({ patch, path = "", className, foldAfterHunks, onQuote
     {hiddenHunks > 0 && <button
       type="button"
       onClick={() => setUnfoldedFor(patch)}
-      className="flex w-full items-center gap-2 bg-code px-3 py-1 text-left text-[10.5px] text-muted-foreground/70 transition-colors hover:text-muted-foreground"
+      className="flex w-full items-center gap-2 bg-code px-3 py-1 text-left text-[11px] text-muted-foreground transition-colors hover:text-muted-foreground"
     >
       <ChevronDown className="h-3 w-3 shrink-0" aria-hidden="true" />
       {hiddenHunks} more hunk{hiddenHunks === 1 ? "" : "s"} — expand

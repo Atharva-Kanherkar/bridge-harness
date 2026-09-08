@@ -689,6 +689,8 @@ fn browser_payloads_mirror_core() {
         sensitive_kind: Some("password".into()),
         expected_domain: Some("example.test".into()),
         actor: Some("worker-1".into()),
+        expected_lease_id: None,
+        originating_session: None,
     });
     assert_mirrors::<wire::BrowserRouteRequest>(&browser_bridge::BrowserRouteRequest {
         structured_api_available: false,
@@ -763,12 +765,14 @@ fn snapshot_enums_share_their_wire_values() {
     for mode in [
         model::RestorationMode::Hot,
         model::RestorationMode::Native,
+        model::RestorationMode::NativeFork,
         model::RestorationMode::CheckpointRestored,
         model::RestorationMode::Fresh,
     ] {
         let mirrored = match mode {
             model::RestorationMode::Hot => wire::RestorationMode::Hot,
             model::RestorationMode::Native => wire::RestorationMode::Native,
+            model::RestorationMode::NativeFork => wire::RestorationMode::NativeFork,
             model::RestorationMode::CheckpointRestored => wire::RestorationMode::CheckpointRestored,
             model::RestorationMode::Fresh => wire::RestorationMode::Fresh,
         };

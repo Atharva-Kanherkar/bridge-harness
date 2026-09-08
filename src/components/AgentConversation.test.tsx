@@ -3,6 +3,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import * as conversation from "../conversation";
 import { AgentConversation } from "./AgentConversation";
 import { asWireKind } from "../transcript/wire";
 import type { AgentEvent, CompletionSummary, Session, SessionEntry, WorkerRuntimeRecord } from "../types";
@@ -12,6 +13,29 @@ const event = (id: number, kind: string, overrides: Partial<AgentEvent> = {}): A
 const completion = (verdict: CompletionSummary["verdict"]): CompletionSummary => ({ attemptId:"a",contractId:"c",verdict,repository:{head:"abcdef1234567890",dirtyDigest:"clean"},passedRequired:0,totalRequired:1,markdownCommitted:false,waiverReason:verdict === "waived" ? "Accepted risk" : null,checks:[{checkId:"gate",kind:"deterministic",required:true,status:verdict === "verified" ? "passed" : verdict === "changes_requested" ? "failed" : verdict === "superseded" ? "stale" : verdict === "waived" ? "skipped" : "pending",executor:"bridge.shell",command:"bun test",verifierFamily:null,detail:null,outputDigest:verdict === "verified" ? "digest" : null,artifactRefs:[]}] });
 
 describe("AgentConversation", () => {
+  it("does not reproject an unchanged durable branch on live-only updates", async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    const project = vi.spyOn(conversation, "projectSessionConversation");
+    const forestEntries: SessionEntry[] = [{ id: "e1", sessionId: "s", parentEntryId: null,
+      sequence: 1, semanticSchemaVersion: 2, kind: "assistant.message", payload: { text: "history", itemId: "old" },
+      providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: "now" }];
+    const container = document.createElement("div");
+    const root = createRoot(container);
+    try {
+      for (const text of ["a", "ab", "abc"]) {
+        await act(async () => root.render(<AgentConversation session={session} onResolve={() => undefined}
+          forestEntries={forestEntries} activeLeafId="e1" events={[event(0, "message.delta", { text, itemId: "new" })]} />));
+      }
+      expect(project).toHaveBeenCalledTimes(1);
+      await act(async () => root.render(<AgentConversation session={session} onResolve={() => undefined}
+        forestEntries={[...forestEntries]} activeLeafId="e1" events={[]} />));
+      expect(project).toHaveBeenCalledTimes(2);
+    } finally {
+      await act(async () => root.unmount());
+      project.mockRestore();
+    }
+  });
+
   const editToolEvent = event(1, "tool.started", { itemId: "t", title: "Edit src/App.tsx", status: "completed", data: { type: "fileChange", path: "src/App.tsx" } });
 
   async function mountConversation(extraProps: Record<string, unknown>) {
@@ -41,7 +65,7 @@ describe("AgentConversation", () => {
 
   it("leaves the tool path inert without an opener", async () => {
     const { container, unmount } = await mountConversation({});
-    expect(container.textContent).toContain("src/App.tsx");
+    expect(container.querySelector('[title="src/App.tsx"]')?.textContent).toBe("src");
     expect(container.querySelector('button[aria-label="Open src/App.tsx in the Code pane"]')).toBeNull();
     await unmount();
   });
@@ -65,15 +89,15 @@ describe("AgentConversation", () => {
   // long it has been. Contract: testing/feat-startup-mark-and-switch-checkpoint.md.
   it("wears the harness's own mark while starting, turning", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} working />);
-    expect(html).toContain("text-harness-codex");
+    expect(html).toContain('data-harness="codex"');
     expect(html).toContain("harness-mark-live");
-    expect(html).not.toContain("text-harness-claude");
+    expect(html).not.toContain('data-harness="claude"');
   });
 
   it("marks a Claude session with Claude's figure, not Codex's", () => {
     const html = renderToStaticMarkup(<AgentConversation session={{ ...session, harness: "claude" }} onResolve={() => undefined} events={[]} working />);
-    expect(html).toContain("text-harness-claude");
-    expect(html).not.toContain("text-harness-codex");
+    expect(html).toContain('data-harness="claude"');
+    expect(html).not.toContain('data-harness="codex"');
   });
 
   it("keeps the mark and drops the label once streaming has begun", () => {
@@ -82,9 +106,10 @@ describe("AgentConversation", () => {
     expect(html).not.toContain("is reading your message");
   });
 
-  // Elapsed reads before the label, the way the reference CLI does it, and in
-  // tabular figures so a second ticking over cannot reflow the words beside it.
-  it("puts the elapsed counter ahead of the label once past 2s", async () => {
+  it.each([
+    { elapsed: 2400, label: "2s" },
+    { elapsed: 42_163_000, label: "11h 42m" },
+  ])("keeps the status first and formats a $elapsed ms wait as $label", async ({ elapsed, label }) => {
     vi.useFakeTimers({ shouldAdvanceTime: false });
     try {
       (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -92,12 +117,13 @@ describe("AgentConversation", () => {
       document.body.append(container);
       const root = createRoot(container);
       await act(async () => root.render(<AgentConversation session={session} onResolve={() => undefined} events={[]} working />));
-      await act(async () => { vi.advanceTimersByTime(2400); });
+      vi.setSystemTime(Date.now() + elapsed - 250);
+      await act(async () => { vi.advanceTimersByTime(250); });
       const line = container.querySelector<HTMLElement>(".tabular-nums")!;
       expect(line).not.toBeNull();
-      expect(line.textContent).toContain("2s");
+      expect(line.textContent).toBe(label);
       const row = line.parentElement!;
-      expect(row.textContent).toMatch(/^2s · GPT Luna is reading your message/);
+      expect(row.textContent).toBe(`GPT Luna is reading your message…${label}`);
       await act(async () => root.unmount());
       container.remove();
     } finally {
@@ -185,18 +211,28 @@ describe("AgentConversation", () => {
     expect(html).not.toContain("Used tools");
   });
 
+  it("renders a same-harness model change via the stable marker, not a tools group", () => {
+    // Same-harness switches are truthful — `freshProviderSession: false` —
+    // so the divider must key off `modelChanged: true`, the marker every
+    // model change carries.
+    const changed: SessionEntry = { id: "e1", sessionId: "s", parentEntryId: null, sequence: 1, semanticSchemaVersion: 2, kind: "session.model_changed", payload: { role: "system", status: "ready", title: "Chat model changed", text: "Chat model changed.", data: { previousHarness: "codex", previousModel: "stub-fast", harness: "codex", model: "stub-standard", modelChanged: true, freshProviderSession: false } }, providerEventId: null, contextVisibility: "eligible", tokenEstimate: null, createdAt: "now" };
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={[changed]} activeLeafId="e1" />);
+    expect(html).not.toContain("Used tools");
+    expect(html).toContain("→");
+  });
+
   it("narrates a model switch with the incoming harness's mark, and no first-launch note anywhere", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} modelSwitch={{ harness: "claude", label: "Opus" }} />);
     expect(html).toContain("Switching to Opus…");
-    expect(html).toContain("text-harness-claude");
-    expect(html).not.toContain("text-harness-codex");
+    expect(html).toContain('data-harness="claude"');
+    expect(html).not.toContain('data-harness="codex"');
     expect(html).not.toContain("First time opening this chat");
   });
 
   it("shows revision-bound verification without requiring a committed contract file", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} completion={{ attemptId:"a",contractId:"c",verdict:"waived",repository:{head:"abcdef1234567890",dirtyDigest:"clean"},passedRequired:1,totalRequired:2,markdownCommitted:false,waiverReason:"Browser unavailable",checks:[{checkId:"tests",kind:"deterministic",required:true,status:"passed",executor:"bridge.shell",command:"bun test",verifierFamily:null,detail:"159 passed",outputDigest:"d",artifactRefs:[]},{checkId:"journey",kind:"user_testing",required:true,status:"skipped",executor:"bridge.worker",command:null,verifierFamily:"claude",detail:"No browser",outputDigest:null,artifactRefs:[]}]} } />);
     expect(html).toContain("Verified with waiver");
-    expect(html).toContain("private contract");
+    expect(html).toContain("saved locally and has not been committed");
     expect(html).toContain("abcdef123456");
     expect(html).toContain("Browser unavailable");
     expect(html).toContain("Skipped");
@@ -338,19 +374,19 @@ describe("AgentConversation", () => {
   it("offers adopt and discard for changes that never reached the workspace", () => {
     const binding = { sessionId: "child", parentSessionId: "s", workspaceId: "w", worktreePath: "/tmp/workers/child", worktreeBranch: "bridge/task-worker-child", taskWorktreePath: "/tmp/task", state: "pending_adoption", head: "2b43aaad", baseCommit: "90ce51c", baseBranch: "bridge/task", baselineDirtyPaths: [], changedPaths: ["src/components/Markdown.tsx"], diffstat: "1 file(s) changed, 12 insertion(s), 3 deletion(s)", dirty: false, detail: null, createdAt: "now", updatedAt: "now" };
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} pendingAdoptions={[binding]} onResolveAdoption={async () => undefined}/>);
-    expect(html).toContain("not in your workspace yet");
+    expect(html).toContain("Worker changes are ready to review");
     expect(html).toContain("src/components/Markdown.tsx");
     expect(html).toContain("1 file(s) changed");
     expect(html).toContain("bridge/task-worker-child");
     expect(html).toContain("Adopt changes");
     expect(html).toContain("Discard");
-    expect(html).toContain("stays unfinished");
+    expect(html).toContain("Choose to finish this session");
     expect(html).toContain('role="alert"');
   });
   it("disables the adoption choice while a decision is already settling", () => {
     const binding = { sessionId: "child", parentSessionId: "s", workspaceId: "w", worktreePath: "/tmp/workers/child", worktreeBranch: "b", taskWorktreePath: "/tmp/task", state: "settling", head: null, baseCommit: null, baseBranch: null, baselineDirtyPaths: [], changedPaths: [], diffstat: null, dirty: true, detail: "adopt in progress", createdAt: "now", updatedAt: "now" };
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} pendingAdoptions={[binding]} onResolveAdoption={async () => undefined}/>);
-    expect(html).toContain("settling");
+    expect(html).toContain("Finishing…");
     expect(html).toContain("disabled");
   });
   it("shows the routing reason, remediation, and write scope on a delegation approval", () => {

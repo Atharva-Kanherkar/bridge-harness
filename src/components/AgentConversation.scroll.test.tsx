@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { AgentConversation } from "./AgentConversation";
 import type { Session, SessionEntry } from "../types";
 
@@ -218,5 +218,47 @@ describe("AgentConversation scroll placement", () => {
     const grown = history("bottomed", 50);
     await show({ session, forestEntries: grown, activeLeafId: grown[grown.length - 1].id }, 50);
     expect(el.scrollTop).toBe(bottom());
+  });
+
+  // The Ask-aside chip's always-mounted wrapper is a child of this container.
+  // ScrollFollow's growth observer watches `firstElementChild`, and an empty
+  // chip wrapper in that slot would never resize — late-growing rows (an image
+  // decoding, a code block highlighting) would stop re-pinning the reader at
+  // the bottom. The transcript content must stay the observed child.
+  it("keeps observing the transcript content, not the Ask-aside chip wrapper", async () => {
+    const observed: Element[] = [];
+    let lastCallback: ResizeObserverCallback | undefined;
+    class RecordingResizeObserver {
+      constructor(callback: ResizeObserverCallback) { lastCallback = callback; }
+      observe(el: Element) { observed.push(el); }
+      unobserve() {}
+      disconnect() {}
+    }
+    vi.stubGlobal("ResizeObserver", RecordingResizeObserver);
+    try {
+      const session = chat("chip-observer");
+      const entries = history("chip-observer", 20);
+      const el = await show({
+        session,
+        forestEntries: entries,
+        activeLeafId: entries[entries.length - 1].id,
+        onAskAside: () => {},
+      }, 20);
+      expect(el.querySelector("[data-ask-aside-chip], .contents")).not.toBeNull();
+      const content = el.querySelector("[data-conversation-content]")!;
+      expect(content).not.toBeNull();
+      expect(observed).toContain(content);
+      expect(observed).not.toContain(el.querySelector("span.contents"));
+
+      // Late growth inside the settle window re-pins at the new bottom, so
+      // the landing holds exactly as it does without the chip.
+      contentHeight = VIEWPORT + 40 * 120;
+      await act(async () => {
+        lastCallback?.([], undefined as unknown as ResizeObserver);
+      });
+      expect(el.scrollTop).toBe(bottom());
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });

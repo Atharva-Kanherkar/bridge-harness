@@ -92,15 +92,23 @@ impl Client {
 
     /// Receive frames until the response with `id` arrives, collecting any
     /// interleaved notifications.
-    fn recv_response(&mut self, id: i64) -> (Value, Vec<Value>) {
+    fn recv_response(&mut self, id: impl Into<Value>) -> (Value, Vec<Value>) {
+        let id = id.into();
         let mut notifications = Vec::new();
         loop {
             let frame = self.recv();
             if frame.get("id").is_none() {
+                assert_eq!(frame["jsonrpc"], json!("2.0"));
+                assert!(
+                    frame["method"].is_string()
+                        && frame.get("result").is_none()
+                        && frame.get("error").is_none(),
+                    "expected a notification, got {frame:?}"
+                );
                 notifications.push(frame);
                 continue;
             }
-            assert_eq!(frame["id"], json!(id), "responses arrive in request order");
+            assert_eq!(frame["id"], id, "responses arrive in request order");
             return (frame, notifications);
         }
     }
@@ -130,6 +138,24 @@ impl Client {
         self.send(frame);
         self.recv_response(id)
     }
+}
+
+#[test]
+fn browser_frame_polling_uses_the_typed_daemon_contract() {
+    let fixture = tempfile::tempdir().unwrap();
+    let running = RunningDaemon::start(fixture.path());
+    let mut client = Client::connect(&running.socket_path);
+    assert!(client.handshake(&running.token).get("error").is_none());
+    let (state, _) = client.call(1, "browser/browser_bridge_state", None);
+    assert!(state.get("error").is_none());
+    assert!(state["result"]["screenshot"].is_null());
+    let (frame, _) = client.call(2, "browser/browser_frame", Some(json!({"afterRevision": 0})));
+    assert!(frame.get("error").is_none());
+    assert!(frame.get("result").is_some_and(Value::is_null));
+    let (invalid, _) = client.call(3, "browser/browser_frame", Some(json!({"afterRevision": -1})));
+    assert_eq!(invalid["error"]["code"], json!(-32602));
+    drop(client);
+    running.stop();
 }
 
 #[test]
@@ -608,6 +634,56 @@ fn clean_shutdown_retires_provider_claims_without_failing_finished_chats_on_rest
 }
 
 #[test]
+fn graceful_shutdown_does_not_leave_chats_as_failed_orphans_after_restart() {
+    let fixture = tempfile::tempdir().unwrap();
+    let running = RunningDaemon::start(fixture.path());
+    let mut client = Client::connect(&running.socket_path);
+    client.handshake(&running.token);
+    let mut cases: Vec<(String, &str)> = Vec::new();
+    for (index, status) in ["ready", "working", "waiting", "completed", "failed"].iter().enumerate() {
+        let (created, _) = client.call(index as i64 + 1, "sessions/create_chat", Some(json!({"harness": "shell"})));
+        let session_id = created["result"]["sessions"].as_array().unwrap().iter()
+            .find(|session| !cases.iter().any(|(id, _)| session["id"].as_str() == Some(id.as_str())))
+            .unwrap()["id"].as_str().unwrap().to_owned();
+        {
+            let db = running.daemon.core.db.lock().unwrap();
+            db.execute(
+                "UPDATE sessions SET status=?2,adapter_pid=2147483647,adapter_process_identity='test-provider',active_turn_id=?3 WHERE id=?1",
+                rusqlite::params![session_id, status, if matches!(*status, "working" | "waiting") { Some("turn") } else { None }],
+            ).unwrap();
+        }
+        running.daemon.core.adapters.lock().unwrap().insert(
+            session_id.clone(),
+            Box::new(RecordingRuntime { responded: Default::default() }),
+        );
+        cases.push((session_id, *status));
+    }
+    drop(client);
+    running.stop();
+
+    let restarted = RunningDaemon::start(fixture.path());
+    {
+        let db = restarted.daemon.core.db.lock().unwrap();
+        for (session_id, previous_status) in cases {
+            let (status, pid, identity, active_turn): (String, Option<i64>, Option<String>, Option<String>) = db.query_row(
+                "SELECT status,adapter_pid,adapter_process_identity,active_turn_id FROM sessions WHERE id=?1",
+                [&session_id], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            ).unwrap();
+            let expected = if matches!(previous_status, "completed" | "failed") { previous_status } else { "stopped" };
+            assert_eq!(status, expected, "status before shutdown: {previous_status}");
+            assert_eq!((pid, identity, active_turn), (None, None, None));
+            let entries = bridge_core::store::session_entries(&db, &session_id).unwrap();
+            assert!(!entries.iter().any(|entry| entry.payload["reason"] == "supervisor_restart_orphan"),
+                "an orderly stop must not be reported as an orphaned provider");
+            if expected == "stopped" {
+                assert!(entries.iter().any(|entry| entry.payload["reason"] == "app_shutdown"));
+            }
+        }
+    }
+    restarted.stop();
+}
+
+#[test]
 fn oversized_frames_are_refused_with_a_bounded_error() {
     let fixture = tempfile::tempdir().unwrap();
     let running = RunningDaemon::start(fixture.path());
@@ -719,22 +795,25 @@ fn cancellation_and_envelope_semantics_follow_json_rpc() {
     assert!(response["error"]["message"].as_str().unwrap().contains("interrupt_turn"));
 
     // Notification-form $/cancel gets no response; the connection moves on.
+    // Background discovery may publish a valid notification between any of
+    // these replies. The response helper must still reject an extra response
+    // (including one with a null id) without mistaking that event for a reply.
+    running.daemon.core.events.publish(bridge_core::events::CoreEvent::AdaptersChanged);
     client.send(json!({"jsonrpc": "2.0", "method": "$/cancel", "params": {"id": 99}}));
-    let (health, notifications) = client.call(2, "health/health", None);
+    let (health, _) = client.call(2, "health/health", None);
     assert_eq!(health["result"]["ok"], json!(true));
-    assert!(notifications.is_empty(), "cancel produced frames: {notifications:?}");
 
     // A structurally invalid request echoes its id with invalid_request —
     // not a parse error with a null id.
     client.send(json!({"jsonrpc": "2.0", "id": 7, "params": {}}));
-    let response = client.recv();
+    let (response, _) = client.recv_response(7);
     assert_eq!(response["id"], json!(7));
     assert_eq!(response["error"]["code"], json!(-32600));
 
     // Non-JSON is the parse-error case, with the null id the spec requires.
     client.writer.write_all(b"not json at all\n").unwrap();
     client.writer.flush().unwrap();
-    let response = client.recv();
+    let (response, _) = client.recv_response(Value::Null);
     assert_eq!(response["id"], Value::Null);
     assert_eq!(response["error"]["code"], json!(-32700));
 

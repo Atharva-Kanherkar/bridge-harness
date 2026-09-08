@@ -286,6 +286,8 @@ impl Daemon {
         }
         let mut sessions: std::collections::HashSet<String> =
             self.core.adapters.lock().unwrap().keys().cloned().collect();
+        // Detached model-switch summaries also own provider processes.
+        sessions.extend(bridge_core::switch_summary::detached_session_ids(&self.core));
         // A reader can take its runtime out of the map just before it clears
         // the durable claim. Include those exits so daemon termination cannot
         // cut their cleanup short and leave completed chats looking orphaned.

@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 47;
+const LATEST_SCHEMA_VERSION: i64 = 49;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -33,10 +33,20 @@ pub struct HistorySnapshotManifest {
 }
 
 pub fn open(path: &Path) -> Result<Connection, BridgeError> {
+    if path != Path::new(":memory:") && path.try_exists()? {
+        // Even a SELECT on a read-write connection can recover a hot journal.
+        // Inspect existing stores without permission to rewrite them first.
+        let preflight =
+            Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        supported_schema_version(&preflight)?;
+    }
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
     }
     let mut connection = Connection::open(path)?;
+    // An older build must not run recovery or prune a newer build's rollback
+    // copies. Check before any application writes or maintenance on this store.
+    supported_schema_version(&connection)?;
     // Migrations run with foreign keys disabled so table rebuilds (which drop and
     // recreate parent tables) don't trip referential checks; re-enabled after.
     connection.execute_batch("PRAGMA foreign_keys=OFF;")?;
@@ -597,8 +607,8 @@ pub fn history_snapshot_stats(snapshot_dir: &Path) -> (u64, u64) {
 }
 
 fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<PathBuf>, BridgeError> {
-    let current = current_schema_version(connection)?;
-    if current >= LATEST_SCHEMA_VERSION {
+    let current = supported_schema_version(connection)?;
+    if current == LATEST_SCHEMA_VERSION {
         return Ok(None);
     }
 
@@ -666,6 +676,8 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             45 => migration_45_latest_memory_packet_audit(&transaction)?,
             46 => crate::external_import::install_import_foundation(&transaction)?,
             47 => migration_47_model_profile_selection_mode(&transaction)?,
+            48 => migration_48_harness_quota_cooldowns(&transaction)?,
+            49 => migration_49_worker_repair_budget(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -694,6 +706,44 @@ fn migration_47_model_profile_selection_mode(
         "UPDATE model_profiles
          SET selection_mode=CASE WHEN pinned=1 THEN 'pinned' ELSE 'track_standard' END",
         [],
+    )?;
+    Ok(())
+}
+
+/// Persist the repair budget and preserve attempts spent before this migration.
+fn migration_49_worker_repair_budget(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(
+        transaction,
+        "worker_runtime",
+        "result_repair_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    transaction.execute(
+        "UPDATE worker_runtime SET result_repair_count=1
+         WHERE EXISTS(SELECT 1 FROM events WHERE entity_id=worker_runtime.session_id
+                      AND kind='worker.result.repair_requested')",
+        [],
+    )?;
+    Ok(())
+}
+
+/// A harness that just told Bridge it is out of quota is not "unknown" —
+/// `learning_router::harness_capacity` otherwise only sees usage/context from
+/// *live* sessions, so the signal would vanish the moment the failed worker's
+/// session ends. This is the durable record that survives it: a per-workspace
+/// cooldown the router checks in addition to live session state, so the next
+/// delegation in this workspace routes around a harness that just failed for
+/// quota reasons instead of picking it again and hitting the same wall.
+fn migration_48_harness_quota_cooldowns(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS harness_quota_cooldowns (
+            workspace_id TEXT NOT NULL,
+            harness TEXT NOT NULL,
+            reason TEXT NOT NULL,
+            exhausted_at TEXT NOT NULL,
+            cooldown_until TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, harness)
+        );",
     )?;
     Ok(())
 }
@@ -1162,6 +1212,17 @@ fn migration_22_session_backend_binding(transaction: &Transaction<'_>) -> Result
         );",
     )?;
     Ok(())
+}
+
+fn supported_schema_version(connection: &Connection) -> Result<i64, BridgeError> {
+    let current = current_schema_version(connection)?;
+    if current > LATEST_SCHEMA_VERSION {
+        return Err(BridgeError::Invalid(format!(
+            "This database uses schema version {current}, but this Bridge build supports up to \
+             {LATEST_SCHEMA_VERSION}. Open it with a newer Bridge version."
+        )));
+    }
+    Ok(current)
 }
 
 fn current_schema_version(connection: &Connection) -> Result<i64, BridgeError> {
@@ -2685,6 +2746,7 @@ fn restoration_mode(value: &str) -> RestorationMode {
     match value {
         "hot" => RestorationMode::Hot,
         "native" => RestorationMode::Native,
+        "native_fork" => RestorationMode::NativeFork,
         "checkpoint_restored" => RestorationMode::CheckpointRestored,
         _ => RestorationMode::Fresh,
     }
@@ -2818,7 +2880,28 @@ pub fn repository_path_for_session(
         params![session_id],
         |row| row.get(0),
     ).optional()?.flatten();
-    Ok(path.map(PathBuf::from))
+    let path = path.map(PathBuf::from);
+    // A private chat has no connected repository. Git's normal ancestor
+    // discovery can otherwise reach a home-directory repository and scan it
+    // while a durable event holds the shared database lock. Only an explicit
+    // repository initialized in this scratch directory belongs to the chat.
+    if let (Some(path), Some(database_path)) = (&path, db.path()) {
+        let chats = Path::new(database_path)
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("chats");
+        // Asides share their source chat's scratch directory, so ownership
+        // follows the directory's parent rather than this session's ID.
+        // SQLite resolves aliases such as macOS /var -> /private/var. The
+        // stored cwd may retain the spelling supplied by the caller.
+        let is_scratch = path.parent() == Some(chats.as_path()) || std::fs::canonicalize(path)
+            .and_then(|actual| std::fs::canonicalize(&chats).map(|owned| actual.parent() == Some(owned.as_path())))
+            .unwrap_or(false);
+        if is_scratch && !path.join(".git").exists() {
+            return Ok(None);
+        }
+    }
+    Ok(path)
 }
 
 /// The directory a session's base-branch facts describe: the workspace root
@@ -2836,24 +2919,35 @@ pub fn base_branch_path_for_session(
     session_id: &str,
 ) -> Result<Option<PathBuf>, BridgeError> {
     let path: Option<String> = db.query_row(
-        "SELECT COALESCE(w.path,s.cwd) FROM sessions s LEFT JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
+        "SELECT w.path FROM sessions s LEFT JOIN workspaces w ON w.id=s.workspace_id WHERE s.id=?1",
         params![session_id],
         |row| row.get(0),
     ).optional()?.flatten();
-    Ok(path.map(PathBuf::from))
+    match path {
+        Some(path) => Ok(Some(PathBuf::from(path))),
+        None => repository_path_for_session(db, session_id),
+    }
 }
 
 pub fn repository_state_for_path(path: &Path) -> serde_json::Value {
-    let head = crate::git::git_command(path)
+    let Ok(head) = crate::git::git_command(path)
         .args(["rev-parse", "HEAD"])
-        .output();
-    let status = crate::git::git_command(path)
-        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
-        .output();
-    let (Ok(head), Ok(status)) = (head, status) else {
+        .output() else {
+            return serde_json::json!({"status":"unavailable"});
+        };
+    // This snapshot needs a commit. An unborn repository cannot provide one;
+    // do not scan all its untracked files while holding a session transaction.
+    // A repository above the workspace (including a user's home) can make that
+    // unnecessary scan stall every daemon request and startup recovery.
+    if !head.status.success() {
         return serde_json::json!({"status":"unavailable"});
-    };
-    if !head.status.success() || !status.status.success() {
+    }
+    let Ok(status) = crate::git::git_command(path)
+        .args(["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+        .output() else {
+            return serde_json::json!({"status":"unavailable"});
+        };
+    if !status.status.success() {
         return serde_json::json!({"status":"unavailable"});
     }
     let head = String::from_utf8_lossy(&head.stdout).trim().to_owned();
@@ -3366,6 +3460,24 @@ pub fn record_prompt_compilation(
     Ok(db.last_insert_rowid())
 }
 
+/// The harness and model a session is bound to.
+///
+/// Usage rows fall back to this when no prompt compilation matches their turn,
+/// so a provider row is never written without a harness while the session row
+/// exists.
+pub fn session_harness_and_model(
+    db: &Connection,
+    session_id: &str,
+) -> Result<Option<(String, Option<String>)>, BridgeError> {
+    Ok(db
+        .query_row(
+            "SELECT harness,model FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?)
+}
+
 pub fn latest_prompt_compilation(
     db: &Connection,
     session_id: &str,
@@ -3555,6 +3667,273 @@ pub(crate) fn session_event_in_transaction(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn a_native_compaction_is_durable_history() {
+        // The harness's own compaction boundary must survive the process that
+        // reported it: it is the only evidence a provider context actually
+        // shrank, and the transcript card is drawn from the stored entry on
+        // every later reload.
+        let db = open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,harness,label,status,metric_source) VALUES('s','claude','Chat','idle','reported')",
+            [],
+        )
+        .unwrap();
+        let mut event = crate::agent::NormalizedEvent::new(crate::agent::NATIVE_COMPACTION_KIND);
+        event.status = Some("completed".into());
+        event.title = Some("Context compacted".into());
+        event.data = json!({"harness":"claude","trigger":"auto","preTokens":184_000,"postTokens":22_500});
+
+        let stored = session_event(&db, "s", &event, &json!({})).unwrap();
+        assert!(
+            stored.sequence > 0,
+            "a transient event returns sequence 0 and writes no row"
+        );
+
+        // Reading it back runs `validate_stored_entry`, which is where an
+        // entry kind the forest cannot account for would be rejected.
+        let replayed = session_events_tail(&db, "s", 10).unwrap();
+        assert_eq!(replayed.len(), 1);
+        assert_eq!(replayed[0].kind, crate::agent::NATIVE_COMPACTION_KIND);
+        assert_eq!(replayed[0].data["harness"], "claude");
+        assert_eq!(replayed[0].data["postTokens"], 22_500);
+        assert_eq!(replayed[0].title.as_deref(), Some("Context compacted"));
+
+        // It is history, not a Bridge compaction: nothing in the controller's
+        // vocabulary was written.
+        let bridge_boundaries: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM session_entries WHERE kind IN ('compaction','compaction.requested','compaction.failed','checkpoint')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(bridge_boundaries, 0);
+
+        // The head advances to it, exactly as it does for any conversation
+        // entry: a native boundary joins history rather than replacing it.
+        // What it must not do is become a projection boundary, and it does not,
+        // because only a `compaction` entry is one. `context::tests::
+        // a_native_compaction_stays_in_the_projection` holds that end.
+        let head: Option<String> = db
+            .query_row(
+                "SELECT active_entry_id FROM session_heads WHERE session_id='s'",
+                [],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+        assert!(
+            head.is_some(),
+            "a durable entry advances the head like any other conversation entry"
+        );
+    }
+
+    #[test]
+    fn newer_schema_is_rejected_before_recovery_or_backup_pruning() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        let db = open(&path).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,harness,label,status,active_turn_id)
+             VALUES('future-session','claude','Future session','working','future-turn')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE schema_version SET version=?1 WHERE version=?2",
+            params![LATEST_SCHEMA_VERSION + 1, LATEST_SCHEMA_VERSION],
+        )
+        .unwrap();
+        drop(db);
+
+        let before = std::fs::read(&path).unwrap();
+        let backups = [
+            dir.path().join("bridge.db.backup-20260101T000000000000000Z"),
+            dir.path().join("bridge.db.backup-20260102T000000000000000Z"),
+        ];
+        for backup in &backups {
+            std::fs::copy(&path, backup).unwrap();
+        }
+
+        let error = open(&path).unwrap_err();
+        assert!(matches!(&error, BridgeError::Invalid(_)));
+        let message = error.to_string();
+        assert!(message.contains(&(LATEST_SCHEMA_VERSION + 1).to_string()));
+        assert!(message.contains(&format!("supports up to {LATEST_SCHEMA_VERSION}")));
+        assert!(message.contains("newer Bridge version"));
+        assert!(
+            std::fs::read(&path).unwrap() == before,
+            "the newer database is unchanged"
+        );
+        for backup in &backups {
+            assert!(
+                std::fs::read(backup).unwrap() == before,
+                "rollback copies are untouched"
+            );
+        }
+
+        let inspected =
+            Connection::open_with_flags(&path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let state: (String, Option<String>, Option<String>) = inspected
+            .query_row(
+                "SELECT status,active_turn_id,ended_at FROM sessions WHERE id='future-session'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(state, ("working".into(), Some("future-turn".into()), None));
+    }
+
+    #[test]
+    fn newer_schema_is_rejected_without_assuming_current_application_tables() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        let db = Connection::open(&path).unwrap();
+        db.execute_batch("CREATE TABLE schema_version(version INTEGER PRIMARY KEY)")
+            .unwrap();
+        db.execute(
+            "INSERT INTO schema_version(version) VALUES(?1)",
+            params![LATEST_SCHEMA_VERSION + 1],
+        )
+        .unwrap();
+        drop(db);
+
+        let error = open(&path).unwrap_err();
+        assert!(matches!(&error, BridgeError::Invalid(_)));
+        assert!(error.to_string().contains("newer Bridge version"));
+    }
+
+    #[test]
+    fn newer_schema_with_a_hot_journal_is_not_recovered_by_preflight() {
+        const FIXTURE_PATH: &str = "BRIDGE_TEST_FUTURE_DATABASE_JOURNAL";
+        if let Some(path) = std::env::var_os(FIXTURE_PATH) {
+            let db = Connection::open(PathBuf::from(path)).unwrap();
+            db.execute_batch(
+                "PRAGMA journal_mode=DELETE;
+                 PRAGMA synchronous=FULL;
+                 PRAGMA cache_size=1;
+                 PRAGMA cache_spill=ON;
+                 CREATE TABLE schema_version(version INTEGER PRIMARY KEY);
+                 CREATE TABLE journal_fixture(payload BLOB);
+                 INSERT INTO journal_fixture VALUES(zeroblob(65536));",
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO schema_version VALUES(?1)",
+                params![LATEST_SCHEMA_VERSION + 1],
+            )
+            .unwrap();
+            db.execute_batch(
+                "BEGIN IMMEDIATE;
+                 UPDATE journal_fixture SET payload=randomblob(65536);",
+            )
+            .unwrap();
+            // Simulate a crash after dirty pages spill, skipping SQLite's
+            // connection destructor and its rollback of the active transaction.
+            std::process::exit(0);
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        let journal = dir.path().join("bridge.db-journal");
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "store::tests::newer_schema_with_a_hot_journal_is_not_recovered_by_preflight",
+                "--nocapture",
+            ])
+            .env(FIXTURE_PATH, &path)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        let before = std::fs::read(&path).unwrap();
+        let journal_before = std::fs::read(&journal).unwrap();
+        assert_eq!(
+            &journal_before[..8],
+            &[0xd9, 0xd5, 0x05, 0xf9, 0x20, 0xa1, 0x63, 0xd7],
+            "the child must leave a hot rollback journal"
+        );
+
+        assert!(open(&path).is_err(), "recovery must not run before version validation");
+        assert!(std::fs::read(&path).unwrap() == before, "database bytes changed");
+        assert!(
+            std::fs::read(&journal).unwrap() == journal_before,
+            "the rollback journal must be left intact"
+        );
+
+        // Prove the fixture requires recovery: normal SQLite access rolls it
+        // back, returning the future version and removing its hot journal.
+        let recovering = Connection::open(&path).unwrap();
+        assert_eq!(current_schema_version(&recovering).unwrap(), LATEST_SCHEMA_VERSION + 1);
+        assert!(!journal.exists());
+        assert!(std::fs::read(&path).unwrap() != before);
+    }
+
+    #[test]
+    fn private_chat_stamps_do_not_discover_an_ancestor_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        let git = |path: &Path, args: &[&str]| {
+            let output = crate::git::git_command(path).args(args).output().unwrap();
+            assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        };
+        git(dir.path(), &["init", "-q"]);
+        git(dir.path(), &["-c", "user.name=Test", "-c", "user.email=test@example.com",
+            "commit", "--allow-empty", "-qm", "parent"]);
+        let data = dir.path().join("app-data");
+        std::fs::create_dir(&data).unwrap();
+        let db = open(&data.join("bridge.db")).unwrap();
+        let scratch = data.join("chats").join("chat");
+        std::fs::create_dir_all(&scratch).unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,harness,label,status,metric_source,cwd)
+             VALUES('chat','codex','Chat','idle','estimated',?1)",
+            params![scratch.to_string_lossy()],
+        ).unwrap();
+        // Asides inherit their source chat's cwd rather than getting a
+        // scratch directory named after their own session ID.
+        db.execute(
+            "INSERT INTO sessions(id,harness,label,status,metric_source,cwd)
+             SELECT 'aside',harness,'Aside',status,metric_source,cwd FROM sessions WHERE id='chat'",
+            [],
+        ).unwrap();
+        for session_id in ["chat", "aside"] {
+            assert_eq!(repository_path_for_session(&db, session_id).unwrap(), None);
+            assert_eq!(base_branch_path_for_session(&db, session_id).unwrap(), None);
+            assert_eq!(repository_state_for_session(&db, session_id).unwrap(), json!({"status":"unavailable"}));
+        }
+
+        // Initializing a repository explicitly in the chat still works.
+        git(&scratch, &["init", "-q"]);
+        git(&scratch, &["-c", "user.name=Test", "-c", "user.email=test@example.com",
+            "commit", "--allow-empty", "-qm", "chat"]);
+        for session_id in ["chat", "aside"] {
+            assert_eq!(repository_path_for_session(&db, session_id).unwrap(), Some(scratch.clone()));
+            assert_eq!(base_branch_path_for_session(&db, session_id).unwrap(), Some(scratch.clone()));
+            assert_eq!(repository_state_for_session(&db, session_id).unwrap()["status"], "clean");
+        }
+
+        // A connected/imported cwd in a repository subdirectory retains
+        // ordinary Git discovery; only Bridge's own private scratch is special.
+        let connected = dir.path().join("source");
+        std::fs::create_dir(&connected).unwrap();
+        db.execute("UPDATE sessions SET cwd=?1 WHERE id='chat'", params![connected.to_string_lossy()]).unwrap();
+        assert_eq!(repository_path_for_session(&db, "chat").unwrap(), Some(connected));
+        assert_eq!(repository_state_for_session(&db, "chat").unwrap()["status"], "dirty");
+    }
+
+    #[test]
+    fn an_unborn_repository_never_runs_the_status_scan() {
+        let scratch = tempfile::tempdir().unwrap();
+        let root = scratch.path();
+        assert!(crate::git::git_command(root).args(["init", "-q"]).status().unwrap().success());
+        std::fs::write(root.join("tracked.txt"), "pending first commit").unwrap();
+        let before = crate::git::git_processes_started_on_this_thread();
+        assert_eq!(repository_state_for_path(root), json!({"status":"unavailable"}));
+        assert_eq!(crate::git::git_processes_started_on_this_thread() - before, 1,
+            "the failed HEAD lookup must not be followed by a status scan");
+    }
 
     #[test]
     fn the_harness_column_round_trips_every_shape() {
@@ -4735,6 +5114,44 @@ mod tests {
     }
 
     #[test]
+    fn migration_49_preserves_existing_repair_spending_across_reopens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        let db = open(&path).unwrap();
+        db.execute_batch(
+            "INSERT INTO sessions(id,harness,label,status,depth) VALUES('parent','codex','Parent','ready',0);
+             INSERT INTO sessions(id,harness,label,status,depth,parent_session_id)
+                 VALUES('spent','codex','Spent','ready',1,'parent'),('fresh','codex','Fresh','ready',1,'parent');
+             INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,updated_at)
+                 VALUES('spent','parent','working','implementation','key','now'),('fresh','parent','working','implementation','key','now');
+             ALTER TABLE worker_runtime DROP COLUMN result_repair_count;
+             DELETE FROM schema_version WHERE version=49;"
+        ).unwrap();
+        event(
+            &db,
+            "delegation",
+            "worker.result.repair_requested",
+            "spent",
+            "missing fence",
+        )
+        .unwrap();
+        drop(db);
+        for _ in 0..2 {
+            let db = open(&path).unwrap();
+            for (id, expected) in [("spent", 1), ("fresh", 0)] {
+                let count: i64 = db
+                    .query_row(
+                        "SELECT result_repair_count FROM worker_runtime WHERE session_id=?1",
+                        params![id],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(count, expected);
+            }
+        }
+    }
+
+    #[test]
     fn migration_47_maps_legacy_profile_pins_to_selection_modes() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bridge.db");
@@ -4746,7 +5163,7 @@ mod tests {
              ) VALUES
                  (1,'planner','planner','planning','codex','strong','high',1,'track_standard',0,'now'),
                  (1,'research','research','research','codex','standard','medium',0,'pinned',1,'now');
-             DELETE FROM schema_version WHERE version=47;",
+             DELETE FROM schema_version WHERE version>=47;",
         )
         .unwrap();
         drop(db);

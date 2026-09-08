@@ -1,9 +1,11 @@
+import { recordStreamReceipt } from "./streamTiming";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { normalizeAgentToken } from "./agentMention";
+import { createInvokeQueue } from "./invokeQueue";
 import { asWireKind, readWireKind } from "./transcript/wire";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
 import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
@@ -71,11 +73,18 @@ const COMMAND_BY_METHOD = Object.fromEntries(
   BRIDGE_METHODS.map(entry => [entry.method, entry.command]),
 ) as Record<BridgeMethod, string>;
 
+// Match daemon_host.rs's connection partitions. Sending the whole UI fan-out
+// at once exhausted its 24-job limit; slow GitHub calls also need to stay out
+// of the lanes used by settings, sessions, and health.
+const generalInvokes = createInvokeQueue(4);
+const githubInvokes = createInvokeQueue(2);
+
 function call<M extends BridgeMethod>(
   method: M,
   ...params: BridgeMethodParams[M] extends undefined ? [] : [BridgeMethodParams[M]]
 ): Promise<BridgeMethodResults[M]> {
-  return invoke(COMMAND_BY_METHOD[method], params[0] as Record<string, unknown> | undefined);
+  const enqueue = method.startsWith("github/") ? githubInvokes : generalInvokes;
+  return enqueue(() => invoke(COMMAND_BY_METHOD[method], params[0] as Record<string, unknown> | undefined));
 }
 
 const subscribe = <T,>(notification: BridgeNotification, handler: (payload: T) => void): Promise<UnlistenFn> =>
@@ -374,7 +383,11 @@ const demoEntries: SessionEntry[] = [
   forestEntry("entry-11b", "session-1", 13, "tool.completed", { status: "completed", title: "Read tokenStore.ts", data: { type: "readFile", path: "src/auth/tokenStore.ts" } }, "entry-10b"),
   forestEntry("entry-12b", "session-1", 14, "file_change.completed", { status: "completed", title: "tokenStore.ts", data: { path: "src/auth/tokenStore.ts", additions: 9, deletions: 4, durationMs: 400, patch: MOCK_PATCH } }, "entry-11b"),
   forestEntry("entry-13b", "session-1", 15, "command.completed", { status: "completed", title: "bun test src/auth", data: { type: "commandExecution", command: "bun test src/auth", exitCode: 0, durationMs: 2400, aggregatedOutput: "bun test v1.1.34\n\n 42 pass\n 0 fail\nRan 42 tests across 6 files. [2.41s]" } }, "entry-12b"),
-  forestEntry("entry-raw", "session-1", 16, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-13b")
+  // The harness's own boundary, beside Bridge's `compaction` above. Two
+  // different facts on purpose: this one is the provider's context actually
+  // shrinking, that one is Bridge saving a summary for a later cold start.
+  forestEntry("entry-14b", "session-1", 16, "context.compacted", { status: "completed", title: "Context compacted", data: { harness: "claude", trigger: "auto", preTokens: 184000, postTokens: 22500 } }, "entry-13b"),
+  forestEntry("entry-raw", "session-1", 17, "provider.unknown", { method: "provider/debug", raw: { trace: "collapsed" } }, "entry-14b")
 ];
 // Seed memory for the mock host: a spread the Memory surface can actually
 // render — pinned + accepted + proposed records, a supersession lineage, a
@@ -885,6 +898,12 @@ export const bridgeApi = {
   githubCheckout: (workspaceId: string, number: number): Promise<GithubCheckoutResult> =>
     isTauri() ? call("github/github_checkout", { workspaceId, number }) : Promise.resolve(mockGithubCheckout(workspaceId, number)),
   browserBridgeState: (): Promise<BrowserBridgeSnapshot> => isTauri() ? call("browser/browser_bridge_state") as Promise<BrowserBridgeSnapshot> : Promise.resolve(structuredClone(mockBrowserBridge)),
+  browserFrame: (afterRevision: number): Promise<BrowserFrame | null> => isTauri()
+    ? call("browser/browser_frame", { afterRevision })
+    : Promise.resolve(mockBrowserBridge.lease && mockBrowserBridge.screenshot && afterRevision < 1 ? {
+      revision: 1, leaseId: mockBrowserBridge.lease.id, dataUrl: mockBrowserBridge.screenshot,
+      redactedRegions: mockBrowserBridge.screenshotRedactedRegions,
+    } : null),
   installBrowserNativeHost: async (): Promise<string> => {
     if (isTauri()) return call("browser/install_browser_native_host");
     mockBrowserBridge.nativeHostInstalled = true; mockBrowserBridge.nativeHostManifestPath = "/mock/dev.bridge.deck.browser.json";
@@ -1788,7 +1807,7 @@ export const bridgeApi = {
   onAgentEvent: async (handler: (event: AgentEvent) => void): Promise<UnlistenFn> => {
     if (isTauri()) {
       return listen<AgentEvent[]>(AGENT_EVENT_BATCH, event => {
-        for (const frame of event.payload) handler(frame);
+        for (const frame of event.payload) { recordStreamReceipt(frame); handler(frame); }
       });
     }
     agentListeners.add(handler);

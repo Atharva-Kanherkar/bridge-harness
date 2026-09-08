@@ -83,6 +83,7 @@ methods![
     (ReplaySessionEvents, "sessions", "replay_session_events"),
     (ActivateSessionEntry, "sessions", "activate_session_entry"),
     (CreateChat, "sessions", "create_chat"),
+    (CreateChatId, "sessions", "create_chat_id"),
     (CreateAsideChat, "sessions", "create_aside_chat"),
     (CreateWorkspaceSession, "sessions", "create_workspace_session"),
     (StartSession, "sessions", "start_session"),
@@ -192,6 +193,7 @@ methods![
     (ApproveLearningRun, "learning", "approve_learning_run"),
     // browser bridge
     (BrowserBridgeState, "browser", "browser_bridge_state"),
+    (BrowserFrame, "browser", "browser_frame"),
     (InstallBrowserNativeHost, "browser", "install_browser_native_host"),
     (BrowserAction, "browser", "browser_action"),
     (SetBrowserPermission, "browser", "set_browser_permission"),

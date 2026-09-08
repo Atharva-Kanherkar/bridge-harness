@@ -165,9 +165,25 @@ pub fn claude_sdk_configuration() -> ClaudeSdkConfiguration {
         .unwrap_or_default();
     ClaudeSdkConfiguration {
         plugins,
-        mcp_servers: parse_claude_native_connector_configs(&mcp_list),
+        mcp_servers: sdk_connector_configs(&mcp_list),
         connector_health: parse_claude_connector_health(&mcp_list),
     }
+}
+
+/// The native connectors a briefing run may be handed explicitly: only the
+/// ones `mcp list` reported as connected.
+///
+/// Chat sessions get no explicit connector list at all — see
+/// `claude_adapter::sidecar_mcp_servers` for why an SDK-scoped copy of a
+/// claude.ai connector costs every turn a 30-second handshake. A briefing
+/// runs under `strictMcpConfig` and needs the list, but a connector that
+/// already needs authentication at discovery time can only stall it.
+fn sdk_connector_configs(mcp_list: &str) -> BTreeMap<String, Value> {
+    let health = parse_claude_connector_health(mcp_list);
+    parse_claude_native_connector_configs(mcp_list)
+        .into_iter()
+        .filter(|(connector_id, _)| health.get(connector_id) == Some(&Some(true)))
+        .collect()
 }
 
 fn provider_catalog(provider: MarketplaceProvider) -> ProviderCatalog {
@@ -1498,6 +1514,21 @@ mod tests {
             configs["claude.ai Notion"]["url"],
             "https://mcp.example/notion"
         );
+    }
+
+    #[test]
+    fn sdk_configuration_passes_only_connected_connectors_explicitly() {
+        // An unauthenticated connector on the explicit SDK list costs every
+        // turn a 30-second handshake timeout before the first token; the CLI
+        // still lists it natively, so dropping it here loses nothing.
+        let configs = sdk_connector_configs(
+            "claude.ai Notion: https://mcp.example/notion - ✔ Connected\n\
+             claude.ai Slack: https://mcp.example/slack - ⚠ Needs authentication\n\
+             claude.ai GitHub: https://mcp.example/github - ✘ Failed to connect\n\
+             claude.ai Quiet: https://mcp.example/quiet\n",
+        );
+        assert_eq!(configs.len(), 1, "{configs:?}");
+        assert_eq!(configs["claude.ai Notion"]["url"], "https://mcp.example/notion");
     }
 
     #[test]

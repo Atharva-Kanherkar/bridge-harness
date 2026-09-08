@@ -105,6 +105,7 @@ pub fn normalize_opencode_message_with_state(
                         "input_tokens": tokens.get("input").cloned().unwrap_or(Value::Null),
                         "output_tokens": tokens.get("output").cloned().unwrap_or(Value::Null),
                         "cached_input_tokens": tokens.pointer("/cache/read").cloned().unwrap_or(Value::Null),
+                        "cache_write_tokens": tokens.pointer("/cache/write").cloned().unwrap_or(Value::Null),
                         "reasoning_tokens": tokens.get("reasoning").cloned().unwrap_or(Value::Null),
                     },
                     "cost": info.get("cost").cloned().unwrap_or(Value::Null),
@@ -155,6 +156,9 @@ pub fn normalize_opencode_message_with_state(
         }
         "message.part.updated" => normalize_opencode_part(&properties, state),
         "session.diff" => vec![with_data("diff.updated", &properties, properties.clone())],
+        // OpenCode summarized its own session. The event carries only the
+        // session id, so the record names the harness and nothing else.
+        "session.compacted" => vec![native_compaction("opencode", json!({}))],
         "todo.updated" => {
             let mut event = with_data("plan.updated", &properties, properties.clone());
             event.title = Some("OpenCode plan".into());
@@ -407,6 +411,16 @@ impl NormalizedEvent {
 pub struct CodexStreamState {
     pub active_reasoning_id: Option<String>,
     pub reasoning_counter: usize,
+    /// The turn whose compaction boundary has already been recorded.
+    ///
+    /// Codex describes one boundary two ways: a `contextCompaction` thread
+    /// item, and the `thread/compacted` notification its own schema marks
+    /// deprecated in favour of that item. A build that sends both would put
+    /// two boundaries in history for one compaction, so the first arrival for
+    /// a turn wins and the echo is dropped. The accepted cost is that a turn
+    /// which compacts twice is recorded once; that is a smaller error than
+    /// telling a reader the context shrank twice when it shrank once.
+    pub compacted_turn: Option<String>,
 }
 
 pub fn normalize_codex_message(message: &Value) -> Vec<NormalizedEvent> {
@@ -434,6 +448,7 @@ pub fn normalize_codex_message_with_state(
         }
         "turn/started" => {
             state.active_reasoning_id = None;
+            state.compacted_turn = None;
             let mut event = with_data("turn.started", &params, params.clone());
             event.status = Some("working".into());
             vec![event]
@@ -558,7 +573,27 @@ pub fn normalize_codex_message_with_state(
                 .map(str::to_owned);
             vec![event]
         }
-        "thread/tokenUsage/updated" => vec![with_data("usage.updated", &params, params.clone())],
+        "thread/tokenUsage/updated" => {
+            let mut data = params.clone();
+            // Always shadow the raw frame with an explicit `usage` key, even an
+            // empty one. `UsageReport::from_normalized` falls back to the whole
+            // event when `usage` is absent, and its recursive search would then
+            // reach `tokenUsage.total` — the cumulative counter this normalizer
+            // exists to keep out of the ledger. An empty object resolves to no
+            // figures at all, so no row is written.
+            data["usage"] = codex_request_usage(&params).unwrap_or_else(|| json!({}));
+            vec![with_data("usage.updated", &params, data)]
+        }
+        // Codex compacted its own context. Its schema marks this notification
+        // deprecated in favour of the `contextCompaction` thread item, so
+        // whichever of the pair arrives first for a turn is the record and the
+        // other is dropped. Neither carries token figures.
+        "thread/compacted" => {
+            if compaction_already_recorded(state, &params) {
+                return vec![];
+            }
+            vec![native_compaction("codex", json!({}))]
+        }
         "turn/diff/updated" | "item/fileChange/patchUpdated" => {
             vec![with_data("diff.updated", &params, params.clone())]
         }
@@ -632,7 +667,7 @@ pub fn normalize_codex_message_with_state(
                     state.active_reasoning_id = None;
                 }
             }
-            normalize_item(method, &params)
+            normalize_item(method, &params, state)
         }
         _ if is_codex_internal_notification(method) => vec![],
         _ => {
@@ -641,6 +676,36 @@ pub fn normalize_codex_message_with_state(
             vec![event]
         }
     }
+}
+
+/// The per-request slice of a Codex `thread/tokenUsage/updated` frame.
+///
+/// Codex reports two breakdowns: `total` is the thread's running counter and
+/// `last` is the request that just completed. A ledger row is a per-request
+/// delta, so only `last` belongs in the normalized `usage` object — and it has
+/// to be named here, because `serde_json` runs with `preserve_order` and a
+/// recursive alias search over the raw frame reaches `total` first.
+///
+/// The raw `tokenUsage` object stays on the event beside this, so the running
+/// total and `modelContextWindow` remain readable. That is also why the caller
+/// must still write an explicit `usage` key when this returns `None`: the raw
+/// object it preserves is precisely what a recursive alias search would find.
+fn codex_request_usage(params: &Value) -> Option<Value> {
+    let last = params.pointer("/tokenUsage/last")?.as_object()?;
+    let mut usage = serde_json::Map::new();
+    for (wire, normalized) in [
+        ("inputTokens", "input_tokens"),
+        ("outputTokens", "output_tokens"),
+        ("cachedInputTokens", "cache_read_tokens"),
+        ("cacheWriteInputTokens", "cache_write_tokens"),
+        ("reasoningOutputTokens", "reasoning_tokens"),
+        ("totalTokens", "total_tokens"),
+    ] {
+        if let Some(count) = last.get(wire).and_then(Value::as_i64) {
+            usage.insert(normalized.into(), count.into());
+        }
+    }
+    (!usage.is_empty()).then(|| Value::Object(usage))
 }
 
 /// Documented app-server notifications that are transport/control-plane
@@ -687,7 +752,6 @@ fn is_codex_internal_notification(method: &str) -> bool {
             | "externalAgentConfig/import/progress"
             | "externalAgentConfig/import/completed"
             | "fs/changed"
-            | "thread/compacted"
             | "model/verification"
             | "turn/moderationMetadata"
             | "model/safetyBuffering/updated"
@@ -754,12 +818,27 @@ pub fn normalize_codex_request(message: &Value) -> Option<NormalizedEvent> {
     Some(event)
 }
 
-fn normalize_item(method: &str, params: &Value) -> Vec<NormalizedEvent> {
+fn normalize_item(
+    method: &str,
+    params: &Value,
+    state: &mut CodexStreamState,
+) -> Vec<NormalizedEvent> {
     let item = params.get("item").cloned().unwrap_or_else(|| json!({}));
     let item_type = item
         .get("type")
         .and_then(Value::as_str)
         .unwrap_or("unknown");
+    if item_type == "contextCompaction" {
+        // The boundary is a completed fact. Its opening half carries nothing a
+        // reader can act on, and recording both halves would put two rows in
+        // history for one compaction.
+        if method == "item/started" || compaction_already_recorded(state, params) {
+            return vec![];
+        }
+        let mut event = native_compaction("codex", json!({}));
+        event.item_id = item.get("id").and_then(Value::as_str).map(str::to_owned);
+        return vec![event];
+    }
     let suffix = if method == "item/started" {
         "started"
     } else {
@@ -821,9 +900,40 @@ pub fn normalize_claude_message(message: &Value) -> Vec<NormalizedEvent> {
 pub struct ClaudeStreamState {
     pub active_message_id: Option<String>,
     pub active_reasoning_id: Option<String>,
+    thinking_blocks: std::collections::BTreeMap<String, ClaudeThinkingBlock>,
     /// Open tool calls by `tool_use` id, so the eventual `tool_result` completes
     /// under the same normalized kind and carries a host-measured duration.
     tool_calls: HashMap<String, ClaudeToolCall>,
+}
+
+#[derive(Debug, Default, Clone)]
+struct ClaudeThinkingBlock {
+    text: String,
+    completed: bool,
+}
+
+fn claude_thinking_id(message_id: &str, index: u64) -> String {
+    // Preserve the identity used by existing histories for the first block.
+    if index == 0 {
+        format!("reasoning-{message_id}")
+    } else {
+        format!("reasoning-{message_id}-block-{index}")
+    }
+}
+
+fn complete_claude_thinking(id: &str, block: &mut ClaudeThinkingBlock) -> Option<NormalizedEvent> {
+    if block.completed {
+        return None;
+    }
+    block.completed = true;
+    if block.text.is_empty() {
+        return None;
+    }
+    let mut event = NormalizedEvent::new("reasoning.completed");
+    event.item_id = Some(id.to_owned());
+    event.status = Some("completed".into());
+    event.text = Some(block.text.clone());
+    Some(event)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -925,9 +1035,12 @@ fn synthesize_claude_patch(name: &str, input: &Value) -> Option<String> {
             .to_owned()
     };
     let hunks: Vec<String> = match name {
-        "Edit" => claude_diff_hunk(&string_field(input, "old_string"), &string_field(input, "new_string"))
-            .into_iter()
-            .collect(),
+        "Edit" => claude_diff_hunk(
+            &string_field(input, "old_string"),
+            &string_field(input, "new_string"),
+        )
+        .into_iter()
+        .collect(),
         "MultiEdit" => input
             .get("edits")?
             .as_array()?
@@ -956,7 +1069,10 @@ fn synthesize_claude_patch(name: &str, input: &Value) -> Option<String> {
     } else {
         format!("a/{path}")
     };
-    Some(format!("--- {old_file}\n+++ b/{path}\n{}", hunks.join("\n")))
+    Some(format!(
+        "--- {old_file}\n+++ b/{path}\n{}",
+        hunks.join("\n")
+    ))
 }
 
 /// One `@@` hunk turning `old` into `new`. The tool input carries no line
@@ -1034,8 +1150,14 @@ pub fn normalize_claude_message_with_state(
         "assistant" => normalize_claude_assistant(message, state),
         "user" => normalize_claude_user(message, state),
         "result" => {
+            let mut events: Vec<_> = state
+                .thinking_blocks
+                .iter_mut()
+                .filter_map(|(id, block)| complete_claude_thinking(id, block))
+                .collect();
             *state = ClaudeStreamState::default();
-            normalize_claude_result(message)
+            events.extend(normalize_claude_result(message));
+            events
         }
         "control_request" | "sdk_control_request" => normalize_claude_control_request(message)
             .into_iter()
@@ -1073,6 +1195,25 @@ fn normalize_claude_system(message: &Value) -> Vec<NormalizedEvent> {
             }
             vec![event]
         }
+        // Claude Code compacted its own context. This is the boundary Bridge
+        // records rather than one it creates, and the only Claude frame that
+        // reports the window actually shrinking: `pre_tokens` and
+        // `post_tokens` are the provider's own figures.
+        "compact_boundary" => {
+            let metadata = message
+                .get("compact_metadata")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
+            vec![native_compaction(
+                "claude",
+                json!({
+                    "trigger": metadata.get("trigger").cloned(),
+                    "preTokens": metadata.get("pre_tokens").cloned(),
+                    "postTokens": metadata.get("post_tokens").cloned(),
+                    "durationMs": metadata.get("duration_ms").cloned(),
+                }),
+            )]
+        }
         // Hooks/notifications are noise in the conversation surface.
         _ => vec![],
     }
@@ -1081,6 +1222,17 @@ fn normalize_claude_system(message: &Value) -> Vec<NormalizedEvent> {
 fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Vec<NormalizedEvent> {
     let event = message.get("event").cloned().unwrap_or_else(|| json!({}));
     let event_type = event.get("type").and_then(Value::as_str).unwrap_or("");
+    // Streams missing message_start still need one identity across block boundaries.
+    let message_id = state
+        .active_message_id
+        .clone()
+        .or_else(|| {
+            message
+                .get("session_id")
+                .and_then(Value::as_str)
+                .map(|session| format!("claude-live-{session}"))
+        })
+        .unwrap_or_else(|| "claude-live".into());
     match event_type {
         "message_start" => {
             if let Some(id) = event
@@ -1096,16 +1248,6 @@ fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Ve
         "content_block_delta" => {
             let delta = event.get("delta").cloned().unwrap_or_else(|| json!({}));
             let delta_type = delta.get("type").and_then(Value::as_str).unwrap_or("");
-            let message_id = state
-                .active_message_id
-                .clone()
-                .or_else(|| {
-                    message
-                        .get("session_id")
-                        .and_then(Value::as_str)
-                        .map(|session| format!("claude-live-{session}"))
-                })
-                .unwrap_or_else(|| "claude-live".into());
             match delta_type {
                 "text_delta" => {
                     let text = delta.get("text").and_then(Value::as_str).unwrap_or("");
@@ -1129,10 +1271,16 @@ fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Ve
                         return vec![];
                     }
                     let mut normalized = NormalizedEvent::new("reasoning.delta");
-                    normalized.item_id = state
-                        .active_reasoning_id
-                        .clone()
-                        .or_else(|| Some(format!("reasoning-{message_id}")));
+                    let id = claude_thinking_id(
+                        &message_id,
+                        event.get("index").and_then(Value::as_u64).unwrap_or(0),
+                    );
+                    let block = state.thinking_blocks.entry(id.clone()).or_default();
+                    if block.completed {
+                        return vec![];
+                    }
+                    block.text.push_str(text);
+                    normalized.item_id = Some(id);
                     normalized.status = Some("streaming".into());
                     normalized.text = Some(text.to_owned());
                     vec![normalized]
@@ -1148,20 +1296,47 @@ fn normalize_claude_stream(message: &Value, state: &mut ClaudeStreamState) -> Ve
             match block.get("type").and_then(Value::as_str).unwrap_or("") {
                 "tool_use" => vec![claude_tool_started(message, &block, state)],
                 "thinking" => {
-                    let message_id = state
-                        .active_message_id
-                        .clone()
-                        .unwrap_or_else(|| "claude-live".into());
-                    state.active_reasoning_id = Some(format!("reasoning-{message_id}"));
-                    vec![]
+                    let id = claude_thinking_id(
+                        &message_id,
+                        event.get("index").and_then(Value::as_u64).unwrap_or(0),
+                    );
+                    state.active_reasoning_id = Some(id.clone());
+                    let thinking = state.thinking_blocks.entry(id.clone()).or_default();
+                    let text = block.get("thinking").and_then(Value::as_str).unwrap_or("");
+                    if thinking.completed || text.is_empty() || !thinking.text.is_empty() {
+                        return vec![];
+                    }
+                    thinking.text.push_str(text);
+                    let mut normalized = NormalizedEvent::new("reasoning.delta");
+                    normalized.item_id = Some(id);
+                    normalized.status = Some("streaming".into());
+                    normalized.text = Some(text.to_owned());
+                    vec![normalized]
                 }
                 _ => vec![],
             }
         }
+        "content_block_stop" => {
+            let id = claude_thinking_id(
+                &message_id,
+                event.get("index").and_then(Value::as_u64).unwrap_or(0),
+            );
+            state
+                .thinking_blocks
+                .get_mut(&id)
+                .and_then(|block| complete_claude_thinking(&id, block))
+                .into_iter()
+                .collect()
+        }
         "message_stop" => {
-            // Keep active ids until the assistant snapshot or result arrives so
-            // completed text can replace the same bubble.
-            vec![]
+            // A truncated stream may omit block_stop; retain its text durably.
+            let prefix = format!("reasoning-{message_id}");
+            state
+                .thinking_blocks
+                .iter_mut()
+                .filter(|(id, _)| **id == prefix || id.starts_with(&format!("{prefix}-block-")))
+                .filter_map(|(id, block)| complete_claude_thinking(id, block))
+                .collect()
         }
         _ => vec![],
     }
@@ -1184,8 +1359,10 @@ fn normalize_claude_assistant(
                 .map(str::to_owned)
         })
         .unwrap_or_else(|| "assistant".into());
-    state.active_message_id = Some(message_id.clone());
-    state.active_reasoning_id = Some(format!("reasoning-{message_id}"));
+    // A delayed snapshot must not redirect an already-started next message.
+    if state.active_message_id.is_none() {
+        state.active_message_id = Some(message_id.clone());
+    }
     let content = payload
         .get("content")
         .and_then(Value::as_array)
@@ -1207,7 +1384,7 @@ fn normalize_claude_assistant(
         event.data = payload.clone();
         events.push(event);
     }
-    for part in content {
+    for (block_index, part) in content.into_iter().enumerate() {
         let part_type = part.get("type").and_then(Value::as_str).unwrap_or("");
         match part_type {
             "tool_use" => {
@@ -1216,11 +1393,15 @@ fn normalize_claude_assistant(
             "thinking" => {
                 if let Some(thinking) = part.get("thinking").and_then(Value::as_str) {
                     if !thinking.is_empty() {
-                        let mut event = NormalizedEvent::new("reasoning.completed");
-                        event.item_id = Some(format!("reasoning-{message_id}"));
-                        event.status = Some("completed".into());
-                        event.text = Some(thinking.to_owned());
-                        events.push(event);
+                        let id = claude_thinking_id(&message_id, block_index as u64);
+                        let block = state.thinking_blocks.entry(id.clone()).or_default();
+                        if block.text != thinking {
+                            block.text = thinking.to_owned();
+                            block.completed = false;
+                        }
+                        if let Some(event) = complete_claude_thinking(&id, block) {
+                            events.push(event);
+                        }
                     }
                 }
             }
@@ -1392,6 +1573,56 @@ fn with_data(kind: &str, params: &Value, data: Value) -> NormalizedEvent {
     event
 }
 
+/// The kind every harness's own compaction boundary normalizes to.
+///
+/// Bridge does not compact a live provider context: the harness that talks to
+/// the model owns its window and shrinks it. This event is Bridge's durable
+/// record that the shrink happened, and it is the only thing the "Context
+/// compacted" card is ever drawn from. A Bridge checkpoint is a separate fact
+/// with its own entry, because on a hot session it frees no provider tokens.
+/// See `docs/compaction-and-resume.md`.
+pub const NATIVE_COMPACTION_KIND: &str = "context.compacted";
+
+/// One native compaction boundary, in the shape the transcript reads.
+///
+/// `facts` carries whatever the provider actually reported. Null members are
+/// dropped rather than stored, so a harness that reports no token figures
+/// produces an entry that says only which harness compacted, and the card
+/// cannot claim a number the provider never sent.
+/// Whether this turn's Codex compaction boundary is already in history.
+///
+/// Claims the turn on the first call, so the caller records the boundary once
+/// however many ways Codex reports it. A frame with no turn id claims the
+/// literal `"unknown"` turn, which still collapses a same-frame pair.
+fn compaction_already_recorded(state: &mut CodexStreamState, params: &Value) -> bool {
+    let turn = params
+        .get("turnId")
+        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_owned();
+    if state.compacted_turn.as_deref() == Some(turn.as_str()) {
+        return true;
+    }
+    state.compacted_turn = Some(turn);
+    false
+}
+
+fn native_compaction(harness: &str, facts: Value) -> NormalizedEvent {
+    let mut data = json!({"harness": harness});
+    if let (Some(target), Some(facts)) = (data.as_object_mut(), facts.as_object()) {
+        for (key, value) in facts {
+            if !value.is_null() {
+                target.insert(key.clone(), value.clone());
+            }
+        }
+    }
+    let mut event = NormalizedEvent::new(NATIVE_COMPACTION_KIND);
+    event.data = data;
+    event.status = Some("completed".into());
+    event.title = Some("Context compacted".into());
+    event
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1482,6 +1713,120 @@ mod tests {
         assert_eq!(events[1].text.as_deref(), Some("Model hit rate limit or context overload"));
     }
     #[test]
+    fn claude_compact_boundary_becomes_a_durable_context_compaction() {
+        let events = normalize_claude_message(&json!({
+            "type":"system",
+            "subtype":"compact_boundary",
+            "session_id":"s1",
+            "uuid":"u1",
+            "compact_metadata":{
+                "trigger":"auto",
+                "pre_tokens":184_000,
+                "post_tokens":22_500,
+                "duration_ms":4_120
+            }
+        }));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, NATIVE_COMPACTION_KIND);
+        assert_eq!(events[0].status.as_deref(), Some("completed"));
+        assert_eq!(events[0].data["harness"], "claude");
+        assert_eq!(events[0].data["trigger"], "auto");
+        assert_eq!(events[0].data["preTokens"], 184_000);
+        assert_eq!(events[0].data["postTokens"], 22_500);
+        assert_eq!(events[0].data["durationMs"], 4_120);
+    }
+
+    #[test]
+    fn a_compaction_records_only_the_figures_the_provider_sent() {
+        // A boundary that summarized everything reports no `post_tokens`. The
+        // entry must omit the key rather than store a zero the card would then
+        // render as "shrank to nothing".
+        let events = normalize_claude_message(&json!({
+            "type":"system",
+            "subtype":"compact_boundary",
+            "session_id":"s1",
+            "uuid":"u1",
+            "compact_metadata":{"trigger":"manual","pre_tokens":90_000}
+        }));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].data["preTokens"], 90_000);
+        assert!(events[0].data.get("postTokens").is_none());
+        assert!(events[0].data.get("durationMs").is_none());
+        assert_eq!(events[0].data["trigger"], "manual");
+    }
+
+    #[test]
+    fn codex_context_compaction_item_is_recorded_once_per_turn() {
+        let mut state = CodexStreamState::default();
+        let started = normalize_codex_message_with_state(
+            &json!({"method":"item/started","params":{"threadId":"t1","turnId":"turn-1",
+                    "item":{"id":"i1","type":"contextCompaction"}}}),
+            &mut state,
+        );
+        assert!(
+            started.is_empty(),
+            "the opening half of a boundary carries nothing to record"
+        );
+        let completed = normalize_codex_message_with_state(
+            &json!({"method":"item/completed","params":{"threadId":"t1","turnId":"turn-1",
+                    "item":{"id":"i1","type":"contextCompaction"}}}),
+            &mut state,
+        );
+        assert_eq!(completed.len(), 1);
+        assert_eq!(completed[0].kind, NATIVE_COMPACTION_KIND);
+        assert_eq!(completed[0].data["harness"], "codex");
+        assert_eq!(completed[0].item_id.as_deref(), Some("i1"));
+        assert!(
+            completed[0].data.get("preTokens").is_none(),
+            "Codex reports no token figures with a boundary"
+        );
+
+        // The deprecated notification describes the same boundary.
+        let echo = normalize_codex_message_with_state(
+            &json!({"method":"thread/compacted","params":{"threadId":"t1","turnId":"turn-1"}}),
+            &mut state,
+        );
+        assert!(echo.is_empty(), "one boundary is one entry");
+    }
+
+    #[test]
+    fn codex_thread_compacted_is_no_longer_swallowed() {
+        // The path an older Codex takes: the deprecated notification is the
+        // only report it sends, and it used to be dropped entirely.
+        let mut state = CodexStreamState::default();
+        let events = normalize_codex_message_with_state(
+            &json!({"method":"thread/compacted","params":{"threadId":"t1","turnId":"turn-1"}}),
+            &mut state,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, NATIVE_COMPACTION_KIND);
+        assert_eq!(events[0].data["harness"], "codex");
+
+        // A later turn compacting is its own boundary.
+        let _ = normalize_codex_message_with_state(
+            &json!({"method":"turn/started","params":{"threadId":"t1","turnId":"turn-2"}}),
+            &mut state,
+        );
+        let next = normalize_codex_message_with_state(
+            &json!({"method":"thread/compacted","params":{"threadId":"t1","turnId":"turn-2"}}),
+            &mut state,
+        );
+        assert_eq!(next.len(), 1);
+    }
+
+    #[test]
+    fn opencode_session_compacted_is_not_a_provider_unknown() {
+        let mut state = OpenCodeStreamState::default();
+        let events = normalize_opencode_message_with_state(
+            &json!({"type":"session.compacted","properties":{"sessionID":"s1"}}),
+            &mut state,
+        );
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, NATIVE_COMPACTION_KIND);
+        assert_eq!(events[0].data["harness"], "opencode");
+    }
+
+    #[test]
     fn codex_internal_notifications_do_not_become_unknown_events() {
         for method in [
             "hook/started",
@@ -1490,7 +1835,6 @@ mod tests {
             "item/commandExecution/terminalInteraction",
             "mcpServer/event/stream/notification",
             "fs/changed",
-            "thread/compacted",
         ] {
             assert!(
                 normalize_codex_message(&json!({"method": method, "params": {"value": 7}}))
@@ -1622,6 +1966,187 @@ mod tests {
         assert_eq!(delta[0].item_id.as_deref(), Some("msg_9"));
         assert_eq!(completed[0].item_id.as_deref(), Some("msg_9"));
         assert_eq!(completed[0].kind, "message.completed");
+    }
+
+    #[test]
+    fn claude_block_stop_completes_before_answer_and_reconciles_snapshot() {
+        let mut state = ClaudeStreamState::default();
+        let frames = [
+            json!({"type":"message_start","message":{"id":"m1"}}),
+            json!({"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Check "}}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"facts."}}),
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Answer."}}),
+        ];
+        let events: Vec<_> = frames
+            .into_iter()
+            .flat_map(|event| {
+                normalize_claude_message_with_state(
+                    &json!({"type":"stream_event","event":event}),
+                    &mut state,
+                )
+            })
+            .collect();
+        assert_eq!(
+            events.iter().map(|e| e.kind.as_str()).collect::<Vec<_>>(),
+            vec![
+                "reasoning.delta",
+                "reasoning.delta",
+                "reasoning.completed",
+                "message.delta"
+            ]
+        );
+        assert_eq!(events[2].text.as_deref(), Some("Check facts."));
+        assert_eq!(events[2].item_id, events[0].item_id);
+        let snapshot = normalize_claude_message_with_state(
+            &json!({"type":"assistant","message":{"id":"m1","content":[
+                {"type":"thinking","thinking":"Check facts."},{"type":"text","text":"Answer."}
+            ]}}),
+            &mut state,
+        );
+        assert_eq!(snapshot.len(), 1);
+        assert_eq!(snapshot[0].kind, "message.completed");
+        // Duplicate stop and a stray delta cannot reopen the completed thought.
+        for event in [
+            json!({"type":"content_block_stop","index":0}),
+            json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"late"}}),
+        ] {
+            assert!(normalize_claude_message_with_state(
+                &json!({"type":"stream_event","event":event}),
+                &mut state
+            )
+            .is_empty());
+        }
+    }
+
+    #[test]
+    fn claude_thinking_fallback_identity_matches_across_block_lifecycle() {
+        for session_id in [Some("session-1"), None] {
+            for index in [0, 2] {
+                for initial_text in [None, Some(""), Some("Check ")] {
+                    for stop_type in ["content_block_stop", "message_stop"] {
+                        let mut state = ClaudeStreamState::default();
+                        let wrap = |event: Value| {
+                            let mut message = json!({"type":"stream_event","event":event});
+                            if let Some(session_id) = session_id {
+                                message["session_id"] = json!(session_id);
+                            }
+                            message
+                        };
+                        let mut deltas = Vec::new();
+                        if let Some(text) = initial_text {
+                            deltas.extend(normalize_claude_message_with_state(
+                                &wrap(json!({"type":"content_block_start","index":index,
+                                    "content_block":{"type":"thinking","thinking":text}})),
+                                &mut state,
+                            ));
+                        }
+                        for text in ["the ", "facts."] {
+                            deltas.extend(normalize_claude_message_with_state(
+                                &wrap(json!({"type":"content_block_delta","index":index,
+                                    "delta":{"type":"thinking_delta","thinking":text}})),
+                                &mut state,
+                            ));
+                        }
+                        let message_id = session_id
+                            .map(|id| format!("claude-live-{id}"))
+                            .unwrap_or_else(|| "claude-live".into());
+                        let expected_id = if index == 0 {
+                            format!("reasoning-{message_id}")
+                        } else {
+                            format!("reasoning-{message_id}-block-{index}")
+                        };
+                        for delta in &deltas {
+                            assert_eq!(delta.kind, "reasoning.delta");
+                            assert_eq!(delta.item_id.as_deref(), Some(expected_id.as_str()));
+                        }
+                        let stop = wrap(json!({"type":stop_type,"index":index}));
+                        let completed = normalize_claude_message_with_state(&stop, &mut state);
+                        assert_eq!(
+                            completed.len(), 1,
+                            "{session_id:?}, {index}, {initial_text:?}, {stop_type}"
+                        );
+                        assert_eq!(completed[0].kind, "reasoning.completed");
+                        assert_eq!(completed[0].status.as_deref(), Some("completed"));
+                        assert_eq!(completed[0].item_id.as_deref(), Some(expected_id.as_str()));
+                        assert_eq!(
+                            completed[0].text,
+                            Some(format!("{}the facts.", initial_text.unwrap_or("")))
+                        );
+                        assert_eq!(state.thinking_blocks.len(), 1);
+                        assert!(normalize_claude_message_with_state(&stop, &mut state).is_empty());
+                        let answer = normalize_claude_message_with_state(
+                            &wrap(json!({"type":"content_block_delta","index":index + 1,
+                                "delta":{"type":"text_delta","text":"Answer."}})),
+                            &mut state,
+                        );
+                        assert_eq!(answer[0].kind, "message.delta");
+                        assert_eq!(answer[0].item_id.as_deref(), Some(message_id.as_str()));
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn claude_thinking_blocks_and_delayed_snapshots_keep_message_identity() {
+        let mut state = ClaudeStreamState::default();
+        for id in ["m1", "m2"] {
+            normalize_claude_message_with_state(
+                &json!({"type":"stream_event","event":{"type":"message_start","message":{"id":id}}}),
+                &mut state,
+            );
+            for index in [0, 2] {
+                let delta = normalize_claude_message_with_state(
+                    &json!({"type":"stream_event","event":{"type":"content_block_delta","index":index,"delta":{"type":"thinking_delta","thinking":"thought"}}}),
+                    &mut state,
+                );
+                let stop = normalize_claude_message_with_state(
+                    &json!({"type":"stream_event","event":{"type":"content_block_stop","index":index}}),
+                    &mut state,
+                );
+                assert_eq!(stop[0].item_id, delta[0].item_id);
+                assert_eq!(
+                    stop[0].item_id.as_deref(),
+                    Some(claude_thinking_id(id, index).as_str())
+                );
+            }
+        }
+        let late = normalize_claude_message_with_state(
+            &json!({"type":"assistant","message":{"id":"m1","content":[
+                {"type":"thinking","thinking":"thought"},{"type":"text","text":"answer"},{"type":"thinking","thinking":"thought"}
+            ]}}),
+            &mut state,
+        );
+        assert_eq!(late.len(), 1);
+        assert_eq!(state.active_message_id.as_deref(), Some("m2"));
+    }
+
+    #[test]
+    fn claude_interrupted_thinking_retains_text_and_resets_state() {
+        let mut state = ClaudeStreamState::default();
+        normalize_claude_message_with_state(
+            &json!({"type":"stream_event","event":{"type":"message_start","message":{"id":"m"}}}),
+            &mut state,
+        );
+        normalize_claude_message_with_state(
+            &json!({"type":"stream_event","event":{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"partial"}}}),
+            &mut state,
+        );
+        // Stops for text/tool blocks must not settle another block.
+        assert!(normalize_claude_message_with_state(
+            &json!({"type":"stream_event","event":{"type":"content_block_stop","index":1}}),
+            &mut state
+        )
+        .is_empty());
+        let end = normalize_claude_message_with_state(
+            &json!({"type":"result","is_error":true,"subtype":"error_during_execution"}),
+            &mut state,
+        );
+        assert_eq!(end[0].kind, "reasoning.completed");
+        assert_eq!(end[0].text.as_deref(), Some("partial"));
+        assert!(state.thinking_blocks.is_empty());
     }
 
     #[test]
@@ -1833,6 +2358,78 @@ mod tests {
         }));
         assert!(events.iter().any(|event| event.kind == "turn.completed"));
         assert!(events.iter().any(|event| event.kind == "usage.updated"));
+    }
+
+    #[test]
+    fn codex_token_usage_reports_the_last_request_not_the_running_total() {
+        // Shape and field names come from the app-server's own generated
+        // schema (`codex app-server generate-json-schema`). `total` and `last`
+        // carry deliberately different numbers: a regression to the cumulative
+        // counter fails here rather than silently inflating the ledger.
+        let events = normalize_codex_message(&json!({
+            "method":"thread/tokenUsage/updated",
+            "params":{
+                "threadId":"thread-1",
+                "turnId":"turn-1",
+                "tokenUsage":{
+                    "total":{"totalTokens":900,"inputTokens":800,"cachedInputTokens":700,"cacheWriteInputTokens":50,"outputTokens":100,"reasoningOutputTokens":40},
+                    "last":{"totalTokens":90,"inputTokens":80,"cachedInputTokens":70,"cacheWriteInputTokens":5,"outputTokens":10,"reasoningOutputTokens":4},
+                    "modelContextWindow":272000
+                }
+            }
+        }));
+        assert_eq!(events.len(), 1);
+        let usage = &events[0].data["usage"];
+        assert_eq!(events[0].kind, "usage.updated");
+        assert_eq!(usage["input_tokens"], 80);
+        assert_eq!(usage["output_tokens"], 10);
+        assert_eq!(usage["cache_read_tokens"], 70);
+        assert_eq!(usage["cache_write_tokens"], 5);
+        assert_eq!(usage["reasoning_tokens"], 4);
+        assert_eq!(usage["total_tokens"], 90);
+
+        // The running total and the context window stay reachable beside the
+        // normalized per-request slice.
+        assert_eq!(events[0].data["tokenUsage"]["total"]["inputTokens"], 800);
+        assert_eq!(events[0].data["tokenUsage"]["modelContextWindow"], 272_000);
+        assert_eq!(events[0].data["turnId"], "turn-1");
+    }
+
+    #[test]
+    fn codex_token_usage_without_a_last_breakdown_invents_nothing() {
+        let events = normalize_codex_message(&json!({
+            "method":"thread/tokenUsage/updated",
+            "params":{"threadId":"thread-1","turnId":"turn-1","tokenUsage":{"modelContextWindow":272000}}
+        }));
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, "usage.updated");
+        // Explicitly empty rather than absent: an absent `usage` sends
+        // `UsageReport::from_normalized` recursing into the raw frame, where it
+        // would find the cumulative `tokenUsage.total` this case must reject.
+        assert_eq!(events[0].data["usage"], json!({}));
+    }
+
+    #[test]
+    fn opencode_usage_reports_cache_writes_alongside_reads() {
+        let mut state = OpenCodeStreamState::default();
+        let usage = normalize_opencode_message_with_state(
+            &json!({
+                "type":"message.updated",
+                "properties":{"sessionID":"ses_1","info":{"id":"msg_1","role":"assistant","tokens":{"input":9,"output":2,"cache":{"read":6,"write":3}}}}
+            }),
+            &mut state,
+        );
+        assert_eq!(usage[0].data["usage"]["cached_input_tokens"], 6);
+        assert_eq!(usage[0].data["usage"]["cache_write_tokens"], 3);
+
+        let no_write = normalize_opencode_message_with_state(
+            &json!({
+                "type":"message.updated",
+                "properties":{"sessionID":"ses_2","info":{"id":"msg_2","role":"assistant","tokens":{"input":9,"output":2,"cache":{"read":6}}}}
+            }),
+            &mut state,
+        );
+        assert!(no_write[0].data["usage"]["cache_write_tokens"].is_null());
     }
 
     #[test]
