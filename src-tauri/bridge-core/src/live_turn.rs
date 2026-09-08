@@ -1491,6 +1491,10 @@ pub fn start_chat(core: &Arc<BridgeCore>, session_id: String) -> Result<BridgeSt
             })
         }
     };
+    // A reclaimed worktree is restored from its recorded branch before the
+    // directory is created, or `create_dir_all` would hand the provider an empty
+    // non-repository where its project used to be.
+    worktree_registry::restore_if_reclaimed(&state.db, Path::new(&cwd));
     std::fs::create_dir_all(&cwd)?;
     let adapter_id: &str = harness.as_str();
     if !agent_config::is_harness_enabled(&state.db.lock().unwrap(), adapter_id) {

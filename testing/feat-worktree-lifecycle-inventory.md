@@ -144,6 +144,29 @@ which frees capacity within a tick and lets the queued delegation proceed.
 - Registry, typed-payload table, dispatch arm, Tauri command, and generated
   artifacts stay 1:1 — enforced by the existing drift gates.
 
+## Review round: cases added after automated review of #577
+
+Six findings from Codex and one from the Cursor security reviewer, each verified
+against the code before fixing and each now pinned:
+
+- `a_ready_chat_holding_a_live_adapter_keeps_its_checkout` and
+  `a_ready_session_with_no_process_claim_does_not_pin_its_checkout` — liveness
+  is a process claim, not a status string. `ready` means the provider is up.
+- `a_reclaimed_checkout_is_restored_from_its_recorded_branch` and
+  `restore_never_recreates_a_checkout_bridge_did_not_cut` — reclaiming must not
+  cost a session its project.
+- `the_removal_path_re_decides_before_deleting` — the full classification
+  re-runs at deletion time, not just the cleanliness check git performs.
+- `a_repository_exactly_at_its_count_cap_frees_one_slot_oldest_first` — the
+  sweep clears a cap to strictly below it, or the creation gate's refusal can
+  never be satisfied.
+- `a_new_measurement_replaces_a_stale_larger_one` — a zero or smaller
+  measurement is recorded, so freeing space stops being invisible to the cap.
+- `reclaiming_an_empty_unadopted_checkout_settles_its_binding` — no pending
+  adopt-or-discard decision is left pointing at a deleted directory.
+- `a_symlink_in_a_layout_slot_is_never_adopted_or_reclaimed` — symlinks are not
+  followed, and namespace containment is re-checked before every deletion.
+
 ## Gates
 
 `bun run check`, `cargo test --manifest-path src-tauri/Cargo.toml --workspace`

@@ -9,7 +9,8 @@ This describes the inventory that records them and the retention policy that
 reclaims them. It does not change the three hierarchies: forking a conversation
 still does not undo filesystem changes, and ending a session still does not
 discard a worktree. Reclaiming is a decision the worktree coordinator makes
-against the filesystem, never a side effect of a conversation moving.
+against the filesystem, never a side effect of a conversation moving — and,
+because branch refs survive, never a decision that loses a session its project.
 
 ## What exists
 
@@ -50,6 +51,14 @@ prune` — and what matters is that afterwards nothing is invisible.
   is recorded `external`. It is reported and never reclaimed: a developer's own
   worktree is not Bridge's to collect.
 
+Symlinks are skipped rather than followed. `is_dir` follows them, so a symlink
+dropped into a layout slot — which anything with write access to its own
+checkout can create as a sibling — would otherwise be inventoried as a Bridge
+checkout at its *resolved* path, outside the namespace entirely. Namespace
+containment is re-checked when the sweep selects a candidate and again
+immediately before deletion, so a row that names a path outside the namespace,
+however it came to be written, is never removed.
+
 ## What may be reclaimed
 
 Classification runs at deletion time, not when the inventory was scanned, and it
@@ -67,6 +76,20 @@ Every question that cannot be answered counts against deletion. A checkout whose
 recorded base commit is unreadable, or whose remotes cannot be consulted, is
 `at_risk` rather than assumed empty.
 
+"In use" is not a question status alone can answer. A chat whose provider is up
+but has no turn in flight sits at `ready`, so a status-only test would call a
+live adapter's checkout idle. `sessions.adapter_pid` is the durable claim that a
+real process owns the session, and boot recovery clears it for every process
+that is actually gone — so a live adapter always retains its checkout, and a
+stale `ready` row left by a crashed run does not pin one forever.
+
+The classification that authorizes a deletion is re-run in full immediately
+before it, against facts read at that moment. This is not covered by the git
+refusal underneath: `git worktree remove` needs `--force` only for a dirty or
+locked tree, not for a clean one carrying a commit that exists nowhere else. A
+commit made between the scan and the deletion would otherwise go with the
+directory.
+
 Idleness is measured from the owning session's own most recent recorded activity,
 not from when the checkout was created — otherwise an isolated chat someone works
 in daily would age out of its own TTL.
@@ -82,6 +105,12 @@ breached it keeps taking expendable checkouts, least recently used first, even
 inside their TTL — a cap is a promise about the machine. If the only checkouts
 left are ones nothing may delete, the breach is *reported* (`over_budget_bytes`)
 rather than forced. There is no `--force` path anywhere in this system.
+
+The sweep reduces to *strictly below* each cap rather than merely to it. The
+creation gate refuses at `>= max_per_repo`, so stopping at equality left a
+repository permanently full: the tick reclaimed nothing and every queued
+delegation waited on a TTL with no reason to expire. Clearing a cap has to leave
+room for the work the cap is blocking.
 
 Capacity is also part of routing. `child_worktrees_available` previously asked
 only whether the namespace root had a parent directory — true for every path
@@ -120,7 +149,14 @@ totals against the caps in force; both report the *last* assessment rather than
 recomputing, since deciding a disposition costs several git invocations per
 checkout.
 
-Branch refs are never deleted by any of this. Only checkouts are reclaimed.
+Branch refs are never deleted by any of this. Only checkouts are reclaimed —
+which is what makes reclaiming reversible. `start_chat` takes `sessions.cwd`
+verbatim and only creates the directory, so a resumed chat whose worktree had
+been collected would otherwise start in an empty non-repository where its
+project used to be. `restore_if_reclaimed` cuts the checkout again from the
+recorded branch before the session starts, the same restore
+`worktree_coordinator` already performs for a pull-request checkout whose tree
+was reclaimed. It refuses to recreate anything Bridge did not cut.
 
 Related: [`delegation-policy.md`](delegation-policy.md) for the worker adoption
 lifecycle, [`session-forest.md`](session-forest.md) for the three hierarchies,

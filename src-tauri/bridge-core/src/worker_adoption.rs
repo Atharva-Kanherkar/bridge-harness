@@ -846,7 +846,15 @@ pub fn discard(
     settle_plan(db, &plan, STATE_DISCARDED, reason)
 }
 
-fn settle(db: &Connection, session_id: &str, state: &str, detail: &str) -> Result<(), BridgeError> {
+/// Record a terminal adoption state and its reason. `pub(crate)` so the
+/// worktree sweep can settle a binding whose checkout it is reclaiming, rather
+/// than leaving a pending decision pointing at a deleted directory.
+pub(crate) fn settle(
+    db: &Connection,
+    session_id: &str,
+    state: &str,
+    detail: &str,
+) -> Result<(), BridgeError> {
     db.execute(
         "UPDATE worker_worktree_adoptions SET state=?2,detail=?3,updated_at=?4 WHERE session_id=?1",
         params![session_id, state, detail, Utc::now().to_rfc3339()],

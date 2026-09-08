@@ -468,6 +468,14 @@ const LIVE_STATES: &str = "'starting','working','resuming','checkpointing','wait
 /// Whether any live session or worker is bound to this path. Covers the
 /// borrowed-verifier case: a verifier runs in the implementation worker's
 /// checkout under its own `worker_runtime` row.
+///
+/// Status alone is not enough. A chat whose provider is up but has no turn in
+/// flight sits at `ready` — `start_chat` sets exactly that, and says why — so a
+/// status-only test would call a live adapter's checkout idle and delete the
+/// directory out from under it. `adapter_pid` is the durable claim that a real
+/// process owns the session, and boot recovery clears it for every process that
+/// is actually gone, so a stale `ready` row from a crashed run does not pin a
+/// checkout forever.
 fn live_users(db: &Connection, path: &str) -> Result<Vec<String>, BridgeError> {
     let mut statement = db.prepare(&format!(
         "SELECT session_id FROM (
@@ -475,10 +483,11 @@ fn live_users(db: &Connection, path: &str) -> Result<Vec<String>, BridgeError> {
                LEFT JOIN sessions s ON s.id=r.session_id
               WHERE r.worktree_path=?1
                 AND (COALESCE(s.status,'') IN ({LIVE_STATES})
-                     OR COALESCE(r.lifecycle_state,'') IN ({LIVE_STATES}))
+                     OR COALESCE(r.lifecycle_state,'') IN ({LIVE_STATES})
+                     OR s.adapter_pid IS NOT NULL)
              UNION
              SELECT id AS session_id FROM sessions
-              WHERE cwd=?1 AND status IN ({LIVE_STATES})
+              WHERE cwd=?1 AND (status IN ({LIVE_STATES}) OR adapter_pid IS NOT NULL)
          ) ORDER BY session_id"
     ))?;
     let rows = statement.query_map(params![path], |row| row.get::<_, String>(0))?;
@@ -758,6 +767,67 @@ pub fn usage(
     Ok(total)
 }
 
+/// Recreate a checkout the sweep reclaimed, from the branch the inventory
+/// recorded. Returns whether a worktree was restored.
+///
+/// Reclaiming a checkout must not cost the session that owns it. `start_chat`
+/// takes `sessions.cwd` verbatim and only `create_dir_all`s it, so a resumed
+/// chat whose worktree had been collected would start in an empty directory
+/// that is not a repository at all — its project silently gone. Branch refs are
+/// never deleted by the sweep, so the branch is always still there to check out
+/// again; this is the same restore [`crate::worktree_coordinator`] already does
+/// for a pull-request checkout whose tree was reclaimed.
+///
+/// Failure is not an error: the caller falls back to its previous behaviour.
+pub fn restore_if_reclaimed(db: &Mutex<Connection>, path: &Path) -> bool {
+    if path.is_dir() {
+        return false;
+    }
+    let key = canonical_key(path);
+    let Some(record) = ({
+        let db = db.lock().unwrap();
+        records(&db)
+            .ok()
+            .and_then(|rows| rows.into_iter().find(|row| row.path == key))
+    }) else {
+        return false;
+    };
+    // Never restore something Bridge did not cut, and never guess a branch.
+    if record.state == STATE_EXTERNAL || record.kind == KIND_EXTERNAL {
+        return false;
+    }
+    let (Some(branch), repo) = (record.branch.as_deref(), PathBuf::from(&record.repo_root)) else {
+        return false;
+    };
+    if branch.is_empty() || !repo.is_dir() {
+        return false;
+    }
+    if git::create_worktree_on_branch(&repo, path, branch, "origin").is_err() {
+        return false;
+    }
+    let db = db.lock().unwrap();
+    let _ = register(
+        &db,
+        &NewWorktree {
+            kind: record.kind.clone(),
+            repo_root: record.repo_root.clone(),
+            path: record.path.clone(),
+            branch: Some(branch.to_owned()),
+            owner_session_id: record.owner_session_id.clone(),
+            owner_workspace_id: record.owner_workspace_id.clone(),
+            base_commit: None,
+        },
+    );
+    let _ = store::event(
+        &db,
+        "worktree",
+        "worktree.restored",
+        &record.path,
+        &format!("Restored reclaimed {} worktree on branch {branch}", record.kind),
+    );
+    true
+}
+
 // --- reconcile ----------------------------------------------------------------
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -957,6 +1027,12 @@ pub fn reconcile(
 
 /// Immediate subdirectories exactly `depth` levels below `root`. Bounded by the
 /// layout rather than recursive: a checkout's own contents are never candidates.
+///
+/// Symlinks are skipped rather than followed. `is_dir` follows them, and a
+/// symlink dropped into a layout slot — which anything with write access to its
+/// own checkout can create as a sibling — would otherwise be inventoried as a
+/// Bridge checkout at its *resolved* path, outside the namespace entirely. That
+/// is how a sweeper ends up deleting a developer's own worktree.
 fn directories_at_depth(root: &Path, depth: usize) -> Vec<PathBuf> {
     let mut level = vec![root.to_path_buf()];
     for _ in 0..depth {
@@ -966,15 +1042,27 @@ fn directories_at_depth(root: &Path, depth: usize) -> Vec<PathBuf> {
                 continue;
             };
             for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    next.push(path);
+                let Ok(metadata) = entry.path().symlink_metadata() else {
+                    continue;
+                };
+                if metadata.is_dir() {
+                    next.push(entry.path());
                 }
             }
         }
         level = next;
     }
     level
+}
+
+/// Whether a path lies inside the namespace Bridge cuts its own worktrees into.
+///
+/// The invariant this whole module rests on is "only what Bridge created", and
+/// the namespace root is what makes that checkable. Every reclaim decision
+/// re-asks the question at the moment of deletion rather than trusting that
+/// whatever wrote the row got it right.
+fn inside_namespace(path: &Path, namespace_root: &Path) -> bool {
+    Path::new(&canonical_key(path)).starts_with(canonical_key(namespace_root))
 }
 
 // --- size ---------------------------------------------------------------------
@@ -1131,6 +1219,21 @@ struct Assessed {
     record: WorktreeRecord,
     disposition: Disposition,
     bytes: u64,
+    /// Whether a measurement actually ran. A missing directory is not zero
+    /// bytes; it is unknown, and must not overwrite a recorded size.
+    measured: bool,
+}
+
+/// Whether a disposition authorizes removal under this policy. The single place
+/// that answers it, so the plan and the re-check at deletion time cannot drift.
+fn is_removable(disposition: &Disposition, retention: &WorktreeRetention) -> bool {
+    match disposition {
+        Disposition::Reclaimable => true,
+        Disposition::PushedUnmerged => {
+            retention.pushed_unmerged == PushedUnmergedPolicy::Delete
+        }
+        _ => false,
+    }
 }
 
 /// Reclaim what can be proven expendable, under the retention policy.
@@ -1140,6 +1243,7 @@ struct Assessed {
 /// unlocked, and only the outcome is written back.
 pub fn sweep(
     db: &Mutex<Connection>,
+    namespace_root: &Path,
     retention: &WorktreeRetention,
 ) -> Result<SweepOutcome, BridgeError> {
     let mut outcome = SweepOutcome::default();
@@ -1150,6 +1254,12 @@ pub fn sweep(
         settle_idle_states(&db)?;
         let mut facts = Vec::new();
         for record in candidates(&db)? {
+            // Containment is checked here *and* again immediately before
+            // deletion: a row can name a path outside the namespace however it
+            // was written, and such a path is not Bridge's to remove.
+            if !inside_namespace(record.as_path(), namespace_root) {
+                continue;
+            }
             let record_facts = classification_facts(&db, &record)?;
             facts.push((record, record_facts));
         }
@@ -1159,7 +1269,8 @@ pub fn sweep(
     let mut assessed: Vec<Assessed> = Vec::new();
     for (record, facts) in assessable {
         let disposition = classify_with(&record, &facts);
-        let (bytes, complete) = if record.as_path().is_dir() {
+        let measured = record.as_path().is_dir();
+        let (bytes, complete) = if measured {
             directory_size(record.as_path())
         } else {
             (0, true)
@@ -1171,13 +1282,17 @@ pub fn sweep(
             record,
             disposition,
             bytes,
+            measured,
         });
     }
 
     {
         let db = db.lock().unwrap();
         for item in &assessed {
-            if item.bytes > 0 {
+            // Zero is a real answer. Skipping it left the old, larger size in
+            // place after a checkout's build output was deleted, so the byte cap
+            // went on refusing new workers for space that had been freed.
+            if item.measured {
                 record_size(&db, &item.record.id, item.bytes)?;
             }
             record_assessment(&db, &item.record.id, &item.disposition)?;
@@ -1199,13 +1314,7 @@ pub fn sweep(
         // useful checkout goes first.
         items.sort_by_key(|item| std::cmp::Reverse(item.record.idle_seconds()));
 
-        let removable = |item: &Assessed| match item.disposition {
-            Disposition::Reclaimable => true,
-            Disposition::PushedUnmerged => {
-                retention.pushed_unmerged == PushedUnmergedPolicy::Delete
-            }
-            _ => false,
-        };
+        let removable = |item: &Assessed| is_removable(&item.disposition, retention);
 
         // The running plan's view of what would remain. Only used to decide
         // what to attempt; the outcome is measured afterwards.
@@ -1223,9 +1332,12 @@ pub fn sweep(
         // Still over a cap: keep taking expendable checkouts, oldest first,
         // even inside their TTL. A cap is a promise about the machine.
         for (index, item) in items.iter().enumerate() {
-            // `<=`: the cap is a ceiling on what may remain, and the creation
-            // gate refuses at `>= max_per_repo`, so the two agree on "at most".
-            if live_bytes <= retention.max_total_bytes && live_count <= retention.max_per_repo {
+            // Strictly below the caps, not merely at them. The creation gate
+            // refuses at `>= max_per_repo`, so stopping at equality left the
+            // repository permanently full: the tick reclaimed nothing and every
+            // queued delegation waited for a TTL that had no reason to expire.
+            // Clearing a cap has to leave room for the work it is blocking.
+            if live_bytes < retention.max_total_bytes && live_count < retention.max_per_repo {
                 break;
             }
             if planned.contains(&index) || !removable(item) {
@@ -1243,7 +1355,7 @@ pub fn sweep(
         let mut removed: Vec<usize> = Vec::new();
         for index in &planned {
             let item = &items[*index];
-            match remove_recorded_worktree(db, &item.record, item.bytes, item.disposition.label()) {
+            match remove_recorded_worktree(db, namespace_root, &item.record, item.bytes, retention) {
                 Ok(true) => {
                     outcome.removed += 1;
                     outcome.removed_bytes += item.bytes;
@@ -1273,15 +1385,25 @@ pub fn sweep(
 /// Remove one recorded checkout and write the audit trail. Returns whether the
 /// directory is actually gone afterwards.
 ///
-/// The classification that authorized this ran without the lock and may be
-/// stale by now, so `safe_remove_worker_worktree` re-checks cleanliness at the
-/// moment of deletion: git itself refuses a dirty or occupied checkout, and that
-/// refusal is the last line of the guarantee.
+/// Every guarantee this module makes is re-established here, at the moment of
+/// deletion, because the plan that selected this checkout ran without the
+/// database lock and against a filesystem that has since moved on:
+///
+/// - the path must still be inside Bridge's namespace,
+/// - nothing may have started running in it,
+/// - and the **full** classification must still authorize removal.
+///
+/// The last of those is not covered by `safe_remove_worker_worktree`. That only
+/// re-runs `git status`, and `git worktree remove` needs `--force` for a dirty
+/// or locked tree — not for a clean one carrying a commit that exists nowhere
+/// else. A commit made between the scan and this call would have been deleted
+/// with the directory.
 fn remove_recorded_worktree(
     db: &Mutex<Connection>,
+    namespace_root: &Path,
     record: &WorktreeRecord,
     bytes: u64,
-    disposition: &str,
+    retention: &WorktreeRetention,
 ) -> Result<bool, BridgeError> {
     let path = record.as_path();
     if !path.is_dir() {
@@ -1289,19 +1411,38 @@ fn remove_recorded_worktree(
         mark_removed(&db, path, "the directory was already gone")?;
         return Ok(true);
     }
-    let repo = PathBuf::from(&record.repo_root);
-    let head = git::head_commit(path).unwrap_or_else(|| "unknown".to_owned());
-    // The assessment that authorized this ran unlocked and may be stale. Git
-    // re-checks cleanliness itself; occupancy is ours to re-check, or a session
-    // that started since the scan would lose the directory under it.
-    let borrowers = { live_users(&db.lock().unwrap(), &record.path)? };
-    if !borrowers.is_empty() {
+    if !inside_namespace(path, namespace_root) {
         let db = db.lock().unwrap();
-        let reason = format!("{} started running in it", borrowers.join(", "));
+        let reason = "outside Bridge's worktree namespace".to_owned();
         set_retained_reason(&db, &record.id, &reason)?;
         let _ = store::event(&db, "worktree", "worktree.retained", &record.path, &reason);
         return Ok(false);
     }
+
+    // Re-decide from scratch, against facts read now.
+    let (fresh, facts) = {
+        let db = db.lock().unwrap();
+        let fresh = records(&db)?
+            .into_iter()
+            .find(|row| row.id == record.id)
+            .unwrap_or_else(|| record.clone());
+        let facts = classification_facts(&db, &fresh)?;
+        (fresh, facts)
+    };
+    let disposition = classify_with(&fresh, &facts);
+    if !is_removable(&disposition, retention) {
+        let reason = disposition
+            .reason()
+            .map(str::to_owned)
+            .unwrap_or_else(|| format!("no longer {}", disposition.label()));
+        let db = db.lock().unwrap();
+        record_assessment(&db, &record.id, &disposition)?;
+        let _ = store::event(&db, "worktree", "worktree.retained", &record.path, &reason);
+        return Ok(false);
+    }
+
+    let repo = PathBuf::from(&record.repo_root);
+    let head = git::head_commit(path).unwrap_or_else(|| "unknown".to_owned());
     if let Err(error) = git::safe_remove_worker_worktree(&repo, path, false) {
         let db = db.lock().unwrap();
         set_retained_reason(&db, &record.id, &error.to_string())?;
@@ -1318,7 +1459,13 @@ fn remove_recorded_worktree(
         return Ok(false);
     }
     let db = db.lock().unwrap();
-    mark_removed(&db, path, disposition)?;
+    // An unsettled binding that outlives its checkout is worse than a stale
+    // directory: `pending_for_parent` keeps offering the user an adopt-or-discard
+    // decision about a path that no longer exists, and the worker-side collector
+    // skips it precisely because the path is missing. Only an *empty* checkout
+    // ever reaches this line, so `empty` is the truthful terminal state.
+    settle_empty_binding(&db, &record.path)?;
+    mark_removed(&db, path, disposition.label())?;
     let _ = store::event(
         &db,
         "worktree",
@@ -1330,11 +1477,41 @@ fn remove_recorded_worktree(
             record.path,
             record.branch.as_deref().unwrap_or("detached"),
             head,
-            disposition,
+            disposition.label(),
             human_bytes(bytes),
         ),
     );
     Ok(true)
+}
+
+/// Settle any unadopted worker binding on this path as `empty`.
+///
+/// Matched by canonical path in Rust rather than SQL: a binding records
+/// whatever path its creator held, which need not be the normalized form the
+/// inventory stores.
+fn settle_empty_binding(db: &Connection, canonical_path: &str) -> Result<(), BridgeError> {
+    let pending = {
+        let mut statement = db.prepare(
+            "SELECT session_id,worktree_path FROM worker_worktree_adoptions
+              WHERE state='pending_adoption'",
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+        })?;
+        rows.collect::<Result<Vec<_>, _>>()?
+    };
+    for (session_id, recorded) in pending {
+        if canonical_key(Path::new(&recorded)) != canonical_path {
+            continue;
+        }
+        crate::worker_adoption::settle(
+            db,
+            &session_id,
+            crate::worker_adoption::STATE_EMPTY,
+            "the worktree held nothing to adopt and was reclaimed",
+        )?;
+    }
+    Ok(())
 }
 
 /// Run a reconcile and a sweep, reporting anything a person would want to know.
@@ -1358,7 +1535,7 @@ pub fn run_maintenance_pass(
         ),
         Err(error) => eprintln!("bridge: worktree reconcile failed: {error}"),
     }
-    match sweep(db, retention) {
+    match sweep(db, namespace_root, retention) {
         Ok(outcome) if outcome.is_quiet() => {}
         Ok(outcome) => eprintln!(
             "bridge: worktree sweep removed={} removed_bytes={} retained={} \
@@ -1569,6 +1746,7 @@ mod tests {
 
         let outcome = sweep(
             &fixture.db,
+            &fixture.namespace,
             &WorktreeRetention {
                 max_total_bytes: 1,
                 max_per_repo: 0,
@@ -1700,7 +1878,7 @@ mod tests {
             classify_path(&fixture, &path),
             Disposition::Unverifiable(_)
         ));
-        let swept = sweep(&fixture.db, &WorktreeRetention::default()).unwrap();
+        let swept = sweep(&fixture.db, &fixture.namespace, &WorktreeRetention::default()).unwrap();
         assert_eq!(swept.removed, 0, "an unverifiable checkout is never swept");
         assert!(path.is_dir());
     }
@@ -1730,7 +1908,7 @@ mod tests {
         assert_eq!(external.state, STATE_EXTERNAL);
         assert_eq!(external.kind, KIND_EXTERNAL, "not miscast as Bridge's own");
 
-        let swept = sweep(&fixture.db, &WorktreeRetention::default()).unwrap();
+        let swept = sweep(&fixture.db, &fixture.namespace, &WorktreeRetention::default()).unwrap();
         assert_eq!(swept.removed, 0);
         assert!(outside.is_dir(), "someone else's worktree is never removed");
     }
@@ -1916,7 +2094,7 @@ mod tests {
         // Old enough to collect on its recorded timestamp alone.
         age(&fixture, &path, 30 * 24 * 60 * 60);
 
-        let outcome = sweep(&fixture.db, &WorktreeRetention::default()).unwrap();
+        let outcome = sweep(&fixture.db, &fixture.namespace, &WorktreeRetention::default()).unwrap();
         assert_eq!(outcome.removed, 0, "the session's own activity is newer");
         assert!(path.is_dir());
         assert!(
@@ -1930,7 +2108,7 @@ mod tests {
         let fixture = fixture();
         let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
         age(&fixture, &path, 2 * 24 * 60 * 60);
-        let outcome = sweep(&fixture.db, &WorktreeRetention::default()).unwrap();
+        let outcome = sweep(&fixture.db, &fixture.namespace, &WorktreeRetention::default()).unwrap();
         assert_eq!(outcome.removed, 1);
         assert!(!path.exists());
         assert_eq!(record(&fixture, &path).state, STATE_REMOVED);
@@ -1940,7 +2118,7 @@ mod tests {
     fn the_sweep_leaves_a_reclaimable_worktree_inside_its_ttl() {
         let fixture = fixture();
         let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
-        let outcome = sweep(&fixture.db, &WorktreeRetention::default()).unwrap();
+        let outcome = sweep(&fixture.db, &fixture.namespace, &WorktreeRetention::default()).unwrap();
         assert_eq!(outcome.removed, 0);
         assert!(path.is_dir());
         assert_eq!(
@@ -1956,7 +2134,7 @@ mod tests {
         let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
         std::fs::write(path.join("scratch.txt"), "unsaved\n").unwrap();
         age(&fixture, &path, 400 * 24 * 60 * 60);
-        let outcome = sweep(&fixture.db, &WorktreeRetention::default()).unwrap();
+        let outcome = sweep(&fixture.db, &fixture.namespace, &WorktreeRetention::default()).unwrap();
         assert_eq!(outcome.removed, 0);
         assert_eq!(outcome.retained, 1);
         assert!(path.is_dir());
@@ -1966,20 +2144,38 @@ mod tests {
     }
 
     #[test]
-    fn exceeding_the_per_repo_count_cap_evicts_oldest_reclaimable_first() {
+    /// A cap has to leave room for the work it is blocking. The creation gate
+    /// refuses at `>= max_per_repo`, so a sweep that stopped at equality left
+    /// the repository permanently full: nothing was reclaimed and every queued
+    /// delegation waited on a TTL that had no reason to expire.
+    fn a_repository_exactly_at_its_count_cap_frees_one_slot_oldest_first() {
         let fixture = fixture();
-        let old = worker_worktree(&fixture, "old", "bridge/task-worker-old");
-        let recent = worker_worktree(&fixture, "recent", "bridge/task-worker-recent");
-        age(&fixture, &old, 900);
-        age(&fixture, &recent, 60);
+        let oldest = worker_worktree(&fixture, "oldest", "bridge/task-worker-oldest");
+        let middle = worker_worktree(&fixture, "middle", "bridge/task-worker-middle");
+        let newest = worker_worktree(&fixture, "newest", "bridge/task-worker-newest");
+        // All well inside the worker TTL: only the cap can justify a removal.
+        age(&fixture, &oldest, 900);
+        age(&fixture, &middle, 600);
+        age(&fixture, &newest, 60);
+        let repo = fixture.repo.to_string_lossy().to_string();
         let retention = WorktreeRetention {
-            max_per_repo: 1,
+            max_per_repo: 3,
             ..WorktreeRetention::default()
         };
-        let outcome = sweep(&fixture.db, &retention).unwrap();
+        assert!(
+            !has_capacity(&fixture.db.lock().unwrap(), &repo, &retention).unwrap(),
+            "the gate refuses at the cap, which is what the sweep has to clear",
+        );
+
+        let outcome = sweep(&fixture.db, &fixture.namespace, &retention).unwrap();
         assert_eq!(outcome.removed, 1, "only as many as the cap requires");
-        assert!(!old.exists(), "the least recently used goes first");
-        assert!(recent.is_dir());
+        assert!(!oldest.exists(), "the least recently used goes first");
+        assert!(middle.is_dir());
+        assert!(newest.is_dir());
+        assert!(
+            has_capacity(&fixture.db.lock().unwrap(), &repo, &retention).unwrap(),
+            "the queued delegation can now proceed",
+        );
     }
 
     #[test]
@@ -1992,7 +2188,7 @@ mod tests {
             max_total_bytes: 1,
             ..WorktreeRetention::default()
         };
-        let outcome = sweep(&fixture.db, &retention).unwrap();
+        let outcome = sweep(&fixture.db, &fixture.namespace, &retention).unwrap();
         assert_eq!(outcome.removed, 1);
         assert!(!path.exists());
     }
@@ -2006,7 +2202,7 @@ mod tests {
             max_total_bytes: 1,
             ..WorktreeRetention::default()
         };
-        let outcome = sweep(&fixture.db, &retention).unwrap();
+        let outcome = sweep(&fixture.db, &fixture.namespace, &retention).unwrap();
         assert_eq!(outcome.removed, 0, "a cap never overrides safety");
         assert!(path.is_dir());
         assert!(
@@ -2023,12 +2219,13 @@ mod tests {
         git_cmd(&path, &["push", "-q", "origin", "bridge/task-worker-child"]);
         age(&fixture, &path, 2 * 24 * 60 * 60);
 
-        let retained = sweep(&fixture.db, &WorktreeRetention::default()).unwrap();
+        let retained = sweep(&fixture.db, &fixture.namespace, &WorktreeRetention::default()).unwrap();
         assert_eq!(retained.removed, 0, "retain is the default");
         assert!(path.is_dir());
 
         let outcome = sweep(
             &fixture.db,
+            &fixture.namespace,
             &WorktreeRetention {
                 pushed_unmerged: PushedUnmergedPolicy::Delete,
                 ..WorktreeRetention::default()
@@ -2064,7 +2261,7 @@ mod tests {
             )
             .unwrap();
 
-        let outcome = sweep(&fixture.db, &WorktreeRetention::default()).unwrap();
+        let outcome = sweep(&fixture.db, &fixture.namespace, &WorktreeRetention::default()).unwrap();
         assert_eq!(outcome.skipped, 1);
         assert_eq!(outcome.removed, 1);
         assert!(broken.is_dir(), "the refusal leaves it in place");
@@ -2080,6 +2277,7 @@ mod tests {
         // must not be able to make a breach disappear.
         let breached = sweep(
             &fixture.db,
+            &fixture.namespace,
             &WorktreeRetention {
                 max_total_bytes: 1,
                 ..WorktreeRetention::default()
@@ -2097,7 +2295,7 @@ mod tests {
         let fixture = fixture();
         let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
         age(&fixture, &path, 2 * 24 * 60 * 60);
-        sweep(&fixture.db, &WorktreeRetention::default()).unwrap();
+        sweep(&fixture.db, &fixture.namespace, &WorktreeRetention::default()).unwrap();
         let body: String = fixture
             .db
             .lock()
@@ -2111,6 +2309,231 @@ mod tests {
         assert!(body.contains("bridge/task-worker-child"), "{body}");
         assert!(body.contains("reclaimable"), "{body}");
         assert!(body.contains("freed"), "{body}");
+    }
+
+    // --- review regressions ---------------------------------------------------
+
+    /// A chat whose provider is up but has no turn in flight sits at `ready`,
+    /// not `working`. A status-only liveness test called that idle and deleted
+    /// the directory out from under a live adapter.
+    #[test]
+    fn a_ready_chat_holding_a_live_adapter_keeps_its_checkout() {
+        let fixture = fixture();
+        let path = worker_worktree(&fixture, "chat", "bridge/task-chat");
+        {
+            let db = fixture.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,cwd,depth,adapter_pid,adapter_process_identity)
+                 VALUES('chat','w','claude','Chat','ready','reported',?1,0,4242,'claude:4242')",
+                params![canonical_key(&path)],
+            )
+            .unwrap();
+        }
+        age(&fixture, &path, 400 * 24 * 60 * 60);
+
+        let disposition = classify_path(&fixture, &path);
+        assert!(
+            matches!(&disposition, Disposition::Retained(reason) if reason.contains("chat")),
+            "{disposition:?}",
+        );
+        let outcome = sweep(&fixture.db, &fixture.namespace, &WorktreeRetention::default()).unwrap();
+        assert_eq!(outcome.removed, 0);
+        assert!(path.is_dir(), "the live adapter keeps its working directory");
+    }
+
+    /// Boot recovery clears `adapter_pid` for every process that is really
+    /// gone, so a `ready` row left by a crashed run must not pin a checkout.
+    #[test]
+    fn a_ready_session_with_no_process_claim_does_not_pin_its_checkout() {
+        let fixture = fixture();
+        let path = worker_worktree(&fixture, "chat", "bridge/task-chat");
+        {
+            let db = fixture.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,cwd,depth)
+                 VALUES('chat','w','claude','Chat','ready','reported',?1,0)",
+                params![canonical_key(&path)],
+            )
+            .unwrap();
+        }
+        age(&fixture, &path, 400 * 24 * 60 * 60);
+        assert_eq!(classify_path(&fixture, &path), Disposition::Reclaimable);
+    }
+
+    /// Reclaiming a checkout must not cost the session that owns it: the branch
+    /// survives, so the checkout can be cut again on resume.
+    #[test]
+    fn a_reclaimed_checkout_is_restored_from_its_recorded_branch() {
+        let fixture = fixture();
+        let path = worker_worktree(&fixture, "chat", "bridge/task-chat");
+        age(&fixture, &path, 2 * 24 * 60 * 60);
+        assert_eq!(
+            sweep(&fixture.db, &fixture.namespace, &WorktreeRetention::default())
+                .unwrap()
+                .removed,
+            1,
+        );
+        assert!(!path.exists());
+
+        assert!(restore_if_reclaimed(&fixture.db, &path));
+        assert!(path.is_dir(), "the checkout is back");
+        assert_eq!(git::current_branch(&path).as_deref(), Some("bridge/task-chat"));
+        assert!(
+            path.join("base.txt").is_file(),
+            "and it is the project, not an empty directory",
+        );
+        assert_eq!(record(&fixture, &path).state, STATE_ACTIVE);
+        assert!(
+            !restore_if_reclaimed(&fixture.db, &path),
+            "restoring an existing checkout is a no-op",
+        );
+    }
+
+    #[test]
+    fn restore_never_recreates_a_checkout_bridge_did_not_cut() {
+        let fixture = fixture();
+        let outside = fixture._dir.path().join("hand-made");
+        git_cmd(
+            &fixture.repo,
+            &["worktree", "add", "-q", "-b", "chore/hand-made", outside.to_str().unwrap(), "HEAD"],
+        );
+        reconcile(&fixture.db, &fixture.namespace).unwrap();
+        std::fs::remove_dir_all(&outside).unwrap();
+        assert!(!restore_if_reclaimed(&fixture.db, &outside));
+        assert!(!outside.exists());
+    }
+
+    /// `safe_remove_worker_worktree` only re-runs `git status`, and
+    /// `git worktree remove` does not need force for a clean tree carrying a
+    /// commit that exists nowhere else. The removal path therefore has to
+    /// re-decide the whole classification for itself.
+    #[test]
+    fn the_removal_path_re_decides_before_deleting() {
+        let fixture = fixture();
+        let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
+        let planned = record(&fixture, &path);
+        assert_eq!(classify_path(&fixture, &path), Disposition::Reclaimable);
+
+        // The world moves between the scan and the deletion.
+        commit_in(&path, "arrived-after-the-scan.txt");
+
+        let removed = remove_recorded_worktree(
+            &fixture.db,
+            &fixture.namespace,
+            &planned,
+            0,
+            &WorktreeRetention::default(),
+        )
+        .unwrap();
+        assert!(!removed, "a stale plan does not authorize a deletion");
+        assert!(path.is_dir());
+        assert_eq!(
+            std::fs::read_to_string(path.join("arrived-after-the-scan.txt")).unwrap(),
+            "change\n",
+            "the commit that arrived late is still there",
+        );
+    }
+
+    #[test]
+    fn a_new_measurement_replaces_a_stale_larger_one() {
+        let fixture = fixture();
+        let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
+        fixture
+            .db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE worktrees SET size_bytes=?2 WHERE path=?1",
+                params![canonical_key(&path), 11 * 1024 * 1024 * 1024i64],
+            )
+            .unwrap();
+        let repo = fixture.repo.to_string_lossy().to_string();
+        assert!(
+            !has_capacity(
+                &fixture.db.lock().unwrap(),
+                &repo,
+                &WorktreeRetention::default()
+            )
+            .unwrap(),
+            "the stale size alone exhausts the byte budget",
+        );
+
+        sweep(&fixture.db, &fixture.namespace, &WorktreeRetention::default()).unwrap();
+        let measured = record(&fixture, &path).size_bytes.unwrap();
+        assert!(
+            measured < 11 * 1024 * 1024 * 1024,
+            "the freed space is reflected: {measured}",
+        );
+        assert!(
+            has_capacity(
+                &fixture.db.lock().unwrap(),
+                &repo,
+                &WorktreeRetention::default()
+            )
+            .unwrap(),
+            "and creation is allowed again",
+        );
+    }
+
+    /// An unsettled binding that outlives its checkout keeps offering the user
+    /// an adopt-or-discard decision about a directory that no longer exists,
+    /// and the worker-side collector skips it because the path is missing.
+    #[test]
+    fn reclaiming_an_empty_unadopted_checkout_settles_its_binding() {
+        let fixture = fixture();
+        let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
+        record_pending_adoption(&fixture, &path);
+        age(&fixture, &path, 2 * 24 * 60 * 60);
+
+        let outcome = sweep(&fixture.db, &fixture.namespace, &WorktreeRetention::default()).unwrap();
+        assert_eq!(outcome.removed, 1);
+        let state: String = fixture
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT state FROM worker_worktree_adoptions WHERE session_id='child'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            state, "empty",
+            "no pending decision is left pointing at a deleted directory",
+        );
+    }
+
+    /// A symlink dropped into a layout slot — which anything with write access
+    /// to its own checkout can create as a sibling — must not become an
+    /// inventoried Bridge checkout at its resolved path.
+    #[test]
+    fn a_symlink_in_a_layout_slot_is_never_adopted_or_reclaimed() {
+        let fixture = fixture();
+        let outside = fixture._dir.path().join("someone-elses");
+        git_cmd(
+            &fixture.repo,
+            &["worktree", "add", "-q", "-b", "chore/theirs", outside.to_str().unwrap(), "HEAD"],
+        );
+        let slot = fixture.namespace.join("github").join("pr-1-theirs");
+        std::fs::create_dir_all(slot.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(&outside, &slot).unwrap();
+
+        reconcile(&fixture.db, &fixture.namespace).unwrap();
+        let rows = records(&fixture.db.lock().unwrap()).unwrap();
+        assert!(
+            rows.iter().all(|row| row.state != STATE_ORPHANED),
+            "the symlink is not adopted as a Bridge checkout: {rows:?}",
+        );
+        for row in &rows {
+            if canonical_key(Path::new(&row.path)) == canonical_key(&outside) {
+                assert_eq!(row.state, STATE_EXTERNAL, "and if seen at all, it is external");
+            }
+        }
+
+        let outcome = sweep(&fixture.db, &fixture.namespace, &WorktreeRetention::default()).unwrap();
+        assert_eq!(outcome.removed, 0);
+        assert!(outside.is_dir(), "somebody else's worktree survives");
+        assert!(outside.join("base.txt").is_file());
     }
 
     // --- capacity -------------------------------------------------------------
@@ -2139,7 +2562,7 @@ mod tests {
         let fixture = fixture();
         let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
         age(&fixture, &path, 30);
-        sweep(&fixture.db, &WorktreeRetention::default()).unwrap();
+        sweep(&fixture.db, &fixture.namespace, &WorktreeRetention::default()).unwrap();
         let usage = usage(
             &fixture.db.lock().unwrap(),
             &WorktreeRetention::default(),
