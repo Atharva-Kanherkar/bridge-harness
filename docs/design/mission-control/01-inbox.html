@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Mission Control · Inbox + Inspector</title>
+<link rel="stylesheet" href="mockup.css"><script src="mockup.js"></script></head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <defs>
+    <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1z"/></symbol>
+    <symbol id="i-help" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></symbol>
+    <symbol id="i-spin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-6.219-8.56"/></symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+    <symbol id="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-ext" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/></symbol>
+    <symbol id="i-grid" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></symbol>
+    <symbol id="i-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></symbol>
+    <symbol id="i-chevr" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="i-dots" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol>
+    <symbol id="i-branch" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="6" x2="6" y1="3" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="2"/></symbol>
+    <symbol id="i-send" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.536 21.686a.5.5 0 0 0 .937-.024l6.5-19a.496.496 0 0 0-.635-.635l-19 6.5a.5.5 0 0 0-.024.937l7.93 3.18a2 2 0 0 1 1.112 1.11z"/><path d="m21.854 2.147-10.94 10.939"/></symbol>
+    <symbol id="i-bot" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/></symbol>
+    <symbol id="i-msg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+    <symbol id="i-panel" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></symbol>
+    <symbol id="i-store" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></symbol>
+    <symbol id="i-gear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 1 1.72v.51a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.39a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/><circle cx="12" cy="12" r="3"/></symbol>
+    <symbol id="i-radar" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19.07 4.93A10 10 0 0 0 6.99 3.34"/><path d="M4 6h.01"/><path d="M2.29 9.62A10 10 0 1 0 21.31 8.35"/><path d="M16.24 7.76A6 6 0 1 0 8.23 16.67"/><path d="M12 18h.01"/><path d="M17.99 11.66A6 6 0 0 1 15.77 16.67"/><circle cx="12" cy="12" r="2"/><path d="m13.41 10.59 5.66-5.66"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></symbol>
+    <symbol id="i-link" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></symbol>
+  </defs>
+</svg>
+
+<div class="window">
+  <!-- ── Sidebar: existing chrome. Only change: the rail entry says Mission Control and carries an attention badge. -->
+  <aside class="sidebar">
+    <div class="brand"><svg width="16" height="16"><use href="#i-panel"/></svg> bridge</div>
+    <button class="primary-btn"><svg width="14" height="14"><use href="#i-msg"/></svg> New chat</button>
+    <div class="section">Chats</div>
+    <div class="row"><span class="dot" style="background:var(--warning)"></span><span>Auth refresh-token rotation<span class="sub">Claude · orchestrator</span></span></div>
+    <div class="row"><span class="dot" style="background:var(--success)"></span><span>Docs site deploy<span class="sub">Codex · gpt-5.2</span></span></div>
+    <div class="row"><span class="dot" style="background:var(--success)"></span><span>Session cleanup race<span class="sub">OpenCode · glm</span></span></div>
+    <div class="section">Workspaces <svg width="12" height="12" style="margin-left:auto"><use href="#i-plus"/></svg></div>
+    <div class="row muted"><svg width="14" height="14"><use href="#i-chevr"/></svg><svg width="14" height="14"><use href="#i-folder"/></svg> bridge-harness</div>
+    <div class="row muted"><svg width="14" height="14"><use href="#i-chevr"/></svg><svg width="14" height="14"><use href="#i-folder"/></svg> rimo-website</div>
+    <div class="spacer"></div>
+    <button class="rail-btn active"><svg width="15" height="15"><use href="#i-radar"/></svg> Mission Control <span class="badge" aria-label="2 items need you">2</span></button>
+    <button class="rail-btn"><svg width="15" height="15"><use href="#i-store"/></svg> Marketplace</button>
+    <button class="rail-btn"><svg width="15" height="15"><use href="#i-gear"/></svg> Settings</button>
+  </aside>
+
+  <main class="main">
+    <header class="topbar">
+      <h1><svg width="15" height="15"><use href="#i-radar"/></svg> Mission Control <span class="count">11 items · 4 running</span></h1>
+      <div class="right">
+        <button class="pill"><svg width="12" height="12"><use href="#i-folder"/></svg> All projects <svg width="11" height="11"><use href="#i-chev"/></svg></button>
+        <span class="live">Updated now</span>
+        <button class="pill ghost"><svg width="12" height="12"><use href="#i-grid"/></svg> Grid</button>
+      </div>
+    </header>
+
+    <div class="filterbar">
+      <div class="segmented" role="tablist">
+        <button data-active>Needs you <span class="n hot">2</span></button>
+        <button>Running <span class="n">4</span></button>
+        <button>Waiting <span class="n">3</span></button>
+        <button>Review <span class="n">1</span></button>
+        <button>Done <span class="n">1</span></button>
+        <button>All <span class="n">11</span></button>
+      </div>
+      <div class="right">
+        <div class="search"><svg width="13" height="13"><use href="#i-search"/></svg> Search work, projects, branches… <span class="k"><kbd>/</kbd></span></div>
+        <button class="pill ghost">Group: project <svg width="11" height="11"><use href="#i-chev"/></svg></button>
+      </div>
+    </div>
+
+    <div class="split">
+      <section class="list" aria-label="Work list">
+
+        <!-- NEEDS YOU -->
+        <div class="group">
+          <div class="group-head"><h2 class="hot">Needs you</h2><span class="n">2</span><span class="hint">oldest unresolved first</span></div>
+          <div class="rows">
+            <div class="row-item" aria-selected="true" tabindex="0">
+              <span class="check"></span>
+              <span class="state-ico warning"><svg width="14" height="14"><use href="#i-shield"/></svg></span>
+              <div class="truncate"><div class="title truncate">Auth tests · write scope</div>
+                <div class="crumb truncate"><span>bridge-harness</span><span class="sep">›</span><span>Auth refresh-token rotation</span><span class="sep">›</span><span class="h claude">Claude · implementation</span></div></div>
+              <div class="truncate"><div class="state warning"><b>Permission</b> · write outside scope</div>
+                <div class="reason truncate">2 files under <code>src/auth/</code> not in <code>src/auth/tests/**</code></div></div>
+              <div class="age"><span class="lbl">waiting</span>4m 12s</div>
+              <button class="btn primary">Review request <kbd class="k">↵</kbd></button>
+              <button class="more" aria-label="More"><svg width="14" height="14"><use href="#i-dots"/></svg></button>
+            </div>
+            <div class="row-item" tabindex="0">
+              <span class="check"></span>
+              <span class="state-ico warning"><svg width="14" height="14"><use href="#i-help"/></svg></span>
+              <div class="truncate"><div class="title truncate">Docs site deploy</div>
+                <div class="crumb truncate"><span>rimo-website</span><span class="sep">›</span><span>direct chat</span><span class="sep">›</span><span class="h codex">Codex</span></div></div>
+              <div class="truncate"><div class="state warning"><b>Question</b> · deploy environment</div>
+                <div class="reason truncate">“Preview or production? The Vercel project has both linked.”</div></div>
+              <div class="age"><span class="lbl">waiting</span>1m 03s</div>
+              <button class="btn primary">Answer</button>
+              <button class="more" aria-label="More"><svg width="14" height="14"><use href="#i-dots"/></svg></button>
+            </div>
+          </div>
+        </div>
+
+        <!-- RUNNING -->
+        <div class="group">
+          <div class="group-head"><h2>Running</h2><span class="n">4</span><span class="hint">grouped by project · a heartbeat is not progress</span></div>
+          <div class="rows">
+            <div class="row-item" tabindex="0">
+              <span class="check"></span>
+              <span class="state-ico success"><svg width="14" height="14"><use href="#i-spin"/></svg></span>
+              <div class="truncate"><div class="title truncate">Token rotation · implementation</div>
+                <div class="crumb truncate"><span>bridge-harness</span><span class="sep">›</span><span>Auth refresh-token rotation</span><span class="sep">›</span><span class="h codex">Codex · standard</span></div></div>
+              <div class="truncate"><div class="state success"><b>Running tests</b></div>
+                <div class="reason truncate"><code>cargo test -p bridge-core auth::</code> · 3 passed so far</div></div>
+              <div class="age"><span class="lbl">active</span>3s ago</div>
+              <button class="btn">Open session <svg width="11" height="11"><use href="#i-ext"/></svg></button>
+              <button class="more" aria-label="More"><svg width="14" height="14"><use href="#i-dots"/></svg></button>
+            </div>
+            <div class="row-item" tabindex="0">
+              <span class="check"></span>
+              <span class="state-ico success"><svg width="14" height="14"><use href="#i-spin"/></svg></span>
+              <div class="truncate"><div class="title truncate">Auth refresh-token rotation</div>
+                <div class="crumb truncate"><span>bridge-harness</span><span class="sep">›</span><span>orchestrator</span><span class="sep">›</span><span class="h claude">Claude</span></div></div>
+              <div class="truncate"><div class="state success"><b>Supervising</b> · 2 workers</div>
+                <div class="reason truncate">Waiting on implementation result before requesting verification</div></div>
+              <div class="age"><span class="lbl">active</span>40s ago</div>
+              <button class="btn">Open session <svg width="11" height="11"><use href="#i-ext"/></svg></button>
+              <button class="more" aria-label="More"><svg width="14" height="14"><use href="#i-dots"/></svg></button>
+            </div>
+            <div class="row-item" tabindex="0">
+              <span class="check"></span>
+              <span class="state-ico success"><svg width="14" height="14"><use href="#i-spin"/></svg></span>
+              <div class="truncate"><div class="title truncate">Session cleanup race</div>
+                <div class="crumb truncate"><span>bridge-harness</span><span class="sep">›</span><span>direct chat</span><span class="sep">›</span><span class="h opencode">OpenCode</span></div></div>
+              <div class="truncate"><div class="state success"><b>Editing</b> <span class="mono">session_supervisor.rs</span></div>
+                <div class="reason truncate">Bisecting cleanup ordering…</div></div>
+              <div class="age"><span class="lbl">active</span>12s ago</div>
+              <button class="btn">Open session <svg width="11" height="11"><use href="#i-ext"/></svg></button>
+              <button class="more" aria-label="More"><svg width="14" height="14"><use href="#i-dots"/></svg></button>
+            </div>
+            <div class="row-item" tabindex="0">
+              <span class="check"></span>
+              <span class="state-ico destructive"><svg width="14" height="14"><use href="#i-alert"/></svg></span>
+              <div class="truncate"><div class="title truncate">Changelog research</div>
+                <div class="crumb truncate"><span>rimo-website</span><span class="sep">›</span><span>Docs site deploy</span><span class="sep">›</span><span class="h claude">Claude · research</span></div></div>
+              <div class="truncate"><div class="state destructive"><b>Stalled</b> · silent 6 min</div>
+                <div class="reason truncate">Provider stream idle; still marked working by the adapter</div></div>
+              <div class="age"><span class="lbl">silent</span>6m 20s</div>
+              <button class="btn">Inspect</button>
+              <button class="more" aria-label="More"><svg width="14" height="14"><use href="#i-dots"/></svg></button>
+            </div>
+          </div>
+        </div>
+
+        <!-- WAITING / QUEUED -->
+        <div class="group">
+          <div class="group-head"><h2>Waiting / queued</h2><span class="n">3</span><span class="hint">not counted as your attention</span></div>
+          <div class="rows">
+            <div class="row-item" tabindex="0">
+              <span class="check"></span>
+              <span class="state-ico"><svg width="14" height="14"><use href="#i-clock"/></svg></span>
+              <div class="truncate"><div class="title truncate">Token rotation · verification</div>
+                <div class="crumb truncate"><span>bridge-harness</span><span class="sep">›</span><span>Auth refresh-token rotation</span><span class="sep">›</span><span class="muted">not launched</span></div></div>
+              <div class="truncate"><div class="state"><b>Waiting for</b> implementation result</div>
+                <div class="reason truncate">Verifier runs in the implementation worktree, different harness family</div></div>
+              <div class="age"><span class="lbl">queued</span>9m</div>
+              <button class="btn quiet">View dependency</button>
+              <button class="more" aria-label="More"><svg width="14" height="14"><use href="#i-dots"/></svg></button>
+            </div>
+            <div class="row-item" tabindex="0">
+              <span class="check"></span>
+              <span class="state-ico"><svg width="14" height="14"><use href="#i-pause"/></svg></span>
+              <div class="truncate"><div class="title truncate">Screenshot sweep</div>
+                <div class="crumb truncate"><span>rimo-website</span><span class="sep">›</span><span>Docs site deploy</span><span class="sep">›</span><span class="muted">queued</span></div></div>
+              <div class="truncate"><div class="state"><b>Capacity</b> · 4/4 worker slots busy</div>
+                <div class="reason truncate">Starts when any worker finishes</div></div>
+              <div class="age"><span class="lbl">queued</span>2m</div>
+              <button class="btn quiet">Reorder</button>
+              <button class="more" aria-label="More"><svg width="14" height="14"><use href="#i-dots"/></svg></button>
+            </div>
+            <div class="row-item" tabindex="0">
+              <span class="check"></span>
+              <span class="state-ico"><svg width="14" height="14"><use href="#i-clock"/></svg></span>
+              <div class="truncate"><div class="title truncate">Lint cleanup</div>
+                <div class="crumb truncate"><span>bridge-harness</span><span class="sep">›</span><span>Session cleanup race</span><span class="sep">›</span><span class="h codex">Codex · fast</span></div></div>
+              <div class="truncate"><div class="state"><b>Cooldown</b> · Codex weekly limit</div>
+                <div class="reason truncate">Resets in 38 min · retry is automatic</div></div>
+              <div class="age"><span class="lbl">paused</span>11m</div>
+              <button class="btn quiet">Reroute…</button>
+              <button class="more" aria-label="More"><svg width="14" height="14"><use href="#i-dots"/></svg></button>
+            </div>
+          </div>
+        </div>
+
+        <!-- REVIEW -->
+        <div class="group">
+          <div class="group-head"><h2>Review</h2><span class="n">1</span><span class="hint">stays here until you acknowledge it</span></div>
+          <div class="rows">
+            <div class="row-item" tabindex="0">
+              <span class="check"></span>
+              <span class="state-ico info"><svg width="14" height="14"><use href="#i-eye"/></svg></span>
+              <div class="truncate"><div class="title truncate">Provider limit detection</div>
+                <div class="crumb truncate"><span>bridge-harness</span><span class="sep">›</span><span>Session cleanup race</span><span class="sep">›</span><span class="h codex">Codex · implementation</span></div></div>
+              <div class="truncate"><div class="state info"><b>Reported</b> · verifying</div>
+                <div class="reason truncate"><span class="diffstat">4 files <span class="a">+182</span> <span class="d">−41</span></span> · 2 checks passed · 1 not run</div></div>
+              <div class="age"><span class="lbl">reported</span>14m ago</div>
+              <button class="btn">Review result</button>
+              <button class="more" aria-label="More"><svg width="14" height="14"><use href="#i-dots"/></svg></button>
+            </div>
+          </div>
+        </div>
+
+        <div class="group">
+          <div class="group-head"><svg width="12" height="12" class="chev"><use href="#i-chevr"/></svg><h2>Done today</h2><span class="n">1</span><span class="hint">collapsed · acknowledged results and cancellations</span></div>
+        </div>
+      </section>
+
+      <!-- ── Inspector: persistent, shares the screen with the list. -->
+      <aside class="inspector" aria-label="Inspector">
+        <div class="insp-head">
+          <div class="eyebrow"><span>bridge-harness</span><span class="sep">›</span><span>Auth refresh-token rotation</span><span class="sep">›</span><span class="h claude">Claude · implementation</span></div>
+          <h3>Auth tests · write scope</h3>
+          <div class="statusline"><span class="chip warning"><svg width="12" height="12"><use href="#i-shield"/></svg> Permission required</span><span class="muted">waiting 4m 12s · attempt 2 of 3</span></div>
+        </div>
+        <div class="insp-actions">
+          <button class="btn">Open session <svg width="11" height="11"><use href="#i-ext"/></svg></button>
+          <button class="btn">Steer</button>
+          <span class="sp"></span>
+          <button class="btn danger"><svg width="11" height="11"><use href="#i-stop"/></svg> Stop</button>
+        </div>
+        <div class="tabs" role="tablist">
+          <button data-active>Overview</button>
+          <button>Activity <span class="n">38</span></button>
+          <button>Changes &amp; checks <span class="n">2</span></button>
+        </div>
+        <div class="insp-body">
+          <!-- The request itself, in place. Scoped, never blanket. -->
+          <div class="card warning">
+            <div class="card-head"><svg width="13" height="13" style="color:var(--warning)"><use href="#i-shield"/></svg> Worker asks to write outside its scope <span class="sp"></span><span class="faint mono">req_7f3a</span></div>
+            <div class="card-body">
+              <div class="caption muted">Owned paths: <code>src/auth/tests/**</code>. Requested:</div>
+              <ul class="path-list">
+                <li><span class="op w">WRITE</span> src/auth/store.rs</li>
+                <li><span class="op w">WRITE</span> src/auth/mod.rs</li>
+              </ul>
+              <p class="caption muted" style="margin:10px 0 0">Worker's reason: “The token invalidation test needs a <code>revoke_all()</code> helper that only exists in the store.”</p>
+              <div style="display:flex;gap:6px;margin-top:12px;flex-wrap:wrap">
+                <button class="btn primary">Allow these 2 files <kbd class="k">A</kbd></button>
+                <button class="btn">Allow for this turn only</button>
+                <button class="btn quiet">Deny with note… <kbd class="k">D</kbd></button>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <h4>Overview</h4>
+            <dl class="kv">
+              <dt>Objective</dt><dd>Add tests covering refresh-token invalidation after rotation; existing auth tests stay green.</dd>
+              <dt>Parent</dt><dd>Auth refresh-token rotation <span class="faint">· orchestrator, Claude</span></dd>
+              <dt>Blocked on</dt><dd><b>You</b> · approval decision</dd>
+              <dt>Runtime</dt><dd><span class="h claude">Claude Code 2.1.261</span> <span class="faint">· sonnet-5 · standard · medium effort</span></dd>
+              <dt>Branch</dt><dd class="mono"><svg width="11" height="11" style="vertical-align:-1px"><use href="#i-branch"/></svg> bridge/auth-tests-7f3a <span class="faint">· .worktrees/auth-tests-7f3a</span></dd>
+              <dt>Identity</dt><dd class="mono faint">task tk_02c1 · attempt 2 · session ses_9b0e (reused warm worker)</dd>
+            </dl>
+          </div>
+
+          <div>
+            <h4>Latest activity</h4>
+            <ul class="timeline">
+              <li class="hot"><span>Requested write permission for 2 paths<span class="sub">Delivered to you · parent notified</span></span><span class="t">4m ago</span></li>
+              <li><span>Read <code>src/auth/store.rs</code>, <code>src/auth/tests/rotation.rs</code></span><span class="t">5m ago</span></li>
+              <li class="ok"><span>Ran <code>cargo test -p bridge-core auth::</code><span class="sub">14 passed</span></span><span class="t">6m ago</span></li>
+              <li><span>Attempt 1 ended: worker reported <code>needs_delegation</code><span class="sub">Orchestrator relaunched with narrowed objective</span></span><span class="t">12m ago</span></li>
+            </ul>
+          </div>
+
+          <div class="details"><svg width="12" height="12"><use href="#i-chevr"/></svg> Diagnostics · raw result JSON, adapter frames, policy decision <span class="sp" style="flex:1"></span><span class="faint mono">12 KB</span></div>
+        </div>
+      </aside>
+    </div>
+
+    <footer class="footer">
+      <span><kbd>J</kbd><kbd>K</kbd> move</span><span><kbd>↵</kbd> primary action</span><span><kbd>O</kbd> open session</span><span><kbd>I</kbd> inspector</span><span><kbd>X</kbd> select</span><span><kbd>⌘K</kbd> commands</span>
+      <span class="sp"></span>
+      <span>Incoming events never move focus or the row under your pointer</span>
+    </footer>
+  </main>
+</div>
+</body></html>

@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Mission Control · design mockups</title>
+<link rel="stylesheet" href="mockup.css"><script src="mockup.js"></script>
+<style>
+.doc{max-width:860px;margin:0 auto;padding:48px 24px 96px;font-size:14px;line-height:1.65}
+.doc h1{font-size:28px;margin:0 0 6px}.doc h2{font-size:16px;margin:36px 0 10px}.doc p{margin:0 0 12px;color:var(--body)}
+.doc ul{padding-left:20px;margin:0 0 12px}.doc li{margin:4px 0}
+.links{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:12px;margin:18px 0 8px}
+.links a{display:block;padding:14px 16px;border:1px solid var(--border-card);border-radius:10px;background:var(--card);color:var(--foreground);text-decoration:none}
+.links a b{display:block;margin-bottom:2px}.links a span{color:var(--muted-foreground);font-size:12.5px}
+table{border-collapse:collapse;width:100%;font-size:13px}td,th{text-align:left;padding:7px 10px;border-top:1px solid var(--border)}th{color:var(--muted-foreground);font-weight:500;font-size:12px}
+</style></head>
+<body><div class="doc">
+<h1 class="display">Mission Control</h1>
+<p class="muted">Design mockups for the cross-project attention inbox proposed in issue #576. Static HTML on the Graphite &amp; Paper tokens; press <kbd>d</kbd> on any page to flip themes. Content is illustrative.</p>
+
+<div class="links">
+  <a href="01-inbox.html"><b>01 · Inbox + inspector</b><span>The default screen at 1440px. Grouped work list, persistent inspector with a permission request open.</span></a>
+  <a href="02-inspector-states.html"><b>02 · Inspector states</b><span>Question, reported result with checks, failed with typed cause, running with steer.</span></a>
+  <a href="03-narrow.html"><b>03 · Narrow window</b><span>720px: list and inspector as two pushed panes with Back.</span></a>
+  <a href="04-edge-states.html"><b>04 · Edge states</b><span>All clear, stale, missing runtime, loading, disconnected, bulk control.</span></a>
+</div>
+
+<h2>The one idea</h2>
+<p><b>Sort by who is blocked, not by what is loud.</b> The screen answers four questions top to bottom: what needs me, what is progressing, what is waiting and on what, and what is ready to review. A live transcript feed is noisy and makes every tile look equally urgent, so it moves into the inspector where you look at it on purpose.</p>
+
+<h2>Control and ease at the same time</h2>
+<table>
+<tr><th>Ease</th><th>Control</th></tr>
+<tr><td>One primary action per row, named after the decision (“Review request”, “Answer”, “Review result”).</td><td>Every action is scoped and reversible in the inspector: allow exactly these files, this turn only, or deny with a note. No “approve all”.</td></tr>
+<tr><td>Groups are fixed and the inspector never moves, so the layout is learned once.</td><td>Stop, steer, retry, open worktree, open session are always in the same bar; unavailable ones are disabled with a reason.</td></tr>
+<tr><td>Status is a word plus one reason line, never a raw lifecycle enum.</td><td>Identity (task, attempt, session), branch, runtime and budget are one row down in Overview; raw JSON is a collapsed diagnostics drawer.</td></tr>
+<tr><td>Incoming events never move focus or the row under the pointer.</td><td>Keyboard covers everything: J/K, Enter, O, I, X, A, D, ⌘K.</td></tr>
+<tr><td>Nothing needs you → a calm empty state, not an empty grid.</td><td>Multi-select offers only the actions valid for every selected item.</td></tr>
+</table>
+
+<h2>Row anatomy</h2>
+<ul>
+  <li><b>State icon</b> carries the only hue on the row: warning for anything blocked on a human, success for live progress, destructive for failed/stalled, info for review, neutral for waiting and terminal states.</li>
+  <li><b>Title + breadcrumb</b>: task title, then project › parent mission › harness mark and role. The harness hue lives on the small square only; the name stays achromatic.</li>
+  <li><b>State + reason</b>: bold word, then one line that says what would unblock it. A heartbeat is never shown as progress.</li>
+  <li><b>Age</b> with a label that says what the number means: waiting, active, queued, silent, reported, ended. Terminal items stop counting.</li>
+  <li><b>Primary action</b> and a ⋯ menu for the rest.</li>
+</ul>
+
+<h2>What the read model must provide</h2>
+<p>Everything on these screens comes from the typed fleet projection in #576: lifecycle, wait kind and responsible actor, failure class, completion verdict (worker claim, verification, adoption as three separate facts), stable task/attempt identity, freshness metadata, and an action-eligibility list. The frontend only derives labels. Nothing here needs transcript events for row correctness.</p>
+
+<h2>Deliberately not in v1</h2>
+<ul>
+  <li>Grid and graph modes (kept as a toggle stub in the top bar; ship after list testing).</li>
+  <li>Percent complete, ETA, cost analytics.</li>
+  <li>Worktree cleanup inside Mission Control (link to the storage manager from #574).</li>
+</ul>
+</div></body></html>
