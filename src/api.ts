@@ -1710,8 +1710,8 @@ export const bridgeApi = {
     if (isTauri()) return (await call("sessions/carry_session_handoff", { targetSessionId, sourceSessionId })).carried;
     return false;
   },
-  listSlashCommands: async (): Promise<SlashCommand[]> => {
-    if (isTauri()) return call("slash/list_slash_commands");
+  listSlashCommands: async (sessionId?: string): Promise<SlashCommand[]> => {
+    if (isTauri()) return call("slash/list_slash_commands", { sessionId: sessionId ?? null });
     return [];
   },
   resolveSlashCommand: async (sessionId: string, text: string): Promise<SlashCommandResolve | null> => {

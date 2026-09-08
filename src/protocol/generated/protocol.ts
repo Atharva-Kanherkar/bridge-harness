@@ -490,7 +490,7 @@ export interface BridgeMethodParams {
   "terminal/resize_terminal": ResizeTerminalParams;
   "terminal/close_terminal": CloseTerminalParams;
   "terminal/list_terminals": ListTerminalsParams;
-  "slash/list_slash_commands": undefined;
+  "slash/list_slash_commands": ListSlashCommandsParams;
   "slash/resolve_slash_command": ResolveSlashCommandParams;
   "completion/create_completion_plan": CreateCompletionPlanParams;
   "completion/record_completion_check": RecordCompletionCheckParams;
@@ -2630,6 +2630,10 @@ export interface ListTerminalsParams {
 
 export interface ListTerminalsResult {
   terminalIds: string[];
+}
+
+export interface ListSlashCommandsParams {
+  sessionId?: string | null;
 }
 
 export type SlashCommandsResult = SlashCommand[];

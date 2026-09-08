@@ -2817,8 +2817,23 @@ fn available_adapter_ids(core: &BridgeCore) -> HashSet<String> {
 /// can offer a labeled `/` menu.
 pub fn list_slash_commands(
     core: &Arc<BridgeCore>,
+    session_id: Option<&str>,
 ) -> Result<Vec<slash::SlashCommand>, BridgeError> {
-    Ok(slash::list_commands(&available_adapter_ids(core)))
+    let project = session_id
+        .map(|session_id| {
+            core.db.lock().unwrap().query_row(
+                "SELECT cwd FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+        })
+        .transpose()?
+        .flatten()
+        .map(PathBuf::from);
+    Ok(slash::list_commands_for_project(
+        &available_adapter_ids(core),
+        project.as_deref(),
+    ))
 }
 
 /// Resolve a composer `/command` against the catalog so the UI can auto-switch
@@ -2837,12 +2852,12 @@ pub fn resolve_slash_command(
         .next()
         .filter(|value| !value.is_empty())
         .ok_or_else(|| BridgeError::Invalid("Empty slash command".into()))?;
-    let (kind, session_harness): (String, String) = {
+    let (kind, session_harness, cwd): (String, String, Option<String>) = {
         let db = core.db.lock().unwrap();
         db.query_row(
-            "SELECT kind, harness FROM sessions WHERE id=?1",
+            "SELECT kind, harness, cwd FROM sessions WHERE id=?1",
             params![session_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?
     };
     if slash::is_bridge_local(name) {
@@ -2854,7 +2869,8 @@ pub fn resolve_slash_command(
         }));
     }
     let available = available_adapter_ids(core);
-    let catalog = slash::list_commands(&available);
+    let project = cwd.as_deref().map(Path::new);
+    let catalog = slash::list_commands_for_project(&available, project);
     let matches: Vec<_> = catalog
         .iter()
         .filter(|command| command.name.eq_ignore_ascii_case(name))

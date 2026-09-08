@@ -1197,9 +1197,10 @@ async fn carry_session_handoff(
 /// can offer a labeled `/` menu.
 #[tauri::command]
 async fn list_slash_commands(
+    session_id: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<Vec<slash::SlashCommand>, BridgeError> {
-    api::list_slash_commands(state.inner())
+    api::list_slash_commands(state.inner(), session_id.as_deref())
 }
 
 /// Resolve a composer `/command` against the catalog so the UI can auto-switch

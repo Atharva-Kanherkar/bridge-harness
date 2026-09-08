@@ -940,7 +940,7 @@ function AppContent() {
   }, [agentEvents, forest, session?.id]);
 
   // Load available slash commands + skills from signed-in providers.
-  useEffect(() => { void bridgeApi.listSlashCommands().then(setSlashCommands).catch(() => undefined); }, [adaptersReady]);
+  useEffect(() => { void bridgeApi.listSlashCommands(session?.id).then(setSlashCommands).catch(() => undefined); }, [adaptersReady, session?.id]);
 
   // Always land on the Agent tab: focusing a session (especially a blocked
   // worker from Mission Control) must reveal its conversation and approval card,

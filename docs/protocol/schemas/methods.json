@@ -565,7 +565,7 @@
       "command": "list_slash_commands",
       "domain": "slash",
       "method": "slash/list_slash_commands",
-      "paramsSchema": null,
+      "paramsSchema": "list-slash-commands-params.json",
       "resultSchema": "slash-commands-result.json"
     },
     {

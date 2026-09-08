@@ -9513,13 +9513,18 @@ fn prepare_input(
         .filter(|descriptor| descriptor.available)
         .map(|descriptor| descriptor.id)
         .collect();
-    let session_harness: String = state.db.lock().unwrap().query_row(
-        "SELECT harness FROM sessions WHERE id=?1",
+    let (session_harness, cwd): (String, Option<String>) = state.db.lock().unwrap().query_row(
+        "SELECT harness, cwd FROM sessions WHERE id=?1",
         params![session_id],
-        |row| row.get(0),
+        |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
 
-    let dispatch = slash::dispatch(&sanitized_input.text, &session_harness, &available);
+    let dispatch = slash::dispatch_for_project(
+        &sanitized_input.text,
+        &session_harness,
+        &available,
+        cwd.as_deref().map(Path::new),
+    );
     if !allow_session_control && session_input::requires_idle_session(&dispatch) {
         return Err(BridgeError::Invalid(
             "That command changes the chat itself, so it needs an idle turn. Stop the current turn first, or send it as a message.".into(),

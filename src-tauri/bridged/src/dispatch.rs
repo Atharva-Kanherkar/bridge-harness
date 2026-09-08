@@ -400,7 +400,10 @@ pub fn dispatch(
             }))
         }
 
-        MethodName::ListSlashCommands => reply(api::list_slash_commands(core)),
+        MethodName::ListSlashCommands => {
+            let p: wire::ListSlashCommandsParams = decode(method, params)?;
+            reply(api::list_slash_commands(core, p.session_id.as_deref()))
+        }
         MethodName::ResolveSlashCommand => {
             let p: wire::ResolveSlashCommandParams = decode(method, params)?;
             reply(api::resolve_slash_command(core, &p.text, &p.session_id))
