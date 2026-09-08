@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 48;
+const LATEST_SCHEMA_VERSION: i64 = 49;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -677,6 +677,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             46 => crate::external_import::install_import_foundation(&transaction)?,
             47 => migration_47_model_profile_selection_mode(&transaction)?,
             48 => migration_48_harness_quota_cooldowns(&transaction)?,
+            49 => migration_49_worker_repair_budget(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -704,6 +705,23 @@ fn migration_47_model_profile_selection_mode(
     transaction.execute(
         "UPDATE model_profiles
          SET selection_mode=CASE WHEN pinned=1 THEN 'pinned' ELSE 'track_standard' END",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Persist the repair budget and preserve attempts spent before this migration.
+fn migration_49_worker_repair_budget(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(
+        transaction,
+        "worker_runtime",
+        "result_repair_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    transaction.execute(
+        "UPDATE worker_runtime SET result_repair_count=1
+         WHERE EXISTS(SELECT 1 FROM events WHERE entity_id=worker_runtime.session_id
+                      AND kind='worker.result.repair_requested')",
         [],
     )?;
     Ok(())
@@ -5093,6 +5111,44 @@ mod tests {
             vec!["third"],
             "an out-of-order insert is compacted instead of displacing the newest payload"
         );
+    }
+
+    #[test]
+    fn migration_49_preserves_existing_repair_spending_across_reopens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        let db = open(&path).unwrap();
+        db.execute_batch(
+            "INSERT INTO sessions(id,harness,label,status,depth) VALUES('parent','codex','Parent','ready',0);
+             INSERT INTO sessions(id,harness,label,status,depth,parent_session_id)
+                 VALUES('spent','codex','Spent','ready',1,'parent'),('fresh','codex','Fresh','ready',1,'parent');
+             INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,updated_at)
+                 VALUES('spent','parent','working','implementation','key','now'),('fresh','parent','working','implementation','key','now');
+             ALTER TABLE worker_runtime DROP COLUMN result_repair_count;
+             DELETE FROM schema_version WHERE version=49;"
+        ).unwrap();
+        event(
+            &db,
+            "delegation",
+            "worker.result.repair_requested",
+            "spent",
+            "missing fence",
+        )
+        .unwrap();
+        drop(db);
+        for _ in 0..2 {
+            let db = open(&path).unwrap();
+            for (id, expected) in [("spent", 1), ("fresh", 0)] {
+                let count: i64 = db
+                    .query_row(
+                        "SELECT result_repair_count FROM worker_runtime WHERE session_id=?1",
+                        params![id],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(count, expected);
+            }
+        }
     }
 
     #[test]

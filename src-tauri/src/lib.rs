@@ -3296,7 +3296,9 @@ mod tests {
 
     #[test]
     fn repair_and_fallback_store_audit_events() {
-        let db = store::open(Path::new(":memory:")).unwrap();
+        let db = policy_fixture();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,parent_session_id,depth) VALUES('worker','w','codex','Worker','working','parent',1)", []).unwrap();
+        db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,updated_at) VALUES('worker','parent','working','implementation','key','now')", []).unwrap();
         let mut tracker = delegation::ResultRepairTracker::default();
         let first = process_worker_result_output(
             &db,

@@ -2524,6 +2524,14 @@ fn handle_agent_value_timed(
         else {
             return;
         };
+        // Ignore buffered provider frames once a worker is terminal. They must
+        // not revive session status or cause another result/repair cycle.
+        if own_depth > 0 && db.query_row(
+            "SELECT lifecycle_state IN ('completed','cancelled') FROM worker_runtime WHERE session_id=?1",
+            params![session_id], |row| row.get::<_, bool>(0),
+        ).unwrap_or(false) {
+            return;
+        }
         // Direct chats are single-agent: no worker delegation and no auto-compaction.
         let is_direct = session_kind == "direct";
         let mut observed_turn_id = current_turn
@@ -6738,6 +6746,15 @@ fn forward_turn_result(core: &Arc<BridgeCore>, child_session_id: &str) {
     if parent.is_none() {
         return;
     }
+    // A queued terminal frame must never reopen a reported worker's budget.
+    let reported = state.db.lock().unwrap().query_row(
+        "SELECT result_status='reported' FROM worker_runtime WHERE session_id=?1",
+        params![child_session_id], |row| row.get::<_, bool>(0),
+    ).unwrap_or(false);
+    if reported {
+        stop_terminal_worker_adapter(core, child_session_id);
+        return;
+    }
     let raw_output = {
         let db = state.db.lock().unwrap();
         latest_worker_output(&db, child_session_id)
@@ -6795,18 +6812,37 @@ fn forward_turn_result(core: &Arc<BridgeCore>, child_session_id: &str) {
         }
     }
     report_to_parent(core, child_session_id, &result);
+    stop_terminal_worker_adapter(core, child_session_id);
+}
+
+fn stop_terminal_worker_adapter(state: &Arc<BridgeCore>, child_session_id: &str) {
     let terminal = state
         .db
         .lock()
         .unwrap()
         .query_row(
-            "SELECT lifecycle_state IN ('completed','cancelled') FROM worker_runtime WHERE session_id=?1",
+            "SELECT lifecycle_state IN ('completed','cancelled','failed') FROM worker_runtime WHERE session_id=?1",
             params![child_session_id],
             |row| row.get::<_, bool>(0),
         )
         .unwrap_or(false);
     if terminal {
-        deactivate_reader_launch(&state, child_session_id);
+        {
+            let db = state.db.lock().unwrap();
+            if store::worker_runtime(&db, child_session_id)
+                .ok()
+                .flatten()
+                .is_some_and(|runtime| runtime.lifecycle_state == "failed")
+            {
+                let _ = session_supervisor::SessionSupervisor::transition(
+                    &db,
+                    child_session_id,
+                    worker_lifecycle::WorkerLifecycleState::Completed,
+                    Some("terminal_failure_cleanup"),
+                );
+            }
+        }
+        deactivate_reader_launch(state, child_session_id);
         if let Some(mut runtime) = state.adapters.lock().unwrap().remove(child_session_id) {
             runtime.stop(adapters::ShutdownReason::Completed);
         }
@@ -6824,7 +6860,64 @@ pub fn process_worker_result_output(
     raw_output: &str,
     send_same_session_repair: impl FnOnce(&str) -> bool,
 ) -> Result<Option<delegation::WorkerResult>, BridgeError> {
-    match tracker.process(child_session_id, raw_output, send_same_session_repair) {
+    let runtime = store::worker_runtime(db, child_session_id)?;
+    let Some(runtime) = runtime else {
+        return Ok(None);
+    };
+    if runtime.result_status == "reported" {
+        return Ok(None);
+    }
+    if runtime.lifecycle_state == "failed" {
+        let context: Option<String> = db
+            .query_row(
+                "SELECT json_extract(payload,'$.text') FROM session_entries
+             WHERE session_id=?1 AND kind='error' ORDER BY sequence DESC LIMIT 1",
+                params![child_session_id],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+        // The session label, not the raw id: this result is what the parent and
+        // the UI read, and a failed worker may still have a live adapter, so it
+        // must not claim the process exited either.
+        let label: String = db
+            .query_row(
+                "SELECT label FROM sessions WHERE id=?1",
+                params![child_session_id],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| child_session_id.to_owned());
+        return Ok(Some(synthetic_failure_result(
+            &label,
+            context.as_deref(),
+            SyntheticFailure::Failed,
+        )));
+    }
+    if runtime.lifecycle_state != "working" {
+        return Ok(None);
+    }
+    // Claim before sending. A crash, fresh tracker, failed delivery, or duplicate
+    // output must never refund the worker's single formatting-repair attempt.
+    let mut claim_error = None;
+    let action = tracker.process(child_session_id, raw_output, |prompt| {
+        match db.execute(
+            "UPDATE worker_runtime SET result_repair_count=result_repair_count+1,updated_at=?2
+             WHERE session_id=?1 AND lifecycle_state='working' AND result_status='pending'
+               AND result_repair_count=0",
+            params![child_session_id, Utc::now().to_rfc3339()],
+        ) {
+            Ok(1) => send_same_session_repair(prompt),
+            Ok(_) => false,
+            Err(error) => {
+                claim_error = Some(error);
+                false
+            }
+        }
+    });
+    if let Some(error) = claim_error {
+        return Err(error.into());
+    }
+    match action {
         delegation::WorkerOutputAction::Structured(result) => Ok(Some(result)),
         delegation::WorkerOutputAction::AwaitingRepair { reason } => {
             store::event(
@@ -7017,7 +7110,9 @@ fn settle_worker_after_result(
     if current.as_deref() == Some("failed")
         && matches!(
             result.status,
-            delegation::WorkerResultStatus::Failed | delegation::WorkerResultStatus::Blocked
+            delegation::WorkerResultStatus::Failed
+                | delegation::WorkerResultStatus::Blocked
+                | delegation::WorkerResultStatus::ProtocolInvalid
         )
     {
         session_supervisor::SessionSupervisor::transition(
@@ -7236,7 +7331,9 @@ fn settle_worker_after_result(
     )?;
     if matches!(
         result.status,
-        delegation::WorkerResultStatus::Failed | delegation::WorkerResultStatus::Blocked
+        delegation::WorkerResultStatus::Failed
+            | delegation::WorkerResultStatus::Blocked
+            | delegation::WorkerResultStatus::ProtocolInvalid
     ) {
         session_supervisor::SessionSupervisor::transition(
             &state.db.lock().unwrap(),
@@ -7764,7 +7861,35 @@ fn notify_parent_on_worker_exit(
 /// full tail, so the parent (which reads the typed result as evidence) and
 /// the UI both see the actual cause, never just "ended without reporting".
 fn synthetic_exit_result(label: &str, failure_context: Option<&str>) -> delegation::WorkerResult {
-    let mut risks = vec!["Worker process exited before a typed result was produced".to_owned()];
+    synthetic_failure_result(label, failure_context, SyntheticFailure::Exited)
+}
+
+/// How a worker stopped, which is all that separates the two synthesized
+/// failures. A worker whose lifecycle went `failed` — a provider usage limit,
+/// say — may still have a running adapter, so it must not be reported as an
+/// exited process.
+#[derive(Clone, Copy)]
+enum SyntheticFailure {
+    Exited,
+    Failed,
+}
+
+fn synthetic_failure_result(
+    label: &str,
+    failure_context: Option<&str>,
+    kind: SyntheticFailure,
+) -> delegation::WorkerResult {
+    let (risk, verb) = match kind {
+        SyntheticFailure::Exited => (
+            "Worker process exited before a typed result was produced",
+            "ended",
+        ),
+        SyntheticFailure::Failed => (
+            "Worker failed before a typed result was produced",
+            "failed",
+        ),
+    };
+    let mut risks = vec![risk.to_owned()];
     let summary = match failure_context {
         Some(context) => {
             risks.push(context.to_owned());
@@ -7774,9 +7899,9 @@ fn synthetic_exit_result(label: &str, failure_context: Option<&str>) -> delegati
                 .find(|line| !line.trim().is_empty())
                 .unwrap_or("unknown error")
                 .trim();
-            format!("{label} ended without reporting a result — {last_line}")
+            format!("{label} {verb} without reporting a result — {last_line}")
         }
-        None => format!("{label} ended without reporting a result"),
+        None => format!("{label} {verb} without reporting a result"),
     };
     delegation::WorkerResult {
         schema_version: delegation::SCHEMA_VERSION,
@@ -8341,6 +8466,21 @@ fn maintain_worker_pool(core: &Arc<BridgeCore>) {
     {
         let db = state.db.lock().unwrap();
         let _ = worker_adoption::release_terminal_worktrees(&db);
+    }
+
+    // A reported failure is terminal. Unreported failures may be between the
+    // Failed -> Resuming retry transitions, so only reap those after silence.
+    let live_ids: Vec<String> = state.adapters.lock().unwrap().keys().cloned().collect();
+    for id in live_ids {
+        let status: Option<String> = state.db.lock().unwrap().query_row(
+            "SELECT result_status FROM worker_runtime WHERE session_id=?1 AND lifecycle_state='failed'",
+            params![id], |row| row.get(0),
+        ).ok();
+        if status.as_deref() == Some("reported")
+            || (status.is_some() && worker_silence_secs(&state, &id)
+                .is_some_and(|silent| silent >= WORKER_STALL_TIMEOUT_SECONDS)) {
+            forward_turn_result(core, &id);
+        }
     }
 
     // Stall watchdog. Detection is driven off the in-memory heartbeat map, so
@@ -14626,7 +14766,9 @@ mod retry_settlement_tests {
         fn respond(&self, _: serde_json::Value, _: &str) -> Result<(), BridgeError> {
             Ok(())
         }
-        fn stop(&mut self, _: adapters::ShutdownReason) {}
+        fn stop(&mut self, _: adapters::ShutdownReason) {
+            self.sent.lock().unwrap().push("STOPPED".into());
+        }
     }
 
     type WorkerFixture = (
@@ -14714,6 +14856,162 @@ mod retry_settlement_tests {
                 |row| row.get(0),
             )
             .ok()
+    }
+
+    #[test]
+    fn quota_frames_never_repair_and_stop_the_adapter_once() {
+        let (_fixture, core, sent, _guard) = core_with_working_worker();
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET harness='codex' WHERE id='child'", [])
+            .unwrap();
+        let frame = serde_json::json!({
+            "method": "turn/completed",
+            "params": {"turn": {"id": "turn-limit", "status": "failed", "error": {
+                "message": "You've hit your usage limit. Try again at Sep 7th, 11:35 AM."
+            }}}
+        });
+        let turn = Arc::new(Mutex::new(Some("turn-limit".into())));
+        for _ in 0..8 {
+            handle_agent_value(&core, "child", &turn, &frame);
+        }
+        assert_eq!(*sent.lock().unwrap(), vec!["STOPPED"]);
+        assert!(!core.adapters.lock().unwrap().contains_key("child"));
+        let db = core.db.lock().unwrap();
+        let runtime = store::worker_runtime(&db, "child").unwrap().unwrap();
+        assert_eq!(runtime.lifecycle_state, "completed");
+        assert_eq!(runtime.result_status, "reported");
+        assert!(runtime
+            .last_result
+            .unwrap()
+            .to_string()
+            .contains("usage limit"));
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM events WHERE kind='worker.result.repair_requested'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn durable_repair_budget_survives_tracker_reset_and_delivery_failure() {
+        for delivered in [true, false] {
+            let (_fixture, core, _sent, _guard) = core_with_working_worker();
+            let db = core.db.lock().unwrap();
+            let mut calls = 0;
+            for _ in 0..8 {
+                let mut tracker = delegation::ResultRepairTracker::default();
+                process_worker_result_output(&db, &mut tracker, "child", "no fence", |_| {
+                    calls += 1;
+                    delivered
+                })
+                .unwrap();
+            }
+            assert_eq!(calls, 1);
+            assert_eq!(
+                db.query_row(
+                    "SELECT result_repair_count FROM worker_runtime WHERE session_id='child'",
+                    [],
+                    |r| r.get::<_, i64>(0)
+                )
+                .unwrap(),
+                1
+            );
+        }
+    }
+
+    #[test]
+    fn non_working_or_reported_workers_cannot_repair() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        let db = core.db.lock().unwrap();
+        for (lifecycle, status) in [
+            ("waiting", "pending"),
+            ("starting", "pending"),
+            ("failed", "pending"),
+            ("working", "reported"),
+            ("completed", "reported"),
+        ] {
+            db.execute("UPDATE worker_runtime SET lifecycle_state=?1,result_status=?2 WHERE session_id='child'", params![lifecycle, status]).unwrap();
+            process_worker_result_output(
+                &db,
+                &mut delegation::ResultRepairTracker::default(),
+                "child",
+                "no fence",
+                |_| panic!("repair on {lifecycle}/{status}"),
+            )
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn failed_worker_result_names_the_label_and_does_not_claim_an_exit() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        let db = core.db.lock().unwrap();
+        db.execute(
+            "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at)
+             VALUES('e1','child',NULL,1,'error','{\"text\":\"You have hit your usage limit.\"}','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE worker_runtime SET lifecycle_state='failed' WHERE session_id='child'",
+            [],
+        )
+        .unwrap();
+
+        let result = process_worker_result_output(
+            &db,
+            &mut delegation::ResultRepairTracker::default(),
+            "child",
+            "no fence",
+            |_| panic!("a failed worker must not be asked to repair"),
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(result.summary.starts_with("Implementation failed"), "{}", result.summary);
+        assert!(!result.summary.contains("child"), "{}", result.summary);
+        assert!(result.summary.contains("usage limit"), "{}", result.summary);
+        assert!(
+            !result.risks.iter().any(|risk| risk.contains("exited")),
+            "a failed worker may still have a live adapter: {:?}",
+            result.risks
+        );
+    }
+
+    #[test]
+    fn invalid_repair_stops_and_duplicate_completion_cannot_restart_it() {
+        let (_fixture, core, sent, _guard) = core_with_working_worker();
+        for _ in 0..8 {
+            forward_turn_result(&core, "child");
+        }
+        let sent = sent.lock().unwrap();
+        assert_eq!(sent.len(), 2);
+        assert!(sent[0].contains("one repair turn"));
+        assert_eq!(sent[1], "STOPPED");
+        let db = core.db.lock().unwrap();
+        let runtime = store::worker_runtime(&db, "child").unwrap().unwrap();
+        assert_eq!(runtime.lifecycle_state, "completed");
+        assert_eq!(runtime.result_status, "reported");
+    }
+
+    #[test]
+    fn maintenance_reaps_failed_adapters_even_after_reporting() {
+        for status in ["pending", "reported"] {
+            let (_fixture, core, sent, _guard) = core_with_working_worker();
+            core.db.lock().unwrap().execute("UPDATE worker_runtime SET lifecycle_state='failed',result_status=?1 WHERE session_id='child'", params![status]).unwrap();
+            core.worker_activity.lock().unwrap().insert(
+                "child".into(), std::time::Instant::now() - Duration::from_secs(WORKER_STALL_TIMEOUT_SECONDS + 1),
+            );
+            maintain_worker_pool(&core);
+            assert_eq!(*sent.lock().unwrap(), vec!["STOPPED"]);
+            assert!(!core.adapters.lock().unwrap().contains_key("child"));
+        }
     }
 
     #[test]
