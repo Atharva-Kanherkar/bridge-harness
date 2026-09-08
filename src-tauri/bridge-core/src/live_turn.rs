@@ -16,7 +16,7 @@ use crate::{
     adapters, agent, agent_config, backend_binding, check_runner, compaction_controller,
     completion, delegation, git, handoff, learning_job, learning_router, managed_agents,
     memory_ledger, orchestrator, policy, policy_coordinator, prompt_compiler, prompt_sections,
-    prompts, restoration, secret_interception, session_context, session_forest, session_input,
+    prompts, provider_limit, restoration, secret_interception, session_context, session_forest, session_input,
     session_recall, session_supervisor, skill_marketplace, slash, store, worker_adoption,
     worker_guard, worker_lifecycle, worker_pool, worker_retry, worker_sandbox, workspace_files,
     worktree_coordinator,
@@ -2889,6 +2889,13 @@ fn handle_agent_value_timed(
                         turn_completed = true;
                         *current_turn.lock().unwrap() = None;
                         void_orphaned_questions(&db, session_id, "provider_error");
+                        // The provider's own words are the only place a usage
+                        // limit is ever stated. Read it here, before anything
+                        // branches on depth or lifecycle: a rate-limited turn
+                        // produces no assistant message and no typed result,
+                        // so every downstream detector that reads those sees
+                        // nothing at all.
+                        record_provider_limit(&db, session_id, event.text.as_deref());
                         if own_depth > 0 {
                             let lifecycle = store::worker_runtime(&db, session_id)
                                 .ok()
@@ -6952,6 +6959,38 @@ pub fn process_worker_result_output(
             Ok(Some(delegation::protocol_invalid_result(&raw, &reason)))
         }
     }
+}
+
+/// Cool a harness down when its own error frame says the account is spent.
+///
+/// Deliberately indifferent to what kind of session this is and to what state
+/// it is in. A chat hitting the limit is the same fact about the same account
+/// as a worker hitting it, and the worker that hits it has usually already
+/// gone `failed` — which is exactly the state the settle path returns early
+/// on. Writing it here is what makes the cooldown reachable at all.
+fn record_provider_limit(db: &Connection, session_id: &str, text: Option<&str>) {
+    let Some(limit) = text.and_then(provider_limit::detect) else {
+        return;
+    };
+    let Some((workspace_id, harness)) = db
+        .query_row(
+            "SELECT workspace_id,harness FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| Ok((row.get::<_, Option<String>>(0)?, row.get::<_, String>(1)?)),
+        )
+        .ok()
+        .and_then(|(workspace_id, harness)| workspace_id.map(|id| (id, harness)))
+    else {
+        return;
+    };
+    let _ = learning_router::mark_harness_quota_exhausted_until(
+        db,
+        &workspace_id,
+        &harness,
+        &limit.signal,
+        session_id,
+        limit.reset_at,
+    );
 }
 
 /// The parent a worker reports to, if it has one.
@@ -14895,6 +14934,147 @@ mod retry_settlement_tests {
             )
             .unwrap(),
             0
+        );
+    }
+
+    /// The failure the cooldown table existed for and never recorded: a
+    /// rate-limited Codex worker writes no assistant message and settles no
+    /// typed result, so every detector that reads those saw nothing. The
+    /// provider said it in its own error frame all along.
+    #[test]
+    fn a_codex_usage_limit_frame_cools_the_harness_down_with_no_worker_prose() {
+        use chrono::Timelike;
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        core.db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET harness='codex' WHERE id='child'", [])
+            .unwrap();
+        // Codex names a date and a wall-clock time with no year, exactly as
+        // the live database recorded it. Anchored two days out so the test
+        // reads the same on any calendar day.
+        let reset = (Utc::now() + chrono::Duration::days(2))
+            .with_second(0)
+            .and_then(|reset| reset.with_nanosecond(0))
+            .unwrap();
+        let frame = serde_json::json!({
+            "method": "turn/completed",
+            "params": {"turn": {"id": "turn-limit", "status": "failed", "error": {
+                "message": format!(
+                    "You've hit your usage limit. Try again at {}.",
+                    reset.format("%b %-d, %-I:%M %p")
+                )
+            }}}
+        });
+        let turn = Arc::new(Mutex::new(Some("turn-limit".into())));
+        handle_agent_value(&core, "child", &turn, &frame);
+
+        let db = core.db.lock().unwrap();
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM session_entries WHERE session_id='child' AND kind='assistant.message'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0,
+            "the whole point: there is no worker prose to classify"
+        );
+        let (harness, reason, cooldown_until): (String, String, String) = db
+            .query_row(
+                "SELECT harness,reason,cooldown_until FROM harness_quota_cooldowns WHERE workspace_id='w'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .expect("the provider's own words are enough to record the exhaustion");
+        assert_eq!(harness, "codex");
+        assert_eq!(reason, "usage limit");
+        let cooldown_until = chrono::DateTime::parse_from_rfc3339(&cooldown_until)
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(
+            cooldown_until, reset,
+            "the provider named its own reset two days out; the one-hour floor must not shorten it"
+        );
+    }
+
+    /// A limit with no readable reset falls back to the floor rather than
+    /// inventing a window, and a chat hits the same path a worker does — it
+    /// is the same account behind the same harness.
+    #[test]
+    fn a_chat_limit_without_a_reset_hint_still_cools_down_to_the_floor() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        let frame = serde_json::json!({
+            "method": "turn/completed",
+            "params": {"turn": {"id": "t", "status": "failed", "error": {
+                "message": "429 rate limit exceeded"
+            }}}
+        });
+        let turn = Arc::new(Mutex::new(Some("t".into())));
+        handle_agent_value(&core, "parent", &turn, &frame);
+
+        let db = core.db.lock().unwrap();
+        let (harness, cooldown_until): (String, String) = db
+            .query_row(
+                "SELECT harness,cooldown_until FROM harness_quota_cooldowns WHERE workspace_id='w'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("an orchestrator chat runs on the same account as its workers");
+        assert_eq!(harness, "codex");
+        let cooldown_until = chrono::DateTime::parse_from_rfc3339(&cooldown_until).unwrap();
+        assert!(
+            cooldown_until > Utc::now() + chrono::Duration::minutes(30),
+            "{cooldown_until}"
+        );
+        assert!(
+            cooldown_until < Utc::now() + chrono::Duration::minutes(90),
+            "{cooldown_until}"
+        );
+    }
+
+    /// Compaction is a provider turn too. Against an exhausted account it
+    /// fails exactly as fast as real work, which is how one worker logged
+    /// 3,703 identical compaction errors.
+    #[test]
+    fn compaction_is_not_attempted_against_a_harness_in_cooldown() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        let db = core.db.lock().unwrap();
+        let before = compaction_controller::CompactionController::begin(
+            &db,
+            "child",
+            compaction_controller::CompactionReason::ContextPressure,
+            1_000,
+        )
+        .unwrap();
+        assert!(before.is_some(), "a healthy harness compacts normally");
+
+        // Clear the request that first call appended, then exhaust the harness.
+        let _ =
+            compaction_controller::CompactionController::record_failure(&db, "child", "reset", 0);
+        learning_router::mark_harness_quota_exhausted(&db, "w", "claude", "usage limit", "child")
+            .unwrap();
+
+        assert!(
+            compaction_controller::CompactionController::begin(
+                &db,
+                "child",
+                compaction_controller::CompactionReason::ContextPressure,
+                1_000,
+            )
+            .unwrap()
+            .is_none(),
+            "an exhausted provider cannot summarise anything; asking just burns the turn"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM events WHERE kind='compaction.suppressed_provider_limit'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1,
+            "the suppression is explained in the ledger, not silent"
         );
     }
 

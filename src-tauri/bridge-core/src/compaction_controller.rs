@@ -487,6 +487,25 @@ impl CompactionController {
         if Self::pending(db, session_id)?.is_some() {
             return Ok(None);
         }
+        // A compaction is a provider turn like any other, and an exhausted
+        // provider fails it exactly as fast as it fails real work. Unguarded,
+        // that produced 3,703 "Error running remote compact task: You've hit
+        // your usage limit" turns against an account that had already said no.
+        if let Some((harness, until)) =
+            crate::learning_router::session_harness_cooldown(db, session_id)
+        {
+            let _ = crate::store::event(
+                db,
+                "compaction",
+                "compaction.suppressed_provider_limit",
+                session_id,
+                &format!(
+                    "{harness} is out of quota until {until}; compaction ({}) was not attempted",
+                    reason.as_str()
+                ),
+            );
+            return Ok(None);
+        }
         let first_retained_entry_id = Uuid::new_v4().to_string();
         let pending = PendingCompaction {
             reason,

@@ -95,6 +95,18 @@ pub fn is_quota_signal(signal: &str) -> bool {
     QUOTA_SIGNALS.contains(&signal)
 }
 
+/// The first quota phrase in an already-lowercased haystack, if any.
+///
+/// Shared with `provider_limit`, which reads the adapter's error frame rather
+/// than the worker's result. Two detectors with two vocabularies would mean a
+/// phrase that cools the harness down on one path and is ignored on the other.
+pub fn quota_signal_in(haystack: &str) -> Option<&'static str> {
+    QUOTA_SIGNALS
+        .iter()
+        .find(|signal| haystack.contains(**signal))
+        .copied()
+}
+
 /// What Bridge believes about a failure, from evidence rather than from the
 /// worker's opinion of itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
