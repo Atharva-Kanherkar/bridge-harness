@@ -1,8 +1,9 @@
 use crate::{
+    analytics::ExactTotalFormula,
     delegation::{CapabilityTier, DelegationRequest, Effort, WorkerRole, WriteMode},
     model::{UsageLedgerRow, WorkerLease},
     session_forest::{EntryKind, SessionForest},
-    store, BridgeError,
+    store, usage, usage_pricing, BridgeError,
 };
 use chrono::Utc;
 use rusqlite::{params, Connection};
@@ -668,6 +669,12 @@ impl UsageReport {
             task_family: None,
             restoration_mode: None,
             cross_harness_reuse: None,
+            reasoning_tokens: None,
+            serving_model: None,
+            context_window_tokens: None,
+            context_used_tokens: None,
+            provider_record_id: None,
+            cache_savings_microusd: None,
             source: source.into(),
             created_at: Utc::now().to_rfc3339(),
         }
@@ -702,6 +709,15 @@ fn decimal_alias(value: &Value, keys: &[&str]) -> Option<f64> {
     })
 }
 
+/// Write one ledger row per request per model for a provider `usage.updated`
+/// event.
+///
+/// The provider-specific normalization lives in [`crate::usage`]; this binds
+/// each record to its prompt compilation or, failing that, the session's own
+/// harness and model, then prices it. A row the provider priced keeps that
+/// figure (`provider_reported`); one it did not is priced from the rate table
+/// when the model has a rate (`model_priced`) and otherwise stays `unpriced`
+/// with no cost — never a zero standing in for a price.
 pub fn record_provider_usage(
     db: &Connection,
     workspace_id: &str,
@@ -710,57 +726,100 @@ pub fn record_provider_usage(
     source: &str,
     data: &Value,
 ) -> Result<bool, BridgeError> {
-    let Some(report) = UsageReport::from_normalized(data) else {
+    let records = usage::normalize(source, data);
+    if records.is_empty() {
         return Ok(false);
-    };
-    let mut row = report.ledger_row(workspace_id, session_id, turn_id, source);
-    row.uncached_input_tokens = report.uncached_input_tokens.or_else(|| {
-        report.input_tokens.map(|input| {
-            if source == "provider.claude" {
-                input.max(0)
-            } else {
-                input
-                    .saturating_sub(report.cache_read_tokens.unwrap_or(0))
-                    .saturating_sub(report.cache_write_tokens.unwrap_or(0))
-                    .max(0)
-            }
-        })
-    });
+    }
     let prompt = match turn_id {
         Some(turn_id) => store::prompt_compilation_for_turn(db, session_id, turn_id)?,
         None => store::latest_prompt_compilation(db, session_id)?,
     };
-    if let Some(prompt) = prompt {
-        row.stable_prefix_id = Some(prompt.prefix_id);
-        row.stable_prefix_hash = Some(prompt.prefix_hash);
-        row.prompt_schema_version = Some(prompt.schema_version);
-        row.prefix_token_estimate = Some(prompt.prefix_token_estimate);
-        row.harness = Some(prompt.harness);
-        row.model = prompt.model;
-        row.role = Some(prompt.role);
-        row.task_family = Some(prompt.task_family);
-        row.restoration_mode = Some(prompt.restoration_mode);
-        row.cross_harness_reuse = Some(prompt.cross_harness_reuse);
-    }
     // A compilation binds to one turn per launch, while a session runs many
     // turns, so most rows find no match above and used to land with every
     // dimension NULL — 13,178 of them locally. Harness and model are the two
     // the session itself already knows; the rest genuinely belong to a
     // compilation and stay NULL rather than being invented here.
-    if row.harness.is_none() {
-        if let Some((harness, model)) = store::session_harness_and_model(db, session_id)? {
-            row.harness = Some(harness);
-            // The model of record is the one Bridge asked for. If the provider
-            // reroutes mid-turn — Codex emits `model/rerouted`, which nothing
-            // persists — this attributes the usage to the requested model. That
-            // is the same attribution `prompt_compilations.model` already gives
-            // every bound row, so the fallback is consistent rather than newly
-            // wrong; correcting it means carrying a per-request serving model,
-            // which is its own change.
-            row.model = row.model.or(model);
+    let session_dimensions = if prompt.is_none() {
+        store::session_harness_and_model(db, session_id)?
+    } else {
+        None
+    };
+    let pricing = usage_pricing::Pricing::load(db)?;
+    let created_at = Utc::now().to_rfc3339();
+    for record in records {
+        let mut row = UsageLedgerRow {
+            id: 0,
+            workspace_id: workspace_id.into(),
+            session_id: Some(session_id.into()),
+            turn_id: turn_id.map(str::to_owned),
+            // The provider's own input figure, whatever it includes: exclusive
+            // for Anthropic, cache-inclusive elsewhere. `uncached_input_tokens`
+            // is the comparable column; this one stays as reported so old and
+            // new rows read the same way.
+            input_tokens: match record.tokens.exact_total_formula {
+                ExactTotalFormula::AnthropicExclusiveInputPlusCacheAndOutput => {
+                    record.tokens.uncached_input_tokens
+                }
+                _ => record.tokens.total_input_tokens,
+            },
+            output_tokens: record.tokens.output_tokens,
+            cache_read_tokens: record.tokens.cache_read_tokens,
+            cache_write_tokens: record.tokens.cache_write_tokens,
+            uncached_input_tokens: record.tokens.uncached_input_tokens,
+            context_percent: record.context_percent,
+            capability_units: 0,
+            runtime_ms: record.runtime_ms,
+            cost_microusd: None,
+            cost_source: None,
+            stable_prefix_id: None,
+            stable_prefix_hash: None,
+            prompt_schema_version: None,
+            prefix_token_estimate: None,
+            harness: None,
+            model: None,
+            role: None,
+            task_family: None,
+            restoration_mode: None,
+            cross_harness_reuse: None,
+            reasoning_tokens: record.tokens.reasoning_tokens,
+            serving_model: record.serving_model.clone(),
+            context_window_tokens: record.context_window_tokens,
+            context_used_tokens: record.context_used_tokens,
+            provider_record_id: record.provider_record_id.clone(),
+            cache_savings_microusd: None,
+            source: source.into(),
+            created_at: created_at.clone(),
+        };
+        if let Some(prompt) = &prompt {
+            row.stable_prefix_id = Some(prompt.prefix_id.clone());
+            row.stable_prefix_hash = Some(prompt.prefix_hash.clone());
+            row.prompt_schema_version = Some(prompt.schema_version);
+            row.prefix_token_estimate = Some(prompt.prefix_token_estimate);
+            row.harness = Some(prompt.harness.clone());
+            row.model = prompt.model.clone();
+            row.role = Some(prompt.role.clone());
+            row.task_family = Some(prompt.task_family.clone());
+            row.restoration_mode = Some(prompt.restoration_mode.clone());
+            row.cross_harness_reuse = Some(prompt.cross_harness_reuse.clone());
+        } else if let Some((harness, model)) = &session_dimensions {
+            row.harness = Some(harness.clone());
+            row.model = model.clone();
         }
+        // A provider that names the model per request (Claude's `modelUsage`,
+        // OpenCode's `modelID`) knows better than the session's model of
+        // record, which is only what Bridge asked for.
+        if record.model.is_some() {
+            row.model = record.model.clone();
+        }
+        // Pricing follows the model that served the request when Codex
+        // rerouted; `model` stays the model of record for attribution.
+        let priced_model = row.serving_model.as_deref().or(row.model.as_deref());
+        let priced = pricing.price(priced_model, &record.tokens, record.reported_cost_microusd);
+        row.cost_microusd = priced.cost_microusd;
+        row.cost_source = Some(priced.cost_source.as_str().into());
+        row.cache_savings_microusd = Some(pricing.cache_savings(priced_model, &record.tokens));
+        store::append_usage_ledger(db, &row)?;
     }
-    store::append_usage_ledger(db, &row)?;
     Ok(true)
 }
 
@@ -955,6 +1014,12 @@ pub fn record_spawn_usage(
             task_family: None,
             restoration_mode: None,
             cross_harness_reuse: None,
+            reasoning_tokens: None,
+            serving_model: None,
+            context_window_tokens: None,
+            context_used_tokens: None,
+            provider_record_id: None,
+            cache_savings_microusd: None,
             source: source.into(),
             created_at: Utc::now().to_rfc3339(),
         },
