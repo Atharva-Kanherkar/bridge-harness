@@ -288,6 +288,11 @@ fn launch(
     // Reasoning effort is passed to the SDK natively through the sidecar config
     // (Options.effort) rather than the deprecated MAX_THINKING_TOKENS budget, so
     // every level — low and medium included — reaches the model.
+    // See the note in `codex_adapter`: shared per-repository caches, and never
+    // for a read-only worker.
+    if read_only_sandbox.is_none() {
+        crate::build_cache::apply(&mut command, std::path::Path::new(cwd));
+    }
     crate::adapters::configure_process_group(&mut command);
     if let Some(on_progress) = on_progress {
         on_progress(crate::adapters::StartupPhase::Spawning);

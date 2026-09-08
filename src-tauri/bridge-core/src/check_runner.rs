@@ -258,6 +258,10 @@ pub fn execute(worktree: &Path, command: &ShellCommand) -> CommandOutcome {
     // Own the process group so a timeout can kill the whole tree. `cargo test`
     // and `bun run` both spawn children; killing only the direct child leaves a
     // grandchild holding the pipes open, and the drain threads would never end.
+    // Verification runs the real build (`cargo test`, `bun run check`), so this
+    // is where a shared cache pays off most: a check in a fresh worker worktree
+    // reuses the repository's artifacts instead of compiling the world.
+    crate::build_cache::apply(&mut builder, worktree);
     crate::adapters::configure_process_group(&mut builder);
     let spawned = builder.spawn();
     let mut child = match spawned {
