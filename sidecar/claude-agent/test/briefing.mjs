@@ -169,13 +169,14 @@ test("absent briefing config leaves write-mode options untouched", () => {
   // session must reach exactly the options it reached before this existed.
   for (const writeMode of ["ReadOnly", "Shared", "Isolated", "Full", undefined]) {
     const withoutBriefing = buildOptions({ ...base, writeMode, plugins: ["/tmp/p"], mcpServers: { notion: {} } });
-    assert.deepEqual(withoutBriefing.settingSources, ["project", "local"]);
+    assert.deepEqual(withoutBriefing.settingSources, ["user", "project", "local"]);
+    assert.equal(withoutBriefing.skills, "all");
     assert.equal(withoutBriefing.strictMcpConfig, false);
-    assert.deepEqual(withoutBriefing.plugins, [{ type: "local", path: "/tmp/p" }]);
+    assert.deepEqual(withoutBriefing.plugins, [{ type: "local", path: "/tmp/p", skipMcpDiscovery: true }]);
     assert.equal(withoutBriefing.canUseTool, undefined);
     assert.deepEqual(withoutBriefing.mcpServers, { notion: {} });
   }
-  assert.equal(buildOptions({ ...base, writeMode: "ReadOnly" }).permissionMode, "dontAsk");
+  assert.equal(buildOptions({ ...base, writeMode: "ReadOnly" }).permissionMode, "default");
   assert.equal(buildOptions({ ...base, writeMode: "Shared" }).permissionMode, "acceptEdits");
   assert.equal(buildOptions({ ...base, writeMode: "Full" }).permissionMode, "bypassPermissions");
 });

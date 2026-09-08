@@ -1498,6 +1498,17 @@ fn normalize_claude_result(message: &Value) -> Vec<NormalizedEvent> {
             json!({"usage": usage, "totalCostUsd": message.get("total_cost_usd")}),
         ));
     }
+    if let Some(denials) = message.get("permission_denials").and_then(Value::as_array) {
+        for denial in denials {
+            let mut event = with_data("permission.denied", message, denial.clone());
+            event.status = Some("denied".into());
+            event.title = denial
+                .get("tool_name")
+                .and_then(Value::as_str)
+                .map(|name| format!("Bridge denied {name}"));
+            events.push(event);
+        }
+    }
     if message
         .get("is_error")
         .and_then(Value::as_bool)
@@ -2358,6 +2369,28 @@ mod tests {
         }));
         assert!(events.iter().any(|event| event.kind == "turn.completed"));
         assert!(events.iter().any(|event| event.kind == "usage.updated"));
+    }
+
+    #[test]
+    fn claude_permission_denials_become_durable_named_events() {
+        let events = normalize_claude_message(&json!({
+            "type":"result",
+            "subtype":"success",
+            "is_error":false,
+            "result":"done",
+            "permission_denials":[{
+                "tool_name":"mcp__notion__create_page",
+                "tool_use_id":"tool-1",
+                "tool_input":{"title":"blocked"}
+            }]
+        }));
+        let denied = events
+            .iter()
+            .find(|event| event.kind == "permission.denied")
+            .unwrap();
+        assert_eq!(denied.status.as_deref(), Some("denied"));
+        assert_eq!(denied.title.as_deref(), Some("Bridge denied mcp__notion__create_page"));
+        assert_eq!(denied.data["tool_use_id"], "tool-1");
     }
 
     #[test]

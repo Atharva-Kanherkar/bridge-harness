@@ -232,6 +232,7 @@ fn launch(
         // system prompt so the child agent knows its single typed task.
         "instructions": instructions.map(str::trim).filter(|value| !value.is_empty()),
         "writeMode": write_mode.map(write_mode_label),
+        "networkAllowed": read_only_sandbox.map(|sandbox| sandbox.network_allowed()).unwrap_or(true),
         "plugins": sdk_configuration.plugins,
         "mcpServers": sidecar_mcp_servers(briefing_config.is_some(), &sdk_configuration.mcp_servers),
         // Absent for every non-briefing session, so the sidecar's existing
