@@ -1881,6 +1881,7 @@ export interface WorkerRepositoryBinding {
 
 export interface WorkerRuntimeRecord {
   compatibilityKey: string;
+  failureClass?: string | null;
   lastActivityAt?: string | null;
   lastResult?: unknown;
   lifecycleState: string;

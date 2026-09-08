@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 51;
+const LATEST_SCHEMA_VERSION: i64 = 52;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -680,6 +680,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             49 => migration_49_worker_repair_budget(&transaction)?,
             50 => migration_50_worktree_inventory(&transaction)?,
             51 => migration_51_archived_chats(&transaction)?,
+            52 => migration_52_worker_failure_class(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -820,6 +821,19 @@ fn migration_50_worktree_inventory(transaction: &Transaction<'_>) -> Result<(), 
           WHERE COALESCE(s.cwd,'')<>'' AND s.cwd LIKE '%/worktrees/orchestrators/%'",
         params![Utc::now().to_rfc3339()],
     )?;
+    Ok(())
+}
+
+/// Bridge's own verdict on why a worker failed, kept next to the result
+/// rather than re-derived from it.
+///
+/// The UI used to decide "is this a stall?" with `/stopped responding/i` over
+/// the summary — a regex against a Rust format string, so rewording one
+/// `format!` silently downgraded every stall to a generic failure. And the
+/// classification it was trying to recover is not in the summary anyway:
+/// a stall is something Bridge observed, not something the worker reported.
+fn migration_52_worker_failure_class(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(transaction, "worker_runtime", "failure_class", "TEXT")?;
     Ok(())
 }
 
@@ -3261,7 +3275,7 @@ pub fn session_head(db: &Connection, session_id: &str) -> Result<Option<SessionH
                 resume_eligibility: resume_eligibility(&row.get::<_, String>(4)?),
                 latest_checkpoint_entry_id: row.get(5)?,
                 updated_at: row.get(6)?,
-            })
+                            })
         },
     )
     .optional()
@@ -3309,7 +3323,7 @@ pub fn worker_leases(db: &Connection, workspace_id: &str) -> Result<Vec<WorkerLe
                 expires_at: row.get(8)?,
                 created_at: row.get(9)?,
                 updated_at: row.get(10)?,
-            })
+                            })
         },
     )
 }
@@ -3331,10 +3345,10 @@ pub fn upsert_worker_runtime(
     runtime: &WorkerRuntimeRecord,
 ) -> Result<(), BridgeError> {
     db.execute(
-        "INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,warm_until,worktree_path,worktree_branch,last_result,last_activity_at,updated_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
-         ON CONFLICT(session_id) DO UPDATE SET parent_session_id=excluded.parent_session_id,lifecycle_state=excluded.lifecycle_state,task_family=excluded.task_family,compatibility_key=excluded.compatibility_key,result_status=excluded.result_status,retry_count=excluded.retry_count,warm_until=excluded.warm_until,worktree_path=excluded.worktree_path,worktree_branch=excluded.worktree_branch,last_result=excluded.last_result,last_activity_at=excluded.last_activity_at,updated_at=excluded.updated_at",
-        params![runtime.session_id,runtime.parent_session_id,runtime.lifecycle_state,runtime.task_family,runtime.compatibility_key,runtime.result_status,runtime.retry_count,runtime.warm_until,runtime.worktree_path,runtime.worktree_branch,runtime.last_result.as_ref().map(serde_json::Value::to_string),runtime.last_activity_at,runtime.updated_at],
+        "INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,warm_until,worktree_path,worktree_branch,last_result,last_activity_at,updated_at,failure_class)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+         ON CONFLICT(session_id) DO UPDATE SET parent_session_id=excluded.parent_session_id,lifecycle_state=excluded.lifecycle_state,task_family=excluded.task_family,compatibility_key=excluded.compatibility_key,result_status=excluded.result_status,retry_count=excluded.retry_count,warm_until=excluded.warm_until,worktree_path=excluded.worktree_path,worktree_branch=excluded.worktree_branch,last_result=excluded.last_result,last_activity_at=excluded.last_activity_at,updated_at=excluded.updated_at,failure_class=excluded.failure_class",
+        params![runtime.session_id,runtime.parent_session_id,runtime.lifecycle_state,runtime.task_family,runtime.compatibility_key,runtime.result_status,runtime.retry_count,runtime.warm_until,runtime.worktree_path,runtime.worktree_branch,runtime.last_result.as_ref().map(serde_json::Value::to_string),runtime.last_activity_at,runtime.updated_at,runtime.failure_class],
     )?;
     Ok(())
 }
@@ -3344,9 +3358,9 @@ pub fn worker_runtime(
     session_id: &str,
 ) -> Result<Option<WorkerRuntimeRecord>, BridgeError> {
     db.query_row(
-        "SELECT session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,warm_until,worktree_path,worktree_branch,last_result,last_activity_at,waiting_since,waiting_reason,progress_summary,updated_at FROM worker_runtime WHERE session_id=?1",
+        "SELECT session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,warm_until,worktree_path,worktree_branch,last_result,last_activity_at,waiting_since,waiting_reason,progress_summary,updated_at,failure_class FROM worker_runtime WHERE session_id=?1",
         params![session_id],
-        |row| Ok(WorkerRuntimeRecord { session_id:row.get(0)?, parent_session_id:row.get(1)?, lifecycle_state:row.get(2)?, task_family:row.get(3)?, compatibility_key:row.get(4)?, result_status:row.get(5)?, retry_count:row.get(6)?, warm_until:row.get(7)?, worktree_path:row.get(8)?, worktree_branch:row.get(9)?, last_result:row.get::<_,Option<String>>(10)?.and_then(|value| serde_json::from_str(&value).ok()), last_activity_at:row.get(11)?, waiting_since:row.get(12)?, waiting_reason:row.get(13)?, progress_summary:row.get(14)?, updated_at:row.get(15)? }),
+        |row| Ok(WorkerRuntimeRecord { session_id:row.get(0)?, parent_session_id:row.get(1)?, lifecycle_state:row.get(2)?, task_family:row.get(3)?, compatibility_key:row.get(4)?, result_status:row.get(5)?, retry_count:row.get(6)?, warm_until:row.get(7)?, worktree_path:row.get(8)?, worktree_branch:row.get(9)?, last_result:row.get::<_,Option<String>>(10)?.and_then(|value| serde_json::from_str(&value).ok()), last_activity_at:row.get(11)?, waiting_since:row.get(12)?, waiting_reason:row.get(13)?, progress_summary:row.get(14)?, updated_at:row.get(15)?, failure_class:row.get(16)? }),
     ).optional().map_err(BridgeError::from)
 }
 
@@ -3356,7 +3370,7 @@ pub fn worker_runtimes(
 ) -> Result<Vec<WorkerRuntimeRecord>, BridgeError> {
     query_with_params(
         db,
-        "SELECT r.session_id,r.parent_session_id,r.lifecycle_state,r.task_family,r.compatibility_key,r.result_status,r.retry_count,r.warm_until,r.worktree_path,r.worktree_branch,r.last_result,r.last_activity_at,r.waiting_since,r.waiting_reason,r.progress_summary,r.updated_at
+        "SELECT r.session_id,r.parent_session_id,r.lifecycle_state,r.task_family,r.compatibility_key,r.result_status,r.retry_count,r.warm_until,r.worktree_path,r.worktree_branch,r.last_result,r.last_activity_at,r.waiting_since,r.waiting_reason,r.progress_summary,r.updated_at,r.failure_class
          FROM worker_runtime r JOIN sessions s ON s.id=r.session_id
          WHERE s.workspace_id=?1 ORDER BY s.rowid",
         params![workspace_id],
@@ -3380,6 +3394,7 @@ pub fn worker_runtimes(
                 waiting_reason: row.get(13)?,
                 progress_summary: row.get(14)?,
                 updated_at: row.get(15)?,
+                failure_class: row.get(16)?,
             })
         },
     )
@@ -6323,7 +6338,7 @@ mod tests {
             expires_at: None,
             created_at: "now".into(),
             updated_at: "now".into(),
-        };
+                    };
         upsert_worker_lease(&db, &lease).unwrap();
         assert_eq!(worker_leases(&db, "w").unwrap(), vec![lease]);
 
@@ -6497,7 +6512,13 @@ mod tests {
             waiting_reason: None,
             progress_summary: None,
             updated_at: "now".into(),
+            failure_class: None,
         };
+        let mut runtime = runtime;
+        runtime.failure_class = Some("stalled".into());
+        upsert_worker_runtime(&db, &runtime).unwrap();
+        assert_eq!(worker_runtime(&db, "child").unwrap(), Some(runtime.clone()));
+        runtime.failure_class = None;
         upsert_worker_runtime(&db, &runtime).unwrap();
         assert_eq!(worker_runtime(&db, "child").unwrap(), Some(runtime));
         assert_eq!(outstanding_children(&db, "s").unwrap(), 1);
@@ -6522,7 +6543,7 @@ mod tests {
                     last_error: None,
                     created_at: "now".into(),
                     updated_at: "now".into(),
-                },
+                                    },
             )
             .unwrap();
         }

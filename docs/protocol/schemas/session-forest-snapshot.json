@@ -700,6 +700,14 @@
         "compatibilityKey": {
           "type": "string"
         },
+        "failureClass": {
+          "default": null,
+          "description": "Bridge's own verdict on a failure: `stalled`, `protocol_invalid`, `transient` or `permanent`. Sent as a classification so surfaces do not each re-derive one by pattern-matching the summary.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "lastActivityAt": {
           "type": [
             "string",

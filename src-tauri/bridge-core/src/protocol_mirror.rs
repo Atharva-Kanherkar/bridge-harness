@@ -662,7 +662,7 @@ fn worker_repository_binding_mirrors_core() {
             detail: None,
             created_at: "now".into(),
             updated_at: "now".into(),
-        },
+                    },
     );
 }
 
@@ -741,7 +741,7 @@ fn configuration_payloads_mirror_core() {
         is_built_in: true,
         created_at: "now".into(),
         updated_at: "now".into(),
-    });
+            });
 }
 
 #[test]
@@ -1000,7 +1000,7 @@ fn the_session_forest_snapshot_mirrors_core() {
             resume_eligibility: model::ResumeEligibility::CheckpointRestored,
             latest_checkpoint_entry_id: Some("e-0".into()),
             updated_at: "now".into(),
-        }),
+                    }),
         leaves: vec![entry],
         worker_leases: vec![model::WorkerLease {
             session_id: "worker-1".into(),
@@ -1014,7 +1014,7 @@ fn the_session_forest_snapshot_mirrors_core() {
             expires_at: Some("later".into()),
             created_at: "now".into(),
             updated_at: "now".into(),
-        }],
+                    }],
         worker_runtimes: vec![model::WorkerRuntimeRecord {
             session_id: "worker-1".into(),
             parent_session_id: "s-1".into(),
@@ -1032,6 +1032,7 @@ fn the_session_forest_snapshot_mirrors_core() {
             waiting_reason: Some("approval_requested".into()),
             progress_summary: Some("Running: cargo test".into()),
             updated_at: "now".into(),
+            failure_class: None,
         }],
         worker_queue: vec![model::QueuedWorkerRequest {
             id: "q-1".into(),
@@ -1050,7 +1051,7 @@ fn the_session_forest_snapshot_mirrors_core() {
             last_error: Some("busy".into()),
             created_at: "now".into(),
             updated_at: "now".into(),
-        }],
+                    }],
         usage: vec![model::UsageLedgerRow {
             id: 1,
             workspace_id: "w-1".into(),
@@ -1278,12 +1279,12 @@ fn result_payloads_mirror_core() {
             is_built_in: false,
             created_at: "now".into(),
             updated_at: "now".into(),
-        }],
+                    }],
         default_agent_id: "reviewer".into(),
         permission_policy: agent_config::PermissionPolicy {
             auto_approve_provider_permissions: true,
             updated_at: "now".into(),
-        },
+                    },
     });
     assert_mirrors::<wire::BrowserRouteDecision>(&browser_bridge::route_browser(
         browser_bridge::BrowserRouteRequest {

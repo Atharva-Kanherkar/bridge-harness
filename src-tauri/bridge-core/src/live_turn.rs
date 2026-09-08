@@ -4197,7 +4197,7 @@ pub fn reserve_worker_launch_outcome(
             expires_at: None,
             created_at: now.clone(),
             updated_at: now,
-        },
+                    },
     )?;
     store::upsert_worker_runtime(
         &transaction,
@@ -4218,6 +4218,7 @@ pub fn reserve_worker_launch_outcome(
             waiting_reason: None,
             progress_summary: None,
             updated_at: Utc::now().to_rfc3339(),
+            failure_class: None,
         },
     )?;
     policy::record_spawn_usage(
@@ -6790,17 +6791,40 @@ pub fn prepare_worker_failure_settlement(
 /// filter on the wrong kind here silently fails every worker: the query
 /// matches nothing, the placeholder text is parsed instead, and a fully
 /// compliant `bridge-worker-result` block is ruled "missing".
+/// How far back to look for a worker's typed result.
+///
+/// A worker that emits its envelope and then keeps talking is common — a
+/// closing "Done!", a summary paragraph, a stray tool narration. Reading only
+/// the newest message made every one of those a paid repair turn followed by
+/// a `protocol_invalid`, for a result that was sitting two messages up.
+const WORKER_RESULT_SCAN_DEPTH: i64 = 25;
+
 pub(crate) fn latest_worker_output(db: &Connection, session_id: &str) -> Option<String> {
-    db.query_row(
-        "SELECT json_extract(payload,'$.text') FROM session_entries
-         WHERE session_id=?1 AND kind IN ('assistant.message','message.completed')
-           AND COALESCE(json_extract(payload,'$.role'),'assistant')='assistant'
-           AND COALESCE(json_extract(payload,'$.text'),'')<>''
-         ORDER BY sequence DESC LIMIT 1",
-        params![session_id],
-        |r| r.get(0),
-    )
-    .ok()
+    let recent: Vec<String> = db
+        .prepare(
+            "SELECT json_extract(payload,'$.text') FROM session_entries
+             WHERE session_id=?1 AND kind IN ('assistant.message','message.completed')
+               AND COALESCE(json_extract(payload,'$.role'),'assistant')='assistant'
+               AND COALESCE(json_extract(payload,'$.text'),'')<>''
+               AND sequence > COALESCE((SELECT MAX(sequence) FROM session_entries
+                   WHERE session_id=?1 AND kind='worker.result'), 0)
+             ORDER BY sequence DESC LIMIT ?2",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map(params![session_id, WORKER_RESULT_SCAN_DEPTH], |row| {
+                    row.get::<_, String>(0)
+                })?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .ok()?;
+    // Newest first, so the last envelope a worker wrote wins over an earlier
+    // one — a worker that corrects itself is taken at its most recent word.
+    recent
+        .iter()
+        .find(|text| delegation::contains_worker_result_block(text))
+        .or_else(|| recent.first())
+        .cloned()
 }
 
 /// Frame a finished worker's final message and send it up to its parent.
@@ -7074,6 +7098,39 @@ fn record_provider_limit(db: &Connection, session_id: &str, text: Option<&str>) 
         PROVIDER_LIMIT_OBSERVED,
         session_id,
         &limit.signal,
+    );
+}
+
+/// The event that says Bridge watched this worker go silent.
+const WORKER_STALLED_OBSERVED: &str = "worker.stalled_observed";
+
+/// Classify a worker failure using what Bridge observed as well as what the
+/// worker wrote. Host observations win: a worker cannot talk its way out of
+/// having stopped responding, nor into it.
+fn classify_worker_failure(
+    db: &Connection,
+    child_session_id: &str,
+    result: &delegation::WorkerResult,
+) -> worker_retry::FailureClass {
+    let stalled = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE entity_id=?1 AND kind=?2)",
+            params![child_session_id, WORKER_STALLED_OBSERVED],
+            |row| row.get::<_, bool>(0),
+        )
+        .unwrap_or(false);
+    if stalled {
+        return worker_retry::FailureClass::Stalled;
+    }
+    worker_retry::classify(result)
+}
+
+/// Keep Bridge's verdict next to the result, so every surface reads the same
+/// classification instead of each re-deriving one from prose.
+fn persist_failure_class(db: &Connection, child_session_id: &str, class: &worker_retry::FailureClass) {
+    let _ = db.execute(
+        "UPDATE worker_runtime SET failure_class=?2,updated_at=?3 WHERE session_id=?1",
+        params![child_session_id, class.as_str(), Utc::now().to_rfc3339()],
     );
 }
 
@@ -7502,7 +7559,22 @@ fn settle_worker_after_result(
             .lock()
             .unwrap()
             .contains_key(child_session_id);
-        worker_retry::decide(result, retry_count, hot, spent)
+        // The same observation classification uses, so a stalled worker is
+        // declined rather than retried on the strength of the word "timeout"
+        // appearing in a summary Bridge wrote itself.
+        let class = classify_worker_failure(&db, child_session_id, result);
+        // Stored where it is decided. Every surface then reads one verdict
+        // instead of four re-derivations of it.
+        if matches!(
+            result.status,
+            delegation::WorkerResultStatus::Failed
+                | delegation::WorkerResultStatus::ProtocolInvalid
+        ) {
+            persist_failure_class(&db, child_session_id, &class);
+            worker_retry::decide_with_class(class, retry_count, hot, spent)
+        } else {
+            worker_retry::decide(result, retry_count, hot, spent)
+        }
     };
     // A quota/rate-limit failure will not clear by asking the same process to
     // try again seconds later — it will just hit the same wall a second time,
@@ -7521,7 +7593,7 @@ fn settle_worker_after_result(
         result.status,
         delegation::WorkerResultStatus::Failed | delegation::WorkerResultStatus::ProtocolInvalid
     )
-    .then(|| worker_retry::classify(result))
+    .then(|| classify_worker_failure(&state.db.lock().unwrap(), child_session_id, result))
     .and_then(|class| match class {
         worker_retry::FailureClass::Transient { signal } if worker_retry::is_quota_signal(&signal) => {
             Some(signal)
@@ -8535,6 +8607,18 @@ fn notify_parent_on_worker_stalled(core: &Arc<BridgeCore>, child_session_id: &st
         suggested_role: None,
         suggested_task: None,
     };
+    // Bridge's own observation, not the worker's account of itself. The
+    // synthetic summary contains the word "timeout", so prose classification
+    // read a hung worker as a transient failure and offered a retry — for the
+    // one failure whose entire evidence is that the worker stopped producing
+    // any.
+    let _ = store::event(
+        &state.db.lock().unwrap(),
+        "supervisor",
+        WORKER_STALLED_OBSERVED,
+        child_session_id,
+        &format!("no output for {WORKER_STALL_TIMEOUT_SECONDS}s"),
+    );
     // (3) Claim the result before the process can die and race us.
     report_synthetic_worker_failure(core, child_session_id, &result);
     // (4) Now stop the hung process; its EOF handler will find it reported.
@@ -8719,7 +8803,12 @@ fn report_to_parent(
                 | delegation::WorkerResultStatus::ProtocolInvalid
                 | delegation::WorkerResultStatus::Blocked
         )
-        .then(|| worker_retry::classify(&result));
+        .then(|| {
+            let db = state.db.lock().unwrap();
+            let class = classify_worker_failure(&db, &child_session_id, &result);
+            persist_failure_class(&db, &child_session_id, &class);
+            class
+        });
         // What the worker asked for, carried through verbatim. Dropping these two
         // fields is what let the orchestrator substitute a verifier for the
         // follow-up that was actually requested.
@@ -11747,6 +11836,7 @@ mod peek_digest_tests {
                 waiting_reason: None,
                 progress_summary: None,
                 updated_at: "now".into(),
+                failure_class: None,
             },
         )
         .unwrap();
@@ -11918,6 +12008,7 @@ mod approval_deadline_tests {
                     waiting_reason: None,
                     progress_summary: None,
                     updated_at: Utc::now().to_rfc3339(),
+                    failure_class: None,
                 },
             )
             .unwrap();
@@ -13927,6 +14018,7 @@ mod submit_input_tests {
                     waiting_reason: None,
                     progress_summary: None,
                     updated_at: Utc::now().to_rfc3339(),
+                    failure_class: None,
                 },
             )
             .unwrap();
@@ -14315,6 +14407,7 @@ mod submit_input_tests {
                     waiting_reason: None,
                     progress_summary: None,
                     updated_at: Utc::now().to_rfc3339(),
+                    failure_class: None,
                 },
             )
             .unwrap();
@@ -14787,7 +14880,7 @@ mod permission_policy_tests {
                     agent_config::PermissionPolicy {
                         auto_approve_provider_permissions: true,
                         updated_at: String::new(),
-                    },
+                                            },
                 )
                 .unwrap();
             }
@@ -14858,6 +14951,7 @@ mod permission_policy_tests {
             db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth,started_at) VALUES('child','w','codex','Implementation · strong','working','reported','parent',1,'now')", []).unwrap();
             db.execute("INSERT INTO worker_leases(session_id,workspace_id,role,capability_tier,task_family,owned_paths,write_mode,lease_status,created_at,updated_at) VALUES('child','w','implementation','strong','implementation','[\"src/**\"]','isolated','active','now','now')", []).unwrap();
             store::upsert_worker_runtime(&db, &crate::model::WorkerRuntimeRecord {
+            failure_class: None,
                 session_id: "child".into(), parent_session_id: "parent".into(),
                 lifecycle_state: "working".into(), task_family: "implementation".into(),
                 compatibility_key: "key".into(), result_status: "pending".into(), retry_count: 0,
@@ -15505,6 +15599,7 @@ mod retry_settlement_tests {
                     waiting_reason: None,
                     progress_summary: None,
                     updated_at: Utc::now().to_rfc3339(),
+                    failure_class: None,
                 },
             )
             .unwrap();
@@ -15544,6 +15639,23 @@ mod retry_settlement_tests {
                 |row| row.get(0),
             )
             .ok()
+    }
+
+    #[test]
+    fn non_failure_results_with_transient_wording_never_retry() {
+        for status in [
+            delegation::WorkerResultStatus::Completed,
+            delegation::WorkerResultStatus::NeedsDelegation,
+            delegation::WorkerResultStatus::Blocked,
+        ] {
+            let (_fixture, core, sent, _guard) = core_with_working_worker();
+            let mut result = failed("Handled the timeout; ready for the next step");
+            result.status = status;
+            assert!(settle_worker_after_result(&core, "child", &result).unwrap());
+            assert!(sent.lock().unwrap().is_empty(), "{status:?} must not retry");
+            assert_eq!(store::worker_runtime(&core.db.lock().unwrap(), "child")
+                .unwrap().unwrap().retry_count, 0);
+        }
     }
 
     #[test]
@@ -16119,6 +16231,130 @@ mod retry_settlement_tests {
         );
     }
 
+    /// A worker that reports and then says "Done!" used to have its result
+    /// go unseen: only the newest assistant message was ever read, so a valid
+    /// envelope one message up bought a repair turn and a `protocol_invalid`.
+    #[test]
+    fn a_result_followed_by_chatter_is_still_found() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        let db = core.db.lock().unwrap();
+        for (sequence, text) in [
+            (1, "```bridge-worker-result\n{\"schemaVersion\":1,\"status\":\"completed\",\"summary\":\"shipped it\"}\n```"),
+            (2, "Done! Anything else?"),
+        ] {
+            db.execute(
+                "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at)
+                 VALUES(?1,'child',NULL,?2,'assistant.message',?3,'now')",
+                params![
+                    format!("entry-{sequence}"),
+                    sequence,
+                    serde_json::json!({ "text": text }).to_string()
+                ],
+            )
+            .unwrap();
+        }
+
+        let output = latest_worker_output(&db, "child").expect("a message is found");
+
+        assert!(
+            delegation::contains_worker_result_block(&output),
+            "the envelope wins over the chatter that followed it: {output}"
+        );
+    }
+
+    #[test]
+    fn a_reused_worker_cannot_report_its_previous_objectives_result() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        let db = core.db.lock().unwrap();
+        for (sequence, kind, payload) in [
+            (1, "assistant.message", serde_json::json!({"text": "```bridge-worker-result\n{\"schemaVersion\":1,\"status\":\"completed\",\"summary\":\"old task\"}\n```"})),
+            (2, "worker.result", serde_json::json!({"status": "completed"})),
+            (3, "assistant.message", serde_json::json!({"text": "New task failed before I could report"})),
+        ] {
+            db.execute("INSERT INTO session_entries(id,session_id,sequence,kind,payload,created_at) VALUES(?1,'child',?2,?3,?4,'now')",
+                params![format!("entry-{sequence}"), sequence, kind, payload.to_string()]).unwrap();
+        }
+        assert_eq!(latest_worker_output(&db, "child").as_deref(),
+            Some("New task failed before I could report"));
+    }
+
+    /// With no envelope anywhere, the newest message is still what gets
+    /// reported — the scan changes which message is chosen, not whether one is.
+    #[test]
+    fn with_no_envelope_the_newest_message_is_still_used() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        let db = core.db.lock().unwrap();
+        for (sequence, text) in [(1, "thinking"), (2, "still thinking")] {
+            db.execute(
+                "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,kind,payload,created_at)
+                 VALUES(?1,'child',NULL,?2,'assistant.message',?3,'now')",
+                params![
+                    format!("entry-{sequence}"),
+                    sequence,
+                    serde_json::json!({ "text": text }).to_string()
+                ],
+            )
+            .unwrap();
+        }
+
+        assert_eq!(
+            latest_worker_output(&db, "child").as_deref(),
+            Some("still thinking")
+        );
+    }
+
+    /// A stall is Bridge's observation, not the worker's account of itself.
+    /// The synthetic summary contains "timeout", so prose classification read
+    /// a hung worker as transient and offered a retry.
+    #[test]
+    fn a_stalled_worker_is_classified_stalled_and_not_retried() {
+        let (_fixture, core, sent, _guard) = core_with_working_worker();
+        {
+            let db = core.db.lock().unwrap();
+            store::event(&db, "supervisor", WORKER_STALLED_OBSERVED, "child", "no output").unwrap();
+        }
+        let result = failed("child stopped responding (no output for 600s) and was stopped");
+
+        assert!(settle_worker_after_result(&core, "child", &result).unwrap());
+
+        assert!(
+            sent.lock().unwrap().is_empty(),
+            "a worker that stopped producing evidence has nothing new to offer on retry"
+        );
+        let stored = store::worker_runtime(&core.db.lock().unwrap(), "child")
+            .unwrap()
+            .unwrap()
+            .failure_class;
+        assert_eq!(
+            stored.as_deref(),
+            Some("stalled"),
+            "the verdict is stored, not re-derived from the summary by each surface"
+        );
+        // `declined_reason` takes the db lock itself, so nothing may be
+        // holding it here: the mutex is not reentrant.
+        let reason = declined_reason(&core).expect("the decline is recorded");
+        assert!(reason.contains("stopped responding"), "{reason}");
+    }
+
+    /// The same summary without the observation is just prose, and must not
+    /// promote itself to a stall.
+    #[test]
+    fn stall_wording_alone_does_not_make_a_stall() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        let result = failed("child stopped responding (no output for 600s) and was stopped");
+
+        assert!(settle_worker_after_result(&core, "child", &result).unwrap());
+
+        assert_ne!(
+            store::worker_runtime(&core.db.lock().unwrap(), "child")
+                .unwrap()
+                .unwrap()
+                .failure_class
+                .as_deref(),
+            Some("stalled"),
+        );
+    }
+
     /// Compaction is a provider turn too. Against an exhausted account it
     /// fails exactly as fast as real work, which is how one worker logged
     /// 3,703 identical compaction errors.
@@ -16497,6 +16733,7 @@ mod verification_binding_tests {
                     waiting_reason: None,
                     progress_summary: None,
                     updated_at: Utc::now().to_rfc3339(),
+                    failure_class: None,
                 },
             )
             .unwrap();

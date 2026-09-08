@@ -1674,7 +1674,11 @@ function WorkerPanel({ model, objective, modelLabel, effort, now, onOpenSession,
   onExpandWorker?: (sessionId: string) => void;
   onStopWorker?: (childSessionId: string) => Promise<void>;
 }) {
-  const live = !model.reported;
+  // A worker whose session has ended is not live, whatever its result status
+  // says. Reading only `reported` left ended-but-unreported workers pulsing
+  // forever under a terminal label, each one re-rendering every second with a
+  // clock that never stopped climbing.
+  const live = !model.reported && !model.endedAt;
   const clock = useLiveClock(live, now);
   // A finished worker reports how long it took, not how long ago it started.
   const elapsedAt = !live && model.endedAt ? Date.parse(model.endedAt) : clock;
