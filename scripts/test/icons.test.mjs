@@ -28,7 +28,7 @@ function solidPng(size, color) {
   ihdr.writeUInt32BE(size, 0); ihdr.writeUInt32BE(size, 4); ihdr[8] = 8; ihdr[9] = 6;
   const pixels = Buffer.alloc(size * (size * 4 + 1));
   for (let y = 0; y < size; y++)
-    for (let x = 0; x < size; x++) pixels.set(color, y * (size * 4 + 1) + 1 + x * 4);
+    for (let x = 0; x < size; x++) pixels.set(typeof color === "function" ? color(x, y) : color, y * (size * 4 + 1) + 1 + x * 4);
   return Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), chunk("IHDR", ihdr), chunk("IDAT", deflateSync(pixels)), chunk("IEND", Buffer.alloc(0))]);
 }
 
@@ -37,9 +37,23 @@ test("committed icons contain the Bridge mark at every macOS scale", () => {
 });
 
 test("black tile regression and invisible transparent mark fail the release gate", () => {
-  assert.throws(() => verifyVisibleMark(solidPng(32, [11, 14, 13, 255]), "black"), /visible lime mark/);
-  assert.throws(() => verifyVisibleMark(solidPng(32, [200, 255, 80, 0]), "transparent"), /visible lime mark/);
-  assert.throws(() => verifyVisibleMark(solidPng(32, [200, 255, 80, 255]), "solid"), /dark background/);
+  assert.throws(() => verifyVisibleMark(solidPng(32, [17, 20, 17, 255]), "black"), /visible Span mark/);
+  assert.throws(() => verifyVisibleMark(solidPng(32, [68, 227, 164, 0]), "transparent"), /visible Span mark/);
+  assert.throws(() => verifyVisibleMark(solidPng(32, [68, 227, 164, 255]), "solid"), /dark background/);
+});
+
+test("the Span gate rejects exports missing the deck or either support", () => {
+  const fixture = (missing) => solidPng(32, (x, y) => {
+    if (missing !== "deck" && x >= 6 && x < 26 && y >= 9 && y < 13) return [68, 227, 164, 255];
+    if (y >= 13 && y < 23 && (
+      (missing !== "left" && x >= 8 && x < 11) ||
+      (missing !== "right" && x >= 21 && x < 24)
+    )) return [242, 241, 236, 255];
+    return [17, 20, 17, 255];
+  });
+  assert.doesNotThrow(() => verifyVisibleMark(fixture(), "Span"));
+  for (const missing of ["deck", "left", "right"])
+    assert.throws(() => verifyVisibleMark(fixture(missing), missing), /visible Span mark/);
 });
 
 test("the macOS ICNS gate checks embedded pixels, not just file existence", () => {
@@ -61,7 +75,7 @@ test("the macOS ICNS gate checks embedded pixels, not just file existence", () =
   assert.ok(replaced);
   const corrupt = Buffer.concat([Buffer.alloc(8), ...parts]);
   corrupt.write("icns", 0); corrupt.writeUInt32BE(corrupt.length, 4);
-  assert.throws(() => verifyIcns(corrupt), /visible lime mark/);
+  assert.throws(() => verifyIcns(corrupt), /visible Span mark/);
 });
 
 test("ICNS output is canonical even when Tauri changes entry order", () => {
