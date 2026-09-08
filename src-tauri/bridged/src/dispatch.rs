@@ -463,6 +463,28 @@ pub fn dispatch(
             let p: wire::ArchiveChatParams = decode(method, params)?;
             reply(api::archive_chat(core, &p.session_id))
         }
+        MethodName::UsageSummary => {
+            let p: wire::SummaryParams = decode(method, params)?;
+            let request = into_core(method, &p)?;
+            reply(api::usage_summary(core, &request))
+        }
+        MethodName::ListUsagePriceOverrides => reply(api::list_usage_price_overrides(core)),
+        MethodName::SetUsagePriceOverride => {
+            let p: wire::SetPriceOverrideParams = decode(method, params)?;
+            reply(api::set_usage_price_override(
+                core,
+                &p.model,
+                p.input_microusd_per_mtok,
+                p.output_microusd_per_mtok,
+                p.cache_read_microusd_per_mtok,
+                p.cache_write_microusd_per_mtok,
+            ))
+        }
+        MethodName::ClearUsagePriceOverride => {
+            let p: wire::ClearPriceOverrideParams = decode(method, params)?;
+            reply(api::clear_usage_price_override(core, &p.model))
+        }
+        MethodName::RefreshUsageRates => reply(api::refresh_usage_rates(core)),
         MethodName::VerifierCandidates => {
             let p: wire::VerifierCandidatesParams = decode(method, params)?;
             reply(api::verifier_candidates(core, &p.change_labels, p.available_capabilities))

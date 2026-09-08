@@ -674,6 +674,41 @@
       "resultSchema": "worktree-sweep-result.json"
     },
     {
+      "command": "summary",
+      "domain": "usage",
+      "method": "usage/summary",
+      "paramsSchema": "summary-params.json",
+      "resultSchema": "usage-summary-result.json"
+    },
+    {
+      "command": "list_price_overrides",
+      "domain": "usage",
+      "method": "usage/list_price_overrides",
+      "paramsSchema": null,
+      "resultSchema": "list-usage-price-overrides-result.json"
+    },
+    {
+      "command": "set_price_override",
+      "domain": "usage",
+      "method": "usage/set_price_override",
+      "paramsSchema": "set-price-override-params.json",
+      "resultSchema": "list-usage-price-overrides-result.json"
+    },
+    {
+      "command": "clear_price_override",
+      "domain": "usage",
+      "method": "usage/clear_price_override",
+      "paramsSchema": "clear-price-override-params.json",
+      "resultSchema": "list-usage-price-overrides-result.json"
+    },
+    {
+      "command": "refresh_rates",
+      "domain": "usage",
+      "method": "usage/refresh_rates",
+      "paramsSchema": null,
+      "resultSchema": "usage-pricing-status.json"
+    },
+    {
       "command": "get_router_preferences",
       "domain": "routing",
       "method": "routing/get_router_preferences",

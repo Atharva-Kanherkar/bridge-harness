@@ -642,6 +642,81 @@ fn worktree_usage_mirrors_core() {
 }
 
 #[test]
+fn usage_payloads_mirror_core() {
+    use crate::usage_pricing::{CostSource, PriceOverride, PricingStatus};
+    use crate::usage_summary::{
+        UsageBucket, UsageBucketTotals, UsageResolution, UsageSummary, UsageSummarySource,
+    };
+    for (core, mirror) in [
+        (CostSource::ProviderReported, wire::UsageCostSource::ProviderReported),
+        (CostSource::ModelPriced, wire::UsageCostSource::ModelPriced),
+        (CostSource::Unpriced, wire::UsageCostSource::Unpriced),
+    ] {
+        assert_same_wire_value(&core, &mirror);
+    }
+    assert_same_wire_value(&UsageResolution::Day, &wire::UsageResolution::Day);
+    assert_same_wire_value(&UsageResolution::Hour, &wire::UsageResolution::Hour);
+    let pricing = PricingStatus {
+        status: "cached".into(),
+        fetched_at: Some("2026-01-01T00:00:00Z".into()),
+        snapshot_date: "2026-01-01".into(),
+        source: "https://example.test/rates.json".into(),
+        known_models: 12,
+        overrides: 1,
+    };
+    assert_mirrors::<wire::UsagePricingStatus>(&pricing);
+    let bucket = |hour_start: Option<&str>| UsageBucket {
+        day: "2026-01-01".into(),
+        hour_start: hour_start.map(str::to_owned),
+        harness: "codex".into(),
+        model: "gpt-5".into(),
+        totals: UsageBucketTotals {
+            uncached_input_tokens: 10,
+            cache_read_tokens: 20,
+            cache_write_tokens: 5,
+            output_tokens: 7,
+            reasoning_tokens: 3,
+        },
+        cost_microusd: 900,
+        cache_savings_microusd: 30,
+        cost_source: CostSource::ModelPriced,
+        records: 2,
+        unpriced_records: 0,
+        sessions: 1,
+    };
+    assert_mirrors::<wire::UsageSummaryResult>(&UsageSummary {
+        since_day: "2026-01-01".into(),
+        until_day: "2026-01-01".into(),
+        time_zone: "America/New_York".into(),
+        resolution: UsageResolution::Hour,
+        buckets: vec![bucket(None), bucket(Some("2026-01-01T05:00:00Z"))],
+        sources: vec![UsageSummarySource {
+            id: "claude-home".into(),
+            agent: "claude".into(),
+            provider: "anthropic".into(),
+            coverage_state: "partial".into(),
+            coverage_reason: Some("scan in progress".into()),
+            records_imported: 40,
+            records_skipped: 2,
+            last_successful_scan_at: Some("2026-01-01T00:00:00Z".into()),
+        }],
+        pricing,
+        scan_duration_ms: 12,
+        duplicates_dropped: 3,
+        live_records: 5,
+        imported_records: 40,
+    });
+    assert_mirrors::<wire::ListUsagePriceOverridesResult>(&vec![PriceOverride {
+        model: "my-fine-tune".into(),
+        input_microusd_per_mtok: 1_000_000,
+        output_microusd_per_mtok: 4_000_000,
+        cache_read_microusd_per_mtok: Some(100_000),
+        cache_write_microusd_per_mtok: None,
+        updated_at: "now".into(),
+    }]);
+}
+
+#[test]
 fn worker_repository_binding_mirrors_core() {
     assert_mirrors::<wire::WorkerRepositoryBinding>(
         &crate::worker_adoption::WorkerRepositoryBinding {

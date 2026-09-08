@@ -22,7 +22,8 @@ use crate::{
     secret_interception,
     session_recall, session_supervisor,
     sessions, skill_marketplace, slash, store,
-    suggestion_engine, switch_summary, verification_pipeline, verified_catalog, work, work_actions,
+    suggestion_engine, switch_summary, usage_pricing, usage_summary, verification_pipeline,
+    verified_catalog, work, work_actions,
     work_observation, work_reconcile, work_task_state, worker_adoption,
     worker_lifecycle, workspace_files, worktree_registry, BridgeCore, BridgeError,
     RuntimeSession,
@@ -3550,6 +3551,63 @@ pub fn pending_worker_adoptions(
     session_id: &str,
 ) -> Result<Vec<worker_adoption::WorkerRepositoryBinding>, BridgeError> {
     worker_adoption::pending_for_parent(&core.db.lock().unwrap(), session_id)
+}
+
+// --- token and cost usage --------------------------------------------------------
+
+/// Day or hour roll-ups of the usage ledger per harness and model.
+pub fn usage_summary(
+    core: &Arc<BridgeCore>,
+    request: &usage_summary::UsageSummaryRequest,
+) -> Result<usage_summary::UsageSummary, BridgeError> {
+    usage_summary::summarize(&core.db.lock().unwrap(), request)
+}
+
+pub fn list_usage_price_overrides(
+    core: &Arc<BridgeCore>,
+) -> Result<Vec<usage_pricing::PriceOverride>, BridgeError> {
+    usage_pricing::list_price_overrides(&core.db.lock().unwrap())
+}
+
+/// Set a user rate for one model and return every override in force.
+pub fn set_usage_price_override(
+    core: &Arc<BridgeCore>,
+    model: &str,
+    input_microusd_per_mtok: i64,
+    output_microusd_per_mtok: i64,
+    cache_read_microusd_per_mtok: Option<i64>,
+    cache_write_microusd_per_mtok: Option<i64>,
+) -> Result<Vec<usage_pricing::PriceOverride>, BridgeError> {
+    let db = core.db.lock().unwrap();
+    usage_pricing::set_price_override(
+        &db,
+        model,
+        input_microusd_per_mtok,
+        output_microusd_per_mtok,
+        cache_read_microusd_per_mtok,
+        cache_write_microusd_per_mtok,
+    )?;
+    usage_pricing::list_price_overrides(&db)
+}
+
+pub fn clear_usage_price_override(
+    core: &Arc<BridgeCore>,
+    model: &str,
+) -> Result<Vec<usage_pricing::PriceOverride>, BridgeError> {
+    let db = core.db.lock().unwrap();
+    usage_pricing::clear_price_override(&db, model)?;
+    usage_pricing::list_price_overrides(&db)
+}
+
+/// Fetch a fresh LiteLLM rate table and cache it. The only place usage
+/// pricing touches the network, and only because a client asked. The fetch
+/// runs before the database lock is taken so a slow upstream never stalls
+/// other callers.
+pub fn refresh_usage_rates(
+    core: &Arc<BridgeCore>,
+) -> Result<usage_pricing::PricingStatus, BridgeError> {
+    let document = usage_pricing::fetch_rate_document()?;
+    usage_pricing::refresh_rates_from_document(&core.db.lock().unwrap(), &document)
 }
 
 // --- worktree inventory --------------------------------------------------------
