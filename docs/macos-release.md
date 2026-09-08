@@ -86,13 +86,46 @@ release command to rebuild the image with a stapled application.
 `APPLE_API_KEY_P8`, plus `APPLE_API_ISSUER` for Team API keys. The job imports the
 certificate into a temporary keychain and removes the credentials afterwards.
 
-A version tag must match `tauri.conf.json`. Only a successful, fully verified tag
-build publishes a release. Asset uploads complete in a draft before it becomes
-public; existing releases are not overwritten. A manual run from a branch
-retains the verified artifact without publishing. Missing secrets fail the job
-before building or publishing anything.
+Every push to `main` (normally a merged PR) queues a public release. No manual
+version tag, local Mac, or separate release approval is needed. Protect `main`
+with PR review and required CI checks so only reviewed changes reach this path.
+Manual dispatch is also available on `main` to retry a failed release; dispatches
+on other branches are skipped. To retry an older failed merge, rerun its original
+workflow run rather than dispatching a new run at the current main commit.
+
+The workflow checks out the event's exact commit and uses
+`scripts/ci-release.mjs prepare` to select the next unused stable version. It
+increments the patch component beyond all existing stable version tags, or honors
+a higher version deliberately supplied in the source (for a minor/major release).
+App, Rust workspace, sidecar, browser extensions, and their relevant lock metadata
+are updated together without refreshing dependencies. A detached release commit
+records the source SHA; only its tag is pushed. `main` is never rewritten by the
+release bot. Inspect the release tag to see the exact versioned build source.
+
+Releases share a concurrency queue (`queue: max`, up to 100 waiting runs). Each
+queued run keeps its own source commit and runs the full release script, including
+frontend, sidecar, release-script, and Rust tests, before publication. Missing
+secrets, failed tests, rejected notarization, invalid signatures, or a checksum
+mismatch stop publication. The DMG is built for the `macos-15` runner architecture;
+this workflow does not produce a universal binary.
+
+The verified tag and draft release are created only after the release gates pass.
+Both DMG and checksum upload before the draft becomes public. Retries reuse the
+same tagged release commit and can replace incomplete **draft** uploads; already
+public releases are left untouched. Retrying an older draft never moves the
+Latest label backwards. A failure before tagging reserves no version. All of this
+happens in one workflow because tags pushed using `GITHUB_TOKEN` do not start a
+second push-triggered workflow. `contents: write` is scoped to the release job;
+no personal access token is needed.
+
+The workflow becomes active when this configuration **and the hardened release
+scripts it calls** reach `main`. Keep these changes together when integrating the
+release branch; do not enable automatic publication using the older packaging
+implementation. This publishes new downloads to GitHub Releases; installing
+updates inside an already installed app requires a separate updater integration.
 
 `npm run test:release` exercises release gates with fixtures, including black
 icons, invalid signing and JIT entitlements, credential modes, rejected notary
-responses, stale SDK locks, and failed staging installs. It does not need Apple
+responses, stale SDK locks, failed staging installs, automatic version allocation,
+release retries, tag collisions, and interrupted uploads. It does not need Apple
 credentials or contact the notary service.

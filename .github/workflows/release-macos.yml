@@ -7,24 +7,30 @@ name: Release macOS DMG
 
 on:
   push:
-    tags:
-      - "v*.*.*"
+    branches: [main]
   workflow_dispatch: {}
 
 permissions:
   contents: read
 
 concurrency:
-  group: release-macos-${{ github.ref }}
+  group: release-macos-public
+  # Preserve merges queued while a DMG is building (up to 100 pending runs).
+  queue: max
   cancel-in-progress: false
 
 jobs:
   dmg:
+    if: github.ref == 'refs/heads/main'
     runs-on: macos-15
+    timeout-minutes: 180
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.3.13
@@ -33,7 +39,14 @@ jobs:
           node-version: "22"
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: Validate release tag and signing inputs
+      - name: Prepare or resume the release for this merge
+        id: release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/ci-release.mjs prepare
+
+      - name: Validate signing inputs
+        if: steps.release.outputs.published != 'true'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -51,16 +64,13 @@ jobs:
             echo "Public release requires these repository secrets:$missing" >&2
             exit 1
           fi
-          version=$(node -p 'JSON.parse(require("fs").readFileSync("src-tauri/tauri.conf.json")).version')
-          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
-            echo "Tag does not match the app version." >&2
-            exit 1
-          fi
 
       - name: Install locked dependencies
+        if: steps.release.outputs.published != 'true'
         run: bun install --frozen-lockfile
 
       - name: Import signing identity into a temporary keychain
+        if: steps.release.outputs.published != 'true'
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
@@ -79,14 +89,18 @@ jobs:
           security list-keychains -d user -s "$RUNNER_TEMP/bridge-signing.keychain-db" login.keychain-db
 
       - name: Build, test, sign, notarize, and verify exact DMG contents
+        if: steps.release.outputs.published != 'true'
         env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_PATH: ${{ runner.temp }}/bridge-auth.p8
+          # Keep native process/socket tests within the runner's resource limits.
+          RUST_TEST_THREADS: "2"
         run: sh scripts/release-dmg.sh
 
       - name: Retain verified DMG and checksum
+        if: steps.release.outputs.published != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: Bridge-macOS-verified
@@ -95,23 +109,20 @@ jobs:
             src-tauri/target/release/bundle/dmg/*.dmg.sha256
           if-no-files-found: error
 
-      # A manual run from a branch only retains a verified artifact. Publishing
-      # requires a matching version tag and never overwrites an existing release.
-      - name: Publish verified tagged release
-        if: github.ref_type == 'tag'
+      - name: Publish the verified release
+        if: steps.release.outputs.published != 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
+        run: node scripts/ci-release.mjs publish
+
+      - name: Record release result
+        env:
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_COMMIT: ${{ steps.release.outputs.commit }}
         run: |
-          version=$(node -p 'JSON.parse(require("fs").readFileSync("src-tauri/tauri.conf.json")).version')
-          case "$(uname -m)" in
-            arm64) arch=aarch64 ;;
-            x86_64) arch=x64 ;;
-            *) exit 1 ;;
-          esac
-          dmg="src-tauri/target/release/bundle/dmg/Bridge_${version}_${arch}.dmg"
-          printf '%s\n' "Signed and notarized macOS release. See CHANGELOG.md for changes." "Claude requires Node 18 or later on PATH." > "$RUNNER_TEMP/release-notes.md"
-          gh release create "$GITHUB_REF_NAME" "$dmg" "$dmg.sha256" --verify-tag --draft --title "Bridge v$version" --notes-file "$RUNNER_TEMP/release-notes.md"
-          gh release edit "$GITHUB_REF_NAME" --draft=false
+          printf '%s\n' "Published: https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG" "Source: $GITHUB_SHA" "Versioned build: $RELEASE_COMMIT" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Remove temporary signing credentials
         if: always()
