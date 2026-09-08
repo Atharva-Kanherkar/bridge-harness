@@ -4,7 +4,7 @@ use crate::{
     session_forest::{append_in_transaction, EntryKind, SessionForest},
     store, BridgeError,
 };
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -136,6 +136,38 @@ pub fn decide(state: &TriggerState) -> Result<CompactionReason, SuppressionReaso
     fires
         .then_some(state.reason)
         .ok_or(SuppressionReason::BelowThreshold)
+}
+
+/// What happened when a checkpoint was requested.
+///
+/// `begin` used to answer `Option<String>`, which meant "here is the prompt"
+/// or "no prompt, work it out". Two callers cannot work it out: the warm-worker
+/// reaper reads a bare `None` as "already pending" and leaves the worker warm,
+/// reselecting it every maintenance tick forever; and manual compaction
+/// reports "Compaction is already pending" for any refusal at all.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CompactionStart {
+    /// Send this checkpoint prompt to the provider.
+    Ready(String),
+    /// A checkpoint is already in flight for this session.
+    AlreadyPending,
+    /// The provider is out of quota until `until`. It cannot summarise
+    /// anything, and asking costs a turn to be told so again.
+    ProviderLimited { harness: String, until: DateTime<Utc> },
+}
+
+impl CompactionStart {
+    /// The prompt, for callers whose only question is whether to send one.
+    pub fn prompt(self) -> Option<String> {
+        match self {
+            Self::Ready(prompt) => Some(prompt),
+            _ => None,
+        }
+    }
+
+    pub fn is_ready(&self) -> bool {
+        matches!(self, Self::Ready(_))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -461,7 +493,7 @@ impl CompactionController {
         session_id: &str,
         reason: CompactionReason,
         tokens_before: i64,
-    ) -> Result<Option<String>, BridgeError> {
+    ) -> Result<CompactionStart, BridgeError> {
         Self::begin_with_options(db, session_id, reason, tokens_before, false)
     }
 
@@ -473,7 +505,7 @@ impl CompactionController {
         session_id: &str,
         reason: CompactionReason,
         tokens_before: i64,
-    ) -> Result<Option<String>, BridgeError> {
+    ) -> Result<CompactionStart, BridgeError> {
         Self::begin_with_options(db, session_id, reason, tokens_before, true)
     }
 
@@ -483,9 +515,9 @@ impl CompactionController {
         reason: CompactionReason,
         tokens_before: i64,
         background: bool,
-    ) -> Result<Option<String>, BridgeError> {
+    ) -> Result<CompactionStart, BridgeError> {
         if Self::pending(db, session_id)?.is_some() {
-            return Ok(None);
+            return Ok(CompactionStart::AlreadyPending);
         }
         // A compaction is a provider turn like any other, and an exhausted
         // provider fails it exactly as fast as it fails real work. Unguarded,
@@ -504,7 +536,7 @@ impl CompactionController {
                     reason.as_str()
                 ),
             );
-            return Ok(None);
+            return Ok(CompactionStart::ProviderLimited { harness, until });
         }
         let first_retained_entry_id = Uuid::new_v4().to_string();
         let pending = PendingCompaction {
@@ -534,7 +566,7 @@ impl CompactionController {
         // repair is what made the opening attempt guess at a list Bridge had
         // already scanned, and then spend a turn being corrected.
         let evidence = CheckpointEvidence::from_active_history(db, session_id)?;
-        Ok(Some(Self::checkpoint_prompt(
+        Ok(CompactionStart::Ready(Self::checkpoint_prompt(
             session_id,
             &pending,
             None,
@@ -1244,7 +1276,7 @@ mod tests {
             )
             .unwrap();
         let prompt = CompactionController::begin(&db, "s", CompactionReason::Manual, 42)
-            .unwrap()
+            .unwrap().prompt()
             .unwrap();
         assert!(prompt.contains("Keep the public API"), "{prompt}");
         assert!(prompt.contains("src/api.rs"), "{prompt}");
@@ -1258,7 +1290,7 @@ mod tests {
             .append("s", EntryKind::AssistantMessage, json!({"text":"just talking"}))
             .unwrap();
         let prompt = CompactionController::begin(&db, "s", CompactionReason::Manual, 42)
-            .unwrap()
+            .unwrap().prompt()
             .unwrap();
         assert!(!prompt.contains("already on record"), "{prompt}");
     }
@@ -1296,7 +1328,7 @@ mod tests {
             .append("s", EntryKind::AssistantMessage, json!({"text":"hello"}))
             .unwrap();
         CompactionController::begin(&db, "s", CompactionReason::BeforeDowngrade, 42)
-            .unwrap()
+            .unwrap().prompt()
             .unwrap();
         let output = json!({
             "summary": "This session had only just started; nothing was decided or changed.",
@@ -1381,7 +1413,7 @@ mod tests {
     fn invalid_checkpoint_gets_one_repair_then_records_failure_without_losing_raw_events() {
         let db = database();
         CompactionController::begin(&db, "s", CompactionReason::Manual, 42)
-            .unwrap()
+            .unwrap().prompt()
             .unwrap();
         assert!(matches!(
             CompactionController::handle_output(&db, "s", "not json").unwrap(),
@@ -1456,14 +1488,14 @@ mod tests {
             .append("s", EntryKind::Checkpoint, json!({"schemaVersion":1,"summary":"earlier"}))
             .unwrap();
         CompactionController::begin_background(&db, "s", CompactionReason::BeforeDowngrade, 42)
-            .unwrap()
+            .unwrap().prompt()
             .expect("nothing pending");
         let pending = CompactionController::pending(&db, "s").unwrap().unwrap();
         assert!(pending.background);
         assert_eq!(pending.reason, CompactionReason::BeforeDowngrade);
         // A foreground request is refused while the background one is pending,
         // and does not silently turn into a foreground parse of it.
-        assert!(CompactionController::begin(&db, "s", CompactionReason::Manual, 1).unwrap().is_none());
+        assert!(CompactionController::begin(&db, "s", CompactionReason::Manual, 1).unwrap().prompt().is_none());
         // A repair re-request keeps the flag.
         assert!(matches!(
             CompactionController::handle_output(&db, "s", "not json").unwrap(),
@@ -1477,7 +1509,7 @@ mod tests {
             .unwrap();
         assert!(CompactionController::pending(&db, "s").unwrap().is_none());
         // Foreground requests default to not-background.
-        CompactionController::begin(&db, "s", CompactionReason::Manual, 1).unwrap().unwrap();
+        CompactionController::begin(&db, "s", CompactionReason::Manual, 1).unwrap().prompt().unwrap();
         assert!(!CompactionController::pending(&db, "s").unwrap().unwrap().background);
     }
 
@@ -1490,7 +1522,7 @@ mod tests {
             "filesChanged":["src-tauri/src/context.rs"]
         })).unwrap();
         CompactionController::begin_background(&db, "s", CompactionReason::BeforeDowngrade, 55)
-            .unwrap()
+            .unwrap().prompt()
             .unwrap();
         let pending = CompactionController::pending(&db, "s").unwrap().unwrap();
         assert!(!conversation_appended_since_request(&db, "s").unwrap());
@@ -1535,7 +1567,7 @@ mod tests {
     fn background_evidence_is_scoped_to_what_the_outgoing_model_saw() {
         let db = database();
         CompactionController::begin_background(&db, "s", CompactionReason::BeforeDowngrade, 9)
-            .unwrap()
+            .unwrap().prompt()
             .unwrap();
         let pending = CompactionController::pending(&db, "s").unwrap().unwrap();
         // The incoming model lands a decision the outgoing model never saw.
@@ -1561,7 +1593,7 @@ mod tests {
         // late rule is gated on `background`; a foreground request that somehow
         // sees a newer user message still commits the boundary.
         let db = database();
-        CompactionController::begin(&db, "s", CompactionReason::Manual, 7).unwrap().unwrap();
+        CompactionController::begin(&db, "s", CompactionReason::Manual, 7).unwrap().prompt().unwrap();
         let pending = CompactionController::pending(&db, "s").unwrap().unwrap();
         SessionForest::new(&db)
             .append("s", EntryKind::UserMessage, json!({"text":"racing frame"}))
@@ -1634,7 +1666,7 @@ mod tests {
             )
             .unwrap();
         CompactionController::begin(&db, "s", CompactionReason::Manual, 42)
-            .unwrap()
+            .unwrap().prompt()
             .unwrap();
         let incomplete = json!({
             "summary":"looks complete","decisions":[],"filesTouched":[]
@@ -1698,7 +1730,7 @@ mod tests {
             .append("s", EntryKind::AssistantMessage, json!({"text":"work"}))
             .unwrap();
         CompactionController::begin(&db, "s", CompactionReason::BeforeSuspend, 42)
-            .unwrap()
+            .unwrap().prompt()
             .unwrap();
         let reply = json!({
             "summary":"halfway through the migration",
@@ -1735,7 +1767,7 @@ mod tests {
             )
             .unwrap();
         CompactionController::begin(&db, "s", CompactionReason::Manual, 42)
-            .unwrap()
+            .unwrap().prompt()
             .unwrap();
         let complete = json!({
             "summary":"the API stayed put",
@@ -1766,7 +1798,7 @@ mod tests {
                 .append("s", EntryKind::AssistantMessage, json!({"text":"work"}))
                 .unwrap();
             CompactionController::begin(&db, "s", CompactionReason::Manual, 42)
-                .unwrap()
+                .unwrap().prompt()
                 .unwrap();
             assert!(
                 matches!(
@@ -1786,7 +1818,7 @@ mod tests {
             .append("s", EntryKind::AssistantMessage, json!({"text":"work"}))
             .unwrap();
         CompactionController::begin(&db, "s", CompactionReason::Manual, 42)
-            .unwrap()
+            .unwrap().prompt()
             .unwrap();
         let prose = "I have summarised the session above, let me know what else you need.";
         assert!(matches!(
@@ -1812,7 +1844,7 @@ mod tests {
             "filesChanged":["src-tauri/src/context.rs", "src-tauri/src/context.rs"]
         })).unwrap();
         CompactionController::begin(&db, "s", CompactionReason::PhaseBoundary, 55)
-            .unwrap()
+            .unwrap().prompt()
             .unwrap();
         let pending = CompactionController::pending(&db, "s").unwrap().unwrap();
         let outcome = CompactionController::handle_output(
@@ -1871,7 +1903,7 @@ mod tests {
             "status":"completed","summary":"old phase","decisions":["old decision"],"filesChanged":["src/old.rs"]
         })).unwrap();
         CompactionController::begin(&db, "s", CompactionReason::PhaseBoundary, 10)
-            .unwrap()
+            .unwrap().prompt()
             .unwrap();
         let first = CompactionController::pending(&db, "s").unwrap().unwrap();
         let first_output = json!({
@@ -1883,7 +1915,7 @@ mod tests {
             CheckpointOutcome::Completed { .. }
         ));
         CompactionController::begin(&db, "s", CompactionReason::Manual, 20)
-            .unwrap()
+            .unwrap().prompt()
             .unwrap();
         let second = CompactionController::pending(&db, "s").unwrap().unwrap();
         let second_output = json!({
@@ -1934,7 +1966,7 @@ mod tests {
         let db = database();
         for phase in 1..=3 {
             CompactionController::begin(&db, "s", CompactionReason::PhaseBoundary, phase * 100)
-                .unwrap()
+                .unwrap().prompt()
                 .unwrap();
             let pending = CompactionController::pending(&db, "s").unwrap().unwrap();
             let output = json!({

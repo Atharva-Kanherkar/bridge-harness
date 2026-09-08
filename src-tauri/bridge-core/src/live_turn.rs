@@ -3574,7 +3574,7 @@ pub fn begin_pressure_compaction(
         return Ok(None);
     };
     let tokens = compaction_controller::active_token_estimate(db, session_id)?;
-    compaction_controller::CompactionController::begin(db, session_id, reason, tokens)
+    Ok(compaction_controller::CompactionController::begin(db, session_id, reason, tokens)?.prompt())
 }
 
 pub fn send_internal_checkpoint_turn(
@@ -8353,19 +8353,26 @@ fn maintain_worker_pool(core: &Arc<BridgeCore>) {
     let expired = worker_pool::WorkerPool::warm_workers_due(&state.db.lock().unwrap(), Utc::now())
         .unwrap_or_default();
     for session_id in expired {
-        let prompt = {
+        let start = {
             let db = state.db.lock().unwrap();
             let tokens =
                 compaction_controller::active_token_estimate(&db, &session_id).unwrap_or_default();
-            let prompt = compaction_controller::CompactionController::begin(
+            let start = compaction_controller::CompactionController::begin(
                 &db,
                 &session_id,
                 compaction_controller::CompactionReason::BeforeSuspend,
                 tokens,
             )
-            .ok()
-            .flatten();
-            if prompt.is_some() {
+            .unwrap_or(compaction_controller::CompactionStart::AlreadyPending);
+            // Expiry is a decision this worker's warmth is over, and it has to
+            // complete either way. Leaving `warm_until` set because the
+            // provider could not summarise reselects the same worker on every
+            // one-second maintenance tick, holding its adapter open and
+            // re-logging the suppression for the whole cooldown.
+            if !matches!(
+                start,
+                compaction_controller::CompactionStart::AlreadyPending
+            ) {
                 let _ = session_supervisor::SessionSupervisor::transition(
                     &db,
                     &session_id,
@@ -8377,9 +8384,14 @@ fn maintain_worker_pool(core: &Arc<BridgeCore>) {
                     params![session_id],
                 );
             }
-            prompt
+            start
         };
-        if let Some(prompt) = prompt {
+        // An exhausted provider cannot write the checkpoint, so the worker
+        // retires without one rather than staying warm against a wall.
+        if let compaction_controller::CompactionStart::ProviderLimited { .. } = &start {
+            finish_worker_checkpoint(core, &session_id, adapters::ShutdownReason::Completed);
+        }
+        if let Some(prompt) = start.prompt() {
             if let Err(error) = send_internal_checkpoint_turn(core, &session_id, &prompt) {
                 let _ = compaction_controller::CompactionController::record_failure(
                     &state.db.lock().unwrap(),
@@ -10466,6 +10478,7 @@ pub fn stop_session(
                 compaction_controller::CompactionReason::BeforeShutdown,
                 tokens,
             )?
+            .prompt()
         } else {
             None
         }
@@ -12231,7 +12244,7 @@ mod submit_input_tests {
             compaction_controller::CompactionReason::Manual,
             42,
         )
-        .unwrap()
+        .unwrap().prompt()
         .expect("checkpoint request starts");
         compaction_controller::CompactionController::pending(&db, "chat")
             .unwrap()
@@ -12402,7 +12415,7 @@ mod submit_input_tests {
                 compaction_controller::CompactionReason::BeforeDowngrade,
                 100,
             )
-            .unwrap()
+            .unwrap().prompt()
             .expect("a background request begins");
         }
 
@@ -14950,10 +14963,12 @@ mod retry_settlement_tests {
             .unwrap()
             .execute("UPDATE sessions SET harness='codex' WHERE id='child'", [])
             .unwrap();
-        // Codex names a date and a wall-clock time with no year, exactly as
-        // the live database recorded it. Anchored two days out so the test
-        // reads the same on any calendar day.
+        // Codex names a date and a wall-clock time with no year and no zone,
+        // exactly as the live database recorded it. Written on the local
+        // clock, because that is the clock the provider printed it on.
+        // Anchored two days out so the test reads the same on any day.
         let reset = (Utc::now() + chrono::Duration::days(2))
+            .with_timezone(&chrono::Local)
             .with_second(0)
             .and_then(|reset| reset.with_nanosecond(0))
             .unwrap();
@@ -14993,7 +15008,8 @@ mod retry_settlement_tests {
             .unwrap()
             .with_timezone(&Utc);
         assert_eq!(
-            cooldown_until, reset,
+            cooldown_until,
+            reset.with_timezone(&Utc),
             "the provider named its own reset two days out; the one-hour floor must not shorten it"
         );
     }
@@ -15033,6 +15049,62 @@ mod retry_settlement_tests {
         );
     }
 
+    /// An expired warm worker on an exhausted provider cannot write a
+    /// checkpoint — but its expiry still has to complete. Treating the
+    /// suppression as "a checkpoint is already pending" left `warm_until` set,
+    /// so `warm_workers_due` reselected the same worker on every one-second
+    /// maintenance tick, held its adapter open, and re-logged the suppression
+    /// for the entire cooldown.
+    #[test]
+    fn an_expired_warm_worker_on_an_exhausted_provider_is_retired_once() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "UPDATE worker_runtime SET lifecycle_state='warm',warm_until=?2 WHERE session_id='child'",
+                params![
+                    Option::<String>::None,
+                    (Utc::now() - chrono::Duration::minutes(1)).to_rfc3339()
+                ],
+            )
+            .unwrap();
+            learning_router::mark_harness_quota_exhausted(
+                &db,
+                "w",
+                "claude",
+                "usage limit",
+                "child",
+            )
+            .unwrap();
+        }
+
+        maintain_worker_pool(&core);
+        maintain_worker_pool(&core);
+
+        let db = core.db.lock().unwrap();
+        assert!(
+            worker_pool::WorkerPool::warm_workers_due(&db, Utc::now())
+                .unwrap()
+                .is_empty(),
+            "the expiry completed, so the reaper has nothing left to reselect"
+        );
+        assert_eq!(
+            db.query_row(
+                "SELECT COUNT(*) FROM events WHERE kind='compaction.suppressed_provider_limit'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            1,
+            "one suppression, not one per maintenance tick"
+        );
+        drop(db);
+        assert!(
+            !core.adapters.lock().unwrap().contains_key("child"),
+            "a worker that cannot checkpoint is still retired, not held open"
+        );
+    }
+
     /// Compaction is a provider turn too. Against an exhausted account it
     /// fails exactly as fast as real work, which is how one worker logged
     /// 3,703 identical compaction errors.
@@ -15046,7 +15118,7 @@ mod retry_settlement_tests {
             compaction_controller::CompactionReason::ContextPressure,
             1_000,
         )
-        .unwrap();
+        .unwrap().prompt();
         assert!(before.is_some(), "a healthy harness compacts normally");
 
         // Clear the request that first call appended, then exhaust the harness.
@@ -15062,7 +15134,7 @@ mod retry_settlement_tests {
                 compaction_controller::CompactionReason::ContextPressure,
                 1_000,
             )
-            .unwrap()
+            .unwrap().prompt()
             .is_none(),
             "an exhausted provider cannot summarise anything; asking just burns the turn"
         );

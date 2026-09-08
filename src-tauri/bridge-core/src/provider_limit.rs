@@ -18,7 +18,7 @@
 //! only sees "429", and the old fixed 15-minute cooldown treated them alike —
 //! which meant re-hammering an exhausted account 160 times before it cleared.
 
-use chrono::{DateTime, Datelike, Duration, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, Local, TimeZone, Utc};
 use regex::Regex;
 use std::sync::OnceLock;
 
@@ -117,6 +117,12 @@ fn retry_after_reset(haystack: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>
 /// Codex says it in words: "Try again at Sep 7th, 11:35 AM." The date is
 /// optional and the year never appears, so a bare time is read as the next
 /// occurrence of that clock time and a date is read against the current year.
+///
+/// The clock it names is the user's, not UTC. Reading "11:35 AM" as 11:35 UTC
+/// on a machine in PDT puts the reset seven hours early, and routing resumes
+/// straight into the account that is still exhausted — so the wall-clock form
+/// is built in the local zone and converted, unlike the epoch and delay forms
+/// which are already absolute.
 fn wall_clock_reset(haystack: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
     static PATTERN: OnceLock<Regex> = OnceLock::new();
     let pattern = PATTERN.get_or_init(|| {
@@ -140,31 +146,61 @@ fn wall_clock_reset(haystack: &str, now: DateTime<Utc>) -> Option<DateTime<Utc>>
         (hour, "pm") => hour + 12,
         (hour, _) => hour,
     };
+    let local_now = now.with_timezone(&Local);
     let candidate = match (captures.get(1), captures.get(2)) {
         (Some(month), Some(day)) => {
             let month = month_number(month.as_str())?;
             let day: u32 = day.as_str().parse().ok()?;
-            let dated = Utc
-                .with_ymd_and_hms(now.year(), month, day, hour24, minute, 0)
-                .single()?;
+            let dated = local_reset(local_now.year(), month, day, hour24, minute)?;
             // No year in the text, so a date that already passed is next year's.
             if dated > now {
                 dated
             } else {
-                Utc.with_ymd_and_hms(now.year() + 1, month, day, hour24, minute, 0)
-                    .single()?
+                local_reset(local_now.year() + 1, month, day, hour24, minute)?
             }
         }
         _ => {
-            let today = now.date_naive().and_hms_opt(hour24, minute, 0)?.and_utc();
+            let today = local_reset(
+                local_now.year(),
+                local_now.month(),
+                local_now.day(),
+                hour24,
+                minute,
+            )?;
             if today > now {
                 today
             } else {
-                today + Duration::days(1)
+                // A day later on the wall clock, which a DST boundary makes
+                // 23 or 25 hours rather than 24 — so it is rebuilt from the
+                // next local date, not by adding a fixed span.
+                let tomorrow = (local_now + Duration::days(1)).date_naive();
+                local_reset(
+                    tomorrow.year(),
+                    tomorrow.month(),
+                    tomorrow.day(),
+                    hour24,
+                    minute,
+                )?
             }
         }
     };
     Some(candidate)
+}
+
+/// A local wall-clock instant as UTC. Ambiguous and skipped times (the two
+/// DST edges) resolve to the later reading, which errs toward waiting longer
+/// rather than resuming into an exhausted account.
+fn local_reset(
+    year: i32,
+    month: u32,
+    day: u32,
+    hour: u32,
+    minute: u32,
+) -> Option<DateTime<Utc>> {
+    let local = Local
+        .with_ymd_and_hms(year, month, day, hour, minute, 0)
+        .latest()?;
+    Some(local.with_timezone(&Utc))
 }
 
 fn month_number(month: &str) -> Option<u32> {
@@ -199,7 +235,11 @@ mod tests {
         Utc.with_ymd_and_hms(2026, 9, 6, 10, 0, 0).unwrap()
     }
 
-    /// The exact string the live database recorded 20,595 times.
+    /// The exact shape the live database recorded 20,595 times. Codex prints
+    /// the reset on the user's wall clock with no zone and no year, so the
+    /// expectation is built the same way rather than pinned to UTC — on a
+    /// machine in PDT, reading "11:35 AM" as 11:35 UTC would resume routing
+    /// seven hours early, straight back into the exhausted account.
     #[test]
     fn the_codex_usage_limit_frame_is_a_limit_with_its_stated_reset() {
         let limit = detect_at(
@@ -210,8 +250,8 @@ mod tests {
         assert_eq!(limit.signal, "usage limit");
         assert_eq!(
             limit.reset_at,
-            Some(Utc.with_ymd_and_hms(2026, 9, 7, 11, 35, 0).unwrap()),
-            "the provider named a reset roughly 25 hours out; a floor would re-hammer it"
+            Some(local_reset(2026, 9, 7, 11, 35).unwrap()),
+            "the provider named a reset roughly 25 hours out, on its own clock"
         );
     }
 
@@ -287,20 +327,24 @@ mod tests {
             december,
         )
         .unwrap();
-        assert_eq!(
-            limit.reset_at,
-            Some(Utc.with_ymd_and_hms(2027, 1, 2, 9, 0, 0).unwrap())
-        );
+        assert_eq!(limit.reset_at, Some(local_reset(2027, 1, 2, 9, 0).unwrap()));
     }
 
-    /// A bare clock time that has already passed today means tomorrow.
+    /// A bare clock time resolves to its next occurrence on the user's
+    /// clock. Which calendar day that is depends on the machine's zone, so
+    /// the assertion is the property rather than a fixed instant.
     #[test]
-    fn a_bare_time_already_past_today_means_tomorrow() {
+    fn a_bare_time_resolves_to_its_next_local_occurrence() {
+        use chrono::Timelike;
         let limit = detect_at("usage limit reached, try again at 9:00 AM", now()).unwrap();
-        assert_eq!(
-            limit.reset_at,
-            Some(Utc.with_ymd_and_hms(2026, 9, 7, 9, 0, 0).unwrap())
+        let reset = limit.reset_at.expect("a bare time is still a hint");
+        assert!(reset > now(), "a reset in the past is not a reset");
+        assert!(
+            reset <= now() + Duration::days(1) + Duration::hours(2),
+            "the next 9am is at most a day away, DST included: {reset}"
         );
+        let local = reset.with_timezone(&Local);
+        assert_eq!((local.hour(), local.minute()), (9, 0), "{local}");
     }
 
     /// A reset months out is a misparse, and believing it would bench a
