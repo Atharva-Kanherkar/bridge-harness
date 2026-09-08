@@ -60,14 +60,28 @@ change attacks the cost and then puts the whole thing in front of a person.
 - External checkouts are listed read-only and visibly not Bridge's to reclaim.
 
 ### Archiving a chat (closing slice)
-- A chat can be archived from the UI: a per-chat action, and a per-chat control
-  in its settings.
-- Archiving reclaims the chat's worktrees, because that is what `archive_workspace`
-  already does — this slice supplies the missing caller, which is the original
-  reason worktrees accumulated at all.
-- Before archiving, the user is told what will be reclaimed.
-- The existing refusal is inherited, not bypassed: an archive is refused when a
-  worker worktree holds uncommitted work, and the refusal names how many.
+
+**Contract corrected during implementation.** The locked version had this slice
+supply "the missing caller" for `archive_workspace`. That would have been
+destructive: `archive_workspace` deletes *every session in the workspace*, and a
+workspace holds many chats — on the machine this was written for, one holds 836
+root sessions and only two of eight hold a single chat. A per-chat button wired
+to it would have destroyed hundreds of unrelated conversations to reclaim one
+directory. Archiving a chat is therefore its own operation.
+
+- A chat can be archived from the UI, per chat, from its row in the sidebar.
+- Archiving reclaims **the checkout that chat owns** — its own orchestrator
+  worktree, which the inventory tracks per session — and never the workspace's,
+  which belongs to every other chat in that project.
+- History is kept. The session row, its forest entries and its evidence all
+  survive; the chat is marked archived and stops being listed.
+- The worktree goes through the same classification and refusals as any other
+  reclaim, and a checkout that cannot be proven expendable is **kept rather than
+  blocking the archive**: filing a conversation away should not require first
+  resolving its uncommitted work. The reason is reported to the caller.
+- A chat that is still running is refused until it is stopped.
+- Before archiving, the user is told that history is kept and the worktree is
+  not.
 
 ### CLI
 - `bridge exec worktrees list --json` and `worktrees sweep --json` for ops.
@@ -87,9 +101,10 @@ change attacks the cost and then puts the whole thing in front of a person.
 
 ## Integration / Functional Tests
 
-- `archive_from_the_ui_reclaims_the_worktrees_and_reports_the_bytes`
-- `archive_is_refused_when_a_worker_worktree_is_dirty` — existing behavior still
-  holds through the new caller.
+- `archiving_a_chat_reclaims_its_own_worktree_and_leaves_its_siblings_alone`
+- `an_archived_chat_keeps_its_row_and_stops_being_listed`
+- `archiving_keeps_a_dirty_checkout_and_says_so_instead_of_refusing`
+- `archiving_refuses_a_chat_that_is_still_running`
 - Protocol: registry, typed payloads, dispatch, Tauri command and generated
   artifacts stay 1:1 — enforced by the existing drift gates.
 
