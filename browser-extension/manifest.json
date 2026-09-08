@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Bridge Authenticated Browser",
-  "version": "0.5.4",
+  "version": "0.5.5",
   "description": "Attach a user-approved Chrome tab to Bridge without copying browser credentials.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAyf0gWzg/N2tiEAEt+H26GzNU1G02+7rWnjCTvq7nJ+9dme8HcJ3JWhjgpDkfKAlhuV6qyWOMGI4u3V9Mkdcjaz/erV4Gdnm+MkSr4EGT7N8xVV6rweySavD50Zv1ljbZmwu0Nj3LtWHUxhl2L5MUsDEYB6uIr7zs+cXnIy3j6O74yK7NoLas4zkaS6uVwYumyTHhIC639pa8H6fbX5YakOiWeJ2SJFoJ9GAuR3OC8BAiy35uoSBVdFmQC9pYgKQhexoSqiQ49PxDyYp9dYp/V3dw+GpIta3lCRtPSMem9jPri8vwmtOX+E9gGkYJ7I+3RvK1TxiBrzbgngrdM8+xfQIDAQAB",
   "permissions": [

@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.5.5] - 2026-09-08
+
+- Adopt the Span app icon: a mint deck over two off-white supports on a dark tile.
+- Regenerate all platform icon exports and check the mint deck and off-white supports at every macOS scale before release.
+
 ## [0.5.4] - 2026-09-08
 
 - Integrate main through `65b00ad`, retaining the signed-release, startup, native window, icon, and daemon ownership fixes from 0.5.2 and 0.5.3.
