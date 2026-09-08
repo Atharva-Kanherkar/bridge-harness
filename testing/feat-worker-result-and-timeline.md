@@ -2,7 +2,7 @@
 
 ## Reading a result (slice 6)
 - A worker's envelope is found by scanning back through its recent assistant messages for one that carries a `bridge-worker-result` block, newest first. A valid result followed by chatter is a result, not a repair turn.
-- An envelope whose body quotes a fenced snippet is recovered by matching braces rather than fences, so a diff or a shell command inside `decisions` does not truncate it. Braces and backticks inside JSON strings are contents, not structure.
+- Only JSON inside the worker-result fence can settle a worker. Valid JSON strings escape newlines, so quoted snippets and braces parse normally; malformed fences cannot borrow an object from surrounding prose.
 - `protocol_invalid` is Bridge's verdict about an envelope it could not read. A worker declaring it about its own readable envelope is read as `failed`, and the normalization is recorded.
 - A worker recovered after a restart reaches its parent's transcript, not just its own runtime row.
 

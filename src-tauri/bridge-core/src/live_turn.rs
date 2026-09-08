@@ -6806,6 +6806,8 @@ pub(crate) fn latest_worker_output(db: &Connection, session_id: &str) -> Option<
              WHERE session_id=?1 AND kind IN ('assistant.message','message.completed')
                AND COALESCE(json_extract(payload,'$.role'),'assistant')='assistant'
                AND COALESCE(json_extract(payload,'$.text'),'')<>''
+               AND sequence > COALESCE((SELECT MAX(sequence) FROM session_entries
+                   WHERE session_id=?1 AND kind='worker.result'), 0)
              ORDER BY sequence DESC LIMIT ?2",
         )
         .and_then(|mut statement| {
@@ -7569,8 +7571,10 @@ fn settle_worker_after_result(
                 | delegation::WorkerResultStatus::ProtocolInvalid
         ) {
             persist_failure_class(&db, child_session_id, &class);
+            worker_retry::decide_with_class(class, retry_count, hot, spent)
+        } else {
+            worker_retry::decide(result, retry_count, hot, spent)
         }
-        worker_retry::decide_with_class(class, retry_count, hot, spent)
     };
     // A quota/rate-limit failure will not clear by asking the same process to
     // try again seconds later — it will just hit the same wall a second time,
@@ -15638,6 +15642,23 @@ mod retry_settlement_tests {
     }
 
     #[test]
+    fn non_failure_results_with_transient_wording_never_retry() {
+        for status in [
+            delegation::WorkerResultStatus::Completed,
+            delegation::WorkerResultStatus::NeedsDelegation,
+            delegation::WorkerResultStatus::Blocked,
+        ] {
+            let (_fixture, core, sent, _guard) = core_with_working_worker();
+            let mut result = failed("Handled the timeout; ready for the next step");
+            result.status = status;
+            assert!(settle_worker_after_result(&core, "child", &result).unwrap());
+            assert!(sent.lock().unwrap().is_empty(), "{status:?} must not retry");
+            assert_eq!(store::worker_runtime(&core.db.lock().unwrap(), "child")
+                .unwrap().unwrap().retry_count, 0);
+        }
+    }
+
+    #[test]
     fn quota_frames_never_repair_and_stop_the_adapter_once() {
         let (_fixture, core, sent, _guard) = core_with_working_worker();
         core.db
@@ -16239,6 +16260,22 @@ mod retry_settlement_tests {
             delegation::contains_worker_result_block(&output),
             "the envelope wins over the chatter that followed it: {output}"
         );
+    }
+
+    #[test]
+    fn a_reused_worker_cannot_report_its_previous_objectives_result() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        let db = core.db.lock().unwrap();
+        for (sequence, kind, payload) in [
+            (1, "assistant.message", serde_json::json!({"text": "```bridge-worker-result\n{\"schemaVersion\":1,\"status\":\"completed\",\"summary\":\"old task\"}\n```"})),
+            (2, "worker.result", serde_json::json!({"status": "completed"})),
+            (3, "assistant.message", serde_json::json!({"text": "New task failed before I could report"})),
+        ] {
+            db.execute("INSERT INTO session_entries(id,session_id,sequence,kind,payload,created_at) VALUES(?1,'child',?2,?3,?4,'now')",
+                params![format!("entry-{sequence}"), sequence, kind, payload.to_string()]).unwrap();
+        }
+        assert_eq!(latest_worker_output(&db, "child").as_deref(),
+            Some("New task failed before I could report"));
     }
 
     /// With no envelope anywhere, the newest message is still what gets

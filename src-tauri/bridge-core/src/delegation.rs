@@ -564,43 +564,6 @@ fn fenced_blocks(text: &str, matches_tag: impl Fn(&str) -> bool) -> Vec<FencedBl
     blocks
 }
 
-/// The first balanced `{...}` in `text`, honouring JSON string literals.
-///
-/// Used to recover an envelope whose body contains a fenced snippet. Braces
-/// inside strings do not count, and neither do escaped quotes, so a result
-/// carrying a shell command full of `{}` is read the same as a plain one.
-fn balanced_json_object(text: &str) -> Option<String> {
-    let bytes = text.as_bytes();
-    let start = text.find('{')?;
-    let mut depth = 0usize;
-    let mut in_string = false;
-    let mut escaped = false;
-    for (offset, byte) in bytes.iter().enumerate().skip(start) {
-        if in_string {
-            if escaped {
-                escaped = false;
-            } else if *byte == b'\\' {
-                escaped = true;
-            } else if *byte == b'"' {
-                in_string = false;
-            }
-            continue;
-        }
-        match byte {
-            b'"' => in_string = true,
-            b'{' => depth += 1,
-            b'}' => {
-                depth -= 1;
-                if depth == 0 {
-                    return Some(text[start..=offset].to_owned());
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
 /// Whether a message carries a worker-result envelope at all.
 ///
 /// The question `latest_worker_output` needs to ask: a valid result followed
@@ -1346,17 +1309,9 @@ pub fn parse_worker_result(text: &str) -> ParseOutcome<WorkerResult> {
         };
     }
     let raw = blocks[0].body.clone();
-    // A fence scan stops at the first line starting with three backticks, which
-    // is wrong whenever the envelope itself quotes a fenced snippet — a diff in
-    // `decisions`, a failing command's output in `tests`. The body is JSON, so
-    // when the naive slice does not parse, re-cut it by matching braces
-    // instead: that is immune to backticks entirely, and a result truncated
-    // mid-object was otherwise reported as "invalid worker-result JSON" and
-    // charged a repair turn.
-    let raw = match serde_json::from_str::<Value>(&raw) {
-        Ok(_) => raw,
-        Err(_) => balanced_json_object(text).unwrap_or(raw),
-    };
+    // Parse only the tagged fence body. JSON encodes newlines inside strings
+    // as escapes, so quoted fences cannot terminate a valid JSON body. Searching
+    // the surrounding prose for an object can accept an unrelated example.
     let mut value = match serde_json::from_str::<Value>(&raw) {
         Ok(value) => value,
         Err(error) => {
@@ -2700,6 +2655,18 @@ mod result_pipeline_tests {
             panic!("string contents are not structure");
         };
         assert_eq!(result.summary, "awk '{print $1}' failed");
+    }
+
+    #[test]
+    fn malformed_fence_cannot_borrow_json_from_surrounding_prose() {
+        let example = r#"{"schemaVersion":1,"status":"completed","summary":"example"}"#;
+        for text in [
+            format!("{example}\n```bridge-worker-result\n{{broken\n```"),
+            format!("```bridge-worker-result\ninvalid\n```\n{example}"),
+            format!("```bridge-worker-result\n{example} trailing garbage\n```"),
+        ] {
+            assert!(matches!(parse_worker_result(&text), ParseOutcome::Invalid { .. }));
+        }
     }
 
     /// `protocol_invalid` is Bridge's verdict about an envelope it could not

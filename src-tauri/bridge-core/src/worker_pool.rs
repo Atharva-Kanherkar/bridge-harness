@@ -292,7 +292,7 @@ impl WorkerPool {
         // worker. Clearing the counter here (and only here) keeps the budget
         // spent for duplicate frames of the result it was actually spent on.
         db.execute(
-            "UPDATE worker_runtime SET result_status='pending',result_repair_count=0,warm_until=NULL,compatibility_key=?2,parent_session_id=?4,updated_at=?3 WHERE session_id=?1",
+            "UPDATE worker_runtime SET result_status='pending',result_repair_count=0,failure_class=NULL,warm_until=NULL,compatibility_key=?2,parent_session_id=?4,updated_at=?3 WHERE session_id=?1",
             rusqlite::params![session_id, key, now, parent_session_id],
         )?;
         db.execute(
@@ -369,6 +369,7 @@ mod tests {
         )
         .unwrap();
 
+        db.execute("UPDATE worker_runtime SET failure_class='transient' WHERE session_id='worker-1'", []).unwrap();
         WorkerPool::activate_reused_worker(&db, "worker-1", "workspace-1", "new-parent", 1, &request())
             .unwrap();
 
@@ -382,6 +383,8 @@ mod tests {
         assert_eq!(runtime_parent, "new-parent", "results must route to the resuming parent");
         assert_eq!(result_status, "pending", "a stale reported status would swallow the new result");
         assert_eq!(repair_count, 0, "a new task gets its own formatting-repair attempt");
+        assert_eq!(store::worker_runtime(&db, "worker-1").unwrap().unwrap().failure_class, None);
+
         let (session_parent, depth, ended_at): (String, i64, Option<String>) = db
             .query_row(
                 "SELECT parent_session_id,depth,ended_at FROM sessions WHERE id='worker-1'",

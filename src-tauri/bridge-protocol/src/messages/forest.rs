@@ -292,6 +292,7 @@ mod tests {
                 waiting_since: Some("now".into()),
                 waiting_reason: Some("approval_requested".into()),
                 progress_summary: Some("Running: cargo test".into()),
+                failure_class: None,
                 updated_at: "now".into(),
             }],
             worker_queue: vec![QueuedWorkerRequest {
