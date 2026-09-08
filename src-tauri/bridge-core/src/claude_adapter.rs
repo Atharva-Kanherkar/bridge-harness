@@ -357,23 +357,11 @@ fn prepare_isolated_claude_config(
     let Some(home) = std::env::var_os("HOME") else {
         return Ok(isolated_root);
     };
-    let source = PathBuf::from(home).join(".claude/.credentials.json");
-    if !source.is_file() {
-        return Ok(isolated_root);
-    }
-    let destination = isolated_root.join(".credentials.json");
-    if destination.exists() {
-        return Ok(isolated_root);
-    }
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(source, destination)?;
-    #[cfg(not(unix))]
-    {
-        let _ = (source, destination);
-        return Err(BridgeError::Invalid(
-            "Read-only Claude authentication projection is unsupported on this platform".into(),
-        ));
-    }
+    crate::capability_projection::project_read_only_capabilities(
+        crate::capability_projection::CapabilityHarness::Claude,
+        &PathBuf::from(home),
+        sandbox.output_dir(),
+    )?;
     Ok(isolated_root)
 }
 
@@ -410,12 +398,36 @@ fn claude_oauth_token() -> Result<Option<String>, BridgeError> {
 /// presence check only — Bridge never reads the token value out of the
 /// Keychain entry, only whether the entry exists.
 pub fn auth_state() -> AuthState {
-    auth_state_from_home(std::env::var_os("HOME").map(PathBuf::from), claude_keychain_present())
+    auth_state_from_environment(
+        std::env::var_os("HOME").map(PathBuf::from),
+        &crate::capability_projection::CapabilityEnvironment::from_process(),
+        claude_keychain_present(),
+    )
 }
 
+#[cfg(test)]
 fn auth_state_from_home(home: Option<PathBuf>, keychain: AuthState) -> AuthState {
+    auth_state_from_environment(
+        home,
+        &crate::capability_projection::CapabilityEnvironment::default(),
+        keychain,
+    )
+}
+
+fn auth_state_from_environment(
+    home: Option<PathBuf>,
+    environment: &crate::capability_projection::CapabilityEnvironment,
+    keychain: AuthState,
+) -> AuthState {
     let file_present = home
-        .map(|home| home.join(".claude/.credentials.json"))
+        .map(|home| {
+            crate::capability_projection::user_config_root(
+                crate::capability_projection::CapabilityHarness::Claude,
+                &home,
+                environment,
+            )
+            .join(".credentials.json")
+        })
         .is_some_and(|path| path.is_file());
     if file_present {
         return AuthState::SignedIn;
@@ -1408,6 +1420,25 @@ mod tests {
         assert_eq!(
             auth_state_from_home(Some(home.path().to_path_buf()), AuthState::Unknown),
             AuthState::Unknown
+        );
+    }
+
+    #[test]
+    fn auth_probe_respects_a_configured_claude_config_directory() {
+        let home = tempfile::tempdir().unwrap();
+        let configured = tempfile::tempdir().unwrap();
+        std::fs::write(configured.path().join(".credentials.json"), "opaque").unwrap();
+        let environment = crate::capability_projection::CapabilityEnvironment {
+            claude_config_dir: Some(configured.path().to_path_buf()),
+            ..Default::default()
+        };
+        assert_eq!(
+            auth_state_from_environment(
+                Some(home.path().to_path_buf()),
+                &environment,
+                AuthState::SignedOut,
+            ),
+            AuthState::SignedIn
         );
     }
 }

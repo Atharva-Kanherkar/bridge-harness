@@ -4,9 +4,11 @@
 //! prevents installation, slash expansion, and worker launch from disagreeing
 //! about what is available.
 
+use crate::BridgeError;
+use serde::Serialize;
 use std::{
     collections::HashSet,
-    env,
+    env, fs,
     path::{Path, PathBuf},
 };
 
@@ -194,6 +196,296 @@ fn stable_deduplicate(paths: Vec<PathBuf>) -> Vec<PathBuf> {
         .collect()
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectedCapability {
+    pub kind: String,
+    pub source: String,
+    pub destination: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityProjectionNotice {
+    pub kind: String,
+    pub path: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityProjectionReport {
+    pub schema_version: u32,
+    pub harness: String,
+    pub projected: Vec<ProjectedCapability>,
+    pub withheld: Vec<CapabilityProjectionNotice>,
+    pub unavailable: Vec<CapabilityProjectionNotice>,
+    pub failures: Vec<CapabilityProjectionNotice>,
+}
+
+impl CapabilityProjectionReport {
+    fn new(harness: CapabilityHarness) -> Self {
+        Self {
+            schema_version: 1,
+            harness: harness.as_str().to_owned(),
+            projected: Vec::new(),
+            withheld: Vec::new(),
+            unavailable: Vec::new(),
+            failures: Vec::new(),
+        }
+    }
+
+    pub fn summary(&self) -> String {
+        let summarize = |kinds: Vec<&str>| {
+            let mut seen = HashSet::new();
+            kinds
+                .into_iter()
+                .filter(|kind| seen.insert(*kind))
+                .collect::<Vec<_>>()
+                .join(", ")
+        };
+        let projected = summarize(
+            self.projected
+                .iter()
+                .map(|item| item.kind.as_str())
+                .collect(),
+        );
+        let unavailable = summarize(
+            self.unavailable
+                .iter()
+                .map(|item| item.kind.as_str())
+                .collect(),
+        );
+        let mut summary = format!(
+            "Harness capabilities: {} read-only worker; projected: {}.",
+            self.harness,
+            if projected.is_empty() {
+                "none"
+            } else {
+                &projected
+            }
+        );
+        if !unavailable.is_empty() {
+            summary.push_str(&format!(" Not configured on this machine: {unavailable}."));
+        }
+        if !self.withheld.is_empty() {
+            summary.push_str(" Some capabilities were withheld by Bridge policy; inspect worker.capabilities_projected for reasons.");
+        }
+        if !self.failures.is_empty() {
+            summary.push_str(" Capability projection had failures; do not claim the affected capability is loaded.");
+        }
+        summary
+    }
+}
+
+struct ProjectionEntry {
+    kind: &'static str,
+    source: PathBuf,
+    destination: PathBuf,
+}
+
+pub fn project_read_only_capabilities(
+    harness: CapabilityHarness,
+    home: &Path,
+    output: &Path,
+) -> Result<CapabilityProjectionReport, BridgeError> {
+    project_read_only_capabilities_with_environment(
+        harness,
+        home,
+        output,
+        &CapabilityEnvironment::from_process(),
+    )
+}
+
+pub fn project_read_only_capabilities_with_environment(
+    harness: CapabilityHarness,
+    home: &Path,
+    output: &Path,
+    environment: &CapabilityEnvironment,
+) -> Result<CapabilityProjectionReport, BridgeError> {
+    let config = user_config_root(harness, home, environment);
+    let isolated = match harness {
+        CapabilityHarness::Claude => output.join(".claude"),
+        CapabilityHarness::Codex => output.join(".codex"),
+        CapabilityHarness::OpenCode => output.join(".config/opencode"),
+    };
+    fs::create_dir_all(&isolated)?;
+    let entries = match harness {
+        CapabilityHarness::Claude => {
+            let state = environment
+                .claude_config_dir
+                .as_ref()
+                .map(|root| root.join(".claude.json"))
+                .unwrap_or_else(|| home.join(".claude.json"));
+            vec![
+                entry(
+                    "credentials",
+                    config.join(".credentials.json"),
+                    isolated.join(".credentials.json"),
+                ),
+                entry(
+                    "settings",
+                    config.join("settings.json"),
+                    isolated.join("settings.json"),
+                ),
+                entry("state-and-mcp", state, isolated.join(".claude.json")),
+                entry(
+                    "global-instructions",
+                    config.join("CLAUDE.md"),
+                    isolated.join("CLAUDE.md"),
+                ),
+                entry("skills", config.join("skills"), isolated.join("skills")),
+                entry(
+                    "commands",
+                    config.join("commands"),
+                    isolated.join("commands"),
+                ),
+                entry("agents", config.join("agents"), isolated.join("agents")),
+                entry("plugins", config.join("plugins"), isolated.join("plugins")),
+            ]
+        }
+        CapabilityHarness::Codex => vec![
+            entry(
+                "credentials",
+                config.join("auth.json"),
+                isolated.join("auth.json"),
+            ),
+            entry(
+                "mcp-credentials",
+                config.join(".credentials.json"),
+                isolated.join(".credentials.json"),
+            ),
+            entry(
+                "settings-and-mcp",
+                config.join("config.toml"),
+                isolated.join("config.toml"),
+            ),
+            entry(
+                "global-instructions",
+                config.join("AGENTS.md"),
+                isolated.join("AGENTS.md"),
+            ),
+            entry(
+                "global-instructions-override",
+                config.join("AGENTS.override.md"),
+                isolated.join("AGENTS.override.md"),
+            ),
+            entry("plugins", config.join("plugins"), isolated.join("plugins")),
+        ],
+        CapabilityHarness::OpenCode => Vec::new(),
+    };
+    let mut report = CapabilityProjectionReport::new(harness);
+    if harness == CapabilityHarness::OpenCode {
+        report.withheld.push(CapabilityProjectionNotice {
+            kind: "read-only-worker".into(),
+            path: isolated.to_string_lossy().into_owned(),
+            reason: "OpenCode does not advertise a read-only transport in Bridge".into(),
+        });
+        return Ok(report);
+    }
+    for item in entries {
+        project_entry(item, &mut report)?;
+    }
+    if harness == CapabilityHarness::Codex {
+        project_directory_children(
+            "skills",
+            &config.join("skills"),
+            &isolated.join("skills"),
+            &[".system"],
+            &mut report,
+        )?;
+    }
+    Ok(report)
+}
+
+fn entry(kind: &'static str, source: PathBuf, destination: PathBuf) -> ProjectionEntry {
+    ProjectionEntry {
+        kind,
+        source,
+        destination,
+    }
+}
+
+fn project_entry(
+    entry: ProjectionEntry,
+    report: &mut CapabilityProjectionReport,
+) -> Result<(), BridgeError> {
+    if fs::symlink_metadata(&entry.source).is_err() {
+        report.unavailable.push(CapabilityProjectionNotice {
+            kind: entry.kind.into(),
+            path: entry.source.to_string_lossy().into_owned(),
+            reason: "not configured".into(),
+        });
+        return Ok(());
+    }
+    match fs::symlink_metadata(&entry.destination) {
+        Ok(metadata) if metadata.file_type().is_symlink() => {
+            if fs::read_link(&entry.destination).ok().as_deref() != Some(entry.source.as_path()) {
+                fs::remove_file(&entry.destination)?;
+            }
+        }
+        Ok(_) => {
+            report.failures.push(CapabilityProjectionNotice {
+                kind: entry.kind.into(),
+                path: entry.destination.to_string_lossy().into_owned(),
+                reason: "projection destination already exists and was left untouched".into(),
+            });
+            return Ok(());
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    if fs::symlink_metadata(&entry.destination).is_err() {
+        if let Some(parent) = entry.destination.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&entry.source, &entry.destination)?;
+        #[cfg(not(unix))]
+        return Err(BridgeError::Invalid(
+            "Read-only capability projection is unsupported on this platform".into(),
+        ));
+    }
+    report.projected.push(ProjectedCapability {
+        kind: entry.kind.into(),
+        source: entry.source.to_string_lossy().into_owned(),
+        destination: entry.destination.to_string_lossy().into_owned(),
+    });
+    Ok(())
+}
+
+fn project_directory_children(
+    kind: &'static str,
+    source: &Path,
+    destination: &Path,
+    reserved_names: &[&str],
+    report: &mut CapabilityProjectionReport,
+) -> Result<(), BridgeError> {
+    let entries = match fs::read_dir(source) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            report.unavailable.push(CapabilityProjectionNotice {
+                kind: kind.into(),
+                path: source.to_string_lossy().into_owned(),
+                reason: "not configured".into(),
+            });
+            return Ok(());
+        }
+        Err(error) => return Err(error.into()),
+    };
+    fs::create_dir_all(destination)?;
+    let mut entries = entries.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for child in entries {
+        let name = child.file_name();
+        if reserved_names.iter().any(|reserved| name == *reserved) {
+            continue;
+        }
+        project_entry(entry(kind, child.path(), destination.join(name)), report)?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -295,5 +587,94 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn claude_projection_is_complete_idempotent_and_secret_free() {
+        let home = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let config = home.path().join(".claude");
+        fs::create_dir_all(config.join("skills/review")).unwrap();
+        fs::create_dir_all(config.join("commands")).unwrap();
+        fs::create_dir_all(config.join("agents")).unwrap();
+        fs::create_dir_all(config.join("plugins")).unwrap();
+        let secret = "sk-proj-do-not-report-this-secret";
+        fs::write(config.join(".credentials.json"), secret).unwrap();
+        fs::write(config.join("settings.json"), "{}").unwrap();
+        fs::write(home.path().join(".claude.json"), "{}").unwrap();
+        fs::write(config.join("CLAUDE.md"), "instructions").unwrap();
+
+        let first = project_read_only_capabilities_with_environment(
+            CapabilityHarness::Claude,
+            home.path(),
+            output.path(),
+            &CapabilityEnvironment::default(),
+        )
+        .unwrap();
+        let second = project_read_only_capabilities_with_environment(
+            CapabilityHarness::Claude,
+            home.path(),
+            output.path(),
+            &CapabilityEnvironment::default(),
+        )
+        .unwrap();
+        assert_eq!(first, second);
+        assert_eq!(first.projected.len(), 8);
+        assert!(first.failures.is_empty());
+        assert_eq!(
+            fs::read_link(output.path().join(".claude/skills")).unwrap(),
+            config.join("skills")
+        );
+        assert_eq!(
+            fs::read_link(output.path().join(".claude/.claude.json")).unwrap(),
+            home.path().join(".claude.json")
+        );
+        assert!(!serde_json::to_string(&first).unwrap().contains(secret));
+        assert!(!first
+            .summary()
+            .contains(home.path().to_string_lossy().as_ref()));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn projection_repairs_wrong_symlinks_but_preserves_real_collisions() {
+        let home = tempfile::tempdir().unwrap();
+        let output = tempfile::tempdir().unwrap();
+        let config = home.path().join(".codex");
+        fs::create_dir_all(config.join("skills/review")).unwrap();
+        fs::write(config.join("auth.json"), "secret-value").unwrap();
+        fs::create_dir_all(output.path().join(".codex")).unwrap();
+        fs::create_dir_all(output.path().join(".codex/skills")).unwrap();
+        std::os::unix::fs::symlink(
+            output.path().join("missing"),
+            output.path().join(".codex/skills/review"),
+        )
+        .unwrap();
+        fs::write(output.path().join(".codex/auth.json"), "owned-output").unwrap();
+
+        let report = project_read_only_capabilities_with_environment(
+            CapabilityHarness::Codex,
+            home.path(),
+            output.path(),
+            &CapabilityEnvironment::default(),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_link(output.path().join(".codex/skills/review")).unwrap(),
+            config.join("skills/review")
+        );
+        fs::create_dir(output.path().join(".codex/skills/.system")).unwrap();
+        assert_eq!(
+            fs::read_to_string(output.path().join(".codex/auth.json")).unwrap(),
+            "owned-output"
+        );
+        assert!(report
+            .failures
+            .iter()
+            .any(|item| item.kind == "credentials"));
+        let serialized = serde_json::to_string(&report).unwrap();
+        assert!(!serialized.contains("secret-value"));
+        assert!(!serialized.contains("owned-output"));
     }
 }

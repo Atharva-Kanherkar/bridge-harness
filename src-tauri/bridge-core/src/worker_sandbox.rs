@@ -135,9 +135,9 @@ fn runtime_network_policy_denies(value: Option<&str>) -> bool {
 }
 
 /// Resolve the host's GitHub CLI token so a sandboxed, networked worker's `gh`
-/// can authenticate. Inside the read-only sandbox `HOME` (and the Claude config
-/// dir) are redirected to the per-worker output directory and the macOS keychain
-/// is out of reach, so `gh` finds no credentials of its own and every call —
+/// can authenticate. Inside the read-only sandbox provider-specific writable
+/// config and temp roots are redirected, and the macOS keychain is out of reach,
+/// so `gh` finds no credentials of its own and every call —
 /// even reading a private PR — comes back 401. Passing the token as `GH_TOKEN`
 /// is the one thing that lets a review worker read the PR and post its comment.
 ///
@@ -376,6 +376,47 @@ mod tests {
                 .success());
         }
         hard_isolated.cleanup();
+        sandbox.cleanup();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn projected_capabilities_are_readable_but_the_host_sources_remain_immutable() {
+        if !Path::new("/usr/bin/sandbox-exec").is_file() {
+            return;
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let source_skill = home.path().join(".claude/skills/review/SKILL.md");
+        fs::create_dir_all(source_skill.parent().unwrap()).unwrap();
+        fs::write(&source_skill, "projected capability").unwrap();
+        let sandbox = ReadOnlySandbox::create("capabilities", workspace.path(), &request()).unwrap();
+        crate::capability_projection::project_read_only_capabilities_with_environment(
+            crate::capability_projection::CapabilityHarness::Claude,
+            home.path(),
+            sandbox.output_dir(),
+            &crate::capability_projection::CapabilityEnvironment::default(),
+        )
+        .unwrap();
+
+        let mut read = command(Path::new("/bin/sh"), Some(&sandbox)).unwrap();
+        assert!(read
+            .args(["-c", "test \"$(cat \"$CLAUDE_CONFIG_DIR/skills/review/SKILL.md\")\" = 'projected capability'"])
+            .env("CLAUDE_CONFIG_DIR", sandbox.output_dir().join(".claude"))
+            .current_dir(sandbox.output_dir())
+            .status()
+            .unwrap()
+            .success());
+
+        let mut write = command(Path::new("/bin/sh"), Some(&sandbox)).unwrap();
+        assert!(!write
+            .args(["-c", "printf changed >> \"$CLAUDE_CONFIG_DIR/skills/review/SKILL.md\""])
+            .env("CLAUDE_CONFIG_DIR", sandbox.output_dir().join(".claude"))
+            .current_dir(sandbox.output_dir())
+            .status()
+            .unwrap()
+            .success());
+        assert_eq!(fs::read_to_string(source_skill).unwrap(), "projected capability");
         sandbox.cleanup();
     }
 

@@ -149,24 +149,20 @@ fn launch(
     });
     command
         .args(["app-server", "--listen", "stdio://"])
-        .current_dir(
-            read_only_sandbox
-                .map(|sandbox| sandbox.output_dir())
-                .unwrap_or_else(|| std::path::Path::new(cwd)),
-        )
+        .current_dir(std::path::Path::new(cwd))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         // Piped and tail-captured: a worker that dies before its typed result
         // reports the provider's own error, not a generic exit.
         .stderr(Stdio::piped());
     if let Some(sandbox) = read_only_sandbox {
-        prepare_isolated_codex_home(sandbox)?;
+        let codex_home = prepare_isolated_codex_home(sandbox)?;
         command
-            .env("HOME", sandbox.output_dir())
+            .env("CODEX_HOME", codex_home)
             .env("TMPDIR", sandbox.output_dir())
             .env("BRIDGE_WORKER_OUTPUT_DIR", sandbox.output_dir());
-        // The redirected HOME leaves `gh` with no config or keychain; a networked
-        // worker (e.g. a PR review) needs the host token or every `gh` call 401s.
+        // The seatbelt cannot use the host keychain; a networked worker (e.g. a
+        // PR review) needs the host token or every `gh` call returns 401.
         if sandbox.network_allowed() {
             if let Some(token) = crate::worker_sandbox::github_cli_token() {
                 command.env("GH_TOKEN", token);
@@ -261,33 +257,18 @@ fn launch(
 
 fn prepare_isolated_codex_home(
     sandbox: &crate::worker_sandbox::ReadOnlySandbox,
-) -> Result<(), BridgeError> {
-    let Some(home) = std::env::var_os("HOME") else {
-        return Ok(());
-    };
-    let source_root = std::path::PathBuf::from(home).join(".codex");
+) -> Result<PathBuf, BridgeError> {
     let isolated_root = sandbox.output_dir().join(".codex");
     std::fs::create_dir_all(&isolated_root)?;
-    for filename in ["auth.json", "config.toml"] {
-        let source = source_root.join(filename);
-        if !source.is_file() {
-            continue;
-        }
-        let destination = isolated_root.join(filename);
-        if destination.exists() {
-            continue;
-        }
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&source, &destination)?;
-        #[cfg(not(unix))]
-        {
-            let _ = (source, destination);
-            return Err(BridgeError::Invalid(
-                "Read-only Codex authentication projection is unsupported on this platform".into(),
-            ));
-        }
-    }
-    Ok(())
+    let Some(home) = std::env::var_os("HOME") else {
+        return Ok(isolated_root);
+    };
+    crate::capability_projection::project_read_only_capabilities(
+        crate::capability_projection::CapabilityHarness::Codex,
+        &PathBuf::from(home),
+        sandbox.output_dir(),
+    )?;
+    Ok(isolated_root)
 }
 
 fn sandbox_settings(write_mode: Option<WriteMode>) -> (&'static str, &'static str) {
@@ -678,15 +659,34 @@ pub fn binary_version() -> Option<String> {
 /// Whether `~/.codex/auth.json` parses with a non-empty token payload —
 /// independent of whether the `codex` binary itself resolves.
 pub fn auth_state() -> AuthState {
-    auth_state_from_home(std::env::var_os("HOME").map(PathBuf::from))
+    auth_state_from_environment(
+        std::env::var_os("HOME").map(PathBuf::from),
+        &crate::capability_projection::CapabilityEnvironment::from_process(),
+    )
 }
 
+#[cfg(test)]
 fn auth_state_from_home(home: Option<PathBuf>) -> AuthState {
+    auth_state_from_environment(
+        home,
+        &crate::capability_projection::CapabilityEnvironment::default(),
+    )
+}
+
+fn auth_state_from_environment(
+    home: Option<PathBuf>,
+    environment: &crate::capability_projection::CapabilityEnvironment,
+) -> AuthState {
     let Some(home) = home else {
         return AuthState::Unknown;
     };
+    let config = crate::capability_projection::user_config_root(
+        crate::capability_projection::CapabilityHarness::Codex,
+        &home,
+        environment,
+    );
     // Metadata only: Bridge never opens or parses credential contents.
-    let Ok(metadata) = std::fs::metadata(home.join(".codex/auth.json")) else {
+    let Ok(metadata) = std::fs::metadata(config.join("auth.json")) else {
         return AuthState::SignedOut;
     };
     if metadata.len() > 0 {
@@ -1217,5 +1217,20 @@ mod tests {
     #[test]
     fn auth_probe_reports_unknown_when_home_is_missing() {
         assert_eq!(auth_state_from_home(None), AuthState::Unknown);
+    }
+
+    #[test]
+    fn auth_probe_respects_codex_home() {
+        let home = tempfile::tempdir().unwrap();
+        let configured = tempfile::tempdir().unwrap();
+        std::fs::write(configured.path().join("auth.json"), "opaque").unwrap();
+        let environment = crate::capability_projection::CapabilityEnvironment {
+            codex_home: Some(configured.path().to_path_buf()),
+            ..Default::default()
+        };
+        assert_eq!(
+            auth_state_from_environment(Some(home.path().to_path_buf()), &environment),
+            AuthState::SignedIn
+        );
     }
 }
