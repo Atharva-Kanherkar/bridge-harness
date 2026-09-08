@@ -2348,6 +2348,7 @@ mod tests {
                 waiting_reason: None,
                 progress_summary: None,
                 updated_at: "now".into(),
+                failure_class: None,
             },
         )
         .unwrap();

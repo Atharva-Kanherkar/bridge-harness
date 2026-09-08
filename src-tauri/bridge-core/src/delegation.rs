@@ -564,6 +564,52 @@ fn fenced_blocks(text: &str, matches_tag: impl Fn(&str) -> bool) -> Vec<FencedBl
     blocks
 }
 
+/// The first balanced `{...}` in `text`, honouring JSON string literals.
+///
+/// Used to recover an envelope whose body contains a fenced snippet. Braces
+/// inside strings do not count, and neither do escaped quotes, so a result
+/// carrying a shell command full of `{}` is read the same as a plain one.
+fn balanced_json_object(text: &str) -> Option<String> {
+    let bytes = text.as_bytes();
+    let start = text.find('{')?;
+    let mut depth = 0usize;
+    let mut in_string = false;
+    let mut escaped = false;
+    for (offset, byte) in bytes.iter().enumerate().skip(start) {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if *byte == b'\\' {
+                escaped = true;
+            } else if *byte == b'"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(text[start..=offset].to_owned());
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Whether a message carries a worker-result envelope at all.
+///
+/// The question `latest_worker_output` needs to ask: a valid result followed
+/// by a cheerful "Done!" used to be invisible, because only the newest
+/// assistant message was ever read.
+pub fn contains_worker_result_block(text: &str) -> bool {
+    !fenced_blocks(text, is_worker_result_tag).is_empty()
+}
+
 fn is_delegation_tag(tag: &str) -> bool {
     tag.contains("bridge") && tag.contains("delegate")
 }
@@ -813,6 +859,20 @@ pub fn normalize_worker_result(value: &mut Value) -> Normalizations {
         status
     });
     if let Some(status) = status {
+        // `protocol_invalid` is Bridge's verdict about an envelope it could not
+        // read — and an envelope Bridge just read is by definition readable.
+        // A worker claiming it about itself was claiming a class that skips
+        // classification entirely and terminates with no retry, which is a
+        // strictly better outcome for a worker that wants to stop trying.
+        let status = if status == WorkerResultStatus::ProtocolInvalid {
+            notes.record(
+                "status \"protocol_invalid\" read as \"failed\": a worker cannot declare its own envelope unreadable"
+                    .to_owned(),
+            );
+            WorkerResultStatus::Failed
+        } else {
+            status
+        };
         object.insert("status".into(), Value::from(status.as_str()));
     }
 
@@ -1286,6 +1346,17 @@ pub fn parse_worker_result(text: &str) -> ParseOutcome<WorkerResult> {
         };
     }
     let raw = blocks[0].body.clone();
+    // A fence scan stops at the first line starting with three backticks, which
+    // is wrong whenever the envelope itself quotes a fenced snippet — a diff in
+    // `decisions`, a failing command's output in `tests`. The body is JSON, so
+    // when the naive slice does not parse, re-cut it by matching braces
+    // instead: that is immune to backticks entirely, and a result truncated
+    // mid-object was otherwise reported as "invalid worker-result JSON" and
+    // charged a repair turn.
+    let raw = match serde_json::from_str::<Value>(&raw) {
+        Ok(_) => raw,
+        Err(_) => balanced_json_object(text).unwrap_or(raw),
+    };
     let mut value = match serde_json::from_str::<Value>(&raw) {
         Ok(value) => value,
         Err(error) => {
@@ -2585,5 +2656,68 @@ mod stop_request_tests {
         let stripped = strip_stop(&text);
         assert_eq!(stripped, "Stopping it.");
         assert!(!stripped.contains("bridge-stop"));
+    }
+}
+
+#[cfg(test)]
+mod result_pipeline_tests {
+    use super::*;
+
+    fn envelope(extra: &str) -> String {
+        format!(
+            "```bridge-worker-result\n{{\"schemaVersion\":1,\"status\":\"completed\",\"summary\":\"did the thing\"{extra}}}\n```"
+        )
+    }
+
+    /// The case that cost a repair turn every time a worker was polite. The
+    /// envelope is valid; the chatter after it is not a reason to reject it.
+    #[test]
+    fn a_result_followed_by_chatter_is_still_a_result() {
+        let text = format!("{}\n\nDone! Let me know if you need anything else.", envelope(""));
+        let ParseOutcome::Parsed(result) = parse_worker_result(&text) else {
+            panic!("the envelope is valid whatever follows it");
+        };
+        assert_eq!(result.summary, "did the thing");
+    }
+
+    /// A worker quoting a fenced snippet inside its own envelope used to
+    /// truncate the block mid-object and be told its JSON was invalid.
+    #[test]
+    fn an_envelope_quoting_a_fenced_snippet_is_recovered() {
+        let text = "```bridge-worker-result\n{\"schemaVersion\":1,\"status\":\"completed\",\"summary\":\"ran it\",\"decisions\":[\"used ```sh\\nmake test\\n``` as the check\"]}\n```";
+        let ParseOutcome::Parsed(result) = parse_worker_result(text) else {
+            panic!("a quoted fence must not truncate the envelope");
+        };
+        assert_eq!(result.summary, "ran it");
+        assert_eq!(result.decisions.len(), 1);
+    }
+
+    /// Braces inside string literals are not structure.
+    #[test]
+    fn braces_inside_strings_do_not_end_the_object() {
+        let text = "```bridge-worker-result\n{\"schemaVersion\":1,\"status\":\"failed\",\"summary\":\"awk '{print $1}' failed\",\"risks\":[\"```\"]}\n```";
+        let ParseOutcome::Parsed(result) = parse_worker_result(text) else {
+            panic!("string contents are not structure");
+        };
+        assert_eq!(result.summary, "awk '{print $1}' failed");
+    }
+
+    /// `protocol_invalid` is Bridge's verdict about an envelope it could not
+    /// read. An envelope Bridge just read is readable by definition, and the
+    /// class terminates with no retry — so self-declaring it is a worker
+    /// choosing the outcome that costs it least.
+    #[test]
+    fn a_worker_cannot_declare_its_own_envelope_unreadable() {
+        let text = "```bridge-worker-result\n{\"schemaVersion\":1,\"status\":\"protocol_invalid\",\"summary\":\"giving up\"}\n```";
+        let ParseOutcome::Parsed(result) = parse_worker_result(text) else {
+            panic!("it still parses; it just does not get that status");
+        };
+        assert_eq!(result.status, WorkerResultStatus::Failed);
+    }
+
+    #[test]
+    fn a_message_with_no_envelope_is_not_mistaken_for_one() {
+        assert!(!contains_worker_result_block("Still working on it."));
+        assert!(contains_worker_result_block(&envelope("")));
     }
 }

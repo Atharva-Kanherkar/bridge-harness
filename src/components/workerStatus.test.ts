@@ -28,10 +28,31 @@ describe("workerStatus", () => {
   });
 
   it("distinguishes a stalled worker from an ordinary failure", () => {
-    expect(workerStatus(session(), runtime({ resultStatus: "reported", lastResult: { status: "failed", summary: "Impl stopped responding (no output for 600s) and was stopped" } })))
+    expect(workerStatus(session(), runtime({ resultStatus: "reported", failureClass: "stalled", lastResult: { status: "failed", summary: "Impl stopped responding (no output for 600s) and was stopped" } })))
       .toMatchObject({ tone: "stalled", label: "STALLED" });
-    expect(workerStatus(session(), runtime({ resultStatus: "reported", lastResult: { status: "failed", summary: "hit a compile error" } })))
+    expect(workerStatus(session(), runtime({ resultStatus: "reported", failureClass: "permanent", lastResult: { status: "failed", summary: "hit a compile error" } })))
       .toMatchObject({ tone: "failed", label: "FAILED" });
+  });
+
+  // The classification is Bridge's, sent as a field. It used to be recovered
+  // by running /stopped responding/i over a summary Bridge wrote itself, so
+  // rewording one `format!` silently downgraded every stall.
+  it("does not promote a failure to STALLED on its wording alone", () => {
+    expect(workerStatus(session(), runtime({ resultStatus: "reported", lastResult: { status: "failed", summary: "the build stopped responding to signals" } })))
+      .toMatchObject({ tone: "failed", label: "FAILED" });
+  });
+
+  it("reads an unreadable result as its own state, not a generic failure", () => {
+    expect(workerStatus(session(), runtime({ resultStatus: "reported", failureClass: "protocol_invalid", lastResult: { status: "failed", summary: "could not be read" } })))
+      .toMatchObject({ label: "UNREADABLE RESULT" });
+  });
+
+  // A stop someone chose is not a crash, and rendering it in destructive red
+  // made every deliberate cancellation look like a fault.
+  it("renders a cancellation as a decision rather than a failure", () => {
+    const cancelled = workerStatus(session(), runtime({ resultStatus: "reported", lastResult: { status: "cancelled", summary: "stopped by the user" } }));
+    expect(cancelled.label).toBe("CANCELLED");
+    expect(cancelled.tone).not.toBe("failed");
   });
 
   it("treats reported blocked / needs_delegation as waiting, not running", () => {

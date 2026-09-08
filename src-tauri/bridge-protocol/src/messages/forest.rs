@@ -83,6 +83,11 @@ pub struct WorkerRuntimeRecord {
     /// One line of "what it is doing right now", derived from the worker's
     /// own event stream.
     pub progress_summary: Option<String>,
+    /// Bridge's own verdict on a failure: `stalled`, `protocol_invalid`,
+    /// `transient` or `permanent`. Sent as a classification so surfaces do not
+    /// each re-derive one by pattern-matching the summary.
+    #[serde(default)]
+    pub failure_class: Option<String>,
     pub updated_at: String,
 }
 

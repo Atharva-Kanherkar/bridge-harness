@@ -382,6 +382,42 @@ impl SessionSupervisor {
             .collect()
     }
 
+    /// Put a restart-recovered worker's ending on its parent's transcript.
+    fn announce_recovery_to_parent(db: &Connection, session_id: &str, result: &WorkerResult) {
+        let parent: Option<String> = db
+            .query_row(
+                "SELECT parent_session_id FROM sessions WHERE id=?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            )
+            .ok()
+            .flatten();
+        let Some(parent) = parent else {
+            return;
+        };
+        let label: String = db
+            .query_row(
+                "SELECT label FROM sessions WHERE id=?1",
+                rusqlite::params![session_id],
+                |row| row.get(0),
+            )
+            .unwrap_or_else(|_| session_id.to_owned());
+        let _ = crate::session_forest::SessionForest::new(db).append(
+            &parent,
+            crate::session_forest::EntryKind::DelegationRejected,
+            serde_json::json!({
+                "requestId": session_id,
+                "childSessionId": session_id,
+                "status": result.status.as_str(),
+                "reason": "restart_recovery",
+                "title": format!("{label} ended when Bridge restarted"),
+                "text": result.summary,
+                "willRetry": false,
+                "orchestratorNotified": false,
+            }),
+        );
+    }
+
     pub fn recover_orphaned_workers(db: &Connection) -> Result<usize, BridgeError> {
         let workers = {
             let mut statement = db.prepare(
@@ -423,6 +459,13 @@ impl SessionSupervisor {
                     suggested_task: None,
                 };
                 Self::record_result(db, &session_id, &result)?;
+                // `record_result` closes the worker's side of the seam and
+                // nothing else. After a restart the parent had a forest entry
+                // it was never told about: no failure card, no row, just a
+                // worker that had silently stopped existing. There is no
+                // adapter left to notify at this point in boot, so the
+                // parent's own transcript is where this has to land.
+                Self::announce_recovery_to_parent(db, &session_id, &result);
             }
             reconciled += 1;
         }
@@ -481,6 +524,7 @@ mod tests {
                 waiting_reason: None,
                 progress_summary: None,
                 updated_at: "now".into(),
+                failure_class: None,
             },
         )
         .unwrap();
@@ -843,6 +887,7 @@ mod tests {
                     waiting_reason: None,
                     progress_summary: None,
                     updated_at: "now".into(),
+                    failure_class: None,
                 },
             )
             .unwrap();
