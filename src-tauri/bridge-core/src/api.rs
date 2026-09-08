@@ -3572,6 +3572,125 @@ pub fn worktree_usage(
     )
 }
 
+/// Put one chat away and reclaim the checkout it owns.
+///
+/// Deliberately *not* `archive_workspace`. That archives a workspace, which
+/// deletes every session in it — and a workspace here holds many chats (one on
+/// the machine this was written for holds 836), so wiring a per-chat button to
+/// it would destroy hundreds of unrelated conversations to reclaim one
+/// directory.
+///
+/// History is kept. The session row, its forest entries and its evidence all
+/// survive; the chat is marked archived so it is no longer listed, and its own
+/// worktree goes through the same classification and refusals as any other
+/// reclaim. A checkout that cannot be proven expendable is *kept* rather than
+/// blocking the archive, and the reason comes back with the result — putting a
+/// conversation away should not require first resolving its uncommitted work.
+pub fn archive_chat(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+) -> Result<worktree_registry::ArchiveChatResult, BridgeError> {
+    let (status, active_turn, adapter_pid): (String, Option<String>, Option<i64>) =
+        core.db.lock().unwrap().query_row(
+            "SELECT status,active_turn_id,adapter_pid FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+    // A `ready` chat has no turn in flight but still owns a live provider
+    // process. Hiding it would take away the only route to that process while
+    // it goes on holding memory, a port and a model session — and the worktree
+    // would be retained anyway, since the same claim marks it in use. Archiving
+    // has to mean the chat is really finished.
+    if active_turn.is_some()
+        || adapter_pid.is_some()
+        || matches!(
+            status.as_str(),
+            "working" | "waiting" | "starting" | "resuming" | "checkpointing" | "ready"
+        )
+    {
+        return Err(BridgeError::Invalid(
+            "Stop this chat before archiving it".into(),
+        ));
+    }
+
+    let owned = { worktree_registry::owned_by_session(&core.db.lock().unwrap(), session_id)? };
+    let reclaim = match owned {
+        Some(record) => Some(worktree_registry::reclaim(
+            &core.db,
+            &core.worktrees,
+            &record.id,
+            &worktree_registry::WorktreeRetention::default(),
+        )?),
+        None => None,
+    };
+
+    core.db.lock().unwrap().execute(
+        "UPDATE sessions SET archived_at=?2,ended_at=COALESCE(ended_at,?2),active_turn_id=NULL
+          WHERE id=?1 AND archived_at IS NULL",
+        params![session_id, chrono::Utc::now().to_rfc3339()],
+    )?;
+    {
+        let db = core.db.lock().unwrap();
+        let freed = reclaim
+            .as_ref()
+            .filter(|outcome| outcome.reclaimed)
+            .map(|outcome| worktree_registry::human_bytes(outcome.bytes_freed.max(0) as u64))
+            .unwrap_or_else(|| "nothing".to_owned());
+        store::event(
+            &db,
+            "supervisor",
+            "session.archived",
+            session_id,
+            &format!("Chat archived; reclaimed {freed}"),
+        )?;
+    }
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(worktree_registry::ArchiveChatResult {
+        archived: true,
+        bytes_freed: reclaim
+            .as_ref()
+            .filter(|outcome| outcome.reclaimed)
+            .map(|outcome| outcome.bytes_freed)
+            .unwrap_or(0),
+        worktree_detail: reclaim
+            .filter(|outcome| !outcome.reclaimed)
+            .and_then(|outcome| outcome.detail),
+    })
+}
+
+/// Reclaim one checkout because a person asked. A refusal comes back in the
+/// result, with its reason, rather than as an error.
+pub fn reclaim_worktree(
+    core: &Arc<BridgeCore>,
+    worktree_id: &str,
+) -> Result<worktree_registry::WorktreeReclaimResult, BridgeError> {
+    let outcome = worktree_registry::reclaim(
+        &core.db,
+        &core.worktrees,
+        worktree_id,
+        &worktree_registry::WorktreeRetention::default(),
+    )?;
+    if outcome.reclaimed {
+        core.events.publish(CoreEvent::StateChanged);
+    }
+    Ok(outcome)
+}
+
+/// Run the maintenance pass now instead of waiting for the tick.
+pub fn sweep_worktrees(
+    core: &Arc<BridgeCore>,
+) -> Result<worktree_registry::SweepOutcome, BridgeError> {
+    let outcome = worktree_registry::run_requested_pass(
+        &core.db,
+        &core.worktrees,
+        &worktree_registry::WorktreeRetention::default(),
+    )?;
+    if outcome.removed > 0 {
+        core.events.publish(CoreEvent::StateChanged);
+    }
+    Ok(outcome)
+}
+
 /// Merge a worker's isolated worktree into the task checkout. Integration
 /// refuses to run against a dirty or active task worktree, so a rejected call
 /// leaves the work pending rather than losing it.
@@ -4413,6 +4532,227 @@ mod tests {
         action: bridge_protocol::messages::GithubAction,
         confirmed: bool,
         expect_executed: bool,
+    }
+
+    use rusqlite::params;
+    use std::path::Path;
+    use std::process::Command;
+
+    fn git_cmd(cwd: &Path, args: &[&str]) -> String {
+        let output = Command::new("git").args(args).current_dir(cwd).output().unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    /// A core with a repository, a workspace, and a chat that owns its own
+    /// isolated checkout — the shape archiving has to get right.
+    struct ChatFixture {
+        _scratch: tempfile::TempDir,
+        core: std::sync::Arc<crate::runtime::BridgeCore>,
+        chat_worktree: std::path::PathBuf,
+        repo: std::path::PathBuf,
+    }
+
+    fn chat_fixture() -> ChatFixture {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
+        let repo = std::fs::canonicalize(scratch.path()).unwrap().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git_cmd(&repo, &["init", "-q", "-b", "main"]);
+        git_cmd(&repo, &["config", "user.email", "t@example.invalid"]);
+        git_cmd(&repo, &["config", "user.name", "Bridge Test"]);
+        git_cmd(&repo, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(repo.join("base.txt"), "base\n").unwrap();
+        git_cmd(&repo, &["add", "."]);
+        git_cmd(&repo, &["commit", "-q", "-m", "base"]);
+
+        let chat_worktree = core
+            .worktrees
+            .join("orchestrators")
+            .join("task")
+            .join("chat");
+        std::fs::create_dir_all(chat_worktree.parent().unwrap()).unwrap();
+        git_cmd(
+            &repo,
+            &["worktree", "add", "-q", "-b", "bridge/task-chat", chat_worktree.to_str().unwrap(), "HEAD"],
+        );
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')",
+                params![repo.to_string_lossy()],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO workspaces(id,project_id,title,branch,path,status,created_at)
+                 VALUES('w','p','Task','main',?1,'idle','now')",
+                params![repo.to_string_lossy()],
+            )
+            .unwrap();
+            // A sibling chat in the same workspace: archiving one must not touch it.
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,cwd,depth)
+                 VALUES('sibling','w','claude','Other','idle','estimated','orchestrator',?1,0)",
+                params![repo.to_string_lossy()],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,cwd,depth)
+                 VALUES('chat','w','claude','Chat','idle','estimated','orchestrator',?1,0)",
+                params![chat_worktree.to_string_lossy()],
+            )
+            .unwrap();
+            crate::worktree_registry::register(
+                &db,
+                &crate::worktree_registry::NewWorktree {
+                    kind: crate::worktree_registry::KIND_ORCHESTRATOR.to_owned(),
+                    repo_root: repo.to_string_lossy().to_string(),
+                    path: chat_worktree.to_string_lossy().to_string(),
+                    branch: Some("bridge/task-chat".to_owned()),
+                    owner_session_id: Some("chat".to_owned()),
+                    owner_workspace_id: Some("w".to_owned()),
+                    base_commit: None,
+                },
+            )
+            .unwrap();
+        }
+        ChatFixture { _scratch: scratch, core, chat_worktree, repo }
+    }
+
+    fn session_count(core: &crate::runtime::BridgeCore) -> usize {
+        crate::store::state(&core.db.lock().unwrap()).unwrap().sessions.len()
+    }
+
+    /// The whole point of not reusing `archive_workspace`: a workspace holds
+    /// many chats, so archiving one must leave its siblings — and their
+    /// checkout — exactly where they are.
+    #[test]
+    fn archiving_a_chat_reclaims_its_own_worktree_and_leaves_its_siblings_alone() {
+        let fixture = chat_fixture();
+        assert_eq!(session_count(&fixture.core), 2);
+
+        let result = super::archive_chat(&fixture.core, "chat").unwrap();
+        assert!(result.archived);
+        assert!(result.bytes_freed > 0, "it says what it freed: {result:?}");
+        assert_eq!(result.worktree_detail, None);
+        assert!(!fixture.chat_worktree.exists(), "the chat's checkout is reclaimed");
+
+        assert!(fixture.repo.is_dir(), "the workspace's own checkout is untouched");
+        assert!(fixture.repo.join("base.txt").is_file());
+        let remaining = crate::store::state(&fixture.core.db.lock().unwrap()).unwrap();
+        assert_eq!(remaining.sessions.len(), 1, "the sibling chat survives");
+        assert_eq!(remaining.sessions[0].id, "sibling");
+        assert_eq!(
+            remaining.workspaces.len(),
+            1,
+            "and so does the workspace every other chat lives in",
+        );
+    }
+
+    /// History is kept: archiving hides a conversation, it does not delete it.
+    #[test]
+    fn an_archived_chat_keeps_its_row_and_stops_being_listed() {
+        let fixture = chat_fixture();
+        super::archive_chat(&fixture.core, "chat").unwrap();
+        let (archived, stored): (Option<String>, i64) = fixture
+            .core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT archived_at,(SELECT COUNT(*) FROM sessions WHERE id='chat') FROM sessions WHERE id='chat'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(archived.is_some(), "marked archived");
+        assert_eq!(stored, 1, "and still there");
+        assert_eq!(session_count(&fixture.core), 1);
+    }
+
+    /// Putting a conversation away should not require first resolving its
+    /// uncommitted work, so the checkout is kept and the reason is reported.
+    #[test]
+    fn archiving_keeps_a_dirty_checkout_and_says_so_instead_of_refusing() {
+        let fixture = chat_fixture();
+        std::fs::write(fixture.chat_worktree.join("scratch.txt"), "unsaved\n").unwrap();
+
+        let result = super::archive_chat(&fixture.core, "chat").unwrap();
+        assert!(result.archived, "the archive still happens");
+        assert_eq!(result.bytes_freed, 0);
+        assert!(
+            result.worktree_detail.unwrap().contains("uncommitted"),
+            "and the reason reaches the caller",
+        );
+        assert!(fixture.chat_worktree.is_dir());
+    }
+
+    /// A `ready` chat has no turn in flight but still owns a live provider
+    /// process. Archiving it would hide the only route to that process while it
+    /// went on holding memory and a model session — and the worktree would be
+    /// retained anyway, since the same claim marks it in use.
+    #[test]
+    fn archiving_refuses_a_chat_whose_adapter_is_still_alive() {
+        let fixture = chat_fixture();
+        fixture
+            .core
+            .db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET status='ready',adapter_pid=4242,
+                    adapter_process_identity='claude:4242' WHERE id='chat'",
+                [],
+            )
+            .unwrap();
+        let error = super::archive_chat(&fixture.core, "chat").unwrap_err();
+        assert!(error.to_string().contains("Stop this chat"), "{error:?}");
+        assert!(fixture.chat_worktree.is_dir());
+        let archived: Option<String> = fixture
+            .core
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT archived_at FROM sessions WHERE id='chat'", [], |row| row.get(0))
+            .unwrap();
+        assert!(archived.is_none(), "and it is not hidden");
+    }
+
+    /// Boot recovery clears the claim for a process that is really gone, so a
+    /// `ready` row left by a crashed run must not block archiving forever.
+    #[test]
+    fn archiving_a_ready_chat_with_no_live_adapter_still_works() {
+        let fixture = chat_fixture();
+        fixture
+            .core
+            .db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET status='idle',adapter_pid=NULL WHERE id='chat'", [])
+            .unwrap();
+        assert!(super::archive_chat(&fixture.core, "chat").unwrap().archived);
+    }
+
+    #[test]
+    fn archiving_refuses_a_chat_that_is_still_running() {
+        let fixture = chat_fixture();
+        fixture
+            .core
+            .db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET status='working' WHERE id='chat'", [])
+            .unwrap();
+        let error = super::archive_chat(&fixture.core, "chat").unwrap_err();
+        assert!(
+            error.to_string().contains("Stop this chat"),
+            "{error:?}",
+        );
+        assert!(fixture.chat_worktree.is_dir());
     }
 
     /// Replays the recorded approve/deny decision for every action kind through

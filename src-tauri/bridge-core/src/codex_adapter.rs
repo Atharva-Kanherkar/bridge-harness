@@ -173,6 +173,14 @@ fn launch(
             }
         }
     }
+    // Build output belongs to the repository, not to this checkout. Skipped for
+    // a read-only worker: its seatbelt permits writes only under its own output
+    // directory, and widening that to reach a shared cache would trade away part
+    // of the read-only guarantee for the speed of a worker that is not meant to
+    // be building.
+    if read_only_sandbox.is_none() {
+        crate::build_cache::apply(&mut command, std::path::Path::new(cwd));
+    }
     crate::adapters::configure_process_group(&mut command);
     if let Some(on_progress) = on_progress {
         on_progress(crate::adapters::StartupPhase::Spawning);

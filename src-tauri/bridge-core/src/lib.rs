@@ -21,6 +21,7 @@ pub mod backend_binding;
 pub mod binary;
 pub mod briefing_conformance;
 pub mod briefing_policy;
+pub mod build_cache;
 pub mod browser_bridge;
 pub mod builtin_compatibility;
 pub mod check_runner;

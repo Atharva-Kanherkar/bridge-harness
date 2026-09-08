@@ -349,6 +349,10 @@ impl BridgeCore {
         crate::claude_adapter::register_node_compile_cache_root(
             config.data_dir.join("node-compile-cache"),
         );
+        // Agents build inside their checkouts, which is what makes a worktree
+        // cost gigabytes rather than megabytes. One cache per repository, kept
+        // outside every checkout.
+        crate::build_cache::register_root(config.data_dir.join("build-caches"));
         let _ = crate::process_ledger::recover_in_dir(&connection, &ledger_root);
         let _ = crate::process_ledger::sweep_legacy_opencode_orphans(&connection);
         session_supervisor::SessionSupervisor::recover_orphaned_workers(&connection)?;

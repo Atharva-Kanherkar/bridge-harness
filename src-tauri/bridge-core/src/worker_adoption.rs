@@ -937,6 +937,7 @@ fn release_worktree(
                 params![binding_row.session_id, Utc::now().to_rfc3339()],
             )?;
             let _ = crate::worktree_registry::mark_removed(db, worker, "released on settlement");
+            release_worker_branch(db, binding_row);
             Ok(())
         }
         Err(error) => {
@@ -948,6 +949,86 @@ fn release_worktree(
                 &error.to_string(),
             );
             Ok(())
+        }
+    }
+}
+
+/// Delete the scratch branch a worker was given, once its checkout is gone and
+/// its commits are provably somewhere else.
+///
+/// These refs accumulate invisibly: 30 `*-worker-<uuid>` branches were sitting
+/// in one repository when this was written, every one of them a worker that had
+/// long since settled. They cost almost no disk, but they clutter every branch
+/// list a person or a tool reads.
+///
+/// Two guards, in order:
+///
+/// 1. **It has to be a branch Bridge minted.** Rather than pattern-match on
+///    `-worker-`, the expected name is *reconstructed* from the same inputs
+///    `prepare_isolated_worker` used — the base branch and the session slug —
+///    and compared exactly. A task branch may itself be called `bridge/foo`, so
+///    no prefix rule can distinguish an orchestrator branch from a worker branch
+///    cut off one; reconstruction can.
+/// 2. **Its commits have to exist elsewhere.** Either the branch never moved off
+///    its base, or its tip is already reachable from the task branch that
+///    adopted it. `git branch -d` then refuses anything still unmerged, so a
+///    wrong answer here fails closed.
+///
+/// Best effort throughout: a branch that cannot be deleted is left alone and
+/// recorded. Losing a ref would be worse than keeping one.
+/// Release the scratch branch of one worker by session id.
+///
+/// The retention sweep reclaims a checkout through
+/// [`crate::worktree_registry`], which removes the directory itself rather than
+/// going through [`release_worktree`] — so without this entry point a swept
+/// worker kept the very ref settlement would have dropped, and the two paths
+/// disagreed about the same worker.
+pub(crate) fn release_branch_for(db: &Connection, session_id: &str) {
+    if let Ok(Some(row)) = binding(db, session_id) {
+        release_worker_branch(db, &row);
+    }
+}
+
+fn release_worker_branch(db: &Connection, binding_row: &WorkerRepositoryBinding) {
+    let branch = binding_row.worktree_branch.trim();
+    let Some(base_branch) = binding_row.base_branch.as_deref() else {
+        return;
+    };
+    let expected = format!("{base_branch}-worker-{}", git::slug(&binding_row.session_id));
+    if branch.is_empty() || branch != expected {
+        return;
+    }
+    let task = Path::new(&binding_row.task_worktree_path);
+    let Some(tip) = git::branch_commit(task, branch) else {
+        return;
+    };
+    let unmoved = binding_row.base_commit.as_deref() == Some(tip.as_str());
+    let merged = || {
+        git::current_branch(task)
+            .map(|target| git::branch_is_contained_in(task, branch, &target).unwrap_or(false))
+            .unwrap_or(false)
+    };
+    if !unmoved && !merged() {
+        return;
+    }
+    match git::delete_merged_branch(task, branch) {
+        Ok(()) => {
+            let _ = store::event(
+                db,
+                "worktree",
+                "worker.branch_deleted",
+                &binding_row.session_id,
+                &format!("Deleted settled worker branch {branch} ({tip})"),
+            );
+        }
+        Err(error) => {
+            let _ = store::event(
+                db,
+                "worktree",
+                "worker.branch_retained",
+                &binding_row.session_id,
+                &format!("Kept worker branch {branch}: {error}"),
+            );
         }
     }
 }
@@ -1072,7 +1153,7 @@ mod tests {
             &fixture.task,
             &fixture.workers,
             "child",
-            "bridge/worker-child",
+            "main-worker-child",
             &["src/**".to_owned()],
             &[],
         )
@@ -1089,6 +1170,75 @@ mod tests {
         )
         .unwrap();
         worker.path
+    }
+
+    /// A settled worker's scratch branch is deleted once its commits are
+    /// provably elsewhere — here, because it never moved off its base.
+    #[test]
+    fn a_settled_worker_branch_that_never_moved_is_deleted() {
+        let fixture = fixture();
+        let worker = isolated_worker(&fixture);
+        let branch = binding(&fixture.db, "child")
+            .unwrap()
+            .unwrap()
+            .worktree_branch;
+        assert!(!git_cmd(&fixture.task, &["branch", "--list", &branch]).is_empty());
+
+        assert_eq!(release_terminal_worktrees(&fixture.db).unwrap(), 1);
+        assert!(!worker.exists());
+        assert_eq!(
+            git_cmd(&fixture.task, &["branch", "--list", &branch]),
+            "",
+            "the scratch ref goes with the checkout",
+        );
+    }
+
+    /// A branch holding commits that exist nowhere else is never deleted,
+    /// whatever its binding says — the work is only recoverable through the ref.
+    #[test]
+    fn a_worker_branch_with_unique_commits_survives_settlement() {
+        let fixture = fixture();
+        let worker = isolated_worker(&fixture);
+        std::fs::write(worker.join("only-here.txt"), "unique\n").unwrap();
+        git_cmd(&worker, &["add", "."]);
+        git_cmd(&worker, &["commit", "-q", "-m", "unique work"]);
+        let branch = binding(&fixture.db, "child")
+            .unwrap()
+            .unwrap()
+            .worktree_branch;
+
+        // Discard is an explicit decision to throw the *output* away; the ref is
+        // the only way back to it, so it stays.
+        discard(&fixture.db, "child", "not needed").unwrap();
+        assert!(
+            !git_cmd(&fixture.task, &["branch", "--list", &branch]).is_empty(),
+            "an unmerged worker branch is kept",
+        );
+    }
+
+    /// The expected name is reconstructed from the same inputs that built it, so
+    /// a branch Bridge did not mint is never a candidate — including the case a
+    /// prefix rule would get wrong, where the task branch is itself `bridge/*`.
+    #[test]
+    fn a_branch_bridge_did_not_mint_is_never_deleted() {
+        let fixture = fixture();
+        let worker = isolated_worker(&fixture);
+        git_cmd(&fixture.task, &["branch", "bridge/someones-own-branch"]);
+        fixture
+            .db
+            .execute(
+                "UPDATE worker_worktree_adoptions
+                    SET worktree_branch='bridge/someones-own-branch' WHERE session_id='child'",
+                [],
+            )
+            .unwrap();
+
+        release_terminal_worktrees(&fixture.db).unwrap();
+        assert!(
+            !git_cmd(&fixture.task, &["branch", "--list", "bridge/someones-own-branch"]).is_empty(),
+            "a branch whose name does not match what Bridge would have cut is left alone",
+        );
+        let _ = worker;
     }
 
     /// The shape that held 3.9 GB on the machine this was written on: the worker
@@ -1305,7 +1455,7 @@ mod tests {
             "parent",
             "w",
             &worker.to_string_lossy(),
-            "bridge/worker-child",
+            "main-worker-child",
             &fixture.task.to_string_lossy(),
             true,
         )
@@ -1797,7 +1947,7 @@ mod tests {
         assert_eq!(reconciled.result.status, WorkerResultStatus::Completed);
         let evidence = reconciled.evidence.unwrap();
         assert_eq!(evidence.commits.len(), 1);
-        assert_eq!(evidence.branch.as_deref(), Some("bridge/worker-child"));
+        assert_eq!(evidence.branch.as_deref(), Some("main-worker-child"));
         assert!(evidence.diffstat().contains("1 file(s) changed"));
     }
 

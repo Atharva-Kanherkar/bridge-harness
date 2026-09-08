@@ -100,6 +100,7 @@ methods![
     (RetryWorkerTask, "sessions", "retry_worker_task"),
     (RefreshAccountUsage, "sessions", "refresh_account_usage"),
     (StopSession, "sessions", "stop_session"),
+    (ArchiveChat, "sessions", "archive_chat"),
     // memory — explicit named-scope pins; not recall, not the router
     (SaveMemoryRecord, "memory", "save_memory_record"),
     (ListMemoryRecords, "memory", "list_memory_records"),
@@ -149,6 +150,8 @@ methods![
     // worktree inventory and retention
     (ListWorktrees, "worktrees", "list_worktrees"),
     (WorktreeUsageReport, "worktrees", "worktree_usage"),
+    (ReclaimWorktree, "worktrees", "reclaim_worktree"),
+    (SweepWorktrees, "worktrees", "sweep_worktrees"),
     // routing
     (GetRouterPreferences, "routing", "get_router_preferences"),
     (UpdateRouterPreferences, "routing", "update_router_preferences"),

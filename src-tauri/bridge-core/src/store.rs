@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 50;
+const LATEST_SCHEMA_VERSION: i64 = 51;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -679,6 +679,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             48 => migration_48_harness_quota_cooldowns(&transaction)?,
             49 => migration_49_worker_repair_budget(&transaction)?,
             50 => migration_50_worktree_inventory(&transaction)?,
+            51 => migration_51_archived_chats(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -721,6 +722,15 @@ fn migration_47_model_profile_selection_mode(
 /// Backfill works off recorded paths rather than the data directory, which this
 /// layer does not know. Anything it misses is still found later: the reconcile
 /// pass adopts unrecorded directories under the namespace root.
+/// Archiving a chat. Bridge could archive a *workspace* — which deletes every
+/// session in it — but had no way to put one conversation away, so the only
+/// route to reclaiming an isolated chat's checkout was a destructive operation
+/// on hundreds of unrelated chats. This is the per-chat marker: history is kept,
+/// the conversation is simply no longer listed.
+fn migration_51_archived_chats(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(transaction, "sessions", "archived_at", "TEXT")
+}
+
 fn migration_50_worktree_inventory(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     transaction.execute_batch(
         "CREATE TABLE IF NOT EXISTS worktrees (
@@ -2769,7 +2779,12 @@ pub fn state(db: &Connection) -> Result<BridgeState, BridgeError> {
         },
     )?;
     let workspaces = query(db, "SELECT id,project_id,city,title,branch,path,status,dirty_files,additions,deletions,created_at FROM workspaces ORDER BY created_at", |r| Ok(Workspace { id:r.get(0)?, project_id:r.get(1)?, city:r.get(2)?, title:r.get(3)?, branch:r.get(4)?, path:r.get(5)?, status:status(&r.get::<_,String>(6)?), dirty_files:r.get(7)?, additions:r.get(8)?, deletions:r.get(9)?, created_at:r.get(10)? }))?;
-    let sessions = query(db, "SELECT s.id,s.workspace_id,s.harness,s.label,s.status,s.started_at,s.ended_at,s.context_percent,s.usage_percent,s.metric_source,s.provider_session_id,s.active_turn_id,s.model,s.requested_tier,s.effort,s.parent_session_id,s.depth,COALESCE(h.restoration_mode,'fresh'),s.continuation_fidelity,s.title,s.kind,s.cwd FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id ORDER BY s.rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)?, restoration_mode:restoration_mode(&r.get::<_,String>(17)?), continuation_fidelity:continuation_fidelity(&r.get::<_,String>(18)?), title:r.get(19)?, kind:r.get(20)?, cwd:r.get(21)? }))?;
+    let sessions = query(db, "SELECT s.id,s.workspace_id,s.harness,s.label,s.status,s.started_at,s.ended_at,s.context_percent,s.usage_percent,s.metric_source,s.provider_session_id,s.active_turn_id,s.model,s.requested_tier,s.effort,s.parent_session_id,s.depth,COALESCE(h.restoration_mode,'fresh'),s.continuation_fidelity,s.title,s.kind,s.cwd FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id
+         WHERE s.archived_at IS NULL
+           AND (s.parent_session_id IS NULL
+                OR NOT EXISTS(SELECT 1 FROM sessions p
+                               WHERE p.id=s.parent_session_id AND p.archived_at IS NOT NULL))
+         ORDER BY s.rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)?, restoration_mode:restoration_mode(&r.get::<_,String>(17)?), continuation_fidelity:continuation_fidelity(&r.get::<_,String>(18)?), title:r.get(19)?, kind:r.get(20)?, cwd:r.get(21)? }))?;
     let events = query(
         db,
         "SELECT id,source,kind,entity_id,body,created_at FROM events ORDER BY id DESC LIMIT 200",
