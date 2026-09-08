@@ -18,9 +18,12 @@ change attacks the cost and then puts the whole thing in front of a person.
 - A process with no resolvable repository (a scratch chat) gets no cache
   variables rather than a wrong shared one.
 - A variable the user has already set in the environment is never overridden.
-- Read-only sandboxed workers keep their redirected `HOME`/`TMPDIR`; the cache
-  directory is added as an explicitly writable root so the sandbox does not
-  refuse it.
+- Read-only sandboxed workers are **excluded** on purpose. Their seatbelt
+  profile permits writes only under their own output directory, and adding a
+  shared cache as a writable root would widen the read-only guarantee to buy
+  build speed for workers that are not supposed to be building. They keep their
+  redirected `HOME`/`TMPDIR` and build into their own output directory if they
+  build at all.
 - Expected effect, stated as the goal: a fresh worker worktree stays under
   100 MB after a full `bun run check`, against ~3.9 GB today.
 
@@ -67,7 +70,7 @@ change attacks the cost and then puts the whole thing in front of a person.
   the same cache directory; a different repo produces a different one.
 - `build_cache_env_is_absent_without_a_repository`
 - `build_cache_env_never_overrides_an_operator_setting`
-- `a_sandboxed_worker_can_write_to_its_build_cache`
+- `a_read_only_sandboxed_worker_gets_no_shared_cache`
 - `a_settled_worker_branch_contained_in_its_adopter_is_deleted`
 - `a_worker_branch_with_unique_commits_survives`
 - `an_orchestrator_or_pull_request_branch_is_never_deleted`
