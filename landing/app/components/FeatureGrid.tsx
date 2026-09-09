@@ -1,4 +1,3 @@
-import Reveal from "./Reveal";
 
 const features = [
   {
@@ -61,13 +60,13 @@ export default function FeatureGrid() {
   return (
     <section className="border-t border-border">
       <div className="mx-auto max-w-6xl px-6 py-20">
-        <Reveal>
+        <div>
           <h2 className="max-w-2xl font-display text-3xl font-semibold tracking-tight sm:text-4xl">Supervised, end to end</h2>
           <p className="mt-4 max-w-2xl text-[15px] leading-7 text-muted-foreground">
             The speed of coding agents, with explicit boundaries around files, processes, approvals, delegation, and session state.
           </p>
-        </Reveal>
-        <Reveal className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        </div>
+        <div className="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {features.map((feature) => (
             <div
               key={feature.title}
@@ -77,7 +76,7 @@ export default function FeatureGrid() {
               <p className="mt-2 text-[13.5px] leading-6 text-muted-foreground">{feature.text}</p>
             </div>
           ))}
-        </Reveal>
+        </div>
       </div>
     </section>
   );

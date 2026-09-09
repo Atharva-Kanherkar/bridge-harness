@@ -1,8 +1,12 @@
 import CallToAction from "./components/CallToAction";
+import Comparison from "./components/Comparison";
+import Faq from "./components/Faq";
 import FeatureGrid from "./components/FeatureGrid";
 import FeatureTabs from "./components/FeatureTabs";
 import HarnessSection from "./components/HarnessSection";
 import HowItWorks from "./components/HowItWorks";
+import LoopSection from "./components/LoopSection";
+import Principles from "./components/Principles";
 import SiteFooter from "./components/SiteFooter";
 import SiteHeader from "./components/SiteHeader";
 import { latestReleaseUrl, latestVersion, platformLabel, repoUrl } from "./content/site";
@@ -40,9 +44,13 @@ export default function Home() {
         <FeatureTabs />
       </main>
 
-      <HarnessSection />
       <HowItWorks />
+      <HarnessSection />
+      <LoopSection />
       <FeatureGrid />
+      <Principles />
+      <Comparison />
+      <Faq />
       <CallToAction />
       <SiteFooter />
     </div>

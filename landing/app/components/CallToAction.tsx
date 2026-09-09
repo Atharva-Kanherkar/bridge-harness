@@ -1,11 +1,10 @@
-import Reveal from "./Reveal";
 import { latestReleaseUrl, nodeRequirement, platformLabel, repoUrl } from "../content/site";
 
 export default function CallToAction() {
   return (
     <section className="border-t border-border">
       <div className="mx-auto max-w-6xl px-6 py-24 text-center">
-        <Reveal>
+        <div>
           <h2 className="font-display text-3xl font-semibold tracking-tight sm:text-4xl">Get Bridge</h2>
           <p className="mx-auto mt-4 max-w-xl text-[15px] leading-7 text-muted-foreground">
             Early-stage software for {platformLabel}. {nodeRequirement} Codex, Claude Code, and OpenCode stay optional.
@@ -21,7 +20,7 @@ export default function CallToAction() {
               View on GitHub
             </a>
           </div>
-        </Reveal>
+        </div>
       </div>
     </section>
   );

@@ -10,13 +10,13 @@ Modeled on onorca.dev (Orca by Stably: Next.js, Motion, dark chrome, real-DOM mo
 | 2 | Hero: "Backed by Y Combinator" badge, "Ship 100x with the agent IDE", one concrete subhead, Download for Mac + "Also for Intel · Windows · Linux", View on GitHub | Eyebrow "macOS 12 or later · Apple Silicon · v0.5.5", "Delegate the coding. Keep the judgment.", subhead, Download for Mac, View on GitHub | Done |
 | 3 | Tabbed real-DOM app mockup, 5 tabs | Five scenes in content/scenes.ts driving AppMockup | Done |
 | 4 | "Used by engineers at" logo strip | Skip until real logos exist | Never fabricate |
-| 5 | "Your dev loop, agentified." vertical tabs (Workspaces, Orchestration, Browser, Terminal, Tasks, Editor, Notes, Ship with AI), each with a mini mock | "Your dev loop, supervised." Six vertical tabs: Workspaces, Delegation, Conversation, Work board, Terminal and browser, Ship | Phase 2 |
+| 5 | "Your dev loop, agentified." vertical tabs (Workspaces, Orchestration, Browser, Terminal, Tasks, Editor, Notes, Ship with AI), each with a mini mock | "Your dev loop, supervised." Six vertical tabs: Workspaces, Delegation, Conversation, Work board, Terminal and browser, Ship | Done |
 | 6 | "Bring your own agent / subscription", 27 agent logos | "Bring your own harness": three cards for Codex, Claude Code, OpenCode with harness tints | Done |
 | 7 | Mobile companion section | Skip, no companion app | Never |
 | 8 | "Agent-first, end to end." 13-tile bento, poster images, "Click to inspect" | "Supervised, end to end." 13 text-first tiles; inspect dialogs once real captures exist | Tiles done, Phase 3 inspect |
-| 9 | Eight testimonials from X | Skip. Replace with a "Three rules" principles section | Phase 2 |
-| 10 | Comparison table "Built for agents, not retrofitted" | "Built for supervision, not retrofitted": Bridge vs terminal wrappers vs agent IDEs | Phase 2 |
-| 11 | FAQ, ten collapsed questions | FAQ, ten questions, native details elements | Phase 2 |
+| 9 | Eight testimonials from X | Skipped. Replaced with a "Three rules" principles section | Done |
+| 10 | Comparison table "Built for agents, not retrofitted" | "Built for supervision, not retrofitted": eight rows, Bridge against the category | Done |
+| 11 | FAQ, ten collapsed questions | FAQ, ten questions, native details elements | Done |
 | 12 | "Get Orca" CTA band | "Get Bridge" CTA band | Done |
 | 13 | Footer: Product, Community, Company, copyright, "Backed by Y Combinator. Built in San Francisco." | Footer: brand, Product, Project, version line | Done |
 | 14 | /download page: four desktop builds, brew command, mobile links | /download: Apple Silicon DMG, sha256, requirements, Node 18+ note for Claude | Phase 3 |
@@ -32,12 +32,14 @@ Modeled on onorca.dev (Orca by Stably: Next.js, Motion, dark chrome, real-DOM mo
 
 Built as SiteHeader, HarnessSection, FeatureGrid, CallToAction, SiteFooter, and a Reveal wrapper. Reveal arms itself only after mount, so the prerendered HTML is visible without JavaScript and reduced-motion viewers skip the animation entirely. The two wide tiles sit at positions one and three so the three-column grid fills five rows with no gaps.
 
-## Phase 2: depth sections (next PR, about one day)
+## Phase 2: depth sections (done)
 
 1. "Your dev loop, supervised." Vertical tab list on the left, heading plus two sentences plus a mini mock on the right, built from the Card and Row primitives in AppMockup. Data in content/loop.ts. Same keyboard model as FeatureTabs.
-2. Comparison table, eight rows by three columns: parallel agents in their own worktrees; policy-authorized delegation with tiers, scopes, and budgets; typed durable worker results; cross-harness verification gate; append-only session forest with fork and rewind; verified checkpoints on compaction; daemon and CLI for CI; generated JSON-RPC protocol. Columns: Bridge, terminal wrappers, agent IDEs. Cells read yes, partial, or no, and stay defensible.
+2. Comparison table, eight rows. Built with two verdict columns rather than the planned three, because naming two rival categories separately would have meant claims about products that change weekly. A caption says the right column generalizes across a category.
 3. "Three rules" section in the testimonial slot: the three hierarchies stay separate; learning and routing can rank but never grant; history is appended, never rewritten. One sentence each, lifted from docs/.
 4. FAQ: What is Bridge? How is it different from running claude or codex in a terminal? Which agents does it support? Do I need API keys? Is it macOS only? Is it open source? What is a session forest? What does the policy engine gate? Can CI use it? Where does my data live?
+
+The mock card renderer moved to its own module so the loop panels and the hero mockup share one implementation. The scroll-reveal wrapper added in Phase 1 was removed: it hid content until a callback fired, and a page that can render nothing is worse than a page without an entrance animation. A pure-CSS scroll timeline guarded by a support query would give the same effect without that failure mode, and is the way to add it back.
 
 ## Phase 3: routes and media (later, about one day)
 

@@ -1,33 +1,5 @@
-import { Fragment } from "react";
-import type { Card, CardBody, ConversationItem, Scene, SidebarRow, Tone } from "../content/scenes";
-
-const dotTone: Record<Tone, string> = {
-  success: "bg-success",
-  warning: "bg-warning",
-  destructive: "bg-destructive",
-  faint: "bg-faint",
-  fg: "bg-foreground",
-};
-
-const inkTone: Record<Tone, string> = {
-  success: "text-success",
-  warning: "text-warning",
-  destructive: "text-destructive",
-  faint: "text-faint",
-  fg: "text-foreground",
-};
-
-const glyphTone: Record<Tone, string> = {
-  success: "✓",
-  warning: "●",
-  destructive: "✕",
-  faint: "○",
-  fg: "·",
-};
-
-function Dot({ tone }: { tone: Tone }) {
-  return <span className={`inline-block size-1.5 shrink-0 rounded-full ${dotTone[tone]}`} />;
-}
+import type { Scene, SidebarRow, ConversationItem } from "../content/scenes";
+import MockCard, { Dot } from "./MockCard";
 
 function Row({ label, sub, tone, right, depth = 0, active = false }: SidebarRow) {
   return (
@@ -48,65 +20,6 @@ function Message({ who, meta, text }: Extract<ConversationItem, { kind: "message
       {meta && <span className="text-[10px] uppercase tracking-wider text-faint">{meta}</span>}
       <div className={`max-w-[85%] rounded-xl px-3 py-2 text-[12.5px] leading-5 ${who === "you" ? "bg-muted text-foreground" : "text-body"}`}>
         {text}
-      </div>
-    </div>
-  );
-}
-
-function diffTone(line: string) {
-  if (line.startsWith("+")) return "text-success";
-  if (line.startsWith("-")) return "text-destructive";
-  return "text-muted-foreground";
-}
-
-function CardContent({ body }: { body: CardBody }) {
-  switch (body.kind) {
-    case "text":
-      return <p className="text-[12px] leading-5 text-body">{body.text}</p>;
-    case "grid":
-      return (
-        <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5 font-mono text-[11px] text-muted-foreground">
-          {body.rows.map(([key, value], i) => (
-            <Fragment key={`${key}-${i}`}>
-              <span>{key}</span>
-              <span className="truncate text-foreground">{value}</span>
-            </Fragment>
-          ))}
-        </div>
-      );
-    case "checks":
-      return (
-        <div className="flex flex-col gap-1 text-[11px] text-muted-foreground">
-          {body.items.map((item) => (
-            <span key={item.label} className="truncate">
-              <span className={inkTone[item.tone]}>{glyphTone[item.tone]}</span> {item.label}
-              {item.detail && <span className="text-faint"> · {item.detail}</span>}
-            </span>
-          ))}
-        </div>
-      );
-    case "code":
-      return (
-        <pre className="overflow-hidden font-mono text-[10.5px] leading-4">
-          {body.lines.map((line, i) => (
-            <div key={i} className={diffTone(line)}>
-              {line}
-            </div>
-          ))}
-        </pre>
-      );
-  }
-}
-
-function MockCard({ card }: { card: Card }) {
-  return (
-    <div className="w-full rounded-lg border border-border-card bg-card">
-      <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-1.5 text-[11px] text-muted-foreground">
-        <span className="truncate">{card.title}</span>
-        {card.status && <span className={`shrink-0 ${inkTone[card.status.tone]}`}>{card.status.label}</span>}
-      </div>
-      <div className="px-3 py-2">
-        <CardContent body={card.body} />
       </div>
     </div>
   );

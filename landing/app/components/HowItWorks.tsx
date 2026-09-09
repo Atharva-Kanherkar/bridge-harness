@@ -1,4 +1,3 @@
-import Reveal from "./Reveal";
 
 const steps = [
   {
@@ -19,12 +18,12 @@ export default function HowItWorks() {
   return (
     <section className="border-t border-border">
       <div className="mx-auto max-w-6xl px-6 py-20">
-        <Reveal>
+        <div>
           <h2 className="max-w-2xl font-display text-3xl font-semibold tracking-tight sm:text-4xl">
             How a task moves through Bridge
           </h2>
-        </Reveal>
-        <Reveal className="mt-12 grid gap-10 md:grid-cols-3">
+        </div>
+        <div className="mt-12 grid gap-10 md:grid-cols-3">
           {steps.map((step, i) => (
             <div key={step.title}>
               <span className="font-mono text-[11px] text-faint">0{i + 1}</span>
@@ -32,7 +31,7 @@ export default function HowItWorks() {
               <p className="mt-2 text-[14px] leading-6 text-muted-foreground">{step.text}</p>
             </div>
           ))}
-        </Reveal>
+        </div>
       </div>
     </section>
   );
