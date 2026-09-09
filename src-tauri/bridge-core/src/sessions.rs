@@ -486,6 +486,23 @@ impl BridgeCore {
                 "New agent session",
             )?;
             if let Some(created) = &worktree {
+                // The class that used to leak permanently: an orchestrator
+                // checkout was named only by `sessions.cwd`, which no cleanup
+                // path consulted, so nothing could find it — let alone reclaim
+                // it. It gets an owned inventory row here, in the same
+                // transaction as the session that owns it.
+                crate::worktree_registry::register(
+                    &transaction,
+                    &crate::worktree_registry::NewWorktree {
+                        kind: crate::worktree_registry::KIND_ORCHESTRATOR.to_owned(),
+                        repo_root: plan.workspace_path.clone().unwrap_or_default(),
+                        path: created.path.to_string_lossy().to_string(),
+                        branch: Some(created.branch.clone()),
+                        owner_session_id: Some(plan.session_id.clone()),
+                        owner_workspace_id: Some(plan.workspace_id.clone()),
+                        base_commit: None,
+                    },
+                )?;
                 store::event(
                     &transaction,
                     "worktree",
@@ -881,13 +898,24 @@ impl BridgeCore {
         })
         .map_err(|reason| BridgeError::Invalid(format!("Compaction suppressed: {reason:?}")))?;
         let tokens = compaction_controller::active_token_estimate(&db, session_id)?;
-        compaction_controller::CompactionController::begin(
+        match compaction_controller::CompactionController::begin(
             &db,
             session_id,
             compaction_controller::CompactionReason::Manual,
             tokens,
-        )?
-        .ok_or_else(|| BridgeError::Invalid("Compaction is already pending".into()))
+        )? {
+            compaction_controller::CompactionStart::Ready(prompt) => Ok(prompt),
+            compaction_controller::CompactionStart::AlreadyPending => Err(BridgeError::Invalid(
+                "Compaction is already pending".into(),
+            )),
+            // Reporting this as "already pending" sent the user looking for a
+            // checkpoint that was never requested.
+            compaction_controller::CompactionStart::ProviderLimited { harness, until } => {
+                Err(BridgeError::Invalid(format!(
+                    "{harness} is out of quota until {until}. Compaction needs a provider turn, so it cannot run until then; your conversation history is intact."
+                )))
+            }
+        }
     }
 
     /// Ask the outgoing provider to summarise the conversation before a model
@@ -951,6 +979,7 @@ impl BridgeCore {
             compaction_controller::CompactionReason::BeforeDowngrade,
             tokens,
         )?
+        .prompt()
         else {
             return Ok(None);
         };
@@ -2580,7 +2609,7 @@ mod tests {
                 compaction_controller::CompactionReason::BeforeDowngrade,
                 100,
             )
-            .unwrap()
+            .unwrap().prompt()
             .expect("no compaction is in flight");
             let after_sequence: i64 = db
                 .query_row(
@@ -2624,7 +2653,7 @@ mod tests {
                 compaction_controller::CompactionReason::BeforeDowngrade,
                 120,
             )
-            .unwrap()
+            .unwrap().prompt()
             .expect("previous terminal cleared the way");
         }
         core.cancel_switch_summary(
@@ -2677,7 +2706,7 @@ mod tests {
                 compaction_controller::CompactionReason::BeforeDowngrade,
                 100,
             )
-            .unwrap()
+            .unwrap().prompt()
             .expect("the older terminal cleared the way");
             let after_sequence: i64 = db
                 .query_row(
@@ -2775,7 +2804,7 @@ mod tests {
                 compaction_controller::CompactionReason::BeforeDowngrade,
                 120,
             )
-            .unwrap()
+            .unwrap().prompt()
             .unwrap();
             compaction_controller::CompactionController::record_failure(
                 &db,
@@ -3292,6 +3321,7 @@ mod tests {
                     100,
                 )
                 .unwrap()
+                .prompt()
                 .unwrap();
                 SwitchSummaryRequest {
                     session_id: session_id.clone(),

@@ -120,6 +120,15 @@ pub struct ClaudeSdkConfiguration {
     /// carried no verdict. Advisory only — a briefing run still records the
     /// truth per source from its own tool results.
     pub connector_health: BTreeMap<String, Option<bool>>,
+    pub diagnostics: Vec<CapabilityDiscoveryDiagnostic>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapabilityDiscoveryDiagnostic {
+    pub stage: String,
+    pub status: String,
+    pub message: String,
 }
 
 pub fn catalog() -> MarketplaceCatalog {
@@ -133,41 +142,120 @@ pub fn catalog() -> MarketplaceCatalog {
 
 pub fn claude_sdk_configuration() -> ClaudeSdkConfiguration {
     let Some(binary_path) = binary::resolve("claude") else {
-        return ClaudeSdkConfiguration::default();
+        return ClaudeSdkConfiguration {
+            diagnostics: vec![capability_diagnostic(
+                "runtime",
+                "unavailable",
+                "Claude CLI is not installed",
+            )],
+            ..Default::default()
+        };
     };
-    let plugins = bounded_output(
+    let mut diagnostics = Vec::new();
+    let plugins = match bounded_output(
         &binary_path,
         &["plugin", "list", "--json"],
         CLAUDE_MCP_STATUS_TIMEOUT,
-    )
-    .ok()
-    .filter(|output| output.status.success())
-    .and_then(|output| serde_json::from_slice::<Value>(&output.stdout).ok())
-    .map(|value| {
-        candidate_objects(&value)
-            .into_iter()
-            .filter_map(Value::as_object)
-            .filter(|plugin| bool_field(plugin, &["enabled", "isEnabled", "is_enabled"]))
-            .filter_map(|plugin| string_field(plugin, &["installPath", "install_path"]))
-            .filter(|path| Path::new(path).is_dir())
-            .fold(Vec::new(), |mut paths, path| {
-                if !paths.contains(&path) {
-                    paths.push(path);
-                }
-                paths
-            })
-    })
-    .unwrap_or_default();
-    let mcp_list = bounded_output(&binary_path, &["mcp", "list"], CLAUDE_MCP_STATUS_TIMEOUT)
-        .ok()
-        .filter(|output| output.status.success())
-        .map(|output| String::from_utf8_lossy(&output.stdout).into_owned())
-        .unwrap_or_default();
+    ) {
+        Ok(output) if output.status.success() => match enabled_plugin_paths(&output.stdout) {
+            Ok(plugins) => plugins,
+            Err(message) => {
+                diagnostics.push(capability_diagnostic("plugins", "malformed", &message));
+                Vec::new()
+            }
+        },
+        Ok(_) => {
+            diagnostics.push(capability_diagnostic(
+                "plugins",
+                "failed",
+                "Claude plugin discovery exited unsuccessfully",
+            ));
+            Vec::new()
+        }
+        Err(error) => {
+            diagnostics.push(command_diagnostic("plugins", &error));
+            Vec::new()
+        }
+    };
+    let mcp_list = match bounded_output(&binary_path, &["mcp", "list"], CLAUDE_MCP_STATUS_TIMEOUT) {
+        Ok(output) if output.status.success() => {
+            let text = String::from_utf8_lossy(&output.stdout).into_owned();
+            if !claude_mcp_output_is_recognized(&text) {
+                diagnostics.push(capability_diagnostic(
+                    "mcp",
+                    "malformed",
+                    "Claude MCP discovery output used an unrecognized format",
+                ));
+            }
+            text
+        }
+        Ok(_) => {
+            diagnostics.push(capability_diagnostic(
+                "mcp",
+                "failed",
+                "Claude MCP discovery exited unsuccessfully",
+            ));
+            String::new()
+        }
+        Err(error) => {
+            diagnostics.push(command_diagnostic("mcp", &error));
+            String::new()
+        }
+    };
     ClaudeSdkConfiguration {
         plugins,
         mcp_servers: sdk_connector_configs(&mcp_list),
         connector_health: parse_claude_connector_health(&mcp_list),
+        diagnostics,
     }
+}
+
+fn capability_diagnostic(stage: &str, status: &str, message: &str) -> CapabilityDiscoveryDiagnostic {
+    CapabilityDiscoveryDiagnostic {
+        stage: stage.into(),
+        status: status.into(),
+        message: message.chars().take(240).collect(),
+    }
+}
+
+fn command_diagnostic(stage: &str, error: &BridgeError) -> CapabilityDiscoveryDiagnostic {
+    let status = if error.to_string().contains("timed out") {
+        "timed-out"
+    } else {
+        "failed"
+    };
+    capability_diagnostic(stage, status, &format!("Claude {stage} discovery {status}"))
+}
+
+fn enabled_plugin_paths(bytes: &[u8]) -> Result<Vec<String>, String> {
+    let value = serde_json::from_slice::<Value>(bytes)
+        .map_err(|_| "Claude plugin discovery returned invalid JSON".to_owned())?;
+    Ok(candidate_objects(&value)
+        .into_iter()
+        .filter_map(Value::as_object)
+        .filter(|plugin| bool_field(plugin, &["enabled", "isEnabled", "is_enabled"]))
+        .filter_map(|plugin| string_field(plugin, &["installPath", "install_path"]))
+        .filter(|path| Path::new(path).is_dir())
+        .fold(Vec::new(), |mut paths, path| {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+            paths
+        }))
+}
+
+fn claude_mcp_output_is_recognized(output: &str) -> bool {
+    let trimmed = output.trim();
+    trimmed.is_empty()
+        || trimmed.to_ascii_lowercase().contains("no mcp servers")
+        || output.lines().any(|line| {
+            let line = line.to_ascii_lowercase();
+            line.contains("connected")
+                || line.contains("needs authentication")
+                || line.contains("failed to connect")
+        })
+        || !parse_claude_mcp_auth_states(output).is_empty()
+        || !parse_claude_native_connector_configs(output).is_empty()
 }
 
 /// The native connectors a briefing run may be handed explicitly: only the
@@ -1002,6 +1090,7 @@ pub(crate) fn bounded_output(
     timeout: Duration,
 ) -> Result<std::process::Output, BridgeError> {
     let mut command = Command::new(binary_path);
+    binary::hydrate_command_path(&mut command);
     command
         .args(args)
         .stdin(Stdio::null())
@@ -1063,9 +1152,12 @@ fn codex_app_server_request(
     method: &str,
     params: Value,
 ) -> Result<Value, BridgeError> {
-    let mut command = Command::new(binary_path);
+    let mut command = crate::adapters::supervised_command(
+        binary_path,
+        ["app-server", "--listen", "stdio://"],
+    );
+    binary::hydrate_command_path(&mut command);
     command
-        .args(["app-server", "--listen", "stdio://"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
@@ -1543,6 +1635,25 @@ mod tests {
         assert_eq!(health["claude.ai Slack"], Some(false), "needing auth is not connected");
         assert_eq!(health["claude.ai GitHub"], Some(false));
         assert_eq!(health["claude.ai Quiet"], None, "no verdict is not a verdict");
+    }
+
+    #[test]
+    fn capability_discovery_parsers_fail_loudly_without_leaking_output() {
+        let secret = "sk-proj-never-include-this-value";
+        let error = enabled_plugin_paths(format!("not-json {secret}").as_bytes()).unwrap_err();
+        assert_eq!(error, "Claude plugin discovery returned invalid JSON");
+        assert!(!error.contains(secret));
+
+        assert!(claude_mcp_output_is_recognized("No MCP servers configured"));
+        assert!(claude_mcp_output_is_recognized(
+            "claude.ai Notion: https://mcp.example/notion - ✔ Connected"
+        ));
+        assert!(!claude_mcp_output_is_recognized(
+            "MCP status changed-format-without-an-endpoint"
+        ));
+
+        let diagnostic = capability_diagnostic("plugins", "failed", &"x".repeat(500));
+        assert_eq!(diagnostic.message.chars().count(), 240);
     }
 
     #[test]

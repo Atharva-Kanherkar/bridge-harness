@@ -939,8 +939,17 @@ function AppContent() {
     });
   }, [agentEvents, forest, session?.id]);
 
-  // Load available slash commands + skills from signed-in providers.
-  useEffect(() => { void bridgeApi.listSlashCommands().then(setSlashCommands).catch(() => undefined); }, [adaptersReady]);
+  // Load available slash commands + skills from signed-in providers. Guarded
+  // against staleness: switching sessions while a slower scan is still in
+  // flight must not let its response land after a newer session's, which
+  // would leave the menu showing the wrong session's commands.
+  useEffect(() => {
+    let active = true;
+    void bridgeApi.listSlashCommands(session?.id)
+      .then(commands => { if (active) setSlashCommands(commands); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [adaptersReady, session?.id]);
 
   // Always land on the Agent tab: focusing a session (especially a blocked
   // worker from Mission Control) must reveal its conversation and approval card,
@@ -955,6 +964,25 @@ function AppContent() {
     const opened = state.sessions.find(candidate => candidate.id === id);
     if (opened?.workspaceId) writeLastWorkspaceId(opened.workspaceId);
   }
+
+  // Archiving a chat files the conversation away and reclaims the checkout it
+  // owns — not its workspace's, which belongs to every other chat in that
+  // project. History is kept either way, which is what makes this safe to offer
+  // on a hover button; the confirm exists because the worktree is not kept.
+  const archiveChat = useCallback(async (chat: Session) => {
+    const name = chat.title?.trim() || chat.label || "this chat";
+    if (!window.confirm(`Archive ${name}? Its history is kept, and its worktree is reclaimed if nothing is unsaved there.`)) return;
+    try {
+      const result = await bridgeApi.archiveChat(chat.id);
+      if (result.worktreeDetail) {
+        setError(`${name} was archived, but its worktree was kept: ${result.worktreeDetail}`);
+      }
+      setSelectedSessionId(current => (current === chat.id ? undefined : current));
+      await reload();
+    } catch (value) {
+      setError(errorMessage(value));
+    }
+  }, [reload]);
 
   const openWorkBoard = useCallback(() => {
     setView("work");
@@ -1797,6 +1825,11 @@ function AppContent() {
   // Re-run a failed worker's objective because the user asked. The reason it
   // failed is on the card next to this action, which is the point: Bridge no
   // longer spends this turn on a cause it cannot show has changed.
+  // Stopping a worker goes through the same seam the user's "End session"
+  // does, so a worker ends one way regardless of which surface asked.
+  const stopWorker = useCallback(async (childSessionId: string) => {
+    setState(await bridgeApi.stopSession(childSessionId));
+  }, []);
   const retryWorkerTask = useCallback(async (childSessionId: string) => {
     await bridgeApi.retryWorkerTask(childSessionId);
     await reload();
@@ -2100,6 +2133,7 @@ function AppContent() {
       onOpenMemory={() => setView("memory")}
       onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
+      onArchiveChat={archiveChat}
       collapsed={sidebarCollapsed}
       onCollapsedChange={setSidebarCollapsed}
       showWindowNav
@@ -2319,6 +2353,7 @@ function AppContent() {
                   onWaiveCompletion={waiveCompletion}
                   onRefreshBase={refreshWorkspaceBase}
                   onRetryWorker={retryWorkerTask}
+                  onStopWorker={stopWorker}
                   onRetryCompaction={() => retryCompaction(session.id)}
                   pendingAdoptions={pendingAdoptions}
                   onResolveAdoption={resolveAdoption}
@@ -2505,6 +2540,7 @@ function AppContent() {
                 onOpenSession={openSession}
                 onExpandWorker={setExpandedWorkerId}
                 onRetryWorker={id => void retryWorkerTask(id)}
+                onStopWorker={id => void stopWorker(id)}
                 onOpenTerminal={() => dispatchDock({ type: "open-pane", pane: "terminal" })}
               />;
               if (pane === "browser") return <BrowserSurface

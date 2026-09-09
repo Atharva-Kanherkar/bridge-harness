@@ -624,6 +624,43 @@ async fn pending_worker_adoptions(
 }
 
 #[tauri::command]
+async fn list_worktrees(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Vec<bridge_core::worktree_registry::WorktreeInventoryEntry>, BridgeError> {
+    api::list_worktrees(state.inner())
+}
+
+#[tauri::command]
+async fn worktree_usage(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::worktree_registry::WorktreeUsage, BridgeError> {
+    api::worktree_usage(state.inner())
+}
+
+#[tauri::command]
+async fn archive_chat(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::worktree_registry::ArchiveChatResult, BridgeError> {
+    api::archive_chat(state.inner(), &session_id)
+}
+
+#[tauri::command]
+async fn reclaim_worktree(
+    worktree_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::worktree_registry::WorktreeReclaimResult, BridgeError> {
+    api::reclaim_worktree(state.inner(), &worktree_id)
+}
+
+#[tauri::command]
+async fn sweep_worktrees(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::worktree_registry::SweepOutcome, BridgeError> {
+    api::sweep_worktrees(state.inner())
+}
+
+#[tauri::command]
 async fn adopt_worker_worktree(
     session_id: String,
     state: State<'_, Arc<BridgeCore>>,
@@ -1161,9 +1198,10 @@ async fn carry_session_handoff(
 /// can offer a labeled `/` menu.
 #[tauri::command]
 async fn list_slash_commands(
+    session_id: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<Vec<slash::SlashCommand>, BridgeError> {
-    api::list_slash_commands(state.inner())
+    api::list_slash_commands(state.inner(), session_id.as_deref())
 }
 
 /// Resolve a composer `/command` against the catalog so the UI can auto-switch
@@ -2003,6 +2041,7 @@ fn setup_embedded(
     bridge_core::routing_evaluation_live::start_evaluation_maintenance(core.clone());
     bridge_core::memory_consolidation_live::start_consolidation_maintenance(core.clone());
     live_turn::start_queued_input_maintenance(core.clone());
+    live_turn::start_worktree_maintenance(core.clone());
     live_turn::start_history_snapshot_maintenance(core);
     Ok(())
 }
@@ -2077,6 +2116,11 @@ pub fn run() -> i32 {
             workspace_base_divergence,
             refresh_workspace_base,
             pending_worker_adoptions,
+            list_worktrees,
+            worktree_usage,
+            archive_chat,
+            reclaim_worktree,
+            sweep_worktrees,
             adopt_worker_worktree,
             discard_worker_worktree,
             register_verifier_manifest,

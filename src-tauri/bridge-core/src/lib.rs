@@ -21,8 +21,10 @@ pub mod backend_binding;
 pub mod binary;
 pub mod briefing_conformance;
 pub mod briefing_policy;
+pub mod build_cache;
 pub mod browser_bridge;
 pub mod builtin_compatibility;
+pub mod capability_projection;
 pub mod check_runner;
 pub mod claude_adapter;
 pub mod claude_import;
@@ -66,6 +68,7 @@ pub mod orchestrator;
 pub mod ownership;
 pub mod policy;
 pub mod policy_coordinator;
+pub mod provider_limit;
 pub mod policy_replay;
 pub mod project_onboarding;
 pub mod process_ledger;
@@ -121,6 +124,7 @@ pub mod work_observation;
 pub mod workspace_files;
 pub mod workspaces;
 pub mod worktree_coordinator;
+pub mod worktree_registry;
 
 pub use runtime::{
     start_health_server, BootConfig, BridgeCore, DelegationState, RuntimeSession,

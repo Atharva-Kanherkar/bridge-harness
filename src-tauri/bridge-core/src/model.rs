@@ -623,6 +623,11 @@ pub struct WorkerRuntimeRecord {
     pub waiting_reason: Option<String>,
     #[serde(default)]
     pub progress_summary: Option<String>,
+    /// Bridge's own verdict on a failure — `stalled`, `protocol_invalid`,
+    /// `transient`, `permanent` — so the UI reads a classification rather
+    /// than pattern-matching the summary Bridge wrote.
+    #[serde(default)]
+    pub failure_class: Option<String>,
     pub updated_at: String,
 }
 

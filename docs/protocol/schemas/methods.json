@@ -394,6 +394,13 @@
       "resultSchema": "bridge-state.json"
     },
     {
+      "command": "archive_chat",
+      "domain": "sessions",
+      "method": "sessions/archive_chat",
+      "paramsSchema": "archive-chat-params.json",
+      "resultSchema": "archive-chat-result.json"
+    },
+    {
       "command": "save_memory_record",
       "domain": "memory",
       "method": "memory/save_memory_record",
@@ -558,7 +565,7 @@
       "command": "list_slash_commands",
       "domain": "slash",
       "method": "slash/list_slash_commands",
-      "paramsSchema": null,
+      "paramsSchema": "list-slash-commands-params.json",
       "resultSchema": "slash-commands-result.json"
     },
     {
@@ -637,6 +644,34 @@
       "method": "worktrees/discard_worker_worktree",
       "paramsSchema": "discard-worker-worktree-params.json",
       "resultSchema": "worker-repository-binding.json"
+    },
+    {
+      "command": "list_worktrees",
+      "domain": "worktrees",
+      "method": "worktrees/list_worktrees",
+      "paramsSchema": null,
+      "resultSchema": "worktree-inventory-result.json"
+    },
+    {
+      "command": "worktree_usage",
+      "domain": "worktrees",
+      "method": "worktrees/worktree_usage",
+      "paramsSchema": null,
+      "resultSchema": "worktree-usage.json"
+    },
+    {
+      "command": "reclaim_worktree",
+      "domain": "worktrees",
+      "method": "worktrees/reclaim_worktree",
+      "paramsSchema": "reclaim-worktree-params.json",
+      "resultSchema": "worktree-reclaim-result.json"
+    },
+    {
+      "command": "sweep_worktrees",
+      "domain": "worktrees",
+      "method": "worktrees/sweep_worktrees",
+      "paramsSchema": null,
+      "resultSchema": "worktree-sweep-result.json"
     },
     {
       "command": "get_router_preferences",

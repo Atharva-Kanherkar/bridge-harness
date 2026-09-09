@@ -173,6 +173,7 @@ fn launch(
         &binary,
         &["serve", "--hostname", "127.0.0.1", "--port", &port_argument],
     );
+    binary::hydrate_command_path(&mut command);
     command
         .current_dir(request.cwd)
         .env("OPENCODE_SERVER_USERNAME", "bridge")
@@ -182,6 +183,7 @@ fn launch(
         // Piped and tail-captured so a dead server reports its own error
         // instead of a generic exit.
         .stderr(Stdio::piped());
+    crate::build_cache::apply(&mut command, std::path::Path::new(request.cwd));
     crate::adapters::configure_process_group(&mut command);
     if let Some(on_progress) = request.on_progress {
         on_progress(crate::adapters::StartupPhase::Spawning);
@@ -833,6 +835,10 @@ fn prompt_body(
         body["variant"] = json!(variant);
     }
     if let Some(system) = instructions.map(str::trim).filter(|value| !value.is_empty()) {
+        // OpenCode 1.18.3+ appends this per-message system value after its own
+        // provider, environment, MCP, instruction, and skill guidance. It does
+        // not replace the built-in system prompt; keeping it role-separated is
+        // stronger than converting Bridge authority into an ordinary text part.
         body["system"] = json!(system);
     }
     body
@@ -974,17 +980,20 @@ fn binary_version_at(executable: &Path) -> Option<String> {
 }
 
 pub fn is_supported_version(version: &str) -> bool {
-    let mut parts = version
-        .trim()
-        .trim_start_matches('v')
-        .split(|character: char| !character.is_ascii_digit())
-        .filter(|part| !part.is_empty())
-        .take(3)
-        .filter_map(|part| part.parse::<u64>().ok());
-    let major = parts.next();
-    let minor = parts.next().unwrap_or(0);
-    let patch = parts.next().unwrap_or(0);
-    matches!(major, Some(major) if (major, minor, patch) >= MINIMUM_VERSION)
+    let value = version.trim().strip_prefix('v').unwrap_or(version.trim());
+    let parts = value.split('.').collect::<Vec<_>>();
+    if parts.len() != 3
+        || parts
+            .iter()
+            .any(|part| part.is_empty() || !part.chars().all(|character| character.is_ascii_digit()))
+    {
+        return false;
+    }
+    let parsed = parts
+        .iter()
+        .map(|part| part.parse::<u64>())
+        .collect::<Result<Vec<_>, _>>();
+    matches!(parsed.as_deref(), Ok([major, minor, patch]) if (*major, *minor, *patch) >= MINIMUM_VERSION)
 }
 
 fn ensure_supported_version(executable: &Path) -> Result<String, BridgeError> {
@@ -1137,6 +1146,7 @@ fn with_control_server<T>(
         executable,
         &["serve", "--hostname", "127.0.0.1", "--port", &port_argument],
     );
+    binary::hydrate_command_path(&mut command);
     command
         .current_dir(directory)
         .env("OPENCODE_SERVER_USERNAME", "bridge")
@@ -1639,9 +1649,13 @@ mod tests {
         assert!(is_supported_version("1.18.3"));
         assert!(is_supported_version("v1.18.4"));
         assert!(!is_supported_version("unknown"));
-        assert!(is_supported_version("1.19"));
-        assert!(is_supported_version("2.0"));
+        assert!(is_supported_version("1.19.0"));
+        assert!(is_supported_version("2.0.0"));
         assert!(!is_supported_version("1.18"));
+        assert!(!is_supported_version("build 9"));
+        assert!(!is_supported_version("opencode 1.18.29"));
+        assert!(!is_supported_version("1.18.3-beta.1"));
+        assert!(!is_supported_version("1.18.3.1"));
     }
 
     #[test]

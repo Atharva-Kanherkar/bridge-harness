@@ -564,6 +564,15 @@ fn fenced_blocks(text: &str, matches_tag: impl Fn(&str) -> bool) -> Vec<FencedBl
     blocks
 }
 
+/// Whether a message carries a worker-result envelope at all.
+///
+/// The question `latest_worker_output` needs to ask: a valid result followed
+/// by a cheerful "Done!" used to be invisible, because only the newest
+/// assistant message was ever read.
+pub fn contains_worker_result_block(text: &str) -> bool {
+    !fenced_blocks(text, is_worker_result_tag).is_empty()
+}
+
 fn is_delegation_tag(tag: &str) -> bool {
     tag.contains("bridge") && tag.contains("delegate")
 }
@@ -578,6 +587,10 @@ fn is_peek_tag(tag: &str) -> bool {
 
 fn is_steer_tag(tag: &str) -> bool {
     tag.contains("bridge") && tag.contains("steer")
+}
+
+fn is_stop_tag(tag: &str) -> bool {
+    tag.contains("bridge") && tag.contains("stop")
 }
 
 /// What the host filled in, corrected, or ignored on the model's behalf.
@@ -809,6 +822,20 @@ pub fn normalize_worker_result(value: &mut Value) -> Normalizations {
         status
     });
     if let Some(status) = status {
+        // `protocol_invalid` is Bridge's verdict about an envelope it could not
+        // read — and an envelope Bridge just read is by definition readable.
+        // A worker claiming it about itself was claiming a class that skips
+        // classification entirely and terminates with no retry, which is a
+        // strictly better outcome for a worker that wants to stop trying.
+        let status = if status == WorkerResultStatus::ProtocolInvalid {
+            notes.record(
+                "status \"protocol_invalid\" read as \"failed\": a worker cannot declare its own envelope unreadable"
+                    .to_owned(),
+            );
+            WorkerResultStatus::Failed
+        } else {
+            status
+        };
         object.insert("status".into(), Value::from(status.as_str()));
     }
 
@@ -1187,6 +1214,81 @@ pub fn parse_steer_request(text: &str) -> ParseOutcome<SteerRequest> {
     }
 }
 
+/// The longest reason a `bridge-stop` may carry. A stop is a decision, not an
+/// explanation; the reason exists so the parent's result and the user's
+/// timeline say *why* rather than just "cancelled".
+pub const MAX_STOP_REASON_BYTES: usize = 500;
+
+/// The orchestrator ending one of its own workers.
+///
+/// The verb the vocabulary was missing. Without it a model that wanted a
+/// worker stopped could only steer it the words "please stop" — advisory text
+/// that lands at a turn boundary, that a worker is free to ignore, and that
+/// never reaches a provider which does not support mid-turn steering at all.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct StopRequest {
+    pub session_id: String,
+    pub reason: String,
+}
+
+impl StopRequest {
+    fn validate(&self) -> Result<(), String> {
+        if !valid_child_session_id(&self.session_id) {
+            return Err("bridge-stop sessionId must be 1-128 identifier characters".into());
+        }
+        if self.reason.trim().is_empty() {
+            return Err(
+                "bridge-stop reason cannot be empty; a stop with no reason is unreadable later"
+                    .into(),
+            );
+        }
+        if self.reason.len() > MAX_STOP_REASON_BYTES {
+            return Err(format!(
+                "bridge-stop reason must be at most {MAX_STOP_REASON_BYTES} bytes"
+            ));
+        }
+        Ok(())
+    }
+
+    /// The reason as it is recorded, whitespace trimmed.
+    pub fn cause(&self) -> &str {
+        self.reason.trim()
+    }
+}
+
+pub fn parse_stop_request(text: &str) -> ParseOutcome<StopRequest> {
+    let blocks = fenced_blocks(text, is_stop_tag);
+    if blocks.is_empty() {
+        return ParseOutcome::Absent;
+    }
+    if blocks.len() != 1 {
+        return ParseOutcome::Invalid {
+            raw: blocks
+                .iter()
+                .map(|block| block.body.as_str())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            reason: "expected at most one bridge-stop block per message".into(),
+        };
+    }
+    let raw = blocks[0].body.clone();
+    match serde_json::from_str::<StopRequest>(&raw) {
+        Ok(request) => match request.validate() {
+            Ok(()) => ParseOutcome::Parsed(request),
+            Err(reason) => ParseOutcome::Invalid { raw, reason },
+        },
+        Err(error) => ParseOutcome::Invalid {
+            raw,
+            reason: format!("invalid bridge-stop JSON: {error}"),
+        },
+    }
+}
+
+pub fn strip_stop(text: &str) -> String {
+    strip_machine_blocks(text, is_stop_tag)
+}
+
 pub fn strip_steer(text: &str) -> String {
     strip_machine_blocks(text, is_steer_tag)
 }
@@ -1207,6 +1309,9 @@ pub fn parse_worker_result(text: &str) -> ParseOutcome<WorkerResult> {
         };
     }
     let raw = blocks[0].body.clone();
+    // Parse only the tagged fence body. JSON encodes newlines inside strings
+    // as escapes, so quoted fences cannot terminate a valid JSON body. Searching
+    // the surrounding prose for an object can accept an unrelated example.
     let mut value = match serde_json::from_str::<Value>(&raw) {
         Ok(value) => value,
         Err(error) => {
@@ -2430,5 +2535,156 @@ mod tests {
         assert_eq!(parsed.schema_version, SCHEMA_VERSION);
         assert_eq!(parsed.status, WorkerResultStatus::Completed);
         assert_eq!(parsed.summary, "did the thing");
+    }
+}
+
+#[cfg(test)]
+mod stop_request_tests {
+    use super::*;
+
+    fn block(body: &str) -> String {
+        format!("Stopping it.\n\n```bridge-stop\n{body}\n```\n")
+    }
+
+    #[test]
+    fn a_well_formed_stop_names_the_worker_and_the_reason() {
+        let ParseOutcome::Parsed(stop) = parse_stop_request(&block(
+            r#"{"sessionId":"worker-1","reason":"  the user asked for it  "}"#,
+        )) else {
+            panic!("a valid stop must parse");
+        };
+        assert_eq!(stop.session_id, "worker-1");
+        assert_eq!(
+            stop.cause(),
+            "the user asked for it",
+            "the reason is what the parent's result and the timeline say"
+        );
+    }
+
+    /// A stop with no reason is unreadable a week later, when someone is
+    /// asking why half an objective is missing.
+    #[test]
+    fn a_stop_without_a_reason_is_refused() {
+        let ParseOutcome::Invalid { reason, .. } =
+            parse_stop_request(&block(r#"{"sessionId":"worker-1","reason":"   "}"#))
+        else {
+            panic!("an empty reason must be refused");
+        };
+        assert!(reason.contains("reason cannot be empty"), "{reason}");
+    }
+
+    #[test]
+    fn a_stop_targeting_a_malformed_session_id_is_refused() {
+        let ParseOutcome::Invalid { reason, .. } = parse_stop_request(&block(
+            r#"{"sessionId":"../../etc/passwd","reason":"nope"}"#,
+        )) else {
+            panic!("an unusable session id must be refused");
+        };
+        assert!(reason.contains("sessionId"), "{reason}");
+    }
+
+    #[test]
+    fn two_stop_blocks_in_one_message_are_refused_rather_than_half_applied() {
+        let text = format!(
+            "{}{}",
+            block(r#"{"sessionId":"a","reason":"one"}"#),
+            block(r#"{"sessionId":"b","reason":"two"}"#)
+        );
+        assert!(matches!(
+            parse_stop_request(&text),
+            ParseOutcome::Invalid { .. }
+        ));
+    }
+
+    #[test]
+    fn stopping_is_absent_from_a_message_that_does_not_ask_for_it() {
+        assert!(matches!(
+            parse_stop_request("Just talking about stopping, not asking."),
+            ParseOutcome::Absent
+        ));
+    }
+
+    /// The machine block is plumbing; the user reads the prose around it.
+    #[test]
+    fn strip_stop_removes_only_the_stop_block() {
+        let text = block(r#"{"sessionId":"worker-1","reason":"overtaken"}"#);
+        let stripped = strip_stop(&text);
+        assert_eq!(stripped, "Stopping it.");
+        assert!(!stripped.contains("bridge-stop"));
+    }
+}
+
+#[cfg(test)]
+mod result_pipeline_tests {
+    use super::*;
+
+    fn envelope(extra: &str) -> String {
+        format!(
+            "```bridge-worker-result\n{{\"schemaVersion\":1,\"status\":\"completed\",\"summary\":\"did the thing\"{extra}}}\n```"
+        )
+    }
+
+    /// The case that cost a repair turn every time a worker was polite. The
+    /// envelope is valid; the chatter after it is not a reason to reject it.
+    #[test]
+    fn a_result_followed_by_chatter_is_still_a_result() {
+        let text = format!("{}\n\nDone! Let me know if you need anything else.", envelope(""));
+        let ParseOutcome::Parsed(result) = parse_worker_result(&text) else {
+            panic!("the envelope is valid whatever follows it");
+        };
+        assert_eq!(result.summary, "did the thing");
+    }
+
+    /// A worker quoting a fenced snippet inside its own envelope used to
+    /// truncate the block mid-object and be told its JSON was invalid.
+    #[test]
+    fn an_envelope_quoting_a_fenced_snippet_is_recovered() {
+        let text = "```bridge-worker-result\n{\"schemaVersion\":1,\"status\":\"completed\",\"summary\":\"ran it\",\"decisions\":[\"used ```sh\\nmake test\\n``` as the check\"]}\n```";
+        let ParseOutcome::Parsed(result) = parse_worker_result(text) else {
+            panic!("a quoted fence must not truncate the envelope");
+        };
+        assert_eq!(result.summary, "ran it");
+        assert_eq!(result.decisions.len(), 1);
+    }
+
+    /// Braces inside string literals are not structure.
+    #[test]
+    fn braces_inside_strings_do_not_end_the_object() {
+        let text = "```bridge-worker-result\n{\"schemaVersion\":1,\"status\":\"failed\",\"summary\":\"awk '{print $1}' failed\",\"risks\":[\"```\"]}\n```";
+        let ParseOutcome::Parsed(result) = parse_worker_result(text) else {
+            panic!("string contents are not structure");
+        };
+        assert_eq!(result.summary, "awk '{print $1}' failed");
+    }
+
+    #[test]
+    fn malformed_fence_cannot_borrow_json_from_surrounding_prose() {
+        let example = r#"{"schemaVersion":1,"status":"completed","summary":"example"}"#;
+        for text in [
+            format!("{example}\n```bridge-worker-result\n{{broken\n```"),
+            format!("```bridge-worker-result\ninvalid\n```\n{example}"),
+            format!("```bridge-worker-result\n{example} trailing garbage\n```"),
+        ] {
+            assert!(matches!(parse_worker_result(&text), ParseOutcome::Invalid { .. }));
+        }
+    }
+
+    /// `protocol_invalid` is Bridge's verdict about an envelope it could not
+    /// read. An envelope Bridge just read is readable by definition, and the
+    /// class terminates with no retry — so self-declaring it is a worker
+    /// choosing the outcome that costs it least.
+    #[test]
+    fn a_worker_cannot_declare_its_own_envelope_unreadable() {
+        let text = "```bridge-worker-result\n{\"schemaVersion\":1,\"status\":\"protocol_invalid\",\"summary\":\"giving up\"}\n```";
+        let ParseOutcome::Parsed(result) = parse_worker_result(text) else {
+            panic!("it still parses; it just does not get that status");
+        };
+        assert_eq!(result.status, WorkerResultStatus::Failed);
+    }
+
+    #[test]
+    fn a_message_with_no_envelope_is_not_mistaken_for_one() {
+        assert!(!contains_worker_result_block("Still working on it."));
+        assert!(contains_worker_result_block(&envelope("")));
     }
 }

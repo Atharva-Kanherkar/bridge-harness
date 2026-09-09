@@ -52,25 +52,22 @@ impl SkillProvider {
     }
 
     fn skill_root(self, home: &Path) -> PathBuf {
-        match self {
-            // skills@1.5.19 uses the Agent Skills standard root for Codex.
-            Self::Codex => home.join(".agents/skills"),
-            Self::Claude => home.join(".claude/skills"),
-            Self::OpenCode => home.join(".config/opencode/skills"),
-        }
+        crate::capability_projection::skill_install_root(self.capability_harness(), home)
     }
 
     fn discovery_roots(self, home: &Path) -> Vec<PathBuf> {
+        crate::capability_projection::skill_discovery_roots(
+            self.capability_harness(),
+            home,
+            None,
+        )
+    }
+
+    fn capability_harness(self) -> crate::capability_projection::CapabilityHarness {
         match self {
-            // Codex supports both the shared standard and legacy native root.
-            Self::Codex => vec![home.join(".agents/skills"), home.join(".codex/skills")],
-            Self::Claude => vec![home.join(".claude/skills")],
-            // OpenCode supports its native root plus the Agent Skills and Claude-compatible roots.
-            Self::OpenCode => vec![
-                home.join(".config/opencode/skills"),
-                home.join(".agents/skills"),
-                home.join(".claude/skills"),
-            ],
+            Self::Codex => crate::capability_projection::CapabilityHarness::Codex,
+            Self::Claude => crate::capability_projection::CapabilityHarness::Claude,
+            Self::OpenCode => crate::capability_projection::CapabilityHarness::OpenCode,
         }
     }
 }

@@ -63,6 +63,7 @@ export type BridgeMethod =
   | "sessions/retry_worker_task"
   | "sessions/refresh_account_usage"
   | "sessions/stop_session"
+  | "sessions/archive_chat"
   | "memory/save_memory_record"
   | "memory/list_memory_records"
   | "memory/delete_memory_record"
@@ -98,6 +99,10 @@ export type BridgeMethod =
   | "worktrees/pending_worker_adoptions"
   | "worktrees/adopt_worker_worktree"
   | "worktrees/discard_worker_worktree"
+  | "worktrees/list_worktrees"
+  | "worktrees/worktree_usage"
+  | "worktrees/reclaim_worktree"
+  | "worktrees/sweep_worktrees"
   | "routing/get_router_preferences"
   | "routing/update_router_preferences"
   | "routing/rollback_routing_policy"
@@ -230,6 +235,7 @@ export const BRIDGE_METHODS = [
   { method: "sessions/retry_worker_task", domain: "sessions", command: "retry_worker_task" },
   { method: "sessions/refresh_account_usage", domain: "sessions", command: "refresh_account_usage" },
   { method: "sessions/stop_session", domain: "sessions", command: "stop_session" },
+  { method: "sessions/archive_chat", domain: "sessions", command: "archive_chat" },
   { method: "memory/save_memory_record", domain: "memory", command: "save_memory_record" },
   { method: "memory/list_memory_records", domain: "memory", command: "list_memory_records" },
   { method: "memory/delete_memory_record", domain: "memory", command: "delete_memory_record" },
@@ -265,6 +271,10 @@ export const BRIDGE_METHODS = [
   { method: "worktrees/pending_worker_adoptions", domain: "worktrees", command: "pending_worker_adoptions" },
   { method: "worktrees/adopt_worker_worktree", domain: "worktrees", command: "adopt_worker_worktree" },
   { method: "worktrees/discard_worker_worktree", domain: "worktrees", command: "discard_worker_worktree" },
+  { method: "worktrees/list_worktrees", domain: "worktrees", command: "list_worktrees" },
+  { method: "worktrees/worktree_usage", domain: "worktrees", command: "worktree_usage" },
+  { method: "worktrees/reclaim_worktree", domain: "worktrees", command: "reclaim_worktree" },
+  { method: "worktrees/sweep_worktrees", domain: "worktrees", command: "sweep_worktrees" },
   { method: "routing/get_router_preferences", domain: "routing", command: "get_router_preferences" },
   { method: "routing/update_router_preferences", domain: "routing", command: "update_router_preferences" },
   { method: "routing/rollback_routing_policy", domain: "routing", command: "rollback_routing_policy" },
@@ -480,7 +490,7 @@ export interface BridgeMethodParams {
   "terminal/resize_terminal": ResizeTerminalParams;
   "terminal/close_terminal": CloseTerminalParams;
   "terminal/list_terminals": ListTerminalsParams;
-  "slash/list_slash_commands": undefined;
+  "slash/list_slash_commands": ListSlashCommandsParams;
   "slash/resolve_slash_command": ResolveSlashCommandParams;
   "completion/create_completion_plan": CreateCompletionPlanParams;
   "completion/record_completion_check": RecordCompletionCheckParams;
@@ -492,6 +502,11 @@ export interface BridgeMethodParams {
   "worktrees/pending_worker_adoptions": PendingWorkerAdoptionsParams;
   "worktrees/adopt_worker_worktree": AdoptWorkerWorktreeParams;
   "worktrees/discard_worker_worktree": DiscardWorkerWorktreeParams;
+  "worktrees/list_worktrees": undefined;
+  "worktrees/worktree_usage": undefined;
+  "worktrees/reclaim_worktree": ReclaimWorktreeParams;
+  "worktrees/sweep_worktrees": undefined;
+  "sessions/archive_chat": ArchiveChatParams;
   "routing/get_router_preferences": GetRouterPreferencesParams;
   "routing/update_router_preferences": UpdateRouterPreferencesParams;
   "routing/rollback_routing_policy": RollbackRoutingPolicyParams;
@@ -626,6 +641,7 @@ export interface BridgeMethodResults {
   "sessions/retry_worker_task": UnitResult;
   "sessions/refresh_account_usage": UnitResult;
   "sessions/stop_session": BridgeState;
+  "sessions/archive_chat": ArchiveChatResult;
   "memory/save_memory_record": MemoryRecord;
   "memory/list_memory_records": ListMemoryRecordsResult;
   "memory/delete_memory_record": MemoryRecord;
@@ -661,6 +677,10 @@ export interface BridgeMethodResults {
   "worktrees/pending_worker_adoptions": PendingWorkerAdoptionsResult;
   "worktrees/adopt_worker_worktree": WorkerRepositoryBinding;
   "worktrees/discard_worker_worktree": WorkerRepositoryBinding;
+  "worktrees/list_worktrees": WorktreeInventoryResult;
+  "worktrees/worktree_usage": WorktreeUsage;
+  "worktrees/reclaim_worktree": WorktreeReclaimResult;
+  "worktrees/sweep_worktrees": WorktreeSweepResult;
   "routing/get_router_preferences": RouterPreferences;
   "routing/update_router_preferences": RouterPreferences;
   "routing/rollback_routing_policy": unknown;
@@ -1861,6 +1881,7 @@ export interface WorkerRepositoryBinding {
 
 export interface WorkerRuntimeRecord {
   compatibilityKey: string;
+  failureClass?: string | null;
   lastActivityAt?: string | null;
   lastResult?: unknown;
   lifecycleState: string;
@@ -1909,6 +1930,33 @@ export interface WorkspaceFileChange {
 }
 
 export type WorkspaceRepositoryState = "normal" | "unborn" | "not_git";
+
+export interface WorktreeInventoryEntry {
+  assessedAt?: string | null;
+  branch?: string | null;
+  createdAt: string;
+  disposition?: string | null;
+  id: string;
+  idleSeconds: number;
+  kind: string;
+  lastUsedAt: string;
+  ownerSessionId?: string | null;
+  ownerWorkspaceId?: string | null;
+  path: string;
+  repoRoot: string;
+  retainedReason?: string | null;
+  sizeBytes?: number | null;
+  sizeMeasuredAt?: string | null;
+  state: string;
+}
+
+export interface WorktreeRepositoryUsage {
+  count: number;
+  overBudget: boolean;
+  reclaimableBytes: number;
+  repoRoot: string;
+  sizeBytes: number;
+}
 
 export interface RpcRequest {
   id: RequestId;
@@ -2584,6 +2632,10 @@ export interface ListTerminalsResult {
   terminalIds: string[];
 }
 
+export interface ListSlashCommandsParams {
+  sessionId?: string | null;
+}
+
 export type SlashCommandsResult = SlashCommand[];
 
 export interface ResolveSlashCommandParams {
@@ -2661,6 +2713,53 @@ export interface AdoptWorkerWorktreeParams {
 export interface DiscardWorkerWorktreeParams {
   reason: string;
   sessionId: string;
+}
+
+export type WorktreeInventoryResult = WorktreeInventoryEntry[];
+
+export interface WorktreeUsage {
+  githubIdleTtlSeconds: number;
+  maxPerRepo: number;
+  maxTotalBytes: number;
+  orchestratorIdleTtlSeconds: number;
+  reclaimableBytes: number;
+  reclaimableCount: number;
+  repositories: WorktreeRepositoryUsage[];
+  retainedCount: number;
+  totalBytes: number;
+  totalCount: number;
+  workerIdleTtlSeconds: number;
+}
+
+export interface ReclaimWorktreeParams {
+  worktreeId: string;
+}
+
+export interface WorktreeReclaimResult {
+  bytesFreed: number;
+  detail?: string | null;
+  disposition: string;
+  reclaimed: boolean;
+}
+
+export interface WorktreeSweepResult {
+  measurementsTruncated: number;
+  overBudgetBytes: number;
+  removed: number;
+  removedBytes: number;
+  retained: number;
+  retainedBytes: number;
+  skipped: number;
+}
+
+export interface ArchiveChatParams {
+  sessionId: string;
+}
+
+export interface ArchiveChatResult {
+  archived: boolean;
+  bytesFreed: number;
+  worktreeDetail?: string | null;
 }
 
 export interface GetRouterPreferencesParams {

@@ -561,6 +561,87 @@ fn base_branch_divergence_mirrors_core() {
 }
 
 #[test]
+fn worktree_inventory_entry_mirrors_core() {
+    assert_mirrors::<wire::WorktreeInventoryEntry>(
+        &crate::worktree_registry::WorktreeInventoryEntry {
+            id: "wt-1".into(),
+            kind: crate::worktree_registry::KIND_WORKER.into(),
+            repo_root: "/repos/demo".into(),
+            path: "/data/worktrees/workers/oslo/child".into(),
+            branch: Some("bridge/task-worker-child".into()),
+            owner_session_id: Some("child".into()),
+            owner_workspace_id: Some("w".into()),
+            state: crate::worktree_registry::STATE_IDLE.into(),
+            disposition: Some("retained".into()),
+            retained_reason: Some("uncommitted changes".into()),
+            assessed_at: Some("now".into()),
+            size_bytes: Some(4_194_304),
+            size_measured_at: Some("now".into()),
+            created_at: "now".into(),
+            last_used_at: "now".into(),
+            idle_seconds: 86_400,
+        },
+    );
+}
+
+#[test]
+fn archive_chat_result_mirrors_core() {
+    assert_mirrors::<wire::ArchiveChatResult>(&crate::worktree_registry::ArchiveChatResult {
+        archived: true,
+        bytes_freed: 0,
+        worktree_detail: Some("uncommitted changes".into()),
+    });
+}
+
+#[test]
+fn worktree_reclaim_result_mirrors_core() {
+    assert_mirrors::<wire::WorktreeReclaimResult>(
+        &crate::worktree_registry::WorktreeReclaimResult {
+            reclaimed: false,
+            bytes_freed: 0,
+            disposition: "at_risk".into(),
+            detail: Some("uncommitted changes".into()),
+        },
+    );
+}
+
+#[test]
+fn worktree_sweep_result_mirrors_core() {
+    assert_mirrors::<wire::WorktreeSweepResult>(&crate::worktree_registry::SweepOutcome {
+        removed: 2,
+        removed_bytes: 8_388_608,
+        retained: 3,
+        retained_bytes: 4_194_304,
+        over_budget_bytes: 0,
+        skipped: 1,
+        measurements_truncated: 0,
+    });
+}
+
+#[test]
+fn worktree_usage_mirrors_core() {
+    assert_mirrors::<wire::WorktreeUsage>(&crate::worktree_registry::WorktreeUsage {
+        total_count: 3,
+        total_bytes: 12_582_912,
+        reclaimable_count: 1,
+        reclaimable_bytes: 4_194_304,
+        retained_count: 2,
+        max_total_bytes: 10 * 1024 * 1024 * 1024,
+        max_per_repo: 12,
+        worker_idle_ttl_seconds: 86_400,
+        orchestrator_idle_ttl_seconds: 604_800,
+        github_idle_ttl_seconds: 604_800,
+        repositories: vec![crate::worktree_registry::WorktreeRepositoryUsage {
+            repo_root: "/repos/demo".into(),
+            count: 3,
+            size_bytes: 12_582_912,
+            reclaimable_bytes: 4_194_304,
+            over_budget: false,
+        }],
+    });
+}
+
+#[test]
 fn worker_repository_binding_mirrors_core() {
     assert_mirrors::<wire::WorkerRepositoryBinding>(
         &crate::worker_adoption::WorkerRepositoryBinding {
@@ -581,7 +662,7 @@ fn worker_repository_binding_mirrors_core() {
             detail: None,
             created_at: "now".into(),
             updated_at: "now".into(),
-        },
+                    },
     );
 }
 
@@ -660,7 +741,7 @@ fn configuration_payloads_mirror_core() {
         is_built_in: true,
         created_at: "now".into(),
         updated_at: "now".into(),
-    });
+            });
 }
 
 #[test]
@@ -919,7 +1000,7 @@ fn the_session_forest_snapshot_mirrors_core() {
             resume_eligibility: model::ResumeEligibility::CheckpointRestored,
             latest_checkpoint_entry_id: Some("e-0".into()),
             updated_at: "now".into(),
-        }),
+                    }),
         leaves: vec![entry],
         worker_leases: vec![model::WorkerLease {
             session_id: "worker-1".into(),
@@ -933,7 +1014,7 @@ fn the_session_forest_snapshot_mirrors_core() {
             expires_at: Some("later".into()),
             created_at: "now".into(),
             updated_at: "now".into(),
-        }],
+                    }],
         worker_runtimes: vec![model::WorkerRuntimeRecord {
             session_id: "worker-1".into(),
             parent_session_id: "s-1".into(),
@@ -951,6 +1032,7 @@ fn the_session_forest_snapshot_mirrors_core() {
             waiting_reason: Some("approval_requested".into()),
             progress_summary: Some("Running: cargo test".into()),
             updated_at: "now".into(),
+            failure_class: None,
         }],
         worker_queue: vec![model::QueuedWorkerRequest {
             id: "q-1".into(),
@@ -969,7 +1051,7 @@ fn the_session_forest_snapshot_mirrors_core() {
             last_error: Some("busy".into()),
             created_at: "now".into(),
             updated_at: "now".into(),
-        }],
+                    }],
         usage: vec![model::UsageLedgerRow {
             id: 1,
             workspace_id: "w-1".into(),
@@ -1197,12 +1279,12 @@ fn result_payloads_mirror_core() {
             is_built_in: false,
             created_at: "now".into(),
             updated_at: "now".into(),
-        }],
+                    }],
         default_agent_id: "reviewer".into(),
         permission_policy: agent_config::PermissionPolicy {
             auto_approve_provider_permissions: true,
             updated_at: "now".into(),
-        },
+                    },
     });
     assert_mirrors::<wire::BrowserRouteDecision>(&browser_bridge::route_browser(
         browser_bridge::BrowserRouteRequest {

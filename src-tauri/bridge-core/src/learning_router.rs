@@ -1201,11 +1201,15 @@ fn harness_capacity(
 }
 
 /// How long a detected quota/rate-limit signal keeps its harness out of
-/// routing consideration for this workspace. Deliberately short and
-/// conservative: real reset windows vary a lot by provider and plan, and this
-/// is a floor against immediately re-hammering the same wall, not a claim
-/// about exactly when the limit clears.
-const QUOTA_COOLDOWN_MINUTES: i64 = 15;
+/// routing consideration when the provider gives no reset hint.
+///
+/// This is a floor, not a claim about when the limit clears. It used to be 15
+/// minutes, chosen to be conservative — but conservative in the wrong
+/// direction: Codex's own reset was roughly 40 hours away, so a 15-minute
+/// cooldown let the next delegation walk back into the same wall about 160
+/// times before it lifted. An hour is still short of any real reset window
+/// while staying well inside the blast radius of a false positive.
+const QUOTA_COOLDOWN_MINUTES: i64 = 60;
 
 /// Record that `harness` just told this workspace it is out of quota, so the
 /// next delegation routes around it instead of repeating the same failure.
@@ -1219,8 +1223,26 @@ pub fn mark_harness_quota_exhausted(
     reason: &str,
     event_session_id: &str,
 ) -> Result<(), BridgeError> {
+    mark_harness_quota_exhausted_until(db, workspace_id, harness, reason, event_session_id, None)
+}
+
+/// [`mark_harness_quota_exhausted`] with the provider's own reset hint.
+///
+/// A hint is authoritative when it is longer than the floor — the provider
+/// knows when its window rolls over and Bridge does not. A hint shorter than
+/// the floor is not trusted down to the second, because the cost of believing
+/// an optimistic one is another paid turn into the same wall.
+pub fn mark_harness_quota_exhausted_until(
+    db: &Connection,
+    workspace_id: &str,
+    harness: &str,
+    reason: &str,
+    event_session_id: &str,
+    reset_at: Option<chrono::DateTime<Utc>>,
+) -> Result<(), BridgeError> {
     let now = Utc::now();
-    let cooldown_until = now + chrono::Duration::minutes(QUOTA_COOLDOWN_MINUTES);
+    let floor = now + chrono::Duration::minutes(QUOTA_COOLDOWN_MINUTES);
+    let cooldown_until = reset_at.filter(|reset| *reset > floor).unwrap_or(floor);
     db.execute(
         "INSERT INTO harness_quota_cooldowns(workspace_id,harness,reason,exhausted_at,cooldown_until)
          VALUES(?1,?2,?3,?4,?5)
@@ -1243,6 +1265,37 @@ pub fn mark_harness_quota_exhausted(
         event_session_id,
         &format!("{harness} marked out of quota ({reason}); routing around it until {cooldown_until}"),
     )
+}
+
+/// The active quota cooldown covering `session_id`'s harness, if any.
+///
+/// Exposed so paths that spend a provider turn without going through routing
+/// — compaction, most of all — can check the same durable fact the router
+/// checks, instead of discovering the limit by hitting it again.
+pub fn session_harness_cooldown(
+    db: &Connection,
+    session_id: &str,
+) -> Option<(String, chrono::DateTime<Utc>)> {
+    let (workspace_id, harness): (Option<String>, String) = db
+        .query_row(
+            "SELECT workspace_id,harness FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .ok()?;
+    let workspace_id = workspace_id?;
+    let until: String = db
+        .query_row(
+            "SELECT cooldown_until FROM harness_quota_cooldowns
+             WHERE workspace_id=?1 AND harness=?2 AND cooldown_until > ?3",
+            params![workspace_id, harness, Utc::now().to_rfc3339()],
+            |row| row.get(0),
+        )
+        .ok()?;
+    let until = chrono::DateTime::parse_from_rfc3339(&until)
+        .ok()?
+        .with_timezone(&Utc);
+    Some((harness, until))
 }
 
 pub fn load_preferences(
@@ -2295,6 +2348,7 @@ mod tests {
                 waiting_reason: None,
                 progress_summary: None,
                 updated_at: "now".into(),
+                failure_class: None,
             },
         )
         .unwrap();

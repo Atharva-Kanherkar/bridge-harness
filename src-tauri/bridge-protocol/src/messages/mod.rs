@@ -43,6 +43,7 @@ mod state;
 mod terminal;
 mod work;
 mod workspaces;
+mod worktrees;
 
 pub use agents::*;
 pub use approvals::*;
@@ -68,6 +69,7 @@ pub use state::*;
 pub use terminal::*;
 pub use work::*;
 pub use workspaces::*;
+pub use worktrees::*;
 
 use schemars::schema_for;
 use serde_json::Value;
@@ -247,7 +249,7 @@ typed_methods![
     (CloseTerminal, CloseTerminalParams, UnitResult),
     (ListTerminals, ListTerminalsParams, ListTerminalsResult),
     // slash commands
-    (ListSlashCommands, _, SlashCommandsResult),
+    (ListSlashCommands, ListSlashCommandsParams, SlashCommandsResult),
     (ResolveSlashCommand, ResolveSlashCommandParams, SlashCommandResolveResult),
     // completion / verification
     (CreateCompletionPlan, CreateCompletionPlanParams, CompletionSummary),
@@ -262,6 +264,12 @@ typed_methods![
     (PendingWorkerAdoptions, PendingWorkerAdoptionsParams, PendingWorkerAdoptionsResult),
     (AdoptWorkerWorktree, AdoptWorkerWorktreeParams, WorkerRepositoryBinding),
     (DiscardWorkerWorktree, DiscardWorkerWorktreeParams, WorkerRepositoryBinding),
+    // worktree inventory and retention
+    (ListWorktrees, _, WorktreeInventoryResult),
+    (WorktreeUsageReport, _, WorktreeUsage),
+    (ReclaimWorktree, ReclaimWorktreeParams, WorktreeReclaimResult),
+    (SweepWorktrees, _, WorktreeSweepResult),
+    (ArchiveChat, ArchiveChatParams, ArchiveChatResult),
     // routing
     (GetRouterPreferences, GetRouterPreferencesParams, RouterPreferences),
     (UpdateRouterPreferences, UpdateRouterPreferencesParams, RouterPreferences),
@@ -509,7 +517,6 @@ mod tests {
             MethodName::Health,
             MethodName::GetState,
             MethodName::RefreshAccountUsage,
-            MethodName::ListSlashCommands,
             MethodName::GetMemoryCapabilities,
             MethodName::GetExtractionSettings,
             MethodName::GetConsolidationSettings,

@@ -46,7 +46,7 @@ if not icon.endswith(".icns"):
     icon += ".icns"
 subprocess.run(["node", str(root / "scripts/verify-icons.mjs"), str(app / "Contents/Resources" / icon)], check=True)
 sidecar = app / "Contents/Resources/sidecar/claude-agent"
-for name in ("index.mjs", "briefing.mjs", "input.mjs", "options.mjs", "package.json", "package-lock.json"):
+for name in ("index.mjs", "briefing.mjs", "input.mjs", "options.mjs", "read-only.mjs", "package.json", "package-lock.json"):
     if (sidecar / name).read_bytes() != (root / "sidecar/claude-agent" / name).read_bytes():
         raise SystemExit("verify-macos-app: stale or missing sidecar source: " + name)
 sdk = sidecar / "node_modules/@anthropic-ai/claude-agent-sdk"

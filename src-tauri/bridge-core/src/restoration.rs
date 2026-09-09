@@ -609,7 +609,7 @@ mod tests {
             .append("s", EntryKind::UserMessage, serde_json::json!({"text":"older words"}))
             .unwrap();
         // A real compaction boundary whose summary is far over the cap.
-        CompactionController::begin(&db, "s", CompactionReason::Manual, 7).unwrap().unwrap();
+        CompactionController::begin(&db, "s", CompactionReason::Manual, 7).unwrap().prompt().unwrap();
         let pending = CompactionController::pending(&db, "s").unwrap().unwrap();
         let huge = format!("THE POINT: we chose SQLite. {}", "filler ünïcödé ".repeat(20_000));
         let output = serde_json::json!({

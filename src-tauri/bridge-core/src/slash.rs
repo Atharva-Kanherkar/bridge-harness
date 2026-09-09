@@ -5,6 +5,9 @@
 //! to the command's harness; skills/custom prompts are expanded into the
 //! turn text so they work outside each provider's TUI.
 
+use crate::capability_projection::{
+    command_discovery_roots, skill_discovery_roots, CapabilityHarness,
+};
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, serde::Serialize)]
@@ -49,6 +52,13 @@ pub enum SlashDispatch {
 }
 
 pub fn list_commands(available: &std::collections::HashSet<String>) -> Vec<SlashCommand> {
+    list_commands_for_project(available, None)
+}
+
+pub fn list_commands_for_project(
+    available: &std::collections::HashSet<String>,
+    project: Option<&Path>,
+) -> Vec<SlashCommand> {
     let home = std::env::var_os("HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
@@ -93,51 +103,55 @@ pub fn list_commands(available: &std::collections::HashSet<String>) -> Vec<Slash
 
     if available.contains("claude") {
         out.extend(claude_builtins());
-        for (name, path) in collect_md_commands(&home.join(".claude/commands")) {
-            out.push(SlashCommand {
-                name,
-                description: read_md_description(&path),
-                harness: "claude".into(),
-                kind: "command".into(),
-            });
+        for root in command_discovery_roots(CapabilityHarness::Claude, &home, project) {
+            for (name, path) in collect_md_commands(&root) {
+                out.push(SlashCommand {
+                    name,
+                    description: read_md_description(&path),
+                    harness: "claude".into(),
+                    kind: "command".into(),
+                });
+            }
         }
-        for (name, path) in collect_skills(&home.join(".claude/skills")) {
-            out.push(SlashCommand {
-                name,
-                description: read_md_description(&path),
-                harness: "claude".into(),
-                kind: "skill".into(),
-            });
+        for root in skill_discovery_roots(CapabilityHarness::Claude, &home, project) {
+            for (name, path) in collect_skills(&root) {
+                out.push(SlashCommand {
+                    name,
+                    description: read_md_description(&path),
+                    harness: "claude".into(),
+                    kind: "skill".into(),
+                });
+            }
         }
     }
 
     if available.contains("codex") {
         out.extend(codex_builtins());
-        for (name, path) in collect_md_commands(&home.join(".codex/prompts")) {
-            out.push(SlashCommand {
-                name,
-                description: read_md_description(&path),
-                harness: "codex".into(),
-                kind: "prompt".into(),
-            });
+        for root in command_discovery_roots(CapabilityHarness::Codex, &home, project) {
+            for (name, path) in collect_md_commands(&root) {
+                out.push(SlashCommand {
+                    name,
+                    description: read_md_description(&path),
+                    harness: "codex".into(),
+                    kind: "prompt".into(),
+                });
+            }
         }
-        for (name, path) in collect_skills(&home.join(".codex/skills")) {
-            out.push(SlashCommand {
-                name,
-                description: read_md_description(&path),
-                harness: "codex".into(),
-                kind: "skill".into(),
-            });
+        for root in skill_discovery_roots(CapabilityHarness::Codex, &home, project) {
+            for (name, path) in collect_skills(&root) {
+                out.push(SlashCommand {
+                    name,
+                    description: read_md_description(&path),
+                    harness: "codex".into(),
+                    kind: "skill".into(),
+                });
+            }
         }
     }
 
     if available.contains("opencode") {
         out.extend(opencode_builtins());
-        for root in [
-            home.join(".config/opencode/skills"),
-            home.join(".agents/skills"),
-            home.join(".claude/skills"),
-        ] {
+        for root in skill_discovery_roots(CapabilityHarness::OpenCode, &home, project) {
             for (name, path) in collect_skills(&root) {
                 out.push(SlashCommand {
                     name,
@@ -149,6 +163,10 @@ pub fn list_commands(available: &std::collections::HashSet<String>) -> Vec<Slash
         }
     }
 
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|command| {
+        seen.insert((command.harness.clone(), command.name.to_ascii_lowercase()))
+    });
     out.sort_by(|a, b| {
         a.name
             .to_lowercase()
@@ -177,6 +195,15 @@ pub fn dispatch(
     text: &str,
     session_harness: &str,
     available: &std::collections::HashSet<String>,
+) -> SlashDispatch {
+    dispatch_for_project(text, session_harness, available, None)
+}
+
+pub fn dispatch_for_project(
+    text: &str,
+    session_harness: &str,
+    available: &std::collections::HashSet<String>,
+    project: Option<&Path>,
 ) -> SlashDispatch {
     let trimmed = text.trim();
     let Some(rest) = trimmed.strip_prefix('/') else {
@@ -228,7 +255,7 @@ pub fn dispatch(
         _ => {}
     }
 
-    let catalog = list_commands(available);
+    let catalog = list_commands_for_project(available, project);
     let matches: Vec<_> = catalog
         .iter()
         .filter(|command| command.name.eq_ignore_ascii_case(name))
@@ -258,7 +285,7 @@ pub fn dispatch(
 
     match chosen.kind.as_str() {
         "skill" | "command" | "prompt" => {
-            if let Some(body) = load_expandable_body(&chosen.harness, &chosen.name) {
+            if let Some(body) = load_expandable_body(&chosen.harness, &chosen.name, project) {
                 let mut expanded = format!("# /{}\n\n{}\n", chosen.name, body.trim());
                 if let Some(args) = args {
                     expanded.push('\n');
@@ -346,39 +373,32 @@ fn is_forwardable_builtin(harness: &str, name: &str) -> bool {
     }
 }
 
-fn load_expandable_body(harness: &str, name: &str) -> Option<String> {
+fn load_expandable_body(harness: &str, name: &str, project: Option<&Path>) -> Option<String> {
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    let candidates = match harness {
-        "claude" => vec![
-            home.join(".claude/commands").join(format!("{name}.md")),
-            home.join(".claude/skills").join(name).join("SKILL.md"),
-        ],
-        "codex" => vec![
-            home.join(".codex/prompts").join(format!("{name}.md")),
-            home.join(".codex/skills").join(name).join("SKILL.md"),
-        ],
-        "opencode" => vec![
-            home.join(".config/opencode/skills")
-                .join(name)
-                .join("SKILL.md"),
-            home.join(".agents/skills").join(name).join("SKILL.md"),
-            home.join(".claude/skills").join(name).join("SKILL.md"),
-        ],
-        _ => Vec::new(),
-    };
-    // Nested command names use `:` separators (parent:child).
-    let mut nested = candidates;
+    let capability_harness = CapabilityHarness::from_id(harness)?;
+    let mut candidates = command_discovery_roots(capability_harness, &home, project)
+        .into_iter()
+        .map(|root| root.join(format!("{name}.md")))
+        .collect::<Vec<_>>();
+    candidates.extend(
+        skill_discovery_roots(capability_harness, &home, project)
+            .into_iter()
+            .map(|root| root.join(name).join("SKILL.md")),
+    );
     if name.contains(':') {
         let relative = name.replace(':', "/");
-        if harness == "claude" {
-            nested.push(home.join(".claude/commands").join(format!("{relative}.md")));
-            nested.push(home.join(".claude/skills").join(&relative).join("SKILL.md"));
-        } else if harness == "codex" {
-            nested.push(home.join(".codex/prompts").join(format!("{relative}.md")));
-            nested.push(home.join(".codex/skills").join(&relative).join("SKILL.md"));
-        }
-    }
-    for path in nested {
+        candidates.extend(
+            command_discovery_roots(capability_harness, &home, project)
+                .into_iter()
+                .map(|root| root.join(format!("{relative}.md"))),
+        );
+        candidates.extend(
+            skill_discovery_roots(capability_harness, &home, project)
+                .into_iter()
+                .map(|root| root.join(&relative).join("SKILL.md")),
+        );
+    };
+    for path in candidates {
         if path.is_file() {
             return std::fs::read_to_string(path).ok();
         }
@@ -801,6 +821,37 @@ mod tests {
         assert!(matches!(
             dispatch("/btw", "claude", &available),
             SlashDispatch::SideChat { query, .. } if query.is_empty()
+        ));
+    }
+
+    #[test]
+    fn project_skills_are_listed_and_expanded_from_the_same_root() {
+        let project = tempfile::tempdir().unwrap();
+        let skill = project.path().join(".agents/skills/project-review");
+        std::fs::create_dir_all(&skill).unwrap();
+        std::fs::write(
+            skill.join("SKILL.md"),
+            "---\ndescription: Review this project's invariants\n---\n\nUse the project contract.\n",
+        )
+        .unwrap();
+        let available = HashSet::from(["codex".into()]);
+
+        let catalog = list_commands_for_project(&available, Some(project.path()));
+        assert!(catalog.iter().any(|command| {
+            command.name == "project-review"
+                && command.harness == "codex"
+                && command.kind == "skill"
+                && command.description == "Review this project's invariants"
+        }));
+        assert!(matches!(
+            dispatch_for_project(
+                "/project-review focus on auth",
+                "codex",
+                &available,
+                Some(project.path()),
+            ),
+            SlashDispatch::Expand { text }
+                if text.contains("Use the project contract.") && text.contains("focus on auth")
         ));
     }
 

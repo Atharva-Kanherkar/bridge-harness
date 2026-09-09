@@ -5,7 +5,7 @@ import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { normalizeAgentToken } from "./agentMention";
 import { createInvokeQueue } from "./invokeQueue";
 import { asWireKind, readWireKind } from "./transcript/wire";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding } from "./types";
+import type { AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
 import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
@@ -490,6 +490,46 @@ const mockPendingAdoption: WorkerRepositoryBinding = {
   baselineDirtyPaths: [], changedPaths: ["src/components/Markdown.tsx", "src/index.css"],
   diffstat: "2 file(s) changed, 284 insertion(s), 31 deletion(s)", dirty: false,
   detail: null, createdAt: now, updatedAt: now,
+};
+
+// Three shapes worth seeing without the desktop app: one collectable, one that
+// nothing may touch because its work is unadopted, and one a developer made by
+// hand that Bridge reports but never reclaims.
+let mockWorktrees: WorktreeInventoryEntry[] = [
+  {
+    id: "wt-1", kind: "worker", repoRoot: "/tmp/bridge/session-supervisor",
+    path: "/tmp/bridge/worker-1w", branch: "bridge/worker-1w",
+    ownerSessionId: "session-1w", ownerWorkspaceId: "demo-1", state: "idle",
+    disposition: "retained", retainedReason: "a worker's output here has not been adopted or discarded yet",
+    assessedAt: now, sizeBytes: 41_943_040, sizeMeasuredAt: now,
+    createdAt: now, lastUsedAt: now, idleSeconds: 3_600,
+  },
+  {
+    id: "wt-2", kind: "orchestrator", repoRoot: "/tmp/bridge/demo",
+    path: "/tmp/bridge/orchestrators/demo/session-2", branch: "bridge/demo-session2",
+    ownerSessionId: "session-2", ownerWorkspaceId: "demo-1", state: "idle",
+    disposition: "reclaimable", retainedReason: null, assessedAt: now,
+    sizeBytes: 2_684_354_560, sizeMeasuredAt: now,
+    createdAt: now, lastUsedAt: now, idleSeconds: 9 * 24 * 3_600,
+  },
+  {
+    id: "wt-3", kind: "orchestrator", repoRoot: "/tmp/bridge/demo",
+    path: "/tmp/bridge/demo/.worktrees/hand-made", branch: "chore/hand-made",
+    ownerSessionId: null, ownerWorkspaceId: null, state: "external",
+    disposition: "retained", retainedReason: "outside Bridge's worktree namespace",
+    assessedAt: now, sizeBytes: 33_554_432, sizeMeasuredAt: now,
+    createdAt: now, lastUsedAt: now, idleSeconds: 5 * 24 * 3_600,
+  },
+];
+const mockWorktreeUsage: WorktreeUsage = {
+  totalCount: 3, totalBytes: 2_759_852_032,
+  reclaimableCount: 1, reclaimableBytes: 2_684_354_560, retainedCount: 1,
+  maxTotalBytes: 10 * 1024 * 1024 * 1024, maxPerRepo: 12,
+  workerIdleTtlSeconds: 86_400, orchestratorIdleTtlSeconds: 604_800, githubIdleTtlSeconds: 604_800,
+  repositories: [
+    { repoRoot: "/tmp/bridge/demo", count: 1, sizeBytes: 2_684_354_560, reclaimableBytes: 2_684_354_560, overBudget: false },
+    { repoRoot: "/tmp/bridge/session-supervisor", count: 1, sizeBytes: 41_943_040, reclaimableBytes: 0, overBudget: false },
+  ],
 };
 
 function mockForest(sessionId: string): SessionForestSnapshot {
@@ -1326,6 +1366,58 @@ export const bridgeApi = {
     if (isTauri()) return call("worktrees/discard_worker_worktree", { sessionId, reason });
     throw new Error("Discarding a worker worktree needs the desktop app");
   },
+  // Put one chat away and reclaim the checkout it owns — never its workspace's,
+  // which belongs to every other chat in it. History is kept; the conversation
+  // is simply no longer listed.
+  archiveChat: async (sessionId: string): Promise<ArchiveChatResult> => {
+    if (isTauri()) return call("sessions/archive_chat", { sessionId });
+    const owned = mockWorktrees.find(item => item.ownerSessionId === sessionId);
+    mockState.sessions = mockState.sessions.filter(session => session.id !== sessionId);
+    if (owned && owned.disposition === "reclaimable") {
+      mockWorktrees = mockWorktrees.filter(item => item.id !== owned.id);
+      emitState();
+      return { archived: true, bytesFreed: owned.sizeBytes ?? 0, worktreeDetail: null };
+    }
+    emitState();
+    return { archived: true, bytesFreed: 0, worktreeDetail: owned?.retainedReason ?? null };
+  },
+  // What the worktrees cost. Read-only on purpose: reclaiming is the
+  // retention sweep's decision, taken against a fresh safety classification,
+  // not something a client can ask for out of band.
+  listWorktrees: async (): Promise<WorktreeInventoryEntry[]> => {
+    if (isTauri()) return call("worktrees/list_worktrees");
+    return structuredClone(mockWorktrees);
+  },
+  worktreeUsage: async (): Promise<WorktreeUsage> => {
+    if (isTauri()) return call("worktrees/worktree_usage");
+    return structuredClone(mockWorktreeUsage);
+  },
+  // A refusal is a result, not a thrown error: the caller renders "no, and
+  // here is why" next to the row it asked about.
+  reclaimWorktree: async (worktreeId: string): Promise<WorktreeReclaimResult> => {
+    if (isTauri()) return call("worktrees/reclaim_worktree", { worktreeId });
+    const entry = mockWorktrees.find(item => item.id === worktreeId);
+    if (!entry) throw new Error(`no worktree ${worktreeId} is recorded`);
+    if (entry.disposition !== "reclaimable" && entry.disposition !== "pushed_unmerged") {
+      return { reclaimed: false, bytesFreed: 0, disposition: entry.disposition ?? "retained", detail: entry.retainedReason };
+    }
+    mockWorktrees = mockWorktrees.filter(item => item.id !== worktreeId);
+    return { reclaimed: true, bytesFreed: entry.sizeBytes ?? 0, disposition: entry.disposition, detail: null };
+  },
+  sweepWorktrees: async (): Promise<WorktreeSweepResult> => {
+    if (isTauri()) return call("worktrees/sweep_worktrees");
+    const collectable = mockWorktrees.filter(item => item.disposition === "reclaimable");
+    mockWorktrees = mockWorktrees.filter(item => item.disposition !== "reclaimable");
+    return {
+      removed: collectable.length,
+      removedBytes: collectable.reduce((total, item) => total + (item.sizeBytes ?? 0), 0),
+      retained: mockWorktrees.length,
+      retainedBytes: mockWorktrees.reduce((total, item) => total + (item.sizeBytes ?? 0), 0),
+      overBudgetBytes: 0,
+      skipped: 0,
+      measurementsTruncated: 0,
+    };
+  },
   registerVerifierManifest: async (source: string, manifest: VerifierManifest): Promise<void> => {
     if (isTauri()) return unit(call("completion/register_verifier_manifest", { source, manifest }));
     mockVerifierManifests.set(manifest.id, structuredClone(manifest));
@@ -1618,8 +1710,8 @@ export const bridgeApi = {
     if (isTauri()) return (await call("sessions/carry_session_handoff", { targetSessionId, sourceSessionId })).carried;
     return false;
   },
-  listSlashCommands: async (): Promise<SlashCommand[]> => {
-    if (isTauri()) return call("slash/list_slash_commands");
+  listSlashCommands: async (sessionId?: string): Promise<SlashCommand[]> => {
+    if (isTauri()) return call("slash/list_slash_commands", { sessionId: sessionId ?? null });
     return [];
   },
   resolveSlashCommand: async (sessionId: string, text: string): Promise<SlashCommandResolve | null> => {

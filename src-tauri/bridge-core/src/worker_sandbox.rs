@@ -4,6 +4,7 @@
 //! boundary is what prevents shell tools from writing the checked-out tree.
 use crate::{delegation::DelegationRequest, BridgeError};
 use std::{
+    ffi::OsString,
     fs,
     path::{Path, PathBuf},
     process::Command,
@@ -93,7 +94,10 @@ impl ReadOnlySandbox {
 /// deliberately return an error instead of silently falling back to audit-only.
 pub fn command(program: &Path, sandbox: Option<&ReadOnlySandbox>) -> Result<Command, BridgeError> {
     let Some(sandbox) = sandbox else {
-        return Ok(Command::new(program));
+        return Ok(crate::adapters::supervised_command(
+            program,
+            std::iter::empty::<OsString>(),
+        ));
     };
     #[cfg(target_os = "macos")]
     {
@@ -101,13 +105,15 @@ pub fn command(program: &Path, sandbox: Option<&ReadOnlySandbox>) -> Result<Comm
         if !runner.is_file() {
             return Err(BridgeError::Invalid("Read-only workers require macOS sandbox-exec, but it is unavailable; refusing to start without isolation".into()));
         }
-        let mut command = Command::new(runner);
-        command
-            .arg("-f")
-            .arg(&sandbox.profile_path)
-            .arg("--")
-            .arg(program);
-        Ok(command)
+        Ok(crate::adapters::supervised_command(
+            runner,
+            [
+                OsString::from("-f"),
+                sandbox.profile_path.as_os_str().to_owned(),
+                OsString::from("--"),
+                program.as_os_str().to_owned(),
+            ],
+        ))
     }
     #[cfg(not(target_os = "macos"))]
     {
@@ -135,9 +141,9 @@ fn runtime_network_policy_denies(value: Option<&str>) -> bool {
 }
 
 /// Resolve the host's GitHub CLI token so a sandboxed, networked worker's `gh`
-/// can authenticate. Inside the read-only sandbox `HOME` (and the Claude config
-/// dir) are redirected to the per-worker output directory and the macOS keychain
-/// is out of reach, so `gh` finds no credentials of its own and every call —
+/// can authenticate. Inside the read-only sandbox provider-specific writable
+/// config and temp roots are redirected, and the macOS keychain is out of reach,
+/// so `gh` finds no credentials of its own and every call —
 /// even reading a private PR — comes back 401. Passing the token as `GH_TOKEN`
 /// is the one thing that lets a review worker read the PR and post its comment.
 ///
@@ -305,6 +311,35 @@ mod tests {
         assert!(!root.exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn provider_commands_use_the_parent_death_watchdog_with_and_without_seatbelt() {
+        if std::env::var_os(crate::adapters::PARENT_WATCHDOG_DISABLE_ENV).is_some() {
+            return;
+        }
+        let direct = command(Path::new("/bin/sh"), None).unwrap();
+        assert_eq!(direct.get_program(), Path::new("/bin/sh"));
+        let direct_args = direct
+            .get_args()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(direct_args.iter().any(|value| value == "bridge-watchdog"));
+
+        #[cfg(target_os = "macos")]
+        {
+            let workspace = tempfile::tempdir().unwrap();
+            let sandbox = ReadOnlySandbox::create("watchdog", workspace.path(), &request()).unwrap();
+            let wrapped = command(Path::new("/bin/sh"), Some(&sandbox)).unwrap();
+            let args = wrapped
+                .get_args()
+                .map(|value| value.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            assert!(args.iter().any(|value| value == "/usr/bin/sandbox-exec"));
+            assert!(args.iter().any(|value| value == "/bin/sh"));
+            sandbox.cleanup();
+        }
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn dev_null_writes_survive_the_sandbox_so_child_spawns_work() {
@@ -376,6 +411,47 @@ mod tests {
                 .success());
         }
         hard_isolated.cleanup();
+        sandbox.cleanup();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn projected_capabilities_are_readable_but_the_host_sources_remain_immutable() {
+        if !Path::new("/usr/bin/sandbox-exec").is_file() {
+            return;
+        }
+        let workspace = tempfile::tempdir().unwrap();
+        let home = tempfile::tempdir().unwrap();
+        let source_skill = home.path().join(".claude/skills/review/SKILL.md");
+        fs::create_dir_all(source_skill.parent().unwrap()).unwrap();
+        fs::write(&source_skill, "projected capability").unwrap();
+        let sandbox = ReadOnlySandbox::create("capabilities", workspace.path(), &request()).unwrap();
+        crate::capability_projection::project_read_only_capabilities_with_environment(
+            crate::capability_projection::CapabilityHarness::Claude,
+            home.path(),
+            sandbox.output_dir(),
+            &crate::capability_projection::CapabilityEnvironment::default(),
+        )
+        .unwrap();
+
+        let mut read = command(Path::new("/bin/sh"), Some(&sandbox)).unwrap();
+        assert!(read
+            .args(["-c", "test \"$(cat \"$CLAUDE_CONFIG_DIR/skills/review/SKILL.md\")\" = 'projected capability'"])
+            .env("CLAUDE_CONFIG_DIR", sandbox.output_dir().join(".claude"))
+            .current_dir(sandbox.output_dir())
+            .status()
+            .unwrap()
+            .success());
+
+        let mut write = command(Path::new("/bin/sh"), Some(&sandbox)).unwrap();
+        assert!(!write
+            .args(["-c", "printf changed >> \"$CLAUDE_CONFIG_DIR/skills/review/SKILL.md\""])
+            .env("CLAUDE_CONFIG_DIR", sandbox.output_dir().join(".claude"))
+            .current_dir(sandbox.output_dir())
+            .status()
+            .unwrap()
+            .success());
+        assert_eq!(fs::read_to_string(source_skill).unwrap(), "projected capability");
         sandbox.cleanup();
     }
 

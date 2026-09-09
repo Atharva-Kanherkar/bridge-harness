@@ -106,7 +106,8 @@ test("sidecar staging invalidates changed locks and keeps the last complete tree
   cpSync(join(root, "scripts/prepare-claude-sidecar.sh"), script);
   const src = join(dir, "sidecar/claude-agent");
   mkdirSync(src, { recursive: true });
-  for (const name of ["index.mjs", "briefing.mjs", "input.mjs", "options.mjs"]) writeFileSync(join(src, name), "export {};\n");
+  for (const name of ["index.mjs", "briefing.mjs", "input.mjs", "options.mjs", "read-only.mjs"]) writeFileSync(join(src, name), "export {};\n");
+  writeFileSync(join(src, "options.mjs"), "import './read-only.mjs';\n");
   writeFileSync(join(src, "package.json"), '{"dependencies":{"@anthropic-ai/claude-agent-sdk":"1.0.0"}}');
   writeFileSync(join(src, "package-lock.json"), '{"fixtureLock":1}');
   const calls = join(dir, "npm-calls");
@@ -126,10 +127,19 @@ if (args[0] === "ci") {
   let out = run();
   assert.equal(out.status, 0, out.stderr);
   assert.equal(ciCount(), 1);
+  const loadStagedOptions = () => {
+    const loaded = spawnSync(process.execPath, [join(dest, "options.mjs")], { encoding: "utf8" });
+    assert.equal(loaded.status, 0, loaded.stderr);
+  };
+  loadStagedOptions();
+  // An existing staging tree from before this dependency was introduced must
+  // gain it even when the package metadata and dependency lock still match.
+  rmSync(join(dest, "read-only.mjs"));
   writeFileSync(join(src, "index.mjs"), "export const changed = true;\n");
   out = run();
   assert.equal(out.status, 0, out.stderr);
   assert.equal(ciCount(), 1, "unchanged dependency lock should reuse the tree");
+  loadStagedOptions();
   assert.equal(readFileSync(join(dest, "index.mjs"), "utf8"), "export const changed = true;\n");
   writeFileSync(join(src, "package-lock.json"), '{"fixtureLock":2}');
   out = run({ FAIL_INSTALL: "1" });
