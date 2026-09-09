@@ -530,6 +530,38 @@ describe("PromptStudio", () => {
     await unmount();
   });
 
+  it("shows approved proposal attribution on shared guidance and restores an earlier revision", async () => {
+    const earlier = await bridgeApi.savePromptSection("orchestrator", "additional_guidance", "Earlier guidance.");
+    const latest = await bridgeApi.savePromptSection("orchestrator", "additional_guidance", "Earlier guidance.\n\nApproved additional guidance.");
+    const originalStack = bridgeApi.promptStack;
+    vi.spyOn(bridgeApi, "promptStack").mockImplementation(async (target, depth) => {
+      const stack = await originalStack(target, depth);
+      if (target !== "orchestrator") return stack;
+      return { ...stack, sections: stack.sections.map(section => section.id !== "additional_guidance" ? section : {
+        ...section,
+        revisions: section.revisions.map(revision => revision.id !== latest.revision.id ? revision : {
+          ...revision,
+          attribution: { actorSessionId: "actor-session", actorTurnId: "actor-turn", actorRole: "orchestrator", proposalId: "proposal-123", rationale: "Keep <b>reliable</b> lessons from earlier work." },
+        }),
+      }) };
+    });
+    const { container, unmount } = await mount(<PromptStudio />);
+    await act(async () => waitFor(() => !!container.querySelector('[aria-label="Edit additional_guidance"]')));
+    expect(rowText(container, "additional_guidance")).toContain("Shared role guidance");
+    await openSection(container, "additional_guidance");
+    expect(container.textContent).toContain("Applies at the next start or relaunch");
+    expect(container.textContent).toContain("Proposed by orchestrator · session actor-session · approved by you");
+    expect(container.textContent).toContain("Keep <b>reliable</b> lessons from earlier work.");
+    expect(container.textContent).toContain("Proposal proposal-123");
+    expect(container.querySelector("b")).toBeNull();
+    const restoreSpy = vi.spyOn(bridgeApi, "restorePromptRevision");
+    const restore = container.querySelector<HTMLButtonElement>(`button[aria-label="Restore additional_guidance to revision ${earlier.revision.id} (override)"]`)!;
+    await act(async () => { restore.click(); await flush(); });
+    expect(restoreSpy).toHaveBeenCalledWith("orchestrator", "additional_guidance", earlier.revision.id);
+    expect(editorTextarea(container).value).toBe("Earlier guidance.");
+    await unmount();
+  });
+
   it("uses_no_native_select_and_no_native_checkbox", async () => {
     const { container, unmount } = await mount(<PromptStudio />);
     await flush();

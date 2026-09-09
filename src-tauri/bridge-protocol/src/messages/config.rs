@@ -132,7 +132,20 @@ pub struct PermissionPolicy {
     /// and browser outward effects are unaffected — those are authorization.
     #[serde(alias = "bypassAll")]
     pub auto_approve_provider_permissions: bool,
+    /// Allows these worker roles to propose guidance; each edit still requires
+    /// a separate human approval of its exact text.
+    pub worker_prompt_proposal_roles: Vec<PromptProposalWorkerRole>,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PromptProposalWorkerRole {
+    Research,
+    Implementation,
+    Verification,
+    Planning,
+    Documentation,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -271,6 +284,19 @@ pub struct PromptRevisionView {
     pub state: PromptSectionStatePayload,
     pub restored_from_revision_id: Option<i64>,
     pub created_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<PromptRevisionAttribution>,
+}
+
+/// Host-stamped origin of an agent-proposed, human-approved prompt revision.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PromptRevisionAttribution {
+    pub actor_session_id: String,
+    pub actor_turn_id: String,
+    pub actor_role: String,
+    pub proposal_id: String,
+    pub rationale: String,
 }
 
 /// A required-vocabulary warning over a section's effective text.
@@ -363,6 +389,42 @@ mod tests {
     use super::*;
     use crate::messages::common::round_trip;
     use serde_json::json;
+
+    #[test]
+    fn prompt_proposal_permissions_default_closed_and_reject_unknown_roles() {
+        let legacy: PermissionPolicy = serde_json::from_value(json!({
+            "autoApproveProviderPermissions": true,
+            "updatedAt": "before-prompt-proposals"
+        })).unwrap();
+        assert!(legacy.worker_prompt_proposal_roles.is_empty());
+        let policy = PermissionPolicy {
+            worker_prompt_proposal_roles: vec![PromptProposalWorkerRole::Research],
+            ..PermissionPolicy::default()
+        };
+        assert_eq!(round_trip(&policy), policy);
+        assert_eq!(serde_json::to_value(&policy).unwrap()["workerPromptProposalRoles"], json!(["research"]));
+        assert!(serde_json::from_value::<SavePermissionPolicyParams>(json!({
+            "policy": {"workerPromptProposalRoles": ["orchestrator"]}
+        })).is_err());
+    }
+
+    #[test]
+    fn prompt_revision_attribution_round_trips_and_legacy_history_still_reads() {
+        let mut revision: PromptRevisionView = serde_json::from_value(json!({
+            "id": 1, "operation": "override", "state": {"state": "overridden", "text": "Cite sources."},
+            "restoredFromRevisionId": null, "createdAt": "now"
+        })).unwrap();
+        assert!(revision.attribution.is_none());
+        revision.attribution = Some(PromptRevisionAttribution {
+            actor_session_id: "worker-session".into(),
+            actor_turn_id: "turn-1".into(),
+            actor_role: "research".into(),
+            proposal_id: "proposal-1".into(),
+            rationale: "Keep research auditable.".into(),
+        });
+        assert_eq!(round_trip(&revision), revision);
+        assert_eq!(serde_json::to_value(&revision).unwrap()["attribution"]["actorSessionId"], "worker-session");
+    }
 
     #[test]
     fn harness_config_round_trips_and_defaults_its_optional_fields() {
@@ -640,6 +702,7 @@ mod tests {
                     operation: PromptRevisionOperation::Override,
                     state: PromptSectionStatePayload::Overridden { text: "Custom.".into() },
                     restored_from_revision_id: None,
+                    attribution: None,
                     created_at: "2026-08-23T00:00:00Z".into(),
                 }],
             }],
@@ -661,6 +724,7 @@ mod tests {
                 operation: PromptRevisionOperation::Restore,
                 state: PromptSectionStatePayload::Deleted,
                 restored_from_revision_id: Some(2),
+                attribution: None,
                 created_at: "2026-08-23T00:00:00Z".into(),
             },
             stack: result.clone(),

@@ -76,6 +76,8 @@ pub struct PromptRevisionView {
     pub state: prompt_sections::PromptSectionState,
     pub restored_from_revision_id: Option<i64>,
     pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub attribution: Option<prompt_sections::PromptRevisionAttribution>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -154,6 +156,7 @@ fn revision_view(revision: &prompt_sections::PromptSectionRevision) -> PromptRev
         state: revision.state.clone(),
         restored_from_revision_id: revision.restored_from_revision_id,
         created_at: revision.created_at.clone(),
+        attribution: revision.attribution.clone(),
     }
 }
 
@@ -188,6 +191,7 @@ fn section_view(
     let bytes = effective_text.as_ref().map_or(0, |text| text.len()) as u64;
     let lint_warnings = effective_text
         .as_deref()
+        .filter(|_| default_section.id != prompts::ADDITIONAL_GUIDANCE_SECTION_ID)
         .map(prompts::lint_required_markers)
         .unwrap_or_default()
         .into_iter()
@@ -379,7 +383,7 @@ mod tests {
                 .iter()
                 .map(|section| section.id.as_str())
                 .collect::<Vec<_>>(),
-            [prompts::BRIDGE_ROLE_SECTION_ID, prompts::DELEGATION_PROTOCOL_SECTION_ID]
+            [prompts::BRIDGE_ROLE_SECTION_ID, prompts::DELEGATION_PROTOCOL_SECTION_ID, prompts::ADDITIONAL_GUIDANCE_SECTION_ID]
         );
         let role = section(&orchestrator, prompts::BRIDGE_ROLE_SECTION_ID);
         assert_eq!(role.state, prompt_sections::PromptSectionState::Default);

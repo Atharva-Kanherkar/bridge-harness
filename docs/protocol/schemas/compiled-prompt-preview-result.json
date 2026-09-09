@@ -86,6 +86,34 @@
       ],
       "type": "object"
     },
+    "PromptRevisionAttribution": {
+      "description": "Host-stamped origin of an agent-proposed, human-approved prompt revision.",
+      "properties": {
+        "actorRole": {
+          "type": "string"
+        },
+        "actorSessionId": {
+          "type": "string"
+        },
+        "actorTurnId": {
+          "type": "string"
+        },
+        "proposalId": {
+          "type": "string"
+        },
+        "rationale": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "actorRole",
+        "actorSessionId",
+        "actorTurnId",
+        "proposalId",
+        "rationale"
+      ],
+      "type": "object"
+    },
     "PromptRevisionOperation": {
       "description": "The closed mutation vocabulary of a revision. Mirrors `bridge_core::prompt_sections::PromptSectionOperation`.",
       "enum": [
@@ -99,6 +127,16 @@
     "PromptRevisionView": {
       "description": "One append-only revision of a prompt section.",
       "properties": {
+        "attribution": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/PromptRevisionAttribution"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "createdAt": {
           "type": "string"
         },

@@ -16,7 +16,7 @@ use crate::{
     adapters, agent, agent_config, backend_binding, check_runner, compaction_controller,
     completion, delegation, git, handoff, learning_job, learning_router, managed_agents,
     memory_ledger, orchestrator, policy, policy_coordinator, prompt_compiler, prompt_sections,
-    prompts, provider_limit, restoration, secret_interception, session_context, session_forest, session_input,
+    prompts, prompt_mutations, provider_limit, restoration, secret_interception, session_context, session_forest, session_input,
     session_recall, session_supervisor, skill_marketplace, slash, store, worker_adoption,
     worker_guard, worker_lifecycle, worker_pool, worker_retry, worker_sandbox, workspace_files,
     worktree_coordinator, worktree_registry,
@@ -123,10 +123,22 @@ fn launch_session_context(
         capabilities.push_str("\n\n");
         capabilities.push_str(summary);
     }
+    if worker_prompt_proposal_capability(&state.db.lock().unwrap(), session_id) {
+        capabilities.push_str("\n\n");
+        capabilities.push_str(delegation::prompt_change_protocol(true));
+    }
     session_context::build(
         &capabilities,
         compiled_memory_packet(state, session_id).as_deref(),
     )
+}
+
+fn worker_prompt_proposal_capability(db: &Connection, session_id: &str) -> bool {
+    // Capability advertisement checks persisted role/ownership and the user's
+    // opt-in before launch; request intake separately requires a live turn.
+    matches!(crate::prompt_mutation_policy::decide(db, session_id, "", session_id, true),
+        Ok(crate::prompt_mutation_policy::PromptMutationDecision::RequireApproval(authority))
+            if matches!(authority.target, prompts::PromptTarget::Worker(_)))
 }
 
 fn configured_capability_summary(harness: &str, cwd: &str) -> Option<String> {
@@ -203,6 +215,9 @@ fn orchestrator_context_event(
         .section_ids()
         .iter()
         .copied()
+        // Optional guidance is empty on a fresh install, not a deleted
+        // built-in contract. Its own history records explicit deletion.
+        .filter(|id| *id != prompts::ADDITIONAL_GUIDANCE_SECTION_ID)
         .filter(|id| !section_ids.contains(id))
         .collect::<Vec<_>>();
     let all_deleted = stack.sections.is_empty();
@@ -2280,7 +2295,8 @@ fn spawn_reader_thread(
                                 &value,
                             );
                         } else {
-                            handle_agent_value_timed(&core, &session_id, &current_turn, &value, frame_timing);
+                            handle_agent_value_timed(&core, &session_id, &current_turn, &value, frame_timing,
+                                Some((&launch_started_at, &launch_provider_session_id)));
                         }
                     }
                 }
@@ -2483,7 +2499,7 @@ impl FrameTiming {
 fn handle_agent_value(
     core: &Arc<BridgeCore>, session_id: &str, current_turn: &Arc<Mutex<Option<String>>>, value: &serde_json::Value,
 ) {
-    handle_agent_value_timed(core, session_id, current_turn, value, None);
+    handle_agent_value_timed(core, session_id, current_turn, value, None, None);
 }
 
 fn handle_agent_value_timed(
@@ -2492,6 +2508,7 @@ fn handle_agent_value_timed(
     current_turn: &Arc<Mutex<Option<String>>>,
     value: &serde_json::Value,
     frame_timing: Option<FrameTiming>,
+    expected_launch: Option<(&str, &str)>,
 ) {
     // Codex account rate-limit frames (the reply to `account/rateLimits/read`
     // and its rolling push) are subscription telemetry, not conversation. Route
@@ -2508,6 +2525,9 @@ fn handle_agent_value_timed(
     let mut pending_stops: Vec<delegation::StopRequest> = Vec::new();
     let mut pending_invalid_steer: Option<String> = None;
     let mut pending_invalid_stop: Option<String> = None;
+    let mut prompt_control_turn = false;
+    let mut prompt_feedback: Vec<(String, String, String)> = Vec::new();
+    let mut prompt_approval_detail = None;
     // A policy-granted approval is answered after the correctness lock, through
     // the same call a human click makes. Holds the persisted sequence, which is
     // the id `resolve_approval` answers by.
@@ -2518,8 +2538,10 @@ fn handle_agent_value_timed(
     // needs the adapter map.
     let mut pending_child_approval: Option<serde_json::Value> = None;
     let mut child_left_waiting: Option<&'static str> = None;
+    let mut child_prompt_failed_proposal: Option<String> = None;
     let mut pending_telemetry: Vec<store::TelemetrySpan> = Vec::new();
     let mut turn_completed = false;
+    let mut turn_failed = false;
     // Set when a native boundary released the optimistic `working` mark a
     // forwarded `/compact` wrote. The release's side effects run after the
     // database guard is dropped, because draining takes the lock itself.
@@ -2536,6 +2558,14 @@ fn handle_agent_value_timed(
         let lock_requested = std::time::Instant::now();
         let db = state.db.lock().unwrap();
         let db_wait_ms = lock_requested.elapsed().as_secs_f64() * 1000.0;
+        // A frame buffered by a replaced reader cannot acquire the new
+        // session's prompt authority. Check the launch generation under the
+        // same lock that will authorize and persist the proposal.
+        if expected_launch.is_some_and(|(started_at, provider_session_id)| {
+            !reader_launch_is_current(&db, session_id, started_at, provider_session_id)
+        }) {
+            return;
+        }
         let session_context: Option<(Option<String>, String, i64, Option<String>, String, String)> = db
             .query_row(
                 "SELECT workspace_id,harness,COALESCE(depth,0),active_turn_id,kind,COALESCE(trace_id,id) FROM sessions WHERE id=?1",
@@ -2558,10 +2588,17 @@ fn handle_agent_value_timed(
         }
         // Direct chats are single-agent: no worker delegation and no auto-compaction.
         let is_direct = session_kind == "direct";
-        let mut observed_turn_id = current_turn
-            .lock()
-            .unwrap()
-            .clone()
+        let runtime_turn_id = current_turn.lock().unwrap().clone();
+        // Claude and other runtimes allocate a turn locally before receiving
+        // a provider start event. This Arc belongs to the checked reader
+        // generation, so it is also a trusted turn binding for host tools.
+        if let Some(turn_id) = runtime_turn_id.as_deref() {
+            let _ = db.execute(
+                "UPDATE sessions SET active_turn_id=?2 WHERE id=?1 AND active_turn_id IS NULL AND status IN ('working','waiting')",
+                params![session_id, turn_id],
+            );
+        }
+        let mut observed_turn_id = runtime_turn_id
             .or(stored_turn_id)
             .or_else(|| {
                 state
@@ -2627,6 +2664,14 @@ fn handle_agent_value_timed(
                         |row| row.get::<_, bool>(0),
                     )
                     .unwrap_or(false);
+        // Some adapters normalize a final assistant message and its turn
+        // boundary together. Keep the tracked turn until the host request has
+        // passed authorization, then release it below before waiting/draining.
+        let completes_prompt_control = !checkpoint_turn_active && normalized.iter().any(|event| {
+            event.kind == "message.completed" && event.role.as_deref() == Some("assistant")
+                && event.text.as_deref().is_some_and(|text|
+                    !matches!(prompt_mutations::parse_assistant_control(text), Ok(None)))
+        });
         bridge_state_changed = normalized.iter().any(agent_event_changes_bridge_state);
         for event in &normalized {
             if checkpoint_turn_active
@@ -2649,7 +2694,9 @@ fn handle_agent_value_timed(
                         .pointer("/turn/id")
                         .or_else(|| event.data.get("turnId"))
                         .and_then(serde_json::Value::as_str)
-                        .map(str::to_owned);
+                        .map(str::to_owned)
+                        .or_else(|| current_turn.lock().unwrap().clone())
+                        .or_else(|| Some(format!("turn-{}", Uuid::new_v4())));
                     *current_turn.lock().unwrap() = turn_id.clone();
                     if let Some(turn_id) = &turn_id {
                         observed_turn_id = Some(turn_id.clone());
@@ -2683,13 +2730,14 @@ fn handle_agent_value_timed(
                 }
                 "turn.completed" => {
                     turn_completed = true;
+                    turn_failed |= matches!(event.status.as_deref(), Some("failed" | "error"));
                     *current_turn.lock().unwrap() = None;
                     let checkpointing_worker = own_depth > 0
                         && store::worker_runtime(&db, session_id)
                             .ok()
                             .flatten()
                             .is_some_and(|runtime| runtime.lifecycle_state == "checkpointing");
-                    if !checkpointing_worker {
+                    if !checkpointing_worker && !completes_prompt_control {
                         let _ = db.execute(
                             "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id=?1",
                             params![session_id],
@@ -2708,14 +2756,14 @@ fn handle_agent_value_timed(
                     // never travel a provider control channel, so they cannot
                     // reach this arm. Checked anyway — a structural guarantee
                     // that is also asserted is one that survives a refactor.
-                    let is_write_scope = event
+                    let is_host_authorization = matches!(event
                         .data
                         .get("approvalType")
                         .or_else(|| event.data.pointer("/data/approvalType"))
-                        .and_then(|value| value.as_str())
-                        == Some("delegation_path_scope");
+                        .and_then(|value| value.as_str()),
+                        Some("delegation_path_scope" | "prompt_mutation"));
                     let is_permission_request = event.kind == "permission.requested";
-                    auto_approve_this_event = !is_write_scope
+                    auto_approve_this_event = !is_host_authorization
                         && is_permission_request
                         && agent_config::permission_policy(&db)
                             .map(|policy| policy.auto_approve_provider_permissions)
@@ -2911,6 +2959,7 @@ fn handle_agent_value_timed(
                     let status = event.status.as_deref().unwrap_or("failed");
                     if status == "failed" {
                         turn_completed = true;
+                        turn_failed = true;
                         *current_turn.lock().unwrap() = None;
                         void_orphaned_questions(&db, session_id, "provider_error");
                         // The provider's own words are the only place a usage
@@ -3023,11 +3072,60 @@ fn handle_agent_value_timed(
                     Ok(compaction_controller::CheckpointOutcome::NotPending) | Err(_) => {}
                 }
             }
+            // This is a host tool, not a provider permission or an instruction
+            // inferred from tool output. Only this live assistant completion
+            // can submit it; the store derives all authority from this session.
+            if !suppress_checkpoint_frame
+                && normalized_event.kind == "message.completed"
+                && normalized_event.role.as_deref() == Some("assistant")
+            {
+                if let Some(text) = normalized_event.text.clone() {
+                    let parsed = prompt_mutations::parse_assistant_control(&text);
+                    if !matches!(&parsed, Ok(None)) {
+                        let result = observed_turn_id.as_deref().ok_or_else(|| {
+                            BridgeError::Invalid("Prompt changes require an active host-tracked turn".into())
+                        }).and_then(|turn_id| {
+                            let duplicate = prompt_control_turn_recorded(&db, session_id, turn_id);
+                            if !duplicate {
+                                store::event(&db, "prompt_mutation", "prompt_mutation.control_turn", session_id, turn_id)?;
+                            }
+                            prompt_control_turn = true;
+                            let control = parsed?.ok_or_else(|| BridgeError::Invalid("Missing prompt change request".into()))?;
+                            normalized_event.text = Some(if control.visible_text.trim().is_empty() {
+                                "_Prompt change submitted for review._".into()
+                            } else {
+                                control.visible_text
+                            });
+                            let proposal = prompt_mutations::propose(&db, session_id, turn_id, &control.request)?;
+                            if proposal.status.as_str() == "pending" && !duplicate {
+                                prompt_approval_detail = Some(serde_json::json!({
+                                    "title": "Approve prompt change",
+                                    "text": "This worker is waiting for review of a change to shared role guidance. The change would apply on the next launch.",
+                                    "approvalType": "prompt_mutation",
+                                    "proposalId": proposal.id,
+                                }));
+                            } else if !duplicate {
+                                prompt_feedback.push((turn_id.into(), proposal.status.as_str().into(),
+                                    "This request was already settled; no new prompt change was applied.".into()));
+                            }
+                            Ok(())
+                        });
+                        if let Err(error) = result {
+                            let reason = error.to_string();
+                            normalized_event.text = Some(format!("_Prompt change rejected: {reason}_"));
+                            let _ = store::event(&db, "prompt_mutation", "prompt_mutation.rejected", session_id, &reason);
+                            prompt_feedback.push((observed_turn_id.clone().or_else(|| normalized_event.item_id.clone())
+                                .unwrap_or_else(|| "unbound".into()), "rejected".into(), reason));
+                        }
+                    }
+                }
+            }
             // A completed assistant message may carry delegation directives.
             // Spawn the workers (after the lock is released) and strip the raw
             // directive block so the conversation shows prose, not machine JSON.
             if !is_direct
                 && !suppress_checkpoint_frame
+                && !prompt_control_turn
                 && normalized_event.kind == "message.completed"
                 && normalized_event.role.as_deref() == Some("assistant")
             {
@@ -3306,12 +3404,36 @@ fn handle_agent_value_timed(
                 }
             }
         }
+        if turn_completed {
+            if let Some(turn_id) = observed_turn_id.as_deref() {
+                prompt_control_turn |= prompt_control_turn_recorded(&db, session_id, turn_id);
+            }
+        }
+        if turn_completed && completes_prompt_control {
+            let _ = db.execute(
+                "UPDATE sessions SET status='ready',active_turn_id=NULL WHERE id=?1 AND status NOT IN ('stopped','failed','completed','cancelled')",
+                params![session_id],
+            );
+        }
+        if turn_completed && prompt_control_turn && !turn_failed {
+            hold_prompt_mutation_wait(&db, session_id);
+        }
+        if turn_failed && own_depth > 0 {
+            child_prompt_failed_proposal = prompt_mutations::pending_for_session(&db, session_id)
+                .ok().and_then(|proposals| proposals.into_iter().next()).map(|proposal| proposal.id);
+            if child_prompt_failed_proposal.is_some() {
+                // The process failed; its separately durable proposal remains
+                // reviewable. Do not report this as a resolved approval.
+                child_left_waiting = None;
+            }
+        }
         if turn_completed
             && checkpoint_prompt_after_turn.is_none()
             && !checkpoint_response_seen
             && !checkpoint_turn_active
             && own_depth == 0
             && !is_direct
+            && !prompt_control_turn
         {
             if let Ok(Some(prompt)) = begin_pressure_compaction(&db, session_id) {
                 checkpoint_prompt_after_turn = Some(prompt);
@@ -3418,8 +3540,18 @@ fn handle_agent_value_timed(
     if let Some(detail) = &pending_child_approval {
         surface_child_approval_on_parent(core, session_id, detail);
     }
+    if let Some(detail) = &prompt_approval_detail {
+        surface_child_approval_on_parent(core, session_id, detail);
+        state.events.publish(CoreEvent::StateChanged);
+    }
+    for (receipt, status, reason) in prompt_feedback {
+        queue_prompt_mutation_feedback(core, session_id, None, &status, &reason, Some(&receipt));
+    }
     if let Some(outcome) = child_left_waiting {
         notify_parent_child_left_waiting(core, session_id, outcome);
+    }
+    if let Some(proposal_id) = child_prompt_failed_proposal.as_deref() {
+        notify_parent_child_left_waiting_inner(core, session_id, "worker_failed", Some(proposal_id));
     }
     for (directive, turn_id) in &pending_directives {
         let _ = launch_worker(core, session_id, turn_id, directive, true);
@@ -3612,7 +3744,7 @@ fn handle_agent_value_timed(
     }
     // When this session's own turn ends and it is not waiting on any child
     // worker, hand its result up to its parent (no-op if it has no parent).
-    if turn_completed && !checkpoint_response_seen && !checkpoint_turn_handled {
+    if turn_completed && !checkpoint_response_seen && !checkpoint_turn_handled && (!prompt_control_turn || turn_failed) {
         let idle =
             store::outstanding_children(&state.db.lock().unwrap(), session_id).unwrap_or(0) == 0;
         if idle {
@@ -3621,6 +3753,145 @@ fn handle_agent_value_timed(
     }
     if bridge_state_changed {
         core.events.publish(CoreEvent::StateChanged);
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static PROMPT_CONTROL_RECEIPT_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+fn prompt_control_turn_recorded(db: &Connection, session_id: &str, turn_id: &str) -> bool {
+    #[cfg(test)]
+    PROMPT_CONTROL_RECEIPT_READS.with(|reads| reads.set(reads.get() + 1));
+    db.query_row(
+        "SELECT EXISTS(SELECT 1 FROM events WHERE entity_id=?1 AND kind='prompt_mutation.control_turn' AND body=?2)",
+        params![session_id, turn_id], |row| row.get(0),
+    ).unwrap_or(false)
+}
+
+/// Park only the model's control turn. Approval applies to a future role
+/// launch and remains reviewable if this process later stops or Bridge exits.
+fn hold_prompt_mutation_wait(db: &Connection, session_id: &str) {
+    if !prompt_mutations::pending_for_session(db, session_id)
+        .is_ok_and(|pending| !pending.is_empty())
+    {
+        return;
+    }
+    if let Ok(Some(runtime)) = store::worker_runtime(db, session_id) {
+        if runtime.result_status != "pending" {
+            return;
+        }
+        let _ = session_supervisor::SessionSupervisor::transition(
+            db, session_id, worker_lifecycle::WorkerLifecycleState::Waiting,
+            Some("prompt_mutation_approval"),
+        );
+    } else {
+        let _ = db.execute("UPDATE sessions SET status='waiting' WHERE id=?1 AND status='ready'", params![session_id]);
+    }
+    let _ = db.execute(
+        "UPDATE workspaces SET status='waiting' WHERE id=(SELECT workspace_id FROM sessions WHERE id=?1)",
+        params![session_id],
+    );
+}
+
+/// Deliver an outcome through the durable phase-boundary queue. This never
+/// starts an adapter or revives a worker that already reported its result.
+pub(crate) fn queue_prompt_mutation_feedback(
+    core: &Arc<BridgeCore>, session_id: &str, proposal_id: Option<&str>, status: &str, reason: &str,
+    receipt_id: Option<&str>,
+) -> bool {
+    if !core.adapters.lock().unwrap().contains_key(session_id) {
+        return false;
+    }
+    let queued = (|| -> Result<bool, BridgeError> {
+        let db = core.db.lock().unwrap();
+        let eligible: bool = db.query_row(
+            "SELECT status NOT IN ('stopped','failed','completed','cancelled')
+             AND NOT EXISTS(SELECT 1 FROM worker_runtime WHERE session_id=?1 AND result_status='reported')
+             FROM sessions WHERE id=?1", params![session_id], |row| row.get(0),
+        ).unwrap_or(false);
+        if !eligible { return Ok(false); }
+        let key = proposal_id.or(receipt_id).map(|id| format!("{id}:{status}"));
+        if let Some(key) = key.as_deref() {
+            if db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM events WHERE entity_id=?1 AND kind='prompt_mutation.feedback.queued' AND body=?2)",
+                params![session_id, key], |row| row.get::<_, bool>(0),
+            )? { return Ok(false); }
+        }
+        let envelope = serde_json::json!({
+            "type": "bridge-prompt-change-result", "proposalId": proposal_id,
+            "status": status, "reason": reason, "effect": "next_launch",
+            "instruction": "This is Bridge's prompt-change result. Approved guidance applies to future launches of the shared role; your running instructions have not changed. Continue the original objective. If you are a worker, still finish with a bridge-worker-result."
+        }).to_string();
+        let transaction = db.unchecked_transaction()?;
+        session_input::enqueue(&transaction, session_id, &envelope, reason)?;
+        if let Some(key) = key.as_deref() {
+            store::event(&transaction, "prompt_mutation", "prompt_mutation.feedback.queued", session_id, key)?;
+        }
+        transaction.commit()?;
+        if let Ok(Some(runtime)) = store::worker_runtime(&db, session_id) {
+            if runtime.lifecycle_state == "waiting" && runtime.waiting_reason.as_deref() == Some("prompt_mutation_approval") {
+                session_supervisor::SessionSupervisor::transition(
+                    &db, session_id, worker_lifecycle::WorkerLifecycleState::Working,
+                    Some("prompt_mutation_resolved"),
+                )?;
+            }
+        }
+        db.execute(
+            "UPDATE sessions SET status='ready' WHERE id=?1 AND active_turn_id IS NULL AND status IN ('working','waiting')",
+            params![session_id],
+        )?;
+        Ok(true)
+    })();
+    if matches!(queued, Ok(true)) {
+        drain_queued_input(core, session_id);
+        core.events.publish(CoreEvent::StateChanged);
+        true
+    } else if let Err(error) = queued {
+        let _ = store::event(&core.db.lock().unwrap(), "prompt_mutation", "prompt_mutation.feedback.failed", session_id, &error.to_string());
+        false
+    } else {
+        false
+    }
+}
+
+pub(crate) fn prompt_mutation_outcome_reason(status: &str) -> &'static str {
+    match status {
+        "accepted" => "The appended guidance was saved for the next launch of the shared role. Running instructions are unchanged.",
+        "stale" => "The role guidance changed after this proposal was created. Nothing was overwritten; submit a fresh proposal.",
+        "denied" => "Prompt mutation authority changed or is no longer valid. No guidance was changed.",
+        _ => "The prompt change was declined. No guidance was changed.",
+    }
+}
+
+/// A successful approval commit must not strand a live model if enqueueing
+/// its response failed. The receipt and queued text commit together, so this
+/// bounded sweep can retry safely without replaying provider turns.
+fn recover_prompt_mutation_feedback(core: &Arc<BridgeCore>) {
+    let missing = {
+        let db = core.db.lock().unwrap();
+        db.prepare(
+            "SELECT p.id,p.actor_session_id,p.status FROM prompt_mutation_proposals p
+             JOIN sessions s ON s.id=p.actor_session_id
+             WHERE p.status!='pending' AND s.status NOT IN ('stopped','failed','completed','cancelled')
+             AND NOT EXISTS(SELECT 1 FROM worker_runtime r WHERE r.session_id=s.id AND r.result_status='reported')
+             AND (NOT EXISTS(SELECT 1 FROM events e WHERE e.entity_id=s.id
+                 AND e.kind='prompt_mutation.feedback.queued' AND e.body=p.id||':'||p.status)
+                 OR (s.parent_session_id IS NOT NULL
+                     AND EXISTS(SELECT 1 FROM sessions parent WHERE parent.id=s.parent_session_id
+                         AND parent.status NOT IN ('stopped','failed','completed','cancelled'))
+                     AND NOT EXISTS(SELECT 1 FROM events e WHERE e.entity_id=s.parent_session_id
+                         AND e.kind='prompt_mutation.parent_notice.queued' AND e.body=p.id||':'||p.status)))
+             ORDER BY p.created_at LIMIT 32",
+        ).and_then(|mut statement| statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?))
+        })?.collect::<Result<Vec<_>, _>>()).unwrap_or_default()
+    };
+    for (id, session, status) in missing {
+        queue_prompt_mutation_feedback(core, &session, Some(&id), &status,
+            prompt_mutation_outcome_reason(&status), None);
+        notify_parent_prompt_mutation_resolved(core, &session, &id, &status);
     }
 }
 
@@ -5968,13 +6239,14 @@ fn surface_child_approval_on_parent(
         child_session_id,
     )
     .is_some_and(|turn_id| is_direct_agent_turn(&turn_id));
-    let delivered = !direct_dispatch
-        && state
-            .adapters
-            .lock()
-            .unwrap()
-            .get(&context.parent_session_id)
-            .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+    let prompt_proposal_id = (detail["approvalType"] == "prompt_mutation")
+        .then(|| detail["proposalId"].as_str()).flatten();
+    let delivered = !direct_dispatch && if let Some(proposal_id) = prompt_proposal_id {
+        queue_parent_prompt_notice(core, &context.parent_session_id, proposal_id, "pending", &routing_notice, text)
+    } else {
+        state.adapters.lock().unwrap().get(&context.parent_session_id)
+            .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok())
+    };
     let event = agent::NormalizedEvent {
         kind: "delegation.blocked".into(),
         item_id: Some(format!("child-approval-{child_session_id}")),
@@ -6012,18 +6284,51 @@ pub fn notify_parent_child_left_waiting(
     child_session_id: &str,
     outcome: &str,
 ) {
+    notify_parent_child_left_waiting_inner(core, child_session_id, outcome, None);
+}
+
+pub(crate) fn notify_parent_prompt_mutation_resolved(
+    core: &Arc<BridgeCore>, child_session_id: &str, proposal_id: &str, outcome: &str,
+) {
+    if !core.adapters.lock().unwrap().contains_key(child_session_id) { return; }
+    // Review of a past proposal must not imply that a finished child resumed.
+    let active = core.db.lock().unwrap().query_row(
+        "SELECT s.status NOT IN ('stopped','failed','completed','cancelled') AND r.result_status='pending'
+         FROM sessions s JOIN worker_runtime r ON r.session_id=s.id WHERE s.id=?1",
+        params![child_session_id], |row| row.get::<_, bool>(0),
+    ).unwrap_or(false);
+    if active {
+        notify_parent_child_left_waiting_inner(core, child_session_id, outcome, Some(proposal_id));
+    }
+}
+
+fn notify_parent_child_left_waiting_inner(
+    core: &Arc<BridgeCore>, child_session_id: &str, outcome: &str, prompt_proposal_id: Option<&str>,
+) {
     let state = core.clone();
     let Some(context) = child_approval_context(&state.db.lock().unwrap(), child_session_id) else {
         return;
     };
     let fleet = fleet_digest(&state.db.lock().unwrap(), &context.parent_session_id);
+    let prompt_worker_failed = prompt_proposal_id.is_some() && outcome == "worker_failed";
+    let prompt_notice_text = if prompt_worker_failed {
+        "The worker failed. Its prompt proposal is still reviewable in the worker conversation."
+    } else {
+        "The worker's prompt proposal was resolved; its task continues at the next available boundary."
+    };
     let routing_notice = serde_json::json!({
-        "type": "bridge-worker-unblocked",
+        "type": if prompt_worker_failed { "bridge-worker-stopped" } else { "bridge-worker-unblocked" },
         "childSessionId": child_session_id,
         "label": context.label,
         "outcome": outcome,
         "fleet": fleet,
-        "instruction": "The worker's approval was resolved and it is running again. Keep waiting for its typed result."
+        "instruction": if prompt_worker_failed {
+            "The worker failed. Its prompt proposal is still pending and reviewable in the worker conversation. Bridge reports the failed task result separately; the proposal does not keep the failed worker running."
+        } else if prompt_proposal_id.is_some() {
+            "The worker's prompt proposal was resolved. Bridge delivers its outcome at the worker's next available turn boundary. Keep waiting for the original objective's typed result; approved guidance changes future launches only."
+        } else {
+            "The worker's approval was resolved and it is running again. Keep waiting for its typed result."
+        }
     })
     .to_string();
     let direct_dispatch = spawned_turn_id(
@@ -6032,20 +6337,21 @@ pub fn notify_parent_child_left_waiting(
         child_session_id,
     )
     .is_some_and(|turn_id| is_direct_agent_turn(&turn_id));
-    let delivered = !direct_dispatch
-        && state
-            .adapters
-            .lock()
-            .unwrap()
-            .get(&context.parent_session_id)
-            .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok());
+    let delivered = !direct_dispatch && if let Some(proposal_id) = prompt_proposal_id {
+        queue_parent_prompt_notice(core, &context.parent_session_id, proposal_id, outcome, &routing_notice,
+            prompt_notice_text)
+    } else {
+        state.adapters.lock().unwrap().get(&context.parent_session_id)
+            .is_some_and(|runtime| runtime.send_turn(&routing_notice).is_ok())
+    };
     let event = agent::NormalizedEvent {
         kind: "delegation.blocked".into(),
         item_id: Some(format!("child-approval-{child_session_id}")),
         role: Some("system".into()),
-        status: Some(outcome.to_owned()),
-        title: Some(format!("{} approval {outcome}", context.label)),
-        text: None,
+        status: Some(if prompt_worker_failed { "failed" } else { outcome }.to_owned()),
+        title: Some(if prompt_worker_failed { format!("{} failed; prompt proposal remains reviewable", context.label) }
+            else { format!("{} approval {outcome}", context.label) }),
+        text: prompt_worker_failed.then(|| prompt_notice_text.to_owned()),
         data: serde_json::json!({
             "childBlocked": false,
             "childSessionId": child_session_id,
@@ -6054,15 +6360,63 @@ pub fn notify_parent_child_left_waiting(
             "orchestratorNotified": delivered,
         }),
     };
+    let db = state.db.lock().unwrap();
+    let mirror_key = prompt_proposal_id.map(|id| format!("{id}:{outcome}"));
+    if let Some(key) = mirror_key.as_deref() {
+        if db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE entity_id=?1 AND kind='prompt_mutation.parent_notice.mirrored' AND body=?2)",
+            params![context.parent_session_id, key], |row| row.get::<_, bool>(0),
+        ).unwrap_or(false) { return; }
+    }
     if let Ok(stored) = store::session_event(
-        &state.db.lock().unwrap(),
+        &db,
         &context.parent_session_id,
         &event,
         &serde_json::json!({"delegation": true}),
     ) {
+        if let Some(key) = mirror_key.as_deref() {
+            let _ = store::event(&db, "prompt_mutation", "prompt_mutation.parent_notice.mirrored", &context.parent_session_id, key);
+        }
         core.events.publish(CoreEvent::Agent(stored));
     }
+    drop(db);
     core.events.publish(CoreEvent::StateChanged);
+}
+
+/// Prompt-control notices obey the parent's ordinary turn boundary. Persist
+/// the notice and its receipt together; an approval retry cannot start a
+/// second parent turn, and no provider is launched solely to deliver it.
+fn queue_parent_prompt_notice(
+    core: &Arc<BridgeCore>, parent_session_id: &str, proposal_id: &str, outcome: &str,
+    provider_text: &str, display_text: &str,
+) -> bool {
+    if !core.adapters.lock().unwrap().contains_key(parent_session_id) { return false; }
+    let result = (|| -> Result<bool, BridgeError> {
+        let db = core.db.lock().unwrap();
+        let active = db.query_row(
+            "SELECT status NOT IN ('stopped','failed','completed','cancelled') FROM sessions WHERE id=?1",
+            params![parent_session_id], |row| row.get::<_, bool>(0),
+        ).unwrap_or(false);
+        if !active { return Ok(false); }
+        let key = format!("{proposal_id}:{outcome}");
+        if db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM events WHERE entity_id=?1 AND kind='prompt_mutation.parent_notice.queued' AND body=?2)",
+            params![parent_session_id, key], |row| row.get::<_, bool>(0),
+        )? { return Ok(false); }
+        let transaction = db.unchecked_transaction()?;
+        session_input::enqueue(&transaction, parent_session_id, provider_text, display_text)?;
+        store::event(&transaction, "prompt_mutation", "prompt_mutation.parent_notice.queued", parent_session_id, &key)?;
+        transaction.commit()?;
+        Ok(true)
+    })();
+    match result {
+        Ok(true) => { drain_queued_input(core, parent_session_id); true }
+        Ok(false) => false,
+        Err(error) => {
+            let _ = store::event(&core.db.lock().unwrap(), "prompt_mutation", "prompt_mutation.parent_notice.failed", parent_session_id, &error.to_string());
+            false
+        }
+    }
 }
 
 /// Answer an approval the permission policy granted.
@@ -8826,6 +9180,12 @@ fn report_to_parent(
     let Some(report) = report else {
         return false;
     };
+    // A prompt-wait failure also emits a canonical worker result. Its routing
+    // must obey the same parent boundary as the prompt-specific failure notice.
+    let pending_prompt_proposal = (result.status == delegation::WorkerResultStatus::Failed)
+        .then(|| prompt_mutations::pending_for_session(&state.db.lock().unwrap(), child_session_id)
+            .ok().and_then(|proposals| proposals.into_iter().next()).map(|proposal| proposal.id))
+        .flatten();
     let direct_dispatch = spawned_turn_id(
         &state.db.lock().unwrap(),
         &report.parent_session_id,
@@ -8926,15 +9286,21 @@ fn report_to_parent(
         "suggestedRole": suggested_role,
         "suggestedTask": handoff.then(|| result.suggested_task.clone()).flatten(),
         "partialRevision": partial_revision,
-        "instruction": match (partial_revision, awaits_adoption) {
+        "promptProposalId": pending_prompt_proposal,
+        "instruction": if pending_prompt_proposal.is_some() {
+            "The worker failed. Its prompt proposal is still reviewable in the worker conversation. The referenced SQLite worker.result entry is the canonical failed task result."
+        } else { match (partial_revision, awaits_adoption) {
             (true, _) => "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical. This worker handed off before finishing: route suggestedRole for suggestedTask next. Its revision is partial, so no completion gate was opened over it and it is NOT a verification target. Do not claim the task is done, and do not substitute verification for the requested follow-up.",
             (false, true) => "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical. These changes exist ONLY in the worker's own worktree — the user's task checkout is unchanged until they are adopted. Do not claim the task is done; report that the change is waiting to be adopted or discarded.",
             (false, false) => "Treat this as routing metadata. The referenced SQLite worker.result entry is canonical. If completion is verifying or changes_requested, route the next required verification sequentially; do not claim the task is done."
-        }
+        } }
     })
     .to_string();
         let delivered = !direct_dispatch
-            && match state
+            && if let Some(proposal_id) = pending_prompt_proposal.as_deref() {
+                queue_parent_prompt_notice(&core, &report.parent_session_id, proposal_id, "worker_result", &routing_notice,
+                    "The worker failed. Its prompt proposal is still reviewable in the worker conversation.")
+            } else { match state
                 .adapters
                 .lock()
                 .unwrap()
@@ -8942,7 +9308,7 @@ fn report_to_parent(
             {
                 Some(runtime) => runtime.send_turn(&routing_notice).is_ok(),
                 None => false,
-            };
+            } };
         {
             let db = state.db.lock().unwrap();
             let result_event = agent::NormalizedEvent {
@@ -10794,6 +11160,11 @@ pub fn drain_queued_input(core: &Arc<BridgeCore>, session_id: &str) -> bool {
     let state = core.clone();
     let queued = {
         let db = state.db.lock().unwrap();
+        if prompt_mutations::pending_for_session(&db, session_id)
+            .is_ok_and(|pending| !pending.is_empty())
+        {
+            return false;
+        }
         let idle = db
             .query_row(
                 "SELECT active_turn_id IS NULL AND status NOT IN ('working','checkpointing')
@@ -10918,6 +11289,7 @@ pub fn start_queued_input_maintenance(core: Arc<BridgeCore>) {
     }
     thread::spawn(move || loop {
         thread::sleep(QUEUED_INPUT_SWEEP_INTERVAL);
+        recover_prompt_mutation_feedback(&core);
         let sessions = {
             let db = core.db.lock().unwrap();
             session_input::sessions_with_queued_input(&db).unwrap_or_default()
@@ -13142,7 +13514,7 @@ mod submit_input_tests {
         core.db.lock().unwrap().execute("UPDATE sessions SET harness='codex' WHERE id='chat'", []).unwrap();
         let mut published = core.events.subscribe();
         handle_agent_value_timed(&core, "chat", &Arc::new(Mutex::new(Some("turn-1".into()))),
-            &codex_agent_message("answer"), Some(FrameTiming { id: "frame-test".into(), received: std::time::Instant::now() }));
+            &codex_agent_message("answer"), Some(FrameTiming { id: "frame-test".into(), received: std::time::Instant::now() }), None);
         let mut found = false;
         while let Ok(event) = published.try_recv() {
             if let CoreEvent::Agent(event) = event {
@@ -14895,6 +15267,303 @@ mod submit_input_tests {
 }
 
 #[cfg(test)]
+mod prompt_mutation_runtime_tests {
+    use super::*;
+    use super::submit_input_tests::{FakeRuntime, FakeHandles};
+
+    fn attach(core: &Arc<BridgeCore>, session: &str) -> FakeHandles {
+        let (runtime, handles) = FakeRuntime::new(false);
+        core.adapters.lock().unwrap().insert(session.into(), runtime);
+        core.db.lock().unwrap().execute(
+            "UPDATE sessions SET active_turn_id='turn-1',started_at='launch-1',provider_session_id='fake' WHERE id=?1",
+            params![session],
+        ).unwrap();
+        handles
+    }
+
+    fn grant(core: &Arc<BridgeCore>) {
+        let db = core.db.lock().unwrap();
+        let mut policy = agent_config::PermissionPolicy::default();
+        policy.worker_prompt_proposal_roles = vec![delegation::WorkerRole::Implementation];
+        agent_config::save_permission_policy(&db, policy).unwrap();
+    }
+
+    fn request() -> serde_json::Value {
+        serde_json::json!({"method":"item/completed","params":{"item":{
+            "id":"prompt-control","type":"agentMessage","status":"completed",
+            "text":"```bridge-prompt-change\n{\"schemaVersion\":1,\"requestId\":\"guide-1\",\"guidance\":\"Check existing public APIs first.\",\"rationale\":\"Avoid duplicate interfaces.\"}\n```"
+        }}})
+    }
+
+    fn finish() -> serde_json::Value {
+        serde_json::json!({"method":"turn/completed","params":{"turn":{"id":"turn-1","status":"completed"}}})
+    }
+
+    fn turn() -> Arc<Mutex<Option<String>>> {
+        Arc::new(Mutex::new(Some("turn-1".into())))
+    }
+
+    fn proposal(core: &Arc<BridgeCore>, session: &str) -> prompt_mutations::PromptMutationProposal {
+        prompt_mutations::for_turn(&core.db.lock().unwrap(), session, "turn-1").unwrap().unwrap()
+    }
+
+    #[test]
+    fn worker_control_turn_waits_without_result_repair_and_acceptance_returns_one_host_result() {
+        let (_fixture, core, _guard) = super::permission_policy_tests::core_with_worker(true);
+        let handles = attach(&core, "child");
+        grant(&core);
+        let current = turn();
+        handle_agent_value(&core, "child", &current, &request());
+        handle_agent_value(&core, "child", &current, &request());
+        let proposal = proposal(&core, "child");
+        assert_eq!(prompt_mutations::pending_for_session(&core.db.lock().unwrap(), "child").unwrap().len(), 1);
+        handle_agent_value(&core, "child", &current, &finish());
+        let runtime = store::worker_runtime(&core.db.lock().unwrap(), "child").unwrap().unwrap();
+        assert_eq!(runtime.lifecycle_state, "waiting");
+        assert_eq!(runtime.result_status, "pending");
+        assert!(handles.sent.lock().unwrap().is_empty(), "a host control turn is not a malformed worker result");
+        assert!(handles.responded.lock().unwrap().is_empty(), "provider bypass cannot resolve host authorization");
+        assert!(crate::api::resolve_approval(&core, "child", proposal.approval_event_id, "acceptForSession", None).is_err());
+        let resolved = crate::api::resolve_approval(&core, "child", proposal.approval_event_id, "accept", None).unwrap();
+        assert_eq!(resolved.status, "accepted");
+        assert_eq!(handles.sent.lock().unwrap().len(), 1);
+        let feedback: serde_json::Value = serde_json::from_str(&handles.sent.lock().unwrap()[0]).unwrap();
+        assert_eq!(feedback["type"], "bridge-prompt-change-result");
+        assert_eq!(feedback["effect"], "next_launch");
+        let replay = crate::api::resolve_approval(&core, "child", proposal.approval_event_id, "decline", None).unwrap();
+        assert_eq!(replay.disposition, wire::InteractionResolutionDisposition::AlreadyResolved);
+        assert_eq!(handles.sent.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn acceptance_before_completion_waits_for_boundary_and_does_not_forward_a_worker_result() {
+        let (_fixture, core, _guard) = super::permission_policy_tests::core_with_worker(false);
+        let handles = attach(&core, "child");
+        grant(&core);
+        let current = turn();
+        handle_agent_value(&core, "child", &current, &request());
+        let proposal = proposal(&core, "child");
+        crate::api::resolve_approval(&core, "child", proposal.approval_event_id, "accept", None).unwrap();
+        assert!(handles.sent.lock().unwrap().is_empty());
+        handle_agent_value(&core, "child", &current, &finish());
+        assert_eq!(handles.sent.lock().unwrap().len(), 1);
+        assert_eq!(store::worker_runtime(&core.db.lock().unwrap(), "child").unwrap().unwrap().result_status, "pending");
+    }
+
+    #[test]
+    fn worker_without_capability_gets_rejection_not_a_prompt_change_or_result_repair() {
+        let (_fixture, core, _guard) = super::permission_policy_tests::core_with_worker(false);
+        let handles = attach(&core, "child");
+        let current = turn();
+        handle_agent_value(&core, "child", &current, &request());
+        handle_agent_value(&core, "child", &current, &request());
+        assert!(prompt_mutations::for_turn(&core.db.lock().unwrap(), "child", "turn-1").unwrap().is_none());
+        handle_agent_value(&core, "child", &current, &finish());
+        assert_eq!(handles.sent.lock().unwrap().len(), 1);
+        assert!(handles.sent.lock().unwrap()[0].contains("bridge-prompt-change-result"));
+        assert_eq!(store::worker_runtime(&core.db.lock().unwrap(), "child").unwrap().unwrap().result_status, "pending");
+    }
+
+    #[test]
+    fn prompt_tool_advertisement_requires_the_workers_explicit_role_grant() {
+        let (_fixture, core, _guard) = super::permission_policy_tests::core_with_worker(false);
+        assert!(!worker_prompt_proposal_capability(&core.db.lock().unwrap(), "child"));
+        assert!(!delegation::worker_contract(delegation::WorkerRole::Implementation, 1).contains("bridge-prompt-change"));
+        grant(&core);
+        assert!(worker_prompt_proposal_capability(&core.db.lock().unwrap(), "child"));
+        assert!(!worker_prompt_proposal_capability(&core.db.lock().unwrap(), "parent"));
+    }
+
+    #[test]
+    fn a_runtime_allocated_turn_is_bound_before_host_tool_authorization() {
+        let (_fixture, core, _guard) = super::permission_policy_tests::core_with_worker(false);
+        attach(&core, "parent");
+        core.db.lock().unwrap().execute("UPDATE sessions SET active_turn_id=NULL WHERE id='parent'", []).unwrap();
+        handle_agent_value_timed(&core, "parent", &turn(), &request(), None, Some(("launch-1", "fake")));
+        assert_eq!(proposal(&core, "parent").actor_turn_id, "turn-1");
+    }
+
+    #[test]
+    fn a_failed_outcome_enqueue_is_recovered_once_without_reapplying_the_change() {
+        let (_fixture, core, _guard) = super::permission_policy_tests::core_with_worker(false);
+        let handles = attach(&core, "child");
+        grant(&core);
+        let current = turn();
+        handle_agent_value(&core, "child", &current, &request());
+        handle_agent_value(&core, "child", &current, &finish());
+        let proposal = proposal(&core, "child");
+        core.db.lock().unwrap().execute_batch(
+            "CREATE TRIGGER fail_prompt_feedback BEFORE INSERT ON queued_session_input BEGIN SELECT RAISE(ABORT,'injected enqueue failure'); END;"
+        ).unwrap();
+        let resolved = crate::api::resolve_approval(&core, "child", proposal.approval_event_id, "accept", None).unwrap();
+        assert_eq!(resolved.status, "accepted");
+        assert!(handles.sent.lock().unwrap().is_empty());
+        core.db.lock().unwrap().execute_batch("DROP TRIGGER fail_prompt_feedback;").unwrap();
+        recover_prompt_mutation_feedback(&core);
+        recover_prompt_mutation_feedback(&core);
+        assert_eq!(handles.sent.lock().unwrap().len(), 1);
+        let replay = crate::api::resolve_approval(&core, "child", proposal.approval_event_id, "accept", None).unwrap();
+        assert_eq!(replay.disposition, wire::InteractionResolutionDisposition::AlreadyResolved);
+        assert_eq!(handles.sent.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_replaced_reader_cannot_submit_a_prompt_change_for_the_current_session() {
+        let (_fixture, core, _guard) = super::permission_policy_tests::core_with_worker(false);
+        attach(&core, "parent");
+        handle_agent_value_timed(&core, "parent", &turn(), &request(), None, Some(("old-launch", "fake")));
+        assert!(prompt_mutations::for_turn(&core.db.lock().unwrap(), "parent", "turn-1").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_stopped_origin_can_be_reviewed_without_resurrecting_its_worker() {
+        let (_fixture, core, _guard) = super::permission_policy_tests::core_with_worker(false);
+        let handles = attach(&core, "child");
+        grant(&core);
+        handle_agent_value(&core, "child", &turn(), &request());
+        let proposal = proposal(&core, "child");
+        core.db.lock().unwrap().execute("UPDATE sessions SET status='stopped',active_turn_id=NULL WHERE id='child'", []).unwrap();
+        core.db.lock().unwrap().execute("UPDATE worker_runtime SET lifecycle_state='stopped',result_status='reported' WHERE session_id='child'", []).unwrap();
+        let result = crate::api::resolve_approval(&core, "child", proposal.approval_event_id, "decline", None).unwrap();
+        assert_eq!(result.status, "declined");
+        assert!(handles.sent.lock().unwrap().is_empty());
+        assert_eq!(store::worker_runtime(&core.db.lock().unwrap(), "child").unwrap().unwrap().result_status, "reported");
+    }
+
+    #[test]
+    fn a_provider_failure_after_prompt_control_still_settles_the_worker() {
+        let (_fixture, core, _guard) = super::permission_policy_tests::core_with_worker(false);
+        let handles = attach(&core, "child");
+        grant(&core);
+        let current = turn();
+        handle_agent_value(&core, "child", &current, &request());
+        handle_agent_value(&core, "child", &current, &serde_json::json!({
+            "method":"error","params":{"error":{"message":"Unsupported model configuration"},"willRetry":false}
+        }));
+        let runtime = store::worker_runtime(&core.db.lock().unwrap(), "child").unwrap().unwrap();
+        assert_eq!(runtime.result_status, "reported");
+        assert_eq!(runtime.lifecycle_state, "completed");
+        assert!(handles.sent.lock().unwrap().is_empty(), "provider failure is not a prompt/result formatting repair");
+        assert_eq!(prompt_mutations::pending_for_session(&core.db.lock().unwrap(), "child").unwrap().len(), 1,
+            "future-role review survives a failed originating process");
+    }
+
+    #[test]
+    fn prompt_wait_failure_queues_parent_notices_and_preserves_review() {
+        let (_fixture, core, _guard) = super::permission_policy_tests::core_with_worker(false);
+        let parent_handles = attach(&core, "parent");
+        let child_handles = attach(&core, "child");
+        grant(&core);
+        let current = turn();
+        handle_agent_value(&core, "child", &current, &request());
+        handle_agent_value(&core, "child", &current, &finish());
+        assert_eq!(store::worker_runtime(&core.db.lock().unwrap(), "child").unwrap().unwrap().lifecycle_state, "waiting");
+        handle_agent_value(&core, "child", &current, &serde_json::json!({
+            "method":"error","params":{"error":{"message":"Unsupported model configuration"},"willRetry":false}
+        }));
+        // Result routing is asynchronous. Wait for its durable transcript event
+        // before asserting that neither terminal path interrupted the parent.
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let reported = core.db.lock().unwrap().query_row(
+                "SELECT EXISTS(SELECT 1 FROM session_entries WHERE session_id='parent' AND kind='delegation.result')",
+                [], |row| row.get::<_, bool>(0),
+            ).unwrap();
+            if reported { break; }
+            assert!(std::time::Instant::now() < deadline, "failed result must reach the parent transcript");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(parent_handles.sent.lock().unwrap().is_empty(), "neither prompt abort nor failed evidence may start a competing parent turn");
+        assert!(child_handles.sent.lock().unwrap().is_empty(), "a failed worker is not resumed");
+        assert_eq!(store::worker_runtime(&core.db.lock().unwrap(), "child").unwrap().unwrap().result_status, "reported");
+        assert_eq!(prompt_mutations::pending_for_session(&core.db.lock().unwrap(), "child").unwrap().len(), 1);
+        assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "parent").unwrap(), 3);
+        let parent_turn = turn();
+        for _ in 0..3 {
+            handle_agent_value(&core, "parent", &parent_turn, &finish());
+        }
+        let sent = parent_handles.sent.lock().unwrap();
+        assert_eq!(sent.len(), 3);
+        let stopped: serde_json::Value = serde_json::from_str(&sent[1]).unwrap();
+        assert_eq!(stopped["type"], "bridge-worker-stopped");
+        assert!(stopped["instruction"].as_str().unwrap().contains("still pending and reviewable"));
+        assert!(!stopped["instruction"].as_str().unwrap().contains("resolved"));
+        let result: serde_json::Value = serde_json::from_str(&sent[2]).unwrap();
+        assert_eq!(result["type"], "bridge-worker-evidence");
+        assert_eq!(result["status"], "failed");
+    }
+
+    #[test]
+    fn prompt_receipts_are_read_at_turn_boundaries_not_for_every_stream_delta() {
+        let (_fixture, core, _guard) = super::permission_policy_tests::core_with_worker(false);
+        attach(&core, "parent");
+        let current = turn();
+        let before = PROMPT_CONTROL_RECEIPT_READS.with(|reads| reads.get());
+        for _ in 0..4 {
+            handle_agent_value(&core, "parent", &current, &serde_json::json!({
+                "method":"item/agentMessage/delta","params":{"itemId":"ordinary-message","delta":"ordinary text "}
+            }));
+        }
+        assert_eq!(PROMPT_CONTROL_RECEIPT_READS.with(|reads| reads.get()), before);
+        handle_agent_value(&core, "parent", &current, &finish());
+        assert_eq!(PROMPT_CONTROL_RECEIPT_READS.with(|reads| reads.get()), before + 1);
+    }
+
+    #[test]
+    fn parent_prompt_notices_wait_for_turn_boundaries_and_are_not_duplicated() {
+        let (_fixture, core, _guard) = super::permission_policy_tests::core_with_worker(false);
+        let parent_handles = attach(&core, "parent");
+        attach(&core, "child");
+        grant(&core);
+        let child_turn = turn();
+        handle_agent_value(&core, "child", &child_turn, &request());
+        handle_agent_value(&core, "child", &child_turn, &finish());
+        assert!(parent_handles.sent.lock().unwrap().is_empty());
+        assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "parent").unwrap(), 1);
+        let proposal = proposal(&core, "child");
+        crate::api::resolve_approval(&core, "child", proposal.approval_event_id, "accept", None).unwrap();
+        crate::api::resolve_approval(&core, "child", proposal.approval_event_id, "accept", None).unwrap();
+        recover_prompt_mutation_feedback(&core);
+        assert!(parent_handles.sent.lock().unwrap().is_empty(), "an active parent must never receive a competing turn");
+        assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "parent").unwrap(), 2);
+        let parent_turn = turn();
+        handle_agent_value(&core, "parent", &parent_turn, &finish());
+        assert_eq!(parent_handles.sent.lock().unwrap().len(), 1);
+        handle_agent_value(&core, "parent", &parent_turn, &finish());
+        let sent = parent_handles.sent.lock().unwrap();
+        assert_eq!(sent.len(), 2);
+        assert!(sent[0].contains("bridge-worker-blocked-on-approval"));
+        assert!(sent[1].contains("bridge-worker-unblocked"));
+    }
+
+    #[test]
+    fn recovery_retries_a_missing_parent_outcome_without_repeating_worker_feedback() {
+        let (_fixture, core, _guard) = super::permission_policy_tests::core_with_worker(false);
+        let parent_handles = attach(&core, "parent");
+        let child_handles = attach(&core, "child");
+        grant(&core);
+        let current = turn();
+        handle_agent_value(&core, "child", &current, &request());
+        handle_agent_value(&core, "child", &current, &finish());
+        let proposal = proposal(&core, "child");
+        core.db.lock().unwrap().execute_batch(
+            "CREATE TRIGGER fail_parent_prompt_notice BEFORE INSERT ON queued_session_input
+             WHEN NEW.session_id='parent' AND NEW.provider_text LIKE '%bridge-worker-unblocked%'
+             BEGIN SELECT RAISE(ABORT,'injected parent notice failure'); END;"
+        ).unwrap();
+        crate::api::resolve_approval(&core, "child", proposal.approval_event_id, "accept", None).unwrap();
+        assert_eq!(child_handles.sent.lock().unwrap().len(), 1);
+        assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "parent").unwrap(), 1);
+        core.db.lock().unwrap().execute_batch("DROP TRIGGER fail_parent_prompt_notice;").unwrap();
+        recover_prompt_mutation_feedback(&core);
+        recover_prompt_mutation_feedback(&core);
+        assert_eq!(child_handles.sent.lock().unwrap().len(), 1);
+        assert!(parent_handles.sent.lock().unwrap().is_empty());
+        assert_eq!(session_input::pending_count(&core.db.lock().unwrap(), "parent").unwrap(), 2);
+    }
+}
+
+#[cfg(test)]
 mod permission_policy_tests {
     use super::submit_input_tests::FakeRuntime;
     use super::*;
@@ -14962,6 +15631,7 @@ mod permission_policy_tests {
                     &db,
                     agent_config::PermissionPolicy {
                         auto_approve_provider_permissions: true,
+                        worker_prompt_proposal_roles: Vec::new(),
                         updated_at: String::new(),
                                             },
                 )
@@ -15017,7 +15687,7 @@ mod permission_policy_tests {
 
     /// A parent orchestrator with one live worker child, so the mirrored
     /// blocked-card path is reachable.
-    fn core_with_worker(bypass: bool) -> Fixture {
+    pub(super) fn core_with_worker(bypass: bool) -> Fixture {
         let managed_root = managed_root_guard();
         let fixture = tempfile::tempdir().unwrap();
         let core = BridgeCore::boot(crate::BootConfig {
@@ -15045,6 +15715,7 @@ mod permission_policy_tests {
             if bypass {
                 agent_config::save_permission_policy(&db, agent_config::PermissionPolicy {
                     auto_approve_provider_permissions: true, updated_at: String::new(),
+                    worker_prompt_proposal_roles: Vec::new(),
                 }).unwrap();
             }
         }

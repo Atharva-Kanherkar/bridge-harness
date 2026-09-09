@@ -20,6 +20,7 @@ import { bridgeApi } from "../api";
 import { quoteSelection } from "../sideChat";
 import { computeNarration, type NarrationView } from "../startupNarration";
 import { HarnessMark } from "./harnessMarks";
+import { PromptMutationApprovalCard } from "./PromptMutationApprovalCard";
 import type { InteractionResolutionResult, QuestionAction } from "../protocol/generated/protocol";
 
 type ResolvePermission = (eventId: number, decision: ApprovalDecision, optionId?: string) => Promise<InteractionResolutionResult | void> | void;
@@ -1090,7 +1091,9 @@ function ItemView({ item, workers, now, onResolve, onAnswerQuestion, onOpenSessi
   if (item.data.staleBase === true) return <StaleBaseCard item={item} onRefresh={onRefreshBase}/>;
   if (item.type === "reasoning") return <Reasoning item={item}/>;
   if (item.type === "plan") return <PlanCard item={item}/>;
-  if (item.type === "approval") return <ApprovalCard item={item} onResolve={onResolve}/>;
+  if (item.type === "approval") return item.data.approvalType === "prompt_mutation"
+    ? <PromptMutationApprovalCard item={item} onResolve={onResolve}/>
+    : <ApprovalCard item={item} onResolve={onResolve}/>;
   if (item.type === "permission") return <PermissionCard item={item} onResolve={onResolve}/>;
   if (item.type === "question") return <QuestionCard item={item} onResolve={onAnswerQuestion}/>;
   if (item.type === "delegation") return <DelegationRow item={item} workers={workers} now={now} onOpenSession={onOpenSession} onExpandWorker={onExpandWorker} onRetryWorker={onRetryWorker} onStopWorker={onStopWorker}/>;

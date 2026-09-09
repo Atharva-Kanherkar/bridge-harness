@@ -296,6 +296,7 @@ pub fn archive_workspace_records(
     remove_worktrees: impl FnOnce() -> Result<(), BridgeError>,
 ) -> Result<(), BridgeError> {
     let transaction = db.unchecked_transaction()?;
+    crate::prompt_mutations::deny_pending_for_workspace_tx(&transaction, workspace_id)?;
     transaction.execute(
         "DELETE FROM worker_leases WHERE workspace_id=?1",
         params![workspace_id],

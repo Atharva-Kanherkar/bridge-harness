@@ -1,4 +1,4 @@
-// Permissions: the bypass switch, the two gates that outlive it, and the log.
+// Permissions: provider convenience, host authorization, and the decision log.
 //
 // The switch renders from what the host stored, never from what was clicked. It
 // is a security control, so showing it on because a request was sent would be a
@@ -8,7 +8,7 @@ import { Lock as LockSimple } from "lucide-react";
 import type { BridgeEvent, PermissionPolicy } from "../../types";
 import { SettingsGroup, SettingsPage, SettingsRow, Switch } from "./kit";
 
-/// The two gates that outlive the bypass switch.
+/// Host authorization gates that outlive the provider convenience switch.
 ///
 /// Named in the UI, not only in a doc comment, because the issue makes the copy
 /// part of the contract: a switch that claims to silence everything and then
@@ -24,7 +24,13 @@ const SURVIVING_GATES = [
     title: "Browser outward effects",
     copy: "Send, submit, purchase, publish, and credential steps in the browser still ask, every time.",
   },
+  {
+    title: "Agent prompt changes",
+    copy: "Every proposed change to a shared role prompt needs your review of the exact before and after text.",
+  },
 ];
+
+const WORKER_ROLES = ["research", "implementation", "verification", "planning", "documentation"] as const;
 
 export function PermissionsSection({ policy, autoApprovals, busy, saved, onChange }: {
   policy: PermissionPolicy;
@@ -34,6 +40,7 @@ export function PermissionsSection({ policy, autoApprovals, busy, saved, onChang
   onChange: (next: PermissionPolicy) => void;
 }) {
   const on = policy.autoApproveProviderPermissions === true;
+  const proposalRoles = policy.workerPromptProposalRoles ?? [];
   return <SettingsPage title="Permissions" description="How much Bridge asks before an agent acts.">
     <SettingsGroup label="Provider prompts">
       <SettingsRow
@@ -47,6 +54,23 @@ export function PermissionsSection({ policy, autoApprovals, busy, saved, onChang
           onChange={next => onChange({ ...policy, autoApproveProviderPermissions: next })}
         />}
       />
+    </SettingsGroup>
+
+    <SettingsGroup label="Worker prompt proposals" note="Off by default; each change still asks">
+      <SettingsRow label="Allow a worker to propose guidance for its own role"
+        description="These switches allow proposals only. You review every change before it is saved to the shared role default. Approved guidance applies at the next start or relaunch." />
+      {WORKER_ROLES.map(role => <SettingsRow
+        key={role}
+        label={<span className="capitalize">{role}</span>}
+        control={<Switch
+          label={`Allow ${role} prompt proposals`}
+          checked={proposalRoles.includes(role)}
+          disabled={busy}
+          onChange={enabled => onChange({ ...policy, workerPromptProposalRoles: enabled
+            ? [...proposalRoles.filter(item => item !== role), role]
+            : proposalRoles.filter(item => item !== role) })}
+        />}
+      />)}
     </SettingsGroup>
 
     <SettingsGroup label="Always asks" note="These keep asking either way">

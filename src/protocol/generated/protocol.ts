@@ -1289,6 +1289,7 @@ export type Params = Record<string, unknown> | unknown[];
 export interface PermissionPolicy {
   autoApproveProviderPermissions?: boolean;
   updatedAt?: string;
+  workerPromptProposalRoles?: PromptProposalWorkerRole[];
 }
 
 export interface PolicyLimits {
@@ -1315,6 +1316,8 @@ export interface PromptLintWarningView {
   message: string;
 }
 
+export type PromptProposalWorkerRole = "research" | "implementation" | "verification" | "planning" | "documentation";
+
 export interface PromptProviderLayerStatus {
   adapter: string;
   bytes?: number | null;
@@ -1323,9 +1326,18 @@ export interface PromptProviderLayerStatus {
   source: PromptLayerSource;
 }
 
+export interface PromptRevisionAttribution {
+  actorRole: string;
+  actorSessionId: string;
+  actorTurnId: string;
+  proposalId: string;
+  rationale: string;
+}
+
 export type PromptRevisionOperation = "override" | "delete" | "reset" | "restore";
 
 export interface PromptRevisionView {
+  attribution?: PromptRevisionAttribution | null;
   createdAt: string;
   id: number;
   operation: PromptRevisionOperation;

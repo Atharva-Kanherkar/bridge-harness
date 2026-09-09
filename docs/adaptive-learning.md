@@ -18,13 +18,20 @@ Each run acquires an expiring durable lease, freezes an evidence high-water mark
 
 The Learning router dialog is the helper picker (pass, latency, cost). It is not Bridge's memory engine. Provider `/memory` and `/memories` stay on that provider and are not merged here. Saving the panel writes the in-app schedule only when enabled, cadence, or mode actually changed. While the job is already enabled, `next_run_at` is owned by the runner and is not overwritten by a stale dialog snapshot. Rollback restores the predecessor of the live (canary, else active) policy in this workspace — not the latest run's `basePolicyVersion`. The dialog refetches that workspace's learning state when `learning-job-changed` fires.
 
-Modes are explicit:
+Learning-policy **promotion** has three modes. Router execution has a separate
+`disabled` / `shadow` / `autonomous` control: shadow keeps executing the baseline
+while measuring recommendations. Promotion does not itself enable autonomous
+routing or grant permissions.
 
 - **Manual** persists a replay-approved recommendation and never promotes it.
 - **Ask** requires a separate user approval before one atomic promotion transaction.
 - **Automatic** is opt-in and promotes only to a guarded canary. Regression creates and activates a new immutable rollback version based on the predecessor in the same workspace. A first workspace policy has no predecessor; a regressed canary in that case is rolled back and leaves the workspace with no live learned policy.
 
 Cold start, insufficient confidence, duplicate triggers, unavailable candidates, replay regressions, and a zero evaluation budget are visible, auditable no-ops.
+
+Prompt changes are a separate, human-approved configuration operation; learning
+does not generate or approve them. See
+[approved agent prompt changes](design/agent-prompt-mutation.md).
 
 ## Bounded outcome evaluation
 
