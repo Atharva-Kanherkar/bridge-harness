@@ -156,13 +156,6 @@ fn clamp_to_work_area(
     (ideal.clamp(leftmost, rightmost), work_top + PANEL_GAP)
 }
 
-/// Put the worst live window's percentage in the menu bar. Empty clears it.
-pub fn set_tray_title(app: &tauri::AppHandle, title: &str) {
-    if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        let _ = tray.set_title(if title.is_empty() { None } else { Some(title) });
-    }
-}
-
 /// Build the meter tray item. Idempotent best-effort: returns `Ok(())` when
 /// the tray already exists or when tray construction fails.
 pub fn build(app: &tauri::App<tauri::Wry>) -> Result<(), String> {

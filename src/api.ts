@@ -8,7 +8,7 @@ import { asWireKind, readWireKind } from "./transcript/wire";
 import type { AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
 import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, SummaryParams, UsageBucket, UsageHistorySource, UsagePriceOverride, UsagePricingStatus, UsageSummaryResult } from "./types";
-import type { MeterRegistry } from "./types";
+import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types";
 import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult } from "./protocol/generated/protocol";
@@ -597,6 +597,55 @@ const mockMeterRegistry: MeterRegistry = {
   nominalIntervalSeconds: 300,
   attribution: "Meter math ported from steipete/CodexBar (MIT)",
 };
+// Browser-mode stand-in for the Insights tab: the shape a real run returns,
+// with figures that exercise every chart. Never shown inside Tauri.
+let mockInsights: UsageInsightsResult | null = null;
+function mockUsageInsights(params: InsightsParams): UsageInsightsResult {
+  if (mockInsights && !params.refresh) return structuredClone(mockInsights);
+  const days = Array.from({ length: Math.min(params.windowDays, 30) }, (_, index) => {
+    const at = new Date(Date.now() - (Math.min(params.windowDays, 30) - 1 - index) * 86_400_000);
+    const wave = 0.5 + 0.5 * Math.abs(Math.sin(index * 1.3));
+    return { day: at.toISOString().slice(0, 10), processedTokens: Math.round(2_400_000 * wave), prompts: Math.round(14 * wave) };
+  });
+  const hours = Array.from({ length: 24 }, (_, hour) => ({ hour, prompts: hour < 8 ? 0 : Math.round(12 * Math.exp(-((hour - 15) ** 2) / 18)) }));
+  mockInsights = {
+    status: "ready",
+    windowDays: params.windowDays,
+    generatedAt: new Date().toISOString(),
+    harness: "claude",
+    model: "sonnet",
+    report: {
+      headline: "Afternoons on Claude, mornings on Codex",
+      summary: "Most of your prompting lands between two and six in the afternoon, and Claude carries two thirds of the tokens. Codex handles the shorter morning asks. Cached input covers most of what Claude reads, which is keeping the estimated cost flat while the token count climbs.",
+      highlights: [
+        { title: "Cache is doing the work", detail: "Roughly two thirds of Claude's input tokens were read from cache, so longer sessions cost little more than short ones.", tone: "good" },
+        { title: "Two PRs waiting on checks", detail: "Two open pull requests have failing checks and neither has moved in the window.", tone: "watch" },
+        { title: "Refactors dominate", detail: "Four in ten prompts ask for a refactor or a cleanup rather than a new feature.", tone: "neutral" },
+      ],
+      themes: [
+        { label: "Refactors and cleanup", share: 0.4, example: "Tidy the meter code and remove the footer text" },
+        { label: "UI polish", share: 0.25, example: "Make the usage chart read better in dark mode" },
+        { label: "Bug fixes", share: 0.2, example: "The tray shows the wrong percentage" },
+        { label: "Reviews", share: 0.15, example: "Review these seven pull requests for readiness" },
+      ],
+      recommendations: [
+        "Route review-only asks to Codex: they are short and your Codex weekly window is barely used.",
+        "Start long Claude sessions from the same project so cached context keeps carrying over.",
+        "Clear the two failing PRs before opening new ones; they are the oldest open work you have.",
+      ],
+      harnesses: [
+        { harness: "claude", processedTokens: 41_200_000, costMicrousd: 38_400_000, records: 412, sessions: 38, prompts: 214 },
+        { harness: "codex", processedTokens: 18_900_000, costMicrousd: 12_100_000, records: 260, sessions: 27, prompts: 122 },
+        { harness: "opencode", processedTokens: 3_100_000, costMicrousd: 1_400_000, records: 40, sessions: 6, prompts: 18 },
+      ],
+      hours,
+      days,
+      github: { repositories: 3, openPrs: 7, draftPrs: 2, failingChecks: 2, awaitingReview: 3 },
+      promptsAnalysed: 60,
+    },
+  };
+  return structuredClone(mockInsights);
+}
 const mockWorktreeUsage: WorktreeUsage = {
   totalCount: 3, totalBytes: 2_759_852_032,
   reclaimableCount: 1, reclaimableBytes: 2_684_354_560, retainedCount: 1,
@@ -1152,6 +1201,10 @@ export const bridgeApi = {
   // Token and cost usage. One summary per window; the screen never polls.
   usageSummary: (params: SummaryParams): Promise<UsageSummaryResult> =>
     isTauri() ? call("usage/summary", params) : Promise.resolve(mockUsageSummary(params)),
+  // The Insights tab. Blocking while a harness turn runs; the stored report
+  // comes back at once when `refresh` is false.
+  usageInsights: (params: InsightsParams): Promise<UsageInsightsResult> =>
+    isTauri() ? call("usage/insights", params) : new Promise(resolve => setTimeout(() => resolve(mockUsageInsights(params)), params.refresh ? 900 : 0)),
   listUsagePriceOverrides: (): Promise<UsagePriceOverride[]> =>
     isTauri() ? call("usage/list_price_overrides") : Promise.resolve(structuredClone(mockPriceOverrides)),
   setUsagePriceOverride: (params: SetPriceOverrideParams): Promise<UsagePriceOverride[]> => {

@@ -707,6 +707,23 @@ async fn summary(
 }
 
 #[tauri::command]
+async fn insights(
+    window_days: i64,
+    refresh: bool,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::UsageInsightsResult, BridgeError> {
+    let core = state.inner().clone();
+    let params = bridge_protocol::messages::InsightsParams {
+        window_days,
+        refresh,
+    };
+    // Runs a harness turn: minutes of blocking work, so off the async runtime.
+    tauri::async_runtime::spawn_blocking(move || api::usage_insights(&core, &params))
+        .await
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?
+}
+
+#[tauri::command]
 async fn list_price_overrides(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<Vec<bridge_core::usage_pricing::PriceOverride>, BridgeError> {
@@ -1990,42 +2007,6 @@ fn select_host(
         window_chrome::apply_wallpaper_tint(&window);
         window_chrome::sync_fullscreen_chrome(&window);
     }
-    // The menu-bar number. CodexBar's whole point is that usage is legible
-    // without a click, so mirror every account-usage frame into the tray
-    // title. Worst window across all providers, so the title tracks whichever
-    // limit is closest to biting rather than whichever frame arrived last.
-    let title_handle = app.handle().clone();
-    let worst_by_provider: Arc<std::sync::Mutex<std::collections::BTreeMap<String, String>>> =
-        Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
-    let _ = app.listen("account-usage", move |event| {
-        let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) else {
-            return;
-        };
-        let Some(provider) = payload.get("provider").and_then(|v| v.as_str()) else {
-            return;
-        };
-        let title = payload
-            .get("rateLimits")
-            .map(bridge_core::meter_sources::tray_title)
-            .unwrap_or_default();
-        let combined = {
-            let mut worst = worst_by_provider.lock().unwrap();
-            if title.is_empty() {
-                worst.remove(provider);
-            } else {
-                worst.insert(provider.to_string(), title);
-            }
-            // Percentages are formatted `NN%`; compare the numbers, not the
-            // strings, or 9% would outrank 50%.
-            worst
-                .values()
-                .filter_map(|value| value.trim_end_matches('%').parse::<i64>().ok())
-                .max()
-                .map(|percent| format!("{percent}%"))
-                .unwrap_or_default()
-        };
-        meter_tray::set_tray_title(&title_handle, &combined);
-    });
     // Opening and closing the meter panel from a webview. Positioning is the
     // tray's job, so a request from the app opens it at the default anchor.
     let panel_handle = app.handle().clone();
@@ -2310,6 +2291,7 @@ pub fn run() -> i32 {
             refresh_rates,
             list_history_sources,
             scan_history,
+            insights,
             get_meter_snapshot,
             refresh_meter,
             register_verifier_manifest,
