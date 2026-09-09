@@ -4863,7 +4863,7 @@ mod tests {
             .join("../../testing/fixtures/github-act-policy.json");
         let cases: Vec<PolicyReplayCase> =
             serde_json::from_slice(&std::fs::read(fixture).unwrap()).unwrap();
-        assert_eq!(cases.len(), 12, "approve and deny for PR and issue action kinds");
+        assert_eq!(cases.len(), 20, "approve and deny for PR and issue action kinds");
         let scratch = tempfile::tempdir().unwrap();
         let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
         for case in cases {

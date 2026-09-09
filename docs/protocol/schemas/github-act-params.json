@@ -133,7 +133,7 @@
               "$ref": "#/definitions/LabelOperation"
             },
             "target": {
-              "$ref": "#/definitions/LabelTarget"
+              "$ref": "#/definitions/GithubTarget"
             }
           },
           "required": [
@@ -144,20 +144,99 @@
             "target"
           ],
           "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "body": {
+              "type": "string"
+            },
+            "kind": {
+              "enum": [
+                "comment"
+              ],
+              "type": "string"
+            },
+            "number": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "target": {
+              "$ref": "#/definitions/GithubTarget"
+            }
+          },
+          "required": [
+            "body",
+            "kind",
+            "number",
+            "target"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "setState"
+              ],
+              "type": "string"
+            },
+            "number": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            },
+            "operation": {
+              "$ref": "#/definitions/StateOperation"
+            },
+            "target": {
+              "$ref": "#/definitions/GithubTarget"
+            }
+          },
+          "required": [
+            "kind",
+            "number",
+            "operation",
+            "target"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "enum": [
+                "ready"
+              ],
+              "type": "string"
+            },
+            "number": {
+              "format": "uint64",
+              "minimum": 0.0,
+              "type": "integer"
+            }
+          },
+          "required": [
+            "kind",
+            "number"
+          ],
+          "type": "object"
         }
       ]
+    },
+    "GithubTarget": {
+      "enum": [
+        "pullRequest",
+        "issue"
+      ],
+      "type": "string"
     },
     "LabelOperation": {
       "enum": [
         "add",
         "remove"
-      ],
-      "type": "string"
-    },
-    "LabelTarget": {
-      "enum": [
-        "pullRequest",
-        "issue"
       ],
       "type": "string"
     },
@@ -174,6 +253,14 @@
         "approve",
         "requestChanges",
         "comment"
+      ],
+      "type": "string"
+    },
+    "StateOperation": {
+      "description": "Open/closed transitions. Marking a draft ready for review is a separate action because `gh` spells it `pr ready`, not a state edit.",
+      "enum": [
+        "close",
+        "reopen"
       ],
       "type": "string"
     }
