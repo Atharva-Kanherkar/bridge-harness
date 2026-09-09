@@ -301,22 +301,85 @@ describe("colorization failure fallbacks", () => {
   });
 });
 
+/**
+ * Class applied to an exact token, or `null` when the token is emitted with
+ * no class. Asserting on a named token rather than `toContain("stx-x")`
+ * anywhere in the line is the difference between these tests and the first
+ * version of them: `stx-regex` "passing" while the delimiters came out
+ * string-green, and `stx-operator` "passing" off the `=` while `=>` stayed
+ * keyword-violet, were both invisible to a substring check.
+ */
+function classOf(html: string, token: string): string | null {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const wrapped = new RegExp(`<span class="(stx-[a-z]+)">${escaped}</span>`).exec(html);
+  if (wrapped) return wrapped[1];
+  // Present but unwrapped (whitespace, or a scope with no rule).
+  return html.includes(`>${token}<`) || html.includes(token) ? null : "MISSING";
+}
+
 describe("the widened scope vocabulary", () => {
   // Each of these buckets existed in `index.css` (or was about to) with no
   // rule in `SCOPE_RULES` able to reach it, so the tokens rendered as bare
   // text. They are the bulk of any real file, which is why code read flat.
-  it("colours a member access as a property", async () => {
+  it("colours an identifier and its member separately inside one merged token", async () => {
+    // `" items."` arrives from Shiki as a *single* token spanning whitespace,
+    // an identifier and an accessor, because Shiki merges adjacent
+    // same-styled runs. Colouring per token painted `items` punctuation-grey.
     const html = await colorizeCode("const n = items.length;", "typescript");
-    expect(html).toContain("stx-property");
+    expect(classOf(html, "items")).toBe("stx-variable");
+    expect(classOf(html, "length")).toBe("stx-property");
+    expect(classOf(html, ".")).toBe("stx-punct");
   });
 
   it("colours an assigned member as a property", async () => {
-    // Not asserted for *object-literal* keys: TextMate's TypeScript grammar
-    // emits `{ alpha: ` as one `meta.object.member` run with no scope of its
-    // own on the key, so no classifier rule can reach it. Member access is
-    // the case the grammar does distinguish, and the one worth locking.
     const html = await colorizeCode("obj.prop = 1;", "typescript");
-    expect(html).toContain("stx-property");
+    expect(classOf(html, "prop")).toBe("stx-property");
+  });
+
+  it("colours a JSX attribute name as a property and the element as a tag", async () => {
+    const html = await colorizeCode('<div className="x" />', "tsx");
+    expect(classOf(html, "className")).toBe("stx-property");
+    expect(classOf(html, "div")).toBe("stx-tag");
+  });
+
+  it("gives operators their own bucket, including the arrow", async () => {
+    // `=>` is scoped `storage.type.function.arrow`, so it used to land in
+    // keyword-violet while the PR claimed it was an operator.
+    const html = await colorizeCode("const f = (a, b) => a + b;", "typescript");
+    expect(classOf(html, "=&gt;")).toBe("stx-operator");
+    expect(classOf(html, "+")).toBe("stx-operator");
+    expect(classOf(html, ";")).toBe("stx-punct");
+  });
+
+  it("paints a regex literal in exactly one colour", async () => {
+    // Delimiters carry `punctuation.definition.string.*`, the quantifier
+    // carries `keyword.operator.quantifier.regexp` and the flags carry
+    // `keyword.other` — three different buckets for one literal until the
+    // `string.regexp` container rule.
+    const html = await colorizeCode("const re = /a+b/g;", "typescript");
+    const classes = [...html.matchAll(/<span class="(stx-[a-z]+)">([^<]*)<\/span>/g)]
+      .filter(match => "/a+b/g".includes(match[2]) && match[2].length > 0 && !"const re = ;".includes(match[2]))
+      .map(match => match[1]);
+    expect(new Set(classes)).toEqual(new Set(["stx-regex"]));
+  });
+
+  it("colours an escape inside a string as an escape", async () => {
+    const html = await colorizeCode('const s = "a\\nb";', "typescript");
+    expect(classOf(html, "\\n")).toBe("stx-regex");
+    expect(classOf(html, "a")).toBe("stx-string");
+  });
+
+  it("colours a parameter distinctly at its declaration and its use", async () => {
+    const html = await colorizeCode("function f(alpha) { return alpha; }", "typescript");
+    expect(classOf(html, "alpha")).toBe("stx-params");
+    // The *use* of `alpha` sits inside the merged token `" alpha; }"`.
+    expect(html.match(/class="stx-variable">alpha</)).toBeTruthy();
+  });
+
+  it("keeps `this` a keyword and the member after it a property", async () => {
+    const html = await colorizeCode("class A { m() { return this.x; } }", "typescript");
+    expect(classOf(html, "this")).toBe("stx-keyword");
+    expect(classOf(html, "x")).toBe("stx-property");
   });
 
   it("leaves a `const` binding as an identifier, not a literal", async () => {
@@ -324,51 +387,24 @@ describe("the widened scope vocabulary", () => {
     // `variable.other.constant`; bucketing that as a number painted most of a
     // TypeScript file amber.
     const html = await colorizeCode("const total = 2;", "typescript");
-    expect(html).toContain("stx-variable");
-    expect(html).not.toMatch(/class="stx-number">total</);
+    expect(classOf(html, "total")).toBe("stx-variable");
   });
 
-  it("colours a JSX attribute name as a property, not as a tag", async () => {
-    const html = await colorizeCode('<div className="x" id="y" />', "tsx");
-    expect(html).toContain("stx-property");
-    expect(html).toContain("stx-tag");
+  it("does not paint the receiver of a call as a function", async () => {
+    // `meta.function-call` is a *range* scope covering `obj.trim()`, so a rule
+    // for it labelled `obj` function-blue.
+    const html = await colorizeCode("obj.trim();", "typescript");
+    expect(classOf(html, "obj")).toBe("stx-variable");
+    expect(classOf(html, "trim")).toBe("stx-function");
   });
 
-  it("gives operators their own bucket, distinct from punctuation", async () => {
-    const html = await colorizeCode("const f = (a, b) => a + b;", "typescript");
-    expect(html).toContain("stx-operator");
-    // The comma and the semicolon are still punctuation.
-    expect(html).toContain("stx-punct");
-  });
-
-  it("colours a regex literal distinctly from a string", async () => {
-    const html = await colorizeCode("const re = /a+b/g;", "typescript");
-    expect(html).toContain("stx-regex");
-  });
-
-  it("colours an escape inside a string as an escape", async () => {
-    const html = await colorizeCode('const s = "a\\nb";', "typescript");
-    expect(html).toContain("stx-regex");
-    expect(html).toContain("stx-string");
-  });
-
-  it("colours a parameter distinctly", async () => {
-    const html = await colorizeCode("function f(alpha) { return alpha; }", "typescript");
-    expect(html).toContain("stx-params");
-  });
-
-  it("colours a plain identifier without swallowing the specific variable scopes", async () => {
-    const html = await colorizeCode("let total = 0; total += 1;", "typescript");
-    expect(html).toContain("stx-variable");
-    // `this` is a keyword wearing an identifier's clothes.
-    const withThis = await colorizeCode("class A { m() { return this.x; } }", "typescript");
-    expect(withThis).toContain("stx-keyword");
-    expect(withThis).not.toMatch(/class="stx-variable">this</);
-  });
-
-  it("keeps `.` in the punctuation bucket, matching the editor highlighter", async () => {
-    const html = await colorizeCode("a.b;", "typescript");
-    expect(html).not.toMatch(/class="stx-operator">\.</);
+  it("reaches markdown emphasis, which the delimiters used to shadow", async () => {
+    // `"**bold**"` is one token whose last scope is the closing
+    // `punctuation.definition.bold`, so bold/italic/strike were unreachable.
+    const html = await colorizeCode("**bold** and ~~gone~~ and *soft*", "markdown");
+    expect(classOf(html, "bold")).toBe("stx-strong");
+    expect(classOf(html, "gone")).toBe("stx-strike");
+    expect(classOf(html, "soft")).toBe("stx-emphasis");
   });
 
   it("emits only classes that are in the shared vocabulary", async () => {
@@ -388,6 +424,20 @@ describe("the widened scope vocabulary", () => {
         const cls = name.slice(7, -1);
         expect(SYNTAX_CLASSES, `${lang}: ${cls}`).toContain(cls);
       }
+    }
+  });
+
+  it("never drops or duplicates a character while splitting a token", async () => {
+    // The per-entry split is the one change here that could corrupt source.
+    for (const [code, lang] of [
+      ["const f = (a: T) => `x${a}y` + /re/g; // c", "typescript"],
+      ["<div a=\"1\">{x}</div>", "tsx"],
+      ["**b** ~~s~~ [l](u)", "markdown"],
+    ] as [string, string][]) {
+      const html = await colorizeCode(code, lang);
+      const text = html.replace(/<[^>]+>/g, "")
+        .replace(/&quot;/g, '"').replace(/&gt;/g, ">").replace(/&lt;/g, "<").replace(/&amp;/g, "&");
+      expect(text, lang).toBe(code);
     }
   });
 });

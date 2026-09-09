@@ -155,3 +155,59 @@ review is exactly what missed it.
 `src/components/macosNavigation.test.tsx` fails on `origin/main` (2 cases,
 appearance-radio keyboard nav) and still fails here. Verified at the base commit
 in a scratch worktree; out of scope for this branch.
+
+## Review round: added contract
+
+Six findings from review, all reproduced against `shiki@4.4.3` + `github-dark`
+(the theme `SCOPE_THEME` selects) before changing anything. Four were bugs in
+this branch, one was a false claim in a comment, one was missing coverage.
+
+- C27. **Colour is applied per explanation entry, not per token.** Shiki merges
+  adjacent same-*styled* runs, and since this file colours by scope rather than
+  by Shiki's theme, one token routinely spans scopes we want painted
+  differently: `" items."` is one token (whitespace + identifier + accessor),
+  `" alpha; }"` is one token, `"**bold**"` is one token. Colouring per token
+  from the innermost-last scope painted `items` and `alpha` punctuation-grey
+  and made `markup.bold`, `markup.italic` and `markup.strikethrough`
+  *permanently unreachable*. Guarded by a round-trip test: stripping the tags
+  back out must reproduce the input byte for byte, because this is the one
+  change here that could corrupt someone's source.
+- C28. **A regex literal is one colour.** Its container `string.regexp` wins
+  over the innermost scope. Otherwise `/a+b/g` arrives in four: delimiters
+  `punctuation.definition.string.*` (string-green), quantifier
+  `keyword.operator.quantifier.regexp` (operator-rose), flags `keyword.other`
+  (keyword-violet). The editor's Lezer grammar tags the whole literal `regexp`,
+  so this is also what keeps the two renderers agreeing.
+- C29. **`=>` is an operator in both renderers.** TypeScript scopes it
+  `storage.type.function.arrow`, which hit `storage.type` and came out
+  keyword-violet; Lezer tags it `function(punctuation)`, which resolved through
+  `punctuation` and came out grey. Neither matched what this branch claimed.
+- C30. **No `meta.function-call` rule.** It is a *range* scope spanning the
+  whole call, so it labelled the receiver: `obj` in `obj.trim()` came out
+  function-blue. `entity.name.function` already covers the callee.
+- C31. **Contrast is asserted, not claimed.** A comment claimed 4.5:1 for the
+  whole ramp; light `--syn-comment` was 3.74 and `--syn-punct` 4.24, dark
+  `--syn-comment` 3.90. `palette.test.ts` now computes WCAG 2.1 contrast for
+  every token against every `--code` background in the file — there are
+  **three**, not two, because the native vibrancy skin overrides `--code` to
+  `#0e0e0d` without overriding the ramp. A separate assertion fails if that set
+  of backgrounds ever changes.
+- C32. **Every bucket is proven reachable.** `syntaxCoverage.test.ts` runs both
+  renderers over fixtures and asserts each `SYNTAX_CLASSES` entry is emitted by
+  at least one of them. This is the assertion that would have caught the
+  original 23 dead `.tok-*` rules, and it earned its place immediately: it
+  found `stx-strike` shipping as a *new* dead bucket. Exemption lists are
+  banned by the test's own comment — reach a bucket or delete it.
+- C33. Structural claims have tests now. C13/C15/C16 in `CodePanel.test.tsx`
+  (guide count per depth, folder glyph follows expanded state, files tint from
+  the ramp and directories do not, `aria-expanded` on directories only) and
+  C18/C19/C20 in `DiffView.test.tsx` (run edge per kind, banded gutter, no
+  doubled edge).
+- C34. The hunk band is **one pre-composed opaque class** (`.u-diff-band`), not
+  `bg-code` plus a `bg-info/10` alpha utility. tailwind-merge keeps only the
+  last `bg-*`, so the layered version silently produced the translucent sticky
+  gutter it was meant to fix. `DiffView.test.tsx` asserts the composed class
+  and the *absence* of a `bg-*` utility, since that was the actual failure
+  mode. Found by writing the C19 test.
+- C35. `fileGlyph.ts` / `fileGlyph.test.ts` — neither contains JSX, so neither
+  is a `.tsx`.

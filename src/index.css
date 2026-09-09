@@ -188,8 +188,11 @@
        comments, punctuation and identifiers. Chroma is pushed far enough that
        a token family is identifiable at a glance; hue assignment is the
        conventional one, so code from outside Bridge still reads correctly.
-       Every colour here clears 4.5:1 against `--code`. */
-    --syn-comment: #7d7d73;
+       Every colour here clears WCAG 4.5:1 against every `--code` background
+       in this file, including the vibrancy skin's — asserted by
+       `palette.test.ts`, because the previous version of this comment claimed
+       it and two greys did not actually hold. */
+    --syn-comment: #6b6b60;
     --syn-keyword: #7a3fae;
     --syn-string: #16724a;
     --syn-number: #a15c05;
@@ -198,7 +201,7 @@
     --syn-tag: #10697f;
     /* Deliberately *lighter* than it was: punctuation is the one family that
        should recede now that operators have left it. */
-    --syn-punct: #74746d;
+    --syn-punct: #6f6f66;
     --syn-operator: #a1495f;
     /* Identifiers are the bulk of any file, so this sits a half-step off
        `--code-foreground` rather than becoming a seventh hue — enough to
@@ -298,7 +301,7 @@
        canvas. Keep them in step: a token that is violet on paper must be
        violet on graphite, or a screenshot from one theme stops teaching you
        how to read the other. */
-    --syn-comment: #6f6f66;
+    --syn-comment: #7c7c72;
     --syn-keyword: #c9a4f0;
     --syn-string: #7fd39a;
     --syn-number: #f0bd7a;
@@ -892,6 +895,18 @@ html[data-native-fullscreen] .u-traffic-inset {
 .html-block iframe {
   display: block;
   height: 22rem;
+}
+
+/* ── Diff rows ───────────────────────────────────────────────────────────────
+   A hunk header bands across the row, gutter included. The pinned gutter has
+   to stay *opaque* — a translucent tint lets a long header scroll through
+   underneath the sticky column, which is the one thing pinning it prevents —
+   so the band is pre-composed against `--color-code` here instead of layered
+   as a `bg-info/10` alpha utility. It cannot be expressed as one: tailwind-
+   merge drops `bg-code` the moment a second `bg-*` utility joins it, which is
+   how the transparent version slipped through in the first place. */
+.u-diff-band {
+  background: color-mix(in srgb, var(--color-info) 10%, var(--color-code));
 }
 
 /* ── Syntax highlighting ────────────────────────────────────────────────── */

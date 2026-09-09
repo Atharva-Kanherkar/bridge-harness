@@ -197,7 +197,10 @@ async function highlighterFor(shikiLang: string): Promise<HighlighterCore | null
  *  re-export churn. */
 interface ScopedToken {
   content: string;
-  explanation?: { scopes: { scopeName: string }[] }[];
+  /** Per-scope-run breakdown of the token. Each entry carries its own slice of
+   *  `content`, which is what lets a merged token be coloured piecewise —
+   *  see `tokenToHtml`. */
+  explanation?: { content: string; scopes: { scopeName: string }[] }[];
 }
 
 /**
@@ -228,12 +231,15 @@ const SCOPE_RULES: [prefix: string, className: string][] = [
   // innermost scope is what should win.
   ["constant.character.escape", "stx-regex"],
   ["constant.regexp", "stx-regex"],
-  ["string.regexp", "stx-regex"],
   ["string", "stx-string"],
   ["constant.numeric", "stx-number"],
   ["constant.language", "stx-number"],
   ["constant.character", "stx-number"],
   ["constant.other", "stx-number"],
+  // `=>` is `storage.type.function.arrow`, which would otherwise hit
+  // `storage.type` below and come out keyword-violet. It is an operator, and
+  // the editor's Lezer grammar agrees (`function(punctuation)` → operator).
+  ["storage.type.function.arrow", "stx-operator"],
   ["storage.type", "stx-keyword"],
   ["storage.modifier", "stx-keyword"],
   // Operators get their own hue rather than sharing punctuation's grey: `=>`,
@@ -243,7 +249,6 @@ const SCOPE_RULES: [prefix: string, className: string][] = [
   ["entity.name.function", "stx-function"],
   ["entity.name.namespace", "stx-type"],
   ["support.function", "stx-function"],
-  ["meta.function-call", "stx-function"],
   ["entity.name.tag", "stx-tag"],
   ["support.class.component", "stx-tag"],
   ["entity.other.attribute-name", "stx-property"],
@@ -294,8 +299,20 @@ export const SYNTAX_CLASSES: string[] = [
   "stx-addition", "stx-deletion",
 ];
 
-function classifyScope(token: ScopedToken): string | null {
-  const scopes = token.explanation?.flatMap(entry => entry.scopes.map(scope => scope.scopeName)) ?? [];
+/**
+ * Bucket one scope stack.
+ *
+ * Innermost scope first, except for regex literals: those are one thing and
+ * get one colour from their *container*. Without that exception `/a+b/g`
+ * arrives in four colours — the delimiters carry
+ * `punctuation.definition.string.*` (string-green), a quantifier carries
+ * `keyword.operator.quantifier.regexp` (operator-rose) and the flags carry
+ * `keyword.other` (keyword-violet) — while the editor's Lezer grammar tags
+ * the whole literal `regexp` and paints it once. The container check is what
+ * keeps the two renderers agreeing.
+ */
+function classifyScopes(scopes: string[]): string | null {
+  if (scopes.some(scope => scope === "string.regexp" || scope.startsWith("string.regexp."))) return "stx-regex";
   for (let i = scopes.length - 1; i >= 0; i -= 1) {
     const scope = scopes[i];
     const rule = SCOPE_RULES.find(([prefix]) => scope === prefix || scope.startsWith(`${prefix}.`));
@@ -304,10 +321,38 @@ function classifyScope(token: ScopedToken): string | null {
   return null;
 }
 
-function tokenToHtml(token: ScopedToken): string {
-  const body = escapeHtml(token.content);
-  const className = classifyScope(token);
+function wrap(text: string, className: string | null): string {
+  const body = escapeHtml(text);
   return className ? `<span class="${className}">${body}</span>` : body;
+}
+
+/**
+ * One span per *explanation entry*, not per token.
+ *
+ * Shiki merges adjacent same-**styled** runs into a single token, and because
+ * this file colours by scope rather than by Shiki's theme, a merged token
+ * routinely spans several scopes that we want to paint differently. Real
+ * examples: `" items."` is one token covering whitespace, an identifier and an
+ * accessor; `" alpha; }"` covers an identifier, a terminator and a brace; and
+ * `"**bold**"` covers the delimiters *and* the emphasised run.
+ *
+ * Classifying the whole token from its innermost-last scope therefore painted
+ * `items` and `alpha` punctuation-grey, and made `markup.bold`,
+ * `markup.italic` and `markup.strikethrough` permanently unreachable, because
+ * the closing delimiter always lands last. Each entry carries its own
+ * `content`, so splitting there fixes every one of those in one place.
+ *
+ * The length guard is the safety net: if the entries do not reconstruct the
+ * token exactly, fall back to colouring it whole. Dropping or duplicating a
+ * character of someone's source is far worse than colouring it bluntly.
+ */
+function tokenToHtml(token: ScopedToken): string {
+  const entries = token.explanation;
+  if (entries?.length && entries.reduce((total, entry) => total + entry.content.length, 0) === token.content.length) {
+    return entries.map(entry => wrap(entry.content, classifyScopes(entry.scopes.map(scope => scope.scopeName)))).join("");
+  }
+  const scopes = entries?.flatMap(entry => entry.scopes.map(scope => scope.scopeName)) ?? [];
+  return wrap(token.content, classifyScopes(scopes));
 }
 
 /** One HTML string per source line, colour-classified via TextMate scopes. */

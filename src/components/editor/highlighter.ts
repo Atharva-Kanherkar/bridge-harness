@@ -74,6 +74,10 @@ const SPECS: { tag: Tag | Tag[]; class: string }[] = [
   // hue. `derefOperator` is the exception: a `.` reads as structure, and the
   // Shiki side buckets `punctuation.accessor` as punctuation.
   { tag: t.operator, class: "stx-operator" },
+  // `=>` is tagged `function(punctuation)`, which resolves through
+  // `punctuation` and would come out grey. The Shiki side reaches the same
+  // decision from `storage.type.function.arrow`.
+  { tag: t.function(t.punctuation), class: "stx-operator" },
   { tag: t.derefOperator, class: "stx-punct" },
   // `bracket`, `brace`, `paren`, `squareBracket`, `angleBracket` and
   // `separator` all resolve through `punctuation`.

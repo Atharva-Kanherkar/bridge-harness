@@ -28,7 +28,7 @@ function hunkRange(row: DiffRow): HunkRange | undefined {
 const ROW_STYLE: Record<DiffRowKind, { tint: string; marker: string; markerClass: string; edge: string }> = {
   add: { tint: "bg-success/10", marker: "+", markerClass: "text-success", edge: "bg-success/60" },
   del: { tint: "bg-destructive/10", marker: "−", markerClass: "text-destructive", edge: "bg-destructive/60" },
-  hunk: { tint: "bg-info/10 text-info", marker: "", markerClass: "", edge: "bg-info/50" },
+  hunk: { tint: "u-diff-band text-info", marker: "", markerClass: "", edge: "bg-info/50" },
   meta: { tint: "text-muted-foreground", marker: "", markerClass: "", edge: "" },
   context: { tint: "", marker: "", markerClass: "", edge: "" },
 };
@@ -41,14 +41,19 @@ function DiffLine({ row, numbered, onQuoteHunk }: { row: DiffRow; numbered: bool
   // that broke the band in half.
   const band = row.kind === "hunk";
   // The gutter is pinned so the numbers and the +/− marker survive a
-  // horizontal scroll through a long line.
-  return <div className={cn("group/hunk flex", band && style.tint)}>
+  // horizontal scroll through a long line, which means it has to be opaque in
+  // every row kind: a translucent sticky column lets a long hunk header
+  // scroll through underneath it. `u-diff-band` is the band pre-composed
+  // against `--color-code` for exactly that reason.
+  return <div className="group/hunk flex">
     <span className={cn(
       "sticky left-0 z-10 flex shrink-0 select-none",
-      // Its own field, so the numbers read as a column rather than as the
-      // leftmost characters of the code.
-      band ? "bg-transparent" : "bg-code",
-      numbered && !band && "border-r border-border/60",
+      // Not `bg-code` *and* the tint: tailwind-merge keeps only the last
+      // `bg-*`, so layering them silently produced a translucent gutter.
+      band ? style.tint : "bg-code",
+      // The coloured run edge replaces this border on add/del rows — drawing
+      // both put 2px of colour next to 1px of grey.
+      numbered && !band && !style.edge && "border-r border-border/60",
     )}>
       {numbered && <>
         <span className="w-9 px-1.5 text-right text-[11px] tabular-nums text-muted-foreground/70">{row.oldLine ?? ""}</span>
@@ -59,7 +64,7 @@ function DiffLine({ row, numbered, onQuoteHunk }: { row: DiffRow; numbered: bool
         {style.marker}
       </span>
     </span>
-    <span className={cn("flex-1 whitespace-pre pl-1.5 pr-3", !band && style.tint)}>
+    <span className={cn("flex-1 whitespace-pre pl-1.5 pr-3", style.tint)}>
       <span dangerouslySetInnerHTML={{ __html: row.html }} />
       {range && <button
         type="button"
