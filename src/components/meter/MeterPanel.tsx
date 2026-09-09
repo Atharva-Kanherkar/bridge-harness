@@ -71,5 +71,11 @@ export function MeterPanel() {
     refreshing={refreshing}
     onRefresh={refresh}
     onClose={() => { void bridgeApi.hideMeterPanel(); }}
+    onOpenBridge={() => {
+      // Dismiss first: the app coming forward while a floating panel stays
+      // over it is the pile-up this whole change exists to avoid.
+      void bridgeApi.hideMeterPanel();
+      void bridgeApi.revealMainWindow();
+    }}
   />;
 }

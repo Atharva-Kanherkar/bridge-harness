@@ -42,12 +42,15 @@ function WindowRow({ window, nowMs }: { window: RateWindow; nowMs: number }) {
   </div>;
 }
 
-export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose }: {
+export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose, onOpenBridge }: {
   usage: Partial<Record<UsageProvider, UsageSnapshot>>;
   registry: MeterRegistry | null;
   refreshing: boolean;
   onRefresh: () => void;
   onClose: () => void;
+  /** Present only on the menu-bar panel, which is otherwise a dead end: from
+   *  the menu bar there is no other way through to the app. */
+  onOpenBridge?: () => void;
 }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
   // Countdowns and pace go stale against a frozen clock, so tick while open.
@@ -109,6 +112,9 @@ export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose }
         </ul>
       </details>}
     </div>
-    <p className="border-t border-border px-3.5 py-2 text-[11px] text-muted-foreground">Pace math from CodexBar (MIT). Limits come from your provider's own records — no passwords stored.</p>
+    <div className="flex items-center gap-2 border-t border-border px-3.5 py-2">
+      <p className="min-w-0 flex-1 text-[11px] text-muted-foreground">Pace math from CodexBar (MIT). Limits come from your provider's own records — no passwords stored.</p>
+      {onOpenBridge && <button type="button" onClick={onOpenBridge} className="shrink-0 rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Open Bridge</button>}
+    </div>
   </div>;
 }

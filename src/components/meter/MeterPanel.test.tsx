@@ -106,6 +106,25 @@ describe("MeterPanel", () => {
     expect(container.querySelector('[role="dialog"][aria-label="Usage meter"]')).not.toBeNull();
   });
 
+  it("offers a way into the app, dismissing itself first", async () => {
+    const hide = vi.spyOn(bridgeApi, "hideMeterPanel").mockResolvedValue();
+    const reveal = vi.spyOn(bridgeApi, "revealMainWindow").mockResolvedValue();
+    vi.spyOn(bridgeApi, "getMeterSnapshot").mockResolvedValue(REGISTRY as never);
+    vi.spyOn(bridgeApi, "refreshMeter").mockResolvedValue();
+    vi.spyOn(bridgeApi, "onMeterTray").mockResolvedValue(() => undefined);
+    vi.spyOn(bridgeApi, "onAccountUsage").mockResolvedValue(() => undefined);
+
+    await act(async () => { root.render(<MeterPanel />); });
+    await settle();
+    const open = [...container.querySelectorAll("button")].find(button => button.textContent === "Open Bridge");
+    expect(open).toBeDefined();
+    await act(async () => { open!.click(); });
+
+    expect(reveal).toHaveBeenCalledTimes(1);
+    // The panel must not be left floating over the window it just raised.
+    expect(hide).toHaveBeenCalledTimes(1);
+  });
+
   it("is not a modal — nothing sits behind it to make inert", async () => {
     vi.spyOn(bridgeApi, "getMeterSnapshot").mockResolvedValue(REGISTRY as never);
     vi.spyOn(bridgeApi, "refreshMeter").mockResolvedValue();
