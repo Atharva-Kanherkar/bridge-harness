@@ -1324,7 +1324,7 @@ impl BridgeCore {
 /// payload is empty, which clears the provider rather than leaving whatever
 /// was last shown in place: a session that reported 95% and then ended would
 /// otherwise keep that 95% on screen forever once its window reset, which is
-/// the same stale reading the expiry pruning exists to prevent.
+/// the same stale reading the reset rule exists to prevent.
 ///
 /// Split out from the spawning caller so the fallback is testable against a
 /// fixture directory rather than the real `CODEX_HOME`.
@@ -3983,11 +3983,13 @@ mod tests {
                 rate_limits,
             } => {
                 assert_eq!(provider, "codex");
-                // The live 5h window is reported...
+                // The live 5h window is reported as recorded...
                 assert_eq!(rate_limits["primary"]["used_percent"], serde_json::json!(44.0));
-                // ...and the window that already reset is not, however alarming
-                // its last recorded percentage was.
-                assert!(rate_limits.get("secondary").is_none());
+                // ...and the window that already reset is reported fresh at
+                // zero, however alarming its last recorded percentage was.
+                assert_eq!(rate_limits["secondary"]["used_percent"], serde_json::json!(0.0));
+                assert_eq!(rate_limits["secondary"]["fresh"], serde_json::json!(true));
+                assert!(rate_limits["secondary"].get("resets_at").is_none());
             }
             other => panic!("unexpected event: {other:?}"),
         }
@@ -3996,12 +3998,39 @@ mod tests {
     }
 
     #[test]
-    fn codex_disk_fallback_clears_the_provider_without_usable_limits() {
+    fn codex_disk_fallback_reports_reset_windows_fresh_rather_than_going_silent() {
         let (_scratch, core) = fixture();
         let mut events = core.events.subscribe();
         let temp = tempfile::tempdir().unwrap();
-        // Every window already reset, so there is nothing current to say.
+        // Every window already reset. Nothing has been spent since, so both
+        // limits still exist and both are at zero.
         seed_codex_rollout(temp.path(), 0);
+
+        assert!(super::publish_codex_usage_from_disk(
+            &core.events,
+            temp.path(),
+            chrono::Utc::now().timestamp()
+        ));
+        match events.try_recv().unwrap() {
+            crate::events::CoreEvent::AccountUsage {
+                provider,
+                rate_limits,
+            } => {
+                assert_eq!(provider, "codex");
+                assert_eq!(rate_limits["primary"]["used_percent"], serde_json::json!(0.0));
+                assert_eq!(rate_limits["primary"]["fresh"], serde_json::json!(true));
+                assert_eq!(rate_limits["secondary"]["used_percent"], serde_json::json!(0.0));
+                assert_eq!(rate_limits["plan_type"], serde_json::json!("plus"));
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn codex_disk_fallback_clears_the_provider_without_any_rollout() {
+        let (_scratch, core) = fixture();
+        let mut events = core.events.subscribe();
+        let temp = tempfile::tempdir().unwrap();
 
         assert!(!super::publish_codex_usage_from_disk(
             &core.events,
@@ -4009,7 +4038,7 @@ mod tests {
             chrono::Utc::now().timestamp()
         ));
         // Silence would strand whatever a since-ended session last reported.
-        // An empty payload is how the tray and the panel are told to drop it.
+        // An empty payload is how the panel is told to drop it.
         match events.try_recv().unwrap() {
             crate::events::CoreEvent::AccountUsage {
                 provider,
@@ -4017,7 +4046,6 @@ mod tests {
             } => {
                 assert_eq!(provider, "codex");
                 assert_eq!(rate_limits, serde_json::json!({}));
-                assert_eq!(crate::meter_sources::tray_title(&rate_limits), "");
             }
             other => panic!("unexpected event: {other:?}"),
         }

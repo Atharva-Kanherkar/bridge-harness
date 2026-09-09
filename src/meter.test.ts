@@ -2,7 +2,7 @@
 // `paceVisible`, and `adaptiveDelay` must agree with
 // `src-tauri/bridge-core/src/meter.rs` case for case.
 import { describe, expect, it } from "vitest";
-import { adaptiveDelay, paceLabel, paceTokenDelta, paceVisible, paceWeekly, type AdaptiveInput } from "./meter";
+import { adaptiveDelay, paceLabel, pacePhrase, paceTokenDelta, paceVisible, paceWeekly, type AdaptiveInput } from "./meter";
 import type { RateWindow } from "./usage";
 import fixture from "../testing/fixtures/meter-pace-cases.json";
 
@@ -31,6 +31,15 @@ describe("meter (CodexBar port)", () => {
     expect(pace.willLastToReset).toBe(true);
     expect(paceLabel(pace)).toContain("in reserve");
     expect(paceLabel(pace)).toContain("lasts until reset");
+  });
+
+  it("phrases pace in plain words for the meter card", () => {
+    expect(pacePhrase(paceWeekly(window(75, WEEK_MS / 2), NOW)!)).toMatch(/^ahead of pace · runs out in /);
+    expect(pacePhrase(paceWeekly(window(20, WEEK_MS / 2), NOW)!)).toBe("under pace · lasts to reset");
+    expect(pacePhrase(paceWeekly(window(50, WEEK_MS / 2), NOW)!)).toBe("on pace · lasts to reset");
+    expect(pacePhrase(paceWeekly(window(100, WEEK_MS / 2), NOW)!)).toBe("ahead of pace · limit reached");
+    // No signed deltas anywhere in the phrase.
+    expect(pacePhrase(paceWeekly(window(75, WEEK_MS / 2), NOW)!)).not.toMatch(/[+-]\d/);
   });
 
   it("yields nothing without reset timing or with a reset outside the window", () => {

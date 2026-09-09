@@ -282,6 +282,7 @@ typed_methods![
     (RefreshUsageRates, _, UsagePricingStatus),
     (ListHistorySources, _, ListHistorySourcesResult),
     (ScanHistory, ScanHistoryParams, ScanHistoryResult),
+    (UsageInsights, InsightsParams, UsageInsightsResult),
     (GetMeterSnapshot, _, MeterRegistry),
     (RefreshMeter, _, UnitResult),
     // routing

@@ -72,8 +72,8 @@ describe("MeterPanel", () => {
     expect(container.textContent).toContain("8%");
     // The worst window is the headline.
     expect(container.textContent).toContain("44% worst");
-    // Planned providers stay visible rather than silently missing.
-    expect(container.textContent).toContain("1 more providers planned");
+    // Planned providers are not a limit and take no room on the card.
+    expect(container.textContent).not.toContain("providers planned");
   });
 
   it("drops a provider whose limits have expired instead of showing the old number", async () => {
