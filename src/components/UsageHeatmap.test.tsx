@@ -22,14 +22,14 @@ describe("heatmap layout", () => {
     expect(heatStep(5, 0)).toBe(0);
   });
 
-  it("lays days out as a calendar: Monday-first weekday columns, one row per week", () => {
+  it("lays days out GitHub-style: one column per week, Monday-first weekday rows", () => {
     expect(weekdayIndex("2026-09-07")).toBe(0); // a Monday
     expect(weekdayIndex("2026-09-13")).toBe(6);
     const { cells, columns, rows } = layoutCells([period("2026-09-05", 1), period("2026-09-06", 2), period("2026-09-07", 3)], "day", "tokens");
-    expect(columns).toBe(7);
-    expect(rows).toBe(2);
-    expect(cells[0]).toMatchObject({ column: 5, row: 0 });
-    expect(cells[2]).toMatchObject({ column: 0, row: 1, value: 3, harness: "claude" });
+    expect(rows).toBe(7);
+    expect(columns).toBe(2);
+    expect(cells[0]).toMatchObject({ column: 0, row: 5 });
+    expect(cells[2]).toMatchObject({ column: 1, row: 0, value: 3, harness: "claude" });
   });
 
   it("names the harness that carried most of a period, by the chosen metric", () => {

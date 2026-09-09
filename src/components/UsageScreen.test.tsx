@@ -262,6 +262,16 @@ describe("UsageScreen", () => {
     expect(details?.textContent).toContain("ai-tracking/ai-code-tracking.db");
   });
 
+  it("keeps the activity calendar behind a disclosure, closed by default", async () => {
+    await mount();
+    expect(container.querySelector('[role="grid"]')).toBeNull();
+    const toggle = container.querySelector<HTMLButtonElement>('[aria-controls="usage-activity"]')!;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    click(toggle);
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelector('[role="grid"]')).not.toBeNull();
+  });
+
   it("ignores an old summary response after the window changes", async () => {
     stored.set(USAGE_PREFERENCES_KEY, JSON.stringify({ metric: "cost", windowDays: 30, includeImported: false }));
     const pending = deferred<UsageSummaryResult>();

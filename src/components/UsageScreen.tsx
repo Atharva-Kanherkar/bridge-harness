@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Gauge, LoaderCircle, RefreshCw, RotateCcw } from "lucide-react";
+import { ChevronDown, Gauge, LoaderCircle, RefreshCw, RotateCcw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
 import { harnessLabel } from "../utils";
@@ -80,6 +80,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
   const [overrides, setOverrides] = useState<UsagePriceOverride[]>([]);
   const [breakdown, setBreakdown] = useState<Breakdown>("model");
   const [tab, setTab] = useState<UsageTab>("usage");
+  const [activityOpen, setActivityOpen] = useState(false);
   const [scanning, setScanning] = useState(preferences.includeImported);
   const [scanFailed, setScanFailed] = useState(false);
   const [refreshingRates, setRefreshingRates] = useState(false);
@@ -278,9 +279,15 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
           </div>
         </section>
 
-        <section className={cn(CARD, "mt-4")} aria-label="Activity">
-          <h2 className="mb-3 text-ui font-medium text-foreground">Activity</h2>
-          <UsageHeatmap periods={report.periods} resolution={window_.resolution} timeZone={window_.timeZone} metric={metric} />
+        <section className={cn(CARD, "mt-4 py-3")} aria-label="Activity">
+          <button type="button" aria-expanded={activityOpen} aria-controls="usage-activity" onClick={() => setActivityOpen(open => !open)} className="flex w-full items-center gap-2 text-left">
+            <h2 className="text-ui font-medium text-foreground">Activity</h2>
+            <span className="text-caption text-muted-foreground">{window_.resolution === "hour" ? "by hour" : "by day"}, coloured by harness</span>
+            <ChevronDown size={14} className={cn("ml-auto text-muted-foreground transition-transform", activityOpen && "rotate-180")} aria-hidden="true" />
+          </button>
+          {activityOpen && <div id="usage-activity" className="mt-3">
+            <UsageHeatmap periods={report.periods} resolution={window_.resolution} timeZone={window_.timeZone} metric={metric} />
+          </div>}
         </section>
 
         <section className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6" aria-label="Totals">
