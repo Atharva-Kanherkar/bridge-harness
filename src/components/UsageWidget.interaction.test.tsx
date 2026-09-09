@@ -182,7 +182,7 @@ describe("UsageWidget panel shell", () => {
     expect(card.className).not.toContain("u-overlay");
     expect(card.className).not.toContain("shadow");
     // Content-sized, capped at the viewport, scrolling inside the cap.
-    expect(card.className).toContain("max-h-[80dvh]");
+    expect(card.className).toContain("max-h-[60dvh]");
     const scroller = card.firstElementChild as HTMLElement;
     expect(scroller.className).toContain("overflow-y-auto");
     expect(scroller.className).toContain("min-h-0");
@@ -213,7 +213,7 @@ describe("UsageWidget panel shell", () => {
       root.render(<UsageWidget usage={{}} />);
     });
     const card = container.querySelector<HTMLElement>("#usage-health-panel > div")!;
-    expect(card.className).toContain("max-h-[80dvh]");
+    expect(card.className).toContain("max-h-[60dvh]");
     expect(card.className).toContain("w-[440px]");
     expect(card.className).not.toContain("shadow");
     expect((card.firstElementChild as HTMLElement).className).toContain("overflow-y-auto");
@@ -293,7 +293,11 @@ describe("UsageWidget panel shell", () => {
     });
     const panel = container.querySelector<HTMLElement>("#usage-health-panel")!;
     expect(panel.parentElement?.hasAttribute("data-composer-frame")).toBe(true);
-    expect(panel.className).toContain("inset-x-0");
+    // A card at the composer's left edge at reading width, never the
+    // composer's full span over the conversation.
+    expect(panel.className).toContain("left-0");
+    expect(panel.className).toContain("w-[min(100vw-1.5rem,26rem)]");
+    expect(panel.className).not.toContain("inset-x-0");
     expect(panel.className).toContain("bottom-full");
     // Clear of the composer, and rounded on every corner: the composer is
     // rounded all round, so a panel butted onto it reads as a seam, not a join.

@@ -31,7 +31,7 @@ describe("UsageWidget", () => {
     expect(html).not.toContain("shadow");
     expect(html).toContain("u-glass-popover");
     // Sized by its content, capped at the viewport, scrolling inside.
-    expect(html).toContain("max-h-[80dvh]");
+    expect(html).toContain("max-h-[60dvh]");
     expect(html).toContain("min-h-0 flex-1 overflow-y-auto");
     // No drag-to-resize affordance survives.
     expect(html).not.toContain("Resize usage panel");
