@@ -136,6 +136,11 @@ pub struct UsageInput {
     pub session_id: Option<String>,
     pub tokens: TokenUsage,
     pub reported_cost_microusd: Option<i64>,
+    /// The row names its input but never recorded how much of it was cached.
+    /// Cached input costs a tenth of the full rate and is most of an agentic
+    /// request, so a full-rate price would overstate the row several times
+    /// over; such a row counts its tokens and stays unpriced.
+    pub cache_split_unknown: bool,
 }
 
 /// The validated shape of a request: parsed zone, day range, and hour bounds.
@@ -273,14 +278,19 @@ pub fn aggregate(
             model.clone(),
         );
         let bucket = buckets.entry(key).or_default();
-        let priced = pricing.price(
+        let mut priced = pricing.price(
             input.model.as_deref(),
             &input.tokens,
             input.reported_cost_microusd,
         );
+        let mut cache_savings = pricing.cache_savings(input.model.as_deref(), &input.tokens);
+        if input.cache_split_unknown && input.reported_cost_microusd.is_none() {
+            priced = crate::usage_pricing::PricedUsage { cost_microusd: None, cost_source: CostSource::Unpriced };
+            cache_savings = 0;
+        }
         bucket.totals.add(&input.tokens);
         bucket.cost_microusd += priced.cost_microusd.unwrap_or(0);
-        bucket.cache_savings_microusd += pricing.cache_savings(input.model.as_deref(), &input.tokens);
+        bucket.cache_savings_microusd += cache_savings;
         bucket.records += 1;
         match priced.cost_source {
             CostSource::Unpriced => bucket.unpriced_records += 1,
@@ -335,7 +345,7 @@ fn live_rows(
     let mut statement = db.prepare(
         "SELECT l.created_at,l.harness,l.model,l.serving_model,l.session_id,
                 l.uncached_input_tokens,l.cache_read_tokens,l.cache_write_tokens,l.output_tokens,l.reasoning_tokens,
-                l.cost_microusd,l.cost_source,s.provider_session_id
+                l.cost_microusd,l.cost_source,s.provider_session_id,l.source
          FROM usage_ledger l LEFT JOIN sessions s ON s.id=l.session_id
          WHERE l.source LIKE 'provider.%'
            AND (?1 IS NULL OR l.workspace_id=?1)
@@ -361,6 +371,11 @@ fn live_rows(
             let cost: Option<i64> = row.get(10)?;
             let cost_source: Option<String> = row.get(11)?;
             let provider_session_id: Option<String> = row.get(12)?;
+            let source: String = row.get(13)?;
+            // Rows written before the session's harness was copied onto the
+            // ledger still name their provider in `source`; that is the
+            // harness, not an unknown.
+            let harness = harness.or_else(|| source.strip_prefix("provider.").map(str::to_owned));
             Ok((created_at, harness, model, serving_model, session_id, tokens, cost, cost_source, provider_session_id))
         },
     )?;
@@ -379,6 +394,13 @@ fn live_rows(
         if !has_tokens && reported.is_none() {
             continue;
         }
+        // Anthropic reports exclusive input, so a missing cache figure there is
+        // a zero; every other provider reports cache-inclusive input, and the
+        // adapter that wrote no cache figure at all did not know the split.
+        let cache_split_unknown = !matches!(harness.as_deref(), Some("claude"))
+            && tokens.uncached_input_tokens.is_some()
+            && tokens.cache_read_tokens.is_none()
+            && tokens.cache_write_tokens.is_none();
         live.push(LiveRow {
             input: UsageInput {
                 occurred_at,
@@ -387,6 +409,7 @@ fn live_rows(
                 session_id: session_id.clone(),
                 tokens,
                 reported_cost_microusd: reported,
+                cache_split_unknown,
             },
             bridge_session_id: session_id,
             provider_session_id,
@@ -465,6 +488,7 @@ fn imported_rows(
                 ..TokenUsage::default()
             },
             reported_cost_microusd: reported,
+            cache_split_unknown: false,
         });
     }
     Ok((inputs, native_sessions))
@@ -562,6 +586,7 @@ mod tests {
             harness: harness.into(),
             model: Some(model.into()),
             session_id: Some(session.into()),
+            cache_split_unknown: false,
             tokens: TokenUsage {
                 uncached_input_tokens: Some(1_000),
                 cache_read_tokens: Some(0),
@@ -700,6 +725,37 @@ mod tests {
         )
         .unwrap();
         db
+    }
+
+    #[test]
+    fn a_live_row_without_a_harness_is_attributed_to_its_source_provider() {
+        let db = seeded();
+        db.execute_batch(
+            "INSERT INTO usage_ledger(workspace_id,session_id,turn_id,uncached_input_tokens,cache_read_tokens,output_tokens,harness,model,source,created_at)
+                 VALUES('w','live-alone','t9',10,0,5,NULL,NULL,'provider.codex','2026-01-01T12:00:00+00:00');",
+        )
+        .unwrap();
+        let summary = summarize(&db, &request("2026-01-01", "2026-01-01", None)).unwrap();
+        let harnesses: Vec<&str> = summary.buckets.iter().map(|bucket| bucket.harness.as_str()).collect();
+        assert!(harnesses.contains(&"codex"), "{harnesses:?}");
+        assert!(!harnesses.contains(&"unknown"), "{harnesses:?}");
+    }
+
+    #[test]
+    fn a_cache_inclusive_row_with_no_cache_figure_counts_tokens_but_is_not_priced() {
+        let db = seeded();
+        db.execute_batch(
+            "INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,harness,model,source,created_at)
+                 VALUES('w','live-alone','t8',400000,400000,500,'codex','gpt-5',  'provider.codex','2026-01-01T12:00:00+00:00');",
+        )
+        .unwrap();
+        let summary = summarize(&db, &request("2026-01-01", "2026-01-01", None)).unwrap();
+        let codex = summary.buckets.iter().find(|bucket| bucket.harness == "codex").expect("a codex bucket");
+        assert_eq!(codex.totals.uncached_input_tokens, 400_000, "the tokens the provider named are counted");
+        assert_eq!(codex.cost_microusd, 0, "an unknown cache split is not priced at the full rate");
+        assert_eq!(codex.cache_savings_microusd, 0);
+        assert_eq!(codex.unpriced_records, 1);
+        assert_eq!(codex.cost_source, CostSource::Unpriced);
     }
 
     #[test]

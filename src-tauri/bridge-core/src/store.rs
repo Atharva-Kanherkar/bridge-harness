@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 53;
+const LATEST_SCHEMA_VERSION: i64 = 54;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -682,6 +682,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             51 => migration_51_archived_chats(&transaction)?,
             52 => migration_52_worker_failure_class(&transaction)?,
             53 => migration_53_usage_tracking(&transaction)?,
+            54 => migration_54_usage_ledger_repair(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -860,6 +861,148 @@ fn migration_53_usage_tracking(transaction: &Transaction<'_>) -> Result<(), Brid
             body TEXT NOT NULL
         );",
     )?;
+    Ok(())
+}
+
+/// Repairs two families of ledger rows written before the per-turn
+/// normalizers, both of which recorded a provider's running total as if it
+/// were one turn's figure:
+///
+/// * Claude rows carry the SDK's `total_cost_usd`, which is cumulative across
+///   the turns of one process. Each row becomes the difference from the
+///   previous row of the same session and model; a cost that goes backwards
+///   started a fresh run and is kept as-is. This ships in the same release as
+///   the per-turn Claude normalizer, so every row present at migration time
+///   predates that normalizer and is cumulative by construction.
+/// * Codex rows from the adapter that read `tokenUsage.total` carry the
+///   thread's cumulative tokens. A session is repaired only when it is proven
+///   to predate the per-request normalizer: every row's `created_at` parses
+///   as RFC 3339 and lies before the commit that made `usage` an explicit
+///   per-request slice (`fb98466`), plus it reads as cumulative end to end
+///   (three or more rows, input and output never decreasing, no cache
+///   figure). The per-request normalizer only copies cache fields present on
+///   the wire, so a missing cache figure alone cannot tell a cumulative row
+///   from a per-request one whose provider omitted the split — the timestamp
+///   gate is what keeps a genuine per-request session like `100/10`,
+///   `200/20`, `300/30` from being rewritten into deltas. Sessions with any
+///   newer or unparsable timestamp are skipped: leaving a stale-binary row
+///   inflated is recoverable, silently undercounting valid usage is not.
+///
+/// Nothing is invented: a repaired row's figure is exactly what the provider
+/// added between two frames it sent. The repair runs once, behind the schema
+/// version: on per-turn rows it would read two equal costs as a zero step.
+fn migration_54_usage_ledger_repair(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    if !table_exists(transaction, "usage_ledger")? {
+        return Ok(());
+    }
+    repair_claude_cumulative_cost(transaction)?;
+    repair_codex_cumulative_tokens(transaction)?;
+    Ok(())
+}
+
+fn repair_claude_cumulative_cost(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    let mut statement = transaction.prepare(
+        "SELECT id, COALESCE(session_id,''), COALESCE(model,''), cost_microusd FROM usage_ledger
+         WHERE source='provider.claude' AND cost_microusd IS NOT NULL
+         ORDER BY session_id, model, id",
+    )?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut previous: Option<(String, String, i64)> = None;
+    for (id, session, model, cost) in rows {
+        let turn = match &previous {
+            Some((prev_session, prev_model, prev_cost)) if *prev_session == session && *prev_model == model && cost >= *prev_cost => cost - prev_cost,
+            _ => cost,
+        };
+        if turn != cost {
+            transaction.execute("UPDATE usage_ledger SET cost_microusd=?1 WHERE id=?2", params![turn, id])?;
+        }
+        previous = Some((session, model, cost));
+    }
+    Ok(())
+}
+
+/// The instant the Codex `usage` payload became an explicit per-request slice
+/// (`fb98466`: an empty object when the frame carries no `last` breakdown, so
+/// the recursive alias search can no longer reach the cumulative
+/// `tokenUsage.total`). Rows created before this predate the per-request
+/// normalizer and can only be cumulative; rows at or after it may be genuine
+/// per-request figures and are never rewritten.
+const CODEX_PER_REQUEST_CUTOFF_RFC3339: &str = "2026-09-06T10:32:00+00:00";
+
+fn codex_row_predates_per_request_normalizer(created_at: &str) -> bool {
+    let cutoff = chrono::DateTime::parse_from_rfc3339(CODEX_PER_REQUEST_CUTOFF_RFC3339)
+        .map(|cutoff| cutoff.timestamp_millis())
+        .unwrap_or(i64::MAX);
+    chrono::DateTime::parse_from_rfc3339(created_at)
+        .map(|row| row.timestamp_millis() < cutoff)
+        .unwrap_or(false)
+}
+
+fn repair_codex_cumulative_tokens(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    let sessions: Vec<String> = transaction
+        .prepare(
+            "SELECT session_id FROM usage_ledger
+             WHERE source='provider.codex' AND cache_read_tokens IS NULL AND session_id IS NOT NULL
+               AND input_tokens IS NOT NULL AND output_tokens IS NOT NULL
+             GROUP BY session_id HAVING COUNT(*) >= 3",
+        )?
+        .query_map([], |row| row.get(0))?
+        .collect::<Result<_, _>>()?;
+    for session in sessions {
+        let rows = transaction
+            .prepare(
+                "SELECT id, input_tokens, output_tokens, uncached_input_tokens, created_at FROM usage_ledger
+                 WHERE source='provider.codex' AND session_id=?1 AND cache_read_tokens IS NULL
+                   AND input_tokens IS NOT NULL AND output_tokens IS NOT NULL
+                 ORDER BY id",
+            )?
+            .query_map(params![session], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })?
+            .collect::<Result<Vec<_>, _>>()?;
+        // Positive provenance first: every row must provably predate the
+        // per-request normalizer. A missing cache split is not evidence — the
+        // current normalizer omits cache fields the wire omitted — so a
+        // monotonic per-request session written after the cutoff must not be
+        // touched.
+        if !rows
+            .iter()
+            .all(|(_, _, _, _, created_at)| codex_row_predates_per_request_normalizer(created_at))
+        {
+            continue;
+        }
+        let cumulative = rows.len() >= 3
+            && rows
+                .windows(2)
+                .all(|pair| pair[1].1 >= pair[0].1 && pair[1].2 >= pair[0].2);
+        if !cumulative {
+            continue;
+        }
+        let mut previous: Option<(i64, i64, Option<i64>)> = None;
+        for (id, input, output, uncached, _) in rows {
+            if let Some((prev_input, prev_output, prev_uncached)) = previous {
+                let turn_uncached = match (uncached, prev_uncached) {
+                    (Some(now), Some(before)) if now >= before => Some(now - before),
+                    (now, _) => now,
+                };
+                transaction.execute(
+                    "UPDATE usage_ledger SET input_tokens=?1, output_tokens=?2, uncached_input_tokens=?3 WHERE id=?4",
+                    params![input - prev_input, output - prev_output, turn_uncached, id],
+                )?;
+            }
+            previous = Some((input, output, uncached));
+        }
+    }
     Ok(())
 }
 
@@ -6645,6 +6788,80 @@ mod tests {
     // Issue #400 foundation: a whole-Mac analytics index that is structurally
     // separate from the workspace-scoped usage ledger. These tests lock the
     // schema and its independence before any importer exists to fill it.
+    #[test]
+    fn the_ledger_repair_turns_running_totals_into_turn_figures() {
+        let mut db = open(Path::new(":memory:")).unwrap();
+        db.execute_batch(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/usage-repair','now');
+             INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','c','t','main','/tmp/usage-repair/w','ready','now');
+             INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('c','w','claude','c','ready');
+             INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('x-total','w','codex','x','ready');
+             INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('x-last','w','codex','y','ready');
+             INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('x-new','w','codex','z','ready');
+             INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('x-fresh','w','codex','fresh','ready');
+             -- Claude: a running total 0.50, 0.80, 1.10, then a fresh run at 0.20.
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,output_tokens,cost_microusd,cost_source,source,created_at) VALUES('w','c','t1',10,500000,'provider_reported','provider.claude','a');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,output_tokens,cost_microusd,cost_source,source,created_at) VALUES('w','c','t2',10,800000,'provider_reported','provider.claude','b');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,output_tokens,cost_microusd,cost_source,source,created_at) VALUES('w','c','t3',10,1100000,'provider_reported','provider.claude','c');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,output_tokens,cost_microusd,cost_source,source,created_at) VALUES('w','c','t4',10,200000,'provider_reported','provider.claude','d');
+             -- Codex, cumulative thread totals written before the per-request normalizer: repaired.
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-total','t',1000,1000,50,'provider.codex','2026-09-01T10:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-total','t',2500,2500,120,'provider.codex','2026-09-02T10:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-total','t',4000,4000,120,'provider.codex','2026-09-03T10:00:00+00:00');
+             -- Codex, per-request without a cache figure: output moves both ways, so it is left alone.
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-last','t',1000,1000,300,'provider.codex','2026-09-01T10:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-last','t',1500,1500,90,'provider.codex','2026-09-02T10:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-last','t',2100,2100,400,'provider.codex','2026-09-03T10:00:00+00:00');
+             -- Codex, per-request with a cache figure: the new normalizer, never touched even when monotonic.
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,cache_read_tokens,output_tokens,source,created_at) VALUES('w','x-new','t',1000,100,900,10,'provider.codex','2026-09-01T10:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,cache_read_tokens,output_tokens,source,created_at) VALUES('w','x-new','t',2000,100,1900,20,'provider.codex','2026-09-02T10:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,cache_read_tokens,output_tokens,source,created_at) VALUES('w','x-new','t',3000,100,2900,30,'provider.codex','2026-09-03T10:00:00+00:00');
+             -- Codex, monotonic with no cache figure but written after the per-request normalizer:
+             -- a genuine per-request session the repair must never rewrite.
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-fresh','t',100,100,10,'provider.codex','2026-09-07T10:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-fresh','t',200,200,20,'provider.codex','2026-09-07T11:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-fresh','t',300,300,30,'provider.codex','2026-09-07T12:00:00+00:00');",
+        )
+        .unwrap();
+
+        let transaction = db.transaction().unwrap();
+        migration_54_usage_ledger_repair(&transaction).unwrap();
+        transaction.commit().unwrap();
+
+        let costs: Vec<i64> = usage_ledger(&db, "w", Some("c")).unwrap().iter().map(|row| row.cost_microusd.unwrap()).collect();
+        assert_eq!(costs, vec![500_000, 300_000, 300_000, 200_000]);
+
+        let inputs = |session: &str| -> Vec<(Option<i64>, Option<i64>, Option<i64>)> {
+            usage_ledger(&db, "w", Some(session)).unwrap().iter().map(|row| (row.input_tokens, row.uncached_input_tokens, row.output_tokens)).collect()
+        };
+        assert_eq!(inputs("x-total"), vec![(Some(1000), Some(1000), Some(50)), (Some(1500), Some(1500), Some(70)), (Some(1500), Some(1500), Some(0))]);
+        assert_eq!(inputs("x-last"), vec![(Some(1000), Some(1000), Some(300)), (Some(1500), Some(1500), Some(90)), (Some(2100), Some(2100), Some(400))]);
+        assert_eq!(inputs("x-new"), vec![(Some(1000), Some(100), Some(10)), (Some(2000), Some(100), Some(20)), (Some(3000), Some(100), Some(30))]);
+        assert_eq!(inputs("x-fresh"), vec![(Some(100), Some(100), Some(10)), (Some(200), Some(200), Some(20)), (Some(300), Some(300), Some(30))]);
+    }
+
+    #[test]
+    fn the_ledger_repair_skips_codex_sessions_with_unparsable_timestamps() {
+        let mut db = open(Path::new(":memory:")).unwrap();
+        db.execute_batch(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/usage-repair-ts','now');
+             INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','c','t','main','/tmp/usage-repair-ts/w','ready','now');
+             INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('x-bad-ts','w','codex','x','ready');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-bad-ts','t',100,100,10,'provider.codex','not-a-timestamp');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-bad-ts','t',200,200,20,'provider.codex','also-not-a-timestamp');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-bad-ts','t',300,300,30,'provider.codex','still-not-a-timestamp');",
+        )
+        .unwrap();
+
+        let transaction = db.transaction().unwrap();
+        migration_54_usage_ledger_repair(&transaction).unwrap();
+        transaction.commit().unwrap();
+
+        let rows = usage_ledger(&db, "w", Some("x-bad-ts")).unwrap();
+        let inputs: Vec<Option<i64>> = rows.iter().map(|row| row.input_tokens).collect();
+        assert_eq!(inputs, vec![Some(100), Some(200), Some(300)], "unprovable provenance is left alone");
+    }
+
     #[test]
     fn the_usage_tracking_migration_is_additive_and_idempotent() {
         let mut db = open(Path::new(":memory:")).unwrap();

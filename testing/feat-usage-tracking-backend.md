@@ -228,3 +228,46 @@ transcript import; Cursor token import (no local source exists).
   (44 sidecar tests passed, 1 authenticated-only skip; 1,862 Vitest tests
   passed; the Rust workspace and doc tests passed with only documented
   live/network tests ignored).
+
+## Addendum: repair of rows written before the normalizers
+
+Locked before the fix branch `fix/usage-summary-honesty`. Live ledgers from
+before this contract hold two families of rows that recorded a provider's
+running total as one turn's figure, and the summary summed them:
+
+1. **Claude cost.** The SDK documents `total_cost_usd` and `modelUsage` as
+   cumulative across the turns of one process ("read the latest result
+   rather than summing"). The Claude stream state now keeps the previous
+   result's totals and emits each result as its difference; a total that goes
+   backwards (a resume, a `/clear`, a restarted process) is a fresh run and is
+   taken as-is; `system/init` resets the totals. Migration 54 rewrites
+   existing Claude rows to the same per-turn difference, per session and
+   model. On the reference machine this moved 30 days of Claude live cost
+   from $12,221 to $1,331, which is what the last frame of each session said.
+2. **Codex cumulative tokens.** The adapter that read `tokenUsage.total`
+   wrote the thread's running totals. Migration 54 repairs a session only with
+   positive provenance: every row's `created_at` must parse as RFC 3339 and
+   predate the per-request normalizer (`fb98466`, 2026-09-06T10:32:00Z), and
+   the session must read as cumulative end to end (three or more rows, input
+   and output never decreasing, no cache figure). A missing cache figure alone
+   proves nothing — the per-request normalizer omits cache fields the wire
+   omitted — so a monotonic per-request session written after the cutoff
+   (e.g. `100/10`, `200/20`, `300/30`) is left alone, as is any session with
+   an unparsable timestamp. The repair is one-shot behind the schema
+   version, never idempotent by design.
+3. **Unknown harness.** A live row with a null harness is attributed to the
+   provider named in its `source` (`provider.codex` is Codex), never to
+   `unknown`.
+4. **Unknown cache split.** A cache-inclusive provider's row with input but no
+   cache figure at all cannot be priced honestly: cached input is a tenth of
+   the rate and most of an agentic request. Such rows count their tokens and
+   stay `unpriced`. Anthropic rows are exempt, since their input is exclusive
+   and a missing cache figure is a zero.
+
+Validation against T3 Code on the same machine and window (Aug 11 to Sep 9,
+Asia/Kolkata), after a full history scan: Claude $5,649 / 7.76B tokens
+against T3's $5,455 / 7.61B; `claude-fable-5` matches to the cent; Codex $880 /
+1.45B against T3's $739 / 1.30B. The remainder is live rows for sessions that
+have no rollout on disk, which T3 cannot see, and a rate-snapshot difference on
+`gpt-5.6-sol`. Imported Codex `gpt-5.6-sol` alone is 959M tokens, exactly T3's
+figure.
