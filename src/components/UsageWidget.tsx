@@ -5,6 +5,8 @@ import { AlertTriangle, ChevronDown, Gauge, Layers, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
+import { MeterReadings, useMeterClock } from "./meter/MeterReadings";
+import { HarnessMark } from "./harnessMarks";
 import { clampPercent, contextPressure, formatReset, projectUsageExhaustion, type CacheDiagnostic, type MetricSource, type UsageHistoryEntry, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "../usage";
 import type { AdapterDescriptor } from "../types";
 import { useContextBreakdown } from "../contextBreakdown";
@@ -38,8 +40,9 @@ function sourceLabel(source: MetricSource): string {
   return source.charAt(0).toUpperCase() + source.slice(1);
 }
 
+/** Where a figure came from, in a quiet word: context, never louder than the number. */
 function SourceBadge({ source }: { source: MetricSource }) {
-  return <span className="shrink-0 whitespace-nowrap rounded-full border border-border px-1.5 py-0.5 text-caption font-semibold uppercase tracking-[0.08em] text-muted-foreground">{sourceLabel(source)}</span>;
+  return <span className="shrink-0 whitespace-nowrap text-[11px] text-muted-foreground">{sourceLabel(source)}</span>;
 }
 
 function highestUse(snapshot?: UsageSnapshot): number | undefined {
@@ -60,16 +63,6 @@ function providerStatus(adapter?: AdapterDescriptor): ProviderStatus {
   if (adapter.authState === "signed_out") return "signed_out";
   if (!adapter.available) return "not_installed";
   return "normal";
-}
-
-function UsageRing({ used, inert = false }: { used?: number; inert?: boolean }) {
-  const clamped = used == null ? 0 : clampPercent(used);
-  const radius = 7;
-  const circumference = 2 * Math.PI * radius;
-  return <svg width="18" height="18" viewBox="0 0 18 18" className="shrink-0 -rotate-90" aria-hidden="true">
-    <circle cx="9" cy="9" r={radius} fill="none" strokeWidth="2" stroke="currentColor" className={inert ? "text-muted-foreground/25" : "text-foreground/15"} />
-    {used != null && !inert && <circle cx="9" cy="9" r={radius} fill="none" strokeWidth="2" strokeLinecap="round" stroke="currentColor" strokeDasharray={circumference} strokeDashoffset={circumference * (1 - clamped / 100)} className="text-foreground transition-[stroke-dashoffset] duration-700 ease-out" />}
-  </svg>;
 }
 
 /** Worst-case usage across every provider that actually reports one — the
@@ -122,15 +115,9 @@ function UsageIndicatorRing({ percent, tier }: { percent: number | null; tier: U
   </svg>;
 }
 
-function UsageBar({ used }: { used: number }) {
-  const clamped = clampPercent(used);
-  return <span className="block h-1.5 w-full overflow-hidden rounded-full bg-muted">
-    <span className="block h-full rounded-full bg-foreground transition-[width] duration-700 ease-out" style={{ width: `${clamped}%` }} />
-  </span>;
-}
-
 export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples = {}, history = [], cacheDiagnostics = [], contextPercent, contextSource = "measured", focusedSessionId = null, onOpenPromptStudio, compact = false }: UsageWidgetProps) {
   const [open, setOpen] = useState(false);
+  const nowMs = useMeterClock();
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [showMore, setShowMore] = useState(false);
   const [activeLogin, setActiveLogin] = useState<UsageProvider | null>(null);
@@ -219,19 +206,20 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
         // straight onto the frame it read as one shape with a seam through it:
         // the composer is rounded on all four corners, so a panel resting on it
         // can never continue that outline. It is its own popover instead.
+        // The same card as the menu-bar meter: 360pt wide at the composer's
+        // left edge, never the composer's full span over the conversation.
         compact
-          ? frame
-            ? "inset-x-0 bottom-full mb-1.5"
-            : "bottom-full left-0 mb-1.5 w-[min(100vw-1.5rem,42rem)]"
+          ? "bottom-full left-0 mb-1.5 w-[min(100vw-1.5rem,22.5rem)]"
           : "right-0 top-full pt-2",
-        open ? "visible pointer-events-auto opacity-100" : "invisible pointer-events-none opacity-0",
+        "transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none",
+        open ? "visible translate-y-0 pointer-events-auto opacity-100" : "invisible translate-y-1 pointer-events-none opacity-0",
       )}
     >
       {/* Content scrolls inside the material, bounded by the space above the composer. */}
       <div
         style={compact && availableHeight !== undefined ? { maxHeight: availableHeight } : undefined}
         className={cn(
-          "@container/usage u-glass-popover flex max-h-[80dvh] flex-col overflow-hidden",
+          "@container/usage u-glass-popover flex max-h-[70dvh] flex-col overflow-hidden",
           // Every corner, both modes: a popover is a whole shape, and half-round
           // corners read as a rendering fault rather than as a join.
           compact ? "w-full rounded-2xl" : "w-[440px] max-w-[calc(100vw-1.5rem)] rounded-2xl",
@@ -247,12 +235,15 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
           <div className="mb-2.5 flex items-center gap-2 px-0.5">
             <Gauge size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
             <h2 className="font-display text-sm font-semibold text-foreground">Usage health</h2>
-            <span className="ml-auto truncate text-caption text-muted-foreground">Provider usage</span>
-            <button type="button" onClick={() => setOpen(false)} className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label="Close usage health details"><X size={13} aria-hidden="true" /></button>
+            <button type="button" onClick={() => setOpen(false)} className="ml-auto grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label="Close usage health details"><X size={13} aria-hidden="true" /></button>
           </div>
 
-          <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
-            {PROVIDERS.map(provider => <ProviderDetail key={provider.id} provider={provider} snapshot={usage[provider.id]} samples={samples[provider.id] ?? []} adapter={adapters?.find(item => item.id === provider.id)} activeLogin={activeLogin} onStartLogin={setActiveLogin} onCloseLogin={() => setActiveLogin(null)} />)}
+          {/* Live limits read exactly as the menu-bar meter does; providers
+              without a reading follow as one quiet row each. */}
+          <div className="px-0.5">
+            <MeterReadings usage={usage} nowMs={nowMs} />
+            {PROVIDERS.filter(provider => !usage[provider.id]?.windows.length).map(provider => <ProviderDetail key={provider.id} provider={provider} snapshot={usage[provider.id]} adapter={adapters?.find(item => item.id === provider.id)} activeLogin={activeLogin} onStartLogin={setActiveLogin} onCloseLogin={() => setActiveLogin(null)} />)}
+            {projections.map(({ provider, projection }) => <p key={provider.id} className="mt-2 flex gap-2 rounded-lg border border-border p-2 text-[11px] leading-relaxed text-muted-foreground"><AlertTriangle size={12} className="mt-0.5 shrink-0" aria-hidden="true" /><span>{provider.label}: {projection.explanation} <span className="text-foreground">Estimated</span></span></p>)}
           </div>
 
           <section className={cn("mt-2 border border-border p-3", PANEL_NESTED)} aria-label="Context pressure">
@@ -373,45 +364,26 @@ function humanizeMetric(value: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1);
 }
 
-function ProviderDetail({ provider, snapshot, samples, adapter, activeLogin, onStartLogin, onCloseLogin }: { provider: { id: UsageProvider; label: string }; snapshot?: UsageSnapshot; samples: UsageRateSample[]; adapter?: AdapterDescriptor; activeLogin?: UsageProvider | null; onStartLogin: (provider: UsageProvider) => void; onCloseLogin: () => void }) {
+function ProviderDetail({ provider, snapshot, adapter, activeLogin, onStartLogin, onCloseLogin }: { provider: { id: UsageProvider; label: string }; snapshot?: UsageSnapshot; adapter?: AdapterDescriptor; activeLogin?: UsageProvider | null; onStartLogin: (provider: UsageProvider) => void; onCloseLogin: () => void }) {
   const status = providerStatus(adapter);
-  const used = status === "normal" ? highestUse(snapshot) : undefined;
-  const projection = status === "normal" ? projectUsageExhaustion(samples) : null;
   const loginActive = activeLogin === provider.id;
-  return <section className="px-3 py-3" aria-label={`${provider.label} usage`}>
-    <div className="flex min-w-0 flex-wrap items-center gap-2">
-      <UsageRing used={used} inert={status !== "normal"} />
-      <b className="text-caption text-foreground">{provider.label}</b>
-      {status === "normal" && snapshot?.planType && <span className="text-caption text-muted-foreground">{snapshot.planType}</span>}
-      {status === "normal" && snapshot?.model && <span className="min-w-0 truncate font-mono text-caption text-muted-foreground">{snapshot.model}</span>}
-      <span className="ml-auto flex shrink-0 items-center gap-1.5">
-        {status === "not_installed" && <span className="text-caption text-muted-foreground">Not installed</span>}
+  return <section className="border-b border-border py-2.5 last:border-0" aria-label={`${provider.label} usage`}>
+    <div className="flex min-w-0 items-center gap-1.5 text-ui">
+      <HarnessMark harness={provider.id} size={12} />
+      <span className="font-medium text-foreground">{provider.label}</span>
+      <span className="ml-auto flex shrink-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+        {status === "not_installed" && "Not installed"}
         {status === "signed_out" && !loginActive && <>
-          <span className="text-caption text-muted-foreground">Not signed in</span>
-          <button
-            type="button"
-            onClick={() => onStartLogin(provider.id)}
-            className="min-h-7 rounded-md border border-border px-2 text-caption font-medium text-foreground transition-colors hover:bg-accent"
-          >
-            Sign in
-          </button>
+          Not signed in
+          <button type="button" onClick={() => onStartLogin(provider.id)} className="min-h-6 rounded-md border border-border px-2 text-[11px] font-medium text-foreground transition-colors hover:bg-accent">Sign in</button>
         </>}
-        {status === "normal" && (snapshot ? <SourceBadge source={snapshot.source} /> : <span className="text-caption text-muted-foreground">Limit unknown</span>)}
+        {status === "normal" && (snapshot ? <SourceBadge source={snapshot.source} /> : "Limit unknown")}
       </span>
     </div>
     {loginActive ? <ProviderLoginPane provider={provider.id} label={provider.label} onClose={onCloseLogin} />
-    : status === "not_installed" ? <p className="mt-2 text-caption leading-relaxed text-muted-foreground">{adapter?.unavailableReason ?? `${provider.label} isn't installed.`} Add it in Settings → Harnesses.</p>
-    : status === "signed_out" ? <p className="mt-2 text-caption leading-relaxed text-muted-foreground">Sign in to see usage, quota, and context for this provider.</p>
-    : snapshot?.windows.length ? <div className="mt-2.5 grid gap-2.5">{snapshot.windows.map(window => {
-      const clamped = clampPercent(window.usedPercent);
-      const reset = window.resetsLabel ?? formatReset(window.resetsInSeconds);
-      return <div key={window.id}>
-        <div className="mb-1 flex flex-wrap items-center gap-2 text-caption"><span className="min-w-0 truncate text-muted-foreground">{window.label}</span><span className="ml-auto whitespace-nowrap font-mono text-foreground">{Math.round(clamped)}% used</span><SourceBadge source={window.source} /></div>
-        <UsageBar used={clamped} />
-        <div className="mt-1 text-caption text-muted-foreground">{reset ?? "Reset unknown"}</div>
-      </div>;
-    })}</div> : <p className="mt-2 text-caption leading-relaxed text-muted-foreground">This provider has not reported its quota yet.</p>}
-    {projection && <div className="mt-2.5 flex gap-2 rounded-lg border border-warning/30 bg-warning/10 p-2 text-caption leading-relaxed text-warning"><AlertTriangle size={12} className="mt-0.5 shrink-0" aria-hidden="true" /><span>{projection.explanation} <b className="font-semibold uppercase tracking-wide">Estimated</b></span></div>}
+    : status === "not_installed" ? <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">{adapter?.unavailableReason ?? `${provider.label} isn't installed.`} Add it in Settings → Harnesses.</p>
+    : status === "signed_out" ? <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">Sign in to see usage, quota, and context for this provider.</p>
+    : <p className="mt-1 text-[11px] leading-relaxed text-muted-foreground">This provider has not reported its quota yet.</p>}
   </section>;
 }
 

@@ -3,71 +3,12 @@
 // biting, then one bar per quota window with its reset and pace in words.
 // Pace math is the shared `src/meter.ts` port; styling is Tailwind utilities
 // plus `.u-glass-popover` only. Series colour follows the harness.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { Gauge, RefreshCw, X } from "lucide-react";
-import { cn } from "@/lib/utils";
-import { formatReset, windowLabel, type RateWindow, type UsageProvider, type UsageSnapshot } from "../../usage";
-import { pacePhrase, paceVisible, paceWeekly } from "../../meter";
+import type { UsageProvider, UsageSnapshot } from "../../usage";
 import type { MeterRegistry } from "../../types";
-import { HarnessMark, harnessChartDot, harnessChartText } from "../harnessMarks";
-import { harnessLabel } from "../../utils";
-
-const PROVIDER_ORDER: UsageProvider[] = ["codex", "claude", "cursor", "opencode"];
-
-function providerSnapshots(usage: Partial<Record<UsageProvider, UsageSnapshot>>): Array<{ provider: UsageProvider; snapshot: UsageSnapshot }> {
-  return PROVIDER_ORDER.filter(provider => usage[provider]).map(provider => ({ provider, snapshot: usage[provider]! }));
-}
-
-const clampPercent = (value: number) => Math.min(100, Math.max(0, value));
-
-/** The window a provider is closest to exhausting. */
-function headlineWindow(windows: RateWindow[]): RateWindow | undefined {
-  return windows.reduce<RateWindow | undefined>((worst, window) => (worst == null || window.usedPercent > worst.usedPercent ? window : worst), undefined);
-}
-
-/** A ring gauge: the headline window's usage as an arc in the harness colour. */
-function RingGauge({ provider, used, label }: { provider: UsageProvider; used: number; label: string }) {
-  // Draw from empty on mount so the arc sweeps to its value once, then rests.
-  const [drawn, setDrawn] = useState(false);
-  useEffect(() => { const frame = window.requestAnimationFrame(() => setDrawn(true)); return () => window.cancelAnimationFrame(frame); }, []);
-  const radius = 17;
-  const circumference = 2 * Math.PI * radius;
-  const offset = circumference * (1 - (drawn ? clampPercent(used) : 0) / 100);
-  return <figure aria-label={`${harnessLabel(provider)} gauge`} className="flex min-w-0 flex-1 flex-col items-center gap-1">
-    <svg viewBox="0 0 44 44" className={cn("size-14", harnessChartText(provider))} role="img" aria-label={`${Math.round(used)} percent of the ${label} window used`}>
-      <circle cx="22" cy="22" r={radius} fill="none" className="stroke-border" strokeWidth={3} />
-      <circle cx="22" cy="22" r={radius} fill="none" stroke="currentColor" strokeWidth={3} strokeLinecap="round" strokeDasharray={circumference} strokeDashoffset={offset} transform="rotate(-90 22 22)" className="transition-[stroke-dashoffset] duration-700 ease-out" />
-      <text x="22" y="22" textAnchor="middle" dominantBaseline="central" className="fill-foreground font-sans text-[11px] font-semibold tabular-nums">{Math.round(used)}%</text>
-    </svg>
-    <figcaption className="flex items-center gap-1 text-[11px] text-muted-foreground">
-      <HarnessMark harness={provider} size={10} />
-      <span className="truncate">{harnessLabel(provider)} · {label}</span>
-    </figcaption>
-  </figure>;
-}
-
-function WindowRow({ provider, window, nowMs }: { provider: UsageProvider; window: RateWindow; nowMs: number }) {
-  const [expanded, setExpanded] = useState(false);
-  const pace = useMemo(() => paceWeekly(window, nowMs), [window, nowMs]);
-  const showPace = pace != null && paceVisible(window, nowMs);
-  const reset = window.fresh ? "fresh window" : window.resetsInSeconds != null ? formatReset(window.resetsInSeconds) : window.resetsLabel;
-  const used = clampPercent(window.usedPercent);
-  const name = window.label || windowLabel(window.id, window.windowMinutes);
-  return <div className="py-1.5">
-    <div className="flex items-baseline justify-between gap-2 text-caption">
-      <span className="font-medium text-foreground">{name}</span>
-      <span className="shrink-0 tabular-nums text-muted-foreground">{Math.round(used)}% used</span>
-    </div>
-    <button type="button" aria-expanded={expanded} aria-controls={`meter-window-${window.id}`} onClick={() => setExpanded(value => !value)} className="mt-1 block h-1.5 w-full overflow-hidden rounded-full bg-muted text-left outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring">
-      <span className={cn("block h-full origin-left rounded-full motion-safe:animate-[meter-fill_600ms_ease-out]", harnessChartDot(provider))} style={{ width: `${used}%` }} />
-    </button>
-    <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
-      {reset && <span className="tabular-nums">{reset}</span>}
-      {pace && showPace && <span>{pacePhrase(pace)}</span>}
-    </div>
-    {expanded && <p id={`meter-window-${window.id}`} className="mt-1 text-[11px] text-muted-foreground">{Math.round(used)}% of this window is used{reset ? `. ${reset === "fresh window" ? "Nothing spent since it reset" : reset}.` : "."}</p>}
-  </div>;
-}
+import { HarnessMark } from "../harnessMarks";
+import { MeterReadings, providerSnapshots, useMeterClock } from "./MeterReadings";
 
 export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose, onOpenBridge }: {
   usage: Partial<Record<UsageProvider, UsageSnapshot>>;
@@ -79,12 +20,7 @@ export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose, 
    *  the menu bar there is no other way through to the app. */
   onOpenBridge?: () => void;
 }) {
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  // Countdowns and pace go stale against a frozen clock, so tick while open.
-  useEffect(() => {
-    const timer = window.setInterval(() => setNowMs(Date.now()), 30_000);
-    return () => window.clearInterval(timer);
-  }, []);
+  const nowMs = useMeterClock();
   const dialogRef = useRef<HTMLDivElement>(null);
   // A dialog that opens without focus strands keyboard users; focus the
   // dialog itself on mount (Escape is handled globally, topmost-layer-first).
@@ -93,7 +29,6 @@ export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose, 
   const liveProviders = new Set(live.map(entry => entry.provider));
   const awaiting = (registry?.providers ?? []).filter(entry => entry.supported && !liveProviders.has(entry.id as UsageProvider));
   const worst = live.flatMap(({ snapshot }) => snapshot.windows).reduce<number | null>((max, window) => (max == null ? window.usedPercent : Math.max(max, window.usedPercent)), null);
-  const gauges = live.map(({ provider, snapshot }) => ({ provider, window: headlineWindow(snapshot.windows) })).filter((entry): entry is { provider: UsageProvider; window: RateWindow } => entry.window != null);
   // The meter is its own menu-bar window, so the card fills that window rather
   // than floating inside the app. Nothing sits behind it to be made inert,
   // which is why there is no `aria-modal` here.
@@ -116,18 +51,7 @@ export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose, 
     </div>
     <div className="min-h-0 flex-1 overflow-y-auto px-3.5 py-2">
       {registry == null && live.length === 0 && <div role="status" className="flex items-center justify-center gap-2 py-5 text-caption text-muted-foreground"><RefreshCw size={12} className="animate-spin" aria-hidden="true" />Loading meter</div>}
-      {gauges.length > 0 && <section aria-label="Gauges" className="flex items-start justify-around gap-2 border-b border-border py-2.5">
-        {gauges.map(({ provider, window }) => <RingGauge key={provider} provider={provider} used={window.usedPercent} label={window.label || windowLabel(window.id, window.windowMinutes)} />)}
-      </section>}
-      {live.map(({ provider, snapshot }) => <section key={provider} aria-label={`${harnessLabel(provider)} usage`} className="border-b border-border py-1.5 last:border-0">
-          <div className="flex items-center gap-1.5 text-ui">
-            <HarnessMark harness={provider} size={12} />
-            <span className="font-medium text-foreground">{harnessLabel(provider)}</span>
-            {snapshot.planType && <span className="text-[11px] text-muted-foreground">{snapshot.planType}</span>}
-          </div>
-          {snapshot.windows.length === 0 && <p className="py-1 text-[11px] text-muted-foreground">Connected — no quota windows reported.</p>}
-          {snapshot.windows.map(window => <WindowRow key={window.id} provider={provider} window={window} nowMs={nowMs} />)}
-        </section>)}
+      <MeterReadings usage={usage} nowMs={nowMs} />
       {awaiting.map(entry => <section key={entry.id} aria-label={`${entry.label} usage`} className="flex items-center gap-2 border-b border-border py-3 last:border-0">
         <HarnessMark harness={entry.id} size={12} />
         <span className="font-medium text-foreground">{entry.label}</span>
