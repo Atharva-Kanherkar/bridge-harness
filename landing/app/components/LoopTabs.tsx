@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef, useState, type KeyboardEvent } from "react";
-import MockCard from "./MockCard";
+import MockEntry from "./MockEntry";
 import { loopSteps } from "../content/loop";
 
 export default function LoopTabs() {
@@ -74,8 +74,8 @@ export default function LoopTabs() {
           <p className="mt-3 text-[14px] leading-6 text-muted-foreground">{step.text}</p>
         </div>
         <div className="flex flex-col gap-3">
-          {step.cards.map((card) => (
-            <MockCard key={card.title} card={card} />
+          {step.entries.map((entry, i) => (
+            <MockEntry key={i} entry={entry} />
           ))}
         </div>
       </div>

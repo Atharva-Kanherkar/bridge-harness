@@ -58,7 +58,7 @@ The mock card renderer moved to its own module so the loop panels and the hero m
 
 ## Carried over from Orca
 
-- Mockups are real DOM, data-driven, never screenshots.
+- Mockups are real DOM, data-driven, never screenshots. Ours goes further: the markup is lifted from the running app rather than approximated, down to the 248px sidebar and the ui/caption/message type scale.
 - Dark achromatic chrome; color appears only inside mockups and only for meaning.
 - One headline step, hairline dividers, max-w-6xl, generous vertical rhythm.
 - Tabs, tiles, and FAQ items are real controls with roles.

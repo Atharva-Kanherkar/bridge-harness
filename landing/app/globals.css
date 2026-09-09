@@ -28,6 +28,11 @@
   --harness-opencode: #9b8cf0;
   --code: #0a0a0a;
   --code-foreground: #ececea;
+  --accent: color-mix(in srgb, #e4e4e4 6%, transparent);
+  --accent-foreground: #e4e4e4;
+  --selection: #242424;
+  --selection-foreground: #e4e4e4;
+  --sidebar-border: #161616;
 }
 
 @theme inline {
@@ -57,9 +62,21 @@
   --color-harness-opencode: var(--harness-opencode);
   --color-code: var(--code);
   --color-code-foreground: var(--code-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-selection: var(--selection);
+  --color-selection-foreground: var(--selection-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --text-ui: 0.8125rem;
+  --text-ui--line-height: 1.5;
+  --text-caption: 0.75rem;
+  --text-caption--line-height: 1.5;
+  --text-message: 0.9375rem;
+  --text-message--line-height: 1.7;
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   --font-display: var(--font-bricolage), var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-heading: var(--font-bricolage), var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
   --animate-fade-up: fade-up 360ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
 
   @keyframes fade-up {
