@@ -1,0 +1,10 @@
+{"timestamp":"2026-09-04 17:50:57 +0530","app_version":"0.5.0"}
+{
+  "procPath":"/private/tmp/Bridge-jit.app/Contents/MacOS/bridge-deck",
+  "exception":{"type":"EXC_CRASH","signal":"SIGABRT"},
+  "threads":[{"triggered":true,"queue":"com.apple.main-thread","frames":[
+    {"symbol":"abort"},
+    {"symbol":"__rust_foreign_exception"},
+    {"symbol":"tao::platform_impl::platform::observer::control_flow_end_handler"}
+  ]}]
+}

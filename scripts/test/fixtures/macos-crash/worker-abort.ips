@@ -1,0 +1,9 @@
+{
+  "exception":{"type":"EXC_CRASH","signal":"SIGABRT"},
+  "faultingThread":1,
+  "threads":[
+    {"queue":"com.apple.main-thread","frames":[{"symbol":"__rust_foreign_exception"}]},
+    {"frames":[{"symbol":"abort"},{"symbol":"worker_shutdown"}]}
+  ],
+  "asi":{"reason":"DO_NOT_EXPORT_PRIVATE_REASON"}
+}

@@ -11,9 +11,21 @@ fn tauri_conf() -> Value {
 }
 
 #[test]
-fn release_version_is_0_5_1() {
+fn release_versions_match_across_packages() {
     let parsed = tauri_conf();
-    assert_eq!(parsed["version"], "0.5.1");
+    assert_eq!(parsed["version"], env!("CARGO_PKG_VERSION"));
+    let npm: Value = serde_json::from_str(include_str!("../../package.json")).unwrap();
+    assert_eq!(parsed["version"], npm["version"]);
+}
+
+#[test]
+fn window_creation_errors_are_handled_by_the_setup_hook() {
+    for window in tauri_conf()["app"]["windows"].as_array().unwrap() {
+        assert_eq!(
+            window["create"], false,
+            "automatic window creation fails before Bridge can report a startup error"
+        );
+    }
 }
 
 #[test]
@@ -31,13 +43,11 @@ fn bundle_targets_include_app_and_dmg() {
 fn macos_bundle_ships_webkit_jit_entitlements() {
     let parsed = tauri_conf();
     assert_eq!(
-        parsed["bundle"]["macOS"]["hardenedRuntime"],
-        true,
+        parsed["bundle"]["macOS"]["hardenedRuntime"], true,
         "Developer ID notarization requires Hardened Runtime"
     );
     assert_eq!(
-        parsed["bundle"]["macOS"]["entitlements"],
-        "entitlements.plist",
+        parsed["bundle"]["macOS"]["entitlements"], "entitlements.plist",
         "without an entitlements file, codesign embeds an empty blob and WKWebView aborts"
     );
 

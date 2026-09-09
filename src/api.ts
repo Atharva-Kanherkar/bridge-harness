@@ -7,6 +7,7 @@ import { createInvokeQueue } from "./invokeQueue";
 import { asWireKind, readWireKind } from "./transcript/wire";
 import type { AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
+import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, SummaryParams, UsageBucket, UsageHistorySource, UsagePriceOverride, UsagePricingStatus, UsageSummaryResult } from "./types";
 import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult } from "./protocol/generated/protocol";
@@ -521,6 +522,68 @@ let mockWorktrees: WorktreeInventoryEntry[] = [
     assessedAt: now, sizeBytes: 33_554_432, sizeMeasuredAt: now,
     createdAt: now, lastUsedAt: now, idleSeconds: 5 * 24 * 3_600,
   },
+];
+// Usage roll-up for the browser host: three harnesses over the last week, with
+// one unpriced Codex model so the screen's provenance notes have something to
+// say, and one imported source that is only partially covered.
+const mockUsagePricing: UsagePricingStatus = { status: "bundled", source: "litellm", snapshotDate: "2026-08-30", fetchedAt: null, knownModels: 259, overrides: 0 };
+let mockPriceOverrides: UsagePriceOverride[] = [];
+function mockUsageBucket(day: string, harness: string, model: string, scale: number, costSource: UsageBucket["costSource"] = "model_priced"): UsageBucket {
+  const uncached = Math.round(18_000 * scale);
+  const cacheRead = Math.round(140_000 * scale);
+  const cacheWrite = Math.round(9_000 * scale);
+  const output = Math.round(6_500 * scale);
+  const cost = costSource === "unpriced" ? 0 : Math.round((uncached * 3 + cacheRead * 0.3 + cacheWrite * 3.75 + output * 15) * (harness === "claude" ? 1 : 0.6));
+  return { day, hourStart: null, harness, model, records: Math.max(1, Math.round(14 * scale)), sessions: Math.max(1, Math.round(3 * scale)), costSource, costMicrousd: cost, cacheSavingsMicrousd: costSource === "unpriced" ? 0 : Math.round(cacheRead * 2.7 * (harness === "claude" ? 1 : 0.6)), unpricedRecords: costSource === "unpriced" ? Math.max(1, Math.round(14 * scale)) : 0, totals: { uncachedInputTokens: uncached, cacheReadTokens: cacheRead, cacheWriteTokens: cacheWrite, outputTokens: output, reasoningTokens: Math.round(output * 0.4) } };
+}
+function mockUsageSummary(params: SummaryParams): UsageSummaryResult {
+  const buckets: UsageBucket[] = [];
+  const since = Date.parse(`${params.sinceDay}T00:00:00Z`);
+  const until = Date.parse(`${params.untilDay}T00:00:00Z`);
+  let index = 0;
+  for (let at = since; at <= until; at += 86_400_000, index += 1) {
+    const day = new Date(at).toISOString().slice(0, 10);
+    const wave = 0.6 + 0.5 * Math.abs(Math.sin(index * 1.3));
+    if (index % 3 !== 2) buckets.push(mockUsageBucket(day, "claude", "claude-fable-5-1", wave));
+    buckets.push(mockUsageBucket(day, "codex", "gpt-5.6-luna", wave * 0.7));
+    if (index % 4 === 1) buckets.push(mockUsageBucket(day, "codex", "gpt-5.6-experimental", 0.2, "unpriced"));
+    if (index % 2 === 0 && params.includeImported) buckets.push(mockUsageBucket(day, "opencode", "kimi-k2.5", wave * 0.3, "provider_reported"));
+  }
+  const hourly = params.resolution === "hour" && params.sinceTime && params.untilTime;
+  if (hourly) {
+    const start = Date.parse(params.sinceTime!);
+    const end = Date.parse(params.untilTime!);
+    buckets.length = 0;
+    for (let at = start, hour = 0; at < end; at += 3_600_000, hour += 1) {
+      if (hour % 5 === 4) continue;
+      const stamp = new Date(at).toISOString().replace(/\.\d{3}Z$/, "Z");
+      const day = stamp.slice(0, 10);
+      buckets.push({ ...mockUsageBucket(day, "claude", "claude-fable-5-1", 0.08 + 0.05 * Math.abs(Math.sin(hour))), hourStart: stamp });
+      if (hour % 2 === 0) buckets.push({ ...mockUsageBucket(day, "codex", "gpt-5.6-luna", 0.05), hourStart: stamp });
+    }
+  }
+  return {
+    buckets,
+    resolution: params.resolution,
+    sinceDay: params.sinceDay,
+    untilDay: params.untilDay,
+    timeZone: params.timeZone ?? "UTC",
+    liveRecords: buckets.filter(bucket => bucket.harness !== "opencode").reduce((sum, bucket) => sum + bucket.records, 0),
+    importedRecords: buckets.filter(bucket => bucket.harness === "opencode").reduce((sum, bucket) => sum + bucket.records, 0),
+    duplicatesDropped: params.includeImported ? 6 : 0,
+    scanDurationMs: 12,
+    pricing: { ...mockUsagePricing, overrides: mockPriceOverrides.length },
+    sources: params.includeImported ? [
+      { id: "claude:~/.claude/projects", agent: "claude", provider: "anthropic", coverageState: "complete", coverageReason: null, lastSuccessfulScanAt: now, recordsImported: 44_740, recordsSkipped: 12 },
+      { id: "opencode:opencode.db", agent: "opencode", provider: "opencode", coverageState: "partial", coverageReason: "scan stopped at the record cap; run again to continue", lastSuccessfulScanAt: now, recordsImported: 10_019, recordsSkipped: 0 },
+    ] : [],
+  };
+}
+const mockHistorySources: UsageHistorySource[] = [
+  { id: "claude:~/.claude/projects", agent: "claude", provider: "anthropic", capability: "supported", location: "~/.claude/projects", detectedVersion: "2.1.261", coverageState: "complete", coverageReason: null, coverageStartAt: "2026-03-02T09:10:00Z", coverageEndAt: now, lastSuccessfulScanAt: now, lastError: null, recordsImported: 44_740, recordsSkipped: 12 },
+  { id: "codex:~/.codex/sessions", agent: "codex", provider: "openai", capability: "supported", location: "~/.codex/sessions", detectedVersion: null, coverageState: "stale", coverageReason: "files changed since the last scan", coverageStartAt: "2026-04-11T08:00:00Z", coverageEndAt: "2026-09-01T17:42:00Z", lastSuccessfulScanAt: "2026-09-01T17:42:00Z", lastError: null, recordsImported: 38_350, recordsSkipped: 214 },
+  { id: "opencode:opencode.db", agent: "opencode", provider: "opencode", capability: "supported", location: "~/.local/share/opencode/opencode.db", detectedVersion: null, coverageState: "partial", coverageReason: "scan stopped at the record cap; run again to continue", coverageStartAt: "2026-05-20T12:00:00Z", coverageEndAt: now, lastSuccessfulScanAt: now, lastError: null, recordsImported: 10_019, recordsSkipped: 0 },
+  { id: "cursor:~/.cursor/chats", agent: "cursor", provider: "cursor", capability: "unsupported", location: "~/.cursor/chats", detectedVersion: null, coverageState: "unsupported", coverageReason: "Cursor's local stores hold no token counts", coverageStartAt: null, coverageEndAt: null, lastSuccessfulScanAt: null, lastError: null, recordsImported: 0, recordsSkipped: 0 },
 ];
 const mockWorktreeUsage: WorktreeUsage = {
   totalCount: 3, totalBytes: 2_759_852_032,
@@ -1074,6 +1137,42 @@ export const bridgeApi = {
   recommendedModelProfiles: (): Promise<ModelProfileDraft[]> => isTauri() ? call("models/recommended_model_profiles") : Promise.resolve(recommendedProfileDrafts(mockHealth.adapters)),
   saveModelProfiles: (profiles: ModelProfileDraft[]): Promise<ModelSetupState> => isTauri() ? call("models/save_model_profiles", { profiles }) as Promise<ModelSetupState> : Promise.resolve(saveMockProfiles(profiles)),
   resetModelProfiles: (): Promise<ModelSetupState> => isTauri() ? call("models/reset_model_profiles") as Promise<ModelSetupState> : Promise.resolve(saveMockProfiles(recommendedProfileDrafts(mockHealth.adapters))),
+  // Token and cost usage. One summary per window; the screen never polls.
+  usageSummary: (params: SummaryParams): Promise<UsageSummaryResult> =>
+    isTauri() ? call("usage/summary", params) : Promise.resolve(mockUsageSummary(params)),
+  listUsagePriceOverrides: (): Promise<UsagePriceOverride[]> =>
+    isTauri() ? call("usage/list_price_overrides") : Promise.resolve(structuredClone(mockPriceOverrides)),
+  setUsagePriceOverride: (params: SetPriceOverrideParams): Promise<UsagePriceOverride[]> => {
+    if (isTauri()) return call("usage/set_price_override", params);
+    const override: UsagePriceOverride = { model: params.model, inputMicrousdPerMtok: params.inputMicrousdPerMtok, outputMicrousdPerMtok: params.outputMicrousdPerMtok, cacheReadMicrousdPerMtok: params.cacheReadMicrousdPerMtok ?? null, cacheWriteMicrousdPerMtok: params.cacheWriteMicrousdPerMtok ?? null, updatedAt: new Date().toISOString() };
+    mockPriceOverrides = [...mockPriceOverrides.filter(item => item.model !== params.model), override].sort((a, b) => a.model.localeCompare(b.model));
+    return Promise.resolve(structuredClone(mockPriceOverrides));
+  },
+  clearUsagePriceOverride: (model: string): Promise<UsagePriceOverride[]> => {
+    if (isTauri()) return call("usage/clear_price_override", { model });
+    mockPriceOverrides = mockPriceOverrides.filter(item => item.model !== model);
+    return Promise.resolve(structuredClone(mockPriceOverrides));
+  },
+  refreshUsageRates: (): Promise<UsagePricingStatus> =>
+    isTauri() ? call("usage/refresh_rates") : Promise.resolve({ ...mockUsagePricing, status: "refreshed", fetchedAt: new Date().toISOString(), overrides: mockPriceOverrides.length }),
+  listUsageHistorySources: (): Promise<UsageHistorySource[]> =>
+    isTauri() ? call("usage/list_history_sources") : Promise.resolve(structuredClone(mockHistorySources)),
+  scanUsageHistory: (params: ScanHistoryParams = {}): Promise<ScanHistoryResult> => {
+    if (isTauri()) return call("usage/scan_history", params);
+    const scanned = mockHistorySources.filter(source => !params.sourceIds || params.sourceIds.includes(source.id));
+    for (const source of scanned) {
+      if (source.capability !== "supported") continue;
+      source.coverageState = "complete";
+      source.coverageReason = null;
+      source.lastSuccessfulScanAt = new Date().toISOString();
+    }
+    return Promise.resolve({
+      durationMs: 840,
+      recordsImported: scanned.some(source => source.agent === "codex") ? 122 : 0,
+      recordsSkipped: 0,
+      sources: scanned.map(source => ({ sourceId: source.id, agent: source.agent, provider: source.provider, capability: source.capability, location: source.location, coverage: source.coverageState, recordsImported: source.agent === "codex" ? 122 : 0, recordsSkipped: 0, nextCursor: null, warning: source.capability === "unsupported" ? source.coverageReason : null })),
+    });
+  },
   // The composer's inline typeahead. Off by default; `configured: false` is a
   // fresh install reading defaults, same distinction Work's settings make.
   getSuggestionSettings: (): Promise<SuggestionSettingsSnapshot> =>

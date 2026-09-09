@@ -675,28 +675,93 @@ impl BridgeCore {
         crate::switch_summary::stop_for_session(self, session_id, reason);
     }
 
-    /// Stop a provider for app shutdown and persist that orderly teardown.
-    /// Replacement uses `stop_session_adapter` because its session continues.
+    /// Stop an adapter for a clean host exit and durably retire its process
+    /// claim. A reader whose runtime has been removed skips its usual exit
+    /// cleanup, so the host must finish it here; otherwise an idle, completed
+    /// turn is misreported as an orphan failure at the next launch.
     pub fn shutdown_session_adapter(&self, session_id: &str) -> Result<(), BridgeError> {
-        self.stop_session_adapter(session_id, adapters::ShutdownReason::AppShutdown);
+        let _lifecycle = self.claim_session_lifecycle(session_id, "app shutdown")?;
+        self.deactivate_reader_launch(session_id);
+        // A model switch can leave only an outgoing summary, with no attached
+        // runtime or durable process claim. Cancel and stop it before any early
+        // return, while retaining its launch identity until the reader exits.
+        let had_detached_summary = crate::switch_summary::is_detached(self, session_id);
+        crate::switch_summary::stop_for_session(
+            self,
+            session_id,
+            adapters::ShutdownReason::AppShutdown,
+        );
+        let runtime = self.adapters.lock().unwrap().remove(session_id);
+        // Provider shutdown can block and its reader may need the adapter map.
+        // Hold neither the map nor the database while waiting for the process.
+        if let Some(mut runtime) = runtime {
+            runtime.stop(adapters::ShutdownReason::AppShutdown);
+        } else {
+            // A reader removes its runtime before retiring the durable claim.
+            // Let that exit cleanup finish if its process is still alive; if
+            // the process has already exited, the host can settle the claim.
+            // Never discard ownership of a process still known to be running.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(500);
+            loop {
+                let claim: Option<(u32, Option<String>)> = self.db.lock().unwrap().query_row(
+                    "SELECT adapter_pid,adapter_process_identity FROM sessions WHERE id=?1 AND adapter_pid IS NOT NULL",
+                    params![session_id], |row| Ok((row.get(0)?, row.get(1)?)),
+                ).optional()?;
+                let Some((pid, expected_identity)) = claim else {
+                    if had_detached_summary {
+                        break;
+                    }
+                    return Ok(());
+                };
+                let live_identity = adapters::process_identity(pid);
+                if live_identity.is_none() || (expected_identity.is_some() && live_identity != expected_identity) {
+                    break;
+                }
+                if std::time::Instant::now() >= deadline {
+                    return Err(BridgeError::Adapter(format!(
+                        "provider {pid} still has a live process claim after its runtime exited"
+                    )));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        }
+
         let db = self.db.lock().unwrap();
         let transaction = db.unchecked_transaction()?;
-        session_supervisor::SessionSupervisor::clear_adapter_process(&transaction, session_id)?;
-        let stopped = transaction.execute(
-            "UPDATE sessions SET status='stopped',active_turn_id=NULL,ended_at=?2
-             WHERE id=?1 AND status NOT IN ('completed','cancelled','stopped','failed')",
-            params![session_id, chrono::Utc::now().to_rfc3339()],
+        let (previous_status, active_turn): (String, bool) = transaction.query_row(
+            "SELECT status,active_turn_id IS NOT NULL FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        if stopped > 0 {
-            session_forest::append_in_transaction(
-                &transaction,
-                session_id,
-                session_forest::EntryKind::SessionStatus,
-                serde_json::json!({"status":"stopped","reason":"app_shutdown"}),
-            )
-            .map_err(|error| BridgeError::Invalid(error.to_string()))?;
-            store::event(&transaction, "adapter", "session.shutdown", session_id, "app_shutdown")?;
-        }
+        let status = match previous_status.as_str() {
+            "completed" | "cancelled" | "failed" | "stopped" => previous_status.as_str(),
+            _ => "stopped",
+        };
+        session_supervisor::SessionSupervisor::clear_adapter_process(&transaction, session_id)?;
+        transaction.execute(
+            "UPDATE sessions SET status=?2,active_turn_id=NULL,
+             ended_at=CASE WHEN status=?2 THEN ended_at ELSE ?3 END WHERE id=?1",
+            params![session_id, status, chrono::Utc::now().to_rfc3339()],
+        )?;
+        session_forest::append_in_transaction(
+            &transaction,
+            session_id,
+            session_forest::EntryKind::SessionStatus,
+            serde_json::json!({
+                "status": status,
+                "reason": adapters::ShutdownReason::AppShutdown.as_str(),
+                "interrupted": active_turn,
+            }),
+        ).map_err(|error| BridgeError::Invalid(error.to_string()))?;
+        store::event(
+            &transaction,
+            "adapter",
+            "session.shutdown",
+            session_id,
+            adapters::ShutdownReason::AppShutdown.as_str(),
+        )?;
+        // Worker lifecycle/result recovery remains separate: shutting down an
+        // unfinished worker must never manufacture a successful result.
         session_supervisor::SessionSupervisor::reconcile_workspace_statuses(&transaction)?;
         transaction.commit()?;
         self.events.publish(crate::events::CoreEvent::StateChanged);
@@ -3231,6 +3296,85 @@ mod tests {
             .unwrap();
         drop(claim);
         core.claim_session_lifecycle("s", "session start").unwrap();
+    }
+
+    #[test]
+    fn app_shutdown_settles_a_detached_summary_with_or_without_an_incoming_runtime() {
+        for incoming_runtime in [false, true] {
+            let (_scratch, core) = fixture();
+            let session_id = core
+                .create_chat_id(&Harness::Codex, Some("stub-fast"), None)
+                .unwrap();
+            core.adapters.lock().unwrap().insert(
+                session_id.clone(),
+                Box::new(RecordingRuntime {
+                    interrupted: Default::default(),
+                    usage_requested: Default::default(),
+                }),
+            );
+            let request = {
+                let db = core.db.lock().unwrap();
+                let prompt = compaction_controller::CompactionController::begin_background(
+                    &db,
+                    &session_id,
+                    compaction_controller::CompactionReason::BeforeDowngrade,
+                    100,
+                )
+                .unwrap()
+                .prompt()
+                .unwrap();
+                SwitchSummaryRequest {
+                    session_id: session_id.clone(),
+                    prompt,
+                    after_sequence: 0,
+                }
+            };
+            assert!(crate::switch_summary::detach(&core, &session_id, request));
+            if incoming_runtime {
+                core.adapters.lock().unwrap().insert(
+                    session_id.clone(),
+                    Box::new(RecordingRuntime {
+                        interrupted: Default::default(),
+                        usage_requested: Default::default(),
+                    }),
+                );
+            }
+            core.db.lock().unwrap().execute(
+                "UPDATE sessions SET status=?2,active_turn_id=?3,
+                 provider_session_id='incoming-thread',adapter_pid=?4,
+                 adapter_process_identity=?5 WHERE id=?1",
+                params![
+                    session_id,
+                    if incoming_runtime { "working" } else { "ready" },
+                    incoming_runtime.then_some("incoming-turn"),
+                    incoming_runtime.then_some(0),
+                    incoming_runtime.then_some("fixture"),
+                ],
+            ).unwrap();
+            let mut events = core.events.subscribe();
+
+            core.shutdown_session_adapter(&session_id).unwrap();
+
+            assert!(!core.adapters.lock().unwrap().contains_key(&session_id));
+            assert!(!crate::switch_summary::is_detached(&core, &session_id));
+            assert!(crate::switch_summary::is_detached_launch(&core, &session_id, 0, "recording"),
+                "the outgoing reader must remain recognisable while its final frames drain");
+            let db = core.db.lock().unwrap();
+            assert!(compaction_controller::CompactionController::pending(&db, &session_id)
+                .unwrap().is_none());
+            let saved: (String, Option<String>, Option<i64>, Option<String>, String) = db.query_row(
+                "SELECT status,active_turn_id,adapter_pid,adapter_process_identity,provider_session_id
+                 FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+            ).unwrap();
+            assert_eq!(saved, ("stopped".into(), None, None, None, "incoming-thread".into()));
+            let entries = store::session_entries(&db, &session_id).unwrap();
+            assert!(entries.iter().any(|entry| entry.kind == "compaction.failed"
+                && entry.payload["reason"].as_str().is_some_and(|reason| reason.contains("app_shutdown"))));
+            assert_eq!(entries.last().unwrap().payload["interrupted"], incoming_runtime);
+            assert!(matches!(events.try_recv().unwrap(), crate::events::CoreEvent::StateChanged));
+        }
     }
 
     #[test]

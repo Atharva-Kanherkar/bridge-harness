@@ -1,16 +1,8 @@
-# Signed, notarized macOS DMG → GitHub Releases.
-#
-# Does not run on push-to-main. Tag v0.5.1 (or workflow_dispatch) after the
-# Apple secrets exist. Missing secrets fail the job rather than publishing an
-# ad-hoc disk image that Gatekeeper will refuse.
-#
-# Required repository secrets:
-#   APPLE_CERTIFICATE            base64-encoded Developer ID Application .p12
-#   APPLE_CERTIFICATE_PASSWORD   password for that .p12
-#   APPLE_SIGNING_IDENTITY       e.g. "Developer ID Application: Name (TEAMID)"
-#   APPLE_API_ISSUER             App Store Connect issuer UUID
-#   APPLE_API_KEY                App Store Connect key id
-#   APPLE_API_KEY_PATH contents: store the .p8 as secret APPLE_API_KEY_P8
+# Both local release and CI use the same signature, icon, and notarization gates.
+# Required secrets: APPLE_CERTIFICATE (base64 Developer ID Application .p12),
+# APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY, APPLE_API_KEY, and
+# APPLE_API_KEY_P8. APPLE_API_ISSUER is required for Team API keys; omit it for
+# Individual API keys. No artifact is published until all verification passes.
 name: Release macOS DMG
 
 on:
@@ -20,7 +12,7 @@ on:
   workflow_dispatch: {}
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-macos-${{ github.ref }}
@@ -29,6 +21,8 @@ concurrency:
 jobs:
   dmg:
     runs-on: macos-15
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
@@ -38,47 +32,89 @@ jobs:
         with:
           node-version: "22"
       - uses: dtolnay/rust-toolchain@stable
-      - name: Require Apple signing and notarization secrets
+
+      - name: Validate release tag and signing inputs
         env:
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
-          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
           APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
         run: |
           missing=
-          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_API_ISSUER APPLE_API_KEY APPLE_API_KEY_P8; do
-            eval "value=\${$name}"
-            if [ -z "$value" ]; then
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_API_KEY APPLE_API_KEY_P8; do
+            if [ -z "${!name}" ]; then
               missing="$missing $name"
             fi
           done
           if [ -n "$missing" ]; then
-            echo "Refusing to publish an unsigned DMG. Set these repository secrets:$missing" >&2
+            echo "Public release requires these repository secrets:$missing" >&2
             exit 1
           fi
+          version=$(node -p 'JSON.parse(require("fs").readFileSync("src-tauri/tauri.conf.json")).version')
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "$GITHUB_REF_NAME" != "v$version" ]; then
+            echo "Tag does not match the app version." >&2
+            exit 1
+          fi
+
       - name: Install locked dependencies
         run: bun install --frozen-lockfile
-      - name: Write App Store Connect API key
+
+      - name: Import signing identity into a temporary keychain
         env:
-          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
-        run: |
-          printf '%s\n' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/AuthKey.p8"
-          echo "APPLE_API_KEY_PATH=$RUNNER_TEMP/AuthKey.p8" >> "$GITHUB_ENV"
-      - uses: tauri-apps/tauri-action@v0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_P8: ${{ secrets.APPLE_API_KEY_P8 }}
+        run: |
+          umask 077
+          keychain_password=$(openssl rand -hex 32)
+          echo "::add-mask::$keychain_password"
+          printf '%s' "$APPLE_CERTIFICATE" | base64 --decode > "$RUNNER_TEMP/bridge-signing.p12"
+          printf '%s\n' "$APPLE_API_KEY_P8" > "$RUNNER_TEMP/bridge-auth.p8"
+          security create-keychain -p "$keychain_password" "$RUNNER_TEMP/bridge-signing.keychain-db"
+          security set-keychain-settings -lut 21600 "$RUNNER_TEMP/bridge-signing.keychain-db"
+          security unlock-keychain -p "$keychain_password" "$RUNNER_TEMP/bridge-signing.keychain-db"
+          security import "$RUNNER_TEMP/bridge-signing.p12" -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign -T /usr/bin/security -t cert -f pkcs12 -k "$RUNNER_TEMP/bridge-signing.keychain-db"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$keychain_password" "$RUNNER_TEMP/bridge-signing.keychain-db"
+          security list-keychains -d user -s "$RUNNER_TEMP/bridge-signing.keychain-db" login.keychain-db
+
+      - name: Build, test, sign, notarize, and verify exact DMG contents
+        env:
           APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
           APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY }}
-          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
+          APPLE_API_KEY_PATH: ${{ runner.temp }}/bridge-auth.p8
+        run: sh scripts/release-dmg.sh
+
+      - name: Retain verified DMG and checksum
+        uses: actions/upload-artifact@v4
         with:
-          tagName: v__VERSION__
-          releaseName: "Bridge v__VERSION__"
-          releaseBody: See CHANGELOG.md. macOS 12+, Apple Silicon. Claude needs Node 18+ on PATH.
-          releaseDraft: false
-          prerelease: false
-          args: --bundles app,dmg
+          name: Bridge-macOS-verified
+          path: |
+            src-tauri/target/release/bundle/dmg/*.dmg
+            src-tauri/target/release/bundle/dmg/*.dmg.sha256
+          if-no-files-found: error
+
+      # A manual run from a branch only retains a verified artifact. Publishing
+      # requires a matching version tag and never overwrites an existing release.
+      - name: Publish verified tagged release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          version=$(node -p 'JSON.parse(require("fs").readFileSync("src-tauri/tauri.conf.json")).version')
+          case "$(uname -m)" in
+            arm64) arch=aarch64 ;;
+            x86_64) arch=x64 ;;
+            *) exit 1 ;;
+          esac
+          dmg="src-tauri/target/release/bundle/dmg/Bridge_${version}_${arch}.dmg"
+          printf '%s\n' "Signed and notarized macOS release. See CHANGELOG.md for changes." "Claude requires Node 18 or later on PATH." > "$RUNNER_TEMP/release-notes.md"
+          gh release create "$GITHUB_REF_NAME" "$dmg" "$dmg.sha256" --verify-tag --draft --title "Bridge v$version" --notes-file "$RUNNER_TEMP/release-notes.md"
+          gh release edit "$GITHUB_REF_NAME" --draft=false
+
+      - name: Remove temporary signing credentials
+        if: always()
+        run: |
+          security delete-keychain "$RUNNER_TEMP/bridge-signing.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/bridge-signing.p12" "$RUNNER_TEMP/bridge-auth.p8"

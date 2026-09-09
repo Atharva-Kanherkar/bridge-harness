@@ -1,5 +1,34 @@
 # Changelog
 
+## [0.5.5] - 2026-09-08
+
+- Adopt the Span app icon: a mint deck over two off-white supports on a dark tile.
+- Regenerate all platform icon exports and check the mint deck and off-white supports at every macOS scale before release.
+
+## [0.5.4] - 2026-09-08
+
+- Integrate main through `65b00ad`, retaining the signed-release, startup, native window, icon, and daemon ownership fixes from 0.5.2 and 0.5.3.
+- Show immediate send feedback and improve streaming delivery, transcript updates, and Claude thinking-block completion.
+- Bound failed worker-result repair loops and give reused workers a fresh repair budget.
+- Improve model-switch handoffs, compaction ownership, provider resume, and context checkpoints.
+- Include the updated macOS navigation, settings, model controls, and dark appearance.
+- Settle detached model-switch summaries alongside tracked providers during clean shutdown.
+
+## [0.5.3] - 2026-09-08
+
+- Settle provider-process ownership during normal app shutdown so completed or idle chats are not falsely marked failed on the next launch.
+
+## [0.5.2] - 2026-09-08
+
+- Regenerate app icons from the source SVG and verify the visible mark before packaging.
+- Report native startup errors in a dialog instead of panicking through macOS launch callbacks; retain bounded diagnostic logs with the executable path and version.
+- Let macOS manage its titlebar controls. Use public AppKit material/layer APIs and defer geometry updates outside window callbacks.
+- Update Bridge's owned material during resize without repeatedly retaining and releasing Wry's parent view, which reproduced a native deallocation failure.
+- Keep other Bridge builds and their active daemons running when a conflicting copy opens.
+- Reject overlong local socket paths before runtime startup, with an actionable data-directory error.
+- Refresh recommended model profiles when live model discovery replaces their initial aliases.
+- Validate signing, entitlements, bundled sidecar dependencies, and notarization before producing a public DMG.
+
 ## [0.5.1] - 2026-09-04
 
 ### Fixed

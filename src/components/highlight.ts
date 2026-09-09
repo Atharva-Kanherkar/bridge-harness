@@ -197,7 +197,10 @@ async function highlighterFor(shikiLang: string): Promise<HighlighterCore | null
  *  re-export churn. */
 interface ScopedToken {
   content: string;
-  explanation?: { scopes: { scopeName: string }[] }[];
+  /** Per-scope-run breakdown of the token. Each entry carries its own slice of
+   *  `content`, which is what lets a merged token be coloured piecewise —
+   *  see `tokenToHtml`. */
+  explanation?: { content: string; scopes: { scopeName: string }[] }[];
 }
 
 /**
@@ -219,30 +222,109 @@ const SCOPE_RULES: [prefix: string, className: string][] = [
   ["markup.deleted", "stx-deletion"],
   ["markup.bold", "stx-strong"],
   ["markup.italic", "stx-emphasis"],
-  ["markup.heading", "stx-function"],
-  ["entity.name.section", "stx-function"],
+  ["markup.strikethrough", "stx-strike"],
+  ["markup.heading", "stx-heading"],
+  ["markup.underline.link", "stx-link"],
+  // Inline code. `punctuation.definition.raw` (the backticks) has to be
+  // listed before the generic `punctuation` rule below, the same way comment
+  // and string delimiters are, or the ticks come out grey while the run
+  // between them — which carries only `markup.inline.raw` — falls through
+  // every rule and renders as bare text. One span of literal text, one
+  // colour; the editor's Lezer side reaches it through `t.monospace`.
+  ["punctuation.definition.raw", "stx-string"],
+  ["markup.inline.raw", "stx-string"],
+  ["entity.name.section", "stx-heading"],
+  // Escapes and regex literals before the generic `string` rule: `\n` inside
+  // a string is `constant.character.escape` *nested in* `string`, and the
+  // innermost scope is what should win.
+  ["constant.character.escape", "stx-regex"],
+  ["constant.regexp", "stx-regex"],
   ["string", "stx-string"],
   ["constant.numeric", "stx-number"],
   ["constant.language", "stx-number"],
   ["constant.character", "stx-number"],
+  ["constant.other", "stx-number"],
+  // `=>` is `storage.type.function.arrow`, which would otherwise hit
+  // `storage.type` below and come out keyword-violet. It is an operator, and
+  // the editor's Lezer grammar agrees (`function(punctuation)` → operator).
+  ["storage.type.function.arrow", "stx-operator"],
   ["storage.type", "stx-keyword"],
   ["storage.modifier", "stx-keyword"],
-  ["keyword.operator", "stx-punct"],
+  // Operators get their own hue rather than sharing punctuation's grey: `=>`,
+  // `??` and `===` carry meaning a `;` does not.
+  ["keyword.operator", "stx-operator"],
   ["keyword", "stx-keyword"],
   ["entity.name.function", "stx-function"],
+  ["entity.name.namespace", "stx-type"],
   ["support.function", "stx-function"],
   ["entity.name.tag", "stx-tag"],
   ["support.class.component", "stx-tag"],
+  ["entity.other.attribute-name", "stx-property"],
   ["entity.name.type", "stx-type"],
   ["entity.name.class", "stx-type"],
+  ["entity.other.inherited-class", "stx-type"],
   ["support.type", "stx-type"],
   ["support.class", "stx-type"],
+  // `.` and `?.` read as structure, not as an operator — kept in the
+  // punctuation bucket to match the editor highlighter's `derefOperator`.
+  ["punctuation.accessor", "stx-punct"],
   ["punctuation", "stx-punct"],
-  ["variable.parameter", "stx-params"],
+  // The `variable.*` family, most specific first. Order is load-bearing:
+  // `classifyScope` takes the first rule whose prefix matches, so the generic
+  // `variable` rule has to come last or it would swallow parameters,
+  // constants and `this`.
+  ["variable.parameter", "stx-param"],
+  // Deliberately *no* `variable.other.constant` rule. TextMate's TypeScript
+  // grammar gives that scope to every `const` binding, not to SCREAMING_CASE
+  // constants, so bucketing it as a literal painted almost every identifier
+  // in a TS file amber. It falls through to `variable` below, which is right.
+  ["variable.other.enummember", "stx-number"],
+  ["variable.language", "stx-keyword"],
+  ["variable.other.property", "stx-property"],
+  ["variable.other.object.property", "stx-property"],
+  ["support.variable.property", "stx-property"],
+  ["meta.object-literal.key", "stx-property"],
+  ["variable.function", "stx-function"],
+  ["variable", "stx-variable"],
+  // Deliberately *no* `meta.decorator` rule, for the same reason C30 has no
+  // `meta.function-call` one: it is a *range* scope spanning the whole
+  // decorator, so `@Injectable({ scope: 'x' })` had its parens, braces and
+  // interior whitespace painted function-blue. `entity.name.function` already
+  // covers the callee, and `punctuation.decorator` covers the `@`.
+  ["invalid", "stx-invalid"],
 ];
 
-function classifyScope(token: ScopedToken): string | null {
-  const scopes = token.explanation?.flatMap(entry => entry.scopes.map(scope => scope.scopeName)) ?? [];
+/**
+ * The shared bucket vocabulary: every class name a Bridge syntax renderer may
+ * emit. `SCOPE_RULES` above (Shiki, for chat code and diffs) and
+ * `editor/highlighter.ts` (Lezer, for the Code tab) both draw from this list,
+ * and `palette.test.ts` asserts each entry has a rule in `index.css`. That is
+ * what makes it impossible to add a bucket and forget its colour — the failure
+ * mode that left `.tok-function` in the stylesheet for months while no
+ * renderer could emit it.
+ */
+export const SYNTAX_CLASSES: string[] = [
+  "stx-comment", "stx-keyword", "stx-string", "stx-regex", "stx-number",
+  "stx-function", "stx-type", "stx-tag", "stx-property", "stx-variable",
+  "stx-param", "stx-operator", "stx-punct", "stx-meta", "stx-invalid",
+  "stx-link", "stx-heading", "stx-emphasis", "stx-strong", "stx-strike",
+  "stx-addition", "stx-deletion",
+];
+
+/**
+ * Bucket one scope stack.
+ *
+ * Innermost scope first, except for regex literals: those are one thing and
+ * get one colour from their *container*. Without that exception `/a+b/g`
+ * arrives in four colours — the delimiters carry
+ * `punctuation.definition.string.*` (string-green), a quantifier carries
+ * `keyword.operator.quantifier.regexp` (operator-rose) and the flags carry
+ * `keyword.other` (keyword-violet) — while the editor's Lezer grammar tags
+ * the whole literal `regexp` and paints it once. The container check is what
+ * keeps the two renderers agreeing.
+ */
+function classifyScopes(scopes: string[]): string | null {
+  if (scopes.some(scope => scope === "string.regexp" || scope.startsWith("string.regexp."))) return "stx-regex";
   for (let i = scopes.length - 1; i >= 0; i -= 1) {
     const scope = scopes[i];
     const rule = SCOPE_RULES.find(([prefix]) => scope === prefix || scope.startsWith(`${prefix}.`));
@@ -251,10 +333,38 @@ function classifyScope(token: ScopedToken): string | null {
   return null;
 }
 
-function tokenToHtml(token: ScopedToken): string {
-  const body = escapeHtml(token.content);
-  const className = classifyScope(token);
+function wrap(text: string, className: string | null): string {
+  const body = escapeHtml(text);
   return className ? `<span class="${className}">${body}</span>` : body;
+}
+
+/**
+ * One span per *explanation entry*, not per token.
+ *
+ * Shiki merges adjacent same-**styled** runs into a single token, and because
+ * this file colours by scope rather than by Shiki's theme, a merged token
+ * routinely spans several scopes that we want to paint differently. Real
+ * examples: `" items."` is one token covering whitespace, an identifier and an
+ * accessor; `" alpha; }"` covers an identifier, a terminator and a brace; and
+ * `"**bold**"` covers the delimiters *and* the emphasised run.
+ *
+ * Classifying the whole token from its innermost-last scope therefore painted
+ * `items` and `alpha` punctuation-grey, and made `markup.bold`,
+ * `markup.italic` and `markup.strikethrough` permanently unreachable, because
+ * the closing delimiter always lands last. Each entry carries its own
+ * `content`, so splitting there fixes every one of those in one place.
+ *
+ * The length guard is the safety net: if the entries do not reconstruct the
+ * token exactly, fall back to colouring it whole. Dropping or duplicating a
+ * character of someone's source is far worse than colouring it bluntly.
+ */
+function tokenToHtml(token: ScopedToken): string {
+  const entries = token.explanation;
+  if (entries?.length && entries.reduce((total, entry) => total + entry.content.length, 0) === token.content.length) {
+    return entries.map(entry => wrap(entry.content, classifyScopes(entry.scopes.map(scope => scope.scopeName)))).join("");
+  }
+  const scopes = entries?.flatMap(entry => entry.scopes.map(scope => scope.scopeName)) ?? [];
+  return wrap(token.content, classifyScopes(scopes));
 }
 
 /** One HTML string per source line, colour-classified via TextMate scopes. */

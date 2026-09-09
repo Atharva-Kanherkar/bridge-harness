@@ -152,6 +152,14 @@ methods![
     (WorktreeUsageReport, "worktrees", "worktree_usage"),
     (ReclaimWorktree, "worktrees", "reclaim_worktree"),
     (SweepWorktrees, "worktrees", "sweep_worktrees"),
+    // token and cost usage
+    (UsageSummary, "usage", "summary"),
+    (ListUsagePriceOverrides, "usage", "list_price_overrides"),
+    (SetUsagePriceOverride, "usage", "set_price_override"),
+    (ClearUsagePriceOverride, "usage", "clear_price_override"),
+    (RefreshUsageRates, "usage", "refresh_rates"),
+    (ListHistorySources, "usage", "list_history_sources"),
+    (ScanHistory, "usage", "scan_history"),
     // routing
     (GetRouterPreferences, "routing", "get_router_preferences"),
     (UpdateRouterPreferences, "routing", "update_router_preferences"),

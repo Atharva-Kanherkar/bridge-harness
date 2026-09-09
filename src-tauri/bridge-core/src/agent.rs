@@ -33,6 +33,9 @@ pub struct NormalizedEvent {
 #[derive(Debug, Default)]
 pub struct OpenCodeStreamState {
     message_roles: HashMap<String, String>,
+    /// `(modelID, providerID)` per assistant message, so a `step-finish` part
+    /// can name the model that produced its tokens.
+    message_models: HashMap<String, (Option<String>, Option<String>)>,
 }
 
 pub fn normalize_opencode_message_with_state(
@@ -91,30 +94,19 @@ pub fn normalize_opencode_message_with_state(
             if !message_id.is_empty() && !role.is_empty() {
                 state.message_roles.insert(message_id.into(), role.into());
             }
-            if role != "assistant" {
-                return vec![];
+            if role == "assistant" && !message_id.is_empty() {
+                let model = info.get("modelID").and_then(Value::as_str).map(str::to_owned);
+                let provider = info.get("providerID").and_then(Value::as_str).map(str::to_owned);
+                if model.is_some() || provider.is_some() {
+                    state.message_models.insert(message_id.into(), (model, provider));
+                }
             }
-            let Some(tokens) = info.get("tokens") else {
-                return vec![];
-            };
-            let mut event = with_data(
-                "usage.updated",
-                &properties,
-                json!({
-                    "usage": {
-                        "input_tokens": tokens.get("input").cloned().unwrap_or(Value::Null),
-                        "output_tokens": tokens.get("output").cloned().unwrap_or(Value::Null),
-                        "cached_input_tokens": tokens.pointer("/cache/read").cloned().unwrap_or(Value::Null),
-                        "cache_write_tokens": tokens.pointer("/cache/write").cloned().unwrap_or(Value::Null),
-                        "reasoning_tokens": tokens.get("reasoning").cloned().unwrap_or(Value::Null),
-                    },
-                    "cost": info.get("cost").cloned().unwrap_or(Value::Null),
-                    "model": info.get("modelID").cloned().unwrap_or(Value::Null),
-                    "provider": info.get("providerID").cloned().unwrap_or(Value::Null),
-                }),
-            );
-            event.item_id = (!message_id.is_empty()).then(|| message_id.into());
-            vec![event]
+            // The message's own `tokens` are the last step's figures and its
+            // `cost` the running sum over steps, so a row here would double
+            // count the `step-finish` parts that carry each request exactly
+            // once. Usage is read from those parts; this frame only names the
+            // model they belong to.
+            vec![]
         }
         "message.part.delta" => {
             let message_id = properties
@@ -367,7 +359,28 @@ fn normalize_opencode_part(
             vec![event]
         }
         "step-finish" => {
-            let mut event = with_data("usage.updated", &part, json!({"usage": part.get("tokens")}));
+            let tokens = part.get("tokens").cloned().unwrap_or(Value::Null);
+            let (model, provider) = state
+                .message_models
+                .get(message_id)
+                .cloned()
+                .unwrap_or((None, None));
+            let mut event = with_data(
+                "usage.updated",
+                &part,
+                json!({
+                    "usage": {
+                        "input_tokens": tokens.get("input").cloned().unwrap_or(Value::Null),
+                        "output_tokens": tokens.get("output").cloned().unwrap_or(Value::Null),
+                        "cache_read_tokens": tokens.pointer("/cache/read").cloned().unwrap_or(Value::Null),
+                        "cache_write_tokens": tokens.pointer("/cache/write").cloned().unwrap_or(Value::Null),
+                        "reasoning_tokens": tokens.get("reasoning").cloned().unwrap_or(Value::Null),
+                    },
+                    "cost": part.get("cost").cloned().unwrap_or(Value::Null),
+                    "model": model,
+                    "provider": provider,
+                }),
+            );
             event.item_id = item_id;
             vec![event]
         }
@@ -421,6 +434,10 @@ pub struct CodexStreamState {
     /// which compacts twice is recorded once; that is a smaller error than
     /// telling a reader the context shrank twice when it shrank once.
     pub compacted_turn: Option<String>,
+    /// The model Codex switched to mid-turn (`model/rerouted`). Stamped on
+    /// every usage frame until the turn ends, so the ledger attributes those
+    /// requests to the model that served them rather than the one asked for.
+    pub serving_model: Option<String>,
 }
 
 pub fn normalize_codex_message(message: &Value) -> Vec<NormalizedEvent> {
@@ -449,12 +466,14 @@ pub fn normalize_codex_message_with_state(
         "turn/started" => {
             state.active_reasoning_id = None;
             state.compacted_turn = None;
+            state.serving_model = None;
             let mut event = with_data("turn.started", &params, params.clone());
             event.status = Some("working".into());
             vec![event]
         }
         "turn/completed" => {
             state.active_reasoning_id = None;
+            state.serving_model = None;
             let status = params
                 .pointer("/turn/status")
                 .and_then(Value::as_str)
@@ -582,6 +601,9 @@ pub fn normalize_codex_message_with_state(
             // exists to keep out of the ledger. An empty object resolves to no
             // figures at all, so no row is written.
             data["usage"] = codex_request_usage(&params).unwrap_or_else(|| json!({}));
+            if let Some(serving_model) = &state.serving_model {
+                data["servingModel"] = Value::String(serving_model.clone());
+            }
             vec![with_data("usage.updated", &params, data)]
         }
         // Codex compacted its own context. Its schema marks this notification
@@ -627,6 +649,12 @@ pub fn normalize_codex_message_with_state(
                 .and_then(Value::as_str)
                 .unwrap_or("a fallback model");
             let reason = params.get("reason").and_then(Value::as_str);
+            state.serving_model = params
+                .get("toModel")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .map(str::to_owned);
             let mut event = with_data("model.rerouted", &params, params.clone());
             event.title = Some("Model rerouted".into());
             event.text = Some(match reason {
@@ -904,6 +932,98 @@ pub struct ClaudeStreamState {
     /// Open tool calls by `tool_use` id, so the eventual `tool_result` completes
     /// under the same normalized kind and carries a host-measured duration.
     tool_calls: HashMap<String, ClaudeToolCall>,
+    /// Survives the per-result reset below: it is the one thing a turn needs
+    /// from the turns before it.
+    usage_cumulative: ClaudeUsageCumulative,
+}
+
+/// The running totals the previous `result` frame carried. The SDK documents
+/// `total_cost_usd` and `modelUsage` as cumulative across the turns of one
+/// query — "read the latest result rather than summing" — while the ledger
+/// wants one turn's worth per row, so each result is reported as its
+/// difference from the frame before it. A figure that goes backwards means the
+/// process started fresh (a resume, a `/clear`, a crash restart) and the
+/// frame is taken as-is. `usage` is per-turn already and passes through.
+#[derive(Debug, Default, Clone)]
+struct ClaudeUsageCumulative {
+    total_cost_usd: Option<f64>,
+    model_usage: HashMap<String, Value>,
+}
+
+const CLAUDE_MODEL_USAGE_COUNTERS: [&str; 5] = [
+    "inputTokens",
+    "outputTokens",
+    "cacheReadInputTokens",
+    "cacheCreationInputTokens",
+    "webSearchRequests",
+];
+const CLAUDE_MODEL_USAGE_COST: &str = "costUSD";
+
+fn cumulative_delta(current: f64, previous: Option<f64>) -> f64 {
+    match previous {
+        Some(previous) if current >= previous => current - previous,
+        _ => current,
+    }
+}
+
+fn claude_turn_cost(message: &Value, cumulative: &mut ClaudeUsageCumulative) -> Value {
+    let Some(current) = message.get("total_cost_usd").and_then(Value::as_f64) else {
+        return Value::Null;
+    };
+    let turn = cumulative_delta(current, cumulative.total_cost_usd);
+    cumulative.total_cost_usd = Some(current);
+    json!(turn)
+}
+
+fn claude_turn_model_usage(message: &Value, cumulative: &mut ClaudeUsageCumulative) -> Value {
+    let Some(entries) = message.get("modelUsage").and_then(Value::as_object) else {
+        return Value::Null;
+    };
+    let mut turn_entries = serde_json::Map::new();
+    for (model, entry) in entries {
+        let Some(current) = entry.as_object() else {
+            turn_entries.insert(model.clone(), entry.clone());
+            continue;
+        };
+        let previous = cumulative
+            .model_usage
+            .get(model)
+            .and_then(Value::as_object);
+        // One counter going backwards means this model's run started over;
+        // its fields reset together rather than one at a time.
+        let reset = previous.is_none_or(|previous| {
+            CLAUDE_MODEL_USAGE_COUNTERS
+                .iter()
+                .chain([CLAUDE_MODEL_USAGE_COST].iter())
+                .any(|key| {
+                    matches!(
+                        (current.get(*key).and_then(Value::as_f64), previous.get(*key).and_then(Value::as_f64)),
+                        (Some(now), Some(before)) if now < before
+                    )
+                })
+        });
+        let mut turn = current.clone();
+        for key in CLAUDE_MODEL_USAGE_COUNTERS {
+            if let Some(now) = current.get(key).and_then(Value::as_f64) {
+                let before = (!reset)
+                    .then(|| previous.and_then(|previous| previous.get(key)).and_then(Value::as_f64))
+                    .flatten();
+                turn.insert(key.to_owned(), json!(cumulative_delta(now, before).round() as i64));
+            }
+        }
+        if let Some(now) = current.get(CLAUDE_MODEL_USAGE_COST).and_then(Value::as_f64) {
+            let before = (!reset)
+                .then(|| previous.and_then(|previous| previous.get(CLAUDE_MODEL_USAGE_COST)).and_then(Value::as_f64))
+                .flatten();
+            turn.insert(CLAUDE_MODEL_USAGE_COST.to_owned(), json!(cumulative_delta(now, before)));
+        }
+        turn_entries.insert(model.clone(), Value::Object(turn));
+    }
+    cumulative.model_usage = entries
+        .iter()
+        .map(|(model, entry)| (model.clone(), entry.clone()))
+        .collect();
+    Value::Object(turn_entries)
 }
 
 #[derive(Debug, Default, Clone)]
@@ -1145,7 +1265,13 @@ pub fn normalize_claude_message_with_state(
         return vec![];
     };
     match kind {
-        "system" => normalize_claude_system(message),
+        "system" => {
+            // A new process starts its running totals from zero.
+            if message.get("subtype").and_then(Value::as_str) == Some("init") {
+                state.usage_cumulative = ClaudeUsageCumulative::default();
+            }
+            normalize_claude_system(message)
+        }
         "stream_event" => normalize_claude_stream(message, state),
         "assistant" => normalize_claude_assistant(message, state),
         "user" => normalize_claude_user(message, state),
@@ -1155,8 +1281,10 @@ pub fn normalize_claude_message_with_state(
                 .iter_mut()
                 .filter_map(|(id, block)| complete_claude_thinking(id, block))
                 .collect();
+            let usage_cumulative = std::mem::take(&mut state.usage_cumulative);
             *state = ClaudeStreamState::default();
-            events.extend(normalize_claude_result(message));
+            state.usage_cumulative = usage_cumulative;
+            events.extend(normalize_claude_result(message, state));
             events
         }
         "control_request" | "sdk_control_request" => normalize_claude_control_request(message)
@@ -1481,7 +1609,7 @@ fn normalize_claude_user(message: &Value, state: &mut ClaudeStreamState) -> Vec<
     events
 }
 
-fn normalize_claude_result(message: &Value) -> Vec<NormalizedEvent> {
+fn normalize_claude_result(message: &Value, state: &mut ClaudeStreamState) -> Vec<NormalizedEvent> {
     let subtype = message
         .get("subtype")
         .and_then(Value::as_str)
@@ -1498,10 +1626,23 @@ fn normalize_claude_result(message: &Value) -> Vec<NormalizedEvent> {
     });
     let mut events = vec![turn];
     if let Some(usage) = message.get("usage") {
+        // `modelUsage` splits a multi-model turn per model; the ledger writes
+        // one row per key and never the aggregate beside them. Cost and the
+        // per-model counters arrive cumulative and leave here as this turn's
+        // share (see `ClaudeUsageCumulative`).
+        let total_cost_usd = claude_turn_cost(message, &mut state.usage_cumulative);
+        let model_usage = claude_turn_model_usage(message, &mut state.usage_cumulative);
         events.push(with_data(
             "usage.updated",
             message,
-            json!({"usage": usage, "totalCostUsd": message.get("total_cost_usd")}),
+            json!({
+                "usage": usage,
+                "totalCostUsd": total_cost_usd,
+                "modelUsage": model_usage,
+                "durationMs": message.get("duration_ms"),
+                "durationApiMs": message.get("duration_api_ms"),
+                "numTurns": message.get("num_turns"),
+            }),
         ));
     }
     if let Some(denials) = message.get("permission_denials").and_then(Value::as_array) {
@@ -2480,6 +2621,71 @@ mod tests {
         assert_eq!(events[0].data["turnId"], "turn-1");
     }
 
+    fn claude_result(cost: f64, model_usage: Value) -> Value {
+        json!({
+            "type":"result","subtype":"success","session_id":"s",
+            "usage":{"input_tokens":3,"cache_read_input_tokens":100,"cache_creation_input_tokens":10,"output_tokens":20},
+            "total_cost_usd": cost,
+            "modelUsage": model_usage
+        })
+    }
+
+    fn usage_data(events: &[NormalizedEvent]) -> &Value {
+        &events.iter().find(|event| event.kind == "usage.updated").expect("a usage event").data
+    }
+
+    #[test]
+    fn claude_running_totals_become_per_turn_figures_across_results() {
+        let mut state = ClaudeStreamState::default();
+        let first = normalize_claude_message_with_state(
+            &claude_result(0.50, json!({"claude-opus-5":{"inputTokens":10,"outputTokens":20,"cacheReadInputTokens":1000,"cacheCreationInputTokens":50,"costUSD":0.50,"contextWindow":200000}})),
+            &mut state,
+        );
+        // The first result of a process is its own delta.
+        assert_eq!(usage_data(&first)["totalCostUsd"], json!(0.50));
+        assert_eq!(usage_data(&first)["modelUsage"]["claude-opus-5"]["cacheReadInputTokens"], json!(1000));
+
+        let second = normalize_claude_message_with_state(
+            &claude_result(0.80, json!({"claude-opus-5":{"inputTokens":14,"outputTokens":26,"cacheReadInputTokens":1600,"cacheCreationInputTokens":50,"costUSD":0.80,"contextWindow":200000}})),
+            &mut state,
+        );
+        let data = usage_data(&second);
+        assert!((data["totalCostUsd"].as_f64().unwrap() - 0.30).abs() < 1e-9);
+        let model = &data["modelUsage"]["claude-opus-5"];
+        assert_eq!(model["inputTokens"], json!(4));
+        assert_eq!(model["outputTokens"], json!(6));
+        assert_eq!(model["cacheReadInputTokens"], json!(600));
+        assert_eq!(model["cacheCreationInputTokens"], json!(0));
+        assert!((model["costUSD"].as_f64().unwrap() - 0.30).abs() < 1e-9);
+        // Non-counters pass through untouched.
+        assert_eq!(model["contextWindow"], json!(200000));
+        // The per-turn `usage` block is not differenced.
+        assert_eq!(data["usage"]["cache_read_input_tokens"], json!(100));
+    }
+
+    #[test]
+    fn claude_totals_that_go_backwards_start_a_fresh_run() {
+        let mut state = ClaudeStreamState::default();
+        normalize_claude_message_with_state(&claude_result(2.0, json!({"m":{"inputTokens":100,"costUSD":2.0}})), &mut state);
+        // A `/clear` or a restarted process reports a smaller running total:
+        // that frame is a whole turn, not a negative one.
+        let reset = normalize_claude_message_with_state(&claude_result(0.25, json!({"m":{"inputTokens":7,"costUSD":0.25}})), &mut state);
+        assert_eq!(usage_data(&reset)["totalCostUsd"], json!(0.25));
+        assert_eq!(usage_data(&reset)["modelUsage"]["m"]["inputTokens"], json!(7));
+        // A new model appears with its own full figures.
+        let added = normalize_claude_message_with_state(
+            &claude_result(0.40, json!({"m":{"inputTokens":9,"costUSD":0.30},"haiku":{"inputTokens":50,"costUSD":0.10}})),
+            &mut state,
+        );
+        assert_eq!(usage_data(&added)["modelUsage"]["m"]["inputTokens"], json!(2));
+        assert_eq!(usage_data(&added)["modelUsage"]["haiku"]["inputTokens"], json!(50));
+        // `system/init` marks a new process, whose totals begin at zero again.
+        normalize_claude_message_with_state(&json!({"type":"system","subtype":"init","session_id":"s","tools":[]}), &mut state);
+        let fresh = normalize_claude_message_with_state(&claude_result(0.05, json!({"m":{"inputTokens":3,"costUSD":0.05}})), &mut state);
+        assert_eq!(usage_data(&fresh)["totalCostUsd"], json!(0.05));
+        assert_eq!(usage_data(&fresh)["modelUsage"]["m"]["inputTokens"], json!(3));
+    }
+
     #[test]
     fn codex_token_usage_without_a_last_breakdown_invents_nothing() {
         let events = normalize_codex_message(&json!({
@@ -2494,37 +2700,67 @@ mod tests {
         assert_eq!(events[0].data["usage"], json!({}));
     }
 
+    fn opencode_step_finish(message_id: &str, tokens: Value, cost: Value) -> Value {
+        json!({
+            "type":"message.part.updated",
+            "properties":{"part":{"id":format!("prt_{message_id}"),"messageID":message_id,"sessionID":"ses_1","type":"step-finish","tokens":tokens,"cost":cost}}
+        })
+    }
+
     #[test]
     fn opencode_usage_reports_cache_writes_alongside_reads() {
         let mut state = OpenCodeStreamState::default();
         let usage = normalize_opencode_message_with_state(
-            &json!({
-                "type":"message.updated",
-                "properties":{"sessionID":"ses_1","info":{"id":"msg_1","role":"assistant","tokens":{"input":9,"output":2,"cache":{"read":6,"write":3}}}}
-            }),
+            &opencode_step_finish("msg_1", json!({"input":9,"output":2,"cache":{"read":6,"write":3}}), Value::Null),
             &mut state,
         );
-        assert_eq!(usage[0].data["usage"]["cached_input_tokens"], 6);
+        assert_eq!(usage[0].data["usage"]["cache_read_tokens"], 6);
         assert_eq!(usage[0].data["usage"]["cache_write_tokens"], 3);
 
         let no_write = normalize_opencode_message_with_state(
-            &json!({
-                "type":"message.updated",
-                "properties":{"sessionID":"ses_2","info":{"id":"msg_2","role":"assistant","tokens":{"input":9,"output":2,"cache":{"read":6}}}}
-            }),
+            &opencode_step_finish("msg_2", json!({"input":9,"output":2,"cache":{"read":6}}), Value::Null),
             &mut state,
         );
         assert!(no_write[0].data["usage"]["cache_write_tokens"].is_null());
     }
 
     #[test]
-    fn normalizes_opencode_streaming_messages_and_usage() {
+    fn opencode_message_updated_names_the_model_and_writes_no_usage_of_its_own() {
         let mut state = OpenCodeStreamState::default();
-        let usage = normalize_opencode_message_with_state(
+        // The message frame's `tokens` are the last step's and its `cost` the
+        // running sum, so it must not become a row beside the step parts.
+        let message = normalize_opencode_message_with_state(
             &json!({
                 "type":"message.updated",
-                "properties":{"sessionID":"ses_1","info":{"id":"msg_1","role":"assistant","tokens":{"input":4,"output":2,"reasoning":1,"cache":{"read":3,"write":0}},"cost":0.01,"modelID":"model","providerID":"provider"}}
+                "properties":{"sessionID":"ses_1","info":{"id":"msg_1","role":"assistant","tokens":{"input":4,"output":2},"cost":0.03,"modelID":"claude-opus-4-6","providerID":"anthropic"}}
             }),
+            &mut state,
+        );
+        assert!(message.iter().all(|event| event.kind != "usage.updated"));
+
+        let step = normalize_opencode_message_with_state(
+            &opencode_step_finish("msg_1", json!({"input":4,"output":2,"reasoning":1,"cache":{"read":3,"write":0}}), json!(0.01)),
+            &mut state,
+        );
+        assert_eq!(step[0].kind, "usage.updated");
+        assert_eq!(step[0].data["model"], "claude-opus-4-6");
+        assert_eq!(step[0].data["provider"], "anthropic");
+        assert_eq!(step[0].data["cost"], 0.01);
+        assert_eq!(step[0].data["usage"]["reasoning_tokens"], 1);
+    }
+
+    #[test]
+    fn normalizes_opencode_streaming_messages_and_usage() {
+        let mut state = OpenCodeStreamState::default();
+        normalize_opencode_message_with_state(
+            &json!({
+                "type":"message.updated",
+                "properties":{"sessionID":"ses_1","info":{"id":"msg_1","role":"assistant","modelID":"model","providerID":"provider"}}
+            }),
+            &mut state,
+        );
+        let usage = normalize_opencode_message_with_state(
+            &opencode_step_finish("msg_1", json!({"input":4,"output":2,"reasoning":1,"cache":{"read":3,"write":0}}), json!(0.01)),
             &mut state,
         );
         assert_eq!(usage[0].kind, "usage.updated");

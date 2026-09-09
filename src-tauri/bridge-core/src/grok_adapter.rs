@@ -1251,14 +1251,6 @@ mod tests {
     use super::*;
     use crate::adapters::HarnessAdapter;
 
-    fn fixture_cli() -> PathBuf {
-        let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        manifest_dir
-            .parent()
-            .unwrap()
-            .join("testing/fixtures/grok-fake-cli.sh")
-    }
-
     #[allow(dead_code)]
     struct FakeGrokCli {
         mode: &'static str,
@@ -1591,11 +1583,8 @@ mod tests {
 
     #[test]
     fn fake_cli_probe_is_initialize_only() {
-        let fixture = fixture_cli();
-        if !fixture.exists() {
-            return;
-        }
-
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = FakeGrokCli::speaking_protocol().install(directory.path(), "grok");
         let executable = GrokExecutable {
             path: fixture,
             version: "1.0.4-e2b819f".into(),
@@ -1611,39 +1600,33 @@ mod tests {
 
     #[test]
     fn fake_cli_probe_fails_on_terminal_mode() {
-        let fixture = fixture_cli();
-        if !fixture.exists() {
-            return;
-        }
-
-        std::env::set_var("BRIDGE_GROK_FAKE_MODE", "terminal");
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = FakeGrokCli::speaking_protocol()
+            .mode("terminal")
+            .version("1.0.4")
+            .install(directory.path(), "grok");
         let executable = GrokExecutable {
             path: fixture,
             version: "1.0.4".into(),
         };
 
         let err = probe(&executable, Duration::from_secs(3)).unwrap_err();
-        std::env::remove_var("BRIDGE_GROK_FAKE_MODE");
-
         assert!(matches!(err, GrokUnavailable::NotProtocol { .. }));
     }
 
     #[test]
     fn fake_cli_probe_does_not_open_a_session_to_check_login() {
-        let fixture = fixture_cli();
-        if !fixture.exists() {
-            return;
-        }
-
-        std::env::set_var("BRIDGE_GROK_FAKE_MODE", "needs_login");
+        let directory = tempfile::tempdir().unwrap();
+        let fixture = FakeGrokCli::speaking_protocol()
+            .mode("needs_login")
+            .version("1.0.4")
+            .install(directory.path(), "grok");
         let executable = GrokExecutable {
             path: fixture,
             version: "1.0.4".into(),
         };
 
         let profile = probe(&executable, Duration::from_secs(3)).unwrap();
-        std::env::remove_var("BRIDGE_GROK_FAKE_MODE");
-
         assert!(!profile.session_opened);
     }
 

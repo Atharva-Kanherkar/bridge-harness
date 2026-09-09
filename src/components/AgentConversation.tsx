@@ -312,7 +312,7 @@ const ActionRow = memo(function ActionRow({ item }: { item: ConversationItem }) 
           </button>
         </div>
         <Disclosure open={open} className="border-t border-border/60">
-          {body === "patch" && <PatchView patch={call.patch ?? ""} path={call.path ?? ""} className="max-h-[360px] bg-card" foldAfterHunks={1}/>}
+          {body === "patch" && <PatchView patch={call.patch ?? ""} path={call.path ?? ""} className="max-h-[360px]" foldAfterHunks={1}/>}
           {body === "terminal" && <TerminalBlock command={call.command} output={call.output}/>}
           {body === "output" && (looksLikeDiff(call.output ?? "")
             ? <PatchView patch={call.output ?? ""} path={call.path ?? ""} className="max-h-[320px] px-1" foldAfterHunks={2}/>

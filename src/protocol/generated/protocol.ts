@@ -103,6 +103,13 @@ export type BridgeMethod =
   | "worktrees/worktree_usage"
   | "worktrees/reclaim_worktree"
   | "worktrees/sweep_worktrees"
+  | "usage/summary"
+  | "usage/list_price_overrides"
+  | "usage/set_price_override"
+  | "usage/clear_price_override"
+  | "usage/refresh_rates"
+  | "usage/list_history_sources"
+  | "usage/scan_history"
   | "routing/get_router_preferences"
   | "routing/update_router_preferences"
   | "routing/rollback_routing_policy"
@@ -275,6 +282,13 @@ export const BRIDGE_METHODS = [
   { method: "worktrees/worktree_usage", domain: "worktrees", command: "worktree_usage" },
   { method: "worktrees/reclaim_worktree", domain: "worktrees", command: "reclaim_worktree" },
   { method: "worktrees/sweep_worktrees", domain: "worktrees", command: "sweep_worktrees" },
+  { method: "usage/summary", domain: "usage", command: "summary" },
+  { method: "usage/list_price_overrides", domain: "usage", command: "list_price_overrides" },
+  { method: "usage/set_price_override", domain: "usage", command: "set_price_override" },
+  { method: "usage/clear_price_override", domain: "usage", command: "clear_price_override" },
+  { method: "usage/refresh_rates", domain: "usage", command: "refresh_rates" },
+  { method: "usage/list_history_sources", domain: "usage", command: "list_history_sources" },
+  { method: "usage/scan_history", domain: "usage", command: "scan_history" },
   { method: "routing/get_router_preferences", domain: "routing", command: "get_router_preferences" },
   { method: "routing/update_router_preferences", domain: "routing", command: "update_router_preferences" },
   { method: "routing/rollback_routing_policy", domain: "routing", command: "rollback_routing_policy" },
@@ -507,6 +521,13 @@ export interface BridgeMethodParams {
   "worktrees/reclaim_worktree": ReclaimWorktreeParams;
   "worktrees/sweep_worktrees": undefined;
   "sessions/archive_chat": ArchiveChatParams;
+  "usage/summary": SummaryParams;
+  "usage/list_price_overrides": undefined;
+  "usage/set_price_override": SetPriceOverrideParams;
+  "usage/clear_price_override": ClearPriceOverrideParams;
+  "usage/refresh_rates": undefined;
+  "usage/list_history_sources": undefined;
+  "usage/scan_history": ScanHistoryParams;
   "routing/get_router_preferences": GetRouterPreferencesParams;
   "routing/update_router_preferences": UpdateRouterPreferencesParams;
   "routing/rollback_routing_policy": RollbackRoutingPolicyParams;
@@ -681,6 +702,13 @@ export interface BridgeMethodResults {
   "worktrees/worktree_usage": WorktreeUsage;
   "worktrees/reclaim_worktree": WorktreeReclaimResult;
   "worktrees/sweep_worktrees": WorktreeSweepResult;
+  "usage/summary": UsageSummaryResult;
+  "usage/list_price_overrides": ListUsagePriceOverridesResult;
+  "usage/set_price_override": ListUsagePriceOverridesResult;
+  "usage/clear_price_override": ListUsagePriceOverridesResult;
+  "usage/refresh_rates": UsagePricingStatus;
+  "usage/list_history_sources": ListHistorySourcesResult;
+  "usage/scan_history": ScanHistoryResult;
   "routing/get_router_preferences": RouterPreferences;
   "routing/update_router_preferences": RouterPreferences;
   "routing/rollback_routing_policy": unknown;
@@ -1668,11 +1696,72 @@ export interface TurnImage {
   mediaType: string;
 }
 
+export interface UsageBucket {
+  cacheSavingsMicrousd: number;
+  costMicrousd: number;
+  costSource: UsageCostSource;
+  day: string;
+  harness: string;
+  hourStart?: string | null;
+  model: string;
+  records: number;
+  sessions: number;
+  totals: UsageBucketTotals;
+  unpricedRecords: number;
+}
+
+export interface UsageBucketTotals {
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  uncachedInputTokens: number;
+}
+
+export type UsageCostSource = "provider_reported" | "model_priced" | "unpriced";
+
+export type UsageCoverageState = "complete" | "partial" | "stale" | "unsupported" | "unreadable" | "empty";
+
+export interface UsageHistoryScanOutcome {
+  agent: string;
+  capability: UsageImporterCapability;
+  coverage: UsageCoverageState;
+  location: string;
+  nextCursor?: string | null;
+  provider: string;
+  recordsImported: number;
+  recordsSkipped: number;
+  sourceId: string;
+  warning?: string | null;
+}
+
+export interface UsageHistorySource {
+  agent: string;
+  capability: UsageImporterCapability;
+  coverageEndAt?: string | null;
+  coverageReason?: string | null;
+  coverageStartAt?: string | null;
+  coverageState: UsageCoverageState;
+  detectedVersion?: string | null;
+  id: string;
+  lastError?: string | null;
+  lastSuccessfulScanAt?: string | null;
+  location: string;
+  provider: string;
+  recordsImported: number;
+  recordsSkipped: number;
+}
+
+export type UsageImporterCapability = "supported" | "unsupported";
+
 export interface UsageLedgerRow {
   cacheReadTokens?: JsSafeI64 | null;
+  cacheSavingsMicrousd?: JsSafeI64 | null;
   cacheWriteTokens?: JsSafeI64 | null;
   capabilityUnits: JsSafeI64;
   contextPercent?: JsSafeI64 | null;
+  contextUsedTokens?: JsSafeI64 | null;
+  contextWindowTokens?: JsSafeI64 | null;
   costMicrousd?: JsSafeI64 | null;
   costSource?: string | null;
   createdAt: string;
@@ -1684,9 +1773,12 @@ export interface UsageLedgerRow {
   outputTokens?: JsSafeI64 | null;
   prefixTokenEstimate?: JsSafeI64 | null;
   promptSchemaVersion?: JsSafeI64 | null;
+  providerRecordId?: string | null;
+  reasoningTokens?: JsSafeI64 | null;
   restorationMode?: string | null;
   role?: string | null;
   runtimeMs?: JsSafeI64 | null;
+  servingModel?: string | null;
   sessionId?: string | null;
   source: string;
   stablePrefixHash?: string | null;
@@ -1695,6 +1787,37 @@ export interface UsageLedgerRow {
   turnId?: string | null;
   uncachedInputTokens?: JsSafeI64 | null;
   workspaceId: string;
+}
+
+export interface UsagePriceOverride {
+  cacheReadMicrousdPerMtok?: number | null;
+  cacheWriteMicrousdPerMtok?: number | null;
+  inputMicrousdPerMtok: number;
+  model: string;
+  outputMicrousdPerMtok: number;
+  updatedAt: string;
+}
+
+export interface UsagePricingStatus {
+  fetchedAt?: string | null;
+  knownModels: number;
+  overrides: number;
+  snapshotDate: string;
+  source: string;
+  status: string;
+}
+
+export type UsageResolution = "day" | "hour";
+
+export interface UsageSummarySource {
+  agent: string;
+  coverageReason?: string | null;
+  coverageState: string;
+  id: string;
+  lastSuccessfulScanAt?: string | null;
+  provider: string;
+  recordsImported: number;
+  recordsSkipped: number;
 }
 
 export interface VerifierCandidate {
@@ -2772,6 +2895,59 @@ export interface ArchiveChatResult {
   archived: boolean;
   bytesFreed: number;
   worktreeDetail?: string | null;
+}
+
+export interface SummaryParams {
+  includeImported: boolean;
+  resolution: UsageResolution;
+  sinceDay: string;
+  sinceTime?: string | null;
+  timeZone?: string | null;
+  untilDay: string;
+  untilTime?: string | null;
+  workspaceId?: string | null;
+}
+
+export interface UsageSummaryResult {
+  buckets: UsageBucket[];
+  duplicatesDropped: number;
+  importedRecords: number;
+  liveRecords: number;
+  pricing: UsagePricingStatus;
+  resolution: UsageResolution;
+  scanDurationMs: number;
+  sinceDay: string;
+  sources: UsageSummarySource[];
+  timeZone: string;
+  untilDay: string;
+}
+
+export type ListUsagePriceOverridesResult = UsagePriceOverride[];
+
+export interface SetPriceOverrideParams {
+  cacheReadMicrousdPerMtok?: number | null;
+  cacheWriteMicrousdPerMtok?: number | null;
+  inputMicrousdPerMtok: number;
+  model: string;
+  outputMicrousdPerMtok: number;
+}
+
+export interface ClearPriceOverrideParams {
+  model: string;
+}
+
+export type ListHistorySourcesResult = UsageHistorySource[];
+
+export interface ScanHistoryParams {
+  maxRecords?: number | null;
+  sourceIds?: string[] | null;
+}
+
+export interface ScanHistoryResult {
+  durationMs: number;
+  recordsImported: number;
+  recordsSkipped: number;
+  sources: UsageHistoryScanOutcome[];
 }
 
 export interface GetRouterPreferencesParams {
