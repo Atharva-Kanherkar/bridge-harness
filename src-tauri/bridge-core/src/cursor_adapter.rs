@@ -92,7 +92,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Mutex, RwLock,
+        Arc, Mutex, RwLock,
     },
     thread,
     time::Duration,
@@ -781,7 +781,7 @@ pub struct CursorRuntime {
     /// session — blocks until every sender is gone, and a sender held for the
     /// runtime's whole lifetime would park it forever on a provider that died
     /// on its own. Shared with the pump so provider death clears it too.
-    events: Arc<Mutex<Option<mpsc::Sender<String>>>>,
+    events: Arc<Mutex<Option<Arc<crate::frame_queue::FrameSender>>>>,
     /// The compiled instruction stack, delivered as the preamble of the first
     /// turn. ACP has no system-prompt channel, so the first prompt is the one
     /// place the delegation protocol, memory packet, and restoration context
@@ -866,9 +866,6 @@ impl AdapterRuntime for CursorRuntime {
         let turn_id = format!("turn-{}", uuid::Uuid::new_v4());
         let mut started = NormalizedEvent::new("turn.started");
         started.data = json!({"turnId": turn_id});
-        events
-            .send(encode_event(&started))
-            .map_err(|_| self.closed())?;
         let text = crate::adapters::folded_message(
             self.pending_instructions.lock().unwrap().take(),
             context,
@@ -878,10 +875,13 @@ impl AdapterRuntime for CursorRuntime {
         thread::Builder::new()
             .name("cursor-turn".into())
             .spawn(move || {
+                // Backpressure must not park send_turn while its caller holds
+                // the adapter map: the reader may need that map to drain.
+                if events.send_durable(encode_event(&started)).is_err() { return; }
                 if let Err(error) = session.prompt(&text) {
                     let reason = redact(&error.to_string(), configured_key().as_deref());
                     let event = crate::acp_events::runtime_failed_event(error.code(), &reason);
-                    drop(events.send(encode_event(&event)));
+                    drop(events.send_durable(encode_event(&event)));
                 }
             })
             .map_err(|error| BridgeError::Invalid(error.to_string()))?;
@@ -989,7 +989,7 @@ impl Drop for CursorRuntime {
 /// has to know that this harness produces typed events rather than parsing
 /// them.
 struct CursorEventReader {
-    lines: mpsc::Receiver<String>,
+    lines: crate::frame_queue::FrameReceiver,
     pending: Vec<u8>,
     consumed: usize,
 }
@@ -1063,6 +1063,14 @@ fn decode_event(value: &Value) -> Option<NormalizedEvent> {
     })
 }
 
+fn send_cursor_event(sender: &crate::frame_queue::FrameSender, event: &NormalizedEvent) -> Result<(), crate::frame_queue::Disconnected> {
+    if matches!(event.kind.as_str(), "message.delta" | "reasoning.delta") {
+        sender.send_transient(encode_event(event)).map(|_| ())
+    } else {
+        sender.send_durable(encode_event(event))
+    }
+}
+
 /// Move the session's events onto the reader until the session is done.
 ///
 /// The offered options of every permission are recorded on the way past. This
@@ -1071,8 +1079,8 @@ fn decode_event(value: &Value) -> Option<NormalizedEvent> {
 /// ids the agent actually offered.
 fn pump_events(
     session: Arc<AcpSession>,
-    events: mpsc::Sender<String>,
-    runtime_sender: Arc<Mutex<Option<mpsc::Sender<String>>>>,
+    events: Arc<crate::frame_queue::FrameSender>,
+    runtime_sender: Arc<Mutex<Option<Arc<crate::frame_queue::FrameSender>>>>,
     approvals: Arc<Mutex<BTreeMap<u64, Vec<OfferedOption>>>>,
     pumping: Arc<AtomicBool>,
 ) {
@@ -1081,7 +1089,7 @@ fn pump_events(
         let idle = drained.is_empty();
         for event in &drained {
             record_approval(&approvals, event);
-            if events.send(encode_event(event)).is_err() {
+            if send_cursor_event(&events, event).is_err() {
                 break 'pump;
             }
         }
@@ -1092,7 +1100,7 @@ fn pump_events(
                 // closed cannot miss it.
                 for event in session.drain() {
                     record_approval(&approvals, &event);
-                    if events.send(encode_event(&event)).is_err() {
+                    if send_cursor_event(&events, &event).is_err() {
                         break 'pump;
                     }
                 }
@@ -1179,7 +1187,8 @@ fn launch(
     if let Some(on_progress) = on_progress {
         on_progress(StartupPhase::SessionOpen);
     }
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver, _) = crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget::default());
+    let sender = Arc::new(sender);
     let approvals = Arc::new(Mutex::new(BTreeMap::new()));
     let pumping = Arc::new(AtomicBool::new(true));
     let runtime_sender = Arc::new(Mutex::new(Some(sender.clone())));
@@ -2371,18 +2380,36 @@ mod tests {
     }
 
     #[test]
+    fn stalled_cursor_reader_bounds_deltas_and_retains_terminal_content() {
+        let (sender, receiver, metrics) = crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget { max_items: 4, max_bytes: 2048 });
+        let mut delta = NormalizedEvent::new("message.delta");
+        delta.text = Some("x".repeat(128));
+        for _ in 0..10_000 { send_cursor_event(&sender, &delta).unwrap(); }
+        assert!(metrics.snapshot().bytes <= 2048);
+        assert!(metrics.snapshot().dropped_transient > 0);
+        let mut terminal = NormalizedEvent::new("message.completed");
+        terminal.text = Some("complete authoritative response".into());
+        send_cursor_event(&sender, &terminal).unwrap();
+        drop(sender);
+        let mut last = None;
+        while let Ok(line) = receiver.recv() { last = decode_event(&serde_json::from_str(&line).unwrap()); }
+        assert_eq!(last, Some(terminal));
+    }
+
+    #[test]
     fn the_reader_yields_one_line_per_event_and_then_end_of_file() {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver, _) = crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget::default());
+        let sender = Arc::new(sender);
         let mut reader = CursorEventReader {
             lines: receiver,
             pending: Vec::new(),
             consumed: 0,
         };
         sender
-            .send(encode_event(&NormalizedEvent::new("turn.started")))
+            .send_durable(encode_event(&NormalizedEvent::new("turn.started")))
             .unwrap();
         sender
-            .send(encode_event(&NormalizedEvent::new("turn.completed")))
+            .send_durable(encode_event(&NormalizedEvent::new("turn.completed")))
             .unwrap();
         drop(sender);
 

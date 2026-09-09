@@ -1967,7 +1967,15 @@ export const bridgeApi = {
       interceptions: [],
     };
   },
-  interruptTurn: (sessionId: string): Promise<void> => isTauri() ? unit(call("sessions/interrupt_turn", { sessionId })) : Promise.resolve(),
+  interruptTurn: async (sessionId: string): Promise<void> => {
+    if (isTauri()) return unit(call("sessions/interrupt_turn", { sessionId }));
+    const session = mockState.sessions.find(item => item.id === sessionId);
+    if (!session) throw new Error("Session not found");
+    session.status = "stopped";
+    session.activeTurnId = null;
+    appendAgent(sessionId, "turn.completed", { status: "cancelled", title: "Stopped", data: { reason: "user_stopped" } });
+    emitState();
+  },
   // The user's half of the retry decision. Bridge stopped taking this turn on
   // its own for a cause it cannot show has changed.
   retryWorkerTask: (childSessionId: string): Promise<void> => isTauri() ? unit(call("sessions/retry_worker_task", { childSessionId })) : Promise.resolve(),

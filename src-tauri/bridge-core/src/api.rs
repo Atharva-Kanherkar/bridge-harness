@@ -1612,7 +1612,7 @@ pub fn retry_worker_task(
 }
 
 pub fn interrupt_turn(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
-    core.interrupt_turn(session_id)
+    live_turn::cancel_visible_turn(core, session_id)
 }
 
 /// Refresh subscription usage for every provider, independent of which session
