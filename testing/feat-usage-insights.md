@@ -13,9 +13,9 @@ Test contract for the second half of the branch. Locked before implementation.
   (`meter.pacePhrase`).
 - **M3** No planned-provider matrix and no attribution footer. The card is the
   limits and only the limits. *Open Bridge* moves to the header.
-- **M4** Two readings per provider: a ring gauge for the headline (worst)
-  window, and a pace chart (even-rate diagonal vs. actual, projection to reset)
-  with a hover tooltip. Bars and marks wear the harness's chart colour.
+- **M4** One reading per provider: a ring gauge for the headline (worst)
+  window. Bars wear the harness's chart colour; pace stays a phrase under the
+  bar (the pace chart was tried and removed as noise at panel width).
 - **M5** The tray shows the icon only. No percentage in the menu bar.
 
 ## Colour
@@ -52,3 +52,10 @@ Test contract for the second half of the branch. Locked before implementation.
   The tab loads the stored report; *Analyse* is the only action that runs one.
 - **I5** Unavailable (no harness), failed, and empty states each say why and
   keep the retry where it makes sense.
+
+## Usage page (follow-up)
+
+- **U1** Local history is always included; the toggle and its scope line are
+  gone, and a stored `includeImported: false` is ignored.
+- **U2** The model-prices card shows the snapshot date and model count only;
+  the rate-table URL lives in the refresh button's tooltip.

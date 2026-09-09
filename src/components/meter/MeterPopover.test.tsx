@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // The meter popover contract: live provider windows render with usage bars,
-// reset countdowns, a ring gauge and a pace chart per provider; nothing that
+// reset countdowns and a ring gauge per provider; nothing that
 // is not a live limit (planned providers, attribution) takes up the card;
 // refresh and close are wired.
 import { act } from "react";
@@ -83,12 +83,11 @@ describe("MeterPopover", () => {
     expect(document.activeElement).toBe(container.querySelector('[role="dialog"]'));
   });
 
-  it("draws a ring gauge and a pace chart for each live provider", async () => {
+  it("draws a ring gauge for each live provider", async () => {
     await mount({ usage: { codex: snapshot(75, WEEK_SECONDS / 2), claude: snapshot(20, WEEK_SECONDS / 2) } });
     expect(container.querySelector('[aria-label="Codex gauge"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Claude gauge"]')).not.toBeNull();
-    expect(container.querySelector('[aria-label="Codex Weekly pace"]')).not.toBeNull();
-    expect(container.querySelector('[aria-label="Claude Weekly pace"]')).not.toBeNull();
+    expect(container.querySelector('[aria-label$=" pace"]')).toBeNull();
     // Series colour follows the harness, never its rank.
     expect(container.querySelector(".bg-chart-codex")).not.toBeNull();
     expect(container.querySelector(".bg-chart-claude")).not.toBeNull();
@@ -112,18 +111,6 @@ describe("MeterPopover", () => {
     expect(text).toContain("Weekly");
     expect(text).toContain("8% used");
     expect(text).toContain("plus");
-  });
-
-  it("reads the pace chart on hover", async () => {
-    await mount();
-    const plot = container.querySelector('[aria-label="Codex Weekly pace"] div')!;
-    plot.getBoundingClientRect = () => ({ left: 0, width: 200, top: 0, height: 56, right: 200, bottom: 56, x: 0, y: 0, toJSON: () => ({}) });
-    act(() => { plot.dispatchEvent(new MouseEvent("mousemove", { bubbles: true, clientX: 50 })); });
-    const tooltip = container.querySelector('[role="tooltip"]');
-    expect(tooltip?.textContent).toContain("25% of window");
-    expect(tooltip?.textContent).toContain("spent");
-    act(() => { plot.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body })); });
-    expect(container.querySelector('[role="tooltip"]')).toBeNull();
   });
 
   it("shows registered providers while fresh live usage is loading", async () => {

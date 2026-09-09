@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Gauge, LoaderCircle, RefreshCw, RotateCcw } from "lucide-react";
+import { ChevronDown, Gauge, LoaderCircle, RefreshCw, RotateCcw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
 import { harnessLabel } from "../utils";
@@ -8,6 +8,7 @@ import { HarnessMark } from "./harnessMarks";
 import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
 import { UsageChart, seriesDotClass } from "./UsageChart";
 import { UsageInsights } from "./UsageInsights";
+import { UsageHeatmap } from "./UsageHeatmap";
 import {
   buildChartSeries, buildUsageReport, costSourceLabel, enumeratePeriods, formatCount, formatDayShort, formatPercent, formatPeriodLabel, formatTokens, formatUsd, formatWindowLabel,
   makeUsageWindow, microToUsdPerMtok, readUsagePreferences, summaryParams, USAGE_WINDOW_OPTIONS, usdPerMtokToMicro, writeUsagePreferences,
@@ -79,6 +80,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
   const [overrides, setOverrides] = useState<UsagePriceOverride[]>([]);
   const [breakdown, setBreakdown] = useState<Breakdown>("model");
   const [tab, setTab] = useState<UsageTab>("usage");
+  const [activityOpen, setActivityOpen] = useState(false);
   const [scanning, setScanning] = useState(preferences.includeImported);
   const [scanFailed, setScanFailed] = useState(false);
   const [refreshingRates, setRefreshingRates] = useState(false);
@@ -245,16 +247,8 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
       <div className="mb-5 flex flex-wrap items-start gap-3">
         <Segmented<UsageMetric> label="Metric" value={metric} options={[{ value: "cost", label: "Cost" }, { value: "tokens", label: "Tokens" }]} onChange={value => update({ metric: value })} />
         <Segmented<UsageWindowDays> label="Window" value={preferences.windowDays} options={USAGE_WINDOW_OPTIONS.map(days => ({ value: days, label: windowLabel(days) }))} onChange={value => update({ windowDays: value })} />
-        <div>
-          <button type="button" aria-pressed={preferences.includeImported} onClick={() => update({ includeImported: !preferences.includeImported })} className={cn("inline-flex h-8 items-center gap-2 rounded-lg border border-border px-3 text-caption transition-colors hover:bg-accent", preferences.includeImported ? "text-foreground" : "text-muted-foreground")}>
-            <span className={cn("size-2 rounded-full", preferences.includeImported ? "bg-foreground" : "bg-border")} aria-hidden="true" />Include local history
-          </button>
-          <p className="mt-1 max-w-64 text-[11px] leading-4 text-muted-foreground">Adds usage totals from supported chats already on this device.</p>
-        </div>
         <span className="ml-auto pt-2 text-caption tabular-nums text-muted-foreground">{formatWindowLabel(window_)}</span>
       </div>
-
-      <p className="mb-3 text-caption text-muted-foreground">{preferences.includeImported ? "Bridge sessions + imported local history on this device" : "Bridge sessions only. Local history is excluded."}</p>
 
       {report && (incompleteSources.length > 0 || summary!.duplicatesDropped > 0 || report.totals.unpricedRecords > 0) && <ul className="mb-5 space-y-1 text-caption text-muted-foreground" aria-label="Coverage notes">
         {incompleteSources.map(source => <li key={source.id}>{harnessLabel(source.agent)} history is still loading.</li>)}
@@ -283,6 +277,17 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
             <h2 className="mb-3 text-ui font-medium text-foreground">{window_.resolution === "hour" ? "Hourly" : "Daily"} {metric === "cost" ? "cost" : "processed tokens"}</h2>
             <UsageChart series={series} periods={periods} resolution={window_.resolution} timeZone={window_.timeZone} metric={metric} />
           </div>
+        </section>
+
+        <section className={cn(CARD, "mt-4 py-3")} aria-label="Activity">
+          <button type="button" aria-expanded={activityOpen} aria-controls="usage-activity" onClick={() => setActivityOpen(open => !open)} className="flex w-full items-center gap-2 text-left">
+            <h2 className="text-ui font-medium text-foreground">Activity</h2>
+            <span className="text-caption text-muted-foreground">{window_.resolution === "hour" ? "by hour" : "by day"}, coloured by harness</span>
+            <ChevronDown size={14} className={cn("ml-auto text-muted-foreground transition-transform", activityOpen && "rotate-180")} aria-hidden="true" />
+          </button>
+          {activityOpen && <div id="usage-activity" className="mt-3">
+            <UsageHeatmap periods={report.periods} resolution={window_.resolution} timeZone={window_.timeZone} metric={metric} />
+          </div>}
         </section>
 
         <section className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6" aria-label="Totals">
@@ -421,10 +426,10 @@ function PriceSection({ report, summary, overrides, refreshing, onRefreshRates, 
         <h2 className="text-ui font-medium text-foreground">Model prices</h2>
         <p className="text-caption text-muted-foreground">USD per million tokens. Overrides apply to all past and future usage; blank cache rates use the automatic rate.</p>
       </div>
-      <div className="flex items-center gap-3 text-caption tabular-nums text-muted-foreground">
-        <span>Rates {summary.pricing.source} · snapshot {summary.pricing.snapshotDate} · {formatCount(summary.pricing.knownModels)} models · {formatCount(summary.pricing.overrides)} overrides</span>
-        <button type="button" onClick={onRefreshRates} disabled={refreshing} className="inline-flex h-8 items-center gap-2 rounded-lg border border-border px-3 text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-40">
-          {refreshing ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={13} aria-hidden="true" />}Refresh rates
+      <div className="flex items-center gap-1 text-caption tabular-nums text-muted-foreground">
+        <span>Snapshot {summary.pricing.snapshotDate} · {formatCount(summary.pricing.knownModels)} models{summary.pricing.overrides > 0 ? ` · ${formatCount(summary.pricing.overrides)} overrides` : ""}</span>
+        <button type="button" onClick={onRefreshRates} disabled={refreshing} aria-label="Refresh rates" aria-busy={refreshing} title={`Refresh rates from ${summary.pricing.source}`} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">
+          <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />
         </button>
       </div>
     </div>
