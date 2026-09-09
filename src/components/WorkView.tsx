@@ -1,597 +1,117 @@
-import { useCallback, useMemo, useRef, useState } from "react";
-import { AlertCircle, CircleCheck, ExternalLink, GitBranch, ListOrdered, Pin, RefreshCw, ShieldCheck, Sparkles, X } from "lucide-react";
-import type { WorkBoard, WorkFact, WorkFactAction, WorkTask } from "../protocol/generated/protocol";
-import { cn } from "@/lib/utils";
-import {
-  actionIsPrimary,
-  actionLabel,
-  bandFacts,
-  detailIsDimmed,
-  factAnnouncement,
-  freshnessText,
-  needsYouCount,
-  RETRY_LABEL,
-  SEVERITY_CAPTION,
-  SEVERITY_LABEL,
-  SOURCE_BY_KIND,
-  SOURCE_LABEL,
-  stalenessClause,
-  type FactSource,
-} from "./workFacts";
-import {
-  ACTION_LABEL,
-  ACTIONS_BY_STATE,
-  confidenceLabel,
-  evidenceLabel,
-  hasOpenableEvidence,
-  orderTasks,
-  sourceLabel,
-  taskAnnouncement,
-  taskRoute,
-  type TaskAction,
-} from "./workTasks";
+import { useEffect, useState } from "react";
+import { AlertCircle, ExternalLink, RefreshCw } from "lucide-react";
+import type { WorkBoard, WorkFactAction, WorkTask } from "../protocol/generated/protocol";
+import { hasOpenableEvidence, sourceLabel, type TaskAction } from "./workTasks";
+import { recentIntegrationActivity } from "./workActivity";
 import { logoForSourceKind } from "./connectorLogos";
 import { lastRunLine, toolsReadLine } from "./workDashboard";
-
-// The Work board. Prop-driven: it is handed a board and four callbacks and holds no
-// data of its own, so every state below is reachable from a test without a backend.
-//
-// The board arrives ordered, so nothing here sorts. Severity is a 3px edge and one
-// small word rather than a tinted panel — five blocking facts should not render as a
-// wall of red — and freshness is carried three ways at once, because any single tell
-// can be missed.
-
-const SOURCE_ICON: Record<FactSource, typeof CircleCheck> = {
-  check: CircleCheck,
-  approval: ShieldCheck,
-  queue: ListOrdered,
-  branch: GitBranch,
-};
-
-/** The severity edge. A hairline, not a fill. */
-const SEVERITY_EDGE: Record<WorkFact["severity"], string> = {
-  blocking: "bg-destructive",
-  attention: "bg-warning",
-  info: "bg-info",
-};
-
-const SEVERITY_INK: Record<WorkFact["severity"], string> = {
-  blocking: "text-destructive",
-  attention: "text-warning",
-  info: "text-info",
-};
 
 export type WorkActionOutcome = { ok: true } | { ok: false; reason: string };
 
 export type WorkViewProps = {
-  /** The board, or `undefined` while it is being read for the first time. */
   board?: WorkBoard;
-  /** Why the board could not be read at all. Only set when there is nothing to show:
-   * a failure that arrives while a board is on screen is a `refreshError`. */
   error?: string;
-  /** A re-read that failed while a board was already rendered. Shown as a line rather
-   * than replacing the board, because the numbers on screen are still the last thing
-   * Bridge actually read. */
   refreshError?: string;
-  /** Re-read the board. */
   onRefresh: () => void;
-  /** Perform a fact's action. Resolving with `ok: false` attaches the reason to the
-   * row rather than replacing it, because the fact is still true. */
   onAction: (action: WorkFactAction) => Promise<WorkActionOutcome>;
-  /** Fixed clock, so freshness copy is deterministic in tests. */
   now?: Date;
-  /** A local state action on a suggested task. Never a connector write. */
   onTaskAction?: (task: WorkTask, action: TaskAction) => Promise<WorkActionOutcome>;
-  /** Pin or unpin. Separate from the state actions because pinning is orthogonal to them. */
   onTogglePin?: (task: WorkTask) => Promise<WorkActionOutcome>;
-  /** Open a task's evidence. The target is rechecked in Rust before anything opens. */
   onOpenEvidence?: (task: WorkTask) => void;
-  /** Follow a row where it belongs: Code for a workspace-bound task, Work otherwise.
-   * Routed by `taskRoute`, from the task's own fields — never a model-authored URL. */
   onOpenTask?: (task: WorkTask) => void;
-  /** Trigger a briefing run. Refresh re-reads the board; this asks a model to rebuild
-   * the suggested half, so it is its own affordance. */
   onRunBriefing?: () => void;
+  onOpenSettings?: () => void;
 };
 
-function Chip({ children }: { children: React.ReactNode }) {
-  return (
-    <span className="inline-flex max-w-full items-center gap-1 truncate rounded border border-border px-1.5 py-px text-[11px] text-muted-foreground">
-      {children}
-    </span>
-  );
-}
-
-/** The dot beside the freshness line. Hollow when nothing was measured, because an
- * empty reading should not look like a filled one. */
-function FreshnessDot({ freshness }: { freshness: WorkFact["freshness"] }) {
-  if (freshness === "unknown") {
-    return <span aria-hidden="true" className="h-[5px] w-[5px] shrink-0 rounded-full ring-1 ring-muted-foreground" />;
-  }
-  return (
-    <span
-      aria-hidden="true"
-      className={cn("h-[5px] w-[5px] shrink-0 rounded-full", freshness === "stale" ? "bg-warning" : "bg-success")}
-    />
-  );
-}
-
-function FactRow({
-  fact,
-  now,
-  onAction,
-}: {
-  fact: WorkFact;
-  now: Date;
-  onAction: (action: WorkFactAction) => Promise<WorkActionOutcome>;
-}) {
-  const [failure, setFailure] = useState<string>();
-  const [busy, setBusy] = useState(false);
-  // `disabled={busy}` is state, so it is not in effect until the next render — two
-  // clicks in the same tick would both get through and fire two fast-forwards. The
-  // ref closes that window synchronously.
-  const running = useRef(false);
-  const source = SOURCE_BY_KIND[fact.kind];
-  const Icon = SOURCE_ICON[source];
-  const stale = stalenessClause(fact, now);
-
-  const run = useCallback(async () => {
-    if (running.current) return;
-    running.current = true;
-    setBusy(true);
-    try {
-      const outcome = await onAction(fact.action);
-      // A failure attaches to the row. The fact is still true — only the attempt
-      // failed — so removing or replacing the row would be a lie about the state.
-      setFailure(outcome.ok ? undefined : outcome.reason);
-    } catch (error) {
-      // The handler is supposed to return an outcome rather than throw, but a button
-      // stuck disabled forever is the worst way to find out that it did.
-      setFailure(error instanceof Error ? error.message : String(error));
-    } finally {
-      running.current = false;
-      setBusy(false);
-    }
-  }, [fact.action, onAction]);
-
-  return (
-    <li className="flex flex-wrap gap-3 rounded-xl border border-border bg-card pr-3 sm:flex-nowrap sm:py-2.5">
-      <span aria-hidden="true" className={cn("w-[3px] shrink-0 self-stretch rounded-r-sm", SEVERITY_EDGE[fact.severity])} />
-      <span aria-hidden="true" className="mt-2.5 flex size-6.5 shrink-0 items-center justify-center rounded-md bg-muted sm:mt-0.5">
-        <Icon size={14} strokeWidth={1.7} className="text-muted-foreground" />
-      </span>
-      <div className="min-w-0 flex-1 pt-2.5 sm:pt-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className={cn("text-[11px] font-semibold uppercase tracking-wide", SEVERITY_INK[fact.severity])}>
-            {SEVERITY_LABEL[fact.severity]}
-          </span>
-          <span className="text-[11px] font-medium text-muted-foreground">{SOURCE_LABEL[source]}</span>
-        </div>
-        {/* The accessible name says severity, source and freshness in words, so the
-            row reads the same with no colour at all. */}
-        <p className="mt-0.5 text-[13px] font-medium leading-snug [overflow-wrap:anywhere]">
-          <span className="sr-only">{factAnnouncement(fact, now)}</span>
-          <span aria-hidden="true">{fact.title}</span>
-        </p>
-        {fact.detail && (
-          <p className={cn("mt-1 text-[12px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]", detailIsDimmed(fact) && "opacity-70")}>
-            {fact.detail}
-          </p>
-        )}
-        {stale && <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground">{stale}</p>}
-        {failure && (
-          <div id={`${fact.dedupeKey}-failure`} className="mt-2 flex gap-2 rounded-lg border border-border border-l-[3px] border-l-destructive px-2.5 py-2">
-            <AlertCircle size={13} strokeWidth={1.8} className="mt-px shrink-0 text-destructive" aria-hidden="true" />
-            <p className="text-[12px] leading-relaxed text-muted-foreground">{failure}</p>
-          </div>
-        )}
-        <div className="mt-1.5 flex flex-wrap items-center gap-2">
-          {fact.target.kind === "workspace" && <Chip>{fact.target.workspaceId}</Chip>}
-          {fact.target.kind === "completionAttempt" && <Chip>attempt {fact.target.attemptId}</Chip>}
-          {fact.target.kind === "workerQueueItem" && <Chip>queued {fact.target.queueId}</Chip>}
-          <span className={cn("inline-flex items-center gap-1.5 text-[11px]", fact.freshness === "stale" ? "text-warning" : "text-muted-foreground")}>
-            <FreshnessDot freshness={fact.freshness} />
-            {freshnessText(fact, now)}
-          </span>
-        </div>
-      </div>
-      {/* Below sm the action gets its own row under a hairline, because at 420px a
-          button beside a wrapping title leaves neither enough room. */}
-      <div className="mt-2.5 flex w-full shrink-0 justify-end border-t border-border pb-2.5 pt-2.5 sm:mt-0 sm:w-auto sm:border-0 sm:pb-0 sm:pt-0.5">
-        <button
-          type="button"
-          onClick={() => void run()}
-          disabled={busy}
-          aria-describedby={failure ? `${fact.dedupeKey}-failure` : undefined}
-          className={cn(
-            "h-7 shrink-0 rounded-md px-2.5 text-[12px] font-medium transition-colors disabled:opacity-60",
-            actionIsPrimary(fact) && !failure
-              ? "bg-primary text-primary-foreground hover:opacity-90"
-              : "border border-border text-foreground hover:bg-accent",
-          )}
-        >
-          {failure ? RETRY_LABEL : actionLabel(fact.action)}
-        </button>
-      </div>
-    </li>
-  );
-}
-
-
-/** One suggested task.
- *
- * Visibly a different kind of thing from a fact: a fact is a projection of Bridge's own
- * state, and this is a model's summary of something it read elsewhere. So the row leads with
- * where it came from and how much the model was willing to claim. */
-function TaskRow({
-  task,
-  onTaskAction,
-  onTogglePin,
-  onOpenEvidence,
-  onOpenTask,
-}: {
-  task: WorkTask;
-  onTaskAction?: (task: WorkTask, action: TaskAction) => Promise<WorkActionOutcome>;
-  onTogglePin?: (task: WorkTask) => Promise<WorkActionOutcome>;
-  onOpenEvidence?: (task: WorkTask) => void;
-  onOpenTask?: (task: WorkTask) => void;
-}) {
-  const [failure, setFailure] = useState<string>();
-  const [busy, setBusy] = useState(false);
-  const running = useRef(false);
-
-  const run = useCallback(
-    async (perform: () => Promise<WorkActionOutcome>) => {
-      if (running.current) return;
-      running.current = true;
-      setBusy(true);
-      try {
-        const outcome = await perform();
-        setFailure(outcome.ok ? undefined : outcome.reason);
-      } catch (error) {
-        setFailure(error instanceof Error ? error.message : String(error));
-      } finally {
-        running.current = false;
-        setBusy(false);
-      }
-    },
-    [],
-  );
-
-  const openable = hasOpenableEvidence(task);
-  // The real connector's mark, inline SVG only. Never load-bearing: the source is
-  // also named in text right below, so an unrecognised family loses nothing.
-  const Logo = logoForSourceKind(task.sourceKind);
-  // A row bound to a workspace routes to Code. Anything else belongs to Work,
-  // which the reader is already on — so only the Code route draws an affordance.
-  const route = taskRoute(task);
-  const routable = route.kind === "code" && onOpenTask !== undefined;
-  return (
-    <li className="flex flex-wrap gap-3 rounded-xl border border-border bg-card pr-3 sm:flex-nowrap sm:py-2.5">
-      <span aria-hidden="true" className="w-[3px] shrink-0 self-stretch rounded-r-sm bg-info" />
-      <span aria-hidden="true" className="mt-2.5 flex size-6.5 shrink-0 items-center justify-center rounded-md bg-muted sm:mt-0.5">
-        {Logo ? (
-          <span className="text-muted-foreground"><Logo size={13} /></span>
-        ) : (
-          <Sparkles size={14} strokeWidth={1.7} className="text-muted-foreground" />
-        )}
-      </span>
-      <div className="min-w-0 flex-1 pt-2.5 sm:pt-0">
-        <div className="flex flex-wrap items-center gap-2">
-          <span className="text-[11px] font-medium text-muted-foreground">{sourceLabel(task)}</span>
-          {task.pinned && (
-            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-muted-foreground">
-              <Pin size={10} strokeWidth={2} aria-hidden="true" />
-              Pinned
-            </span>
-          )}
-          {task.state === "stale" && (
-            <span className="text-[11px] font-semibold uppercase tracking-wide text-warning">Stale</span>
-          )}
-        </div>
-        <p className="mt-0.5 text-[13px] font-medium leading-snug [overflow-wrap:anywhere]">
-          <span className="sr-only">{taskAnnouncement(task)}</span>
-          {routable ? (
-            <button
-              type="button"
-              aria-label={`Open ${task.title} in Code`}
-              onClick={() => onOpenTask(task)}
-              className="text-left underline-offset-2 transition-colors hover:underline"
-            >
-              <span aria-hidden="true">{task.title}</span>
-            </button>
-          ) : (
-            <span aria-hidden="true">{task.title}</span>
-          )}
-        </p>
-        <p className="mt-1 text-[12px] leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{task.why}</p>
-        {failure && (
-          <div id={`${task.id}-failure`} className="mt-2 flex gap-2 rounded-lg border border-border border-l-[3px] border-l-destructive px-2.5 py-2">
-            <AlertCircle size={13} strokeWidth={1.8} className="mt-px shrink-0 text-destructive" aria-hidden="true" />
-            <p className="text-[12px] leading-relaxed text-muted-foreground">{failure}</p>
-          </div>
-        )}
-        <div className="mt-1.5 flex flex-wrap items-center gap-2">
-          <Chip>{confidenceLabel(task.confidenceBps)}</Chip>
-          {openable && onOpenEvidence && (
-            <button
-              type="button"
-              onClick={() => onOpenEvidence(task)}
-              className="inline-flex min-h-7 items-center gap-1 rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-            >
-              <ExternalLink size={10} strokeWidth={1.8} aria-hidden="true" />
-              {evidenceLabel(task)}
-            </button>
-          )}
-        </div>
-      </div>
-      <div className="mt-2.5 flex w-full shrink-0 flex-wrap justify-end gap-1.5 border-t border-border pb-2.5 pt-2.5 sm:mt-0 sm:w-auto sm:border-0 sm:pb-0 sm:pt-0.5">
-        {onTogglePin && (
-          <button
-            type="button"
-            onClick={() => void run(() => onTogglePin(task))}
-            disabled={busy}
-            aria-pressed={task.pinned}
-            aria-label={task.pinned ? "Unpin this task" : "Pin this task"}
-            className="inline-flex h-7 items-center rounded-md border border-border px-2 text-[12px] text-foreground transition-colors hover:bg-accent disabled:opacity-60"
-          >
-            <Pin size={12} strokeWidth={1.8} aria-hidden="true" />
-          </button>
-        )}
-        {onTaskAction &&
-          ACTIONS_BY_STATE[task.state].map(action => (
-            <button
-              key={action}
-              type="button"
-              onClick={() => void run(() => onTaskAction(task, action))}
-              disabled={busy}
-              aria-describedby={failure ? `${task.id}-failure` : undefined}
-              className={cn(
-                "h-7 shrink-0 rounded-md px-2.5 text-[12px] font-medium transition-colors disabled:opacity-60",
-                action === "start"
-                  ? "bg-primary text-primary-foreground hover:opacity-90"
-                  : "border border-border text-foreground hover:bg-accent",
-              )}
-            >
-              {ACTION_LABEL[action]}
-            </button>
-          ))}
-      </div>
-    </li>
-  );
-}
-
-/** Rows in the shape of the answer. A local SQLite read is fast enough that a
- * spinner would flash, and three placeholders read as "nearly there". */
-function LoadingRows() {
-  return (
-    <ul aria-label="Loading work" className="flex flex-col gap-1.5">
-      {[
-        { key: "first", title: "w-1/2", detail: "w-3/4" },
-        { key: "second", title: "w-2/5", detail: "w-3/5" },
-        { key: "third", title: "w-7/12", detail: "w-2/3" },
-      ].map((widths, index) => (
-        <li key={widths.key} className="flex gap-3 rounded-xl border border-border bg-card p-2.5">
-          <span className="w-[3px] shrink-0 self-stretch rounded-r-sm bg-muted" />
-          <span className="size-6.5 shrink-0 rounded-md bg-muted" />
-          <div className="flex-1 space-y-2 pt-1">
-            <span className={cn("block h-2 rounded-full bg-muted", widths.title)} />
-            <span className={cn("block h-1.5 rounded-full bg-muted", widths.detail)} />
-          </div>
-          <span className="sr-only">Reading item {index + 1}</span>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function Panel({ title, body, action }: { title: string; body: string; action: React.ReactNode }) {
-  return (
-    <div className="rounded-xl border border-border bg-card px-5 py-6 text-center">
-      <h3 className="text-[13px] font-semibold">{title}</h3>
-      <p className="mx-auto mt-1 max-w-[44ch] text-[12px] leading-relaxed text-muted-foreground">{body}</p>
-      <div className="mt-3 flex justify-center gap-2">{action}</div>
-    </div>
-  );
-}
-
-function GhostButton({ children, onClick }: { children: React.ReactNode; onClick: () => void }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className="inline-flex h-6.5 items-center gap-1.5 rounded-md border border-border px-2.5 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-    >
-      {children}
-    </button>
-  );
-}
-
-export function WorkView({ board, error, refreshError, onRefresh, onAction, now = new Date(), onTaskAction, onTogglePin, onOpenEvidence, onOpenTask, onRunBriefing }: WorkViewProps) {
-  const [noticeDismissed, setNoticeDismissed] = useState(false);
-  const [hiddenShown, setHiddenShown] = useState(false);
-  const bands = useMemo(() => bandFacts(board?.facts ?? []), [board]);
-  // The same set the rail badge counts. Info is "worth knowing, not worth
-  // interrupting for", so a board holding only info facts is not waiting on you —
-  // and the two numbers must not disagree about that.
-  const count = needsYouCount(board?.facts ?? []);
-  const anyFacts = (board?.facts.length ?? 0) > 0;
-  // Suggested work sits below the facts and is visibly a second kind of thing. Absent
-  // entirely when there is none, rather than an empty section inviting setup.
-  const tasks = useMemo(() => orderTasks(board?.tasks ?? []), [board]);
-  const hiddenTasks = useMemo(
-    () => (board?.tasks ?? []).filter(task => task.state === "snoozed" || task.state === "dismissed"),
-    [board],
-  );
-  const showNotice = !noticeDismissed && board?.suggestions.state === "not_configured";
+export function WorkView({ board, error, refreshError, onRefresh, now, onOpenEvidence, onRunBriefing, onOpenSettings }: WorkViewProps) {
+  const [clock, setClock] = useState(() => Date.now());
+  useEffect(() => {
+    if (now) return;
+    const timer = window.setInterval(() => setClock(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, [now]);
+  const currentTime = now ?? new Date(clock);
+  const items = recentIntegrationActivity(board?.tasks ?? [], currentTime);
+  const configured = board !== undefined && board.suggestions.state !== "not_configured";
+  const running = board?.suggestions.state === "running";
+  const refresh = configured && onRunBriefing ? onRunBriefing : onRefresh;
+  const buttonClass = "inline-flex min-h-8 items-center justify-center gap-1.5 rounded-md border border-border px-3 text-xs text-foreground transition-colors hover:bg-accent disabled:opacity-50";
 
   return (
     <section aria-label="Work" className="mx-auto flex min-h-0 w-full max-w-page flex-1 flex-col overflow-y-auto">
       <header className="flex flex-wrap items-start gap-3 px-5 pb-5 pt-6 sm:px-8" data-tauri-drag-region="deep">
         <div className="min-w-0">
-          <h2 className="font-display text-title font-semibold tracking-tight">Needs you</h2>
-          <p aria-live="polite" className="mt-0.5 text-[12px] leading-snug text-muted-foreground">
-            {error
-              ? "The board could not be read."
-              : board === undefined
-                ? "Reading what needs you."
-                : count === 0
-                  ? anyFacts
-                    ? "Nothing is waiting on you. What is below is worth knowing, not urgent."
-                    : "Nothing is waiting on you."
-                  : `${count} ${count === 1 ? "thing needs" : "things need"} you. Nothing was started to build this list.`}
+          <h2 className="font-display text-title font-semibold tracking-tight">Past 24 hours</h2>
+          <p aria-live="polite" className="mt-1 text-xs text-muted-foreground">
+            {board ? "Activity from your connected integrations." : error ? "Activity could not be loaded." : "Loading your activity…"}
           </p>
         </div>
-        <div className="ml-auto flex shrink-0 gap-1.5">
-          {onRunBriefing && board !== undefined && board.suggestions.state !== "not_configured" && board.suggestions.state !== "running" && (
-            <GhostButton onClick={onRunBriefing}>
-              <Sparkles size={12} strokeWidth={1.8} aria-hidden="true" />
-              Run briefing
-            </GhostButton>
-          )}
-          <GhostButton onClick={onRefresh}>
-            <RefreshCw size={12} strokeWidth={1.8} aria-hidden="true" />
-            Refresh
-          </GhostButton>
-        </div>
+        <button type="button" disabled={running} onClick={refresh} className={`${buttonClass} ml-auto`}>
+          <RefreshCw size={13} aria-hidden="true" />
+          {running ? "Refreshing…" : "Refresh"}
+        </button>
       </header>
 
-      {/* The dashboard strip: when the last run was, how it ended, and which tools
-          it actually read — from the run's own coverage, never the model's word.
-          No secrets and no raw provider errors reach this line. */}
-      {board !== undefined && (board.latestRun || board.suggestions.state === "running") && (
-        <div aria-label="Briefing status" className="mx-5 mb-2.5 rounded-lg border border-border bg-card px-2.5 py-2">
-          <p className="text-[12px] leading-relaxed text-muted-foreground">
-            <span className="font-medium text-foreground">{lastRunLine(board.latestRun, now)}</span>{" "}
-            {toolsReadLine(board.sources)}
-          </p>
-        </div>
-      )}
+      <div className="flex flex-col gap-3 px-5 pb-6 sm:px-8">
+        {board && !configured && (
+          <div className="u-glass-soft rounded-xl border border-border p-4">
+            <h3 className="text-sm font-medium">Connect your work</h3>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">Choose a briefing model and your connected tools in Settings → Work to see recent Slack, GitHub, and other integration activity.</p>
+            {onOpenSettings && <button type="button" onClick={onOpenSettings} className={`${buttonClass} mt-3`}>Set up integrations</button>}
+          </div>
+        )}
 
-      {showNotice && (
-        <div className="mx-5 mb-2.5 flex items-center gap-2 rounded-lg border border-border bg-card px-2.5 py-2">
-          <AlertCircle size={13} strokeWidth={1.6} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-          <p className="min-w-0 flex-1 text-[12px] leading-relaxed text-muted-foreground">
-            Suggested work is off until a briefing model is set up. The facts below do not need one.
-          </p>
-          <button
-            type="button"
-            onClick={() => setNoticeDismissed(true)}
-            aria-label="Dismiss the suggested work notice"
-            className="shrink-0 grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          >
-            <X size={12} strokeWidth={1.8} aria-hidden="true" />
-          </button>
-        </div>
-      )}
+        {board && (board.latestRun || running) && (
+          <div aria-label="Briefing status" className="text-xs leading-relaxed text-muted-foreground">
+            {running ? "Reading your connected integrations…" : lastRunLine(board.latestRun, currentTime)} {toolsReadLine(board.sources)}
+          </div>
+        )}
+        {(refreshError || board?.suggestions.state === "degraded") && (
+          <div role="status" className="flex items-start gap-2 rounded-lg border border-border p-3 text-xs text-muted-foreground">
+            <AlertCircle size={14} className="shrink-0" aria-hidden="true" />
+            <p>Could not refresh all activity. {refreshError ?? board?.suggestions.detail ?? "Try again."} Only previously read items still within the past 24 hours are shown.</p>
+          </div>
+        )}
 
-      {board?.suggestions.state === "running" && (
-        <div className="mx-5 mb-2.5 rounded-lg border border-border bg-card px-2.5 py-2 text-[12px] text-muted-foreground">
-          Suggestions are being refreshed. The current board remains available while Bridge reads.
-        </div>
-      )}
-
-      {board?.suggestions.state === "degraded" && (
-        <div className="mx-5 mb-2.5 rounded-lg border border-border border-l-[3px] border-l-warning px-2.5 py-2 text-[12px] text-muted-foreground">
-          <span className="font-medium text-foreground">Suggestions may be stale.</span>{" "}
-          {board.suggestions.detail ?? "The latest briefing did not complete."}
-        </div>
-      )}
-
-      {refreshError && board !== undefined && (
-        <div className="mx-5 mb-2.5 flex items-start gap-2 rounded-lg border border-border border-l-[3px] border-l-destructive px-2.5 py-2">
-          <AlertCircle size={13} strokeWidth={1.8} className="mt-px shrink-0 text-destructive" aria-hidden="true" />
-          <p className="min-w-0 flex-1 text-[12px] leading-relaxed text-muted-foreground">
-            <span className="font-medium text-foreground">Could not re-read the board.</span> {refreshError} What is below is the last thing Bridge read.
-          </p>
-        </div>
-      )}
-
-      <div className="flex flex-col gap-1.5 px-5 pb-5">
-        {board === undefined && error ? (
-          <Panel
-            title="Work could not be read"
-            body="The local database did not answer. Nothing is wrong with your sessions — this screen only reads, so retrying is safe."
-            action={<GhostButton onClick={onRefresh}>{RETRY_LABEL}</GhostButton>}
-          />
-        ) : board === undefined ? (
-          <LoadingRows />
-        ) : !anyFacts && tasks.length === 0 ? (
-          <Panel
-            title="Nothing needs you"
-            body="No failed checks, no unanswered approvals, nothing parked, and every workspace is close to its base."
-            action={<GhostButton onClick={onRefresh}>Refresh</GhostButton>}
-          />
+        {!board && error ? (
+          <div role="alert" className="rounded-xl border border-border p-5">
+            <h3 className="text-sm font-medium">Activity could not be loaded</h3>
+            <p className="mt-1 text-xs text-muted-foreground">{error}</p>
+            <button type="button" onClick={onRefresh} className={`${buttonClass} mt-3`}>Try again</button>
+          </div>
+        ) : !board ? (
+          <p role="status" className="text-sm text-muted-foreground">Loading activity…</p>
+        ) : items.length === 0 ? (
+          <div className="rounded-xl border border-border p-6 text-center">
+            <h3 className="text-sm font-medium">No recent activity to show</h3>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              {running ? "Your integrations are being read." : configured ? "Refresh to check your connected tools for updates from the past 24 hours." : "Recent activity will appear after you set up and refresh your integrations."}
+            </p>
+          </div>
         ) : (
-          bands.map(band => (
-            <section key={band.severity} aria-labelledby={`work-band-${band.severity}`}>
-              <h3
-                id={`work-band-${band.severity}`}
-                className="mb-1 mt-2.5 flex items-center gap-2 pl-0.5 text-[12px] font-medium text-muted-foreground first:mt-0"
-              >
-                {SEVERITY_LABEL[band.severity]}
-                <span className="font-normal normal-case tracking-normal opacity-65">— {SEVERITY_CAPTION[band.severity]}</span>
-              </h3>
-              <ul aria-label={`${SEVERITY_LABEL[band.severity]} work`} className="flex flex-col gap-1.5">
-                {band.facts.map(fact => (
-                  <FactRow key={fact.dedupeKey} fact={fact} now={now} onAction={onAction} />
-                ))}
-              </ul>
-            </section>
-          ))
-        )}
-
-        {tasks.length > 0 && (
-          <section aria-labelledby="work-band-suggested">
-            <h3
-              id="work-band-suggested"
-              className="mb-1 mt-2.5 flex items-center gap-2 pl-0.5 text-[12px] font-medium text-muted-foreground"
-            >
-              Suggested
-              <span className="font-normal normal-case tracking-normal opacity-65">
-                — from your connected tools, summarised by a model
-              </span>
-            </h3>
-            <ul aria-label="Suggested work" className="flex flex-col gap-1.5">
-              {tasks.map(task => (
-                <TaskRow
-                  key={task.id}
-                  task={task}
-                  onTaskAction={onTaskAction}
-                  onTogglePin={onTogglePin}
-                  onOpenEvidence={onOpenEvidence}
-                  onOpenTask={onOpenTask}
-                />
-              ))}
-            </ul>
-          </section>
-        )}
-
-        {hiddenTasks.length > 0 && (
-          <section aria-labelledby="work-band-hidden">
-            <div className="mb-1 mt-2.5 flex items-center justify-between gap-2">
-              <h3 id="work-band-hidden" className="pl-0.5 text-[12px] font-medium text-muted-foreground">
-                Hidden — {hiddenTasks.length}
-              </h3>
-              <GhostButton onClick={() => setHiddenShown(value => !value)}>
-                {hiddenShown ? "Hide" : "Show hidden"}
-              </GhostButton>
-            </div>
-            {hiddenShown && (
-              <ul aria-label="Hidden suggested work" className="flex flex-col gap-1.5">
-                {hiddenTasks.map(task => (
-                  <TaskRow
-                    key={task.id}
-                    task={task}
-                    onTaskAction={onTaskAction}
-                    onTogglePin={onTogglePin}
-                    onOpenEvidence={onOpenEvidence}
-                    onOpenTask={onOpenTask}
-                  />
-                ))}
-              </ul>
-            )}
-          </section>
+          <ul aria-label="Integration activity" className="flex flex-col gap-2">
+            {items.map(item => {
+              const Logo = logoForSourceKind(item.sourceKind);
+              return (
+                <li key={item.id} className="u-glass-soft flex gap-3 rounded-xl border border-border p-4">
+                  {Logo && <span className="mt-0.5 shrink-0 text-muted-foreground" aria-hidden="true"><Logo size={16} /></span>}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-muted-foreground">
+                      <span>{sourceLabel(item)}</span>
+                      <time dateTime={item.sourceActivityAt!}>{new Date(item.sourceActivityAt!).toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}</time>
+                    </div>
+                    <h3 className="mt-1 text-sm font-medium [overflow-wrap:anywhere]">{item.title}</h3>
+                    <p className="mt-1 text-xs leading-relaxed text-muted-foreground [overflow-wrap:anywhere]">{item.why}</p>
+                    {onOpenEvidence && hasOpenableEvidence(item) && item.evidenceTarget?.kind === "externalLink" && (
+                      <button type="button" onClick={() => onOpenEvidence(item)} className={`${buttonClass} mt-3`}>
+                        <ExternalLink size={12} aria-hidden="true" />Open in {item.evidenceTarget.host}
+                      </button>
+                    )}
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
         )}
       </div>
     </section>

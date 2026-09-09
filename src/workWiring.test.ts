@@ -162,3 +162,9 @@ describe("briefing runs are hidden from every surface", () => {
     expect(resolved.slice(0, 160)).toContain("!isHiddenSession(s)");
   });
 });
+
+it("opens Work from settings without restoring the sidebar row", () => {
+  expect(APP).toContain("<SettingsScreen onOpenWorkBoard={openWorkBoard}");
+  const settings = readFileSync(join(__dirname, "components", "SettingsScreen.tsx"), "utf8");
+  expect(settings).toContain("onOpenBoard={onOpenWorkBoard}");
+});

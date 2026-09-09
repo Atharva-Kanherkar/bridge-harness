@@ -34,7 +34,7 @@ const CADENCES: { value: string; label: string }[] = [
   { value: "1440", label: "Once a day" },
 ];
 
-export function WorkSettingsSection({ onError }: { onError: (message: string) => void }) {
+export function WorkSettingsSection({ onError, onOpenBoard }: { onError: (message: string) => void; onOpenBoard?: () => void }) {
   const [snapshot, setSnapshot] = useState<WorkSettingsSnapshot>();
   const [options, setOptions] = useState<WorkBriefingOptions>();
   const [draft, setDraft] = useState<WorkSettings>();
@@ -104,18 +104,19 @@ export function WorkSettingsSection({ onError }: { onError: (message: string) =>
 
   return <SettingsPage
     title="Work briefing"
-    description="A background model turn on the harness you pick, reading your connected tools. Read-only, on your account, summarised onto the Work board."
+    description="A briefing of activity from your connected tools in the past 24 hours, using the model you choose."
   >
+    {onOpenBoard && <SettingsRow label="Past 24 hours" description="See recent activity from your connected integrations." control={<button type="button" onClick={onOpenBoard} className="rounded-md border border-border px-3 py-2 text-xs text-foreground hover:bg-accent">Open Work</button>} />}
     <SettingsGroup
-      label="Suggested work"
+      label="Integration briefing"
       note={snapshot?.configured ? "Configured" : "Never configured"}
     >
       <SettingsRow
         label="Enabled"
-        description="Off is a choice Bridge remembers, not the absence of one. Facts stay on the board either way."
+        description="Read recent Slack, GitHub, and other connected integration activity. Turning this off stops new briefings."
         saved={isFlashed("enabled")}
         control={<Switch
-          label="Suggested work"
+          label="Integration briefing"
           checked={briefingOn}
           // Only turning ON needs a certified harness. Off must always be
           // reachable: a stored profile whose harness later loses certification
