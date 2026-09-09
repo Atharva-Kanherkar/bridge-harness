@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { LoaderCircle, RefreshCw, RotateCcw } from "lucide-react";
+import { Gauge, LoaderCircle, RefreshCw, RotateCcw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
 import { harnessLabel } from "../utils";
@@ -60,9 +60,10 @@ function relativeStamp(iso: string | null | undefined): string {
   return formatDayShort(at.toISOString().slice(0, 10));
 }
 
-export function UsageScreen({ onError }: { onError: (message: string) => void }) {
+export function UsageScreen({ onError, onOpenMeter }: { onError: (message: string) => void; onOpenMeter?: () => void }) {
   const [preferences, setPreferences] = useState<UsagePreferences>(() => readUsagePreferences());
   const [refreshTick, setRefreshTick] = useState(0);
+  const [summaryTick, setSummaryTick] = useState(0);
   const window_ = useMemo(() => makeUsageWindow(preferences.windowDays), [preferences.windowDays, refreshTick]);
   const periods = useMemo(() => enumeratePeriods(window_), [window_]);
   const [summary, setSummary] = useState<UsageSummaryResult | null>(null);
@@ -70,7 +71,8 @@ export function UsageScreen({ onError }: { onError: (message: string) => void })
   const [sources, setSources] = useState<UsageHistorySource[]>([]);
   const [overrides, setOverrides] = useState<UsagePriceOverride[]>([]);
   const [breakdown, setBreakdown] = useState<Breakdown>("model");
-  const [scanning, setScanning] = useState(false);
+  const [scanning, setScanning] = useState(preferences.includeImported);
+  const [scanFailed, setScanFailed] = useState(false);
   const [refreshingRates, setRefreshingRates] = useState(false);
   const [scanNote, setScanNote] = useState<string | null>(null);
 
@@ -82,48 +84,111 @@ export function UsageScreen({ onError }: { onError: (message: string) => void })
     });
   }, []);
 
-  const loadSummary = useCallback(async () => {
-    setLoading(true);
-    try {
-      setSummary(await bridgeApi.usageSummary(summaryParams(window_, preferences.includeImported)));
-    } catch (error) {
-      onError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setLoading(false);
-    }
-  }, [window_, preferences.includeImported, onError]);
+  const loadSummary = () => setSummaryTick(tick => tick + 1);
 
-  useEffect(() => { void loadSummary(); }, [loadSummary]);
   useEffect(() => {
-    bridgeApi.listUsageHistorySources().then(setSources).catch(() => undefined);
+    let cancelled = false;
+    setLoading(true);
+    bridgeApi.usageSummary(summaryParams(window_, preferences.includeImported))
+      .then(result => { if (!cancelled) setSummary(result); })
+      .catch(error => {
+        if (!cancelled) {
+          setSummary(null);
+          onError(error instanceof Error ? error.message : String(error));
+        }
+      })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [window_, preferences.includeImported, summaryTick, onError]);
+
+  useEffect(() => {
     bridgeApi.listUsagePriceOverrides().then(setOverrides).catch(() => undefined);
   }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setScanning(preferences.includeImported);
+    setScanFailed(false);
+    setScanNote(null);
+    const scan = async () => {
+      try {
+        const discovered = await bridgeApi.listUsageHistorySources();
+        if (cancelled) return;
+        setSources(discovered);
+        if (!preferences.includeImported) return;
+
+        let sourceIds: string[] | undefined;
+        let imported = 0;
+        let durationMs = 0;
+        const cursors = new Map<string, string | null>();
+        const warnings = new Set<string>();
+        // Each call is bounded. A partial source is excluded by the summary
+        // until its last batch, so one successful call is not a finished scan.
+        do {
+          const result = await bridgeApi.scanUsageHistory(sourceIds ? { sourceIds } : {});
+          if (cancelled) return;
+          imported += result.recordsImported;
+          durationMs += result.durationMs;
+          sourceIds = [];
+          for (const source of result.sources) {
+            if (source.capability !== "supported") continue;
+            if (source.coverage === "partial") {
+              const cursor = source.nextCursor ?? null;
+              if (cursors.has(source.sourceId) && cursors.get(source.sourceId) === cursor) {
+                warnings.add(`History scan did not advance for ${harnessLabel(source.agent)}. Try Scan history again.`);
+              } else {
+                cursors.set(source.sourceId, cursor);
+                sourceIds.push(source.sourceId);
+              }
+            } else if (source.coverage === "unreadable" || source.coverage === "stale") {
+              warnings.add(source.warning ?? `${harnessLabel(source.agent)} history is ${source.coverage}.`);
+            }
+          }
+          setScanFailed(warnings.size > 0);
+          setScanNote(`Loading history. Imported ${formatCount(imported)} records so far.`);
+          const updated = await bridgeApi.listUsageHistorySources();
+          if (cancelled) return;
+          setSources(updated);
+        } while (sourceIds.length > 0);
+        setScanNote(warnings.size > 0
+          ? `Imported ${formatCount(imported)} records. ${[...warnings].join(" ")} Totals are incomplete.`
+          : `Imported ${formatCount(imported)} records in ${(durationMs / 1000).toFixed(1)} s.`);
+      } catch (error) {
+        if (!cancelled) {
+          const message = error instanceof Error ? error.message : String(error);
+          setScanFailed(true);
+          setScanNote(`History could not finish: ${message}. Totals are incomplete.`);
+          onError(message);
+        }
+      } finally {
+        if (!cancelled) {
+          setScanning(false);
+          if (preferences.includeImported) {
+            setLoading(true);
+            setSummaryTick(tick => tick + 1);
+          }
+        }
+      }
+    };
+    void scan();
+    return () => { cancelled = true; };
+  }, [preferences.includeImported, refreshTick, onError]);
 
   const report = useMemo(() => summary ? buildUsageReport(summary, periods) : null, [summary, periods]);
   const series = useMemo(() => report ? buildChartSeries(report, preferences.metric) : [], [report, preferences.metric]);
   const metric = preferences.metric;
   const format = metric === "cost" ? formatUsd : formatTokens;
 
-  const scan = async () => {
-    setScanning(true);
-    setScanNote(null);
-    try {
-      const result = await bridgeApi.scanUsageHistory({});
-      setScanNote(`Imported ${formatCount(result.recordsImported)} records in ${(result.durationMs / 1000).toFixed(1)} s.`);
-      setSources(await bridgeApi.listUsageHistorySources());
-      await loadSummary();
-    } catch (error) {
-      onError(error instanceof Error ? error.message : String(error));
-    } finally {
-      setScanning(false);
-    }
+  const scan = () => {
+    update({ includeImported: true });
+    setRefreshTick(tick => tick + 1);
   };
 
   const refreshRates = async () => {
     setRefreshingRates(true);
     try {
       await bridgeApi.refreshUsageRates();
-      await loadSummary();
+      loadSummary();
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -134,20 +199,27 @@ export function UsageScreen({ onError }: { onError: (message: string) => void })
   const changeOverrides = async (next: Promise<UsagePriceOverride[]>) => {
     try {
       setOverrides(await next);
-      await loadSummary();
+      loadSummary();
     } catch (error) {
       onError(error instanceof Error ? error.message : String(error));
     }
   };
 
-  const incompleteSources = (summary?.sources ?? []).filter(source => source.coverageState !== "complete");
+  const incompleteSources = preferences.includeImported
+    ? sources.filter(source => source.coverageState !== "complete" && source.coverageState !== "empty")
+    : [];
+  const historyIncomplete = preferences.includeImported && (scanning || scanFailed || incompleteSources.some(source => source.capability === "supported"));
+  const partialTotal = loading || historyIncomplete;
 
   return <div className="h-full min-h-0 overflow-y-auto">
     <div className={SCREEN_CONTENT}>
       <ScreenHeading
         title="Usage"
         description="Tokens processed across harnesses and what they would cost at API rates. Not money spent: subscription plans bill separately."
-        action={<button type="button" onClick={() => setRefreshTick(tick => tick + 1)} disabled={loading} aria-label="Refresh usage" aria-busy={loading} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading ? "animate-spin" : ""} /></button>}
+        action={<span className="inline-flex shrink-0 items-center gap-1">
+          {onOpenMeter && <button type="button" onClick={onOpenMeter} aria-label="Open usage meter" title="Usage meter" className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Gauge size={14} aria-hidden="true" /></button>}
+          <button type="button" onClick={() => setRefreshTick(tick => tick + 1)} disabled={loading || scanning} aria-label="Refresh usage" aria-busy={loading || scanning} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading || scanning ? "animate-spin" : ""} /></button>
+        </span>}
       />
 
       <div className="mb-5 flex flex-wrap items-center gap-3">
@@ -159,15 +231,19 @@ export function UsageScreen({ onError }: { onError: (message: string) => void })
         <span className="ml-auto text-caption tabular-nums text-muted-foreground">{formatWindowLabel(window_)}</span>
       </div>
 
+      <p className="mb-3 text-caption text-muted-foreground">{preferences.includeImported ? "Bridge sessions + imported local history on this device" : "Bridge sessions only. Local history is excluded."}</p>
+      {partialTotal && <p role="status" className="mb-3 text-caption text-warning">{scanning ? "Loading history. The displayed total is incomplete." : loading ? "Updating usage. The displayed total is incomplete." : "History is incomplete. The displayed number is a partial total."}</p>}
+
       {report && (incompleteSources.length > 0 || summary!.duplicatesDropped > 0 || report.totals.unpricedRecords > 0) && <ul className="mb-5 space-y-1 text-caption text-muted-foreground" aria-label="Coverage notes">
         {incompleteSources.map(source => <li key={source.id}>{harnessLabel(source.agent)} history is <span className={coverageTone(source.coverageState)}>{source.coverageState}</span>{source.coverageReason ? `: ${source.coverageReason}` : "."}</li>)}
         {summary!.duplicatesDropped > 0 && <li>{formatCount(summary!.duplicatesDropped)} live records were counted once against their imported transcripts.</li>}
-        {report.totals.unpricedRecords > 0 && <li>{formatCount(report.totals.unpricedRecords)} records have no known rate and count as zero cost; their tokens are included.</li>}
+        {report.totals.unpricedRecords > 0 && <li>{formatCount(report.totals.unpricedRecords)} records have no known rate or complete pricing inputs; their cost is unknown, not free. Their tokens are included.</li>}
       </ul>}
 
       {loading && !summary ? <div role="status" className="grid h-56 place-items-center text-caption text-muted-foreground"><LoaderCircle size={16} className="animate-spin" aria-hidden="true" /><span className="sr-only">Loading usage</span></div> : report && <>
         <section className="grid gap-4 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]" aria-label="Summary">
           <div className={CARD}>
+            {partialTotal && <p className="mb-1 text-caption text-warning">Partial total</p>}
             <div className="font-display text-4xl font-semibold tabular-nums tracking-tight text-foreground">{metric === "cost" ? formatUsd(report.totals.costMicrousd) : formatTokens(report.totals.processedTokens)}</div>
             <p className="mt-1 text-caption text-muted-foreground">{formatCount(report.totals.records)} requests{metric === "cost" ? ` · API estimate · ${costSourceLabel(report.costSource)}` : " · processed tokens"}</p>
             <ul className="mt-4 space-y-2.5" aria-label="By harness">
@@ -240,7 +316,7 @@ export function UsageScreen({ onError }: { onError: (message: string) => void })
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <div>
               <h2 className="text-ui font-medium text-foreground">History sources</h2>
-              <p className="text-caption text-muted-foreground">Local transcripts from sessions Bridge did not run. Numbers only; prompt and completion text never leave the store.</p>
+              <p className="text-caption text-muted-foreground">Local Claude Code, Codex, and OpenCode history. Only usage numbers are imported, never prompt or completion text.</p>
             </div>
             <button type="button" onClick={() => void scan()} disabled={scanning} className="inline-flex h-8 items-center gap-2 rounded-lg border border-border px-3 text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-40">
               {scanning ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={13} aria-hidden="true" />}Scan history
