@@ -2100,8 +2100,8 @@ const mockGithubCheckout = (_workspaceId: string, number: number): GithubCheckou
 
 const mockGithubPullRequests = (workspaceId: string): GithubPullRequestsResult => (simulateMockCiFinished(workspaceId), {
   pullRequests: [
-    { number: 341, title: "Render the native GitHub read surface", state: "open", isDraft: false, author: { login: "atharva" }, headBranch: "feat/github-read-surface", reviewDecision: "reviewRequired", mergeability: "mergeable", mergeStateStatus: "CLEAN", checks: { total: 2, queued: 0, inProgress: 0, passed: 2, failed: 0, skipped: 0, cancelled: 0 }, url: "https://github.com/Atharva-Kanherkar/bridge-harness/pull/341" },
-    { number: 340, title: "Add the deterministic gh reader", state: "open", isDraft: false, author: { login: "bridge" }, headBranch: "feat/github-surface-core", reviewDecision: "approved", mergeability: "mergeable", mergeStateStatus: "CLEAN", checks: { total: 2, queued: 0, inProgress: 0, passed: 1, failed: 1, skipped: 0, cancelled: 0 }, url: "https://github.com/Atharva-Kanherkar/bridge-harness/pull/340" },
+    { number: 341, title: "Render the native GitHub read surface", state: "open", isDraft: false, author: { login: "atharva" }, headBranch: "feat/github-read-surface", reviewDecision: "reviewRequired", mergeability: "mergeable", mergeStateStatus: "CLEAN", checks: { total: 3, queued: 0, inProgress: 1, passed: 2, failed: 0, skipped: 0, cancelled: 0 }, url: "https://github.com/Atharva-Kanherkar/bridge-harness/pull/341" },
+    { number: 340, title: "Add the deterministic gh reader", state: "open", isDraft: false, author: { login: "bridge" }, headBranch: "feat/github-surface-core", reviewDecision: "approved", mergeability: "conflicting", mergeStateStatus: "DIRTY", checks: { total: 3, queued: 0, inProgress: 1, passed: 1, failed: 1, skipped: 0, cancelled: 0 }, url: "https://github.com/Atharva-Kanherkar/bridge-harness/pull/340" },
   ],
 });
 
@@ -2111,16 +2111,36 @@ const mockGithubAct = (action: GithubAction, confirmed: boolean): GithubActResul
   confirmed ? { executed: true, message: `Ran ${action.kind}.` } : { executed: false, message: `Declined: ${action.kind}` };
 const mockGithubReview = (number: number, harness: string): GithubReviewResult =>
   ({ status: "launched", sessionId: "mock-review", message: `Review started with ${harness} — comments will post to PR #${number} shortly.` });
-const mockGithubChecks = (_workspaceId: string, number: number): GithubChecksResult => ({ checks: [{ name: "test", status: "completed", conclusion: number === 340 ? "failure" : "success", logUrl: "https://github.com/Atharva-Kanherkar/bridge-harness/actions", workflow: "CI" }] });
+const mockGithubChecks = (_workspaceId: string, number: number): GithubChecksResult => ({ checks: [
+  { name: "test", status: "completed", conclusion: number === 340 ? "failure" : "success", logUrl: "https://github.com/Atharva-Kanherkar/bridge-harness/actions", workflow: "CI" },
+  { name: "typecheck", status: "completed", conclusion: "success", logUrl: "", workflow: "CI" },
+  { name: "bundle size", status: "inProgress", conclusion: null, logUrl: "", workflow: "Size" },
+] });
 const mockGithubPullRequest = (workspaceId: string, number: number): GithubPullRequestResult => {
   const summary = mockGithubPullRequests(workspaceId).pullRequests.find(pr => pr.number === number) ?? mockGithubPullRequests(workspaceId).pullRequests[0];
   return {
     pullRequest: {
       summary,
-      body: "GitHub content remains plain text, including <script>alert('inert')</script>.",
+      body: [
+        "<!-- this template comment never renders -->",
+        "Manage GitHub **without leaving Bridge**. Fixes #339, thanks @atharva.",
+        "",
+        "- [x] read surface",
+        "- [ ] commit list",
+        "",
+        "See https://github.com/Atharva-Kanherkar/bridge-harness for the design notes.",
+        "",
+        "GitHub content remains plain text, including <script>alert('inert')</script>.",
+        "",
+        "A disguised link — <a href=\"javascript:void%200\">click for the logs</a> — renders as text, not an anchor.",
+      ].join("\n"),
       baseBranch: "main",
-      comments: [{ id: "conversation-1", author: { login: "maintainer" }, body: "This is the main PR conversation.", createdAt: now, url: summary.url }],
+      comments: [{ id: "conversation-1", author: { login: "maintainer" }, body: "This is the main PR conversation.\n\n<details><summary>CI output</summary>\n\n```\nok 12 passed\n```\n\n</details>", createdAt: now, url: `${summary.url}#issuecomment-1` }],
       labels: [{ name: "enhancement", color: "a2eeef", description: "New feature" }],
+      commits: [
+        { oid: "8f2a1c9d4e5b6a7c8d9e0f1a2b3c4d5e6f708192", abbreviatedOid: "8f2a1c9", messageHeadline: "feat(github): render the read surface", messageBody: "The pane owns its own height now.", committedAt: now, authors: [{ login: "atharva" }] },
+        { oid: "1b0c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e", abbreviatedOid: "1b0c3d4", messageHeadline: "test(github): cover the inert render", messageBody: "", committedAt: now, authors: [{ login: "bridge" }] },
+      ],
       additions: 18,
       deletions: 4,
       changedFiles: 2,

@@ -122,6 +122,41 @@
       ],
       "type": "string"
     },
+    "PullRequestCommit": {
+      "description": "One commit on a pull request's head branch. `abbreviated_oid` is derived here rather than in the client so every surface shortens a SHA the same way.",
+      "properties": {
+        "abbreviatedOid": {
+          "type": "string"
+        },
+        "authors": {
+          "items": {
+            "$ref": "#/definitions/GithubActor"
+          },
+          "type": "array"
+        },
+        "committedAt": {
+          "type": "string"
+        },
+        "messageBody": {
+          "type": "string"
+        },
+        "messageHeadline": {
+          "type": "string"
+        },
+        "oid": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "abbreviatedOid",
+        "authors",
+        "committedAt",
+        "messageBody",
+        "messageHeadline",
+        "oid"
+      ],
+      "type": "object"
+    },
     "PullRequestDetail": {
       "properties": {
         "additions": {
@@ -146,6 +181,12 @@
           },
           "type": "array"
         },
+        "commits": {
+          "items": {
+            "$ref": "#/definitions/PullRequestCommit"
+          },
+          "type": "array"
+        },
         "deletions": {
           "format": "uint64",
           "minimum": 0.0,
@@ -167,6 +208,7 @@
         "body",
         "changedFiles",
         "comments",
+        "commits",
         "deletions",
         "labels",
         "summary"

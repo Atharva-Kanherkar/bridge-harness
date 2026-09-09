@@ -1068,7 +1068,7 @@ export type ExternalImportStability = "stable" | "version_gated" | "experimental
 
 export type ExternalLearningTriggerKind = "codex" | "claude" | "open_code";
 
-export type GithubAction = { kind: "merge"; number: number; strategy: MergeStrategy } | { body: string; event: ReviewEvent; kind: "review"; number: number } | { body: string; commentId: number; kind: "reply"; number: number } | { kind: "rerun"; number: number } | { kind: "label"; label: string; number: number; operation: LabelOperation; target: LabelTarget };
+export type GithubAction = { kind: "merge"; number: number; strategy: MergeStrategy } | { body: string; event: ReviewEvent; kind: "review"; number: number } | { body: string; commentId: number; kind: "reply"; number: number } | { kind: "rerun"; number: number } | { kind: "label"; label: string; number: number; operation: LabelOperation; target: GithubTarget } | { body: string; kind: "comment"; number: number; target: GithubTarget } | { kind: "setState"; number: number; operation: StateOperation; target: GithubTarget } | { kind: "ready"; number: number };
 
 export interface GithubActor {
   login: string;
@@ -1107,6 +1107,8 @@ export interface GithubRepository {
   name: string;
   owner: string;
 }
+
+export type GithubTarget = "pullRequest" | "issue";
 
 export interface HarnessConfig {
   advanced?: unknown;
@@ -1158,8 +1160,6 @@ export type JsSafeU64 = number;
 export type JsonRpcVersion = "2.0";
 
 export type LabelOperation = "add" | "remove";
-
-export type LabelTarget = "pullRequest" | "issue";
 
 export interface LearningSchedule {
   cadenceMinutes: number;
@@ -1413,12 +1413,22 @@ export interface PullRequestCheck {
   workflow: string;
 }
 
+export interface PullRequestCommit {
+  abbreviatedOid: string;
+  authors: GithubActor[];
+  committedAt: string;
+  messageBody: string;
+  messageHeadline: string;
+  oid: string;
+}
+
 export interface PullRequestDetail {
   additions: number;
   baseBranch: string;
   body: string;
   changedFiles: number;
   comments: GithubComment[];
+  commits: PullRequestCommit[];
   deletions: number;
   labels: GithubLabel[];
   summary: PullRequestSummary;
@@ -1678,6 +1688,8 @@ export interface SlashCommandResolve {
   name: string;
   switchHarness: boolean;
 }
+
+export type StateOperation = "close" | "reopen";
 
 export type StoredHarnessId = string;
 

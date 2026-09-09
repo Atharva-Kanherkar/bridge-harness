@@ -131,6 +131,19 @@ pub struct PullRequestSummary {
     pub url: String,
 }
 
+/// One commit on a pull request's head branch. `abbreviated_oid` is derived
+/// here rather than in the client so every surface shortens a SHA the same way.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequestCommit {
+    pub oid: String,
+    pub abbreviated_oid: String,
+    pub message_headline: String,
+    pub message_body: String,
+    pub committed_at: String,
+    pub authors: Vec<GithubActor>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct PullRequestDetail {
@@ -139,6 +152,7 @@ pub struct PullRequestDetail {
     pub base_branch: String,
     pub comments: Vec<GithubComment>,
     pub labels: Vec<GithubLabel>,
+    pub commits: Vec<PullRequestCommit>,
     pub additions: u64,
     pub deletions: u64,
     pub changed_files: u64,
@@ -345,7 +359,7 @@ pub enum ReviewEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub enum LabelTarget {
+pub enum GithubTarget {
     PullRequest,
     Issue,
 }
@@ -355,6 +369,15 @@ pub enum LabelTarget {
 pub enum LabelOperation {
     Add,
     Remove,
+}
+
+/// Open/closed transitions. Marking a draft ready for review is a separate
+/// action because `gh` spells it `pr ready`, not a state edit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum StateOperation {
+    Close,
+    Reopen,
 }
 
 /// One mutating GitHub action. The `kind` tag selects the variant; every write
@@ -374,11 +397,22 @@ pub enum GithubAction {
     },
     Rerun { number: u64 },
     Label {
-        target: LabelTarget,
+        target: GithubTarget,
         number: u64,
         label: String,
         operation: LabelOperation,
     },
+    Comment {
+        target: GithubTarget,
+        number: u64,
+        body: String,
+    },
+    SetState {
+        target: GithubTarget,
+        number: u64,
+        operation: StateOperation,
+    },
+    Ready { number: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -548,7 +582,7 @@ mod tests {
         assert_eq!(round_trip(&reply), reply);
 
         let label = GithubAction::Label {
-            target: LabelTarget::PullRequest,
+            target: GithubTarget::PullRequest,
             number: 341,
             label: "bug".into(),
             operation: LabelOperation::Add,
@@ -584,5 +618,54 @@ mod tests {
             message: "Declined: merge PR #328 (squash)".into(),
         };
         assert_eq!(round_trip(&acted), acted);
+    }
+
+    #[test]
+    fn conversation_and_state_actions_round_trip_camel_case() {
+        let comment = GithubAction::Comment {
+            target: GithubTarget::PullRequest,
+            number: 341,
+            body: "looks good".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&comment).unwrap(),
+            json!({"kind": "comment", "target": "pullRequest", "number": 341, "body": "looks good"})
+        );
+        assert_eq!(round_trip(&comment), comment);
+
+        let close = GithubAction::SetState {
+            target: GithubTarget::Issue,
+            number: 17,
+            operation: StateOperation::Close,
+        };
+        assert_eq!(
+            serde_json::to_value(&close).unwrap(),
+            json!({"kind": "setState", "target": "issue", "number": 17, "operation": "close"})
+        );
+        assert_eq!(round_trip(&close), close);
+
+        let ready = GithubAction::Ready { number: 341 };
+        assert_eq!(
+            serde_json::to_value(&ready).unwrap(),
+            json!({"kind": "ready", "number": 341})
+        );
+        assert_eq!(round_trip(&ready), ready);
+    }
+
+    #[test]
+    fn a_pull_request_commit_keeps_its_abbreviated_oid_on_the_wire() {
+        let commit = PullRequestCommit {
+            oid: "8f2a1c9d4e5b6a7c8d9e0f1a2b3c4d5e6f708192".into(),
+            abbreviated_oid: "8f2a1c9".into(),
+            message_headline: "feat(github): show commits".into(),
+            message_body: "The pane never listed them.".into(),
+            committed_at: "2026-09-09T10:00:00Z".into(),
+            authors: vec![GithubActor { login: "atharva".into() }],
+        };
+        assert_eq!(
+            serde_json::to_value(&commit).unwrap()["abbreviatedOid"],
+            json!("8f2a1c9")
+        );
+        assert_eq!(round_trip(&commit), commit);
     }
 }

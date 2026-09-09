@@ -701,6 +701,55 @@ html[data-native-fullscreen] .u-traffic-inset {
   animation: page-enter 0.36s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+/* ── GitHub pane ────────────────────────────────────────────────────────────
+   A check that is still running used to spin a loader glyph on every row, so a
+   red CI run read as a page full of jitter. Motion here says one thing only —
+   "this row is still live" — and it says it the way the rest of the app does:
+   opacity, on the app's 2.4s cadence, with nothing rotating or deforming. */
+@keyframes github-check-breathe {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
+.github-check-live {
+  animation: github-check-breathe 2.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+/* List rows arriving together. The per-row delay is an inline custom property
+   because it is an index, and `@media (prefers-reduced-motion)` at the bottom
+   of this file collapses the whole thing to its final frame. */
+@keyframes github-row-enter {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.github-row-enter {
+  animation: github-row-enter 0.28s cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: var(--github-row-delay, 0ms);
+}
+
+/* The GitHub markdown surface. A comment body is written for GitHub, where a
+   single newline inside a paragraph is a hard break — collapsing them (which
+   is correct for the transcript) turns a reviewer's numbered walkthrough into
+   one run-on line. Scoped to this surface so the transcript keeps its own
+   paragraph behaviour. */
+.gh-md .md {
+  /* The pane's compact scale. This lives here rather than as a utility
+     because `.md` sets its own unlayered `font-size`, which beats any
+     Tailwind utility regardless of specificity. */
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+
+.gh-md .md p,
+.gh-md .md blockquote {
+  white-space: pre-line;
+}
+
+.gh-md .md > :is(h1, h2, h3, h4) {
+  margin-top: 1em;
+}
+
 /* The live accent bar on a working Mission Control tile. */
 @keyframes mission-pulse {
   0%, 100% { opacity: 0.45; }

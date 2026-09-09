@@ -10,5 +10,13 @@
   { "id": "pr-label-approved", "action": { "kind": "label", "target": "pullRequest", "number": 104, "label": "bug", "operation": "add" }, "confirmed": true, "expectExecuted": true },
   { "id": "pr-label-denied", "action": { "kind": "label", "target": "pullRequest", "number": 104, "label": "bug", "operation": "remove" }, "confirmed": false, "expectExecuted": false },
   { "id": "issue-label-approved", "action": { "kind": "label", "target": "issue", "number": 17, "label": "enhancement", "operation": "add" }, "confirmed": true, "expectExecuted": true },
-  { "id": "issue-label-denied", "action": { "kind": "label", "target": "issue", "number": 17, "label": "enhancement", "operation": "remove" }, "confirmed": false, "expectExecuted": false }
+  { "id": "issue-label-denied", "action": { "kind": "label", "target": "issue", "number": 17, "label": "enhancement", "operation": "remove" }, "confirmed": false, "expectExecuted": false },
+  { "id": "pr-comment-approved", "action": { "kind": "comment", "target": "pullRequest", "number": 341, "body": "looks good" }, "confirmed": true, "expectExecuted": true },
+  { "id": "pr-comment-denied", "action": { "kind": "comment", "target": "pullRequest", "number": 341, "body": "looks good" }, "confirmed": false, "expectExecuted": false },
+  { "id": "issue-comment-approved", "action": { "kind": "comment", "target": "issue", "number": 17, "body": "on it" }, "confirmed": true, "expectExecuted": true },
+  { "id": "pr-close-approved", "action": { "kind": "setState", "target": "pullRequest", "number": 341, "operation": "close" }, "confirmed": true, "expectExecuted": true },
+  { "id": "pr-close-denied", "action": { "kind": "setState", "target": "pullRequest", "number": 341, "operation": "close" }, "confirmed": false, "expectExecuted": false },
+  { "id": "issue-reopen-approved", "action": { "kind": "setState", "target": "issue", "number": 17, "operation": "reopen" }, "confirmed": true, "expectExecuted": true },
+  { "id": "ready-approved", "action": { "kind": "ready", "number": 341 }, "confirmed": true, "expectExecuted": true },
+  { "id": "ready-denied", "action": { "kind": "ready", "number": 341 }, "confirmed": false, "expectExecuted": false }
 ]
