@@ -56,7 +56,9 @@ provider tiles are unreadable at panel width.
 - Left-click on the tray icon toggles a `meter` window: borderless, not
   resizable, always on top, absent from the taskbar/app switcher.
 - The panel is positioned from the tray icon's own rect: horizontally centred
-  under the icon, clamped so it never leaves the monitor's visible frame.
+  under the icon, clamped so it never leaves the visible frame **of the display
+  holding that icon**, which is not necessarily the display the hidden panel
+  currently reports itself on.
 - Left-click while open hides it. The panel also hides when it loses focus and
   when the main window gains focus.
 - **Dismissal is not universal, and that is a deliberate trade.** Showing the
@@ -85,8 +87,16 @@ provider tiles are unreadable at panel width.
   shape the live adapter publishes**, so no frontend parsing changes.
 - **Expired windows are dropped, not shown.** `resets_at` is absolute Unix
   seconds; a rollout from last week carries a `used_percent` that has since
-  reset. A window whose `resets_at` is at or before now is omitted. If every
-  window is expired, nothing is published — a stale number is worse than none.
+  reset. A window whose `resets_at` is at or before now is omitted.
+- **When every window has expired, the provider is cleared, not skipped.**
+  Publishing nothing only avoids showing a stale number on a *first* read; if a
+  live session already put 95% on screen and the window later resets with no
+  session running, silence leaves that 95% up forever. So the disk path emits
+  an explicit empty payload, and both the tray title and the panel drop the
+  provider's snapshot when they receive one.
+- **A live session that fails to answer falls through to disk.** Reaching a
+  registered runtime is not the same as it replying; a closed request writer
+  must not suppress the fallback.
 - A live Codex session still wins: the disk read only fills the gap.
 
 ### F4 — The menu bar shows the number
@@ -140,7 +150,8 @@ provider tiles are unreadable at panel width.
   `CODEX_HOME` publishes exactly one `AccountUsage{provider:"codex"}` event whose
   `rate_limits` matches the fixture's surviving windows.
 - `refresh_account_usage` with a live Codex session does **not** double-publish
-  from disk.
+  from disk, but a live session whose `read_usage()` errors **does** fall
+  through to it.
 - Claude's existing cold probe is unaffected — its event still fires.
 - `bun run check` clean: `tsc -b` + `cargo check --workspace`.
 - Protocol artifacts regenerate to a no-op diff
