@@ -142,7 +142,7 @@ The first request on a connection must be **`protocol/handshake`**
 (`handshake-request.json` / `handshake-response.json`); any other first
 request is answered with `invalid_request`. The server advertises:
 
-- its `protocolVersion` (this document describes **1.0**),
+- its `protocolVersion` (this document describes **1.7**),
 - its identity (`server.name`/`server.version` — the application version), and
 - its `capabilities`: the method domains it serves.
 
@@ -151,6 +151,11 @@ request is answered with `invalid_request`. The server advertises:
 when majors match and the client's minor is not newer than the server's.
 Incompatible clients are rejected with the stable code **2000
 `incompatible_protocol`**, with both versions in `error.data`.
+
+**1.7 adds worker prompt proposal grants and attributed prompt revisions.**
+An older daemon must reject a new client during handshake so it cannot silently
+discard `workerPromptProposalRoles` when saving the permission policy. Older
+clients remain compatible with the current daemon.
 
 **1.0 is a breaking bump, not a stability claim.** Opening `HarnessId` (below)
 widened a value domain that appears in *results*, so a 0.x client — whose

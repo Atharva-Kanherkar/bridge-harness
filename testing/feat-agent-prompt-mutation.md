@@ -81,6 +81,8 @@ release safeguards. Prompt storage uses migration 55, after usage migrations
   depth survives appends; exact append, size/compiler validation, rollback,
   concurrent edits, reset/restore ABA, idempotency/conflicting replay,
   attribution immutability, migration upgrade and transaction-failure rollback.
+- Protocol: a daemon from before worker role grants must reject the current
+  client during handshake, while the current daemon still accepts older clients.
 - Policy/runtime: actor spoofing, own/unrelated child targets, default worker
   denial and explicit opt-in, revoked grant, hidden/direct session denial,
   duplicate events, auto-approve bypass prevention, host-control-turn handling,
