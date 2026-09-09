@@ -1,0 +1,9 @@
+export const repoUrl = "https://github.com/Atharva-Kanherkar/bridge-harness";
+export const releasesUrl = `${repoUrl}/releases`;
+export const latestReleaseUrl = `${repoUrl}/releases/latest`;
+export const issuesUrl = `${repoUrl}/issues`;
+export const docsUrl = `${repoUrl}/tree/main/docs`;
+export const changelogUrl = releasesUrl;
+export const latestVersion = "0.5.5";
+export const platformLabel = "macOS 12 or later · Apple Silicon";
+export const nodeRequirement = "Claude models need Node 18 or newer on your PATH.";

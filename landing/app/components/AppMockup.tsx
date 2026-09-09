@@ -1,13 +1,37 @@
-function Dot({ tone }: { tone: "success" | "warn" | "faint" | "fg" }) {
-  const c = { success: "bg-success", warn: "bg-warn", faint: "bg-faint", fg: "bg-foreground" }[tone];
-  return <span className={`inline-block size-1.5 shrink-0 rounded-full ${c}`} />;
+import { Fragment } from "react";
+import type { Card, CardBody, ConversationItem, Scene, SidebarRow, Tone } from "../content/scenes";
+
+const dotTone: Record<Tone, string> = {
+  success: "bg-success",
+  warning: "bg-warning",
+  destructive: "bg-destructive",
+  faint: "bg-faint",
+  fg: "bg-foreground",
+};
+
+const inkTone: Record<Tone, string> = {
+  success: "text-success",
+  warning: "text-warning",
+  destructive: "text-destructive",
+  faint: "text-faint",
+  fg: "text-foreground",
+};
+
+const glyphTone: Record<Tone, string> = {
+  success: "✓",
+  warning: "●",
+  destructive: "✕",
+  faint: "○",
+  fg: "·",
+};
+
+function Dot({ tone }: { tone: Tone }) {
+  return <span className={`inline-block size-1.5 shrink-0 rounded-full ${dotTone[tone]}`} />;
 }
 
-function Row({ label, sub, tone, right, depth = 0, active = false }: {
-  label: string; sub?: string; tone: "success" | "warn" | "faint" | "fg"; right?: string; depth?: number; active?: boolean;
-}) {
+function Row({ label, sub, tone, right, depth = 0, active = false }: SidebarRow) {
   return (
-    <div className={`flex items-center gap-2 rounded-md px-2 py-1.5 ${active ? "bg-muted" : ""}`} style={{ paddingLeft: 8 + depth * 14 }}>
+    <div className={`flex items-center gap-2 rounded-md py-1.5 pr-2 ${depth === 1 ? "pl-6" : "pl-2"} ${active ? "bg-muted" : ""}`}>
       <Dot tone={tone} />
       <div className="min-w-0 flex-1">
         <div className="truncate text-[12px] leading-4 text-foreground">{label}</div>
@@ -18,88 +42,125 @@ function Row({ label, sub, tone, right, depth = 0, active = false }: {
   );
 }
 
-function Msg({ who, children, meta }: { who: "you" | "bridge"; children: React.ReactNode; meta?: string }) {
+function Message({ who, meta, text }: Extract<ConversationItem, { kind: "message" }>) {
   return (
     <div className={`flex flex-col gap-1 ${who === "you" ? "items-end" : "items-start"}`}>
       {meta && <span className="text-[10px] uppercase tracking-wider text-faint">{meta}</span>}
-      <div className={`max-w-[85%] rounded-xl px-3 py-2 text-[12.5px] leading-5 ${who === "you" ? "bg-muted text-foreground" : "text-foreground/90"}`}>
-        {children}
+      <div className={`max-w-[85%] rounded-xl px-3 py-2 text-[12.5px] leading-5 ${who === "you" ? "bg-muted text-foreground" : "text-body"}`}>
+        {text}
       </div>
     </div>
   );
 }
 
-function Card({ title, right, children }: { title: string; right?: React.ReactNode; children: React.ReactNode }) {
+function diffTone(line: string) {
+  if (line.startsWith("+")) return "text-success";
+  if (line.startsWith("-")) return "text-destructive";
+  return "text-muted-foreground";
+}
+
+function CardContent({ body }: { body: CardBody }) {
+  switch (body.kind) {
+    case "text":
+      return <p className="text-[12px] leading-5 text-body">{body.text}</p>;
+    case "grid":
+      return (
+        <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5 font-mono text-[11px] text-muted-foreground">
+          {body.rows.map(([key, value], i) => (
+            <Fragment key={`${key}-${i}`}>
+              <span>{key}</span>
+              <span className="truncate text-foreground">{value}</span>
+            </Fragment>
+          ))}
+        </div>
+      );
+    case "checks":
+      return (
+        <div className="flex flex-col gap-1 text-[11px] text-muted-foreground">
+          {body.items.map((item) => (
+            <span key={item.label} className="truncate">
+              <span className={inkTone[item.tone]}>{glyphTone[item.tone]}</span> {item.label}
+              {item.detail && <span className="text-faint"> · {item.detail}</span>}
+            </span>
+          ))}
+        </div>
+      );
+    case "code":
+      return (
+        <pre className="overflow-hidden font-mono text-[10.5px] leading-4">
+          {body.lines.map((line, i) => (
+            <div key={i} className={diffTone(line)}>
+              {line}
+            </div>
+          ))}
+        </pre>
+      );
+  }
+}
+
+function MockCard({ card }: { card: Card }) {
   return (
     <div className="w-full rounded-lg border border-border-card bg-card">
-      <div className="flex items-center justify-between border-b border-border px-3 py-1.5 text-[11px] text-muted-foreground">
-        <span>{title}</span>{right}
+      <div className="flex items-center justify-between gap-3 border-b border-border px-3 py-1.5 text-[11px] text-muted-foreground">
+        <span className="truncate">{card.title}</span>
+        {card.status && <span className={`shrink-0 ${inkTone[card.status.tone]}`}>{card.status.label}</span>}
       </div>
-      <div className="px-3 py-2 text-[12px] leading-5">{children}</div>
+      <div className="px-3 py-2">
+        <CardContent body={card.body} />
+      </div>
     </div>
   );
 }
 
-export default function AppMockup() {
+export default function AppMockup({ scene }: { scene: Scene }) {
   return (
     <div className="w-full overflow-hidden rounded-xl border border-border-card bg-background text-left text-foreground shadow-[0_0_0_1px_#000,0_40px_80px_-30px_rgba(0,0,0,0.9)]">
-      {/* title bar */}
       <div className="flex h-10 items-center border-b border-border bg-sidebar px-3">
-        <div className="flex gap-1.5">
-          <span className="size-3 rounded-full bg-[#ff5f57]" /><span className="size-3 rounded-full bg-[#febc2e]" /><span className="size-3 rounded-full bg-[#28c840]" />
+        <div className="flex gap-1.5" aria-hidden="true">
+          <span className="size-3 rounded-full bg-[#ff5f57]" />
+          <span className="size-3 rounded-full bg-[#febc2e]" />
+          <span className="size-3 rounded-full bg-[#28c840]" />
         </div>
         <span className="ml-4 text-[12px] text-muted-foreground">Bridge</span>
-        <div className="ml-auto flex items-center gap-2 text-[11px] text-muted-foreground">
-          <span className="rounded-md border border-border px-2 py-0.5">harness · main</span>
-          <span className="rounded-md border border-border px-2 py-0.5">3 workers live</span>
+        <div className="ml-auto flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap text-[11px] text-muted-foreground">
+          {scene.chips.map((chip, i) => (
+            <span key={chip} className={`shrink-0 rounded-md border border-border px-2 py-0.5 ${i > 0 ? "max-sm:hidden" : ""}`}>
+              {chip}
+            </span>
+          ))}
         </div>
       </div>
 
-      <div className="grid h-[600px] grid-cols-[230px_1fr_320px] max-lg:grid-cols-[230px_1fr] max-md:grid-cols-1">
-        {/* sidebar */}
+      <div className="grid h-[640px] grid-cols-[230px_1fr_320px] max-lg:grid-cols-[230px_1fr] max-md:grid-cols-1">
         <aside className="flex flex-col border-r border-border bg-sidebar p-2 max-md:hidden">
           <div className="px-2 pb-2 pt-1 text-[10px] uppercase tracking-wider text-faint">Repositories</div>
           <Row label="harness" sub="github.com/bridge/harness" tone="fg" />
           <div className="mt-2 px-2 pb-1 text-[10px] uppercase tracking-wider text-faint">Tasks</div>
-          <Row label="Worktree lifecycle inventory" sub="feat/worktree-lifecycle" tone="success" right="live" active />
-          <Row label="impl · standard" sub="worker-2f9a · isolated" tone="success" depth={1} />
-          <Row label="verify · codex" sub="worker-71c0 · read-only" tone="warn" depth={1} />
-          <Row label="Usage ledger rollups" sub="feat/usage-tracking" tone="success" right="live" />
-          <Row label="research · opencode" sub="worker-b330" tone="success" depth={1} />
-          <Row label="Refresh-token rotation" sub="merged · PR #577" tone="faint" />
-          <Row label="Sidebar archive action" sub="archived" tone="faint" />
+          {scene.sidebar.map((row) => (
+            <Row key={`${row.label}-${row.sub}`} {...row} />
+          ))}
           <div className="mt-auto flex items-center gap-2 border-t border-border px-2 pt-2 text-[11px] text-muted-foreground">
             <Dot tone="success" /> codex · claude · opencode
           </div>
         </aside>
 
-        {/* conversation */}
         <section className="flex min-h-0 min-w-0 flex-col">
-          <div className="flex h-9 items-center gap-4 border-b border-border px-4 text-[12px]">
-            <span className="border-b border-foreground pb-2 pt-2 text-foreground">Conversation</span>
-            <span className="text-muted-foreground">Changes <span className="text-faint">7</span></span>
-            <span className="text-muted-foreground">Terminal</span>
-            <span className="text-muted-foreground">Browser</span>
-            <span className="ml-auto text-[11px] text-faint">fable-5-1 · high</span>
+          <div className="flex h-9 items-center gap-4 overflow-hidden whitespace-nowrap border-b border-border px-4 text-[12px]">
+            <span className="shrink-0 border-b border-foreground pb-2 pt-2 text-foreground">Conversation</span>
+            <span className="shrink-0 text-muted-foreground">
+              Changes <span className="text-faint">{scene.changes}</span>
+            </span>
+            <span className="shrink-0 text-muted-foreground max-sm:hidden">Terminal</span>
+            <span className="shrink-0 text-muted-foreground max-sm:hidden">Browser</span>
+            <span className="ml-auto shrink-0 text-[11px] text-faint max-sm:hidden">{scene.model}</span>
           </div>
-          <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden px-5 py-4">
-            <Msg who="you">Reclaimed branches still show as active in the sidebar. Trace it and fix it, but I want a second harness to verify.</Msg>
-            <Msg who="bridge" meta="orchestrator">
-              The coordinator marks a branch reclaimed before the forest entry lands, so the sidebar reads one stale tick. Delegating the fix to an isolated worker.
-            </Msg>
-            <Card title="Delegation · implementation" right={<span className="text-success">running</span>}>
-              <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-0.5 font-mono text-[11px] text-muted-foreground">
-                <span>tier</span><span className="text-foreground">standard · medium</span>
-                <span>write</span><span className="text-foreground">isolated · src-tauri/bridge-core/**</span>
-                <span>verify</span><span className="text-foreground">cargo test -p bridge-core worktree::</span>
-              </div>
-            </Card>
-            <Card title="Worker result · worker-2f9a" right={<span className="text-success">tests passed</span>}>
-              Reordered reclaim after the forest append and added a regression test. 2 files changed, cargo test green.
-            </Card>
-            <Card title="Completion gate" right={<span className="text-warn">verifying</span>}>
-              Codex verifier launched in the implementation worktree. Same-family evidence rejected by policy.
-            </Card>
+          <div className="relative min-h-0 flex-1 overflow-hidden">
+            <div className="flex flex-col gap-3 px-5 py-4 animate-fade-up motion-reduce:animate-none">
+              {scene.conversation.map((item, i) =>
+                item.kind === "message" ? <Message key={i} {...item} /> : <MockCard key={i} card={item.card} />,
+              )}
+            </div>
+            <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-linear-to-t from-background to-transparent" />
           </div>
           <div className="border-t border-border p-3">
             <div className="flex items-center gap-2 rounded-full border border-border-card bg-card px-3 py-2 text-[12px] text-faint">
@@ -109,36 +170,12 @@ export default function AppMockup() {
           </div>
         </section>
 
-        {/* work view */}
         <aside className="flex flex-col border-l border-border bg-sidebar max-lg:hidden">
           <div className="flex h-9 items-center border-b border-border px-3 text-[12px] text-foreground">Work</div>
-          <div className="flex flex-col gap-3 p-3">
-            <Card title="Worktree">
-              <div className="font-mono text-[11px] text-muted-foreground">
-                .worktrees/worker-2f9a<br />
-                <span className="text-foreground">+38 −12</span> · 2 files · clean
-              </div>
-            </Card>
-            <Card title="worktree_coordinator.rs">
-              <pre className="font-mono text-[10.5px] leading-4 text-muted-foreground">
-{`- self.mark_reclaimed(&branch)?;
-  forest.append(entry)?;
-+ self.mark_reclaimed(&branch)?;`}
-              </pre>
-            </Card>
-            <Card title="Policy">
-              <div className="flex flex-col gap-1 text-[11px] text-muted-foreground">
-                <span><span className="text-success">✓</span> write scope authorized</span>
-                <span><span className="text-success">✓</span> isolation enforced</span>
-                <span><span className="text-warn">●</span> approval pending · merge</span>
-              </div>
-            </Card>
-            <Card title="Usage · today">
-              <div className="font-mono text-[11px] text-muted-foreground">
-                claude 412k · codex 96k · opencode 31k<br />
-                <span className="text-foreground">$4.18</span> across 3 harnesses
-              </div>
-            </Card>
+          <div className="flex flex-col gap-3 overflow-hidden p-3 animate-fade-up motion-reduce:animate-none">
+            {scene.work.map((card) => (
+              <MockCard key={card.title} card={card} />
+            ))}
           </div>
         </aside>
       </div>
