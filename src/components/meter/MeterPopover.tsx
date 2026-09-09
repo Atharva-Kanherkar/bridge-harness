@@ -20,6 +20,7 @@ function providerSnapshots(usage: Partial<Record<UsageProvider, UsageSnapshot>>)
 }
 
 function WindowRow({ window, nowMs }: { window: RateWindow; nowMs: number }) {
+  const [expanded, setExpanded] = useState(false);
   const pace = useMemo(() => paceWeekly(window, nowMs), [window, nowMs]);
   const showPace = pace != null && paceVisible(window, nowMs);
   const reset = window.resetsInSeconds != null ? formatReset(window.resetsInSeconds) : window.resetsLabel;
@@ -30,13 +31,14 @@ function WindowRow({ window, nowMs }: { window: RateWindow; nowMs: number }) {
       <span className="font-medium text-foreground">{name}</span>
       <span className="shrink-0 tabular-nums text-muted-foreground">{Math.round(used)}% used{pace && showPace ? ` · ${paceTokenDelta(pace)}` : ""}</span>
     </div>
-    <span className="mt-1 block h-1.5 w-full overflow-hidden rounded-full bg-muted" role="img" aria-label={`${name} ${Math.round(used)} percent used`}>
+    <button type="button" aria-expanded={expanded} aria-controls={`meter-window-${window.id}`} onClick={() => setExpanded(value => !value)} className="mt-1 block h-1.5 w-full overflow-hidden rounded-full bg-muted text-left outline-none transition-shadow focus-visible:ring-2 focus-visible:ring-ring">
       <span className="block h-full rounded-full bg-foreground" style={{ width: `${used}%` }} />
-    </span>
+    </button>
     <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
       {reset && <span className="tabular-nums">{reset}</span>}
       {pace && showPace && <span>{paceLabel(pace)}</span>}
     </div>
+    {expanded && <p id={`meter-window-${window.id}`} className="mt-1 text-[11px] text-muted-foreground">{Math.round(used)}% of this window is used{reset ? `. ${reset}.` : "."}</p>}
   </div>;
 }
 
@@ -58,6 +60,8 @@ export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose }
   // dialog itself on mount (Escape is handled globally, topmost-layer-first).
   useEffect(() => { dialogRef.current?.focus(); }, []);
   const live = providerSnapshots(usage);
+  const liveProviders = new Set(live.map(entry => entry.provider));
+  const awaiting = (registry?.providers ?? []).filter(entry => entry.supported && !liveProviders.has(entry.id as UsageProvider));
   const planned = (registry?.providers ?? []).filter(entry => !entry.supported);
   const worst = live.flatMap(({ snapshot }) => snapshot.windows).reduce<number | null>((max, window) => (max == null ? window.usedPercent : Math.max(max, window.usedPercent)), null);
   return <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Usage meter" tabIndex={-1} className="u-glass-popover flex max-h-[80dvh] w-[min(24rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl outline-none">
@@ -75,7 +79,7 @@ export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose }
       </span>
     </div>
     <div className="min-h-0 flex-1 overflow-y-auto px-3.5 py-2">
-      {live.length === 0 && <p className="py-4 text-center text-caption text-muted-foreground">No live windows yet. Run a session, then refresh.</p>}
+      {registry == null && live.length === 0 && <div role="status" className="flex items-center justify-center gap-2 py-5 text-caption text-muted-foreground"><RefreshCw size={12} className="animate-spin" aria-hidden="true" />Loading meter</div>}
       {live.map(({ provider, snapshot }) => <section key={provider} aria-label={`${harnessLabel(provider)} usage`} className="border-b border-border py-1.5 last:border-0">
         <div className="flex items-center gap-1.5 text-ui">
           <HarnessMark harness={provider} size={12} />
@@ -84,6 +88,11 @@ export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose }
         </div>
         {snapshot.windows.length === 0 && <p className="py-1 text-[11px] text-muted-foreground">Connected — no quota windows reported.</p>}
         {snapshot.windows.map(window => <WindowRow key={window.id} window={window} nowMs={nowMs} />)}
+      </section>)}
+      {awaiting.map(entry => <section key={entry.id} aria-label={`${entry.label} usage`} className="flex items-center gap-2 border-b border-border py-3 last:border-0">
+        <HarnessMark harness={entry.id} size={12} />
+        <span className="font-medium text-foreground">{entry.label}</span>
+        <span className="ml-auto text-[11px] text-muted-foreground">Awaiting live usage</span>
       </section>)}
       {planned.length > 0 && <details className="py-2 text-caption text-muted-foreground">
         <summary className="cursor-pointer hover:text-foreground">{planned.length} more providers planned</summary>
