@@ -146,3 +146,117 @@
     outline-offset: 2px;
   }
 }
+
+@layer components {
+  .doc-prose {
+    color: var(--color-body);
+    font-size: 0.9375rem;
+    line-height: 1.75;
+  }
+  .doc-prose > * + * {
+    margin-top: 1rem;
+  }
+  .doc-prose h1 {
+    color: var(--color-foreground);
+    font-family: var(--font-heading);
+    font-size: 2rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+  }
+  .doc-prose h2 {
+    color: var(--color-foreground);
+    font-family: var(--font-heading);
+    font-size: 1.35rem;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    margin-top: 2.5rem;
+  }
+  .doc-prose h3,
+  .doc-prose h4 {
+    color: var(--color-foreground);
+    font-size: 1.0625rem;
+    font-weight: 600;
+    margin-top: 2rem;
+  }
+  .doc-prose a {
+    color: var(--color-foreground);
+    text-decoration: underline;
+    text-underline-offset: 4px;
+  }
+  .doc-prose a:hover {
+    text-decoration: none;
+  }
+  .doc-prose strong {
+    color: var(--color-foreground);
+    font-weight: 600;
+  }
+  .doc-prose ul,
+  .doc-prose ol {
+    padding-left: 1.25rem;
+  }
+  .doc-prose ul {
+    list-style: disc;
+  }
+  .doc-prose ol {
+    list-style: decimal;
+  }
+  .doc-prose li::marker {
+    color: var(--color-faint-2);
+  }
+  .doc-prose li + li {
+    margin-top: 0.375rem;
+  }
+  .doc-prose code {
+    background: var(--color-code);
+    border: 1px solid var(--color-border);
+    border-radius: 0.25rem;
+    font-size: 0.8125rem;
+    padding: 0.1rem 0.3rem;
+  }
+  .doc-prose pre {
+    background: var(--color-code);
+    border: 1px solid var(--color-border);
+    border-radius: 0.5rem;
+    overflow-x: auto;
+    padding: 0.875rem 1rem;
+  }
+  .doc-prose pre code {
+    background: none;
+    border: 0;
+    color: var(--color-code-foreground);
+    font-size: 0.78125rem;
+    line-height: 1.6;
+    padding: 0;
+  }
+  .doc-prose blockquote {
+    border-left: 2px solid var(--color-border);
+    color: var(--color-muted-foreground);
+    padding-left: 1rem;
+  }
+  .doc-prose hr {
+    border-color: var(--color-border);
+    margin: 2.5rem 0;
+  }
+  .doc-prose table {
+    border-collapse: collapse;
+    display: block;
+    font-size: 0.8125rem;
+    overflow-x: auto;
+    width: 100%;
+  }
+  .doc-prose th,
+  .doc-prose td {
+    border-top: 1px solid var(--color-border);
+    padding: 0.5rem 0.75rem;
+    text-align: left;
+    vertical-align: top;
+  }
+  .doc-prose th {
+    color: var(--color-muted-foreground);
+    font-weight: 500;
+  }
+  .doc-prose img {
+    border-radius: 0.5rem;
+  }
+}

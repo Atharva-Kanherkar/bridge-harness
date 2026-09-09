@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { changelogPath, docsUrl, downloadPath, issuesUrl, latestVersion, platformLabel, repoUrl } from "../content/site";
+import { blogPath, changelogPath, docsPath, downloadPath, issuesUrl, latestVersion, platformLabel, repoUrl } from "../content/site";
 
 const columns = [
   {
@@ -7,7 +7,8 @@ const columns = [
     links: [
       { label: "Download", href: downloadPath },
       { label: "Changelog", href: changelogPath },
-      { label: "Docs", href: docsUrl },
+      { label: "Docs", href: docsPath },
+      { label: "Blog", href: blogPath },
     ],
   },
   {

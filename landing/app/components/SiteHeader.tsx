@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { changelogPath, docsUrl, downloadPath, repoUrl } from "../content/site";
+import { blogPath, changelogPath, docsPath, downloadPath } from "../content/site";
 
 export default function SiteHeader() {
   const [scrolled, setScrolled] = useState(false);
@@ -23,15 +23,15 @@ export default function SiteHeader() {
           Bridge
         </Link>
         <nav className="flex items-center gap-6 text-[13px] text-muted-foreground">
-          <a href={docsUrl} className="hover:text-foreground">
+          <Link href={docsPath} className="hover:text-foreground">
             Docs
-          </a>
+          </Link>
           <Link href={changelogPath} className="hidden hover:text-foreground sm:inline">
             Changelog
           </Link>
-          <a href={repoUrl} className="hidden hover:text-foreground sm:inline">
-            GitHub
-          </a>
+          <Link href={blogPath} className="hidden hover:text-foreground sm:inline">
+            Blog
+          </Link>
           <Link href={downloadPath} className="rounded-md bg-foreground px-3 py-1.5 text-background hover:bg-foreground/90">
             Download
           </Link>

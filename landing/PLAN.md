@@ -43,6 +43,8 @@ The mock card renderer moved to its own module so the loop panels and the hero m
 
 ## Phase 3: routes and media (routes done, media outstanding)
 
+The blog and docs routes were added beyond the original table: `/blog` with three posts drawn from the design references, and `/docs` rendering twelve of the repository's own markdown files rather than linking to GitHub.
+
 1. /download: Apple Silicon DMG button to releases/latest, sha256 line, requirements (macOS 12 or later, Node 18+ for Claude), the Gatekeeper note from the README.
 2. /changelog: six releases from 0.5.0 to 0.5.5, each with date, headline, bullets, and a link to its GitHub notes. Written as a typed data file rather than MDX, which avoids adding an MDX toolchain for prose that is already short. Copied from release notes at authoring time; no GitHub API because the repo is private.
 3. Bento tiles open a dialog with a larger mock, then a short recording once real captures exist.
