@@ -32,9 +32,6 @@ export type SessionToolbarProps = {
    *  muted secondary line next to the model picker for repo sessions, or as the
    *  sole context indicator for direct chats that omit `modelControl`. */
   tierLabel?: string | null;
-  /** The standing bypass-approvals warning. Sits immediately before the
-   * dock/recall/menu cluster, same spot AppTitleBar gave it. */
-  bypassBadge?: ReactNode;
   /** Right-edge cluster beyond the window controls. */
   actions?: ReactNode;
   /** Leading cluster, before the title: the panel toggle and history chevrons
@@ -89,7 +86,6 @@ export function SessionToolbar({
   sourceBadge,
   modelControl,
   tierLabel,
-  bypassBadge,
   actions,
   leading,
   sidebarHidden = false,
@@ -162,8 +158,6 @@ export function SessionToolbar({
           )}
         </div>
       )}
-
-      {bypassBadge}
 
       <span className="mx-0.5 h-4 w-px shrink-0 bg-border" aria-hidden="true" />
 
