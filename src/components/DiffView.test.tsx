@@ -47,6 +47,56 @@ describe("PatchView", () => {
     expect(container.innerHTML).not.toContain("stx-keyword");
   });
 
+  it("gives an add and a del row a coloured run edge", async () => {
+    // C18. An 8–10% body tint has no boundary against surrounding context, so
+    // a short run inside a long file was near-invisible; the edge is the cue.
+    await act(async () => { root.render(<PatchView patch={PATCH} path="src/a.ts" />); });
+    const rowFor = (marker: string) => [...container.querySelectorAll("div.group\\/hunk")]
+      .find(node => node.textContent?.includes(marker));
+    const edge = (node: Element | undefined) =>
+      node?.querySelector('span[aria-hidden].absolute')?.className ?? "";
+    expect(edge(rowFor("const a = 2;"))).toContain("bg-success");
+    expect(edge(rowFor("const a = 1;"))).toContain("bg-destructive");
+    // Context rows have no run to bound.
+    expect(edge(rowFor("@@"))).toBe("");
+  });
+
+  it("bands a hunk header across the gutter as well as the body", async () => {
+    // C19/C20. The tint rides over an opaque `bg-code` on the pinned gutter:
+    // banding only the body split the divider in two at the line numbers, and
+    // making the gutter transparent would let a long header scroll through
+    // the sticky column.
+    await act(async () => { root.render(<PatchView patch={PATCH} path="src/a.ts" />); });
+    const hunk = [...container.querySelectorAll("div.group\\/hunk")]
+      .find(node => node.textContent?.includes("@@"))!;
+    const gutter = hunk.querySelector("span.sticky")!;
+    // Opaque and banded. Asserted as one pre-composed class precisely because
+    // `bg-code` + `bg-info/10` does not survive tailwind-merge.
+    expect(gutter.className).toContain("u-diff-band");
+    expect(gutter.className).not.toMatch(/bg-(code|transparent)/);
+    expect(hunk.querySelector("span.flex-1")!.className).toContain("u-diff-band");
+  });
+
+  it("owns the code surface the band and gutter are composed against", async () => {
+    // `u-diff-band` is `color-mix(--color-info 10%, --color-code)` and the
+    // gutter is `bg-code`, so both are only correct on a `--code` surface. A
+    // caller that dropped the patch onto `bg-card` (`#ffffff`/`#0f0f0f`
+    // against `--code`'s `#f3f3f1`/`#0a0a0a`) painted them as visibly
+    // mismatched rectangles, so the root owns the background rather than
+    // trusting every call site to pass the right one.
+    await act(async () => { root.render(<PatchView patch={PATCH} path="src/a.ts" />); });
+    expect(container.firstElementChild!.className).toContain("bg-code");
+  });
+
+  it("does not draw a grey gutter border beside a coloured run edge", async () => {
+    // Minor from review: 2px of colour abutting a 1px border read as a
+    // three-pixel smear.
+    await act(async () => { root.render(<PatchView patch={PATCH} path="src/a.ts" />); });
+    const added = [...container.querySelectorAll("div.group\\/hunk")]
+      .find(node => node.textContent?.includes("const a = 2;"))!;
+    expect(added.querySelector("span.sticky")!.className).not.toContain("border-r");
+  });
+
   it("upgrades bodies to .stx-* coloured spans once the grammar loads", async () => {
     act(() => { root.render(<PatchView patch={PATCH} path="a.ts" />); });
     await waitFor(() => container.innerHTML.includes("stx-keyword"));

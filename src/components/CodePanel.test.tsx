@@ -83,6 +83,49 @@ const settleDrift = async () => {
 };
 
 describe("CodePanel", () => {
+  it("draws depth as indent guides rather than computed padding", async () => {
+    // C15. Guides *are* the indent, so a row at depth n has exactly n of
+    // them; padding alone gave a deep tree no visible trunk to hang off.
+    await render();
+    const guides = (name: string) =>
+      rowNamed(name)!.querySelectorAll("span[aria-hidden].border-r").length;
+    expect(guides("README.md")).toBe(0);
+    expect(guides("src")).toBe(0);
+    await click(rowNamed("src"));
+    expect(guides("App.tsx")).toBe(1);
+    expect(guides("components/ui")).toBe(1);
+    await click(rowNamed("components/ui"));
+    expect(guides("button.tsx")).toBe(2);
+    // And no row falls back to an inline padding offset.
+    for (const row of rows()) expect((row as HTMLElement).style.paddingLeft).toBe("");
+  });
+
+  it("gives a directory a folder glyph that follows its expanded state", async () => {
+    // C13/C16. The glyph is the only cue that distinguishes a directory from
+    // a file at the same depth, so it has to actually change on toggle.
+    await render();
+    const glyph = (name: string) => rowNamed(name)!.querySelector("svg:not(.lucide-chevron-right)")?.getAttribute("class") ?? "";
+    const collapsed = glyph("src");
+    await click(rowNamed("src"));
+    expect(glyph("src")).not.toBe(collapsed);
+    // A file's glyph is tinted from the syntax ramp; a directory's is not.
+    expect(glyph("App.tsx")).toMatch(/text-syn-/);
+    expect(glyph("src")).not.toMatch(/text-syn-/);
+    // Every glyph is decorative — the row's text is the accessible name.
+    for (const svg of rowNamed("App.tsx")!.querySelectorAll("svg")) {
+      expect(svg.getAttribute("aria-hidden")).toBe("true");
+    }
+  });
+
+  it("marks only directories as expandable", async () => {
+    // C17, restated: the glyph work must not put aria-expanded on files.
+    await render();
+    expect(rowNamed("src")!.getAttribute("aria-expanded")).toBe("false");
+    expect(rowNamed("README.md")!.hasAttribute("aria-expanded")).toBe(false);
+    await click(rowNamed("src"));
+    expect(rowNamed("src")!.getAttribute("aria-expanded")).toBe("true");
+  });
+
   it("passes a reveal line to the active file's editor, and only there", async () => {
     await render({ reveal: { path: "src/App.tsx", line: 42, nonce: 7 } });
     const editor = () => container.querySelector<HTMLTextAreaElement>('[data-testid="editor"]');

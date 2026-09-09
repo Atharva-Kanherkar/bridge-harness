@@ -16,27 +16,53 @@ function hunkRange(row: DiffRow): HunkRange | undefined {
   return { start, end: start + Math.max(count, 1) - 1 };
 }
 
-/** Row tint, marker glyph and marker colour for each kind of diff line. */
-const ROW_STYLE: Record<DiffRowKind, { tint: string; marker: string; markerClass: string }> = {
-  add: { tint: "bg-success/8", marker: "+", markerClass: "text-success" },
-  del: { tint: "bg-destructive/8", marker: "−", markerClass: "text-destructive" },
-  hunk: { tint: "bg-info/8 text-info", marker: "", markerClass: "" },
-  meta: { tint: "text-muted-foreground", marker: "", markerClass: "" },
-  context: { tint: "", marker: "", markerClass: "" },
+/**
+ * Row tint, marker glyph and marker colour for each kind of diff line.
+ *
+ * `edge` is what makes a run of changes read as a block: an 8% tint has no
+ * boundary against the context around it, so a two-line deletion inside forty
+ * lines of context used to be almost invisible. The marker column carries a
+ * full-strength rule in the row's own colour instead — one continuous stripe
+ * down the length of a run, which is the shape the eye actually picks up.
+ */
+const ROW_STYLE: Record<DiffRowKind, { tint: string; marker: string; markerClass: string; edge: string }> = {
+  add: { tint: "bg-success/10", marker: "+", markerClass: "text-success", edge: "bg-success/60" },
+  del: { tint: "bg-destructive/10", marker: "−", markerClass: "text-destructive", edge: "bg-destructive/60" },
+  hunk: { tint: "u-diff-band text-info", marker: "", markerClass: "", edge: "bg-info/50" },
+  meta: { tint: "text-muted-foreground", marker: "", markerClass: "", edge: "" },
+  context: { tint: "", marker: "", markerClass: "", edge: "" },
 };
 
 function DiffLine({ row, numbered, onQuoteHunk }: { row: DiffRow; numbered: boolean; onQuoteHunk?: (range: HunkRange) => void }) {
   const style = ROW_STYLE[row.kind];
   const range = row.kind === "hunk" && onQuoteHunk ? hunkRange(row) : undefined;
+  // A hunk header is a divider across the whole row, gutter included —
+  // tinting only the body left the line numbers sitting in an untinted notch
+  // that broke the band in half.
+  const band = row.kind === "hunk";
   // The gutter is pinned so the numbers and the +/− marker survive a
-  // horizontal scroll through a long line.
+  // horizontal scroll through a long line, which means it has to be opaque in
+  // every row kind: a translucent sticky column lets a long hunk header
+  // scroll through underneath it. `u-diff-band` is the band pre-composed
+  // against `--color-code` for exactly that reason.
   return <div className="group/hunk flex">
-    <span className="sticky left-0 z-10 flex shrink-0 select-none bg-code">
+    <span className={cn(
+      "sticky left-0 z-10 flex shrink-0 select-none",
+      // Not `bg-code` *and* the tint: tailwind-merge keeps only the last
+      // `bg-*`, so layering them silently produced a translucent gutter.
+      band ? style.tint : "bg-code",
+      // The coloured run edge replaces this border on add/del rows — drawing
+      // both put 2px of colour next to 1px of grey.
+      numbered && !band && !style.edge && "border-r border-border/60",
+    )}>
       {numbered && <>
-        <span className="w-9 px-1.5 text-right text-[11px] tabular-nums text-muted-foreground">{row.oldLine ?? ""}</span>
-        <span className="w-9 px-1.5 text-right text-[11px] tabular-nums text-muted-foreground">{row.newLine ?? ""}</span>
+        <span className="w-9 px-1.5 text-right text-[11px] tabular-nums text-muted-foreground/70">{row.oldLine ?? ""}</span>
+        <span className="w-9 px-1.5 text-right text-[11px] tabular-nums text-muted-foreground/70">{row.newLine ?? ""}</span>
       </>}
-      <span className={cn("w-3.5 pl-1 text-left", style.markerClass)}>{style.marker}</span>
+      <span className={cn("relative w-3.5 pl-1 text-left", style.markerClass)}>
+        {style.edge && !band && <span className={cn("absolute inset-y-0 right-0 w-[2px]", style.edge)} aria-hidden="true" />}
+        {style.marker}
+      </span>
     </span>
     <span className={cn("flex-1 whitespace-pre pl-1.5 pr-3", style.tint)}>
       <span dangerouslySetInnerHTML={{ __html: row.html }} />
@@ -121,7 +147,14 @@ export function PatchView({ patch, path = "", className, foldAfterHunks, onQuote
   if (!rows.length) return null;
   // A column, so a caller's `max-h-*` bounds the rows and leaves the fold bar
   // pinned below them rather than scrolling away with the code.
-  return <div className={cn("stx flex flex-col overflow-hidden font-mono text-[12px] leading-[1.6]", className)}>
+  //
+  // `bg-code` is not decoration: the pinned gutter, the fold bar and
+  // `u-diff-band` are all *pre-composed* against `--color-code`, so a patch
+  // dropped onto any other surface paints them as mismatched rectangles. A
+  // transcript caller passing `bg-card` did exactly that, and the gap between
+  // the two tokens is visible in both themes, not a rounding difference.
+  // Owning the background here means a caller cannot get it wrong by omission.
+  return <div className={cn("stx flex flex-col overflow-hidden bg-code font-mono text-[12px] leading-[1.6]", className)}>
     <div className="min-h-0 flex-1 overflow-auto py-2">
       <div className="w-max min-w-full">
         {shown.map((row, index) => <DiffLine key={index} row={row} numbered={numbered} onQuoteHunk={onQuoteHunk} />)}

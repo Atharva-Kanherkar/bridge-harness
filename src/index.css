@@ -41,6 +41,26 @@
     --color-code-highlight: var(--code-highlight);
     --code-foreground: var(--code-foreground);
     --color-code: var(--code);
+    /* The syntax ramp, exposed as Tailwind colour utilities (`text-syn-tag`,
+       `bg-syn-string/10`). The `.stx-*` classes below consume the raw
+       `--syn-*` tokens directly; these exist so JSX that wants a syntax hue —
+       the file tree's type glyphs — can reach it with a utility instead of an
+       arbitrary `text-[var(--syn-tag)]`. Same values, one source. */
+    --color-syn-comment: var(--syn-comment);
+    --color-syn-keyword: var(--syn-keyword);
+    --color-syn-string: var(--syn-string);
+    --color-syn-number: var(--syn-number);
+    --color-syn-function: var(--syn-function);
+    --color-syn-type: var(--syn-type);
+    --color-syn-tag: var(--syn-tag);
+    --color-syn-punct: var(--syn-punct);
+    --color-syn-operator: var(--syn-operator);
+    --color-syn-variable: var(--syn-variable);
+    --color-syn-property: var(--syn-property);
+    --color-syn-param: var(--syn-param);
+    --color-syn-regex: var(--syn-regex);
+    --color-syn-addition: var(--syn-addition);
+    --color-syn-deletion: var(--syn-deletion);
     --color-secondary-foreground: var(--secondary-foreground);
     --color-secondary: var(--secondary);
     --color-ring: var(--ring);
@@ -164,15 +184,46 @@
     --code-foreground: #1f1f1d;
     --code-highlight: color-mix(in srgb, #1f1f1d 5%, transparent);
 
-    /* Syntax — restrained, tuned for paper */
-    --syn-comment: #8e8e87;
-    --syn-keyword: #6b4e9e;
-    --syn-string: #2f6b3d;
-    --syn-number: #8a5a10;
-    --syn-function: #2c5c90;
-    --syn-type: #8a4a78;
-    --syn-tag: #2a6480;
-    --syn-punct: #5d5d57;
+    /* Syntax — tuned for paper. Thirteen buckets, six hue families: violet
+       (keyword), green (string), amber (number/param), blue (function/
+       property), magenta (type), cyan (tag/regex), plus a neutral ramp for
+       comments, punctuation and identifiers. Chroma is pushed far enough that
+       a token family is identifiable at a glance; hue assignment is the
+       conventional one, so code from outside Bridge still reads correctly.
+       Every colour here clears WCAG 4.5:1 against every `--code` background
+       in this file, including the vibrancy skin's — asserted by
+       `palette.test.ts`, because the previous version of this comment claimed
+       it and two greys did not actually hold. */
+    --syn-comment: #6b6b60;
+    --syn-keyword: #7a3fae;
+    --syn-string: #16724a;
+    --syn-number: #a15c05;
+    --syn-function: #1d5cad;
+    --syn-type: #a03d7f;
+    --syn-tag: #10697f;
+    /* Deliberately *lighter* than it was: punctuation is the one family that
+       should recede now that operators have left it. */
+    --syn-punct: #6f6f66;
+    --syn-operator: #a1495f;
+    /* Identifiers are the bulk of any file, so this sits a half-step off
+       `--code-foreground` rather than becoming a seventh hue — enough to
+       separate a name from the syntax around it, not enough to shout. */
+    --syn-variable: #33333c;
+    /* Properties and members are the highest-frequency coloured token in
+       most files, so they separate from function-blue and tag-cyan by
+       *chroma* rather than by hue: a quiet slate reads as "a name" without
+       competing with the call it hangs off. */
+    --syn-property: #4c6273;
+    --syn-param: #7a5320;
+    --syn-regex: #0b7a68;
+    /* Diff runs inside a code block carry a tint of their own colour, so the
+       surface they are read against is *not* `--code` — it is `--code` with
+       12%/11% of the same hue mixed in, which is darker in the paper theme
+       and drags the ratio down. These sit a step darker than the chrome
+       `--success`/`--destructive` for exactly that reason; `palette.test.ts`
+       composites the tint before measuring, so the two cannot drift apart. */
+    --syn-addition: #256b42;
+    --syn-deletion: #ac3232;
 
     --radius: 0.5rem;
 
@@ -256,14 +307,25 @@
     --code-foreground: #ececea;
     --code-highlight: color-mix(in srgb, #ececea 7%, transparent);
 
-    --syn-comment: #78786f;
-    --syn-keyword: #b9a0dc;
-    --syn-string: #86c08a;
-    --syn-number: #ddb877;
-    --syn-function: #86abdc;
-    --syn-type: #d6a0c8;
-    --syn-tag: #8fbfd8;
-    --syn-punct: #9a9a94;
+    /* Same six hue families as the paper ramp, lifted for a near-black
+       canvas. Keep them in step: a token that is violet on paper must be
+       violet on graphite, or a screenshot from one theme stops teaching you
+       how to read the other. */
+    --syn-comment: #7c7c72;
+    --syn-keyword: #c9a4f0;
+    --syn-string: #7fd39a;
+    --syn-number: #f0bd7a;
+    --syn-function: #8fb8f5;
+    --syn-type: #f0a6d8;
+    --syn-tag: #7fd0ea;
+    --syn-punct: #85857f;
+    --syn-operator: #f09a9a;
+    --syn-variable: #e6e6ec;
+    --syn-property: #a9bed0;
+    --syn-param: #e3c49c;
+    --syn-regex: #6fded8;
+    --syn-addition: #5db872;
+    --syn-deletion: #e5695e;
 
     --sidebar-foreground: #8b8b8b;
     --sidebar-accent: color-mix(in srgb, #e4e4e4 6%, transparent);
@@ -847,6 +909,18 @@ html[data-native-fullscreen] .u-traffic-inset {
   height: 22rem;
 }
 
+/* ── Diff rows ───────────────────────────────────────────────────────────────
+   A hunk header bands across the row, gutter included. The pinned gutter has
+   to stay *opaque* — a translucent tint lets a long header scroll through
+   underneath the sticky column, which is the one thing pinning it prevents —
+   so the band is pre-composed against `--color-code` here instead of layered
+   as a `bg-info/10` alpha utility. It cannot be expressed as one: tailwind-
+   merge drops `bg-code` the moment a second `bg-*` utility joins it, which is
+   how the transparent version slipped through in the first place. */
+.u-diff-band {
+  background: color-mix(in srgb, var(--color-info) 10%, var(--color-code));
+}
+
 /* ── Syntax highlighting ────────────────────────────────────────────────── */
 /* Class names emitted by `highlight.ts`'s scope classifier (Shiki tokens
    bucketed by TextMate scope, not Shiki's own theme colours) — kept
@@ -878,11 +952,41 @@ html[data-native-fullscreen] .u-traffic-inset {
 .stx-tag {
   color: var(--syn-tag);
 }
-.stx-params {
-  color: var(--color-muted-foreground);
+.stx-param {
+  color: var(--syn-param);
 }
 .stx-punct {
   color: var(--syn-punct);
+}
+.stx-operator {
+  color: var(--syn-operator);
+}
+.stx-variable {
+  color: var(--syn-variable);
+}
+.stx-property {
+  color: var(--syn-property);
+}
+.stx-regex {
+  color: var(--syn-regex);
+}
+.stx-meta {
+  color: var(--color-muted-foreground);
+}
+.stx-invalid {
+  color: var(--color-destructive);
+  text-decoration: underline wavy;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+.stx-link {
+  color: var(--syn-tag);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.stx-heading {
+  color: var(--syn-function);
+  font-weight: 600;
 }
 .stx-emphasis {
   font-style: italic;
@@ -890,13 +994,16 @@ html[data-native-fullscreen] .u-traffic-inset {
 .stx-strong {
   font-weight: 600;
 }
+.stx-strike {
+  text-decoration: line-through;
+}
 .stx-addition {
-  color: var(--color-success);
-  background: color-mix(in srgb, var(--color-success) 12%, transparent);
+  color: var(--syn-addition);
+  background: color-mix(in srgb, var(--syn-addition) 12%, transparent);
 }
 .stx-deletion {
-  color: var(--color-destructive);
-  background: color-mix(in srgb, var(--color-destructive) 11%, transparent);
+  color: var(--syn-deletion);
+  background: color-mix(in srgb, var(--syn-deletion) 11%, transparent);
 }
 
 
@@ -944,8 +1051,11 @@ html[data-native-fullscreen] .u-traffic-inset {
 .cm-editor .cm-line {
   padding: 0 10px 0 6px;
 }
+/* The gutter is its own column, not a hairline in the same field as the code:
+   a faint inset tint reads as structure at a glance and gives the numbers
+   somewhere to sit under horizontal scroll. */
 .cm-editor .cm-gutters {
-  background: var(--color-code);
+  background: color-mix(in srgb, var(--code-foreground) 3.5%, var(--color-code));
   border-right: 1px solid var(--color-border);
   color: var(--color-muted-foreground);
   font-size: 11px;
@@ -953,6 +1063,14 @@ html[data-native-fullscreen] .u-traffic-inset {
 .cm-editor .cm-lineNumbers .cm-gutterElement {
   padding: 0 10px 0 14px;
   font-variant-numeric: tabular-nums;
+  /* Line numbers are reference, not content: they should be legible when
+     looked for and invisible when not. */
+  opacity: 0.62;
+  transition: opacity 120ms ease;
+}
+.cm-editor:hover .cm-lineNumbers .cm-gutterElement,
+.cm-editor.cm-focused .cm-lineNumbers .cm-gutterElement {
+  opacity: 0.85;
 }
 .cm-editor .cm-foldGutter .cm-gutterElement {
   padding: 0 4px;
@@ -965,9 +1083,16 @@ html[data-native-fullscreen] .u-traffic-inset {
 .cm-editor .cm-activeLine {
   background: var(--color-code-highlight);
 }
+/* The active line is marked with an *edge* as well as a fill. The fill alone
+   is a 5–7% tint, which disappears the moment the line also carries a
+   selection or a search match; the edge survives both. */
 .cm-editor .cm-activeLineGutter {
   background: var(--color-code-highlight);
   color: var(--color-foreground);
+  box-shadow: inset 2px 0 0 var(--color-foreground);
+}
+.cm-editor .cm-activeLineGutter.cm-gutterElement {
+  opacity: 1;
 }
 .cm-editor .cm-cursor,
 .cm-editor .cm-dropCursor {
@@ -1042,27 +1167,12 @@ html[data-native-fullscreen] .u-traffic-inset {
   background: color-mix(in srgb, var(--color-warning) 55%, transparent);
 }
 
-/* Syntax tokens — the same ramp as `.stx-*` above, keyed to
-   `@lezer/highlight`'s standard class names. */
-.tok-comment { color: var(--syn-comment); font-style: italic; }
-.tok-keyword, .tok-modifier, .tok-controlKeyword, .tok-operatorKeyword,
-.tok-definitionKeyword, .tok-moduleKeyword { color: var(--syn-keyword); }
-.tok-string, .tok-string2, .tok-regexp, .tok-character, .tok-special { color: var(--syn-string); }
-.tok-number, .tok-bool, .tok-null, .tok-atom, .tok-unit { color: var(--syn-number); }
-.tok-function, .tok-macroName { color: var(--syn-function); }
-.tok-typeName, .tok-className, .tok-namespace, .tok-standard { color: var(--syn-type); }
-.tok-tagName, .tok-angleBracket { color: var(--syn-tag); }
-.tok-attributeName, .tok-propertyName, .tok-labelName { color: var(--code-foreground); }
-.tok-variableName, .tok-definition { color: var(--code-foreground); }
-.tok-operator, .tok-punctuation, .tok-separator, .tok-derefOperator,
-.tok-squareBracket, .tok-brace, .tok-paren { color: var(--syn-punct); }
-.tok-meta, .tok-processingInstruction, .tok-documentMeta { color: var(--color-muted-foreground); }
-.tok-link, .tok-url { color: var(--syn-type); text-decoration: underline; }
-.tok-heading { color: var(--syn-function); font-weight: 600; }
-.tok-emphasis { font-style: italic; }
-.tok-strong { font-weight: 600; }
-.tok-strikethrough { text-decoration: line-through; }
-.tok-invalid { color: var(--color-destructive); }
+/* The editor emits the same `.stx-*` classes as the diff viewer and markdown
+   code blocks — see `editor/highlighter.ts`. There is deliberately no second
+   `.tok-*` family here any more: the stock `classHighlighter` could not emit
+   most of the names the old block styled, so `.tok-function`,
+   `.tok-tagName`, `.tok-attributeName`, `.tok-regexp` and their siblings were
+   dead rules, and functions, JSX tags and attributes went uncoloured. */
 
 /* Accessibility preferences also apply to custom webview materials. */
 @media (prefers-reduced-transparency: reduce) {
