@@ -57,7 +57,14 @@ provider tiles are unreadable at panel width.
   resizable, always on top, absent from the taskbar/app switcher.
 - The panel is positioned from the tray icon's own rect: horizontally centred
   under the icon, clamped so it never leaves the monitor's visible frame.
-- Left-click while open hides it. Focus loss hides it.
+- Left-click while open hides it. The panel also hides when it loses focus and
+  when the main window gains focus.
+- **Dismissal is not universal, and that is a deliberate trade.** Showing the
+  panel must not activate Bridge, so it is never focused; an unfocused window
+  receives no blur event, and a click on another app or the desktop therefore
+  leaves it up. Tray toggle, the close control, and returning to Bridge all
+  dismiss it. Making an outside click dismiss it too requires either an
+  `NSPanel` or a global event monitor, both deferred (see Non-goals).
 - The main window is **not** shown, raised, or focused by a tray click.
 - No error banner appears on any tray interaction.
 
@@ -166,7 +173,9 @@ killed by TCC when launched from there).
    The percentages must match, and any window whose `resets_at` is in the past
    must be absent from the panel.
 4. **D4** — confirm the menu bar shows a percentage matching the worst window.
-5. Click outside the panel. Expect: it hides.
+5. Click into the Bridge main window. Expect: the panel hides. Then reopen it
+   and click another app instead — it stays up, which is the documented limit
+   of dismissal without an `NSPanel`, not a regression.
 6. Toggle rapidly ten times. Expect: no duplicate windows, no stuck state.
 
 ## Regression guard
