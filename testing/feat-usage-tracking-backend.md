@@ -245,10 +245,15 @@ running total as one turn's figure, and the summary summed them:
    model. On the reference machine this moved 30 days of Claude live cost
    from $12,221 to $1,331, which is what the last frame of each session said.
 2. **Codex cumulative tokens.** The adapter that read `tokenUsage.total`
-   wrote the thread's running totals. Migration 54 repairs a session only when
-   it reads as cumulative end to end (three or more rows, input and output
-   never decreasing, no cache figure); a per-request session's output moves
-   both ways and is left alone. The repair is one-shot behind the schema
+   wrote the thread's running totals. Migration 54 repairs a session only with
+   positive provenance: every row's `created_at` must parse as RFC 3339 and
+   predate the per-request normalizer (`fb98466`, 2026-09-06T10:32:00Z), and
+   the session must read as cumulative end to end (three or more rows, input
+   and output never decreasing, no cache figure). A missing cache figure alone
+   proves nothing — the per-request normalizer omits cache fields the wire
+   omitted — so a monotonic per-request session written after the cutoff
+   (e.g. `100/10`, `200/20`, `300/30`) is left alone, as is any session with
+   an unparsable timestamp. The repair is one-shot behind the schema
    version, never idempotent by design.
 3. **Unknown harness.** A live row with a null harness is attributed to the
    provider named in its `source` (`provider.codex` is Codex), never to

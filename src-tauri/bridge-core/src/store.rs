@@ -871,12 +871,22 @@ fn migration_53_usage_tracking(transaction: &Transaction<'_>) -> Result<(), Brid
 /// * Claude rows carry the SDK's `total_cost_usd`, which is cumulative across
 ///   the turns of one process. Each row becomes the difference from the
 ///   previous row of the same session and model; a cost that goes backwards
-///   started a fresh run and is kept as-is.
+///   started a fresh run and is kept as-is. This ships in the same release as
+///   the per-turn Claude normalizer, so every row present at migration time
+///   predates that normalizer and is cumulative by construction.
 /// * Codex rows from the adapter that read `tokenUsage.total` carry the
-///   thread's cumulative tokens. A session is repaired only when it reads as
-///   cumulative end to end: three or more rows, input and output never
-///   decreasing, and no cache figure (the per-request normalizer always
-///   writes one, and a per-request session's output moves up and down).
+///   thread's cumulative tokens. A session is repaired only when it is proven
+///   to predate the per-request normalizer: every row's `created_at` parses
+///   as RFC 3339 and lies before the commit that made `usage` an explicit
+///   per-request slice (`fb98466`), plus it reads as cumulative end to end
+///   (three or more rows, input and output never decreasing, no cache
+///   figure). The per-request normalizer only copies cache fields present on
+///   the wire, so a missing cache figure alone cannot tell a cumulative row
+///   from a per-request one whose provider omitted the split — the timestamp
+///   gate is what keeps a genuine per-request session like `100/10`,
+///   `200/20`, `300/30` from being rewritten into deltas. Sessions with any
+///   newer or unparsable timestamp are skipped: leaving a stale-binary row
+///   inflated is recoverable, silently undercounting valid usage is not.
 ///
 /// Nothing is invented: a repaired row's figure is exactly what the provider
 /// added between two frames it sent. The repair runs once, behind the schema
@@ -915,6 +925,23 @@ fn repair_claude_cumulative_cost(transaction: &Transaction<'_>) -> Result<(), Br
     Ok(())
 }
 
+/// The instant the Codex `usage` payload became an explicit per-request slice
+/// (`fb98466`: an empty object when the frame carries no `last` breakdown, so
+/// the recursive alias search can no longer reach the cumulative
+/// `tokenUsage.total`). Rows created before this predate the per-request
+/// normalizer and can only be cumulative; rows at or after it may be genuine
+/// per-request figures and are never rewritten.
+const CODEX_PER_REQUEST_CUTOFF_RFC3339: &str = "2026-09-06T10:32:00+00:00";
+
+fn codex_row_predates_per_request_normalizer(created_at: &str) -> bool {
+    let cutoff = chrono::DateTime::parse_from_rfc3339(CODEX_PER_REQUEST_CUTOFF_RFC3339)
+        .map(|cutoff| cutoff.timestamp_millis())
+        .unwrap_or(i64::MAX);
+    chrono::DateTime::parse_from_rfc3339(created_at)
+        .map(|row| row.timestamp_millis() < cutoff)
+        .unwrap_or(false)
+}
+
 fn repair_codex_cumulative_tokens(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     let sessions: Vec<String> = transaction
         .prepare(
@@ -928,15 +955,32 @@ fn repair_codex_cumulative_tokens(transaction: &Transaction<'_>) -> Result<(), B
     for session in sessions {
         let rows = transaction
             .prepare(
-                "SELECT id, input_tokens, output_tokens, uncached_input_tokens FROM usage_ledger
+                "SELECT id, input_tokens, output_tokens, uncached_input_tokens, created_at FROM usage_ledger
                  WHERE source='provider.codex' AND session_id=?1 AND cache_read_tokens IS NULL
                    AND input_tokens IS NOT NULL AND output_tokens IS NOT NULL
                  ORDER BY id",
             )?
             .query_map(params![session], |row| {
-                Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?, row.get::<_, i64>(2)?, row.get::<_, Option<i64>>(3)?))
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
             })?
             .collect::<Result<Vec<_>, _>>()?;
+        // Positive provenance first: every row must provably predate the
+        // per-request normalizer. A missing cache split is not evidence — the
+        // current normalizer omits cache fields the wire omitted — so a
+        // monotonic per-request session written after the cutoff must not be
+        // touched.
+        if !rows
+            .iter()
+            .all(|(_, _, _, _, created_at)| codex_row_predates_per_request_normalizer(created_at))
+        {
+            continue;
+        }
         let cumulative = rows.len() >= 3
             && rows
                 .windows(2)
@@ -945,7 +989,7 @@ fn repair_codex_cumulative_tokens(transaction: &Transaction<'_>) -> Result<(), B
             continue;
         }
         let mut previous: Option<(i64, i64, Option<i64>)> = None;
-        for (id, input, output, uncached) in rows {
+        for (id, input, output, uncached, _) in rows {
             if let Some((prev_input, prev_output, prev_uncached)) = previous {
                 let turn_uncached = match (uncached, prev_uncached) {
                     (Some(now), Some(before)) if now >= before => Some(now - before),
@@ -6754,23 +6798,29 @@ mod tests {
              INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('x-total','w','codex','x','ready');
              INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('x-last','w','codex','y','ready');
              INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('x-new','w','codex','z','ready');
+             INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('x-fresh','w','codex','fresh','ready');
              -- Claude: a running total 0.50, 0.80, 1.10, then a fresh run at 0.20.
              INSERT INTO usage_ledger(workspace_id,session_id,turn_id,output_tokens,cost_microusd,cost_source,source,created_at) VALUES('w','c','t1',10,500000,'provider_reported','provider.claude','a');
              INSERT INTO usage_ledger(workspace_id,session_id,turn_id,output_tokens,cost_microusd,cost_source,source,created_at) VALUES('w','c','t2',10,800000,'provider_reported','provider.claude','b');
              INSERT INTO usage_ledger(workspace_id,session_id,turn_id,output_tokens,cost_microusd,cost_source,source,created_at) VALUES('w','c','t3',10,1100000,'provider_reported','provider.claude','c');
              INSERT INTO usage_ledger(workspace_id,session_id,turn_id,output_tokens,cost_microusd,cost_source,source,created_at) VALUES('w','c','t4',10,200000,'provider_reported','provider.claude','d');
-             -- Codex, cumulative thread totals: input and output only ever grow.
-             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-total','t',1000,1000,50,'provider.codex','a');
-             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-total','t',2500,2500,120,'provider.codex','b');
-             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-total','t',4000,4000,120,'provider.codex','c');
+             -- Codex, cumulative thread totals written before the per-request normalizer: repaired.
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-total','t',1000,1000,50,'provider.codex','2026-09-01T10:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-total','t',2500,2500,120,'provider.codex','2026-09-02T10:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-total','t',4000,4000,120,'provider.codex','2026-09-03T10:00:00+00:00');
              -- Codex, per-request without a cache figure: output moves both ways, so it is left alone.
-             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-last','t',1000,1000,300,'provider.codex','a');
-             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-last','t',1500,1500,90,'provider.codex','b');
-             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-last','t',2100,2100,400,'provider.codex','c');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-last','t',1000,1000,300,'provider.codex','2026-09-01T10:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-last','t',1500,1500,90,'provider.codex','2026-09-02T10:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-last','t',2100,2100,400,'provider.codex','2026-09-03T10:00:00+00:00');
              -- Codex, per-request with a cache figure: the new normalizer, never touched even when monotonic.
-             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,cache_read_tokens,output_tokens,source,created_at) VALUES('w','x-new','t',1000,100,900,10,'provider.codex','a');
-             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,cache_read_tokens,output_tokens,source,created_at) VALUES('w','x-new','t',2000,100,1900,20,'provider.codex','b');
-             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,cache_read_tokens,output_tokens,source,created_at) VALUES('w','x-new','t',3000,100,2900,30,'provider.codex','c');",
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,cache_read_tokens,output_tokens,source,created_at) VALUES('w','x-new','t',1000,100,900,10,'provider.codex','2026-09-01T10:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,cache_read_tokens,output_tokens,source,created_at) VALUES('w','x-new','t',2000,100,1900,20,'provider.codex','2026-09-02T10:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,cache_read_tokens,output_tokens,source,created_at) VALUES('w','x-new','t',3000,100,2900,30,'provider.codex','2026-09-03T10:00:00+00:00');
+             -- Codex, monotonic with no cache figure but written after the per-request normalizer:
+             -- a genuine per-request session the repair must never rewrite.
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-fresh','t',100,100,10,'provider.codex','2026-09-07T10:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-fresh','t',200,200,20,'provider.codex','2026-09-07T11:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-fresh','t',300,300,30,'provider.codex','2026-09-07T12:00:00+00:00');",
         )
         .unwrap();
 
@@ -6787,6 +6837,29 @@ mod tests {
         assert_eq!(inputs("x-total"), vec![(Some(1000), Some(1000), Some(50)), (Some(1500), Some(1500), Some(70)), (Some(1500), Some(1500), Some(0))]);
         assert_eq!(inputs("x-last"), vec![(Some(1000), Some(1000), Some(300)), (Some(1500), Some(1500), Some(90)), (Some(2100), Some(2100), Some(400))]);
         assert_eq!(inputs("x-new"), vec![(Some(1000), Some(100), Some(10)), (Some(2000), Some(100), Some(20)), (Some(3000), Some(100), Some(30))]);
+        assert_eq!(inputs("x-fresh"), vec![(Some(100), Some(100), Some(10)), (Some(200), Some(200), Some(20)), (Some(300), Some(300), Some(30))]);
+    }
+
+    #[test]
+    fn the_ledger_repair_skips_codex_sessions_with_unparsable_timestamps() {
+        let mut db = open(Path::new(":memory:")).unwrap();
+        db.execute_batch(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/usage-repair-ts','now');
+             INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','c','t','main','/tmp/usage-repair-ts/w','ready','now');
+             INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('x-bad-ts','w','codex','x','ready');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-bad-ts','t',100,100,10,'provider.codex','not-a-timestamp');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-bad-ts','t',200,200,20,'provider.codex','also-not-a-timestamp');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-bad-ts','t',300,300,30,'provider.codex','still-not-a-timestamp');",
+        )
+        .unwrap();
+
+        let transaction = db.transaction().unwrap();
+        migration_54_usage_ledger_repair(&transaction).unwrap();
+        transaction.commit().unwrap();
+
+        let rows = usage_ledger(&db, "w", Some("x-bad-ts")).unwrap();
+        let inputs: Vec<Option<i64>> = rows.iter().map(|row| row.input_tokens).collect();
+        assert_eq!(inputs, vec![Some(100), Some(200), Some(300)], "unprovable provenance is left alone");
     }
 
     #[test]
