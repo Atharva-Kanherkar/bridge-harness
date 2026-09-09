@@ -3,6 +3,7 @@ import { Dialog, DialogPopup } from "@/components/ui/dialog";
 import { Check, Copy, Maximize2, Minimize2 } from "lucide-react";
 import katex from "katex";
 import { COLORIZE_DEBOUNCE_MS, colorizeCode, escapeHtml, normalizeLang } from "./highlight";
+import { isExternalUrl } from "../externalLinks";
 import { DiagramFigure, isValidDiagramSpec, type DiagramSpec } from "./DiagramFigure";
 
 type Block =
@@ -262,7 +263,16 @@ function renderInline(text: string): React.ReactNode[] {
     if (part.startsWith("**") && part.endsWith("**") && part.length > 4) return <strong key={index}>{renderInline(part.slice(2, -2))}</strong>;
     if (part.startsWith("*") && part.endsWith("*") && part.length > 2) return <em key={index}>{renderInline(part.slice(1, -1))}</em>;
     const link = part.match(/^\[([^\]]+)\]\(([^)\s]+)\)$/);
-    if (link) return <a key={index} href={link[2]} target="_blank" rel="noreferrer">{renderInline(link[1])}</a>;
+    // A link only renders as an anchor when `externalLinks` would claim it.
+    // Its click interceptor only hijacks `http(s)`/`mailto`; any other scheme
+    // keeps the webview's default action, and the Tauri webview sets no CSP,
+    // so a `javascript:` href in agent- or GitHub-authored markdown would run
+    // in-app. Anything else keeps its label as text.
+    if (link) {
+      return isExternalUrl(link[2])
+        ? <a key={index} href={link[2]} target="_blank" rel="noreferrer">{renderInline(link[1])}</a>
+        : <span key={index}>{renderInline(link[1])}</span>;
+    }
     return <TextRun key={index} text={part} />;
   });
 }

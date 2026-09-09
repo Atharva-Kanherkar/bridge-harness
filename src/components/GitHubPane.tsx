@@ -1316,7 +1316,7 @@ function IssueDetail({ workspaceId, repository, repositoryUrl, number, detail, e
     </div>
     {pending && <ConfirmOverlay
       statement={pending.statement}
-      requiresBody={false}
+      requiresBody={pending.requiresBody}
       body={pending.body ?? ""}
       onBody={() => undefined}
       readOnlyBody={pending.body !== undefined}

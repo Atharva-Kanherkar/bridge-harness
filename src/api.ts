@@ -2130,6 +2130,8 @@ const mockGithubPullRequest = (workspaceId: string, number: number): GithubPullR
         "See https://github.com/Atharva-Kanherkar/bridge-harness for the design notes.",
         "",
         "GitHub content remains plain text, including <script>alert('inert')</script>.",
+        "",
+        "A disguised link — <a href=\"javascript:void%200\">click for the logs</a> — renders as text, not an anchor.",
       ].join("\n"),
       baseBranch: "main",
       comments: [{ id: "conversation-1", author: { login: "maintainer" }, body: "This is the main PR conversation.\n\n<details><summary>CI output</summary>\n\n```\nok 12 passed\n```\n\n</details>", createdAt: now, url: `${summary.url}#issuecomment-1` }],

@@ -464,10 +464,13 @@ describe("GitHubPane", () => {
 
     // Template comments are invisible on GitHub, so they are invisible here.
     expect(description.textContent).not.toContain("template instructions");
-    // A cross-reference and a handle become real links.
+    // A cross-reference and a handle become real links — both on the
+    // repository's own host, so an Enterprise mention does not land on a
+    // stranger's github.com account.
     const links = [...description.querySelectorAll("a")].map(link => link.getAttribute("href"));
     expect(links).toContain("https://example.test/repo/issues/412");
-    expect(links).toContain("https://github.com/atharva");
+    expect(links).toContain("https://example.test/atharva");
+    expect(links.join(" ")).not.toContain("github.com");
     // Task lists read as statuses, not as literal brackets.
     expect(description.textContent).toContain("☑ done");
     expect(description.textContent).toContain("☐ pending");
@@ -477,6 +480,38 @@ describe("GitHubPane", () => {
     expect(disclosure?.querySelector("summary")?.textContent).toContain("CI log");
     expect(disclosure?.textContent).toContain("the collapsed log");
     expect(description.textContent).not.toContain("<summary>");
+  });
+
+  it("never turns a remote body into a link the webview would run in-app", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubPullRequest").mockResolvedValue({
+      ...detail,
+      pullRequest: {
+        ...detail.pullRequest,
+        body: [
+          '<a href="javascript:void%200">totally safe</a>',
+          "",
+          "[or this one](javascript:void%200)",
+          "",
+          '<img src="data:text/html,pwned">',
+          "",
+          "[real link](https://example.test/ok)",
+        ].join("\n"),
+      },
+    });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    const description = host!.querySelector('[aria-label="Description"]')!;
+
+    // Only the http(s) target — the one `externalLinks` would hand to the OS
+    // browser — is an anchor at all.
+    const hrefs = [...description.querySelectorAll("a")].map(link => link.getAttribute("href"));
+    expect(hrefs).toEqual(["https://example.test/ok"]);
+    expect(description.innerHTML).not.toContain("javascript:");
+    expect(description.innerHTML).not.toContain("data:text/html");
+    // The labels survive as text, so nothing silently disappears.
+    expect(description.textContent).toContain("totally safe");
+    expect(description.textContent).toContain("or this one");
   });
 
   it("groups checks by workflow and never spins a running check", async () => {
@@ -563,6 +598,9 @@ describe("GitHubPane", () => {
     const composer = host!.querySelector('textarea[aria-label="New comment"]') as HTMLTextAreaElement;
     await type(composer, "On it.");
     await click(buttonByText("Comment"));
+    // The drafted text is shown back before it posts, exactly as on a PR.
+    expect(document.body.textContent).toContain("post a comment on issue #17");
+    expect(document.querySelector('[role="dialog"] [aria-label="Comment body"]')?.textContent).toBe("On it.");
     await click(buttonByText("Confirm"));
     expect(action).toHaveBeenLastCalledWith("w", { kind: "comment", target: "issue", number: 17, body: "On it." }, true);
 
