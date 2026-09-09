@@ -667,7 +667,8 @@ impl BridgeCore {
     /// hosts place this on their blocking pool.
     pub fn stop_session_adapter(&self, session_id: &str, reason: adapters::ShutdownReason) {
         self.deactivate_reader_launch(session_id);
-        if let Some(mut runtime) = self.adapters.lock().unwrap().remove(session_id) {
+        let runtime = { self.adapters.lock().unwrap().remove(session_id) };
+        if let Some(mut runtime) = runtime {
             runtime.stop(reason);
         }
         // A model switch's outgoing runtime lives outside the adapter map while

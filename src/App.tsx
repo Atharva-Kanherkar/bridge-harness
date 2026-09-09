@@ -1,3 +1,5 @@
+import { ForestCache } from "./forestCache";
+import { useSessionStops } from "./sessionStop";
 import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -209,7 +211,6 @@ function AppContent() {
   const [configuredAgents, setConfiguredAgents] = useState<AgentDefinition[]>([]);
   const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
   const [busy, setBusy] = useState(false);
-  const [stopping, setStopping] = useState(false);
   const [browserSupervision, setBrowserSupervision] = useState<BrowserSupervision>();
   const [terminalActivity, setTerminalActivity] = useState<TerminalActivity>();
   const [acknowledgedTasks, setAcknowledgedTasks] = useState<Set<string>>(() => new Set());
@@ -217,7 +218,7 @@ function AppContent() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [highlightEntryId, setHighlightEntryId] = useState<string | null>(null);
   const [error, setError] = useState<string>();
-  const [forest, setForest] = useState<SessionForestSnapshot>();
+  const [loadedForest, setForest] = useState<SessionForestSnapshot>();
   // Completion blocks while a child's changes live only in its own worktree, so
   // the user must be able to see and resolve that here — otherwise the session
   // waits forever with no visible cause.
@@ -273,7 +274,7 @@ function AppContent() {
   // One entry per session, so switching back to a chat that already loaded its
   // forest shows it immediately instead of flashing to empty while the poll
   // refetches. Never read across sessions.
-  const forestCacheRef = useRef(new Map<string, SessionForestSnapshot>());
+  const forestCacheRef = useRef(new ForestCache());
   const browserSessionRef = useRef<string>();
   const workQueryError = workBoardQueryError ? errorMessage(workBoardQueryError) : undefined;
   const workError = workBoard === undefined ? workQueryError : undefined;
@@ -440,6 +441,9 @@ function AppContent() {
   // opened directly (from Mission Control or a blocked-approval link) so its own
   // conversation — and the approval card that lives on it — is reachable.
   const session = state.sessions.find(s => s.id === selectedSessionId && s.harness !== "shell" && !isHiddenSession(s));
+  // Selection changes before the history effect runs. Never paint the prior
+  // chat under the new header, even for that first render.
+  const forest = loadedForest?.sessionId === session?.id ? loadedForest : undefined;
   const workspace = session?.workspaceId ? state.workspaces.find(w => w.id === session.workspaceId) : undefined;
   // The new-thread hero names the project when it can, dotted-underlined.
   const projectName = (workspace?.projectId ? state.projects.find(p => p.id === workspace.projectId)?.name : undefined) ?? workspace?.title ?? undefined;
@@ -874,37 +878,15 @@ function AppContent() {
     active?.scrollIntoView({ block: "nearest" });
   }, [mentionOpen, mentionIndex]);
 
-  // Stop is honoured from the moment the user's bubble appears, not from the
-  // moment the backend confirms a turn. Pressed before `activeTurnId` exists,
-  // the request is held and fired the instant the turn is acknowledged; pressed
-  // during a live turn it interrupts at once.
-  const stopRequestedRef = useRef(false);
-  // The runtime can be interrupted as soon as Bridge has delivered the turn
-  // (the session reads `working`), with or without a provider turn id.
-  const turnDelivered = !!session?.activeTurnId || session?.status === "working";
+  const pendingStopIds = useMemo(() => new Set(pending.map(item => item.sessionId)), [pending]);
+  const sessionStops = useSessionStops(state.sessions, pendingStopIds,
+    id => bridgeApi.interruptTurn(id),
+    (id, error) => setError(`Could not stop chat ${id}: ${errorMessage(error)}`),
+  );
+  const stopping = sessionStops.has(session?.id);
   const requestStop = useCallback(() => {
-    if (!session) return;
-    setStopping(true);
-    if (session.activeTurnId || session.status === "working") {
-      stopRequestedRef.current = false;
-      void bridgeApi.interruptTurn(session.id).catch(() => undefined);
-    } else {
-      stopRequestedRef.current = true;
-    }
-  }, [session]);
-  useEffect(() => {
-    if (turnDelivered) {
-      if (stopRequestedRef.current && session) {
-        stopRequestedRef.current = false;
-        void bridgeApi.interruptTurn(session.id).catch(() => undefined);
-      }
-      return;
-    }
-    if (pendingForSession.length === 0) {
-      stopRequestedRef.current = false;
-      setStopping(false);
-    }
-  }, [session, turnDelivered, pendingForSession.length]);
+    if (session) sessionStops.request(session);
+  }, [session, sessionStops]);
 
   useEffect(() => {
     const sessionId = session?.id;

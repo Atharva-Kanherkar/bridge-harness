@@ -1819,7 +1819,8 @@ async fn retry_worker_task(
 
 #[tauri::command]
 async fn interrupt_turn(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
-    api::interrupt_turn(state.inner(), &session_id)
+    let core = state.inner().clone();
+    blocking("Interrupt turn", move || api::interrupt_turn(&core, &session_id)).await
 }
 
 /// Refresh subscription usage for every provider, independent of which session
