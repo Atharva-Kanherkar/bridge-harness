@@ -337,7 +337,19 @@ function AppContent() {
     });
     void bridgeApi.onAccountUsage(payload => {
       const snapshot = extractUsageSnapshot({ rateLimits: payload.rateLimits });
-      if (!snapshot) return;
+      // An unreadable frame means the provider has no current limits — its
+      // last window reset with nothing running, say. Dropping the snapshot is
+      // what stops the old percentage sitting in the ring after it expired;
+      // the samples series is history and is deliberately left alone.
+      if (!snapshot) {
+        setUsageByProvider(current => {
+          if (!(payload.provider in current)) return current;
+          const next = { ...current };
+          delete next[payload.provider];
+          return next;
+        });
+        return;
+      }
       setUsageByProvider(current => ({ ...current, [payload.provider]: snapshot }));
       if (snapshot.windows.length) {
         const usedPercent = clampPercent(Math.max(...snapshot.windows.map(window => window.usedPercent)));

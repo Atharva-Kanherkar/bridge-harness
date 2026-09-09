@@ -71,9 +71,13 @@ pub fn build_panel(app: &tauri::App<tauri::Wry>) -> Result<(), String> {
     Ok(())
 }
 
-/// Show the panel under `anchor_x` (the status item's horizontal centre, in
-/// logical points), or hide it when it is already up.
-pub fn toggle_panel(app: &tauri::AppHandle, anchor_x: Option<f64>) {
+/// Show the panel under the status item, or hide it when it is already up.
+///
+/// `anchor` is the status item's centre in *physical* screen coordinates. It
+/// selects the display as well as the position: the panel is hidden between
+/// uses, so its own `current_monitor()` reports wherever it was last shown,
+/// which on a second click from another display is the wrong screen entirely.
+pub fn toggle_panel(app: &tauri::AppHandle, anchor: Option<tauri::PhysicalPosition<f64>>) {
     let Some(panel) = app.get_webview_window(PANEL_LABEL) else {
         return;
     };
@@ -81,7 +85,7 @@ pub fn toggle_panel(app: &tauri::AppHandle, anchor_x: Option<f64>) {
         let _ = panel.hide();
         return;
     }
-    if let Some(position) = panel_position(&panel, anchor_x) {
+    if let Some(position) = panel_position(app, &panel, anchor) {
         let _ = panel.set_position(position);
     }
     // `show` only — see the module note on `set_focus` activating the app.
@@ -95,23 +99,46 @@ pub fn hide_panel(app: &tauri::AppHandle) {
 }
 
 /// Where the panel should sit: centred under the status item, pushed back
-/// inside the screen's visible area when the icon is near an edge.
+/// inside the visible area of the display that holds it.
+///
+/// The display is chosen from the click point, not from the panel. Scale
+/// follows from that same monitor, which matters on a mixed-DPI setup where
+/// converting the tray rect with the panel's own factor lands it elsewhere.
 fn panel_position(
+    app: &tauri::AppHandle,
     panel: &tauri::WebviewWindow,
-    anchor_x: Option<f64>,
+    anchor: Option<tauri::PhysicalPosition<f64>>,
 ) -> Option<LogicalPosition<f64>> {
-    let monitor = panel
-        .current_monitor()
-        .ok()
-        .flatten()
+    let monitor = anchor
+        .and_then(|point| app.monitor_from_point(point.x, point.y).ok().flatten())
+        .or_else(|| panel.current_monitor().ok().flatten())
         .or_else(|| panel.primary_monitor().ok().flatten())?;
     let scale = monitor.scale_factor();
     let area = monitor.work_area();
     let origin = LogicalPosition::<f64>::from_physical(area.position, scale);
     let size = LogicalSize::<f64>::from_physical(area.size, scale);
-    let anchor = anchor_x.unwrap_or(origin.x + size.width - PANEL_WIDTH / 2.0 - SCREEN_MARGIN);
-    let (x, y) = clamp_to_work_area(anchor, origin.x, origin.y, size.width);
+    let anchor_x = anchor
+        .map(|point| LogicalPosition::<f64>::from_physical(point, scale).x)
+        .unwrap_or(origin.x + size.width - PANEL_WIDTH / 2.0 - SCREEN_MARGIN);
+    let (x, y) = clamp_to_work_area(anchor_x, origin.x, origin.y, size.width);
     Some(LogicalPosition::new(x, y))
+}
+
+/// The status item's centre, in physical screen coordinates.
+///
+/// The rect's `Position`/`Size` may arrive in either unit. A logical variant
+/// carries no scale factor of its own, and the correct one belongs to a
+/// display we have not identified yet — so treat logical values as physical
+/// here. The result only has to be inside the status item to select the right
+/// screen, and a status item is never near a display boundary in a way that
+/// this could get wrong.
+fn status_item_centre(
+    position: tauri::Position,
+    size: tauri::Size,
+) -> tauri::PhysicalPosition<f64> {
+    let position: tauri::PhysicalPosition<f64> = position.to_physical(1.0);
+    let size: tauri::PhysicalSize<f64> = size.to_physical(1.0);
+    tauri::PhysicalPosition::new(position.x + size.width / 2.0, position.y + size.height / 2.0)
 }
 
 /// Split out from monitor lookup so the clamping is unit-testable.
@@ -187,16 +214,10 @@ pub fn build(app: &tauri::App<tauri::Wry>) -> Result<(), String> {
             {
                 let app = tray.app_handle().clone();
                 // Centre on the status item itself, so the panel hangs from
-                // the icon the user actually clicked.
-                let scale = app
-                    .get_webview_window(PANEL_LABEL)
-                    .and_then(|panel| panel.scale_factor().ok())
-                    .unwrap_or(1.0);
-                // The rect arrives as `Position`/`Size`, either variant, so
-                // normalise rather than assuming physical.
-                let position: LogicalPosition<f64> = rect.position.to_logical(scale);
-                let size: LogicalSize<f64> = rect.size.to_logical(scale);
-                let anchor = position.x + size.width / 2.0;
+                // the icon the user actually clicked. Kept in physical
+                // coordinates: they are what picks the display, and the right
+                // scale factor is not known until that display is known.
+                let anchor = status_item_centre(rect.position, rect.size);
                 // Refresh on open so the panel never shows a stale number.
                 app.emit("bridge-meter-tray", "refresh").unwrap_or_default();
                 toggle_panel(&app, Some(anchor));
@@ -241,6 +262,29 @@ mod tests {
         assert!(x >= 1440.0 + SCREEN_MARGIN);
         assert!(x + PANEL_WIDTH <= 1440.0 + 1920.0);
         assert_eq!(y, PANEL_GAP);
+    }
+
+    #[test]
+    fn the_status_item_centre_is_a_point_inside_the_icon() {
+        // Physical rect, as macOS reports it on a Retina display.
+        let centre = status_item_centre(
+            tauri::PhysicalPosition::new(2800.0, 0.0).into(),
+            tauri::PhysicalSize::new(48.0, 48.0).into(),
+        );
+        assert_eq!(centre.x, 2824.0);
+        assert_eq!(centre.y, 24.0);
+    }
+
+    #[test]
+    fn the_status_item_centre_keeps_a_second_display_x() {
+        // The whole point of the physical point: it has to fall on the display
+        // holding the icon so the monitor lookup picks that display, not the
+        // one the hidden panel happens to sit on.
+        let centre = status_item_centre(
+            tauri::PhysicalPosition::new(3000.0, 12.0).into(),
+            tauri::PhysicalSize::new(40.0, 24.0).into(),
+        );
+        assert!(centre.x > 1920.0, "must stay on the secondary display");
     }
 
     #[test]

@@ -1115,8 +1115,15 @@ impl BridgeCore {
         let adapters = self.adapters.lock().unwrap();
         for session_id in codex_sessions {
             if let Some(runtime) = adapters.get(&session_id) {
-                let _ = runtime.read_usage();
-                return Ok(true);
+                // Reaching a registered runtime is not the same as it
+                // answering: a session whose request writer has closed rejects
+                // here. Reporting that as asked would suppress the disk
+                // fallback in exactly the case that needs it, so only a
+                // successful request counts, and anything else tries the next
+                // session before falling through.
+                if runtime.read_usage().is_ok() {
+                    return Ok(true);
+                }
             }
         }
         Ok(false)
@@ -1311,25 +1318,28 @@ impl BridgeCore {
 }
 
 /// Read Codex's rate limits from `sessions_dir` and publish them on the
-/// account-usage channel. Returns whether anything was published: nothing is
-/// sent when the rollouts report no limits, or only limits whose windows have
-/// already reset. Split out from the spawning caller so the fallback is
-/// testable against a fixture directory rather than the real `CODEX_HOME`.
+/// account-usage channel. Returns whether any live window was found.
+///
+/// A frame is published either way. When nothing current is on disk the
+/// payload is empty, which clears the provider rather than leaving whatever
+/// was last shown in place: a session that reported 95% and then ended would
+/// otherwise keep that 95% on screen forever once its window reset, which is
+/// the same stale reading the expiry pruning exists to prevent.
+///
+/// Split out from the spawning caller so the fallback is testable against a
+/// fixture directory rather than the real `CODEX_HOME`.
 pub(crate) fn publish_codex_usage_from_disk(
     events: &crate::events::EventBus,
     sessions_dir: &Path,
     now_unix: i64,
 ) -> bool {
-    match crate::meter_sources::codex_rate_limits(sessions_dir, now_unix) {
-        Some(rate_limits) => {
-            events.publish(crate::events::CoreEvent::AccountUsage {
-                provider: "codex".into(),
-                rate_limits,
-            });
-            true
-        }
-        None => false,
-    }
+    let found = crate::meter_sources::codex_rate_limits(sessions_dir, now_unix);
+    let live = found.is_some();
+    events.publish(crate::events::CoreEvent::AccountUsage {
+        provider: "codex".into(),
+        rate_limits: found.unwrap_or_else(|| serde_json::json!({})),
+    });
+    live
 }
 
 fn chat_label(title: Option<&str>) -> String {
@@ -3784,6 +3794,34 @@ mod tests {
         assert!(effort.is_none(), "switching to a model without thinking support clears effort");
     }
 
+    /// A runtime that is registered but can no longer answer — the shape of a
+    /// session whose request writer has closed under it.
+    struct RejectingUsageRuntime;
+    impl adapters::AdapterRuntime for RejectingUsageRuntime {
+        fn process_id(&self) -> u32 {
+            0
+        }
+        fn provider_session_id(&self) -> &str {
+            "rejecting"
+        }
+        fn current_turn(&self) -> std::sync::Arc<std::sync::Mutex<Option<String>>> {
+            std::sync::Arc::new(std::sync::Mutex::new(None))
+        }
+        fn send_turn(&self, _: &str) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn interrupt(&self) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn respond(&self, _: serde_json::Value, _: &str) -> Result<(), BridgeError> {
+            Ok(())
+        }
+        fn read_usage(&self) -> Result<(), BridgeError> {
+            Err(BridgeError::Invalid("the request writer is closed".into()))
+        }
+        fn stop(&mut self, _: adapters::ShutdownReason) {}
+    }
+
     /// A live adapter runtime that records control calls.
     struct RecordingRuntime {
         interrupted: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -3958,7 +3996,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_disk_fallback_stays_silent_without_usable_limits() {
+    fn codex_disk_fallback_clears_the_provider_without_usable_limits() {
         let (_scratch, core) = fixture();
         let mut events = core.events.subscribe();
         let temp = tempfile::tempdir().unwrap();
@@ -3970,7 +4008,37 @@ mod tests {
             temp.path(),
             chrono::Utc::now().timestamp()
         ));
-        assert!(events.try_recv().is_err());
+        // Silence would strand whatever a since-ended session last reported.
+        // An empty payload is how the tray and the panel are told to drop it.
+        match events.try_recv().unwrap() {
+            crate::events::CoreEvent::AccountUsage {
+                provider,
+                rate_limits,
+            } => {
+                assert_eq!(provider, "codex");
+                assert_eq!(rate_limits, serde_json::json!({}));
+                assert_eq!(crate::meter_sources::tray_title(&rate_limits), "");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn codex_usage_falls_through_to_disk_when_a_live_session_rejects() {
+        let (_scratch, core) = fixture();
+        seed_workspace(&core, false);
+        {
+            let db = core.db.lock().unwrap();
+            db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('c1','w','codex','S','idle','reported')", []).unwrap();
+        }
+        core.adapters
+            .lock()
+            .unwrap()
+            .insert("c1".into(), Box::new(RejectingUsageRuntime));
+
+        // The runtime is registered but cannot answer. Claiming it was asked
+        // would suppress the fallback in the one case that most needs it.
+        assert!(!core.request_codex_usage().unwrap());
     }
 
     #[test]

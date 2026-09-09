@@ -76,6 +76,31 @@ describe("MeterPanel", () => {
     expect(container.textContent).toContain("1 more providers planned");
   });
 
+  it("drops a provider whose limits have expired instead of showing the old number", async () => {
+    let push: ((payload: { provider: string; rateLimits: unknown }) => void) | undefined;
+    vi.spyOn(bridgeApi, "getMeterSnapshot").mockResolvedValue(REGISTRY as never);
+    vi.spyOn(bridgeApi, "refreshMeter").mockResolvedValue();
+    vi.spyOn(bridgeApi, "onMeterTray").mockResolvedValue(() => undefined);
+    vi.spyOn(bridgeApi, "onAccountUsage").mockImplementation(async handler => {
+      push = handler as never;
+      return () => undefined;
+    });
+
+    await act(async () => { root.render(<MeterPanel />); });
+    await settle();
+    await act(async () => { push?.(CODEX_FRAME); });
+    await settle();
+    expect(container.textContent).toContain("44%");
+
+    // The window resets with no session running, so the disk path reports an
+    // empty payload. Ignoring it would leave 44% on screen indefinitely.
+    await act(async () => { push?.({ provider: "codex", rateLimits: {} }); });
+    await settle();
+
+    expect(container.textContent).not.toContain("44%");
+    expect(container.textContent).toContain("no limits");
+  });
+
   it("refreshes on mount so an opened panel is never showing stale numbers", async () => {
     const refresh = vi.spyOn(bridgeApi, "refreshMeter").mockResolvedValue();
     vi.spyOn(bridgeApi, "getMeterSnapshot").mockResolvedValue(REGISTRY as never);

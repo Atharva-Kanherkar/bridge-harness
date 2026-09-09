@@ -13,11 +13,19 @@ import { bridgeApi } from "../../api";
 import { extractUsageSnapshot, type UsageProvider, type UsageSnapshot } from "../../usage";
 import type { MeterRegistry } from "../../types";
 import { MeterPopover } from "./MeterPopover";
+import { followThemeAcrossWindows, useThemePreference } from "../../theme";
 
 /** How often the panel re-reads limits while it is on screen. */
 const VISIBLE_REFRESH_MS = 60_000;
 
 export function MeterPanel() {
+  // `index.html` resolves the theme before first paint in every document, so
+  // the panel opens in the right appearance already. What it cannot do is
+  // follow a later change: this keeps the panel with the system appearance,
+  // and `followThemeAcrossWindows` carries a Settings change over from the
+  // main window, which `THEME_EVENT` alone never leaves its own document to do.
+  useThemePreference();
+  useEffect(followThemeAcrossWindows, []);
   const [usage, setUsage] = useState<Partial<Record<UsageProvider, UsageSnapshot>>>({});
   const [registry, setRegistry] = useState<MeterRegistry | null>(null);
   const [refreshing, setRefreshing] = useState(false);
@@ -37,8 +45,19 @@ export function MeterPanel() {
     let off: (() => void) | undefined;
     void bridgeApi.onAccountUsage(payload => {
       const snapshot = extractUsageSnapshot({ rateLimits: payload.rateLimits });
-      if (!snapshot) return;
-      setUsage(current => ({ ...current, [payload.provider]: snapshot }));
+      setUsage(current => {
+        // A frame carrying nothing readable is the provider saying it has no
+        // current limits — most often because its last window reset with no
+        // session running. Ignoring it would leave the percentage that
+        // provider reported before it went quiet on screen indefinitely.
+        if (!snapshot) {
+          if (!(payload.provider in current)) return current;
+          const next = { ...current };
+          delete next[payload.provider as UsageProvider];
+          return next;
+        }
+        return { ...current, [payload.provider]: snapshot };
+      });
     }).then(fn => { if (!active) { fn(); return; } off = fn; });
     return () => { active = false; off?.(); };
   }, []);
