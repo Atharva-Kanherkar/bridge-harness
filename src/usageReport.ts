@@ -28,8 +28,10 @@ export function readUsagePreferences(storage: Pick<Storage, "getItem"> | undefin
     const parsed = JSON.parse(raw) as Partial<UsagePreferences> | null;
     const metric = parsed?.metric === "tokens" ? "tokens" : parsed?.metric === "cost" ? "cost" : null;
     const windowDays = USAGE_WINDOW_OPTIONS.find(option => option === parsed?.windowDays) ?? null;
-    if (!metric || !windowDays || typeof parsed?.includeImported !== "boolean") return { ...DEFAULT_USAGE_PREFERENCES };
-    return { metric, windowDays, includeImported: parsed.includeImported };
+    if (!metric || !windowDays) return { ...DEFAULT_USAGE_PREFERENCES };
+    // Local history is always part of the picture; an older stored `false`
+    // from the retired toggle is ignored rather than honoured.
+    return { metric, windowDays, includeImported: true };
   } catch {
     return { ...DEFAULT_USAGE_PREFERENCES };
   }

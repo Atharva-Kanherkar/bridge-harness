@@ -179,18 +179,6 @@ describe("UsageScreen", () => {
     await act(async () => { pending.resolve(batch("complete", 5, "end")); });
   });
 
-  it("does not scan with history disabled and states the scope", async () => {
-    stored.set(USAGE_PREFERENCES_KEY, JSON.stringify({ metric: "cost", windowDays: 30, includeImported: false }));
-    await mount();
-    expect(scanSpy).not.toHaveBeenCalled();
-    expect(text()).toContain("Bridge sessions only");
-    expect(text()).not.toContain("Codex history is partial");
-    expect(text()).toContain("Adds usage totals from supported chats already on this device.");
-    click(buttonByText("Include local history"));
-    await flush();
-    expect(scanSpy).toHaveBeenCalledTimes(1);
-  });
-
   it("keeps scanning when the cursor advances even if a batch imports only duplicates", async () => {
     scanSpy.mockResolvedValueOnce(batch("partial", 0, "a"))
       .mockResolvedValueOnce(batch("partial", 0, "b"))
@@ -252,17 +240,6 @@ describe("UsageScreen", () => {
     summarySpy.mockImplementationOnce(async params => summaryFor(params)).mockRejectedValueOnce(new Error("summary unavailable"));
     await mount();
     expect(text()).not.toContain("$4.50");
-  });
-
-  it("stops scheduling batches when history is disabled", async () => {
-    const pending = deferred<ScanHistoryResult>();
-    scanSpy.mockReturnValueOnce(pending.promise);
-    await mount();
-    click(buttonByText("Include local history"));
-    await flush();
-    await act(async () => { pending.resolve(batch("partial", 10_000, "more")); });
-    expect(scanSpy).toHaveBeenCalledTimes(1);
-    expect(text()).toContain("Bridge sessions only");
   });
 
   it("stops scheduling batches after leaving Usage", async () => {

@@ -245,16 +245,8 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
       <div className="mb-5 flex flex-wrap items-start gap-3">
         <Segmented<UsageMetric> label="Metric" value={metric} options={[{ value: "cost", label: "Cost" }, { value: "tokens", label: "Tokens" }]} onChange={value => update({ metric: value })} />
         <Segmented<UsageWindowDays> label="Window" value={preferences.windowDays} options={USAGE_WINDOW_OPTIONS.map(days => ({ value: days, label: windowLabel(days) }))} onChange={value => update({ windowDays: value })} />
-        <div>
-          <button type="button" aria-pressed={preferences.includeImported} onClick={() => update({ includeImported: !preferences.includeImported })} className={cn("inline-flex h-8 items-center gap-2 rounded-lg border border-border px-3 text-caption transition-colors hover:bg-accent", preferences.includeImported ? "text-foreground" : "text-muted-foreground")}>
-            <span className={cn("size-2 rounded-full", preferences.includeImported ? "bg-foreground" : "bg-border")} aria-hidden="true" />Include local history
-          </button>
-          <p className="mt-1 max-w-64 text-[11px] leading-4 text-muted-foreground">Adds usage totals from supported chats already on this device.</p>
-        </div>
         <span className="ml-auto pt-2 text-caption tabular-nums text-muted-foreground">{formatWindowLabel(window_)}</span>
       </div>
-
-      <p className="mb-3 text-caption text-muted-foreground">{preferences.includeImported ? "Bridge sessions + imported local history on this device" : "Bridge sessions only. Local history is excluded."}</p>
 
       {report && (incompleteSources.length > 0 || summary!.duplicatesDropped > 0 || report.totals.unpricedRecords > 0) && <ul className="mb-5 space-y-1 text-caption text-muted-foreground" aria-label="Coverage notes">
         {incompleteSources.map(source => <li key={source.id}>{harnessLabel(source.agent)} history is still loading.</li>)}
@@ -421,10 +413,10 @@ function PriceSection({ report, summary, overrides, refreshing, onRefreshRates, 
         <h2 className="text-ui font-medium text-foreground">Model prices</h2>
         <p className="text-caption text-muted-foreground">USD per million tokens. Overrides apply to all past and future usage; blank cache rates use the automatic rate.</p>
       </div>
-      <div className="flex items-center gap-3 text-caption tabular-nums text-muted-foreground">
-        <span>Rates {summary.pricing.source} · snapshot {summary.pricing.snapshotDate} · {formatCount(summary.pricing.knownModels)} models · {formatCount(summary.pricing.overrides)} overrides</span>
-        <button type="button" onClick={onRefreshRates} disabled={refreshing} className="inline-flex h-8 items-center gap-2 rounded-lg border border-border px-3 text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-40">
-          {refreshing ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={13} aria-hidden="true" />}Refresh rates
+      <div className="flex items-center gap-1 text-caption tabular-nums text-muted-foreground">
+        <span>Snapshot {summary.pricing.snapshotDate} · {formatCount(summary.pricing.knownModels)} models{summary.pricing.overrides > 0 ? ` · ${formatCount(summary.pricing.overrides)} overrides` : ""}</span>
+        <button type="button" onClick={onRefreshRates} disabled={refreshing} aria-label="Refresh rates" aria-busy={refreshing} title={`Refresh rates from ${summary.pricing.source}`} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">
+          <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />
         </button>
       </div>
     </div>
