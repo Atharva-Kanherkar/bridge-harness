@@ -1,7 +1,8 @@
 # Streaming, memory retention, and chat cancellation
 
-Based on fresh main `006507c`. Main already contains the Claude thinking-block
-completion and history/scheduler changes from PR 568. This change retains them.
+Started from fresh main `006507c` and merged main `5ed1967` before final
+validation. Main already contains the Claude thinking-block completion and
+history/scheduler changes from PR 568. This change retains them.
 
 ## Confirmed causes
 
@@ -86,3 +87,18 @@ wire replay. Browser smoke checks use the mock-backed Vite app; they are not a
 native WebKit latency benchmark. Real paid-provider end-to-end sessions for all
 four harnesses were not run. The recorded local OpenCode capture is the live
 transport check.
+
+## Final verification
+
+- `bun run build`: passed on merged main `5ed1967`.
+- `bun run test`: passed (2,046 frontend tests; 2,569 Rust tests across the
+  workspace, including 2,251 bridge-core tests; release and Claude sidecar checks
+  also passed). Existing explicitly ignored tests remain ignored.
+- Used a private Cargo target with debug symbols disabled, Rust test concurrency
+  eight, and Vitest fork concurrency two. A shared target initially picked up an
+  incompatible protocol artifact from another checkout; isolation resolved it.
+  Overlapping unrestricted frontend runs exposed existing syntax-highlighter
+  timeouts; the bounded final full run passed without changing those tests.
+- Browser mock smoke: expanded command output, typed while it remained open,
+  stopped the active chat, and switched to another chat with its own transcript
+  and no inherited Stop indicator.
