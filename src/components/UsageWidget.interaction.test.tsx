@@ -293,8 +293,9 @@ describe("UsageWidget panel shell", () => {
     });
     const panel = container.querySelector<HTMLElement>("#usage-health-panel")!;
     expect(panel.parentElement?.hasAttribute("data-composer-frame")).toBe(true);
-    // The meter's own width at the composer's left edge, never the composer's span.
-    expect(panel.className).toContain("left-0");
+    // The meter's own width, hung from the right edge where its trigger sits.
+    expect(panel.className).toContain("right-0");
+    expect(panel.className).not.toContain("left-0");
     expect(panel.className).toContain("w-[min(100vw-1.5rem,22.5rem)]");
     expect(panel.className).toContain("bottom-full");
     // Clear of the composer, and rounded on every corner: the composer is

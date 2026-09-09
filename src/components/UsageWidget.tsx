@@ -206,10 +206,10 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
         // straight onto the frame it read as one shape with a seam through it:
         // the composer is rounded on all four corners, so a panel resting on it
         // can never continue that outline. It is its own popover instead.
-        // The same card as the menu-bar meter: 360pt wide at the composer's
+        // The same card as the menu-bar meter: 360pt wide, hung from the composer's
         // left edge, never the composer's full span over the conversation.
         compact
-          ? "bottom-full left-0 mb-1.5 w-[min(100vw-1.5rem,22.5rem)]"
+          ? "bottom-full right-0 mb-1.5 w-[min(100vw-1.5rem,22.5rem)]"
           : "right-0 top-full pt-2",
         "transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none",
         open ? "visible translate-y-0 pointer-events-auto opacity-100" : "invisible translate-y-1 pointer-events-none opacity-0",
