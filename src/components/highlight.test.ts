@@ -371,7 +371,7 @@ describe("the widened scope vocabulary", () => {
 
   it("colours a parameter distinctly at its declaration and its use", async () => {
     const html = await colorizeCode("function f(alpha) { return alpha; }", "typescript");
-    expect(classOf(html, "alpha")).toBe("stx-params");
+    expect(classOf(html, "alpha")).toBe("stx-param");
     // The *use* of `alpha` sits inside the merged token `" alpha; }"`.
     expect(html.match(/class="stx-variable">alpha</)).toBeTruthy();
   });
@@ -396,6 +396,25 @@ describe("the widened scope vocabulary", () => {
     const html = await colorizeCode("obj.trim();", "typescript");
     expect(classOf(html, "obj")).toBe("stx-variable");
     expect(classOf(html, "trim")).toBe("stx-function");
+  });
+
+  it("does not paint a decorator's punctuation as a function", async () => {
+    // `meta.decorator` is a *range* scope covering `@Injectable({ ... })`, so
+    // a rule for it painted the parens, the braces and the whitespace between
+    // them function-blue. Same defect as the `meta.function-call` guard above.
+    const html = await colorizeCode("@Injectable({ scope: 'x' })\nclass A {}", "typescript");
+    expect(classOf(html, "Injectable")).toBe("stx-function");
+    expect(html).not.toMatch(/class="stx-function">[^<]*[()]/);
+    expect(html).not.toMatch(/class="stx-function">\s+</);
+  });
+
+  it("paints markdown inline code as one run, backticks included", async () => {
+    // The ticks carry `punctuation.definition.raw` and came out punctuation
+    // grey, while the run between them carries only `markup.inline.raw` and
+    // matched no rule at all, so it rendered as bare text.
+    const html = await colorizeCode("use `npm install` here", "markdown");
+    expect(classOf(html, "npm install")).toBe("stx-string");
+    expect(html).toMatch(/class="stx-string">`</);
   });
 
   it("reaches markdown emphasis, which the delimiters used to shadow", async () => {

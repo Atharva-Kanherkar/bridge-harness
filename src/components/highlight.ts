@@ -225,6 +225,14 @@ const SCOPE_RULES: [prefix: string, className: string][] = [
   ["markup.strikethrough", "stx-strike"],
   ["markup.heading", "stx-heading"],
   ["markup.underline.link", "stx-link"],
+  // Inline code. `punctuation.definition.raw` (the backticks) has to be
+  // listed before the generic `punctuation` rule below, the same way comment
+  // and string delimiters are, or the ticks come out grey while the run
+  // between them — which carries only `markup.inline.raw` — falls through
+  // every rule and renders as bare text. One span of literal text, one
+  // colour; the editor's Lezer side reaches it through `t.monospace`.
+  ["punctuation.definition.raw", "stx-string"],
+  ["markup.inline.raw", "stx-string"],
   ["entity.name.section", "stx-heading"],
   // Escapes and regex literals before the generic `string` rule: `\n` inside
   // a string is `constant.character.escape` *nested in* `string`, and the
@@ -265,7 +273,7 @@ const SCOPE_RULES: [prefix: string, className: string][] = [
   // `classifyScope` takes the first rule whose prefix matches, so the generic
   // `variable` rule has to come last or it would swallow parameters,
   // constants and `this`.
-  ["variable.parameter", "stx-params"],
+  ["variable.parameter", "stx-param"],
   // Deliberately *no* `variable.other.constant` rule. TextMate's TypeScript
   // grammar gives that scope to every `const` binding, not to SCREAMING_CASE
   // constants, so bucketing it as a literal painted almost every identifier
@@ -278,7 +286,11 @@ const SCOPE_RULES: [prefix: string, className: string][] = [
   ["meta.object-literal.key", "stx-property"],
   ["variable.function", "stx-function"],
   ["variable", "stx-variable"],
-  ["meta.decorator", "stx-function"],
+  // Deliberately *no* `meta.decorator` rule, for the same reason C30 has no
+  // `meta.function-call` one: it is a *range* scope spanning the whole
+  // decorator, so `@Injectable({ scope: 'x' })` had its parens, braces and
+  // interior whitespace painted function-blue. `entity.name.function` already
+  // covers the callee, and `punctuation.decorator` covers the `@`.
   ["invalid", "stx-invalid"],
 ];
 
@@ -294,7 +306,7 @@ const SCOPE_RULES: [prefix: string, className: string][] = [
 export const SYNTAX_CLASSES: string[] = [
   "stx-comment", "stx-keyword", "stx-string", "stx-regex", "stx-number",
   "stx-function", "stx-type", "stx-tag", "stx-property", "stx-variable",
-  "stx-params", "stx-operator", "stx-punct", "stx-meta", "stx-invalid",
+  "stx-param", "stx-operator", "stx-punct", "stx-meta", "stx-invalid",
   "stx-link", "stx-heading", "stx-emphasis", "stx-strong", "stx-strike",
   "stx-addition", "stx-deletion",
 ];

@@ -147,7 +147,14 @@ export function PatchView({ patch, path = "", className, foldAfterHunks, onQuote
   if (!rows.length) return null;
   // A column, so a caller's `max-h-*` bounds the rows and leaves the fold bar
   // pinned below them rather than scrolling away with the code.
-  return <div className={cn("stx flex flex-col overflow-hidden font-mono text-[12px] leading-[1.6]", className)}>
+  //
+  // `bg-code` is not decoration: the pinned gutter, the fold bar and
+  // `u-diff-band` are all *pre-composed* against `--color-code`, so a patch
+  // dropped onto any other surface paints them as mismatched rectangles. A
+  // transcript caller passing `bg-card` did exactly that, and the gap between
+  // the two tokens is visible in both themes, not a rounding difference.
+  // Owning the background here means a caller cannot get it wrong by omission.
+  return <div className={cn("stx flex flex-col overflow-hidden bg-code font-mono text-[12px] leading-[1.6]", className)}>
     <div className="min-h-0 flex-1 overflow-auto py-2">
       <div className="w-max min-w-full">
         {shown.map((row, index) => <DiffLine key={index} row={row} numbered={numbered} onQuoteHunk={onQuoteHunk} />)}

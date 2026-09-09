@@ -59,6 +59,8 @@
     --color-syn-property: var(--syn-property);
     --color-syn-param: var(--syn-param);
     --color-syn-regex: var(--syn-regex);
+    --color-syn-addition: var(--syn-addition);
+    --color-syn-deletion: var(--syn-deletion);
     --color-secondary-foreground: var(--secondary-foreground);
     --color-secondary: var(--secondary);
     --color-ring: var(--ring);
@@ -214,6 +216,14 @@
     --syn-property: #4c6273;
     --syn-param: #7a5320;
     --syn-regex: #0b7a68;
+    /* Diff runs inside a code block carry a tint of their own colour, so the
+       surface they are read against is *not* `--code` — it is `--code` with
+       12%/11% of the same hue mixed in, which is darker in the paper theme
+       and drags the ratio down. These sit a step darker than the chrome
+       `--success`/`--destructive` for exactly that reason; `palette.test.ts`
+       composites the tint before measuring, so the two cannot drift apart. */
+    --syn-addition: #256b42;
+    --syn-deletion: #ac3232;
 
     --radius: 0.5rem;
 
@@ -314,6 +324,8 @@
     --syn-property: #a9bed0;
     --syn-param: #e3c49c;
     --syn-regex: #6fded8;
+    --syn-addition: #5db872;
+    --syn-deletion: #e5695e;
 
     --sidebar-foreground: #8b8b8b;
     --sidebar-accent: color-mix(in srgb, #e4e4e4 6%, transparent);
@@ -940,7 +952,7 @@ html[data-native-fullscreen] .u-traffic-inset {
 .stx-tag {
   color: var(--syn-tag);
 }
-.stx-params {
+.stx-param {
   color: var(--syn-param);
 }
 .stx-punct {
@@ -986,12 +998,12 @@ html[data-native-fullscreen] .u-traffic-inset {
   text-decoration: line-through;
 }
 .stx-addition {
-  color: var(--color-success);
-  background: color-mix(in srgb, var(--color-success) 12%, transparent);
+  color: var(--syn-addition);
+  background: color-mix(in srgb, var(--syn-addition) 12%, transparent);
 }
 .stx-deletion {
-  color: var(--color-destructive);
-  background: color-mix(in srgb, var(--color-destructive) 11%, transparent);
+  color: var(--syn-deletion);
+  background: color-mix(in srgb, var(--syn-deletion) 11%, transparent);
 }
 
 

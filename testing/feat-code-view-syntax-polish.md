@@ -13,7 +13,7 @@ chrome are what read as flat:
 1. **Most of a file is uncoloured.** The palette has eight hues and none of them
    is for an identifier. `.tok-variableName`, `.tok-definition`,
    `.tok-propertyName`, `.tok-attributeName` and `.tok-labelName` all resolve to
-   plain `--code-foreground`; `.stx-params` resolves to `--color-muted-foreground`.
+   plain `--code-foreground`; `.stx-param` resolves to `--color-muted-foreground`.
    In `highlight.ts`'s `SCOPE_RULES` there is no rule at all for `variable`,
    `entity.other.attribute-name`, `variable.other.property` or
    `constant.regexp`, so a Shiki token carrying only those scopes falls through
@@ -53,10 +53,11 @@ loader, `parsePatch`, buffer/save semantics, or any protocol surface.
 
 ### Palette — `src/index.css`
 
-- C1. Five new tokens exist in both the light (`:root`) and dark
+- C1. Seven new tokens exist in both the light (`:root`) and dark
   (`[data-theme="dark"]`-equivalent) blocks: `--syn-variable`, `--syn-property`,
-  `--syn-operator`, `--syn-param`, `--syn-regex`. No `--syn-*` token is defined
-  in one theme block and not the other.
+  `--syn-operator`, `--syn-param`, `--syn-regex`, `--syn-addition`,
+  `--syn-deletion`. No `--syn-*` token is defined in one theme block and not
+  the other.
 - C2. Every `--syn-*` token retains its existing hue family. Chroma may rise;
   hue may not be reassigned (keyword stays violet, string green, number amber,
   function blue, type magenta, tag cyan). This is a refinement of Graphite &
@@ -76,10 +77,10 @@ loader, `parsePatch`, buffer/save semantics, or any protocol surface.
 - C7. `colorizeCode('<div className="x" />', "tsx")` emits `stx-property` for
   the attribute name.
 - C8. `colorizeCode("function f(alpha) { return alpha; }", "typescript")` emits
-  `stx-params` for the parameter.
+  `stx-param` for the parameter.
 - C9. A generic `variable` scope emits `stx-variable`, and it does **not**
   shadow the more specific variable scopes: `variable.parameter` still yields
-  `stx-params`, `variable.other.enummember` still yields `stx-number`, and
+  `stx-param`, `variable.other.enummember` still yields `stx-number`, and
   `variable.language` (`this`, `self`) still yields `stx-keyword`. See C26 for
   why `variable.other.constant` is deliberately *not* on that list.
 - C10. Every class name `classifyScope` can return has a matching rule in
@@ -141,7 +142,8 @@ loader, `parsePatch`, buffer/save semantics, or any protocol surface.
 
 ```bash
 bunx vitest run src/components/highlight.test.ts src/components/DiffView.test.tsx \
-  src/components/CodePanel.test.tsx src/components/fileGlyph.test.tsx src/components/palette.test.ts
+  src/components/CodePanel.test.tsx src/components/fileGlyph.test.ts \
+  src/components/palette.test.ts src/components/syntaxCoverage.test.ts
 bun run build
 bun run test
 ```
@@ -211,3 +213,37 @@ this branch, one was a false claim in a comment, one was missing coverage.
   mode. Found by writing the C19 test.
 - C35. `fileGlyph.ts` / `fileGlyph.test.ts` — neither contains JSX, so neither
   is a `.tsx`.
+
+## Review round: second pass
+
+- C36. **No `meta.decorator` rule.** Like `meta.function-call` in C30 it is a
+  *range* scope: it spans the whole decorator, so `@Injectable({ scope: 'x' })`
+  had its parens, braces and interior whitespace painted function-blue.
+  `entity.name.function` already reaches the callee and
+  `punctuation.decorator` the `@`.
+- C37. **Inline code is one run.** In markdown the backticks carry
+  `punctuation.definition.raw` and came out punctuation grey while the run
+  between them carries only `markup.inline.raw` and matched no rule at all, so
+  it rendered as bare text. Both are bucketed `stx-string` now, with the
+  delimiter rule ahead of the generic `punctuation` one — the same ordering
+  comments and strings already rely on. The editor reaches the same bucket
+  through `t.monospace`.
+- C38. **`PatchView` owns its background.** The pinned gutter, the fold bar and
+  `u-diff-band` are all pre-composed against `--color-code`, and a caller
+  rendering the patch on `bg-card` (`#ffffff`/`#0f0f0f` against `--code`'s
+  `#f3f3f1`/`#0a0a0a`) painted them as mismatched rectangles in the transcript.
+  The root carries `bg-code` so omission cannot get it wrong.
+- C39. **Contrast is asserted per class, not per token.** C31's assertion read
+  `--syn-*` declarations, which silently skipped anything not written as
+  six-digit lowercase hex and never covered the buckets coloured from
+  `--color-muted-foreground`, `--color-destructive` or `--color-success`, or
+  the three that inherit `--code-foreground`. It now resolves each `.stx-*`
+  rule's own `color` through `@theme` to a hex, composites the rule's own tint
+  over each `--code` background, and *fails* on anything it cannot resolve.
+  That immediately found two real ones: paper `.stx-addition` was 3.91 and
+  `.stx-deletion` 4.13 against their own tinted surface, which is why those two
+  buckets now take `--syn-addition`/`--syn-deletion` — a step darker than the
+  chrome status colours — instead of `--color-success`/`--color-destructive`.
+- C40. **`stx-param` matches `--syn-param`.** The class was plural and the token
+  singular; nothing broke, but the pair is the one naming convention the three
+  renderers share.

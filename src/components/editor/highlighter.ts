@@ -91,6 +91,10 @@ const SPECS: { tag: Tag | Tag[]; class: string }[] = [
   { tag: t.emphasis, class: "stx-emphasis" },
   { tag: t.strong, class: "stx-strong" },
   { tag: t.strikethrough, class: "stx-strike" },
+  // Inline code in a markdown buffer. The Shiki side buckets
+  // `markup.inline.raw` the same way, so a fenced-off `npm install` reads
+  // identically in the Code tab and in a chat message.
+  { tag: t.monospace, class: "stx-string" },
   // A `.diff`/`.patch` buffer opened in the Code tab. The stock highlighter
   // emitted `tok-inserted`/`tok-deleted` and nothing styled them.
   { tag: t.inserted, class: "stx-addition" },

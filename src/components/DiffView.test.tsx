@@ -77,6 +77,17 @@ describe("PatchView", () => {
     expect(hunk.querySelector("span.flex-1")!.className).toContain("u-diff-band");
   });
 
+  it("owns the code surface the band and gutter are composed against", async () => {
+    // `u-diff-band` is `color-mix(--color-info 10%, --color-code)` and the
+    // gutter is `bg-code`, so both are only correct on a `--code` surface. A
+    // caller that dropped the patch onto `bg-card` (`#ffffff`/`#0f0f0f`
+    // against `--code`'s `#f3f3f1`/`#0a0a0a`) painted them as visibly
+    // mismatched rectangles, so the root owns the background rather than
+    // trusting every call site to pass the right one.
+    await act(async () => { root.render(<PatchView patch={PATCH} path="src/a.ts" />); });
+    expect(container.firstElementChild!.className).toContain("bg-code");
+  });
+
   it("does not draw a grey gutter border beside a coloured run edge", async () => {
     // Minor from review: 2px of colour abutting a 1px border read as a
     // three-pixel smear.
