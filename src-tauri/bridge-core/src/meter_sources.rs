@@ -10,11 +10,14 @@
 //! The payload is published unchanged, in the shape the live adapter uses, so
 //! the client parses one format regardless of which path produced it.
 //!
-//! The one transformation is pruning. `resets_at` is an absolute Unix second,
-//! and a rollout is a historical record: a file from last week reports a
-//! `used_percent` for a window that has since rolled over. Reporting that as
-//! current would be worse than reporting nothing, so windows whose reset has
-//! passed are dropped, and a payload with no surviving window is discarded.
+//! The one transformation is the reset rule. `resets_at` is an absolute Unix
+//! second, and a rollout is a historical record: a file from last week reports
+//! a `used_percent` for a window that has since rolled over. Reporting that as
+//! current would be worse than reporting nothing — but dropping the window
+//! hides a limit the account really has. Any Codex use on this machine writes
+//! fresh limits to a rollout, so a window that reset with no newer line means
+//! nothing has been spent in it since: it is reported at zero, marked `fresh`,
+//! with its stale reset removed. A payload with no window at all is discarded.
 
 use serde_json::{Map, Value};
 use std::fs::File;
@@ -38,15 +41,14 @@ const NON_WINDOW_KEYS: &[&str] = &[
 ];
 
 /// Codex's account-wide rate limits, read from the newest rollout that reports
-/// them. `None` when nothing is on disk, nothing reports limits, or every
-/// window reported has already reset.
+/// them. `None` when nothing is on disk or nothing reports a quota window.
 ///
-/// `now_unix` is the comparison instant for reset pruning, injected so the
-/// expiry rule is testable rather than clock-dependent.
+/// `now_unix` is the comparison instant for the reset rule, injected so it is
+/// testable rather than clock-dependent.
 pub fn codex_rate_limits(sessions_dir: &Path, now_unix: i64) -> Option<Value> {
     for rollout in newest_rollouts(sessions_dir, MAX_ROLLOUTS_EXAMINED) {
         if let Some(limits) = last_rate_limits_in(&rollout) {
-            if let Some(live) = prune_expired_windows(limits, now_unix) {
+            if let Some(live) = settle_reset_windows(limits, now_unix) {
                 return Some(live);
             }
         }
@@ -120,15 +122,17 @@ fn last_rate_limits_in(rollout: &Path) -> Option<Value> {
     newest
 }
 
-/// Drop windows whose reset has already passed, returning `None` when that
-/// leaves no window standing. Non-window metadata (`plan_type`, `credits`) is
-/// preserved so the client can still label the provider.
-fn prune_expired_windows(limits: Value, now_unix: i64) -> Option<Value> {
+/// Apply the reset rule: a window whose reset has passed is reported at zero
+/// and marked `fresh`, with the stale `resets_at` removed so no client counts
+/// down to an instant that is already behind it. Returns `None` when the
+/// payload holds no quota window at all. Non-window metadata (`plan_type`,
+/// `credits`) is preserved so the client can still label the provider.
+fn settle_reset_windows(limits: Value, now_unix: i64) -> Option<Value> {
     let Value::Object(fields) = limits else {
         return None;
     };
     let mut kept = Map::new();
-    let mut live_windows = 0usize;
+    let mut windows = 0usize;
     for (key, value) in fields {
         if NON_WINDOW_KEYS.contains(&key.as_str()) || !value.is_object() {
             kept.insert(key, value);
@@ -138,32 +142,18 @@ fn prune_expired_windows(limits: Value, now_unix: i64) -> Option<Value> {
         let Some(resets_at) = value.get("resets_at").and_then(Value::as_i64) else {
             continue;
         };
+        windows += 1;
         if resets_at <= now_unix {
-            continue;
+            let mut fresh = value.as_object().cloned().unwrap_or_default();
+            fresh.insert("used_percent".into(), Value::from(0.0));
+            fresh.remove("resets_at");
+            fresh.insert("fresh".into(), Value::Bool(true));
+            kept.insert(key, Value::Object(fresh));
+        } else {
+            kept.insert(key, value);
         }
-        live_windows += 1;
-        kept.insert(key, value);
     }
-    (live_windows > 0).then(|| Value::Object(kept))
-}
-
-/// The worst live window as a menu-bar title (`50%`), empty when nothing is
-/// known. CodexBar's defining behaviour is that the number lives in the menu
-/// bar rather than behind a click.
-pub fn tray_title(rate_limits: &Value) -> String {
-    let Some(fields) = rate_limits.as_object() else {
-        return String::new();
-    };
-    let worst = fields
-        .iter()
-        .filter(|(key, _)| !NON_WINDOW_KEYS.contains(&key.as_str()))
-        .filter_map(|(_, value)| value.get("used_percent").and_then(Value::as_f64))
-        .fold(None::<f64>, |max, percent| {
-            Some(max.map_or(percent, |current: f64| current.max(percent)))
-        });
-    worst.map_or(String::new(), |percent| {
-        format!("{}%", percent.clamp(0.0, 100.0).round() as i64)
-    })
+    (windows > 0).then(|| Value::Object(kept))
 }
 
 #[cfg(test)]
@@ -241,9 +231,10 @@ mod tests {
     }
 
     #[test]
-    fn codex_rate_limits_drops_expired_windows() {
+    fn codex_rate_limits_reports_a_reset_window_as_fresh() {
         let temp = tempfile::tempdir().unwrap();
-        // The 5h window reset an hour ago; its 50% is history, not current.
+        // The 5h window reset an hour ago; its 50% is history, not current —
+        // but the window itself is still a limit the account has.
         write_rollout(
             temp.path(),
             "09",
@@ -252,17 +243,21 @@ mod tests {
         );
 
         let limits = codex_rate_limits(temp.path(), NOW).unwrap();
+        assert_eq!(limits["primary"]["used_percent"], json!(0.0));
+        assert_eq!(limits["primary"]["fresh"], json!(true));
         assert!(
-            limits.get("primary").is_none(),
-            "a window past its reset must not be reported as current"
+            limits["primary"].get("resets_at").is_none(),
+            "a reset already behind us must not be counted down to"
         );
+        assert_eq!(limits["primary"]["window_minutes"], json!(300));
         assert_eq!(limits["secondary"]["used_percent"], json!(8.0));
-        // Labelling metadata survives the prune.
+        assert!(limits["secondary"].get("fresh").is_none());
+        // Labelling metadata survives.
         assert_eq!(limits["plan_type"], json!("plus"));
     }
 
     #[test]
-    fn codex_rate_limits_none_when_all_windows_expired() {
+    fn codex_rate_limits_reports_every_window_fresh_when_all_have_reset() {
         let temp = tempfile::tempdir().unwrap();
         write_rollout(
             temp.path(),
@@ -270,7 +265,10 @@ mod tests {
             "all-stale",
             &rollout_line(NOW - 7_200, NOW - 3_600, 50.0),
         );
-        assert!(codex_rate_limits(temp.path(), NOW).is_none());
+        let limits = codex_rate_limits(temp.path(), NOW).unwrap();
+        assert_eq!(limits["primary"]["used_percent"], json!(0.0));
+        assert_eq!(limits["secondary"]["used_percent"], json!(0.0));
+        assert_eq!(limits["secondary"]["fresh"], json!(true));
     }
 
     #[test]
@@ -316,23 +314,6 @@ mod tests {
     fn codex_rate_limits_none_when_sessions_dir_missing() {
         let temp = tempfile::tempdir().unwrap();
         assert!(codex_rate_limits(&temp.path().join("absent"), NOW).is_none());
-    }
-
-    #[test]
-    fn tray_title_uses_worst_window() {
-        let limits = json!({
-            "primary": { "used_percent": 50.0, "resets_at": NOW + 900 },
-            "secondary": { "used_percent": 8.0, "resets_at": NOW + 90_000 },
-            "credits": { "balance": "0" },
-            "plan_type": "plus"
-        });
-        assert_eq!(tray_title(&limits), "50%");
-    }
-
-    #[test]
-    fn tray_title_empty_without_windows() {
-        assert_eq!(tray_title(&json!({ "plan_type": "plus" })), "");
-        assert_eq!(tray_title(&json!(null)), "");
     }
 }
 
