@@ -29,7 +29,7 @@
       "type": "object"
     }
   },
-  "description": "Static registry payload for `meter/get_snapshot`.",
+  "description": "Static registry payload for `meter/get_meter_snapshot`.",
   "properties": {
     "adaptiveDefaultSeconds": {
       "format": "int64",

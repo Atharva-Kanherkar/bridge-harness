@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { adaptiveDelay, paceLabel, paceTokenDelta, paceVisible, paceWeekly, type AdaptiveInput } from "./meter";
 import type { RateWindow } from "./usage";
+import fixture from "../testing/fixtures/meter-pace-cases.json";
 
 const NOW = Date.UTC(2026, 8, 7, 12, 0, 0); // a Monday noon UTC
 const WEEK_MS = 10_080 * 60_000;
@@ -35,6 +36,30 @@ describe("meter (CodexBar port)", () => {
   it("yields nothing without reset timing or with a reset outside the window", () => {
     expect(paceWeekly({ id: "w", label: "W", usedPercent: 10, source: "reported" }, NOW)).toBeUndefined();
     expect(paceWeekly(window(10, WEEK_MS * 2), NOW)).toBeUndefined();
+  });
+
+  it("agrees with the Rust core on every shared fixture, including the multiplier", () => {
+    const nowMs = Date.parse(fixture.now);
+    for (const kase of fixture.cases) {
+      const pace = paceWeekly(
+        {
+          id: "weekly",
+          label: "Weekly",
+          usedPercent: kase.used_percent,
+          windowMinutes: kase.window_minutes,
+          resetsInSeconds: kase.resets_in_seconds ?? undefined,
+          source: "reported",
+        },
+        nowMs,
+        kase.resets_at,
+      )!;
+      expect(pace, `${kase.name}: pace`).toBeDefined();
+      expect(pace.deltaPercent, `${kase.name}: delta`).toBeCloseTo(kase.expected.delta, 6);
+      expect(pace.stage, `${kase.name}: stage`).toBe(kase.expected.stage);
+      expect(pace.willLastToReset, `${kase.name}: willLast`).toBe(kase.expected.will_last);
+      expect(pace.etaSeconds != null, `${kase.name}: eta`).toBe(kase.expected.eta_some);
+      expect(pace.speedMultiplierToReset ?? NaN, `${kase.name}: multiplier`).toBeCloseTo(kase.expected.multiplier, 4);
+    }
   });
 
   it("hides pace before 3% elapsed, except the weekly menu token at 1%", () => {

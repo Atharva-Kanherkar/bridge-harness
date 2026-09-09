@@ -23,6 +23,11 @@ const CARD = "u-surface rounded-2xl p-4";
 const TABLE_HEAD = "text-left text-[11px] font-medium uppercase tracking-wide text-muted-foreground";
 const NUM = "text-right tabular-nums";
 
+/// Upper bound on bounded scan batches per auto-scan. Opening Usage must not
+/// fire an open-ended series of IPC round trips on a huge history; hitting
+/// the cap surfaces as a partial total and Scan history resumes the cursors.
+const MAX_SCAN_PASSES = 25;
+
 type Breakdown = "model" | "time";
 
 function windowLabel(days: UsageWindowDays): string {
@@ -120,11 +125,20 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
         let sourceIds: string[] | undefined;
         let imported = 0;
         let durationMs = 0;
+        let passes = 0;
         const cursors = new Map<string, string | null>();
         const warnings = new Set<string>();
         // Each call is bounded. A partial source is excluded by the summary
         // until its last batch, so one successful call is not a finished scan.
+        // Passes are capped: opening Usage must not fire an open-ended series
+        // of IPC round trips on a huge history. Hitting the cap is a partial
+        // total, and Scan history resumes from the cursors.
         do {
+          passes += 1;
+          if (passes > MAX_SCAN_PASSES) {
+            warnings.add(`History scan stopped after ${MAX_SCAN_PASSES} batches with more to go. Press Scan history to continue.`);
+            break;
+          }
           const result = await bridgeApi.scanUsageHistory(sourceIds ? { sourceIds } : {});
           if (cancelled) return;
           imported += result.recordsImported;

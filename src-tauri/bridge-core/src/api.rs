@@ -3660,7 +3660,18 @@ pub fn meter_snapshot() -> meter::MeterRegistry {
 
 /// Trigger the shared account-usage refresh (Claude `/usage` probe plus one
 /// live Codex session); results arrive on the `account-usage` channel.
+///
+/// Coalesced: calls within 10 seconds of an accepted one return `Ok` without
+/// spawning another probe pair. Neither the tray menu nor the popover button
+/// can show a spinner, so rapid re-clicks would otherwise stack a Claude PTY
+/// probe per click — the hammering the adaptive policy exists to prevent.
 pub fn refresh_meter(core: &Arc<BridgeCore>) -> Result<(), BridgeError> {
+    static LAST_REFRESH_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    let now = chrono::Utc::now().timestamp_millis();
+    if now - LAST_REFRESH_MS.load(std::sync::atomic::Ordering::SeqCst) < 10_000 {
+        return Ok(());
+    }
+    LAST_REFRESH_MS.store(now, std::sync::atomic::Ordering::SeqCst);
     core.refresh_account_usage()
 }
 

@@ -60,9 +60,9 @@ pub struct MeterProviderEntry {
     pub planned_source: Option<String>,
 }
 
-/// CodexBar's provider matrix (`docs/*.md`, 69 providers). v1 wires the two
-/// Bridge already reads (Codex rate-limit frames, Claude `/usage` probe); the
-/// remainder are explicit follow-ups, not silent gaps.
+/// A slice of CodexBar's 69-provider matrix (`docs/*.md` upstream). v1 wires
+/// the two Bridge already reads (Codex rate-limit frames, Claude `/usage`
+/// probe); 41 further providers are registered below as planned follow-ups.
 const PLANNED_PROVIDERS: &[(&str, &str, &str)] = &[
     ("openai", "OpenAI", "Admin API key usage/cost graphs"),
     ("azure-openai", "Azure OpenAI", "API key, endpoint and deployment probe"),
@@ -189,6 +189,23 @@ fn clamp(value: f64, lower: f64, upper: f64) -> f64 {
     value.max(lower).min(upper)
 }
 
+/// The window's reset instant: the provider's absolute timestamp when present,
+/// otherwise the live countdown Bridge normalizes absolute resets into (see
+/// `src/usage.ts`, which stores only `resetsInSeconds`). Both halves must
+/// accept both shapes — a countdown-only window is the common case on live
+/// data, and requiring one shape while tests set both hid that asymmetry.
+fn reset_instant(window: &MeterWindow, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
+    if let Some(text) = window.resets_at.as_deref() {
+        if let Ok(instant) = text.parse() {
+            return Some(instant);
+        }
+    }
+    window.resets_in_seconds.and_then(|secs| {
+        (secs > 0.0 && secs.is_finite())
+            .then(|| now + chrono::Duration::milliseconds((secs * 1000.0) as i64))
+    })
+}
+
 /// Even-rate pace for one window at `now`.
 ///
 /// Ports `UsagePace.weekly(window:now:defaultWindowMinutes:workDays:calendar:)`
@@ -204,16 +221,17 @@ pub fn pace_weekly_with_workdays(
     window: &MeterWindow,
     now: DateTime<Utc>,
     work_days: u32,
+    utc_offset_seconds: i64,
 ) -> Option<MeterPace> {
-    pace_weekly_inner(window, now, Some(work_days))
+    pace_weekly_inner(window, now, Some((work_days, utc_offset_seconds)))
 }
 
 fn pace_weekly_inner(
     window: &MeterWindow,
     now: DateTime<Utc>,
-    work_days: Option<u32>,
+    work_schedule: Option<(u32, i64)>,
 ) -> Option<MeterPace> {
-    let resets_at: DateTime<Utc> = window.resets_at.as_deref()?.parse().ok()?;
+    let resets_at = reset_instant(window, now)?;
     let minutes = window.window_minutes.unwrap_or(10_080);
     if minutes <= 0 {
         return None;
@@ -224,15 +242,18 @@ fn pace_weekly_inner(
         return None;
     }
     let elapsed = clamp(duration - time_until_reset, 0.0, duration);
-    let (expected, pace_elapsed, effective_remaining) = match work_days {
-        Some(days) if (2..7).contains(&days) && minutes == 10_080 => {
-            let progress = workday_progress(now, duration, resets_at, days)?;
+    let (expected, pace_elapsed, effective_remaining) = match work_schedule {
+        Some((days, offset)) if (2..7).contains(&days) && minutes == 10_080 => {
+            let progress = workday_progress(now, duration, resets_at, days, offset)?;
             (progress.expected_used_percent(), progress.elapsed_seconds, progress.remaining_seconds)
         }
         _ => (clamp(elapsed / duration * 100.0, 0.0, 100.0), elapsed, time_until_reset),
     };
     let actual = clamp(window.used_percent, 0.0, 100.0);
-    if elapsed == 0.0 && actual > 0.0 {
+    // Guard on the clock the expectation runs on, not wall time: a window that
+    // opens on a non-workday has zero pace-elapsed while wall time advances,
+    // and recording usage against a zero expectation is contradictory data.
+    if pace_elapsed == 0.0 && actual > 0.0 {
         return None;
     }
     let delta = actual - expected;
@@ -292,12 +313,16 @@ impl WorkdayProgress {
     }
 }
 
-/// Weekly work-day split at local day boundaries (CodexBar `workdayProgress`).
+/// Weekly work-day split at the viewer's local day boundaries (CodexBar
+/// `workdayProgress`). `utc_offset_seconds` is the viewer's zone offset (east
+/// positive); day slices and weekday classification both run in local time so
+/// weekend detection is correct around local midnight.
 fn workday_progress(
     now: DateTime<Utc>,
     duration: f64,
     resets_at: DateTime<Utc>,
     work_days: u32,
+    utc_offset_seconds: i64,
 ) -> Option<WorkdayProgress> {
     let window_start = resets_at - chrono::Duration::milliseconds((duration * 1000.0) as i64);
     let mut total = 0.0;
@@ -305,9 +330,9 @@ fn workday_progress(
     let mut remaining = 0.0;
     let mut cursor = window_start;
     while cursor < resets_at {
-        let boundary = next_day_boundary(cursor)?;
+        let boundary = next_local_day_boundary(cursor, utc_offset_seconds)?;
         let slice_end = boundary.min(resets_at);
-        if is_workday(cursor, work_days) {
+        if is_workday(cursor, work_days, utc_offset_seconds) {
             let slice = (slice_end - cursor).num_milliseconds() as f64 / 1000.0;
             total += slice;
             if now > cursor {
@@ -322,23 +347,25 @@ fn workday_progress(
     (total > 0.0).then_some(WorkdayProgress { total_seconds: total, elapsed_seconds: elapsed, remaining_seconds: remaining })
 }
 
-fn next_day_boundary(after: DateTime<Utc>) -> Option<DateTime<Utc>> {
-    let date = after.date_naive();
-    let next = date.succ_opt()?;
-    let midnight = next.and_hms_opt(0, 0, 0)?;
-    Some(DateTime::<Utc>::from_naive_utc_and_offset(midnight, Utc))
+fn next_local_day_boundary(after: DateTime<Utc>, utc_offset_seconds: i64) -> Option<DateTime<Utc>> {
+    let local = after + chrono::Duration::seconds(utc_offset_seconds);
+    let next_local_midnight = local.date_naive().succ_opt()?.and_hms_opt(0, 0, 0)?;
+    let boundary = DateTime::<Utc>::from_naive_utc_and_offset(next_local_midnight, Utc)
+        - chrono::Duration::seconds(utc_offset_seconds);
+    (boundary > after).then_some(boundary)
 }
 
-/// Monday = 1 .. Sunday = 7; `work_days` counts from Monday.
-fn is_workday(instant: DateTime<Utc>, work_days: u32) -> bool {
-    let iso = instant.weekday().number_from_monday();
-    iso <= work_days
+/// Monday = 1 .. Sunday = 7 in the viewer's local time; `work_days` counts
+/// from Monday.
+fn is_workday(instant: DateTime<Utc>, work_days: u32, utc_offset_seconds: i64) -> bool {
+    let local = instant + chrono::Duration::seconds(utc_offset_seconds);
+    local.weekday().number_from_monday() <= work_days
 }
 
 /// Whether pace is shown for a window (`docs/ui.md`): hidden until 3% of the
 /// window has elapsed; the weekly menu-bar token appears after 1%.
 pub fn pace_visible(window: &MeterWindow, now: DateTime<Utc>, weekly_menu_token: bool) -> bool {
-    let Some(resets_at) = window.resets_at.as_deref().and_then(|value| value.parse::<DateTime<Utc>>().ok()) else {
+    let Some(resets_at) = reset_instant(window, now) else {
         return false;
     };
     let minutes = window.window_minutes.unwrap_or(10_080);
@@ -481,7 +508,7 @@ pub fn adaptive_delay(input: AdaptiveInput) -> (std::time::Duration, AdaptiveRea
 /// `nominalIntervalForHeuristics`): the steady-state active delay.
 pub const NOMINAL_INTERVAL_SECONDS: u64 = 300;
 
-/// Static registry payload for `meter/get_snapshot`.
+/// Static registry payload for `meter/get_meter_snapshot`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MeterRegistry {
@@ -531,6 +558,8 @@ mod tests {
         assert_eq!(pace.stage, PaceStage::FarAhead);
         assert!(!pace.will_last_to_reset);
         assert!(pace.eta_seconds.unwrap() > 0.0);
+        // 25 points of headroom against 75 projected: exactly one third.
+        assert!((pace.speed_multiplier_to_reset.unwrap() - 1.0 / 3.0).abs() < 1e-9);
         assert_eq!(pace_token_delta(&pace), "+25%");
         assert!(pace_label(&pace).contains("in deficit"));
     }
@@ -541,6 +570,8 @@ mod tests {
         let pace = pace_weekly(&window(20.0, 10_080, 5_040.0 * 60.0, now), now).unwrap();
         assert_eq!(pace.stage, PaceStage::FarBehind);
         assert!(pace.will_last_to_reset);
+        // 80 points of headroom against 20 projected: four times the pace.
+        assert!((pace.speed_multiplier_to_reset.unwrap() - 4.0).abs() < 1e-9);
         assert!(pace_label(&pace).contains("in reserve"));
         assert!(pace_label(&pace).contains("lasts until reset"));
     }
@@ -554,11 +585,90 @@ mod tests {
     }
 
     #[test]
+    fn countdown_only_windows_take_the_same_path_as_absolute_resets() {
+        // Live Bridge data carries countdowns (see usage.ts normalization),
+        // not timestamps — a countdown-only window must produce pace.
+        let now = monday_noon();
+        let countdown = MeterWindow {
+            id: "weekly".into(),
+            label: "Weekly".into(),
+            used_percent: 75.0,
+            window_minutes: Some(10_080),
+            resets_at: None,
+            resets_in_seconds: Some(5_040.0 * 60.0),
+        };
+        let pace = pace_weekly(&countdown, now).expect("countdown-only windows produce pace");
+        assert!((pace.delta_percent - 25.0).abs() < 1e-6);
+        assert!(!pace.will_last_to_reset);
+    }
+
+    #[test]
     fn workdays_reshape_the_expected_rate() {
         let now = monday_noon();
         let plain = pace_weekly(&window(10.0, 10_080, 6.5 * 24.0 * 3_600.0, now), now).unwrap();
-        let workdays = pace_weekly_with_workdays(&window(10.0, 10_080, 6.5 * 24.0 * 3_600.0, now), now, 5).unwrap();
+        let workdays = pace_weekly_with_workdays(&window(10.0, 10_080, 6.5 * 24.0 * 3_600.0, now), now, 5, 0).unwrap();
         assert!(workdays.expected_used_percent > plain.expected_used_percent);
+    }
+
+    #[test]
+    fn workday_boundaries_follow_the_viewer_offset_not_utc() {
+        // Monday 00:30 UTC is still Sunday evening in UTC-5: with a 5-day
+        // week those minutes are non-work time.
+        let monday_0030_utc = Utc.with_ymd_and_hms(2026, 9, 7, 0, 30, 0).single().unwrap();
+        assert!(!is_workday(monday_0030_utc, 5, -5 * 3_600));
+        assert!(is_workday(monday_0030_utc, 5, 0));
+        assert!(is_workday(monday_0030_utc, 7, -5 * 3_600));
+    }
+
+    #[test]
+    fn shared_fixtures_agree_with_the_typescript_port_case_for_case() {
+        #[derive(serde::Deserialize)]
+        struct Fixture {
+            now: String,
+            cases: Vec<FixtureCase>,
+        }
+        #[derive(serde::Deserialize)]
+        struct FixtureCase {
+            name: String,
+            used_percent: f64,
+            window_minutes: i64,
+            resets_in_seconds: Option<f64>,
+            resets_at: Option<String>,
+            expected: FixtureExpected,
+        }
+        #[derive(serde::Deserialize)]
+        struct FixtureExpected {
+            delta: f64,
+            stage: PaceStage,
+            will_last: bool,
+            eta_some: bool,
+            multiplier: f64,
+        }
+        let fixture: Fixture = serde_json::from_str(include_str!(
+            "../../../testing/fixtures/meter-pace-cases.json"
+        ))
+        .expect("pace fixtures parse");
+        let now: DateTime<Utc> = fixture.now.parse().expect("fixture now parses");
+        for case in &fixture.cases {
+            let window = MeterWindow {
+                id: "weekly".into(),
+                label: "Weekly".into(),
+                used_percent: case.used_percent,
+                window_minutes: Some(case.window_minutes),
+                resets_at: case.resets_at.clone(),
+                resets_in_seconds: case.resets_in_seconds,
+            };
+            let pace = pace_weekly(&window, now).unwrap_or_else(|| panic!("{}: pace", case.name));
+            assert!((pace.delta_percent - case.expected.delta).abs() < 1e-6, "{}: delta", case.name);
+            assert_eq!(pace.stage, case.expected.stage, "{}: stage", case.name);
+            assert_eq!(pace.will_last_to_reset, case.expected.will_last, "{}: will_last", case.name);
+            assert_eq!(pace.eta_seconds.is_some(), case.expected.eta_some, "{}: eta", case.name);
+            assert!(
+                (pace.speed_multiplier_to_reset.unwrap() - case.expected.multiplier).abs() < 1e-4,
+                "{}: multiplier",
+                case.name
+            );
+        }
     }
 
     #[test]
@@ -594,6 +704,7 @@ mod tests {
         let live: Vec<&str> = registry.iter().filter(|entry| entry.supported).map(|entry| entry.id.as_str()).collect();
         assert_eq!(live, vec!["codex", "claude"]);
         assert!(registry.iter().any(|entry| entry.id == "openrouter" && !entry.supported));
+        assert_eq!(registry.len(), 2 + PLANNED_PROVIDERS.len());
         assert!(registry.len() > 30, "the CodexBar matrix must be visible, not just the live two");
     }
 }

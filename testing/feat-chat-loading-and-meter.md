@@ -72,3 +72,23 @@ N/A — Tauri shell; covered by manual smoke above.
 - `cargo run -p bridge-client --bin bridge -- meter --json | head -30`
 - `cargo run -p bridge-protocol --bin generate-protocol-artifacts` produces no
   diff after protocol edits (artifacts committed).
+
+## Review follow-ups (PR #595, review by Codex)
+
+- `speedMultiplierToReset` was 1000x off in TS (stray `/1000` with no unit to
+  cancel); fixed, and both suites now assert the multiplier. Shared fixtures
+  in `testing/fixtures/meter-pace-cases.json` are consumed by
+  `src/meter.test.ts` and `bridge-core meter::tests`, so the two
+  implementations cannot drift again.
+- Rust pace accepted only absolute `resets_at` while live data carries
+  countdowns; both halves now accept both shapes (absolute wins).
+- Workday progress runs in the viewer's local time via an explicit UTC offset;
+  the contradictory-sample guard runs on pace-elapsed, not wall time.
+- Tray actions route through the same `openMeter`/`refreshMeter` handlers as
+  the in-app controls; Escape closes the meter first; the dialog is modal
+  with initial focus and a 30s ticking clock.
+- Dead surface removed (`set_tooltip`, `MeterPaceStage`, the `adapters` prop);
+  `refresh_meter` coalesces calls within 10s; auto-scan caps at 25 passes.
+- Migration 54 population split is documented in `store.rs`: earlier
+  timestamp-gated repairs keep delta rows, new upgrades keep cumulative rows
+  until a history scan imports per-request observations.

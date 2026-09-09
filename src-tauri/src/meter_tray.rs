@@ -2,15 +2,15 @@
 //!
 //! CodexBar is a menu-bar-only app (`LSUIElement`, one `NSStatusItem` per
 //! provider). Bridge stays a windowed app; the tray is a companion surface:
-//! one status item with a native menu (Show Bridge, Refresh usage, Quit) plus
-//! a tooltip carrying the worst live window. The live percent ring already
+//! one status item with a native menu (Show Bridge, Refresh usage, Quit).
+//! Left-click opens the in-app meter popover. The live percent ring already
 //! lives in-app (`UsageWidget`); per-window pace and reset countdowns render
 //! in the meter popover (`src/components/meter/`).
 //!
 //! The tray never blocks startup: any failure here is swallowed so a tray
 //! regression cannot take down the desktop shell.
 
-use tauri::{tray::TrayIconBuilder, AppHandle, Emitter, Manager};
+use tauri::{tray::TrayIconBuilder, Emitter, Manager};
 
 const TRAY_ID: &str = "bridge-meter";
 
@@ -66,12 +66,4 @@ pub fn build(app: &tauri::App<tauri::Wry>) -> Result<(), String> {
         .build(handle)
         .map_err(|error| error.to_string())?;
     Ok(())
-}
-
-/// Update the tray tooltip with the worst live window, when the frontend
-/// reports one. `None` restores the default tooltip.
-pub fn set_tooltip(app: &AppHandle, tooltip: Option<String>) {
-    if let Some(tray) = app.tray_by_id(TRAY_ID) {
-        let _ = tray.set_tooltip(tooltip.as_deref());
-    }
 }

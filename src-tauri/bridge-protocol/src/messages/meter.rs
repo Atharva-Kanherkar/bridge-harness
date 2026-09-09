@@ -19,7 +19,7 @@ pub struct MeterProviderEntry {
     pub planned_source: Option<String>,
 }
 
-/// Static registry payload for `meter/get_snapshot`.
+/// Static registry payload for `meter/get_meter_snapshot`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct MeterRegistry {
@@ -27,19 +27,6 @@ pub struct MeterRegistry {
     pub adaptive_default_seconds: i64,
     pub nominal_interval_seconds: i64,
     pub attribution: String,
-}
-
-/// Pace stage for one quota window, mirroring `bridge_core::meter::PaceStage`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum MeterPaceStage {
-    OnTrack,
-    SlightlyAhead,
-    Ahead,
-    FarAhead,
-    SlightlyBehind,
-    Behind,
-    FarBehind,
 }
 
 #[cfg(test)]

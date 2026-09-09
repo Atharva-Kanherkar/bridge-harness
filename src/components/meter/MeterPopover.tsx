@@ -4,12 +4,12 @@
 // planned-provider matrix from the registry so follow-ups are visible, not
 // silent. Pace math is the shared `src/meter.ts` port; styling is Tailwind
 // utilities plus `.u-glass-popover` only.
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Gauge, RefreshCw, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { formatReset, windowLabel, type RateWindow, type UsageProvider, type UsageSnapshot } from "../../usage";
 import { paceLabel, paceTokenDelta, paceVisible, paceWeekly } from "../../meter";
-import type { AdapterDescriptor, MeterRegistry } from "../../types";
+import type { MeterRegistry } from "../../types";
 import { HarnessMark } from "../harnessMarks";
 import { harnessLabel } from "../../utils";
 
@@ -24,12 +24,13 @@ function WindowRow({ window, nowMs }: { window: RateWindow; nowMs: number }) {
   const showPace = pace != null && paceVisible(window, nowMs);
   const reset = window.resetsInSeconds != null ? formatReset(window.resetsInSeconds) : window.resetsLabel;
   const used = Math.min(100, Math.max(0, window.usedPercent));
+  const name = window.label || windowLabel(window.id, window.windowMinutes);
   return <div className="py-1.5">
     <div className="flex items-baseline justify-between gap-2 text-caption">
-      <span className="font-medium text-foreground">{window.label || windowLabel(window.id, window.windowMinutes)}</span>
+      <span className="font-medium text-foreground">{name}</span>
       <span className="shrink-0 tabular-nums text-muted-foreground">{Math.round(used)}% used{pace && showPace ? ` · ${paceTokenDelta(pace)}` : ""}</span>
     </div>
-    <span className="mt-1 block h-1.5 w-full overflow-hidden rounded-full bg-muted" role="img" aria-label={`${window.label} ${Math.round(used)} percent used`}>
+    <span className="mt-1 block h-1.5 w-full overflow-hidden rounded-full bg-muted" role="img" aria-label={`${name} ${Math.round(used)} percent used`}>
       <span className="block h-full rounded-full bg-foreground" style={{ width: `${used}%` }} />
     </span>
     <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[11px] text-muted-foreground">
@@ -41,17 +42,25 @@ function WindowRow({ window, nowMs }: { window: RateWindow; nowMs: number }) {
 
 export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose }: {
   usage: Partial<Record<UsageProvider, UsageSnapshot>>;
-  adapters?: AdapterDescriptor[];
   registry: MeterRegistry | null;
   refreshing: boolean;
   onRefresh: () => void;
   onClose: () => void;
 }) {
-  const [nowMs] = useState(() => Date.now());
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  // Countdowns and pace go stale against a frozen clock, so tick while open.
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  // A dialog that opens without focus strands keyboard users; focus the
+  // dialog itself on mount (Escape is handled globally, topmost-layer-first).
+  useEffect(() => { dialogRef.current?.focus(); }, []);
   const live = providerSnapshots(usage);
   const planned = (registry?.providers ?? []).filter(entry => !entry.supported);
   const worst = live.flatMap(({ snapshot }) => snapshot.windows).reduce<number | null>((max, window) => (max == null ? window.usedPercent : Math.max(max, window.usedPercent)), null);
-  return <div role="dialog" aria-label="Usage meter" className="u-glass-popover flex max-h-[80dvh] w-[min(24rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl">
+  return <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Usage meter" tabIndex={-1} className="u-glass-popover flex max-h-[80dvh] w-[min(24rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl outline-none">
     <div className="flex items-center gap-2 border-b border-border px-3.5 py-2.5">
       <Gauge size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
       <h2 className="font-display text-sm font-semibold text-foreground">Meter</h2>

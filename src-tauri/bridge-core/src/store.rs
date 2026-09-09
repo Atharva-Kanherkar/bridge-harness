@@ -868,6 +868,15 @@ fn migration_53_usage_tracking(transaction: &Transaction<'_>) -> Result<(), Brid
 /// Codex rows have no persisted cumulative/per-request discriminator: neither
 /// timestamps nor monotonic counts prove provenance. Leave them unchanged;
 /// imported provider history supplies the per-request records instead.
+///
+/// Population note: the schema version was deliberately not bumped for the
+/// Codex half of this repair, so two populations exist and stay as they are.
+/// Databases that ran the earlier timestamp-gated Codex repair keep its delta
+/// rows (per-turn figures, the honest shape); databases upgrading now keep
+/// their raw cumulative rows until a history scan imports per-request
+/// observations for those sessions. Guessing a discriminator to reunite them
+/// would risk silently undercounting valid usage, which is worse than the
+/// split — so the split is documented here instead of repaired.
 fn migration_54_usage_ledger_repair(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     if !table_exists(transaction, "usage_ledger")? {
         return Ok(());

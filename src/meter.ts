@@ -45,28 +45,36 @@ function paceStage(delta: number): PaceStage {
   return delta >= 0 ? "far_ahead" : "far_behind";
 }
 
-function resetsAtMs(window: RateWindow, nowMs: number): number | undefined {
+function resetsAtMs(window: RateWindow, nowMs: number, resetsAt?: string | null): number | undefined {
+  if (resetsAt) {
+    const parsed = Date.parse(resetsAt);
+    if (Number.isFinite(parsed)) return parsed;
+  }
   const direct = window.resetsInSeconds;
   if (direct != null && Number.isFinite(direct) && direct > 0) return nowMs + direct * 1000;
   return undefined;
 }
 
 /** Even-rate pace for one quota window. `undefined` when the reset is missing,
- * outside the window, or the sample contradicts the clock. */
-export function paceWeekly(window: RateWindow, nowMs: number = Date.now()): MeterPace | undefined {
-  const resetsAt = resetsAtMs(window, nowMs);
-  if (resetsAt == null) return undefined;
+ * outside the window, or the sample contradicts the clock. An explicit
+ * absolute reset wins over the countdown, mirroring the Rust core. */
+export function paceWeekly(window: RateWindow, nowMs: number = Date.now(), resetsAt?: string | null): MeterPace | undefined {
+  const reset = resetsAtMs(window, nowMs, resetsAt);
+  if (reset == null) return undefined;
   const minutes = window.windowMinutes ?? 10_080;
   if (!Number.isFinite(minutes) || minutes <= 0) return undefined;
   const duration = minutes * 60_000;
-  const timeUntilReset = resetsAt - nowMs;
+  const timeUntilReset = reset - nowMs;
   if (!(timeUntilReset > 0) || timeUntilReset > duration) return undefined;
   const elapsed = clamp(duration - timeUntilReset, 0, duration);
   const expected = clamp((elapsed / duration) * 100, 0, 100);
   const actual = clamp(window.usedPercent, 0, 100);
   if (elapsed === 0 && actual > 0) return undefined;
   const delta = actual - expected;
-  const projectedRemaining = elapsed > 0 ? (actual * timeUntilReset) / elapsed / 1000 : 0;
+  // Both operands are in the same time unit (ms), so the quotient is already
+  // a percentage — no divisor. (A stray /1000 here once inflated this 1000x
+  // vs the Rust core; both suites now assert the multiplier.)
+  const projectedRemaining = elapsed > 0 ? (actual * timeUntilReset) / elapsed : 0;
   const remainingCapacity = 100 - actual;
   const speedMultiplierToReset =
     remainingCapacity > 0 && projectedRemaining > 0 && Number.isFinite(remainingCapacity / projectedRemaining)

@@ -204,6 +204,15 @@ describe("UsageScreen", () => {
     expect(text()).toContain("Partial total");
   });
 
+  it("caps auto-scan passes and resumes on demand", async () => {
+    let cursors = 0;
+    scanSpy.mockImplementation(async () => batch("partial", 0, `cursor-${++cursors}`));
+    await mount();
+    expect(scanSpy).toHaveBeenCalledTimes(25);
+    expect(text()).toContain("stopped after 25 batches");
+    expect(text()).toContain("Partial total");
+  });
+
   it("does not claim complete coverage when scanning fails", async () => {
     scanSpy.mockRejectedValue(new Error("cannot read history"));
     await mount();

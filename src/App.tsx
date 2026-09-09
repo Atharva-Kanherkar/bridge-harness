@@ -251,6 +251,10 @@ function AppContent() {
   const [meterOpen, setMeterOpen] = useState(false);
   const [meterRegistry, setMeterRegistry] = useState<MeterRegistry | null>(null);
   const [meterRefreshing, setMeterRefreshing] = useState(false);
+  // Mirrored for the global Escape handler, which must close the topmost
+  // layer without resubscribing on every popover toggle.
+  const meterOpenRef = useRef(false);
+  meterOpenRef.current = meterOpen;
   const startedRef = useRef<Set<string>>(new Set());
   // The first message of a just-created chat, tagged with its target session id so
   // the delivery effect can only ever hand it to that chat — never to a session that
@@ -335,12 +339,14 @@ function AppContent() {
       }
     }).then(fn => offUsage = fn);
     // Native tray (menu-bar meter companion): left-click opens the meter
-    // popover, the tray menu's refresh triggers a shared usage refresh.
+    // popover, the tray menu's refresh triggers a shared usage refresh. Both
+    // route through the same handlers as the in-app controls so the registry
+    // loads and the spinner spins on every path.
     let offMeter: (() => void) | undefined;
     void bridgeApi.onMeterTray(action => {
       if (!active) return;
-      if (action === "open-popover") setMeterOpen(true);
-      else void bridgeApi.refreshMeter().catch(value => setError(errorMessage(value)));
+      if (action === "open-popover") openMeter();
+      else refreshMeter();
     }).then(fn => { if (!active) { fn(); return; } offMeter = fn; });
     return () => {
       active = false;
@@ -2062,6 +2068,9 @@ function AppContent() {
         return;
       }
       if (event.key === "Escape") {
+        // Topmost layer first: the meter popover, then an expanded dock, then
+        // fullscreen. The meter is a dialog over everything, so it wins.
+        if (meterOpenRef.current) { setMeterOpen(false); return; }
         // An expanded dock is the nearer layer: the first Escape restores it,
         // the next one leaves fullscreen.
         if (dockRef.current.open && dockRef.current.expanded) dispatchDock({ type: "toggle-expanded" });
@@ -2688,7 +2697,7 @@ function AppContent() {
     <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={acceptModelSetup} onClose={closeModal} onError={setError} />
     <ShortcutsSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
     {meterOpen && <div role="presentation" className="fixed inset-0 z-50 grid place-items-center bg-background/60 p-4" onPointerDown={event => { if (event.target === event.currentTarget) setMeterOpen(false); }}>
-      <MeterPopover usage={usageByProvider} adapters={health?.adapters} registry={meterRegistry} refreshing={meterRefreshing} onRefresh={refreshMeter} onClose={() => setMeterOpen(false)} />
+      <MeterPopover usage={usageByProvider} registry={meterRegistry} refreshing={meterRefreshing} onRefresh={refreshMeter} onClose={() => setMeterOpen(false)} />
     </div>}
   </div>;
 }

@@ -69,6 +69,8 @@ describe("MeterPopover", () => {
     expect(text).toContain("1 more providers planned");
     expect(text).toContain("OpenRouter");
     expect(container.querySelector('[role="dialog"]')?.getAttribute("aria-label")).toBe("Usage meter");
+    expect(container.querySelector('[role="dialog"]')?.getAttribute("aria-modal")).toBe("true");
+    expect(document.activeElement).toBe(container.querySelector('[role="dialog"]'));
   });
 
   it("says when no live windows exist yet", async () => {
