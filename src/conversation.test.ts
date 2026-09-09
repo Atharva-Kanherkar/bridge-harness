@@ -355,8 +355,19 @@ describe("worker delegation fold",()=>{
     // Both halves survive: the spawn's routing detail and the result's outcome.
     expect(folded[0].data.modelLabel).toBe("Fable");
     expect(folded[0].data.delivered).toBe(true);
-    expect(folded[0].text).toBe("done");
+    // The panel's text is the objective, and a result does not get to replace
+    // it: the worker's own prose can run to paragraphs, and overwriting the ask
+    // with it left a finished card that no longer said what it had been for.
+    // The summary travels on the typed envelope, which is where the card reads
+    // it from.
+    expect(folded[0].text).toBe("add rotation");
     expect(folded[0].key).toBe(spawn("x").key);
+  });
+
+  it("fills an empty objective from the result rather than leaving the panel blank",()=>{
+    const bare = {...spawn("x"), text: ""};
+    const folded = foldWorkerDelegations([bare, result("x")]);
+    expect(folded[0].text).toBe("done");
   });
 
   it("keeps each worker's panel separate",()=>{

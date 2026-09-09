@@ -14,6 +14,27 @@ export const WORKER_PANEL_FEED_LINES = 3;
 
 export type WorkerPanelFeedLine = { id: number; text: string };
 
+/**
+ * The machine blocks a worker and its orchestrator talk to each other in.
+ *
+ * A worker's typed envelope arrives inside a ```bridge-worker-result fence, and
+ * the adapters happily record the fence's opening line as the worker's newest
+ * activity. The card then showed a lone "```bridge-worker-result" where its
+ * one-line progress note belongs — protocol plumbing presented to a human as
+ * status. These lines are never worth a row; they are the wire, not the work.
+ */
+const MACHINE_TAGS = new Set(["bridge-delegate", "bridge-worker-result", "bridge-peek", "bridge-steer", "bridge-stop"]);
+
+/** One line of worker activity, or nothing if it is only wire chatter. */
+export function legibleWorkerLine(text: string | null | undefined): string | undefined {
+  const trimmed = (text ?? "").trim();
+  if (!trimmed) return undefined;
+  // A fence and nothing else. A fence with content after the tag is prose.
+  if (/^(?:```|~~~)\s*[\w-]*$/.test(trimmed)) return undefined;
+  if (MACHINE_TAGS.has(trimmed)) return undefined;
+  return trimmed;
+}
+
 /** The result facts worth showing once a worker has reported. */
 export interface WorkerPanelResult {
   status?: string;
@@ -84,7 +105,7 @@ export function workerFeedLines(
   const lines: WorkerPanelFeedLine[] = [];
   for (const event of events) {
     if (event.sessionId !== sessionId) continue;
-    const text = (event.text ?? "").trim() || (event.title ?? "").trim();
+    const text = legibleWorkerLine(event.text) ?? legibleWorkerLine(event.title);
     if (!text) continue;
     const last = lines[lines.length - 1];
     if (last && last.text === text) { last.id = event.id; continue; }
@@ -118,7 +139,7 @@ export function workerPanelModel(
     session,
     status: workerStatus(session, runtime),
     retryCount: Number(runtime?.retryCount ?? 0),
-    progressSummary: runtime?.progressSummary ?? undefined,
+    progressSummary: legibleWorkerLine(runtime?.progressSummary),
     waitingReason: runtime?.waitingReason ?? undefined,
     waitingSince: runtime?.waitingSince ?? undefined,
     startedAt: session.startedAt ?? undefined,
