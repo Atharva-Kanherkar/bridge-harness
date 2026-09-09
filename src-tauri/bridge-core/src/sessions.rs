@@ -1354,7 +1354,11 @@ pub fn session_forest_snapshot_with_repository_state(
     )?;
     let workspace_id = workspace_id.unwrap_or_default();
     let config = policy::PolicyConfig::default();
-    let entries = store::session_entries(db, session_id)?;
+    // Bounded on purpose. The untrimmed read of a long chat reached 129 MB of
+    // payload, which is both slow to parse twice (here and in the renderer)
+    // and past the daemon's frame ceiling, so it failed the open outright.
+    let window = store::session_entry_window(db, session_id, store::SNAPSHOT_ENTRY_WINDOW)?;
+    let entries = window.entries;
     let head = store::session_head(db, session_id)?;
     let selected_state = head
         .as_ref()
@@ -1374,6 +1378,7 @@ pub fn session_forest_snapshot_with_repository_state(
         Some(selected) if comparable(selected) && comparable(&current_state) => "diverged",
         _ => "unknown",
     };
+    let entries_returned = entries.len() as i64;
     Ok(SessionForestSnapshot {
         session_id: session_id.to_owned(),
         entries,
@@ -1385,7 +1390,7 @@ pub fn session_forest_snapshot_with_repository_state(
         worker_runtimes: store::worker_runtimes(db, &workspace_id)?,
         worker_queue: store::worker_queue_requests(db, &workspace_id)?,
         usage: store::usage_ledger(db, &workspace_id, None)?,
-        reasons: store::workspace_reason_events(db, &workspace_id)?,
+        reasons: store::workspace_reason_events(db, &workspace_id, store::SNAPSHOT_REASON_WINDOW)?,
         policy_limits: PolicyLimits {
             max_workers_per_turn: config.max_workers_per_turn as i64,
             max_strong_workers_per_turn: config.max_strong_workers_per_turn as i64,
@@ -1397,6 +1402,11 @@ pub fn session_forest_snapshot_with_repository_state(
             current_state,
         },
         completion: completion::latest_summary(db, session_id)?,
+        entry_window: crate::model::SessionEntryWindowSummary {
+            returned: entries_returned,
+            total: window.total,
+            trimmed_payloads: window.trimmed_payloads,
+        },
     })
 }
 

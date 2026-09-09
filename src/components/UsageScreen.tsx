@@ -224,6 +224,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
     : [];
   const historyIncomplete = preferences.includeImported && (scanning || scanFailed || incompleteSources.some(source => source.capability === "supported"));
   const partialTotal = loading || historyIncomplete;
+  const partialLabel = scanning ? "Loading history" : loading ? "Updating usage" : "History incomplete";
 
   return <div className="h-full min-h-0 overflow-y-auto">
     <div className={SCREEN_CONTENT}>
@@ -236,20 +237,22 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
         </span>}
       />
 
-      <div className="mb-5 flex flex-wrap items-center gap-3">
+      <div className="mb-5 flex flex-wrap items-start gap-3">
         <Segmented<UsageMetric> label="Metric" value={metric} options={[{ value: "cost", label: "Cost" }, { value: "tokens", label: "Tokens" }]} onChange={value => update({ metric: value })} />
         <Segmented<UsageWindowDays> label="Window" value={preferences.windowDays} options={USAGE_WINDOW_OPTIONS.map(days => ({ value: days, label: windowLabel(days) }))} onChange={value => update({ windowDays: value })} />
-        <button type="button" aria-pressed={preferences.includeImported} onClick={() => update({ includeImported: !preferences.includeImported })} className={cn("inline-flex h-8 items-center gap-2 rounded-lg border border-border px-3 text-caption transition-colors hover:bg-accent", preferences.includeImported ? "text-foreground" : "text-muted-foreground")}>
-          <span className={cn("size-2 rounded-full", preferences.includeImported ? "bg-foreground" : "bg-border")} aria-hidden="true" />Include history
-        </button>
-        <span className="ml-auto text-caption tabular-nums text-muted-foreground">{formatWindowLabel(window_)}</span>
+        <div>
+          <button type="button" aria-pressed={preferences.includeImported} onClick={() => update({ includeImported: !preferences.includeImported })} className={cn("inline-flex h-8 items-center gap-2 rounded-lg border border-border px-3 text-caption transition-colors hover:bg-accent", preferences.includeImported ? "text-foreground" : "text-muted-foreground")}>
+            <span className={cn("size-2 rounded-full", preferences.includeImported ? "bg-foreground" : "bg-border")} aria-hidden="true" />Include local history
+          </button>
+          <p className="mt-1 max-w-64 text-[11px] leading-4 text-muted-foreground">Adds usage totals from supported chats already on this device.</p>
+        </div>
+        <span className="ml-auto pt-2 text-caption tabular-nums text-muted-foreground">{formatWindowLabel(window_)}</span>
       </div>
 
       <p className="mb-3 text-caption text-muted-foreground">{preferences.includeImported ? "Bridge sessions + imported local history on this device" : "Bridge sessions only. Local history is excluded."}</p>
-      {partialTotal && <p role="status" className="mb-3 text-caption text-warning">{scanning ? "Loading history. The displayed total is incomplete." : loading ? "Updating usage. The displayed total is incomplete." : "History is incomplete. The displayed number is a partial total."}</p>}
 
       {report && (incompleteSources.length > 0 || summary!.duplicatesDropped > 0 || report.totals.unpricedRecords > 0) && <ul className="mb-5 space-y-1 text-caption text-muted-foreground" aria-label="Coverage notes">
-        {incompleteSources.map(source => <li key={source.id}>{harnessLabel(source.agent)} history is <span className={coverageTone(source.coverageState)}>{source.coverageState}</span>{source.coverageReason ? `: ${source.coverageReason}` : "."}</li>)}
+        {incompleteSources.map(source => <li key={source.id}>{harnessLabel(source.agent)} history is still loading.</li>)}
         {summary!.duplicatesDropped > 0 && <li>{formatCount(summary!.duplicatesDropped)} live records were counted once against their imported transcripts.</li>}
         {report.totals.unpricedRecords > 0 && <li>{formatCount(report.totals.unpricedRecords)} records have no known rate or complete pricing inputs; their cost is unknown, not free. Their tokens are included.</li>}
       </ul>}
@@ -257,7 +260,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
       {loading && !summary ? <div role="status" className="grid h-56 place-items-center text-caption text-muted-foreground"><LoaderCircle size={16} className="animate-spin" aria-hidden="true" /><span className="sr-only">Loading usage</span></div> : report && <>
         <section className="grid gap-4 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]" aria-label="Summary">
           <div className={CARD}>
-            {partialTotal && <p className="mb-1 text-caption text-warning">Partial total</p>}
+            {partialTotal && <span role="status" className="mb-2 inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2 py-1 text-[11px] text-muted-foreground"><span className="size-1.5 rounded-full bg-muted-foreground/50" aria-hidden="true" />Partial total · {partialLabel}</span>}
             <div className="font-display text-4xl font-semibold tabular-nums tracking-tight text-foreground">{metric === "cost" ? formatUsd(report.totals.costMicrousd) : formatTokens(report.totals.processedTokens)}</div>
             <p className="mt-1 text-caption text-muted-foreground">{formatCount(report.totals.records)} requests{metric === "cost" ? ` · API estimate · ${costSourceLabel(report.costSource)}` : " · processed tokens"}</p>
             <ul className="mt-4 space-y-2.5" aria-label="By harness">
@@ -342,8 +345,14 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
             {sources.map(source => <li key={source.id} className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1 py-2.5">
               <div className="min-w-0">
                 <div className="inline-flex items-center gap-2 text-ui text-foreground"><HarnessMark harness={source.agent} size={13} />{harnessLabel(source.agent)}<span className={cn("text-caption", coverageTone(source.coverageState))}>{coverageLabel(source.coverageState)}</span></div>
-                <div className="font-mono text-[11px] text-muted-foreground">{source.location}</div>
-                {(source.coverageReason || source.lastError) && <div className="text-caption text-muted-foreground">{source.lastError ?? source.coverageReason}</div>}
+                <p className="text-caption text-muted-foreground">{source.capability === "supported" ? "Local usage history" : "History is not available for this harness"}</p>
+                {(source.location || source.coverageReason || source.lastError) && <details className="mt-1 text-[11px] text-muted-foreground">
+                  <summary className="w-fit cursor-pointer select-none hover:text-foreground">Technical details</summary>
+                  <div className="mt-1 space-y-1 border-l border-border pl-2">
+                    {source.location && <div className="break-all font-mono">{source.location}</div>}
+                    {(source.coverageReason || source.lastError) && <div>{source.lastError ?? source.coverageReason}</div>}
+                  </div>
+                </details>}
               </div>
               {source.capability === "supported" && <div className="text-right text-[11px] tabular-nums text-muted-foreground">
                 <div>{formatCount(source.recordsImported)} imported · {formatCount(source.recordsSkipped)} skipped</div>

@@ -40,6 +40,7 @@ function snapshot(entries: SessionEntry[] = []): SessionForestSnapshot {
       currentState: { status: "unavailable" },
     },
     completion: null,
+    entryWindow: { returned: entries.length, total: entries.length, trimmedPayloads: 0 },
   };
 }
 
