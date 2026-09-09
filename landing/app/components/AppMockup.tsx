@@ -74,9 +74,9 @@ function FileRow({ file }: { file: DockFile }) {
   );
 }
 
-export default function AppMockup({ scene }: { scene: Scene }) {
+export default function AppMockup({ scene, onCycleEnd }: { scene: Scene; onCycleEnd?: () => void }) {
   const prompt = scene.entries[0].kind === "user" ? scene.entries[0].text : "";
-  const { typed, shown, playing } = useDemoPlayback(scene.id, prompt, scene.entries.length);
+  const { typed, shown, playing } = useDemoPlayback(scene.id, prompt, scene.entries.length, onCycleEnd);
 
   const progress = playing ? shown / scene.entries.length : 1;
   const visibleEntries = playing ? scene.entries.slice(0, shown) : scene.entries;

@@ -1,16 +1,26 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 
 const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
 
 export type Playback = { typed: string; shown: number; playing: boolean };
 
-export function useDemoPlayback(sceneId: string, promptText: string, entryCount: number): Playback {
+export function useDemoPlayback(
+  sceneId: string,
+  promptText: string,
+  entryCount: number,
+  onCycleEnd?: () => void,
+): Playback {
   const [playing, setPlaying] = useState(false);
   const [run, setRun] = useState(0);
   const [typed, setTyped] = useState("");
+  const cycleEnd = useRef(onCycleEnd);
   const [shown, setShown] = useState(entryCount);
+
+  useEffect(() => {
+    cycleEnd.current = onCycleEnd;
+  }, [onCycleEnd]);
 
   useIsomorphicLayoutEffect(() => {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
@@ -49,7 +59,10 @@ export function useDemoPlayback(sceneId: string, promptText: string, entryCount:
       cursor += 1000;
     }
 
-    at(cursor + 4200, () => setRun((value) => value + 1));
+    at(cursor + 4200, () => {
+      if (cycleEnd.current) cycleEnd.current();
+      else setRun((value) => value + 1);
+    });
 
     return () => timers.forEach(clearTimeout);
   }, [sceneId, playing, run, promptText, entryCount]);

@@ -1,13 +1,23 @@
 "use client";
 
-import { useRef, useState, type KeyboardEvent } from "react";
+import { useCallback, useRef, useState, type KeyboardEvent } from "react";
 import AppMockup from "./AppMockup";
 import { scenes } from "../content/scenes";
 
 export default function FeatureTabs() {
   const [active, setActive] = useState(0);
+  const [replay, setReplay] = useState(0);
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const held = useRef(false);
   const scene = scenes[active];
+
+  const onCycleEnd = useCallback(() => {
+    if (held.current) {
+      setReplay((value) => value + 1);
+      return;
+    }
+    setActive((index) => (index + 1) % scenes.length);
+  }, []);
 
   function select(index: number) {
     const next = (index + scenes.length) % scenes.length;
@@ -59,8 +69,25 @@ export default function FeatureTabs() {
       <p key={scene.id} className="mt-5 max-w-2xl text-[15px] leading-7 text-muted-foreground animate-fade-up motion-reduce:animate-none">
         {scene.blurb}
       </p>
-      <div id={`panel-${scene.id}`} role="tabpanel" aria-labelledby={`tab-${scene.id}`} className="mt-6 w-full">
-        <AppMockup key={scene.id} scene={scene} />
+      <div
+        id={`panel-${scene.id}`}
+        role="tabpanel"
+        aria-labelledby={`tab-${scene.id}`}
+        className="mt-6 w-full"
+        onPointerEnter={() => {
+          held.current = true;
+        }}
+        onPointerLeave={() => {
+          held.current = false;
+        }}
+        onFocusCapture={() => {
+          held.current = true;
+        }}
+        onBlurCapture={() => {
+          held.current = false;
+        }}
+      >
+        <AppMockup key={`${scene.id}:${replay}`} scene={scene} onCycleEnd={onCycleEnd} />
       </div>
     </>
   );
