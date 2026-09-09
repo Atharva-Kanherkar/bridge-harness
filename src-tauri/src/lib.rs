@@ -1990,6 +1990,56 @@ fn select_host(
         window_chrome::apply_wallpaper_tint(&window);
         window_chrome::sync_fullscreen_chrome(&window);
     }
+    // The menu-bar number. CodexBar's whole point is that usage is legible
+    // without a click, so mirror every account-usage frame into the tray
+    // title. Worst window across all providers, so the title tracks whichever
+    // limit is closest to biting rather than whichever frame arrived last.
+    let title_handle = app.handle().clone();
+    let worst_by_provider: Arc<std::sync::Mutex<std::collections::BTreeMap<String, String>>> =
+        Arc::new(std::sync::Mutex::new(std::collections::BTreeMap::new()));
+    let _ = app.listen("account-usage", move |event| {
+        let Ok(payload) = serde_json::from_str::<serde_json::Value>(event.payload()) else {
+            return;
+        };
+        let Some(provider) = payload.get("provider").and_then(|v| v.as_str()) else {
+            return;
+        };
+        let title = payload
+            .get("rateLimits")
+            .map(bridge_core::meter_sources::tray_title)
+            .unwrap_or_default();
+        let combined = {
+            let mut worst = worst_by_provider.lock().unwrap();
+            if title.is_empty() {
+                worst.remove(provider);
+            } else {
+                worst.insert(provider.to_string(), title);
+            }
+            // Percentages are formatted `NN%`; compare the numbers, not the
+            // strings, or 9% would outrank 50%.
+            worst
+                .values()
+                .filter_map(|value| value.trim_end_matches('%').parse::<i64>().ok())
+                .max()
+                .map(|percent| format!("{percent}%"))
+                .unwrap_or_default()
+        };
+        meter_tray::set_tray_title(&title_handle, &combined);
+    });
+    // Opening and closing the meter panel from a webview. Positioning is the
+    // tray's job, so a request from the app opens it at the default anchor.
+    let panel_handle = app.handle().clone();
+    let _ = app.listen("bridge-meter-panel", move |event| {
+        let hide = event.payload().contains("hide");
+        let handle = panel_handle.clone();
+        let _ = panel_handle.run_on_main_thread(move || {
+            if hide {
+                meter_tray::hide_panel(&handle);
+            } else {
+                meter_tray::toggle_panel(&handle, None);
+            }
+        });
+    });
     // Raising the main window natively. The webview cannot do this itself: the
     // window APIs are ACL-gated, and from the meter panel `getCurrentWindow()`
     // is the panel rather than `main`. Rust holds the real handle.
@@ -2380,8 +2430,10 @@ pub fn run() -> i32 {
             // show it once Ready arrives, outside the setup callback.
             let result = diagnostics::native_boundary(|| select_host(app, &setup_slot))
                 .and_then(|result| result.map_err(|error| error.to_string()));
-            // The menu-bar meter tray is best-effort: a tray failure must never
-            // fail startup (CodexBar port, v1 companion surface).
+            // The menu-bar meter is best-effort: neither the panel nor the
+            // tray may fail startup. The panel is built hidden and up front so
+            // the first click shows a rendered window rather than booting one.
+            let _ = meter_tray::build_panel(app);
             let _ = meter_tray::build(app);
             if let Err(error) = result {
                 let message = format!("Bridge could not start: {error}");

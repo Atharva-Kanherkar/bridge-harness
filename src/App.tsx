@@ -55,7 +55,6 @@ import { MemoryDialog, rememberAction } from "./components/MemoryDialog";
 import { MemoryUsedChip } from "./components/MemoryUsedChip";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
-import { MeterPopover } from "./components/meter/MeterPopover";
 import type { MeterRegistry } from "./types";
 import { formatElapsed, harnessLabel, slashOwnershipBadge } from "./utils";
 import { scheduleSuggestion } from "./suggestionTypeahead";
@@ -248,13 +247,7 @@ function AppContent() {
   // Menu-bar meter popover (CodexBar companion): opened from the Usage screen
   // or the native tray's left-click; live windows come from the same
   // account-usage channel as the usage ring.
-  const [meterOpen, setMeterOpen] = useState(false);
-  const [meterRegistry, setMeterRegistry] = useState<MeterRegistry | null>(null);
   const [meterRefreshing, setMeterRefreshing] = useState(false);
-  // Mirrored for the global Escape handler, which must close the topmost
-  // layer without resubscribing on every popover toggle.
-  const meterOpenRef = useRef(false);
-  meterOpenRef.current = meterOpen;
   // These handlers must be initialized before the startup effects subscribe.
   // The first render returns the loading shell, so handlers declared below
   // that return leave the tray listener with an uninitialized closure forever.
@@ -264,11 +257,11 @@ function AppContent() {
       .catch(value => setError(errorMessage(value)))
       .finally(() => setMeterRefreshing(false));
   }, []);
+  // The meter lives in the menu bar, in its own window. Opening it from the
+  // Usage screen opens that same panel rather than a second, in-app copy —
+  // one meter, one surface, wherever you ask for it from.
   const openMeter = useCallback(() => {
-    setMeterOpen(true);
-    void bridgeApi.getMeterSnapshot()
-      .then(setMeterRegistry)
-      .catch(value => setError(errorMessage(value)));
+    void bridgeApi.openMeterPanel().catch(value => setError(errorMessage(value)));
     refreshMeter();
   }, [refreshMeter]);
   const startedRef = useRef<Set<string>>(new Set());
@@ -359,12 +352,11 @@ function AppContent() {
     // route through the same handlers as the in-app controls so the registry
     // loads and the spinner spins on every path.
     let offMeter: (() => void) | undefined;
+    // The tray opens the panel itself, natively — the app is not involved in
+    // showing the meter, which is what stops a menu-bar click raising the
+    // window. All the app does is service the refresh the tray asks for.
     void bridgeApi.onMeterTray(action => {
-      if (!active) return;
-      // The tray must not drag the whole app forward. Opening the meter from
-      // the menu bar shows the meter, and nothing else.
-      if (action === "open-popover") openMeter();
-      else refreshMeter();
+      if (active && action === "refresh") refreshMeter();
     }).then(fn => { if (!active) { fn(); return; } offMeter = fn; });
     return () => {
       active = false;
@@ -2087,9 +2079,8 @@ function AppContent() {
         return;
       }
       if (event.key === "Escape") {
-        // Topmost layer first: the meter popover, then an expanded dock, then
-        // fullscreen. The meter is a dialog over everything, so it wins.
-        if (meterOpenRef.current) { setMeterOpen(false); return; }
+        // Topmost layer first. The meter is no longer one of these layers: it
+        // is a separate menu-bar window with its own dismissal.
         // An expanded dock is the nearer layer: the first Escape restores it,
         // the next one leaves fullscreen.
         if (dockRef.current.open && dockRef.current.expanded) dispatchDock({ type: "toggle-expanded" });
@@ -2705,9 +2696,6 @@ function AppContent() {
     />
     <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={acceptModelSetup} onClose={closeModal} onError={setError} />
     <ShortcutsSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
-    {meterOpen && <div role="presentation" className="fixed inset-0 z-50 grid place-items-center bg-background/60 p-4" onPointerDown={event => { if (event.target === event.currentTarget) setMeterOpen(false); }}>
-      <MeterPopover usage={usageByProvider} registry={meterRegistry} refreshing={meterRefreshing} onRefresh={refreshMeter} onClose={() => setMeterOpen(false)} />
-    </div>}
   </div>;
 }
 

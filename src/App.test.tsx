@@ -224,8 +224,8 @@ describe("the dock in the session view", () => {
     expect(welcomeCalls.some(args => args[1] === "Build session supervisor")).toBe(false);
   });
 
-  it("opens and refreshes the meter from the startup tray listener without raising the app", async () => {
-    let trayAction: ((action: "open-popover" | "refresh") => void) | undefined;
+  it("services a tray refresh without raising the app or opening an in-app meter", async () => {
+    let trayAction: ((action: "refresh") => void) | undefined;
     const onTray = vi.spyOn(bridgeApi, "onMeterTray").mockImplementation(async handler => {
       trayAction = handler;
       return () => undefined;
@@ -234,20 +234,22 @@ describe("the dock in the session view", () => {
     const refresh = vi.spyOn(bridgeApi, "refreshMeter").mockResolvedValue();
     await mountApp();
 
-    await act(async () => { trayAction?.("open-popover"); });
+    await act(async () => { trayAction?.("refresh"); });
     await settle(2);
 
-    // A menu-bar click shows the meter. It must not pull the main window
-    // forward — that is what made the tray feel like it opened "in the app",
-    // and the reveal it attempted was the ungranted `window.show` IPC.
-    expect(reveal).not.toHaveBeenCalled();
     expect(refresh).toHaveBeenCalledTimes(1);
-    expect(container.querySelector('[role="dialog"][aria-label="Usage meter"]')).not.toBeNull();
-    expect(container.textContent).toContain("Codex");
+    // The tray must not pull the main window forward — that is what made a
+    // menu-bar click feel like it opened "in the app", and the reveal it
+    // attempted was the ungranted `window.show` IPC behind the error banner.
+    expect(reveal).not.toHaveBeenCalled();
+    // The meter is a separate menu-bar window now. Nothing renders it over
+    // the app, so no dialog may appear here at all.
+    expect(container.querySelector('[role="dialog"][aria-label="Usage meter"]')).toBeNull();
     onTray.mockRestore();
     reveal.mockRestore();
     refresh.mockRestore();
   });
+
 
   it("cancels new orchestrator setup without creating a session", async () => {
     await mountApp();

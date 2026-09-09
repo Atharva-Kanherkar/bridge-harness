@@ -1208,12 +1208,25 @@ export const bridgeApi = {
     if (isTauri()) return call("meter/refresh_meter").then(() => undefined);
     return Promise.resolve();
   },
+  // Opening and closing the meter is window work, so the shell does it. Same
+  // channel pattern as `revealMainWindow`: the panel is positioned against the
+  // status item's rect, which only the tray handler knows.
+  openMeterPanel: async (): Promise<void> => {
+    if (!isTauri()) return;
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit("bridge-meter-panel", "toggle");
+  },
+  hideMeterPanel: async (): Promise<void> => {
+    if (!isTauri()) return;
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit("bridge-meter-panel", "hide");
+  },
   // The desktop shell owns this channel (native tray menu/left-click), not the
   // protocol — same exemption as MENU_COMMAND_EVENT in api.boundary.test.ts.
-  onMeterTray: (handler: (action: "open-popover" | "refresh") => void): Promise<UnlistenFn> => {
+  onMeterTray: (handler: (action: "refresh") => void): Promise<UnlistenFn> => {
     if (!isTauri()) return Promise.resolve(() => undefined);
     return listen<string>("bridge-meter-tray", event => {
-      if (event.payload === "open-popover" || event.payload === "refresh") handler(event.payload);
+      if (event.payload === "refresh") handler(event.payload);
     });
   },
   // The composer's inline typeahead. Off by default; `configured: false` is a
