@@ -221,6 +221,16 @@ pub struct SessionForestSnapshot {
     pub policy_limits: PolicyLimits,
     pub repository_divergence: RepositoryDivergence,
     pub completion: Option<CompletionSummary>,
+    pub entry_window: SessionEntryWindowSummary,
+}
+
+/// Mirrors `bridge_core::model::SessionEntryWindowSummary`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionEntryWindowSummary {
+    pub returned: JsSafeI64,
+    pub total: JsSafeI64,
+    pub trimmed_payloads: JsSafeI64,
 }
 
 #[cfg(test)]
@@ -396,6 +406,11 @@ mod tests {
                 markdown_committed: true,
                 waiver_reason: None,
             }),
+            entry_window: SessionEntryWindowSummary {
+                returned: safe_i64(2),
+                total: safe_i64(7344),
+                trimmed_payloads: safe_i64(1),
+            },
         };
         let wire = serde_json::to_value(&snapshot).unwrap();
         assert_eq!(wire["entries"][0]["parentEntryId"], json!(null));
@@ -407,6 +422,11 @@ mod tests {
         assert_eq!(wire["policyLimits"]["maxWorkersPerTurn"], json!(4));
         assert_eq!(wire["completion"]["verdict"], json!("changes_requested"));
         assert_eq!(wire["completion"]["passedRequired"], json!(1));
+        // The window is what stops the UI reading a truncated tail as a whole
+        // conversation.
+        assert_eq!(wire["entryWindow"]["returned"], json!(2));
+        assert_eq!(wire["entryWindow"]["total"], json!(7344));
+        assert_eq!(wire["entryWindow"]["trimmedPayloads"], json!(1));
         assert_eq!(round_trip(&snapshot), snapshot);
     }
 

@@ -3343,6 +3343,113 @@ pub fn session_entries(
     )
 }
 
+/// The display ceiling for one string inside a snapshot payload.
+///
+/// A transcript row renders a preview, never a 50 KB heredoc. The whole forest
+/// travels to the UI as a single JSON frame, and untrimmed payloads made that
+/// frame unopenable: one real chat's `command.started` entries alone held
+/// 115 MB, because each one carries the full command text as its `title` and
+/// the full command output under `data`. Past the daemon's 64 MB frame ceiling
+/// the read fails and takes the whole connection down, so an old chat did not
+/// load slowly — it did not load at all.
+const SNAPSHOT_STRING_BYTES: usize = 4 * 1024;
+
+/// The number of newest entries a snapshot carries.
+///
+/// Safe to truncate from the front: branch projection walks parent links from
+/// the head backwards and stops at the first parent it cannot find, so a tail
+/// window shortens the *start* of the transcript and never orphans the rest.
+pub const SNAPSHOT_ENTRY_WINDOW: usize = 1500;
+
+/// A bounded read of one session's entries, with the totals the UI needs to
+/// tell the difference between "this is the whole conversation" and "this is
+/// the tail of a longer one".
+#[derive(Debug, Clone)]
+pub struct SessionEntryWindow {
+    pub entries: Vec<SessionEntry>,
+    pub total: i64,
+    pub trimmed_payloads: i64,
+}
+
+/// Shorten every oversized string in `value` in place, reporting whether
+/// anything was cut. Structure is preserved: the transcript codec reads named
+/// fields (`text`, `title`, nested `data`), so trimming has to leave those
+/// fields present and merely shorter.
+fn trim_snapshot_strings(value: &mut serde_json::Value) -> bool {
+    match value {
+        serde_json::Value::String(text) => {
+            if text.len() <= SNAPSHOT_STRING_BYTES {
+                return false;
+            }
+            let mut end = SNAPSHOT_STRING_BYTES;
+            while end > 0 && !text.is_char_boundary(end) {
+                end -= 1;
+            }
+            let dropped = text.len() - end;
+            text.truncate(end);
+            text.push_str(&format!("\n… {dropped} more bytes not shown"));
+            true
+        }
+        serde_json::Value::Array(items) => items.iter_mut().fold(false, |trimmed, item| {
+            trim_snapshot_strings(item) || trimmed
+        }),
+        serde_json::Value::Object(fields) => {
+            fields.iter_mut().fold(false, |trimmed, (_, field)| {
+                trim_snapshot_strings(field) || trimmed
+            })
+        }
+        _ => false,
+    }
+}
+
+/// The newest `limit` entries of a session, oldest-first, with oversized
+/// payload strings trimmed for display. `session_entries` stays the untrimmed
+/// read for callers that need real payloads (compaction, context projection);
+/// this one exists only to make the snapshot a bounded frame.
+pub fn session_entry_window(
+    db: &Connection,
+    session_id: &str,
+    limit: usize,
+) -> Result<SessionEntryWindow, BridgeError> {
+    let total: i64 = db.query_row(
+        "SELECT count(*) FROM session_entries WHERE session_id=?1",
+        params![session_id],
+        |row| row.get(0),
+    )?;
+    let mut trimmed_payloads = 0i64;
+    let mut entries = query_with_params(
+        db,
+        "SELECT id,session_id,parent_entry_id,sequence,semantic_schema_version,kind,payload,provider_event_id,context_visibility,token_estimate,created_at
+         FROM session_entries WHERE session_id=?1 ORDER BY sequence DESC LIMIT ?2",
+        params![session_id, limit as i64],
+        |row| {
+            let mut payload = parse_json_column(row, 6);
+            if trim_snapshot_strings(&mut payload) {
+                trimmed_payloads += 1;
+            }
+            Ok(SessionEntry {
+                id: row.get(0)?,
+                session_id: row.get(1)?,
+                parent_entry_id: row.get(2)?,
+                sequence: row.get(3)?,
+                semantic_schema_version: row.get(4)?,
+                kind: row.get(5)?,
+                payload,
+                provider_event_id: row.get(7)?,
+                context_visibility: row.get(8)?,
+                token_estimate: row.get(9)?,
+                created_at: row.get(10)?,
+            })
+        },
+    )?;
+    entries.reverse();
+    Ok(SessionEntryWindow {
+        entries,
+        total,
+        trimmed_payloads,
+    })
+}
+
 pub fn session_head(db: &Connection, session_id: &str) -> Result<Option<SessionHead>, BridgeError> {
     db.query_row(
         "SELECT session_id,active_entry_id,native_provider_session_id,restoration_mode,resume_eligibility,latest_checkpoint_entry_id,updated_at
@@ -3551,9 +3658,16 @@ pub fn enqueue_outbox(
     Ok(())
 }
 
+/// The number of newest reason events a snapshot carries. The panel reads as a
+/// recent-activity feed and always did — but the query had no `LIMIT`, so
+/// opening any chat in a busy workspace pulled every event ever recorded for
+/// every session in it (26,430 rows in one real workspace).
+pub const SNAPSHOT_REASON_WINDOW: usize = 500;
+
 pub fn workspace_reason_events(
     db: &Connection,
     workspace_id: &str,
+    limit: usize,
 ) -> Result<Vec<BridgeEvent>, BridgeError> {
     query_with_params(
         db,
@@ -3561,8 +3675,8 @@ pub fn workspace_reason_events(
          WHERE entity_id=?1
             OR entity_id IN (SELECT id FROM sessions WHERE workspace_id=?1)
             OR entity_id IN (SELECT id FROM worker_queue WHERE workspace_id=?1)
-         ORDER BY id DESC",
-        params![workspace_id],
+         ORDER BY id DESC LIMIT ?2",
+        params![workspace_id, limit as i64],
         |row| {
             Ok(BridgeEvent {
                 id: row.get(0)?,
@@ -6346,6 +6460,232 @@ mod tests {
         assert_eq!(head.native_provider_session_id.as_deref(), Some("native-s"));
         assert_eq!(head.restoration_mode, RestorationMode::Fresh);
         assert_eq!(head.resume_eligibility, ResumeEligibility::Native);
+    }
+
+    #[test]
+    fn the_snapshot_window_keeps_the_newest_entries_oldest_first() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        seed_workspace(&db);
+        let mut parent: Option<String> = None;
+        for index in 0..10 {
+            let entry = append_session_entry(
+                &db,
+                "s",
+                parent.as_deref(),
+                "assistant.message",
+                &json!({"text": format!("entry {index}")}),
+                None,
+                "eligible",
+                Some(1),
+            )
+            .unwrap();
+            parent = Some(entry.id);
+        }
+
+        let window = session_entry_window(&db, "s", 4).unwrap();
+        assert_eq!(window.total, 10, "the total counts the whole session");
+        assert_eq!(window.entries.len(), 4);
+        // Oldest-first inside the window: branch projection walks parents from
+        // the head, and the transcript renders in order.
+        assert_eq!(
+            window
+                .entries
+                .iter()
+                .map(|entry| entry.sequence)
+                .collect::<Vec<_>>(),
+            vec![7, 8, 9, 10],
+        );
+
+        let whole = session_entry_window(&db, "s", 100).unwrap();
+        assert_eq!(whole.entries.len(), 10);
+        assert_eq!(whole.total, 10);
+        assert_eq!(
+            whole.trimmed_payloads, 0,
+            "small payloads travel exactly as stored"
+        );
+    }
+
+    #[test]
+    fn the_snapshot_window_trims_oversized_payload_strings_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        seed_workspace(&db);
+        // The real shape that made a chat unopenable: a `command.started`
+        // whose title is the whole command and whose nested data carries the
+        // whole output.
+        let huge = "x".repeat(SNAPSHOT_STRING_BYTES * 3);
+        append_session_entry(
+            &db,
+            "s",
+            None,
+            "command.started",
+            &json!({
+                "itemId": "call-1",
+                "title": huge.clone(),
+                "status": "inProgress",
+                "data": {"state": {"metadata": {"output": huge.clone()}}},
+            }),
+            None,
+            "eligible",
+            Some(1),
+        )
+        .unwrap();
+
+        let window = session_entry_window(&db, "s", 10).unwrap();
+        assert_eq!(window.trimmed_payloads, 1);
+        let payload = &window.entries[0].payload;
+        // Structure survives: the codec reads these fields by name, so trimming
+        // has to shorten them, never drop them.
+        assert_eq!(payload["itemId"], json!("call-1"));
+        assert_eq!(payload["status"], json!("inProgress"));
+        for value in [
+            &payload["title"],
+            &payload["data"]["state"]["metadata"]["output"],
+        ] {
+            let text = value.as_str().expect("a trimmed string is still a string");
+            assert!(
+                text.len() < huge.len(),
+                "an oversized string must be shortened"
+            );
+            assert!(
+                text.contains("more bytes not shown"),
+                "truncation must be visible rather than silent: {text:.80}"
+            );
+        }
+
+        // Untrimmed reads are unaffected — compaction and context projection
+        // still need the real payload.
+        let full = session_entries(&db, "s").unwrap();
+        assert_eq!(full[0].payload["title"].as_str().unwrap().len(), huge.len());
+    }
+
+    #[test]
+    fn trimming_a_payload_never_splits_a_character() {
+        // A multi-byte character straddling the cap: `String::truncate` panics
+        // off a char boundary, so the cut walks back to one.
+        let filler = "e".repeat(SNAPSHOT_STRING_BYTES - 1);
+        let mut value = json!({"text": format!("{filler}\u{1f600}tail")});
+        assert!(trim_snapshot_strings(&mut value));
+        let text = value["text"].as_str().unwrap();
+        assert!(text.starts_with(&filler));
+        assert!(!text.contains('\u{fffd}'), "no replacement character");
+        assert!(text.contains("more bytes not shown"));
+    }
+
+    #[test]
+    fn reason_events_are_bounded_to_the_newest_window() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        seed_workspace(&db);
+        for index in 0..12 {
+            event(&db, "policy", "worker.spawned", "s", &format!("body {index}")).unwrap();
+        }
+        let bounded = workspace_reason_events(&db, "w", 5).unwrap();
+        assert_eq!(bounded.len(), 5, "the feed is capped");
+        assert_eq!(
+            bounded[0].body, "body 11",
+            "the newest event is still first"
+        );
+    }
+
+    /// The regression guard for the bug this window exists to fix.
+    ///
+    /// A forest snapshot crosses to the UI as **one** newline-delimited JSON
+    /// frame, and `bridge_client::MAX_SERVER_FRAME_BYTES` caps that frame at
+    /// 64 MB. Past the cap the read does not degrade — it errors, the reader
+    /// thread exits, and every subscriber on that daemon connection is
+    /// dropped. So an oversized snapshot is not a slow chat, it is a chat that
+    /// cannot be opened and takes the connection with it.
+    ///
+    /// Shaped after the real payload that caused it: a `command.started` whose
+    /// `title` is the entire command and whose nested `data` carries the
+    /// entire output. One real session held 7,344 of these, 123 MB in total.
+    #[test]
+    fn a_snapshot_of_a_pathological_session_stays_inside_the_client_frame_limit() {
+        const MAX_SERVER_FRAME_BYTES: usize = 64 * 1024 * 1024;
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        seed_workspace(&db);
+
+        let fat = "x".repeat(24 * 1024);
+        let entries = 2_000i64;
+        // Inserted directly rather than through `append_session_entry`: that
+        // opens its own transaction per call, and 2,000 of them is the
+        // difference between a test that runs in a second and one nobody
+        // wants in CI.
+        let transaction = db.unchecked_transaction().unwrap();
+        for index in 0..entries {
+            let payload = json!({
+                "itemId": format!("call-{index}"),
+                "status": "inProgress",
+                "title": fat,
+                "data": {"state": {"metadata": {"output": fat, "stderr": fat}}},
+            });
+            transaction
+                .execute(
+                    "INSERT INTO session_entries(id,session_id,parent_entry_id,sequence,semantic_schema_version,kind,payload,context_visibility,token_estimate,created_at)
+                     VALUES(?1,'s',?2,?3,1,'command.started',?4,'eligible',1,'now')",
+                    params![
+                        format!("e-{index}"),
+                        (index > 0).then(|| format!("e-{}", index - 1)),
+                        index + 1,
+                        payload.to_string(),
+                    ],
+                )
+                .unwrap();
+        }
+        transaction
+            .execute(
+                "INSERT INTO session_heads(session_id,active_entry_id,restoration_mode,resume_eligibility,updated_at)
+                 VALUES('s',?1,'fresh','fresh','now')",
+                params![format!("e-{}", entries - 1)],
+            )
+            .unwrap();
+        transaction.commit().unwrap();
+
+        // What the snapshot used to carry: every entry, untrimmed.
+        let before = serde_json::to_vec(&session_entries(&db, "s").unwrap())
+            .unwrap()
+            .len();
+        let after = serde_json::to_vec(
+            &crate::sessions::session_forest_snapshot_with_repository_state(
+                &db,
+                "s",
+                json!({"status": "unavailable"}),
+            )
+            .unwrap(),
+        )
+        .unwrap()
+        .len();
+
+        assert!(
+            before > MAX_SERVER_FRAME_BYTES,
+            "the fixture has to actually reproduce the failure, or this test \
+             proves nothing: {before} bytes did not exceed the {MAX_SERVER_FRAME_BYTES} byte frame limit"
+        );
+        assert!(
+            after < MAX_SERVER_FRAME_BYTES,
+            "a snapshot must fit in one frame: {after} bytes"
+        );
+        println!(
+            "snapshot bytes: {before} -> {after} ({:.1}x smaller)",
+            before as f64 / after as f64
+        );
+        // Deliberately generous. This fixture is uniformly worst-case — every
+        // entry maximally fat — which understates the win: on a real database
+        // the heaviest session measured 123.1 MB -> 6.6 MB. The assertion
+        // guards the order of magnitude so ordinary payload churn cannot turn
+        // it into a brittle failure.
+        assert!(
+            after * 5 < before,
+            "the window must cut the payload by at least 5x: {before} -> {after}"
+        );
+        // The whole session is still counted, so the UI can say how much of it
+        // is on screen instead of presenting the tail as the entire chat.
+        let window = session_entry_window(&db, "s", SNAPSHOT_ENTRY_WINDOW).unwrap();
+        assert_eq!(window.total, entries);
+        assert_eq!(window.entries.len(), SNAPSHOT_ENTRY_WINDOW);
     }
 
     #[test]

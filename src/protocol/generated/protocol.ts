@@ -1666,6 +1666,12 @@ export interface SessionEntry {
   tokenEstimate?: JsSafeI64 | null;
 }
 
+export interface SessionEntryWindowSummary {
+  returned: JsSafeI64;
+  total: JsSafeI64;
+  trimmedPayloads: JsSafeI64;
+}
+
 export interface SessionHead {
   activeEntryId?: string | null;
   latestCheckpointEntryId?: string | null;
@@ -2443,6 +2449,7 @@ export interface GetSessionForestParams {
 export interface SessionForestSnapshot {
   completion?: CompletionSummary | null;
   entries: SessionEntry[];
+  entryWindow: SessionEntryWindowSummary;
   head?: SessionHead | null;
   leaves: SessionEntry[];
   policyLimits: PolicyLimits;
