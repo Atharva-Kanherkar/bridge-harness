@@ -65,16 +65,6 @@ function providerStatus(adapter?: AdapterDescriptor): ProviderStatus {
   return "normal";
 }
 
-function UsageRing({ used, inert = false }: { used?: number; inert?: boolean }) {
-  const clamped = used == null ? 0 : clampPercent(used);
-  const radius = 7;
-  const circumference = 2 * Math.PI * radius;
-  return <svg width="18" height="18" viewBox="0 0 18 18" className="shrink-0 -rotate-90" aria-hidden="true">
-    <circle cx="9" cy="9" r={radius} fill="none" strokeWidth="2" stroke="currentColor" className={inert ? "text-muted-foreground/25" : "text-foreground/15"} />
-    {used != null && !inert && <circle cx="9" cy="9" r={radius} fill="none" strokeWidth="2" strokeLinecap="round" stroke="currentColor" strokeDasharray={circumference} strokeDashoffset={circumference * (1 - clamped / 100)} className="text-foreground transition-[stroke-dashoffset] duration-700 ease-out" />}
-  </svg>;
-}
-
 /** Worst-case usage across every provider that actually reports one — the
  *  single number the compact indicator colors itself by. Providers that are
  *  signed out, not installed, or simply haven't reported yet stay out of the
