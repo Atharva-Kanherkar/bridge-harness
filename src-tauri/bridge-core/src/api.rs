@@ -3705,8 +3705,9 @@ pub fn meter_snapshot() -> meter::MeterRegistry {
     meter::registry_snapshot()
 }
 
-/// Trigger the shared account-usage refresh (Claude `/usage` probe plus one
-/// live Codex session); results arrive on the `account-usage` channel.
+/// Trigger the shared account-usage refresh (Claude `/usage` probe plus Codex,
+/// from a live session when there is one and from its rollouts when there is
+/// not); results arrive on the `account-usage` channel.
 ///
 /// Coalesced: calls within 10 seconds of an accepted one return `Ok` without
 /// spawning another probe pair. Neither the tray menu nor the popover button
