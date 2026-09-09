@@ -2536,6 +2536,15 @@ fn handle_agent_value_timed(
         let lock_requested = std::time::Instant::now();
         let db = state.db.lock().unwrap();
         let db_wait_ms = lock_requested.elapsed().as_secs_f64() * 1000.0;
+        // The reader's first gate check precedes database acquisition. A clean
+        // shutdown may retire this launch while a frame is waiting on the DB;
+        // recheck under the same lock as durable shutdown settlement so that
+        // late turn/error frames cannot undo its stopped state.
+        if state.reader_launches.lock().unwrap().get(session_id)
+            .is_some_and(|gate| !*gate.lock().unwrap())
+        {
+            return;
+        }
         let session_context: Option<(Option<String>, String, i64, Option<String>, String, String)> = db
             .query_row(
                 "SELECT workspace_id,harness,COALESCE(depth,0),active_turn_id,kind,COALESCE(trace_id,id) FROM sessions WHERE id=?1",
@@ -13134,6 +13143,33 @@ mod submit_input_tests {
                 |row| row.get(0),
             )
             .unwrap()
+    }
+
+    #[test]
+    fn a_frame_admitted_before_shutdown_cannot_overwrite_its_durable_state() {
+        let (_fixture, core, _managed_root) = core_with_chat("working");
+        attach(&core, false);
+        core.db.lock().unwrap().execute(
+            "UPDATE sessions SET harness='codex',provider_session_id='native-thread',adapter_pid=0,adapter_process_identity='fixture' WHERE id='chat'",
+            [],
+        ).unwrap();
+        core.reader_launches.lock().unwrap().insert("chat".into(), Arc::new(Mutex::new(true)));
+
+        // The outer reader check has already admitted this frame. Shutdown
+        // closes that gate and commits first; handling the late frame must
+        // recheck under the database lock before it writes turn.completed.
+        core.shutdown_session_adapter("chat").unwrap();
+        handle_agent_value(&core, "chat", &Arc::new(Mutex::new(Some("old-turn".into()))), &codex_turn_completed());
+
+        let db = core.db.lock().unwrap();
+        let state: (String, Option<String>, Option<i64>) = db.query_row(
+            "SELECT status,active_turn_id,adapter_pid FROM sessions WHERE id='chat'", [],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
+        ).unwrap();
+        assert_eq!(state, ("stopped".into(), None, None));
+        let entries = store::session_entries(&db, "chat").unwrap();
+        assert!(!entries.iter().any(|entry| entry.kind == "turn.completed"));
+        assert_eq!(entries.last().unwrap().payload["reason"], "app_shutdown");
     }
 
     #[test]

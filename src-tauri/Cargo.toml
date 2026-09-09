@@ -5,7 +5,7 @@ members = ["bridge-client", "bridge-core", "bridge-protocol", "bridged"]
 # CARGO_PKG_VERSION in the health endpoint and provider handshakes, so it must
 # never drift from the application version.
 [workspace.package]
-version = "0.5.1"
+version = "0.5.5"
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
@@ -39,6 +39,7 @@ bridge-client = { path = "bridge-client" }
 tauri = { version = "2", features = ["macos-private-api"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
+tauri-plugin-single-instance = "2"
 serde = { workspace = true }
 serde_json = { workspace = true }
 rusqlite = { workspace = true }
@@ -60,9 +61,11 @@ incremental = false
 debug = 0
 incremental = false
 
-# The traffic lights are an AppKit detail; tao already builds these, so naming
-# them here costs nothing and keeps window_chrome.rs off raw objc_msgSend.
+# Use typed public AppKit APIs for the material behind the webview. Native
+# titlebar controls remain under AppKit's control.
 [target.'cfg(target_os = "macos")'.dependencies]
+dispatch2 = "0.3"
 objc2 = { version = "0.6", features = ["exception"] }
-objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSButton", "NSView", "NSResponder", "NSColor", "objc2-quartz-core"] }
+objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSButton", "NSView", "NSResponder", "NSColor", "NSVisualEffectView", "NSUserInterfaceItemIdentification", "objc2-quartz-core"] }
+objc2-foundation = "0.3"
 objc2-quartz-core = { version = "0.3", features = ["CALayer"] }

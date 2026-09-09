@@ -62,6 +62,31 @@ pub const DEFAULT_DRAIN_TIMEOUT: Duration = Duration::from_secs(5);
 pub const SOCKET_FILE_NAME: &str = "bridged.sock";
 pub const TOKEN_FILE_NAME: &str = "daemon.token";
 
+/// Validate the platform's Unix-domain pathname limit without touching the
+/// filesystem. The desktop, CLI and daemon share this check so an unusable
+/// path fails before token reads, process spawning or runtime/store boot.
+pub fn validate_socket_path(path: &Path) -> std::io::Result<()> {
+    std::os::unix::net::SocketAddr::from_pathname(path)
+        .map(|_| ())
+        .map_err(|error| {
+            std::io::Error::new(
+                error.kind(),
+                format!(
+                    "The Bridge daemon socket path {} ({} bytes) is invalid on this platform: {error}. \
+                     Set BRIDGE_DATA_DIR to a shorter absolute directory, or use a shorter --socket path when running bridged.",
+                    path.display(),
+                    path.as_os_str().len(),
+                ),
+            )
+        })
+}
+
+pub fn socket_path_for_data_dir(data_dir: &Path) -> std::io::Result<PathBuf> {
+    let path = data_dir.join(SOCKET_FILE_NAME);
+    validate_socket_path(&path)?;
+    Ok(path)
+}
+
 /// Everything `main` resolves from flags before the daemon starts.
 pub struct DaemonConfig {
     pub data_dir: PathBuf,
@@ -85,10 +110,9 @@ pub struct DaemonState {
     pub handshake_timeout: Duration,
     /// This process's executable identity, computed once at startup — while
     /// the file at `current_exe()` is still the binary that is running — and
-    /// reported in every handshake so a launcher holding a newer build can
-    /// replace this daemon instead of silently running stale code. `None`
-    /// when the read failed; the launcher treats that as stale, which errs
-    /// toward a restart rather than toward staleness going unnoticed.
+    /// reported in every handshake so a launcher can refuse mismatched code
+    /// without interrupting this daemon's active work. `None` when the read
+    /// failed; a launcher with a known binary identity also refuses that case.
     pub build_id: Option<String>,
 }
 
@@ -176,6 +200,14 @@ impl Daemon {
     /// socket and health listeners. On return the daemon is ready; call
     /// [`serve`] to run the accept loop.
     pub fn start(config: DaemonConfig) -> Result<(Daemon, std::os::unix::net::UnixListener), StartupError> {
+        let socket_path = config
+            .socket_path
+            .clone()
+            .unwrap_or_else(|| config.data_dir.join(SOCKET_FILE_NAME));
+        validate_socket_path(&socket_path).map_err(|error| StartupError::SocketBind {
+            path: socket_path.clone(),
+            error,
+        })?;
         let lease = DataDirLease::acquire(&config.data_dir, OwnerKind::Daemon)
             .map_err(StartupError::Ownership)?;
 
@@ -193,10 +225,6 @@ impl Daemon {
 
         let auth_token = ensure_token(&config.data_dir.join(TOKEN_FILE_NAME))?;
 
-        let socket_path = config
-            .socket_path
-            .clone()
-            .unwrap_or_else(|| config.data_dir.join(SOCKET_FILE_NAME));
         prepare_socket_path(&socket_path)?;
         let listener = std::os::unix::net::UnixListener::bind(&socket_path).map_err(|error| {
             StartupError::SocketBind { path: socket_path.clone(), error }
@@ -257,18 +285,26 @@ impl Daemon {
                  are still mid-request"
             );
         }
-        // Detached model-switch summaries hold live provider processes outside
-        // the adapter map; a shutdown must stop those too or they are orphaned.
-        let mut sessions: Vec<String> =
+        let mut sessions: std::collections::HashSet<String> =
             self.core.adapters.lock().unwrap().keys().cloned().collect();
+        // Detached model-switch summaries also own provider processes.
         sessions.extend(bridge_core::switch_summary::detached_session_ids(&self.core));
-        sessions.sort();
-        sessions.dedup();
+        // A reader can take its runtime out of the map just before it clears
+        // the durable claim. Include those exits so daemon termination cannot
+        // cut their cleanup short and leave completed chats looking orphaned.
+        let tracked = (|| -> Result<Vec<String>, bridge_core::BridgeError> {
+            let db = self.core.db.lock().unwrap();
+            let mut statement = db.prepare("SELECT id FROM sessions WHERE adapter_pid IS NOT NULL")?;
+            let rows = statement.query_map([], |row| row.get(0))?.collect::<Result<Vec<_>, _>>()?;
+            Ok(rows)
+        })();
+        match tracked {
+            Ok(tracked) => sessions.extend(tracked),
+            Err(error) => eprintln!("bridged: could not read provider claims during shutdown: {error}"),
+        }
         for session_id in sessions {
             if let Err(error) = self.core.shutdown_session_adapter(&session_id) {
-                // A failed durable cleanup keeps its process claim so startup
-                // recovery can report it instead of implying a clean stop.
-                eprintln!("bridged: could not record shutdown for {session_id}: {error}");
+                eprintln!("bridged: could not settle session {session_id} during shutdown: {error}");
             }
         }
         let _ = std::fs::remove_file(&self.socket_path);
@@ -398,6 +434,65 @@ fn start_health_listener(addr: SocketAddr, state: Arc<DaemonState>) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_socket_paths_fail_before_the_daemon_creates_any_state() {
+        let fixture = tempfile::tempdir().unwrap();
+        let data_dir = fixture.path().join("long-directory-".repeat(10));
+        let error = match Daemon::start(DaemonConfig {
+            data_dir: data_dir.clone(),
+            socket_path: None,
+            health_addr: None,
+            browser_extension_path: fixture.path().join("extension"),
+            handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
+        }) {
+            Ok(_) => panic!("an overlong socket path was accepted"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+        assert!(matches!(error, StartupError::SocketBind { .. }));
+        assert!(message.contains("BRIDGE_DATA_DIR"), "{message}");
+        assert!(message.contains("shorter absolute directory"), "{message}");
+        assert!(
+            !data_dir.exists(),
+            "path validation must precede all runtime state"
+        );
+    }
+
+    #[test]
+    fn socket_path_validation_counts_bytes_and_preserves_valid_paths() {
+        assert_eq!(
+            socket_path_for_data_dir(Path::new("/tmp/bridge")).unwrap(),
+            PathBuf::from("/tmp/bridge/bridged.sock")
+        );
+        let unicode_path = PathBuf::from(format!("/tmp/{}.sock", "é".repeat(70)));
+        let error = validate_socket_path(&unicode_path).unwrap_err();
+        assert!(error.to_string().contains("BRIDGE_DATA_DIR"));
+        assert!(error
+            .to_string()
+            .contains(&format!("{} bytes", unicode_path.as_os_str().len())));
+    }
+
+    #[test]
+    fn an_explicit_short_socket_takes_precedence_over_a_long_data_directory() {
+        let fixture = tempfile::tempdir().unwrap();
+        let data_dir = fixture.path().join("long-directory-".repeat(10));
+        // A regular file prevents boot. Reaching ownership instead of socket
+        // validation proves the explicit endpoint was selected, without
+        // starting providers or creating stores in a unit test.
+        std::fs::write(&data_dir, "not a directory").unwrap();
+        let error = match Daemon::start(DaemonConfig {
+            data_dir,
+            socket_path: Some(fixture.path().join("short.sock")),
+            health_addr: None,
+            browser_extension_path: fixture.path().join("extension"),
+            handshake_timeout: DEFAULT_HANDSHAKE_TIMEOUT,
+        }) {
+            Ok(_) => panic!("a regular file was accepted as a data directory"),
+            Err(error) => error,
+        };
+        assert!(matches!(error, StartupError::Ownership(_)), "{error}");
+    }
 
     #[test]
     fn tokens_persist_across_starts_and_are_owner_readable_only() {

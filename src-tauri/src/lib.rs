@@ -7,6 +7,7 @@ pub mod agent_batch;
 pub mod daemon_host;
 pub mod menu;
 pub mod window_chrome;
+mod diagnostics;
 
 use bridge_core::api;
 use bridge_core::managed_agents;
@@ -1818,6 +1819,7 @@ async fn workspace_changes(
 pub enum HostMode {
     Embedded,
     Daemon(Arc<DaemonHostRuntime>),
+    Failed(String),
 }
 
 pub struct DaemonHostRuntime {
@@ -1846,9 +1848,29 @@ fn select_host(
     app: &tauri::App,
     host: &std::sync::OnceLock<HostMode>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let data = daemon_host::desktop_data_dir(
+        app.path().app_data_dir()?,
+        std::env::var_os("BRIDGE_DATA_DIR"),
+    )?;
+    // The single-instance plugin focuses an existing window. This OS lease
+    // also closes simultaneous-launch races before either copy starts a backend.
+    app.manage(daemon_host::DesktopLease::acquire(&data)?);
+    // Config windows normally build before our setup hook, where a failure
+    // becomes a Tauri panic in did_finish_launching. Build explicitly so the
+    // same startup-error handling covers the window and the runtime host.
+    let config = app
+        .config()
+        .app
+        .windows
+        .first()
+        .ok_or("main window config is missing")?;
+    let create_window = || -> Result<(), Box<dyn std::error::Error>> {
+        tauri::WebviewWindowBuilder::from_config(app, config)?.build()?;
+        Ok(())
+    };
+    create_window()?;
     if let Some(window) = app.get_webview_window("main") {
         let window = window.as_ref().window();
-        window_chrome::position_traffic_lights(&window);
         window_chrome::apply_wallpaper_tint(&window);
         window_chrome::sync_fullscreen_chrome(&window);
     }
@@ -1863,7 +1885,6 @@ fn select_host(
             }
         });
     });
-    let data = app.path().app_data_dir()?;
     let bundled_extension = app.path().resource_dir()?.join("browser-extension");
     let extension_path = if bundled_extension.exists() {
         bundled_extension
@@ -2025,7 +2046,7 @@ fn setup_embedded(
     Ok(())
 }
 
-pub fn run() {
+pub fn run() -> i32 {
     let host: Arc<std::sync::OnceLock<HostMode>> = Arc::new(std::sync::OnceLock::new());
     let setup_slot = host.clone();
     let exit_host = host.clone();
@@ -2202,26 +2223,39 @@ pub fn run() {
             archive_workspace,
             workspace_changes
         ]);
-    tauri::Builder::default()
+    let application = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .menu(|handle| menu::build(handle))
         .on_menu_event(menu::dispatch)
-        .setup(move |app| select_host(app, &setup_slot))
+        .setup(move |app| {
+            // Tauri panics on a setup Err inside tao's non-unwinding Cocoa
+            // did_finish_launching callback. Preserve the actual error and
+            // show it once Ready arrives, outside the setup callback.
+            let result = diagnostics::native_boundary(|| select_host(app, &setup_slot))
+                .and_then(|result| result.map_err(|error| error.to_string()));
+            if let Err(error) = result {
+                let message = format!("Bridge could not start: {error}");
+                diagnostics::record(&message);
+                let _ = setup_slot.set(HostMode::Failed(message));
+            }
+            Ok(())
+        })
         .on_window_event(|window, event| {
-            // macOS rebuilds the titlebar on these and forgets the button
-            // placement; putting it back here keeps the corner stable.
-            if matches!(
-                event,
-                tauri::WindowEvent::Resized(_)
-                    | tauri::WindowEvent::Focused(_)
-                    | tauri::WindowEvent::ThemeChanged(_)
-            ) {
-                window_chrome::position_traffic_lights(window);
+            // Native materials follow focus/theme themselves. Only geometry
+            // changes need a deferred, idempotent layer-radius update.
+            if matches!(event, tauri::WindowEvent::Resized(_)) {
                 window_chrome::sync_fullscreen_chrome(window);
             }
-            if matches!(event, tauri::WindowEvent::ThemeChanged(_)) {
-                window_chrome::apply_wallpaper_tint(window);
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                window_chrome::release_window_material(window.label());
             }
         })
         .invoke_handler(move |invoke| {
@@ -2230,6 +2264,10 @@ pub fn run() {
                     daemon_host::proxy_invoke(runtime.proxy.clone(), invoke)
                 }
                 Some(HostMode::Embedded) => embedded_commands(invoke),
+                Some(HostMode::Failed(message)) => {
+                    invoke.resolver.reject(message.clone());
+                    true
+                }
                 // Invokes cannot arrive before setup finishes; refuse rather
                 // than panic if that assumption ever breaks.
                 None => {
@@ -2238,15 +2276,40 @@ pub fn run() {
                 }
             }
         })
-        .build(tauri::generate_context!())
-        .expect("Bridge failed to start")
-        .run(move |_app, event| {
-            if matches!(event, tauri::RunEvent::Exit) {
-                if let Some(HostMode::Daemon(runtime)) = exit_host.get() {
-                    runtime.shutdown();
+        .build(tauri::generate_context!());
+    let app = match application {
+        Ok(app) => app,
+        Err(error) => {
+            eprintln!("Bridge could not initialize its desktop shell: {error}");
+            return 1;
+        }
+    };
+    diagnostics::install(app.path().app_log_dir().ok());
+    app.run_return(move |app, event| {
+        if matches!(event, tauri::RunEvent::Ready) {
+            if let Some(HostMode::Failed(message)) = exit_host.get() {
+                use tauri_plugin_dialog::DialogExt;
+                let mut detail = message.clone();
+                if let Some(path) = diagnostics::path() {
+                    detail.push_str(&format!("\n\nDetails: {}", path.display()));
                 }
+                let handle = app.clone();
+                app.dialog()
+                    .message(detail)
+                    .title("Bridge could not start")
+                    .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+                    .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(
+                        "Quit".into(),
+                    ))
+                    .show(move |_| handle.exit(1));
             }
-        })
+        }
+        if matches!(event, tauri::RunEvent::Exit) {
+            if let Some(HostMode::Daemon(runtime)) = exit_host.get() {
+                runtime.shutdown();
+            }
+        }
+    })
 }
 
 #[cfg(test)]

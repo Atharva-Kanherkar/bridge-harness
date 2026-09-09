@@ -1,18 +1,19 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Bridge",
-  "version": "0.5.1",
+  "version": "0.5.5",
   "identifier": "dev.bridge.deck",
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bun run build && bun run prepare:browser-host && bun run prepare:daemon && bun run prepare:claude-sidecar",
+    "beforeBuildCommand": "npm run generate:icons && npm run build && npm run prepare:browser-host && npm run prepare:daemon && npm run prepare:claude-sidecar",
     "frontendDist": "../dist"
   },
   "app": {
     "withGlobalTauri": false,
     "macOSPrivateApi": true,
     "windows": [{
+      "create": false,
       "title": "Bridge",
       "width": 1380,
       "height": 860,
@@ -22,14 +23,8 @@
       "transparent": true,
       "titleBarStyle": "Overlay",
       "hiddenTitle": true,
-      "trafficLightPosition": { "x": 18, "y": 15 },
       "acceptFirstMouse": true,
-      "zoomHotkeysEnabled": true,
-      "windowEffects": {
-        "effects": ["sidebar"],
-        "state": "followsWindowActiveState",
-        "radius": 16
-      }
+      "zoomHotkeysEnabled": true
     }],
     "security": { "csp": null }
   },

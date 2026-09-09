@@ -29,7 +29,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender, SyncSender, TryRecvErr
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-pub const SOCKET_FILE_NAME: &str = "bridged.sock";
+pub use bridged::{socket_path_for_data_dir, validate_socket_path, SOCKET_FILE_NAME};
 pub const TOKEN_FILE_NAME: &str = "daemon.token";
 
 /// Default budget for [`DaemonClient::call`]. Generous: requests are handled
@@ -103,12 +103,19 @@ pub struct Endpoint {
 impl Endpoint {
     /// The endpoint for a data directory, reading the daemon's token file.
     pub fn for_data_dir(data_dir: &Path) -> Result<Endpoint, ClientError> {
+        let socket_path = socket_path_for_data_dir(data_dir).map_err(ClientError::Connect)?;
         let token_path = data_dir.join(TOKEN_FILE_NAME);
         let auth_token = std::fs::read_to_string(&token_path)
-            .map_err(|error| ClientError::Token { path: token_path, error })?
+            .map_err(|error| ClientError::Token {
+                path: token_path,
+                error,
+            })?
             .trim()
             .to_owned();
-        Ok(Endpoint { socket_path: data_dir.join(SOCKET_FILE_NAME), auth_token })
+        Ok(Endpoint {
+            socket_path,
+            auth_token,
+        })
     }
 }
 
@@ -214,6 +221,7 @@ impl DaemonClient {
         endpoint: &Endpoint,
         timeout: Duration,
     ) -> Result<DaemonClient, ClientError> {
+        validate_socket_path(&endpoint.socket_path).map_err(ClientError::Connect)?;
         let stream = UnixStream::connect(&endpoint.socket_path).map_err(ClientError::Connect)?;
         stream.set_read_timeout(Some(timeout)).map_err(ClientError::Connect)?;
         let mut writer = stream.try_clone().map_err(ClientError::Connect)?;
@@ -651,6 +659,36 @@ impl<'client> SessionEventStream<'client> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlong_data_directory_reports_path_guidance_before_a_missing_token() {
+        let fixture = tempfile::tempdir().unwrap();
+        let data_dir = fixture.path().join("long-directory-".repeat(10));
+        let error = Endpoint::for_data_dir(&data_dir).unwrap_err();
+        assert!(matches!(error, ClientError::Connect(_)), "{error}");
+        assert!(error.to_string().contains("BRIDGE_DATA_DIR"), "{error}");
+        assert!(
+            error.to_string().contains("shorter absolute directory"),
+            "{error}"
+        );
+        assert!(!data_dir.exists());
+    }
+
+    #[test]
+    fn a_custom_endpoint_also_gets_actionable_socket_path_validation() {
+        let endpoint = Endpoint {
+            socket_path: PathBuf::from(format!("/tmp/{}.sock", "x".repeat(150))),
+            auth_token: "test-token".into(),
+        };
+        let error = match DaemonClient::connect(&endpoint) {
+            Ok(_) => panic!("an overlong endpoint was accepted"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("shorter --socket path"),
+            "{error}"
+        );
+    }
 
     fn notification(method: &str) -> RpcNotification {
         RpcNotification::new(method, Params::new(serde_json::json!({})).ok())
