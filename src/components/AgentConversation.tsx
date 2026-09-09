@@ -1730,7 +1730,7 @@ function WorkerPanel({ model, objective, modelLabel: requestedModel, effort, now
   // says. Reading only `reported` left ended-but-unreported workers pulsing
   // forever under a terminal label, each one re-rendering every second with a
   // clock that never stopped climbing.
-  const live = !model.reported && !model.endedAt;
+  const live = !model.reported && !model.endedAt && ["working", "waiting", "warm"].includes(model.status.tone);
   const clock = useLiveClock(live, now);
   // A finished worker reports how long it took, not how long ago it started.
   const elapsedAt = !live && model.endedAt ? Date.parse(model.endedAt) : clock;

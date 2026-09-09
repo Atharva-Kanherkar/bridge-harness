@@ -662,12 +662,12 @@ async fn unarchive_chat(session_id: String, state: State<'_, Arc<BridgeCore>>) -
 
 #[tauri::command]
 async fn get_worker_settings(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::WorkerSettings, BridgeError> {
-    bridge_core::worker_settings::load(&state.db.lock().unwrap(), &workspace_id)
+    api::get_worker_settings(state.inner(), &workspace_id)
 }
 
 #[tauri::command]
 async fn save_worker_settings(workspace_id: String, settings: bridge_protocol::messages::WorkerSettings, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::WorkerSettings, BridgeError> {
-    bridge_core::worker_settings::save(&state.db.lock().unwrap(), &workspace_id, &settings)
+    api::save_worker_settings(state.inner(), &workspace_id, &settings)
 }
 
 #[tauri::command]

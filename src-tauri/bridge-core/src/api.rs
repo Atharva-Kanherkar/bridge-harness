@@ -3736,6 +3736,14 @@ pub fn refresh_meter(core: &Arc<BridgeCore>) -> Result<(), BridgeError> {
 
 // --- worktree inventory --------------------------------------------------------
 
+pub fn get_worker_settings(core: &Arc<BridgeCore>, workspace_id: &str) -> Result<wire::WorkerSettings, BridgeError> {
+    crate::worker_settings::load(&core.db.lock().unwrap(), workspace_id)
+}
+
+pub fn save_worker_settings(core: &Arc<BridgeCore>, workspace_id: &str, settings: &wire::WorkerSettings) -> Result<wire::WorkerSettings, BridgeError> {
+    crate::worker_settings::save(&core.db.lock().unwrap(), workspace_id, settings)
+}
+
 /// Every worktree Bridge knows about, with the last assessment of what may be
 /// done with it. A read: the sweep owns reclaiming.
 pub fn list_worktrees(

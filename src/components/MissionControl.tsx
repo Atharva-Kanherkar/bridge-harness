@@ -210,6 +210,10 @@ export function MissionControl({
       const runtime = runtimes.find(item => item.sessionId === session.id);
       const isActive = session.id === activeSessionId;
       // A missing runtime is visible as unavailable, never guessed as success.
+      // But unloaded historical forests must not turn every ended worker into
+      // a new attention tile. Ended is a liveness fact, not a success claim.
+      if (session.parentSessionId && !runtime && !isActive
+        && (session.endedAt || ["completed", "cancelled", "stopped"].includes(session.status))) continue;
       const status = agentStatus(session, runtime);
       // Only live agents belong on the grid. Idle chats and finished sessions are
       // dropped (keeping the active one so returning to the grid never blanks),

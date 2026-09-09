@@ -21,8 +21,9 @@ use crate::{
     worker_guard, worker_lifecycle, worker_pool, worker_retry, worker_sandbox, workspace_files,
     worktree_coordinator, worktree_registry,
     BridgeError, WORKER_APPROVAL_TIMEOUT_SECONDS,
-    WORKER_STALL_TIMEOUT_SECONDS,
 };
+#[cfg(test)]
+use crate::WORKER_STALL_TIMEOUT_SECONDS;
 use bridge_protocol::messages as wire;
 use chrono::Utc;
 use rusqlite::{params, Connection};

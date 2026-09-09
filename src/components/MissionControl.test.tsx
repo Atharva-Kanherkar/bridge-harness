@@ -161,6 +161,12 @@ describe("MissionControl", () => {
     expect(html).not.toContain("Finished worker");
   });
 
+  it("does not promote unloaded historical workers into attention tiles", () => {
+    const html = renderToStaticMarkup(<MissionControl sessions={[session("old", { parentSessionId: "old-parent", endedAt: "2026-09-01T00:00:00Z", status: "completed" })]} runtimes={[]} reasons={[]} events={[]} now={NOW} onFocusSession={() => undefined} />);
+    expect(html).toContain("No agents running yet");
+    expect(html).not.toContain("STATUS UNAVAILABLE");
+  });
+
   it("shows an empty state when no agents are live", () => {
     const html = renderToStaticMarkup(
       <MissionControl sessions={[]} runtimes={[]} reasons={[]} events={[]} now={NOW} onFocusSession={() => undefined} />,

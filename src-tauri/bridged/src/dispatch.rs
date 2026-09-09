@@ -472,11 +472,11 @@ pub fn dispatch(
         }
         MethodName::GetWorkerSettings => {
             let p: wire::GetWorkerSettingsParams = decode(method, params)?;
-            reply(bridge_core::worker_settings::load(&core.db.lock().unwrap(), &p.workspace_id))
+            reply(api::get_worker_settings(core, &p.workspace_id))
         }
         MethodName::SaveWorkerSettings => {
             let p: wire::SaveWorkerSettingsParams = decode(method, params)?;
-            reply(bridge_core::worker_settings::save(&core.db.lock().unwrap(), &p.workspace_id, &p.settings))
+            reply(api::save_worker_settings(core, &p.workspace_id, &p.settings))
         }
         MethodName::UnarchiveChat => {
             let p: wire::ArchiveChatParams = decode(method, params)?;
