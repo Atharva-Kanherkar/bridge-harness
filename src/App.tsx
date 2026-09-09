@@ -1,6 +1,6 @@
 import { ForestCache } from "./forestCache";
 import { useSessionStops } from "./sessionStop";
-import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
@@ -44,7 +44,7 @@ import { SessionRecallSearch } from "./components/SessionRecallSearch";
 import { AppTitleBar } from "./components/AppTitleBar";
 import { WindowHistoryChevrons, WindowPanelButton } from "./components/WindowNavButtons";
 import { MissionControl } from "./components/MissionControl";
-import { BypassBadge } from "./components/BypassBadge";
+import { AccessControl, type AccessMode } from "./components/AccessControl";
 import type { Section as SettingsSection } from "./components/SettingsScreen";
 import { SteerComposer, WorkerDetail } from "./components/WorkerDetail";
 import { ComposerPill } from "./components/ComposerPill";
@@ -2125,11 +2125,22 @@ function AppContent() {
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
   const isSessionChrome = view === "workspace" && paradigm !== "grid" && !!session;
-  const bypassBadge = <BypassBadge bypassing={!!permissionPolicy?.autoApproveProviderPermissions} onOpenSettings={() => { setSettingsSection("permissions"); setView("settings"); }} />;
+  // Access lives in the composer, chosen where the work happens: "Full access"
+  // grants every provider permission, "User approval" asks first. The saved
+  // policy publishes StateChanged, and `reload` re-reads it for every window.
+  const changeAccessMode = async (mode: AccessMode) => {
+    try {
+      const config = await bridgeApi.savePermissionPolicy({ ...(permissionPolicy ?? {}), autoApproveProviderPermissions: mode === "full" });
+      setPermissionPolicy(config.permissionPolicy);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    }
+  };
+  const accessControl = <AccessControl policy={permissionPolicy} onChange={mode => void changeAccessMode(mode)} />;
   const usageProps = { usage: usageByProvider, adapters: health?.adapters, samples: usageSamples, history: usageHistory, cacheDiagnostics, contextPercent: latestContext ?? undefined, contextSource: latestContextSource, focusedSessionId: session?.id ?? null, onOpenPromptStudio: () => { setSettingsSection("prompts"); setView("settings"); } };
   const usageWidget = <UsageWidget {...usageProps} />;
   const usageRing = <UsageWidget compact {...usageProps} />;
-  const titleBarActions = <>{usageWidget}{bypassBadge}</>;
+  const titleBarActions = <>{usageWidget}</>;
   // With the rail hidden there is no sidebar header to hold them, so the panel
   // toggle and the history chevrons move onto whichever chrome row is mounted.
   // They are the only pointer route back to the sidebar; the keymap keeps ⌘B.
@@ -2530,6 +2541,7 @@ function AppContent() {
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"
                       ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
+                    accessControl={accessControl}
                     footer={<ComposerContextStrip
                       workspaces={state.workspaces}
                       workspace={workspace ?? null}
@@ -2608,6 +2620,7 @@ function AppContent() {
           </SessionDock>
         </section>
       </> : <Welcome
+        accessControl={accessControl}
         adapters={adapters}
         harness={(newChatDraft ?? resolveDraftHarnessModel()).harness}
         model={(newChatDraft ?? resolveDraftHarnessModel()).model}
@@ -2717,7 +2730,7 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
   </aside>;
 }
 
-function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, onNewWorkspace, workspaces, workspace, projectName, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree }: {
+function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, onNewWorkspace, workspaces, workspace, projectName, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl }: {
   adapters: import("./types").AdapterDescriptor[];
   harness: Harness;
   model: string | null;
@@ -2742,6 +2755,8 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
   onRequestBranches: () => void;
   onSelectBranch: (branch: string) => void;
   onToggleWorktree: (draft?: string) => void;
+  /** The composer's access-mode control, owned by App so both composers agree. */
+  accessControl?: ReactNode;
 }) {
   // Names the owning project in the hero when one is selected, dotted-underlined.
   // Falls back to the workspace title only when it has no distinct project.
@@ -2809,6 +2824,7 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
       // The unstarted draft is a real chat-in-waiting: let the model be chosen
       // before the first message, the same picker the session composer uses.
       modelControl={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} onEffortChange={onSelectEffort} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
+      accessControl={accessControl}
       footer={workspaces.length > 0 ? <ComposerContextStrip
         workspaces={workspaces}
         workspace={workspace}

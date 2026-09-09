@@ -7,6 +7,7 @@ import type { UsageHistorySource, UsagePriceOverride, UsageSummaryResult } from 
 import { HarnessMark } from "./harnessMarks";
 import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
 import { UsageChart, seriesDotClass } from "./UsageChart";
+import { UsageInsights } from "./UsageInsights";
 import {
   buildChartSeries, buildUsageReport, costSourceLabel, enumeratePeriods, formatCount, formatDayShort, formatPercent, formatPeriodLabel, formatTokens, formatUsd, formatWindowLabel,
   makeUsageWindow, microToUsdPerMtok, readUsagePreferences, summaryParams, USAGE_WINDOW_OPTIONS, usdPerMtokToMicro, writeUsagePreferences,
@@ -29,6 +30,7 @@ const NUM = "text-right tabular-nums";
 const MAX_SCAN_PASSES = 25;
 
 type Breakdown = "model" | "time";
+type UsageTab = "usage" | "insights";
 
 function windowLabel(days: UsageWindowDays): string {
   return days === 1 ? "24h" : `${days}d`;
@@ -76,6 +78,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
   const [sources, setSources] = useState<UsageHistorySource[]>([]);
   const [overrides, setOverrides] = useState<UsagePriceOverride[]>([]);
   const [breakdown, setBreakdown] = useState<Breakdown>("model");
+  const [tab, setTab] = useState<UsageTab>("usage");
   const [scanning, setScanning] = useState(preferences.includeImported);
   const [scanFailed, setScanFailed] = useState(false);
   const [refreshingRates, setRefreshingRates] = useState(false);
@@ -230,13 +233,15 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
     <div className={SCREEN_CONTENT}>
       <ScreenHeading
         title="Usage"
-        description="Tokens processed across harnesses and what they would cost at API rates. Not money spent: subscription plans bill separately."
-        action={<span className="inline-flex shrink-0 items-center gap-1">
+        description={tab === "usage" ? "Tokens processed across harnesses and what they would cost at API rates. Not money spent: subscription plans bill separately." : "What your usage says about how you work, written by your harness from Bridge's own records."}
+        action={<span className="inline-flex shrink-0 items-center gap-2">
+          <Segmented<UsageTab> label="View" value={tab} options={[{ value: "usage", label: "Usage" }, { value: "insights", label: "Insights" }]} onChange={setTab} />
           {onOpenMeter && <button type="button" onClick={onOpenMeter} aria-label="Open usage meter" title="Usage meter" className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Gauge size={14} aria-hidden="true" /></button>}
           <button type="button" onClick={() => setRefreshTick(tick => tick + 1)} disabled={loading || scanning} aria-label="Refresh usage" aria-busy={loading || scanning} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading || scanning ? "animate-spin" : ""} /></button>
         </span>}
       />
 
+      {tab === "insights" ? <UsageInsights windowDays={preferences.windowDays} onError={onError} /> : <>
       <div className="mb-5 flex flex-wrap items-start gap-3">
         <Segmented<UsageMetric> label="Metric" value={metric} options={[{ value: "cost", label: "Cost" }, { value: "tokens", label: "Tokens" }]} onChange={value => update({ metric: value })} />
         <Segmented<UsageWindowDays> label="Window" value={preferences.windowDays} options={USAGE_WINDOW_OPTIONS.map(days => ({ value: days, label: windowLabel(days) }))} onChange={value => update({ windowDays: value })} />
@@ -265,8 +270,8 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
             <p className="mt-1 text-caption text-muted-foreground">{formatCount(report.totals.records)} requests{metric === "cost" ? ` · API estimate · ${costSourceLabel(report.costSource)}` : " · processed tokens"}</p>
             <ul className="mt-4 space-y-2.5" aria-label="By harness">
               {report.harnesses.length === 0 && <li className="text-caption text-muted-foreground">No activity in this window.</li>}
-              {report.harnesses.map((entry, index) => <li key={entry.harness} className="flex items-start justify-between gap-3">
-                <span className="inline-flex min-w-0 items-center gap-2 text-ui text-foreground"><span className={cn("size-2 shrink-0 rounded-[3px]", seriesDotClass(series.findIndex(item => item.harness === entry.harness) === -1 ? index : series.findIndex(item => item.harness === entry.harness)))} aria-hidden="true" /><HarnessMark harness={entry.harness} size={13} /><span className="truncate">{harnessLabel(entry.harness)}</span></span>
+              {report.harnesses.map(entry => <li key={entry.harness} className="flex items-start justify-between gap-3">
+                <span className="inline-flex min-w-0 items-center gap-2 text-ui text-foreground"><span className={cn("size-2 shrink-0 rounded-[3px]", seriesDotClass(entry.harness))} aria-hidden="true" /><HarnessMark harness={entry.harness} size={13} /><span className="truncate">{harnessLabel(entry.harness)}</span></span>
                 <span className="text-right">
                   <span className="block text-ui tabular-nums text-foreground">{metric === "cost" ? formatUsd(entry.costMicrousd) : formatTokens(entry.processedTokens)}</span>
                   <span className="block text-[11px] tabular-nums text-muted-foreground">{metric === "cost" ? `${formatPercent(entry.costShare)} of cost · ${formatTokens(entry.processedTokens)} tokens` : `${formatPercent(entry.tokenShare)} of tokens · ${formatUsd(entry.costMicrousd)}`}</span>
@@ -363,6 +368,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
         </section>
 
         <PriceSection report={report} summary={summary!} overrides={overrides} refreshing={refreshingRates} onRefreshRates={() => void refreshRates()} onChange={changeOverrides} />
+      </>}
       </>}
     </div>
   </div>;

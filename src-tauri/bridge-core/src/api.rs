@@ -3627,6 +3627,17 @@ pub fn usage_summary(
     usage_summary::summarize(&core.db.lock().unwrap(), request)
 }
 
+/// The Insights tab: the stored report, or a fresh one from a headless harness
+/// turn over Bridge's own usage, prompt, and GitHub records. Blocking — the
+/// run is bounded by `usage_insights::MAX_WALL_SECONDS`, inside the daemon
+/// client's call timeout.
+pub fn usage_insights(
+    core: &Arc<BridgeCore>,
+    params: &wire::InsightsParams,
+) -> Result<wire::UsageInsightsResult, BridgeError> {
+    crate::usage_insights::insights(core, params)
+}
+
 pub fn list_usage_price_overrides(
     core: &Arc<BridgeCore>,
 ) -> Result<Vec<usage_pricing::PriceOverride>, BridgeError> {

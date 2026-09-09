@@ -14,6 +14,9 @@ export interface RateWindow {
   windowMinutes?: number;
   resetsInSeconds?: number;
   resetsLabel?: string;
+  /** The window rolled over since the provider last reported and nothing has
+   *  been spent in it: shown as a fresh window rather than a countdown. */
+  fresh?: boolean;
   source: MetricSource;
 }
 
@@ -184,7 +187,8 @@ function windowFrom(id: string, value: Dict, nowMs: number, source: MetricSource
   const label = typeof explicit === "string" && explicit.trim() ? explicit : windowLabel(id, windowMinutes);
   const resetsRaw = pick(value, ["resets_label", "resetsLabel"]);
   const resetsLabel = typeof resetsRaw === "string" && resetsRaw.trim() ? resetsRaw : undefined;
-  return { id, label, usedPercent, windowMinutes, resetsInSeconds, resetsLabel, source };
+  const fresh = pick(value, ["fresh"]) === true;
+  return { id, label, usedPercent, windowMinutes, resetsInSeconds, resetsLabel, fresh: fresh || undefined, source };
 }
 
 /** Parse a real usage snapshot from a `usage.updated` event payload. */
