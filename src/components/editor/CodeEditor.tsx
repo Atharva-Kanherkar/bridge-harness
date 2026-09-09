@@ -5,17 +5,19 @@ import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirro
 import { bracketMatching, foldGutter, foldKeymap, indentOnInput, indentUnit, syntaxHighlighting } from "@codemirror/language";
 import { closeBrackets, closeBracketsKeymap } from "@codemirror/autocomplete";
 import { highlightSelectionMatches, search, searchKeymap } from "@codemirror/search";
-import { classHighlighter } from "@lezer/highlight";
 import { languageFromPath } from "../highlight";
+import { bridgeHighlighter } from "./highlighter";
 import { loadLanguage } from "./language";
 
 /**
  * The editor's fixed extension set.
  *
- * `classHighlighter` is the load-bearing choice: it emits `tok-*` class names
- * instead of inline styles, so the whole editor is themed from `index.css`
- * with the same `--syn-*` tokens as the diff viewer and markdown code blocks.
- * No second palette, and no CSS-in-JS.
+ * `bridgeHighlighter` is the load-bearing choice: it emits `stx-*` class
+ * names instead of inline styles, so the whole editor is themed from
+ * `index.css` with the same `--syn-*` tokens — and the same class names — as
+ * the diff viewer and markdown code blocks. No second palette, no second
+ * class vocabulary, and no CSS-in-JS. See `highlighter.ts` for why
+ * `@lezer/highlight`'s stock `classHighlighter` is not that.
  */
 function baseExtensions(onSave: () => void): Extension[] {
   return [
@@ -28,7 +30,7 @@ function baseExtensions(onSave: () => void): Extension[] {
     EditorState.allowMultipleSelections.of(true),
     indentOnInput(),
     indentUnit.of("  "),
-    syntaxHighlighting(classHighlighter),
+    syntaxHighlighting(bridgeHighlighter),
     bracketMatching(),
     closeBrackets(),
     rectangularSelection(),

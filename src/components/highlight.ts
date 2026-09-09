@@ -219,26 +219,79 @@ const SCOPE_RULES: [prefix: string, className: string][] = [
   ["markup.deleted", "stx-deletion"],
   ["markup.bold", "stx-strong"],
   ["markup.italic", "stx-emphasis"],
-  ["markup.heading", "stx-function"],
-  ["entity.name.section", "stx-function"],
+  ["markup.strikethrough", "stx-strike"],
+  ["markup.heading", "stx-heading"],
+  ["markup.underline.link", "stx-link"],
+  ["entity.name.section", "stx-heading"],
+  // Escapes and regex literals before the generic `string` rule: `\n` inside
+  // a string is `constant.character.escape` *nested in* `string`, and the
+  // innermost scope is what should win.
+  ["constant.character.escape", "stx-regex"],
+  ["constant.regexp", "stx-regex"],
+  ["string.regexp", "stx-regex"],
   ["string", "stx-string"],
   ["constant.numeric", "stx-number"],
   ["constant.language", "stx-number"],
   ["constant.character", "stx-number"],
+  ["constant.other", "stx-number"],
   ["storage.type", "stx-keyword"],
   ["storage.modifier", "stx-keyword"],
-  ["keyword.operator", "stx-punct"],
+  // Operators get their own hue rather than sharing punctuation's grey: `=>`,
+  // `??` and `===` carry meaning a `;` does not.
+  ["keyword.operator", "stx-operator"],
   ["keyword", "stx-keyword"],
   ["entity.name.function", "stx-function"],
+  ["entity.name.namespace", "stx-type"],
   ["support.function", "stx-function"],
+  ["meta.function-call", "stx-function"],
   ["entity.name.tag", "stx-tag"],
   ["support.class.component", "stx-tag"],
+  ["entity.other.attribute-name", "stx-property"],
   ["entity.name.type", "stx-type"],
   ["entity.name.class", "stx-type"],
+  ["entity.other.inherited-class", "stx-type"],
   ["support.type", "stx-type"],
   ["support.class", "stx-type"],
+  // `.` and `?.` read as structure, not as an operator — kept in the
+  // punctuation bucket to match the editor highlighter's `derefOperator`.
+  ["punctuation.accessor", "stx-punct"],
   ["punctuation", "stx-punct"],
+  // The `variable.*` family, most specific first. Order is load-bearing:
+  // `classifyScope` takes the first rule whose prefix matches, so the generic
+  // `variable` rule has to come last or it would swallow parameters,
+  // constants and `this`.
   ["variable.parameter", "stx-params"],
+  // Deliberately *no* `variable.other.constant` rule. TextMate's TypeScript
+  // grammar gives that scope to every `const` binding, not to SCREAMING_CASE
+  // constants, so bucketing it as a literal painted almost every identifier
+  // in a TS file amber. It falls through to `variable` below, which is right.
+  ["variable.other.enummember", "stx-number"],
+  ["variable.language", "stx-keyword"],
+  ["variable.other.property", "stx-property"],
+  ["variable.other.object.property", "stx-property"],
+  ["support.variable.property", "stx-property"],
+  ["meta.object-literal.key", "stx-property"],
+  ["variable.function", "stx-function"],
+  ["variable", "stx-variable"],
+  ["meta.decorator", "stx-function"],
+  ["invalid", "stx-invalid"],
+];
+
+/**
+ * The shared bucket vocabulary: every class name a Bridge syntax renderer may
+ * emit. `SCOPE_RULES` above (Shiki, for chat code and diffs) and
+ * `editor/highlighter.ts` (Lezer, for the Code tab) both draw from this list,
+ * and `palette.test.ts` asserts each entry has a rule in `index.css`. That is
+ * what makes it impossible to add a bucket and forget its colour — the failure
+ * mode that left `.tok-function` in the stylesheet for months while no
+ * renderer could emit it.
+ */
+export const SYNTAX_CLASSES: string[] = [
+  "stx-comment", "stx-keyword", "stx-string", "stx-regex", "stx-number",
+  "stx-function", "stx-type", "stx-tag", "stx-property", "stx-variable",
+  "stx-params", "stx-operator", "stx-punct", "stx-meta", "stx-invalid",
+  "stx-link", "stx-heading", "stx-emphasis", "stx-strong", "stx-strike",
+  "stx-addition", "stx-deletion",
 ];
 
 function classifyScope(token: ScopedToken): string | null {
