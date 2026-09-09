@@ -229,6 +229,26 @@ describe("AgentConversation", () => {
     expect(html).not.toContain("First time opening this chat");
   });
 
+  it("shows a skeleton while an existing chat's history loads, not the new-chat greeting", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={undefined} />);
+    expect(html).toContain('aria-label="Loading conversation"');
+    expect(html).toContain("Loading conversation");
+    expect(html).not.toContain("What should we");
+  });
+
+  it("keeps the greeting for a loaded-but-empty chat", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={[]} />);
+    expect(html).not.toContain('aria-label="Loading conversation"');
+  });
+
+  it("shows live content through a forest refetch instead of the skeleton", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[
+      event(1, "message.completed", { itemId: "m", role: "assistant", text: "Still here", status: "completed" }),
+    ]} forestEntries={undefined} />);
+    expect(html).toContain("Still here");
+    expect(html).not.toContain('aria-label="Loading conversation"');
+  });
+
   it("shows revision-bound verification without requiring a committed contract file", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} completion={{ attemptId:"a",contractId:"c",verdict:"waived",repository:{head:"abcdef1234567890",dirtyDigest:"clean"},passedRequired:1,totalRequired:2,markdownCommitted:false,waiverReason:"Browser unavailable",checks:[{checkId:"tests",kind:"deterministic",required:true,status:"passed",executor:"bridge.shell",command:"bun test",verifierFamily:null,detail:"159 passed",outputDigest:"d",artifactRefs:[]},{checkId:"journey",kind:"user_testing",required:true,status:"skipped",executor:"bridge.worker",command:null,verifierFamily:"claude",detail:"No browser",outputDigest:null,artifactRefs:[]}]} } />);
     expect(html).toContain("Verified with waiver");

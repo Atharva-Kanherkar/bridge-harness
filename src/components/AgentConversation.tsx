@@ -608,6 +608,13 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     streaming,
   });
   if (!session && !preview) return <Empty title="No chat yet" copy="Start a chat from the sidebar, or open a workspace agent."/>;
+  // Selecting a chat commits `session` a commit before its forest snapshot
+  // follows. `forestEntries === undefined` is still loading (show the
+  // skeleton); `[]` loaded empty (a new chat, show the greeting). Live turns
+  // render through the normal path below so a turn that starts mid-fetch is
+  // never hidden behind the skeleton.
+  const historyPending = !!session && !preview && forestEntries === undefined;
+  if (historyPending && !visibleItems.length && !working && !modelSwitch && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <ChatHistorySkeleton />;
   if (!visibleItems.length && !working && !modelSwitch && !pendingMessages.length && !completion && !pendingAdoptions.length && repositoryDivergence !== "diverged" && continuationFidelity !== "projected_at_boundary" && continuationFidelity !== "projected_mid_turn") return <GreetingEmpty seed={session?.id ?? session?.workspaceId ?? undefined} projectName={projectName} />;
   const existingUserTexts = new Set(visibleItems.filter(item => item.type === "message" && item.role === "user").map(item => item.text.trim()));
   // An image-only send has no words yet — its optimistic row is the image, so
@@ -1033,6 +1040,24 @@ function GreetingEmpty({ seed, projectName }: { seed?: string; projectName?: str
   // time of day. A known project name lets the hero name it, dotted-underlined.
   const greeting = useMemo(() => pickGreeting(seed, projectName), [seed, projectName]);
   return <Empty title={greeting.headline} copy={greeting.hint} parts={greeting.parts} />;
+}
+
+/// Placeholder rows shaped like a transcript while an existing chat's history
+/// loads. `forestEntries === undefined` means "not yet fetched"; `[]` means
+/// "fetched and empty" (a genuinely new chat) and keeps the greeting. Minimal
+/// by contract: shimmer rows plus a screen-reader label, no explanatory copy.
+function ChatHistorySkeleton() {
+  return <div role="status" aria-label="Loading conversation" className="absolute inset-0 overflow-y-auto overscroll-y-none px-4 py-5 sm:px-8 sm:py-6">
+    <div className="mx-auto flex w-full min-w-0 max-w-conversation flex-col gap-5" aria-hidden="true">
+      <span className="ml-auto block h-9 w-2/5 animate-pulse rounded-2xl bg-muted-foreground/10" />
+      <span className="block h-3 w-11/12 animate-pulse rounded bg-muted-foreground/10" />
+      <span className="block h-3 w-3/5 animate-pulse rounded bg-muted-foreground/10" />
+      <span className="block h-24 animate-pulse rounded-xl border border-border/80" />
+      <span className="ml-auto block h-9 w-1/3 animate-pulse rounded-2xl bg-muted-foreground/10" />
+      <span className="block h-3 w-4/5 animate-pulse rounded bg-muted-foreground/10" />
+    </div>
+    <span className="sr-only">Loading conversation</span>
+  </div>;
 }
 
 function Empty({ title, copy, parts }: { title: string; copy: string; parts?: GreetingPart[] }) {
