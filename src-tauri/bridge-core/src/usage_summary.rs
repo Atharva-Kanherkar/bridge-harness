@@ -3,7 +3,10 @@
 //! Two record sources feed one aggregation: Bridge's own `usage_ledger` rows
 //! (live) and the `agent_usage_observations` an importer wrote from a
 //! provider's transcripts (imported). They describe the same provider
-//! sessions from two vantage points, so when both are asked for, a Bridge
+//! sessions from two vantage points, so when both are asked for, a complete
+//! imported source's observations replace matching Bridge rows. Partial
+//! sources stay out of totals until their bounded rebuild finishes, avoiding
+//! a half-imported transcript suppressing a complete live session. A Bridge
 //! session whose `provider_session_id` matches an imported
 //! `native_session_id` counts once: the transcript is the complete record and
 //! wins, and the live rows it displaces are reported in `duplicates_dropped`.
@@ -404,7 +407,8 @@ fn imported_rows(
          FROM agent_usage_observations o
          LEFT JOIN agent_usage_sessions ses ON ses.id=o.session_id
          LEFT JOIN agent_usage_sources src ON src.id=o.source_id
-         WHERE o.occurred_at >= ?1 AND o.occurred_at < ?2
+         WHERE src.coverage_state='complete'
+           AND o.occurred_at >= ?1 AND o.occurred_at < ?2
          ORDER BY o.occurred_at, o.id",
     )?;
     let rows = statement.query_map(params![bounds.0.to_rfc3339(), bounds.1.to_rfc3339()], |row| {
@@ -713,6 +717,16 @@ mod tests {
         assert_eq!(live_only.sources.len(), 1);
 
         request.include_imported = true;
+        db.execute("UPDATE agent_usage_sources SET coverage_state='partial' WHERE id='src'", [])
+            .unwrap();
+        let rebuilding = summarize(&db, &request).unwrap();
+        assert_eq!(rebuilding.duplicates_dropped, 0);
+        assert_eq!(rebuilding.live_records, 2);
+        assert_eq!(rebuilding.imported_records, 0);
+        assert_eq!(rebuilding.buckets[0].cost_microusd, 12_000);
+
+        db.execute("UPDATE agent_usage_sources SET coverage_state='complete' WHERE id='src'", [])
+            .unwrap();
         let merged = summarize(&db, &request).unwrap();
         assert_eq!(merged.duplicates_dropped, 1, "live-covered's row is set aside");
         assert_eq!(merged.live_records, 1);

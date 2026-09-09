@@ -208,3 +208,23 @@ mirror, tsgen, and registry↔handler gates stay green.
 Frontend usage page, charts, and settings UI; subscription-quota windows
 (already handled by `account-usage`); billing tiers above base; Grok
 transcript import; Cursor token import (no local source exists).
+
+## PR review verification (2026-09-09)
+
+- Reviewed the complete `67fe4450..HEAD` merge-base diff. Confirmed fixes:
+  OpenCode rescans now replace stable message ids, importer-version changes
+  persist their cleared cursor/version before a failed retry, and incomplete
+  rebuilds do not suppress complete live-session totals.
+- Actual-scan regressions cover an updated OpenCode message and a version
+  reset followed by failure, retry, and two bounded rebuild batches.
+- Isolated daemon API QA under `/tmp/bridge-588-qa.d0uR0x` imported one
+  OpenCode row, replaced it in place after an edit, returned the updated
+  model/tokens/provider cost in `usage/summary`, repriced a seeded live row to
+  158 µUSD via an override, round-tripped and cleared the override, and
+  rejected a negative rate.
+- `bun run build` passed. The full test command passed with the host's
+  intentional cache variable removed:
+  `env -u CARGO_TARGET_DIR NODE_OPTIONS=--no-experimental-webstorage bun run test`
+  (44 sidecar tests passed, 1 authenticated-only skip; 1,862 Vitest tests
+  passed; the Rust workspace and doc tests passed with only documented
+  live/network tests ignored).

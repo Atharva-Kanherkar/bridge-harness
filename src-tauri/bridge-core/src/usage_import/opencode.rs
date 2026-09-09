@@ -4,8 +4,9 @@
 //! `tokens`, `cost`, `modelID`, `providerID`, and timestamps. Message text
 //! lives in a separate `part` table that this importer never touches. The
 //! database is opened read-only; the cursor is the `(time_updated, id)`
-//! high-water mark, so an edited message is seen again and de-duplicated by
-//! its id.
+//! high-water mark, so an edited message is seen again by its id and
+//! upserted, replacing whatever was imported from it earlier (e.g. a
+//! preliminary row seen before the assistant turn finished).
 
 use super::scan::{finish_source, persist_records};
 use super::{
@@ -129,7 +130,7 @@ pub(crate) fn scan(
             None => skipped += 1,
         }
     }
-    let persisted = persist_records(tx, source_id, AGENT, records)?;
+    let persisted = persist_records(tx, source_id, AGENT, records, true)?;
     skipped += persisted.ignored;
     let coverage = if truncated {
         CoverageState::Partial

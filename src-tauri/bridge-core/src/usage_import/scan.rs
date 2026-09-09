@@ -7,7 +7,12 @@
 //! resumes from its offset when the guard still matches; anything else —
 //! truncation, rotation, an in-place rewrite — fails the guard and the file is
 //! read from the start, where `INSERT OR IGNORE` on `(source_id,
-//! native_record_id)` keeps the rescan idempotent.
+//! native_record_id)` keeps the rescan idempotent. The database source
+//! (OpenCode) instead upserts: its native record id is stable across edits,
+//! so a later scan must replace the earlier, possibly preliminary, row
+//! rather than ignore it. A bump of [`IMPORTER_VERSION`] invalidates every
+//! stored cursor and observation for a source so the next scan reparses its
+//! full history under the new interpretation.
 
 use super::{
     claude, codex, cursor, opencode, sha256_hex, source_id_for, ParsedUsage, SourceEnv,
@@ -406,7 +411,7 @@ fn scan_jsonl_source(
         }
     }
 
-    let persisted = persist_records(tx, source_id, &source.agent, records)?;
+    let persisted = persist_records(tx, source_id, &source.agent, records, false)?;
     skipped += persisted.ignored;
     let coverage = if truncated {
         CoverageState::Partial
@@ -446,6 +451,11 @@ fn now() -> String {
 }
 
 /// Inserts or refreshes the source row and returns its stored cursor.
+///
+/// When the stored row predates the running [`IMPORTER_VERSION`], its cursor
+/// and every observation and attribution already imported from it are wiped
+/// so the caller rescans the source's full history from scratch under the
+/// new parser instead of silently keeping rows a fix invalidated.
 pub(crate) fn ensure_source_row(
     tx: &Transaction<'_>,
     source_id: &str,
@@ -470,14 +480,31 @@ pub(crate) fn ensure_source_row(
             now,
         ],
     )?;
-    let cursor: Option<String> = tx
+    let stored: Option<(Option<String>, String)> = tx
         .query_row(
-            "SELECT scan_cursor FROM agent_usage_sources WHERE id=?1",
+            "SELECT scan_cursor, importer_version FROM agent_usage_sources WHERE id=?1",
             params![source_id],
-            |row| row.get(0),
+            |row| Ok((row.get(0)?, row.get(1)?)),
         )
-        .optional()?
-        .flatten();
+        .optional()?;
+    let Some((cursor, stored_version)) = stored else {
+        return Ok(None);
+    };
+    if stored_version != IMPORTER_VERSION {
+        tx.execute(
+            "DELETE FROM agent_usage_attributions WHERE source_id=?1",
+            params![source_id],
+        )?;
+        tx.execute(
+            "DELETE FROM agent_usage_observations WHERE source_id=?1",
+            params![source_id],
+        )?;
+        tx.execute(
+            "UPDATE agent_usage_sources SET scan_cursor=NULL, importer_version=?2 WHERE id=?1",
+            params![source_id, IMPORTER_VERSION],
+        )?;
+        return Ok(None);
+    }
     Ok(cursor)
 }
 
@@ -538,13 +565,20 @@ fn project_label(path: &str) -> Option<String> {
         .filter(|name| !name.is_empty())
 }
 
-/// Persists a batch: session rows first, then observations with
-/// `INSERT OR IGNORE` so a rescan of a rewritten file cannot double count.
+/// Persists a batch: session rows first, then observations.
+///
+/// `replace` is false for JSONL sources, where `INSERT OR IGNORE` keeps a
+/// rescan of a rewritten file from double counting a native record id it
+/// already has a row for. It is true for sources whose native record id can
+/// be revisited with different content — OpenCode's message id is stable
+/// across edits, so a later scan must overwrite the earlier (possibly
+/// preliminary) row instead of leaving it stale.
 pub(crate) fn persist_records(
     tx: &Transaction<'_>,
     source_id: &str,
     agent: &str,
     records: Vec<(ParsedUsage, String)>,
+    replace: bool,
 ) -> Result<Persisted, BridgeError> {
     let now = now();
     let mut observations = Vec::with_capacity(records.len());
@@ -598,13 +632,39 @@ pub(crate) fn persist_records(
         };
         observation.validate()?;
         let cost_source = record.reported_cost_microusd.map(|_| "provider_reported");
+        let upsert_clause = if replace {
+            " ON CONFLICT(source_id,native_record_id) DO UPDATE SET
+                session_id=excluded.session_id,
+                occurred_at=excluded.occurred_at,
+                model=excluded.model,
+                input_semantics=excluded.input_semantics,
+                output_semantics=excluded.output_semantics,
+                total_input_tokens=excluded.total_input_tokens,
+                uncached_input_tokens=excluded.uncached_input_tokens,
+                cache_read_tokens=excluded.cache_read_tokens,
+                cache_write_tokens=excluded.cache_write_tokens,
+                output_tokens=excluded.output_tokens,
+                reasoning_tokens=excluded.reasoning_tokens,
+                tool_use_tokens=excluded.tool_use_tokens,
+                provider_reported_total_tokens=excluded.provider_reported_total_tokens,
+                exact_total_formula=excluded.exact_total_formula,
+                reported_cost_microusd=excluded.reported_cost_microusd,
+                cost_source=excluded.cost_source,
+                numeric_usage_json=excluded.numeric_usage_json,
+                source_file_fingerprint=excluded.source_file_fingerprint,
+                importer_version=excluded.importer_version"
+        } else {
+            " ON CONFLICT(source_id,native_record_id) DO NOTHING"
+        };
         let changed = tx.execute(
-            "INSERT OR IGNORE INTO agent_usage_observations(
+            &format!(
+                "INSERT INTO agent_usage_observations(
                 id,source_id,session_id,native_record_id,occurred_at,model,input_semantics,output_semantics,
                 total_input_tokens,uncached_input_tokens,cache_read_tokens,cache_write_tokens,output_tokens,reasoning_tokens,tool_use_tokens,
                 provider_reported_total_tokens,exact_total_formula,reported_cost_microusd,cost_source,
                 numeric_usage_json,source_file_fingerprint,importer_version,created_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23)",
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23){upsert_clause}"
+            ),
             params![
                 observation_row_id(source_id, &record.native_record_id),
                 source_id,
@@ -646,6 +706,197 @@ pub(crate) fn persist_records(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::usage_import::opencode::fixtures as oc;
+
+    fn opencode_request(env: &SourceEnv, max_records: usize) -> AnalyticsScanRequest {
+        AnalyticsScanRequest {
+            source: opencode::discover(env),
+            cursor: None,
+            max_records,
+        }
+    }
+
+    fn insert_opencode_message(
+        history: &Connection,
+        id: &str,
+        time_updated: i64,
+        output_tokens: i64,
+    ) {
+        oc::insert_message(
+            history,
+            id,
+            "ses_1",
+            time_updated,
+            &oc::assistant_data(
+                "claude-sonnet-5",
+                "anthropic",
+                100,
+                output_tokens,
+                0,
+                10,
+                5,
+                0.01,
+                time_updated - 20,
+            ),
+        );
+    }
+
+    /// Codex finding: OpenCode keeps a stable message id while the assistant
+    /// turn is updated. A real incremental scan must revisit that id and
+    /// replace the preliminary observation without double counting it.
+    #[test]
+    fn opencode_scan_replaces_an_updated_message() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::store::open(&dir.path().join("bridge.db")).unwrap();
+        let env = SourceEnv::for_home(dir.path().join("home"));
+        let history_path = env.opencode_db_path();
+        std::fs::create_dir_all(history_path.parent().unwrap()).unwrap();
+        let history = oc::create_db(&history_path);
+        oc::insert_session(&history, "ses_1", None, "/tmp/project");
+        insert_opencode_message(&history, "msg_1", 100, 5);
+
+        let first = run(&db, &opencode_request(&env, 100), &env).unwrap();
+        assert_eq!(first.records_imported, 1);
+        assert_eq!(first.coverage, CoverageState::Complete);
+
+        history
+            .execute(
+                "UPDATE message SET time_updated=?2, data=?3 WHERE id=?1",
+                params![
+                    "msg_1",
+                    200,
+                    oc::assistant_data(
+                        "claude-opus-5",
+                        "anthropic",
+                        500,
+                        230,
+                        10,
+                        40,
+                        8,
+                        0.025,
+                        180,
+                    )
+                ],
+            )
+            .unwrap();
+
+        let updated = run(&db, &opencode_request(&env, 100), &env).unwrap();
+        assert_eq!(updated.records_imported, 1);
+        assert_eq!(updated.records_skipped, 0);
+        let (rows, model, output, cost): (i64, String, i64, i64) = db
+            .query_row(
+                "SELECT COUNT(*), MAX(model), MAX(output_tokens), MAX(reported_cost_microusd)
+                 FROM agent_usage_observations WHERE native_record_id='msg_1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(rows, 1, "the stable native id must remain unique");
+        assert_eq!(model, "claude-opus-5");
+        assert_eq!(output, 230);
+        assert_eq!(cost, 25_000);
+    }
+
+    /// A version reset is committed even when the first rebuild attempt
+    /// fails. The retry must start from an empty cursor and rebuild the whole
+    /// source across bounded batches, without reviving stale observations or
+    /// attributions and without wiping the first successful retry batch.
+    #[test]
+    fn importer_version_reset_survives_failure_and_rebuilds_in_batches() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::store::open(&dir.path().join("bridge.db")).unwrap();
+        let env = SourceEnv::for_home(dir.path().join("home"));
+        let history_path = env.opencode_db_path();
+        std::fs::create_dir_all(history_path.parent().unwrap()).unwrap();
+        let history = oc::create_db(&history_path);
+        oc::insert_session(&history, "ses_1", None, "/tmp/project");
+        insert_opencode_message(&history, "msg_1", 100, 10);
+        insert_opencode_message(&history, "msg_2", 200, 20);
+        insert_opencode_message(&history, "msg_3", 300, 30);
+
+        let initial = run(&db, &opencode_request(&env, 100), &env).unwrap();
+        assert_eq!(initial.records_imported, 3);
+        let source_id = source_id_for(&opencode::discover(&env));
+        let observation_id: String = db
+            .query_row(
+                "SELECT id FROM agent_usage_observations WHERE native_record_id='msg_1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        db.execute(
+            "INSERT INTO agent_usage_attributions(
+                id,source_id,observation_id,attribution_kind,attribution_value,attribution_source,created_at)
+             VALUES('stale-attribution',?1,?2,'tool','old','test','now')",
+            params![source_id, observation_id],
+        )
+        .unwrap();
+        db.execute(
+            "UPDATE agent_usage_sources SET importer_version='usage-import/0' WHERE id=?1",
+            params![source_id],
+        )
+        .unwrap();
+
+        history
+            .execute("ALTER TABLE message RENAME TO message_broken", [])
+            .unwrap();
+        let failure = run(&db, &opencode_request(&env, 2), &env).unwrap_err();
+        assert!(failure.to_string().contains("no such table: message"));
+        let (cursor, version, coverage, last_error): (
+            Option<String>,
+            String,
+            String,
+            Option<String>,
+        ) = db
+            .query_row(
+                "SELECT scan_cursor, importer_version, coverage_state, last_error
+                 FROM agent_usage_sources WHERE id=?1",
+                params![source_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(cursor, None, "the old high-water mark must be discarded");
+        assert_eq!(version, IMPORTER_VERSION);
+        assert_eq!(coverage, "unreadable");
+        assert!(last_error.unwrap().contains("no such table: message"));
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM agent_usage_observations", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM agent_usage_attributions", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            0
+        );
+
+        history
+            .execute("ALTER TABLE message_broken RENAME TO message", [])
+            .unwrap();
+        let first_retry = run(&db, &opencode_request(&env, 2), &env).unwrap();
+        assert_eq!(first_retry.records_imported, 2);
+        assert_eq!(first_retry.coverage, CoverageState::Partial);
+        let second_retry = run(&db, &opencode_request(&env, 2), &env).unwrap();
+        assert_eq!(second_retry.records_imported, 1);
+        assert_eq!(second_retry.coverage, CoverageState::Complete);
+        assert_eq!(
+            db.query_row("SELECT COUNT(*) FROM agent_usage_observations", [], |row| {
+                row.get::<_, i64>(0)
+            })
+            .unwrap(),
+            3
+        );
+        assert_eq!(
+            run(&db, &opencode_request(&env, 2), &env)
+                .unwrap()
+                .records_imported,
+            0
+        );
+    }
 
     #[test]
     fn fnv1a_is_stable() {
