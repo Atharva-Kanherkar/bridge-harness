@@ -2451,6 +2451,27 @@ pub fn run() -> i32 {
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 window_chrome::release_window_material(window.label());
             }
+            // Menu-bar dismissal. A dropdown should not outlive your attention:
+            // the panel goes away when it loses focus, and when you go back to
+            // the app. It is shown unfocused (see `meter_tray`), so the second
+            // rule is the one that usually fires — clicking into Bridge is the
+            // common way of being done with the meter.
+            if let tauri::WindowEvent::Focused(focused) = event {
+                let app = window.app_handle();
+                match (window.label(), focused) {
+                    (meter_tray::PANEL_LABEL, false) => meter_tray::hide_panel(app),
+                    ("main", true) => meter_tray::hide_panel(app),
+                    _ => {}
+                }
+            }
+            // Closing the panel is dismissal, not teardown: it is created once
+            // at startup, so let it hide and stay available for the next click.
+            if window.label() == meter_tray::PANEL_LABEL {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
+            }
         })
         .invoke_handler(move |invoke| {
             match host.get() {
