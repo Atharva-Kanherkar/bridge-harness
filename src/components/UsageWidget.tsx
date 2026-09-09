@@ -125,13 +125,6 @@ function UsageIndicatorRing({ percent, tier }: { percent: number | null; tier: U
   </svg>;
 }
 
-function UsageBar({ used }: { used: number }) {
-  const clamped = clampPercent(used);
-  return <span className="block h-1.5 w-full overflow-hidden rounded-full bg-muted">
-    <span className="block h-full rounded-full bg-foreground transition-[width] duration-700 ease-out" style={{ width: `${clamped}%` }} />
-  </span>;
-}
-
 export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples = {}, history = [], cacheDiagnostics = [], contextPercent, contextSource = "measured", focusedSessionId = null, onOpenPromptStudio, compact = false }: UsageWidgetProps) {
   const [open, setOpen] = useState(false);
   const nowMs = useMeterClock();
