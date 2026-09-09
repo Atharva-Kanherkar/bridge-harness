@@ -794,7 +794,7 @@ pub struct SessionForestSnapshot {
 pub struct SessionEntryWindowSummary {
     /// Entries in this snapshot.
     pub returned: i64,
-    /// Entries the session has in total.
+    /// Entries the active branch has in total.
     pub total: i64,
     /// Entries whose payload had oversized strings shortened for display.
     pub trimmed_payloads: i64,

@@ -3356,14 +3356,13 @@ const SNAPSHOT_STRING_BYTES: usize = 4 * 1024;
 
 /// The number of newest entries a snapshot carries.
 ///
-/// Safe to truncate from the front: branch projection walks parent links from
-/// the head backwards and stops at the first parent it cannot find, so a tail
-/// window shortens the *start* of the transcript and never orphans the rest.
+/// The window follows the active head's ancestry, so newer entries on sibling
+/// branches can never push the selected conversation out of its own snapshot.
 pub const SNAPSHOT_ENTRY_WINDOW: usize = 1500;
 
-/// A bounded read of one session's entries, with the totals the UI needs to
-/// tell the difference between "this is the whole conversation" and "this is
-/// the tail of a longer one".
+/// A bounded read of the active branch, with the totals the UI needs to tell
+/// the difference between "this is the whole conversation" and "this is the
+/// tail of a longer one".
 #[derive(Debug, Clone)]
 pub struct SessionEntryWindow {
     pub entries: Vec<SessionEntry>,
@@ -3376,8 +3375,18 @@ pub struct SessionEntryWindow {
 /// fields (`text`, `title`, nested `data`), so trimming has to leave those
 /// fields present and merely shorter.
 fn trim_snapshot_strings(value: &mut serde_json::Value) -> bool {
+    trim_snapshot_strings_at_key(value, None)
+}
+
+fn trim_snapshot_strings_at_key(value: &mut serde_json::Value, key: Option<&str>) -> bool {
     match value {
         serde_json::Value::String(text) => {
+            // Pasted images are durable history, not verbose textual detail.
+            // Cutting their base64 data produces a plausible-looking but
+            // undecodable URI and makes the image disappear after reload.
+            if key == Some("dataUri") && text.starts_with("data:image/") {
+                return false;
+            }
             if text.len() <= SNAPSHOT_STRING_BYTES {
                 return false;
             }
@@ -3391,36 +3400,59 @@ fn trim_snapshot_strings(value: &mut serde_json::Value) -> bool {
             true
         }
         serde_json::Value::Array(items) => items.iter_mut().fold(false, |trimmed, item| {
-            trim_snapshot_strings(item) || trimmed
+            trim_snapshot_strings_at_key(item, None) || trimmed
         }),
         serde_json::Value::Object(fields) => {
-            fields.iter_mut().fold(false, |trimmed, (_, field)| {
-                trim_snapshot_strings(field) || trimmed
+            fields.iter_mut().fold(false, |trimmed, (name, field)| {
+                trim_snapshot_strings_at_key(field, Some(name)) || trimmed
             })
         }
         _ => false,
     }
 }
 
-/// The newest `limit` entries of a session, oldest-first, with oversized
-/// payload strings trimmed for display. `session_entries` stays the untrimmed
-/// read for callers that need real payloads (compaction, context projection);
-/// this one exists only to make the snapshot a bounded frame.
+/// The newest `limit` ancestors of the active head, oldest-first, with
+/// oversized payload strings trimmed for display. `session_entries` stays the
+/// untrimmed read for callers that need real payloads (compaction, context
+/// projection); this one exists only to make the snapshot a bounded frame.
 pub fn session_entry_window(
     db: &Connection,
     session_id: &str,
     limit: usize,
 ) -> Result<SessionEntryWindow, BridgeError> {
     let total: i64 = db.query_row(
-        "SELECT count(*) FROM session_entries WHERE session_id=?1",
+        "WITH RECURSIVE active_branch(id,parent_entry_id,sequence) AS (
+             SELECT id,parent_entry_id,sequence FROM session_entries
+             WHERE session_id=?1
+               AND id=(SELECT active_entry_id FROM session_heads WHERE session_id=?1)
+             UNION
+             SELECT parent.id,parent.parent_entry_id,parent.sequence
+             FROM session_entries parent
+             JOIN active_branch child ON parent.id=child.parent_entry_id
+             WHERE parent.session_id=?1
+         )
+         SELECT count(*) FROM active_branch",
         params![session_id],
         |row| row.get(0),
     )?;
     let mut trimmed_payloads = 0i64;
     let mut entries = query_with_params(
         db,
-        "SELECT id,session_id,parent_entry_id,sequence,semantic_schema_version,kind,payload,provider_event_id,context_visibility,token_estimate,created_at
-         FROM session_entries WHERE session_id=?1 ORDER BY sequence DESC LIMIT ?2",
+        "WITH RECURSIVE active_branch(id,parent_entry_id,sequence) AS (
+             SELECT id,parent_entry_id,sequence FROM session_entries
+             WHERE session_id=?1
+               AND id=(SELECT active_entry_id FROM session_heads WHERE session_id=?1)
+             UNION
+             SELECT parent.id,parent.parent_entry_id,parent.sequence
+             FROM session_entries parent
+             JOIN active_branch child ON parent.id=child.parent_entry_id
+             WHERE parent.session_id=?1
+         )
+         SELECT entry.id,entry.session_id,entry.parent_entry_id,entry.sequence,entry.semantic_schema_version,entry.kind,entry.payload,entry.provider_event_id,entry.context_visibility,entry.token_estimate,entry.created_at
+         FROM active_branch branch
+         JOIN session_entries entry ON entry.id=branch.id
+         WHERE entry.session_id=?1
+         ORDER BY branch.sequence DESC LIMIT ?2",
         params![session_id, limit as i64],
         |row| {
             let mut payload = parse_json_column(row, 6);
@@ -6484,7 +6516,7 @@ mod tests {
         }
 
         let window = session_entry_window(&db, "s", 4).unwrap();
-        assert_eq!(window.total, 10, "the total counts the whole session");
+        assert_eq!(window.total, 10, "the total counts the active branch");
         assert_eq!(window.entries.len(), 4);
         // Oldest-first inside the window: branch projection walks parents from
         // the head, and the transcript renders in order.
@@ -6504,6 +6536,79 @@ mod tests {
             whole.trimmed_payloads, 0,
             "small payloads travel exactly as stored"
         );
+    }
+
+    #[test]
+    fn the_snapshot_window_follows_the_active_head_not_newer_sibling_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        seed_workspace(&db);
+        let root = append_session_entry(
+            &db,
+            "s",
+            None,
+            "assistant.message",
+            &json!({"text": "root"}),
+            None,
+            "eligible",
+            Some(1),
+        )
+        .unwrap();
+        let active_middle = append_session_entry(
+            &db,
+            "s",
+            Some(&root.id),
+            "assistant.message",
+            &json!({"text": "active middle"}),
+            None,
+            "eligible",
+            Some(1),
+        )
+        .unwrap();
+        let active_head = append_session_entry(
+            &db,
+            "s",
+            Some(&active_middle.id),
+            "assistant.message",
+            &json!({"text": "active head"}),
+            None,
+            "eligible",
+            Some(1),
+        )
+        .unwrap();
+
+        let mut sibling_parent = root.id.clone();
+        for index in 0..4 {
+            sibling_parent = append_session_entry(
+                &db,
+                "s",
+                Some(&sibling_parent),
+                "assistant.message",
+                &json!({"text": format!("newer sibling {index}")}),
+                None,
+                "eligible",
+                Some(1),
+            )
+            .unwrap()
+            .id;
+        }
+        db.execute(
+            "UPDATE session_heads SET active_entry_id=?1 WHERE session_id='s'",
+            params![active_head.id],
+        )
+        .unwrap();
+
+        let window = session_entry_window(&db, "s", 2).unwrap();
+        assert_eq!(window.total, 3, "sibling entries are not active history");
+        assert_eq!(
+            window
+                .entries
+                .iter()
+                .map(|entry| entry.payload["text"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["active middle", "active head"],
+        );
+        assert_eq!(window.entries.last().unwrap().id, active_head.id);
     }
 
     #[test]
@@ -6558,6 +6663,43 @@ mod tests {
         // still need the real payload.
         let full = session_entries(&db, "s").unwrap();
         assert_eq!(full[0].payload["title"].as_str().unwrap().len(), huge.len());
+    }
+
+    #[test]
+    fn the_snapshot_window_preserves_durable_image_data_uris() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        seed_workspace(&db);
+        let data_uri = format!(
+            "data:image/png;base64,{}",
+            "a".repeat(SNAPSHOT_STRING_BYTES * 3)
+        );
+        append_session_entry(
+            &db,
+            "s",
+            None,
+            "message.completed",
+            &json!({
+                "text": "x".repeat(SNAPSHOT_STRING_BYTES * 3),
+                "data": {"attachments": [{"mediaType": "image/png", "dataUri": data_uri.clone()}]},
+            }),
+            None,
+            "eligible",
+            Some(1),
+        )
+        .unwrap();
+
+        let window = session_entry_window(&db, "s", 10).unwrap();
+        let payload = &window.entries[0].payload;
+        assert!(payload["text"]
+            .as_str()
+            .unwrap()
+            .contains("more bytes not shown"));
+        assert_eq!(
+            payload["data"]["attachments"][0]["dataUri"],
+            json!(data_uri),
+            "a reload must keep the image decodable"
+        );
     }
 
     #[test]

@@ -898,18 +898,12 @@ function AppContent() {
     let active = true;
     let pollsSinceFullFetch = 0;
     const refresh = async () => {
-      // The digest is tens of bytes; the snapshot is the whole display window.
-      // Only fetch the snapshot when the digest moves, with a periodic forced
-      // fetch as the safety net for state the store cannot see (repository
-      // divergence above all).
-      //
-      // Skipped entirely on a cold open: with nothing cached to compare the
-      // digest against, the comparison can only miss, so asking for it first
-      // just puts a second serial round trip in front of the snapshot the
-      // screen is empty without.
-      const cold = forestCacheRef.current.get(sessionId) === undefined;
-      const digest = cold ? undefined : await bridgeApi.sessionForestDigest(sessionId).catch(() => undefined);
-      const force = cold || pollsSinceFullFetch >= 9 || digest === undefined;
+      // Read the digest before the snapshot. If state changes between the two,
+      // the snapshot is newer than its key and the next poll safely refetches.
+      // Reading the key afterwards can acknowledge state the snapshot never
+      // saw, leaving the UI stale until the periodic forced fetch.
+      const digest = await bridgeApi.sessionForestDigest(sessionId).catch(() => undefined);
+      const force = pollsSinceFullFetch >= 9 || digest === undefined;
       if (!active) return;
       if (!force && digest === forestKeyRef.current) {
         pollsSinceFullFetch += 1;
@@ -923,14 +917,7 @@ function AppContent() {
       pollsSinceFullFetch = 0;
       setPendingAdoptions(adoptions);
       if (!value) return;
-      // A cold open skipped the digest, so reconcile the key from the store
-      // rather than leaving it empty and refetching the snapshot next tick.
-      // Re-check `active` afterwards: this await can outlive the selection,
-      // and the key ref is shared, so a late write would strand the newly
-      // selected chat on a token that belongs to the old one.
-      const key = digest ?? (cold ? await bridgeApi.sessionForestDigest(sessionId).catch(() => "") : "");
-      if (!active) return;
-      forestKeyRef.current = key ?? "";
+      forestKeyRef.current = digest ?? "";
       forestCacheRef.current.set(sessionId, value);
       setForest(current => mergeForestSnapshot(current, value));
     };
