@@ -893,14 +893,15 @@ function AppContent() {
     // durable card (including a pending approval) must never vanish and pop
     // back just because the poll for the freshly-selected session hasn't
     // resolved yet.
-    setForest(forestCacheRef.current.get(sessionId));
+    const cached = forestCacheRef.current.get(sessionId);
+    setForest(cached);
     let active = true;
     let pollsSinceFullFetch = 0;
     const refresh = async () => {
-      // The digest is tens of bytes; the snapshot is the entire history. Only
-      // fetch the snapshot when the digest moves, with a periodic forced
-      // fetch as the safety net for state the store cannot see (repository
-      // divergence above all).
+      // Read the digest before the snapshot. If state changes between the two,
+      // the snapshot is newer than its key and the next poll safely refetches.
+      // Reading the key afterwards can acknowledge state the snapshot never
+      // saw, leaving the UI stale until the periodic forced fetch.
       const digest = await bridgeApi.sessionForestDigest(sessionId).catch(() => undefined);
       const force = pollsSinceFullFetch >= 9 || digest === undefined;
       if (!active) return;
@@ -2384,6 +2385,7 @@ function AppContent() {
                   workers={workerPanelSource}
                   events={sessionEvents}
                   forestEntries={forest?.entries}
+                  entryWindow={forest?.entryWindow}
                   activeLeafId={forest?.head?.activeEntryId}
                   repositoryDivergence={forest?.repositoryDivergence.status}
                   completion={forest?.completion}
