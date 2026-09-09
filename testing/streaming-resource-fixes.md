@@ -24,7 +24,7 @@ history/scheduler changes from PR 568. This change retains them.
 | --- | --- |
 | Visited chat histories | LRU, 4 chats and 16 MiB estimated serialized UTF-16 size |
 | Shared live event tail | Existing text/count limits plus 8 MiB including nested payloads |
-| Cursor reader backlog | Existing shared frame-queue policy: 2,048 items / 8 MiB; shed recoverable text/thinking deltas first; backpressure terminal events |
+| Cursor reader backlog | Existing shared frame-queue policy: 2,048 items / 8 MiB; shed recoverable thinking deltas first; backpressure answer chunks and terminal events |
 | Eligible idle chat processes | At most 2 retained; expire after 120 seconds; one release per maintenance tick |
 
 The process policy applies across harnesses. Active turns, approvals, workers,
@@ -56,7 +56,7 @@ No paid model request was required for that capture.
 
 Regression coverage includes deferred/concurrent Stop ownership, backend
 cancellation isolation, cached-history eviction including nested data, Cursor
-backpressure with 10,000 deltas and terminal recovery, and idle reclamation with
+backpressure with real ACP answer chunks and accumulated thinking recovery, and idle reclamation with
 active/approval/submission exclusions and resume ID preservation.
 
 These are retention budgets, not a hard cap on RSS of active vendor processes.
@@ -102,3 +102,16 @@ transport check.
 - Browser mock smoke: expanded command output, typed while it remained open,
   stopped the active chat, and switched to another chat with its own transcript
   and no inherited Stop indicator.
+
+## Connector review follow-up
+
+The secondary Cursor queue must preserve every normalized ACP answer chunk
+without relying on a terminal replacement. A stalled four-item queue must block
+the producer and deliver all 1,000 chunks in order after draining starts. Thinking
+may still be shed because `AcpThoughtRun` supplies the authoritative completion;
+the regression uses that real accumulator rather than a fabricated terminal.
+
+The review's claim that no answer accumulator exists is incomplete:
+`acp_session::TurnMessage` already assembles live completions. Nevertheless,
+backpressuring answer chunks makes this queue's guarantee independent of that
+assembly and preserves live prose through downstream stalls.
