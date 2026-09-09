@@ -127,11 +127,11 @@ describe("MeterPopover", () => {
 
   it("expands and collapses a meter bar on click", async () => {
     await mount();
-    const bar = container.querySelector<HTMLButtonElement>('[aria-controls="meter-window-weekly"]')!;
+    const bar = container.querySelector<HTMLButtonElement>('[aria-controls="meter-window-codex-weekly"]')!;
     expect(bar.getAttribute("aria-expanded")).toBe("false");
     act(() => { bar.click(); });
     expect(bar.getAttribute("aria-expanded")).toBe("true");
-    expect(container.querySelector("#meter-window-weekly")?.textContent).toContain("75% of this window is used");
+    expect(container.querySelector("#meter-window-codex-weekly")?.textContent).toContain("75% of this window is used");
     act(() => { bar.click(); });
     expect(bar.getAttribute("aria-expanded")).toBe("false");
   });
