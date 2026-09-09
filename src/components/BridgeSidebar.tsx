@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {  Archive,
- BarChart3, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, Home, Pin, Plus, RotateCw, Search, Settings2, SquarePen, Store, type LucideIcon } from "lucide-react";
+ BarChart3, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, Home, Pin, Plus, RotateCw, Search, Settings2, SquarePen, Store, type LucideIcon } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
 import type { Session, SessionStatus, Workspace } from "../types";
@@ -260,6 +260,7 @@ export type BridgeSidebarProps = {
   projectsActive: boolean;
   memoryActive?: boolean;
   marketplaceActive: boolean;
+  usageActive?: boolean;
   missionControlActive: boolean;
   workActive?: boolean;
   settingsActive: boolean;
@@ -278,6 +279,8 @@ export type BridgeSidebarProps = {
   onOpenWorkBoard: () => void;
   /** Account memory. Not workspace-gated: a plain chat reaches it identically. */
   onOpenMemory: () => void;
+  /** Token and cost usage across harnesses. */
+  onOpenUsage?: () => void;
   onOpenSettings: () => void;
   onOpenSession: (id: string) => void;
   /** Absent when the host cannot archive — the row then shows no action. */
@@ -302,6 +305,7 @@ export function BridgeSidebar({
   projectsActive,
   memoryActive = false,
   marketplaceActive,
+  usageActive = false,
   missionControlActive,
   settingsActive,
   accountName,
@@ -314,6 +318,7 @@ export function BridgeSidebar({
   onOpenMarketplace,
   onOpenMissionControl,
   onOpenMemory,
+  onOpenUsage,
   onOpenSettings,
   onOpenSession,
   onArchiveChat,
@@ -587,6 +592,7 @@ export function BridgeSidebar({
            * untouched. */}
           <ActionRow icon={FolderGit2} label="Projects" chord="open-projects" onClick={onOpenProjects} active={projectsActive} />
           <ActionRow icon={Pin} label="Memory" onClick={onOpenMemory} active={memoryActive} />
+          {onOpenUsage && <ActionRow icon={ChartNoAxesColumn} label="Usage" onClick={onOpenUsage} active={usageActive} />}
         </nav>
 
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
