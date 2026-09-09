@@ -1,3 +1,4 @@
+import Link from "next/link";
 import CallToAction from "./components/CallToAction";
 import Comparison from "./components/Comparison";
 import Faq from "./components/Faq";
@@ -9,7 +10,7 @@ import LoopSection from "./components/LoopSection";
 import Principles from "./components/Principles";
 import SiteFooter from "./components/SiteFooter";
 import SiteHeader from "./components/SiteHeader";
-import { latestReleaseUrl, latestVersion, platformLabel, repoUrl } from "./content/site";
+import { downloadPath, latestVersion, platformLabel, repoUrl } from "./content/site";
 
 export default function Home() {
   return (
@@ -30,12 +31,12 @@ export default function Home() {
           safety gate, and each worker lands in its own worktree with verifiable evidence.
         </p>
         <div className="mt-8 flex flex-col gap-3 sm:flex-row">
-          <a
-            href={latestReleaseUrl}
+          <Link
+            href={downloadPath}
             className="rounded-md bg-foreground px-5 py-3 text-sm font-medium text-background hover:bg-foreground/90"
           >
             Download for Mac
-          </a>
+          </Link>
           <a href={repoUrl} className="rounded-md border border-border-card px-5 py-3 text-sm font-medium hover:bg-muted">
             View on GitHub
           </a>

@@ -1,11 +1,12 @@
-import { changelogUrl, docsUrl, issuesUrl, latestReleaseUrl, latestVersion, platformLabel, repoUrl } from "../content/site";
+import Link from "next/link";
+import { changelogPath, docsUrl, downloadPath, issuesUrl, latestVersion, platformLabel, repoUrl } from "../content/site";
 
 const columns = [
   {
     title: "Product",
     links: [
-      { label: "Download", href: latestReleaseUrl },
-      { label: "Changelog", href: changelogUrl },
+      { label: "Download", href: downloadPath },
+      { label: "Changelog", href: changelogPath },
       { label: "Docs", href: docsUrl },
     ],
   },
@@ -34,9 +35,15 @@ export default function SiteFooter() {
             <ul className="mt-3 flex flex-col gap-2 text-muted-foreground">
               {column.links.map((link) => (
                 <li key={link.label}>
-                  <a href={link.href} className="hover:text-foreground">
-                    {link.label}
-                  </a>
+                  {link.href.startsWith("/") ? (
+                    <Link href={link.href} className="hover:text-foreground">
+                      {link.label}
+                    </Link>
+                  ) : (
+                    <a href={link.href} className="hover:text-foreground">
+                      {link.label}
+                    </a>
+                  )}
                 </li>
               ))}
             </ul>

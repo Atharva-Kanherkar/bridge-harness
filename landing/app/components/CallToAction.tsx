@@ -1,4 +1,5 @@
-import { latestReleaseUrl, nodeRequirement, platformLabel, repoUrl } from "../content/site";
+import Link from "next/link";
+import { downloadPath, nodeRequirement, platformLabel, repoUrl } from "../content/site";
 
 export default function CallToAction() {
   return (
@@ -10,12 +11,12 @@ export default function CallToAction() {
             Early-stage software for {platformLabel}. {nodeRequirement} Codex, Claude Code, and OpenCode stay optional.
           </p>
           <div className="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
-            <a
-              href={latestReleaseUrl}
+            <Link
+              href={downloadPath}
               className="rounded-md bg-foreground px-5 py-3 text-sm font-medium text-background hover:bg-foreground/90"
             >
               Download for Mac
-            </a>
+            </Link>
             <a href={repoUrl} className="rounded-md border border-border-card px-5 py-3 text-sm font-medium hover:bg-muted">
               View on GitHub
             </a>

@@ -19,8 +19,8 @@ Modeled on onorca.dev (Orca by Stably: Next.js, Motion, dark chrome, real-DOM mo
 | 11 | FAQ, ten collapsed questions | FAQ, ten questions, native details elements | Done |
 | 12 | "Get Orca" CTA band | "Get Bridge" CTA band | Done |
 | 13 | Footer: Product, Community, Company, copyright, "Backed by Y Combinator. Built in San Francisco." | Footer: brand, Product, Project, version line | Done |
-| 14 | /download page: four desktop builds, brew command, mobile links | /download: Apple Silicon DMG, sha256, requirements, Node 18+ note for Claude | Phase 3 |
-| 15 | /changelog: date, version link, headline, bullets, "Read more", per-version pages | /changelog from release notes as MDX, "View all releases on GitHub" | Phase 3 |
+| 14 | /download page: four desktop builds, brew command, mobile links | /download: Apple Silicon DMG, checksum command, requirements, Node 18+ note for Claude | Done |
+| 15 | /changelog: date, version link, headline, bullets, "Read more", per-version pages | /changelog from release notes, one page, "All releases on GitHub" | Done |
 
 ## Phase 1: finish the one-page skeleton (done)
 
@@ -41,12 +41,13 @@ Built as SiteHeader, HarnessSection, FeatureGrid, CallToAction, SiteFooter, and 
 
 The mock card renderer moved to its own module so the loop panels and the hero mockup share one implementation. The scroll-reveal wrapper added in Phase 1 was removed: it hid content until a callback fired, and a page that can render nothing is worse than a page without an entrance animation. A pure-CSS scroll timeline guarded by a support query would give the same effect without that failure mode, and is the way to add it back.
 
-## Phase 3: routes and media (later, about one day)
+## Phase 3: routes and media (routes done, media outstanding)
 
 1. /download: Apple Silicon DMG button to releases/latest, sha256 line, requirements (macOS 12 or later, Node 18+ for Claude), the Gatekeeper note from the README.
-2. /changelog: one MDX file per release with date, version, headline, bullets, and a Read more link, plus a footer link to all releases. Copied from release notes at authoring time; no GitHub API because the repo is private.
+2. /changelog: six releases from 0.5.0 to 0.5.5, each with date, headline, bullets, and a link to its GitHub notes. Written as a typed data file rather than MDX, which avoids adding an MDX toolchain for prose that is already short. Copied from release notes at authoring time; no GitHub API because the repo is private.
 3. Bento tiles open a dialog with a larger mock, then a short recording once real captures exist.
 4. Open Graph image and metadataBase once the domain is chosen.
+5. Optional: bring the scroll-in animation back as a CSS scroll timeline behind an @supports guard, so an unsupported browser shows plain visible content instead of nothing.
 
 ## Honesty gates, owner decisions
 

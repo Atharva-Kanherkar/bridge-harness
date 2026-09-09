@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { changelogUrl, docsUrl, latestReleaseUrl, repoUrl } from "../content/site";
+import { changelogPath, docsUrl, downloadPath, repoUrl } from "../content/site";
 
 export default function SiteHeader() {
   const [scrolled, setScrolled] = useState(false);
@@ -26,15 +26,15 @@ export default function SiteHeader() {
           <a href={docsUrl} className="hover:text-foreground">
             Docs
           </a>
-          <a href={changelogUrl} className="hidden hover:text-foreground sm:inline">
+          <Link href={changelogPath} className="hidden hover:text-foreground sm:inline">
             Changelog
-          </a>
+          </Link>
           <a href={repoUrl} className="hidden hover:text-foreground sm:inline">
             GitHub
           </a>
-          <a href={latestReleaseUrl} className="rounded-md bg-foreground px-3 py-1.5 text-background hover:bg-foreground/90">
+          <Link href={downloadPath} className="rounded-md bg-foreground px-3 py-1.5 text-background hover:bg-foreground/90">
             Download
-          </a>
+          </Link>
         </nav>
       </div>
     </header>
