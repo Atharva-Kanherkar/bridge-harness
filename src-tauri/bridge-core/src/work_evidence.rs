@@ -42,6 +42,7 @@ pub struct EvidenceEntry {
     pub target: EvidenceTarget,
     /// When Bridge saw the result, not when the connector says the thing happened.
     pub observed_at: String,
+    pub source_activity_at: Option<String>,
 }
 
 /// Digest a connector result. Prefixed and versioned so a digest cannot be mistaken
@@ -179,9 +180,18 @@ impl RunLedger {
         // the existing reference rather than a second one keeps a brief from citing the
         // same thing twice under two names.
         if let Some(existing) = canonical_resource_id.as_ref().and_then(|canonical_id| {
-            self.entries.iter().find(|entry| entry.canonical_resource_id.as_ref() == Some(canonical_id))
+            self.entries.iter_mut().find(|entry| entry.canonical_resource_id.as_ref() == Some(canonical_id))
         }) {
             let reused = existing.evidence_ref.clone();
+            // Reuse identity, not the first read's metadata. A discovery result
+            // may omit the date/link that the subsequent individual read earns.
+            existing.target = target;
+            existing.source_activity_at = crate::work_connectors::source_activity_at(family, result);
+            existing.result_digest = result_digest(result);
+            existing.observed_at = observed_at.to_owned();
+            existing.tool_call_id = tool_call_id.to_owned();
+            existing.tool_definition_digest = tool_definition_digest.to_owned();
+            existing.account_identity = account_identity.map(str::to_owned);
             self.record_source(
                 instance_id,
                 family.as_str(),
@@ -209,6 +219,7 @@ impl RunLedger {
             result_digest: result_digest(result),
             target,
             observed_at: observed_at.to_owned(),
+            source_activity_at: crate::work_connectors::source_activity_at(family, result),
         });
         self.record_source(
             instance_id,
@@ -558,4 +569,16 @@ mod tests {
         assert_eq!(ids(&one), ids(&other));
         assert_eq!(ids(&one), vec!["a", "z"]);
     }
+    #[test]
+    fn individual_reread_fills_in_missing_source_metadata() {
+        let mut ledger = RunLedger::new("run");
+        let first = ledger.record_succeeded(ConnectorFamily::GitHub, "gh", None, "search", "d", &json!({"node_id":"I_1"}), SEEN).unwrap();
+        let second = ledger.record_succeeded(ConnectorFamily::GitHub, "gh", None, "read", "read-digest", &json!({"node_id":"I_1","updated_at":SEEN,"html_url":"https://github.com/o/r/issues/1"}), SEEN).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(ledger.entries()[0].tool_definition_digest, "read-digest");
+        assert_eq!(ledger.entries()[0].tool_call_id, "read");
+        assert_eq!(ledger.entries()[0].source_activity_at.as_deref(), Some(SEEN));
+        assert!(matches!(ledger.entries()[0].target, EvidenceTarget::ExternalLink { .. }));
+    }
+
 }

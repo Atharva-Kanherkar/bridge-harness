@@ -208,6 +208,9 @@ pub struct WorkTask {
     pub evidence_digest: Option<String>,
     pub evidence_target: Option<WorkEvidenceTarget>,
     pub evidence_observed_at: Option<String>,
+    /// Activity time reported by the source item, never the cache observation time.
+    #[serde(default)]
+    pub source_activity_at: Option<String>,
     /// Consecutive successful source-scoped misses. Two makes a task stale; a
     /// connector failure never increments it.
     pub miss_count: i64,
@@ -897,6 +900,7 @@ mod tests {
                 host: "github.com".into(),
             }),
             evidence_observed_at: Some("2026-08-19T09:00:00+00:00".into()),
+            source_activity_at: None,
             miss_count: 0,
             workspace_id: None,
             created_at: "2026-08-19T09:00:00+00:00".into(),

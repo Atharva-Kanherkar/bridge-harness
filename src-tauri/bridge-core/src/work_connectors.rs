@@ -239,6 +239,70 @@ pub struct ResolvedEvidence {
     pub target: EvidenceTarget,
 }
 
+/// Unwrap a single source item. Collections with multiple items are deliberately
+/// not collapsed: a search response is context, not evidence for one dated item.
+/// MCP wrappers are bounded so a malformed response cannot recurse indefinitely.
+pub fn source_item(result: &serde_json::Value) -> Option<serde_json::Value> {
+    let mut item = result.clone();
+    for _ in 0..8 {
+        match &item {
+            serde_json::Value::String(text) => {
+                item = serde_json::from_str(text).ok()?;
+            }
+            serde_json::Value::Array(items) => {
+                if items.len() != 1 { return None; }
+                item = items[0].clone();
+            }
+            serde_json::Value::Object(object) => {
+                // Only transport and single-resource wrappers, never arbitrary
+                // descendants (e.g. an author's updated_at or another message).
+                let wrapper = ["structuredContent", "content", "data", "result", "message", "issue", "page", "messages", "items", "nodes", "matches"]
+                    .into_iter().find_map(|key| object.get(key).filter(|value| value.is_object() || value.is_array()));
+                if let Some(inner) = wrapper {
+                    item = inner.clone();
+                } else if object.get("type").and_then(serde_json::Value::as_str) == Some("text") {
+                    item = serde_json::from_str(object.get("text")?.as_str()?).ok()?;
+                } else {
+                    return Some(item);
+                }
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Provider-owned activity time. Observing or pinning an old item must never
+/// renew its lifetime on the board. Missing dates stay missing.
+pub fn source_activity_at(family: ConnectorFamily, result: &serde_json::Value) -> Option<String> {
+    let item = source_item(result)?;
+    let keys: &[&str] = match family {
+        ConnectorFamily::Slack => &["ts"],
+        ConnectorFamily::Gmail => &["internalDate"],
+        ConnectorFamily::GitHub => &["updated_at", "updatedAt", "created_at", "createdAt"],
+        ConnectorFamily::Linear => &["updatedAt", "createdAt"],
+        ConnectorFamily::Notion => &["last_edited_time", "created_time"],
+    };
+    // An invalid update time does not fall back to a different, convenient date.
+    let value = if family == ConnectorFamily::Slack {
+        item.get("edited").and_then(|edited| edited.get("ts")).or_else(|| item.get("ts"))
+    } else {
+        keys.iter().find_map(|key| item.get(*key))
+    }?;
+    let raw = value.as_str().map(str::to_owned).or_else(|| value.as_i64().map(|v| v.to_string()))?;
+    let date = match family {
+        ConnectorFamily::Slack => {
+            let (seconds, fraction) = raw.split_once('.').unwrap_or((&raw, ""));
+            if fraction.len() > 9 || !fraction.bytes().all(|b| b.is_ascii_digit()) { return None; }
+            let nanos = if fraction.is_empty() { 0 } else { fraction.parse::<u32>().ok()? * 10u32.pow(9 - fraction.len() as u32) };
+            chrono::DateTime::from_timestamp(seconds.parse().ok()?, nanos)?
+        }
+        ConnectorFamily::Gmail => chrono::DateTime::from_timestamp_millis(raw.parse().ok()?)?,
+        _ => chrono::DateTime::parse_from_rfc3339(&raw).ok()?.with_timezone(&chrono::Utc),
+    };
+    Some(date.to_rfc3339())
+}
+
 /// Turn one successful result into provenance. A result without a stable provider id
 /// remains run-scoped evidence and reconciles to an ephemeral task.
 pub fn resolve_evidence(
@@ -246,6 +310,8 @@ pub fn resolve_evidence(
     instance_id: &str,
     result: &serde_json::Value,
 ) -> ResolvedEvidence {
+    let item = source_item(result).unwrap_or(serde_json::Value::Null);
+    let result = &item;
     let text = |key: &str| result.get(key).and_then(serde_json::Value::as_str).map(str::trim).filter(|value| !value.is_empty());
     // Exactly one field per family, and no fallback to a generic `id`.
     //
@@ -257,7 +323,7 @@ pub fn resolve_evidence(
     let (source_kind, native_id) = match family {
         ConnectorFamily::Slack => ("slack.message", text("ts")),
         ConnectorFamily::Gmail => ("gmail.thread", text("threadId")),
-        ConnectorFamily::GitHub => ("github.item", text("nodeId")),
+        ConnectorFamily::GitHub => ("github.item", text("nodeId").or_else(|| text("node_id"))),
         ConnectorFamily::Linear => ("linear.issue", text("identifier")),
         ConnectorFamily::Notion => ("notion.page", text("pageId")),
     };
@@ -275,7 +341,7 @@ pub fn resolve_evidence(
 /// but the connector's result is untrusted too, so the host check applies to it just
 /// the same.
 pub fn resolve_target(family: ConnectorFamily, result: &serde_json::Value) -> EvidenceTarget {
-    let candidate = ["permalink", "url", "htmlUrl", "webUrl"]
+    let candidate = ["permalink", "html_url", "htmlUrl", "webUrl", "url"]
         .into_iter()
         .find_map(|key| result.get(key).and_then(serde_json::Value::as_str));
     let Some(url) = candidate.map(str::trim).filter(|value| !value.is_empty()) else {
@@ -298,8 +364,13 @@ pub fn safe_external_link(family: ConnectorFamily, url: &str) -> Option<Evidence
         return None;
     }
     let host = authority.split(':').next().unwrap_or(authority).to_ascii_lowercase();
-    // Exact host match. A suffix test would admit `github.com.evil.example`.
-    if !family.allowed_hosts().iter().any(|allowed| *allowed == host) {
+    // Slack publishes workspace permalinks at <workspace>.slack.com. Only
+    // a single valid DNS label is accepted, never a substring/suffix lookalike.
+    let slack_workspace = family == ConnectorFamily::Slack && host.strip_suffix(".slack.com").is_some_and(|label| {
+        !label.is_empty() && label.len() <= 63 && !label.starts_with('-') && !label.ends_with('-')
+            && label.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+    });
+    if !slack_workspace && !family.allowed_hosts().iter().any(|allowed| *allowed == host) {
         return None;
     }
     Some(EvidenceTarget::ExternalLink {
@@ -611,4 +682,49 @@ mod tests {
             assert!(ConnectorFamily::parse(family.as_str()) == Some(family));
         }
     }
+    #[test]
+    fn source_dates_use_provider_fields_and_preserve_timezone_and_precision() {
+        let cases = [
+            (ConnectorFamily::Slack, json!({"ts":"1789041600.123456"}), "2026-09-10T12:00:00.123456+00:00"),
+            (ConnectorFamily::Gmail, json!({"internalDate":"1789041600123"}), "2026-09-10T12:00:00.123+00:00"),
+            (ConnectorFamily::GitHub, json!({"updated_at":"2026-09-10T17:30:00+05:30"}), "2026-09-10T12:00:00+00:00"),
+            (ConnectorFamily::Linear, json!({"updatedAt":"2026-09-10T12:00:00Z"}), "2026-09-10T12:00:00+00:00"),
+            (ConnectorFamily::Notion, json!({"last_edited_time":"2026-09-10T12:00:00Z"}), "2026-09-10T12:00:00+00:00"),
+        ];
+        for (family, value, expected) in cases {
+            assert_eq!(source_activity_at(family, &value).as_deref(), Some(expected));
+        }
+    }
+
+    #[test]
+    fn source_dates_never_borrow_a_cache_time_or_a_different_items_time() {
+        for value in [
+            json!({"observedAt":"2026-09-10T12:00:00Z"}),
+            json!({"updated_at":"bad", "created_at":"2026-09-10T12:00:00Z"}),
+            json!({"items":[{"updated_at":"2026-09-10T12:00:00Z"},{"updated_at":"2020-01-01T00:00:00Z"}]}),
+            json!({"author":{"updated_at":"2026-09-10T12:00:00Z"}}),
+        ] {
+            assert!(source_activity_at(ConnectorFamily::GitHub, &value).is_none());
+        }
+        assert!(source_activity_at(ConnectorFamily::Slack, &json!({"ts":"1.1234567891"})).is_none());
+    }
+
+    #[test]
+    fn native_github_issue_in_mcp_wrapper_keeps_its_date_identity_and_link() {
+        let issue = json!({"node_id":"I_123", "updated_at":"2026-09-10T12:00:00Z", "url":"https://api.github.com/repos/o/r/issues/1", "html_url":"https://github.com/o/r/issues/1"});
+        let wrapped = json!({"content":[{"type":"text", "text":serde_json::to_string(&json!({"data":issue})).unwrap()}]});
+        let evidence = resolve_evidence(ConnectorFamily::GitHub, "gh", &wrapped);
+        assert_eq!(evidence.canonical_resource_id.as_deref(), Some("github:gh:I_123"));
+        assert!(matches!(evidence.target, EvidenceTarget::ExternalLink { ref host, .. } if host == "github.com"));
+        assert_eq!(source_activity_at(ConnectorFamily::GitHub, &wrapped).as_deref(), Some("2026-09-10T12:00:00+00:00"));
+    }
+
+    #[test]
+    fn slack_workspace_links_are_openable_without_accepting_lookalikes() {
+        assert!(safe_external_link(ConnectorFamily::Slack, "https://acme-work.slack.com/archives/C1/p1").is_some());
+        for url in ["https://slack.com.evil.test/x", "https://evilslack.com/x", "https://acme.slack.com@evil.test/x", "https://acme.slack.com\\@evil.test/x", "https://.slack.com/x"] {
+            assert!(safe_external_link(ConnectorFamily::Slack, url).is_none(), "{url}");
+        }
+    }
+
 }
