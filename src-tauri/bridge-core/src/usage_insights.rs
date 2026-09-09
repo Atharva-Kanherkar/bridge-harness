@@ -31,7 +31,8 @@ use uuid::Uuid;
 use crate::adapters::{ShutdownReason, StartRequest};
 use crate::briefing_policy::BriefingRuntimePolicy;
 use crate::usage_summary::{self, UsageResolution, UsageSummaryRequest};
-use crate::work_briefing_config::{resolve_briefing, BRIEFING_SESSION_KIND};
+use crate::model::AdapterDescriptor;
+use crate::work_briefing_config::{resolve_briefing, BriefingSelection, BriefingUnavailable, BRIEFING_SESSION_KIND};
 use crate::{work, BridgeCore, BridgeError};
 
 /// Longest a run may take before it is abandoned as failed.
@@ -168,14 +169,16 @@ fn store(db: &Connection, result: &wire::UsageInsightsResult) -> Result<(), Brid
     Ok(())
 }
 
-/// The entry point behind `usage/insights`. Returns the stored report unless a
-/// refresh is asked for or none exists, in which case the harness is run.
+/// The entry point behind `usage/insights`. Without `refresh` this only reads:
+/// the stored report, or `empty`. With it, the harness is run.
 pub fn insights(core: &Arc<BridgeCore>, params: &wire::InsightsParams) -> Result<wire::UsageInsightsResult, BridgeError> {
     let window_days = clamp_window(params.window_days);
     if !params.refresh {
-        if let Some(existing) = latest(&core.db.lock().unwrap())? {
-            return Ok(existing);
-        }
+        // Opening the tab must never start a harness turn: that sends sampled
+        // prompts to a provider and can cost money. Without a stored report
+        // the answer is `empty`, and the explicit Analyse action asks again
+        // with `refresh`.
+        return Ok(latest(&core.db.lock().unwrap())?.unwrap_or(empty(window_days)));
     }
     let input = gather(core, window_days)?;
     let result = match run(core, &input) {
@@ -234,7 +237,21 @@ pub fn build_input(
 ) -> InsightInput {
     use std::collections::BTreeMap;
     let mut by_harness: BTreeMap<String, wire::UsageInsightHarness> = BTreeMap::new();
+    // Every date in the window starts at zero, so a quiet stretch is drawn as a
+    // quiet stretch and read by the model as one, not interpolated away.
     let mut by_day: BTreeMap<String, wire::UsageInsightDay> = BTreeMap::new();
+    if let (Ok(first), Ok(last)) = (
+        chrono::NaiveDate::parse_from_str(&since_day, "%Y-%m-%d"),
+        chrono::NaiveDate::parse_from_str(&until_day, "%Y-%m-%d"),
+    ) {
+        let mut cursor = first;
+        while cursor <= last {
+            let day = cursor.format("%Y-%m-%d").to_string();
+            by_day.insert(day.clone(), wire::UsageInsightDay { day, processed_tokens: 0, prompts: 0 });
+            let Some(next) = cursor.succ_opt() else { break };
+            cursor = next;
+        }
+    }
     for bucket in buckets {
         let tokens = bucket.totals.uncached_input_tokens
             + bucket.totals.cache_read_tokens
@@ -453,7 +470,11 @@ Return one fenced ```json object with exactly these keys:\n\
 }
 
 /// Which harness and model write the prose: the configured briefing profile,
-/// else Claude at its default model when it is installed.
+/// else Claude at its default model when nothing is configured and Claude is
+/// installed. Fail-closed like the briefing itself: a profile that exists but
+/// does not resolve (uncertified version, malformed model, unsupported
+/// harness) is refused, never quietly swapped for a provider the user did not
+/// choose.
 fn selection(core: &Arc<BridgeCore>) -> Result<(String, String, Option<String>), wire::UsageInsightsResult> {
     let descriptors = core.adapter_registry.descriptors();
     let versions = |harness: &str| {
@@ -462,17 +483,40 @@ fn selection(core: &Arc<BridgeCore>) -> Result<(String, String, Option<String>),
             .find(|descriptor| descriptor.id == harness)
             .and_then(|descriptor| descriptor.version.clone())
     };
-    let settings = work::read_settings(&core.db.lock().unwrap()).ok().map(|snapshot| snapshot.settings);
-    if let Some(settings) = settings {
-        if let Ok(selection) = resolve_briefing(&settings, &versions) {
-            return Ok((selection.harness, selection.model, selection.effort));
-        }
-    }
+    let settings = work::read_settings(&core.db.lock().unwrap())
+        .map(|snapshot| snapshot.settings)
+        .map_err(|error| unavailable(format!("Work settings could not be read: {error}")))?;
+    let resolved = resolve_briefing(&settings, &versions);
     let claude = descriptors.iter().find(|descriptor| descriptor.id == "claude");
-    match claude {
-        Some(descriptor) if descriptor.available => Ok(("claude".into(), crate::claude_adapter::DEFAULT_MODEL.into(), None)),
-        Some(descriptor) => Err(unavailable(descriptor.unavailable_reason.clone().unwrap_or_else(|| "Claude is not available".into()))),
-        None => Err(unavailable("Insights need Claude Code installed: it is the harness that can run a read-only analysis without tools.".into())),
+    choose(resolved, claude)
+}
+
+/// The selection rule, separated from the core so it can be tested without an
+/// adapter registry.
+fn choose(
+    resolved: Result<BriefingSelection, BriefingUnavailable>,
+    claude: Option<&AdapterDescriptor>,
+) -> Result<(String, String, Option<String>), wire::UsageInsightsResult> {
+    match resolved {
+        Ok(selection) => Ok((selection.harness, selection.model, selection.effort)),
+        Err(BriefingUnavailable::NotConfigured) => match claude {
+            Some(descriptor) if descriptor.available => Ok(("claude".into(), crate::claude_adapter::DEFAULT_MODEL.into(), None)),
+            Some(descriptor) => Err(unavailable(descriptor.unavailable_reason.clone().unwrap_or_else(|| "Claude is not available".into()))),
+            None => Err(unavailable("Insights need Claude Code installed: it is the harness that can run a read-only analysis without tools.".into())),
+        },
+        Err(other) => Err(unavailable(format!("The configured briefing profile cannot run Insights: {}", other.reason()))),
+    }
+}
+
+fn empty(window_days: i64) -> wire::UsageInsightsResult {
+    wire::UsageInsightsResult {
+        status: wire::UsageInsightsStatus::Empty,
+        window_days,
+        generated_at: None,
+        harness: None,
+        model: None,
+        report: None,
+        detail: None,
     }
 }
 
@@ -877,6 +921,66 @@ mod tests {
         store(&db, &result).unwrap();
         let count: i64 = db.query_row("SELECT count(*) FROM usage_insights", [], |row| row.get(0)).unwrap();
         assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn every_day_in_the_window_is_present_at_zero() {
+        let buckets = vec![bucket("2026-09-03", "codex", 1_000, 1)];
+        let input = build_input(7, "2026-09-01".into(), "2026-09-07".into(), &buckets, vec![], None);
+        assert_eq!(input.days.len(), 7);
+        assert_eq!(input.days[0].day, "2026-09-01");
+        assert_eq!(input.days[0].processed_tokens, 0);
+        assert_eq!(input.days[2].processed_tokens, 1_000);
+        assert_eq!(input.days[6].day, "2026-09-07");
+    }
+
+    fn descriptor(available: bool) -> AdapterDescriptor {
+        AdapterDescriptor {
+            id: "claude".into(),
+            label: "Claude".into(),
+            available,
+            auth_state: crate::model::AuthState::SignedIn,
+            version: Some("2.1.0".into()),
+            capabilities: vec![],
+            sandbox_modes: vec![],
+            unavailable_reason: (!available).then(|| "claude is not on PATH".to_owned()),
+            models: vec![],
+            default_model: None,
+            model_catalog: Default::default(),
+        }
+    }
+
+    #[test]
+    fn selection_falls_back_to_claude_only_when_nothing_is_configured() {
+        let ok = choose(Err(BriefingUnavailable::NotConfigured), Some(&descriptor(true))).unwrap();
+        assert_eq!(ok.0, "claude");
+        let missing = choose(Err(BriefingUnavailable::NotConfigured), None).unwrap_err();
+        assert_eq!(missing.status, wire::UsageInsightsStatus::Unavailable);
+        let off = choose(Err(BriefingUnavailable::NotConfigured), Some(&descriptor(false))).unwrap_err();
+        assert!(off.detail.unwrap().contains("not on PATH"));
+    }
+
+    #[test]
+    fn a_configured_profile_that_does_not_resolve_is_refused_not_replaced() {
+        let refused = choose(
+            Err(BriefingUnavailable::UnknownHarness { harness: "codex".into() }),
+            Some(&descriptor(true)),
+        )
+        .unwrap_err();
+        assert_eq!(refused.status, wire::UsageInsightsStatus::Unavailable);
+        assert!(refused.detail.unwrap().contains("configured briefing profile"));
+        let chosen = choose(
+            Ok(BriefingSelection { harness: "claude".into(), model: "opus".into(), effort: Some("high".into()), certified_provider_version: "x".into() }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(chosen, ("claude".into(), "opus".into(), Some("high".into())));
+    }
+
+    #[test]
+    fn without_refresh_and_without_a_report_the_answer_is_empty() {
+        assert_eq!(empty(30).status, wire::UsageInsightsStatus::Empty);
+        assert!(empty(30).report.is_none());
     }
 
     #[test]

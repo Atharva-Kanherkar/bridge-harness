@@ -601,7 +601,9 @@ const mockMeterRegistry: MeterRegistry = {
 // with figures that exercise every chart. Never shown inside Tauri.
 let mockInsights: UsageInsightsResult | null = null;
 function mockUsageInsights(params: InsightsParams): UsageInsightsResult {
-  if (mockInsights && !params.refresh) return structuredClone(mockInsights);
+  // Like the daemon: without `refresh` this only reads, and a fresh install
+  // has nothing to read.
+  if (!params.refresh) return mockInsights ? structuredClone(mockInsights) : { status: "empty", windowDays: params.windowDays };
   const days = Array.from({ length: Math.min(params.windowDays, 30) }, (_, index) => {
     const at = new Date(Date.now() - (Math.min(params.windowDays, 30) - 1 - index) * 86_400_000);
     const wave = 0.5 + 0.5 * Math.abs(Math.sin(index * 1.3));
