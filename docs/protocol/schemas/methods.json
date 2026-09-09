@@ -425,7 +425,7 @@
       "command": "unarchive_chat",
       "domain": "sessions",
       "method": "sessions/unarchive_chat",
-      "paramsSchema": "archive-chat-params.json",
+      "paramsSchema": "unarchive-chat-params.json",
       "resultSchema": "unit-result.json"
     },
     {

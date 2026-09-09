@@ -538,7 +538,7 @@ export interface BridgeMethodParams {
   "config/get_worker_settings": GetWorkerSettingsParams;
   "config/save_worker_settings": SaveWorkerSettingsParams;
   "sessions/list_archived_chats": ListArchivedChatsParams;
-  "sessions/unarchive_chat": ArchiveChatParams;
+  "sessions/unarchive_chat": UnarchiveChatParams;
   "usage/summary": SummaryParams;
   "usage/list_price_overrides": undefined;
   "usage/set_price_override": SetPriceOverrideParams;
@@ -3043,6 +3043,10 @@ export interface ListArchivedChatsParams {
 export interface ArchivedChatsResult {
   chats: ArchivedChat[];
   hasMore: boolean;
+}
+
+export interface UnarchiveChatParams {
+  sessionId: string;
 }
 
 export interface SummaryParams {

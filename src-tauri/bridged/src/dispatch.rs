@@ -479,7 +479,7 @@ pub fn dispatch(
             reply(api::save_worker_settings(core, &p.workspace_id, &p.settings))
         }
         MethodName::UnarchiveChat => {
-            let p: wire::ArchiveChatParams = decode(method, params)?;
+            let p: wire::UnarchiveChatParams = decode(method, params)?;
             reply(api::unarchive_chat(core, &p.session_id))
         }
         MethodName::UsageSummary => {

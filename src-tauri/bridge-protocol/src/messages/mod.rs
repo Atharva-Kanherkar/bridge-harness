@@ -277,7 +277,7 @@ typed_methods![
     (GetWorkerSettings, GetWorkerSettingsParams, WorkerSettings),
     (SaveWorkerSettings, SaveWorkerSettingsParams, WorkerSettings),
     (ListArchivedChats, ListArchivedChatsParams, ArchivedChatsResult),
-    (UnarchiveChat, ArchiveChatParams, UnitResult),
+    (UnarchiveChat, UnarchiveChatParams, UnitResult),
     // token and cost usage
     (UsageSummary, SummaryParams, UsageSummaryResult),
     (ListUsagePriceOverrides, _, ListUsagePriceOverridesResult),

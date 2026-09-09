@@ -104,6 +104,12 @@ pub struct ArchiveChatParams {
     pub session_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UnarchiveChatParams {
+    pub session_id: String,
+}
+
 /// What archiving a chat did. Mirrors
 /// `bridge_core::worktree_registry::ArchiveChatResult`.
 ///
