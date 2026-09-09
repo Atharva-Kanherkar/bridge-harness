@@ -6,10 +6,10 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { PeriodReport } from "../usageReport";
-import { heatStep, layoutCells, UsageHeatmap, weekdayIndex } from "./UsageHeatmap";
+import { dominantHarness, heatStep, layoutCells, UsageHeatmap, weekdayIndex } from "./UsageHeatmap";
 
-function period(period: string, tokens: number, cost = tokens): PeriodReport {
-  return { period, tokens, costMicrousd: cost, costByHarness: {}, tokensByHarness: {} };
+function period(period: string, tokens: number, cost = tokens, harness = "claude"): PeriodReport {
+  return { period, tokens, costMicrousd: cost, costByHarness: { [harness]: cost }, tokensByHarness: { [harness]: tokens } };
 }
 
 describe("heatmap layout", () => {
@@ -22,14 +22,21 @@ describe("heatmap layout", () => {
     expect(heatStep(5, 0)).toBe(0);
   });
 
-  it("places days in Monday-first weekday rows and week columns", () => {
+  it("lays days out as a calendar: Monday-first weekday columns, one row per week", () => {
     expect(weekdayIndex("2026-09-07")).toBe(0); // a Monday
     expect(weekdayIndex("2026-09-13")).toBe(6);
     const { cells, columns, rows } = layoutCells([period("2026-09-05", 1), period("2026-09-06", 2), period("2026-09-07", 3)], "day", "tokens");
-    expect(rows).toBe(7);
-    expect(columns).toBe(2);
-    expect(cells[0]).toMatchObject({ column: 0, row: 5 });
-    expect(cells[2]).toMatchObject({ column: 1, row: 0, value: 3 });
+    expect(columns).toBe(7);
+    expect(rows).toBe(2);
+    expect(cells[0]).toMatchObject({ column: 5, row: 0 });
+    expect(cells[2]).toMatchObject({ column: 0, row: 1, value: 3, harness: "claude" });
+  });
+
+  it("names the harness that carried most of a period, by the chosen metric", () => {
+    const mixed: PeriodReport = { period: "2026-09-01", tokens: 10, costMicrousd: 10, tokensByHarness: { codex: 7, claude: 3 }, costByHarness: { codex: 2, claude: 8 } };
+    expect(dominantHarness(mixed, "tokens")).toBe("codex");
+    expect(dominantHarness(mixed, "cost")).toBe("claude");
+    expect(dominantHarness({ ...mixed, tokensByHarness: {} }, "tokens")).toBeNull();
   });
 
   it("lays the hourly window out as one row and reads cost when asked", () => {
@@ -51,18 +58,23 @@ describe("UsageHeatmap", () => {
   });
   afterEach(() => { act(() => root.unmount()); container.remove(); });
 
-  it("renders a cell per period with a readable label and a hover readout", () => {
-    const periods = [period("2026-09-07", 0), period("2026-09-08", 500_000), period("2026-09-09", 1_000_000)];
+  it("renders a cell per period, coloured by harness, with a readable label and a hover readout", () => {
+    const periods = [period("2026-09-07", 0), period("2026-09-08", 500_000, 500_000, "codex"), period("2026-09-09", 1_000_000)];
     act(() => { root.render(<UsageHeatmap periods={periods} resolution="day" timeZone="UTC" metric="tokens" />); });
     const cells = container.querySelectorAll('[role="gridcell"]');
     expect(cells).toHaveLength(3);
     expect(cells[0].getAttribute("data-step")).toBe("0");
     expect(cells[2].getAttribute("data-step")).toBe("4");
-    expect(cells[2].getAttribute("aria-label")).toBe("Sep 9: 1M");
+    expect(cells[2].getAttribute("aria-label")).toBe("Sep 9: 1M, mostly Claude");
+    // Colour follows the harness that did the work; an empty day is grey.
+    expect(cells[0].className).toContain("bg-muted");
+    expect(cells[1].className).toContain("bg-chart-codex");
+    expect(cells[2].className).toContain("bg-chart-claude");
     act(() => { cells[1].dispatchEvent(new MouseEvent("mouseover", { bubbles: true })); });
     expect(container.querySelector('[role="tooltip"]')?.textContent).toContain("500K");
-    expect(container.textContent).toContain("Each cell is a day");
-    // Sequential ramp: one hue, no series colour.
-    expect(container.innerHTML).not.toMatch(/chart-(codex|claude|cursor|opencode)/);
+    expect(container.querySelector('[role="tooltip"]')?.textContent).toContain("mostly Codex");
+    // Legend names the harnesses present and the depth ramp.
+    expect(container.textContent).toContain("Claude");
+    expect(container.textContent).toContain("less");
   });
 });
