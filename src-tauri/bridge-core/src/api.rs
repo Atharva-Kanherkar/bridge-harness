@@ -1612,7 +1612,7 @@ pub fn retry_worker_task(
 }
 
 pub fn interrupt_turn(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
-    core.interrupt_turn(session_id)
+    live_turn::cancel_visible_turn(core, session_id)
 }
 
 /// Refresh subscription usage for every provider, independent of which session
@@ -3627,6 +3627,17 @@ pub fn usage_summary(
     usage_summary::summarize(&core.db.lock().unwrap(), request)
 }
 
+/// The Insights tab: the stored report, or a fresh one from a headless harness
+/// turn over Bridge's own usage, prompt, and GitHub records. Blocking — the
+/// run is bounded by `usage_insights::MAX_WALL_SECONDS`, inside the daemon
+/// client's call timeout.
+pub fn usage_insights(
+    core: &Arc<BridgeCore>,
+    params: &wire::InsightsParams,
+) -> Result<wire::UsageInsightsResult, BridgeError> {
+    crate::usage_insights::insights(core, params)
+}
+
 pub fn list_usage_price_overrides(
     core: &Arc<BridgeCore>,
 ) -> Result<Vec<usage_pricing::PriceOverride>, BridgeError> {
@@ -3705,8 +3716,9 @@ pub fn meter_snapshot() -> meter::MeterRegistry {
     meter::registry_snapshot()
 }
 
-/// Trigger the shared account-usage refresh (Claude `/usage` probe plus one
-/// live Codex session); results arrive on the `account-usage` channel.
+/// Trigger the shared account-usage refresh (Claude `/usage` probe plus Codex,
+/// from a live session when there is one and from its rollouts when there is
+/// not); results arrive on the `account-usage` channel.
 ///
 /// Coalesced: calls within 10 seconds of an accepted one return `Ok` without
 /// spawning another probe pair. Neither the tray menu nor the popover button

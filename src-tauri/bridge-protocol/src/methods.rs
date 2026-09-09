@@ -164,6 +164,7 @@ methods![
     (RefreshUsageRates, "usage", "refresh_rates"),
     (ListHistorySources, "usage", "list_history_sources"),
     (ScanHistory, "usage", "scan_history"),
+    (UsageInsights, "usage", "insights"),
     // menu-bar meter (CodexBar port)
     (GetMeterSnapshot, "meter", "get_meter_snapshot"),
     (RefreshMeter, "meter", "refresh_meter"),

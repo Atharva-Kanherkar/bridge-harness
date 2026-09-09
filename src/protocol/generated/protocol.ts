@@ -114,6 +114,7 @@ export type BridgeMethod =
   | "usage/refresh_rates"
   | "usage/list_history_sources"
   | "usage/scan_history"
+  | "usage/insights"
   | "meter/get_meter_snapshot"
   | "meter/refresh_meter"
   | "routing/get_router_preferences"
@@ -299,6 +300,7 @@ export const BRIDGE_METHODS = [
   { method: "usage/refresh_rates", domain: "usage", command: "refresh_rates" },
   { method: "usage/list_history_sources", domain: "usage", command: "list_history_sources" },
   { method: "usage/scan_history", domain: "usage", command: "scan_history" },
+  { method: "usage/insights", domain: "usage", command: "insights" },
   { method: "meter/get_meter_snapshot", domain: "meter", command: "get_meter_snapshot" },
   { method: "meter/refresh_meter", domain: "meter", command: "refresh_meter" },
   { method: "routing/get_router_preferences", domain: "routing", command: "get_router_preferences" },
@@ -544,6 +546,7 @@ export interface BridgeMethodParams {
   "usage/refresh_rates": undefined;
   "usage/list_history_sources": undefined;
   "usage/scan_history": ScanHistoryParams;
+  "usage/insights": InsightsParams;
   "meter/get_meter_snapshot": undefined;
   "meter/refresh_meter": undefined;
   "routing/get_router_preferences": GetRouterPreferencesParams;
@@ -731,6 +734,7 @@ export interface BridgeMethodResults {
   "usage/refresh_rates": UsagePricingStatus;
   "usage/list_history_sources": ListHistorySourcesResult;
   "usage/scan_history": ScanHistoryResult;
+  "usage/insights": UsageInsightsResult;
   "meter/get_meter_snapshot": MeterRegistry;
   "meter/refresh_meter": UnitResult;
   "routing/get_router_preferences": RouterPreferences;
@@ -1810,6 +1814,63 @@ export interface UsageHistorySource {
 }
 
 export type UsageImporterCapability = "supported" | "unsupported";
+
+export interface UsageInsightDay {
+  day: string;
+  processedTokens: number;
+  prompts: number;
+}
+
+export interface UsageInsightGithub {
+  awaitingReview: number;
+  draftPrs: number;
+  failingChecks: number;
+  openPrs: number;
+  repositories: number;
+}
+
+export interface UsageInsightHarness {
+  costMicrousd: number;
+  harness: string;
+  processedTokens: number;
+  prompts: number;
+  records: number;
+  sessions: number;
+}
+
+export interface UsageInsightHighlight {
+  detail: string;
+  title: string;
+  tone: UsageInsightTone;
+}
+
+export interface UsageInsightHour {
+  hour: number;
+  prompts: number;
+}
+
+export interface UsageInsightTheme {
+  example?: string | null;
+  label: string;
+  share: number;
+}
+
+export type UsageInsightTone = "neutral" | "good" | "watch";
+
+export interface UsageInsightsReport {
+  days: UsageInsightDay[];
+  github?: UsageInsightGithub | null;
+  harnesses: UsageInsightHarness[];
+  headline: string;
+  highlights: UsageInsightHighlight[];
+  hours: UsageInsightHour[];
+  promptsAnalysed: number;
+  recommendations: string[];
+  summary: string;
+  themes: UsageInsightTheme[];
+}
+
+export type UsageInsightsStatus = "ready" | "unavailable" | "failed" | "empty";
 
 export interface UsageLedgerRow {
   cacheReadTokens?: JsSafeI64 | null;
@@ -3035,6 +3096,21 @@ export interface ScanHistoryResult {
   recordsImported: number;
   recordsSkipped: number;
   sources: UsageHistoryScanOutcome[];
+}
+
+export interface InsightsParams {
+  refresh?: boolean;
+  windowDays: number;
+}
+
+export interface UsageInsightsResult {
+  detail?: string | null;
+  generatedAt?: string | null;
+  harness?: string | null;
+  model?: string | null;
+  report?: UsageInsightsReport | null;
+  status: UsageInsightsStatus;
+  windowDays: number;
 }
 
 export interface MeterRegistry {

@@ -487,6 +487,10 @@ pub fn dispatch(
             let request = into_core(method, &p)?;
             reply(api::usage_summary(core, &request))
         }
+        MethodName::UsageInsights => {
+            let p: wire::InsightsParams = decode(method, params)?;
+            reply(api::usage_insights(core, &p))
+        }
         MethodName::ListUsagePriceOverrides => reply(api::list_usage_price_overrides(core)),
         MethodName::SetUsagePriceOverride => {
             let p: wire::SetPriceOverrideParams = decode(method, params)?;

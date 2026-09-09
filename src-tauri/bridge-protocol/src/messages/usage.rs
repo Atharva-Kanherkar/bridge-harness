@@ -255,6 +255,139 @@ pub struct ScanHistoryResult {
     pub duration_ms: i64,
 }
 
+/// Params for `usage/insights`: the window to analyse and whether to run the
+/// model again. Without `refresh` the last stored report for any window is
+/// returned when one exists, so opening the tab costs nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct InsightsParams {
+    /// Days of history to read, ending today. Clamped to 1..=90 by the core.
+    pub window_days: i64,
+    /// Run the analysis again even when a stored report exists.
+    #[serde(default)]
+    pub refresh: bool,
+}
+
+/// How a run ended. `unavailable` means no harness could be asked (nothing
+/// installed, or the one configured cannot run headless); `failed` names why
+/// the run that started did not produce a report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageInsightsStatus {
+    Ready,
+    Unavailable,
+    Failed,
+    /// No report has ever been generated; nothing was attempted.
+    Empty,
+}
+
+/// Emphasis on a highlight card, chosen by the model from a closed set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum UsageInsightTone {
+    Neutral,
+    Good,
+    Watch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageInsightHighlight {
+    pub title: String,
+    pub detail: String,
+    pub tone: UsageInsightTone,
+}
+
+/// One theme the model found across the prompts it was shown. `share` is the
+/// model's estimate of the fraction of prompts it covers, 0–1.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageInsightTheme {
+    pub label: String,
+    pub share: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub example: Option<String>,
+}
+
+/// Bridge-computed, never model-authored: one harness's footprint in the window.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageInsightHarness {
+    pub harness: String,
+    pub processed_tokens: i64,
+    pub cost_microusd: i64,
+    pub records: i64,
+    pub sessions: i64,
+    pub prompts: i64,
+}
+
+/// Bridge-computed: prompts sent per local hour of day, 24 entries.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageInsightHour {
+    pub hour: i64,
+    pub prompts: i64,
+}
+
+/// Bridge-computed: one day's processed tokens, so the model's narrative can
+/// be checked against the shape it is describing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageInsightDay {
+    pub day: String,
+    pub processed_tokens: i64,
+    pub prompts: i64,
+}
+
+/// Bridge-computed from `gh`, for the workspaces Bridge knows. Absent when the
+/// GitHub CLI is missing or signed out.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageInsightGithub {
+    pub repositories: i64,
+    pub open_prs: i64,
+    pub draft_prs: i64,
+    pub failing_checks: i64,
+    pub awaiting_review: i64,
+}
+
+/// The report the Insights tab renders. Numbers come from Bridge's own ledgers
+/// and are handed to the model as context; the prose comes from the model.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageInsightsReport {
+    pub headline: String,
+    pub summary: String,
+    pub highlights: Vec<UsageInsightHighlight>,
+    pub themes: Vec<UsageInsightTheme>,
+    pub recommendations: Vec<String>,
+    pub harnesses: Vec<UsageInsightHarness>,
+    pub hours: Vec<UsageInsightHour>,
+    pub days: Vec<UsageInsightDay>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github: Option<UsageInsightGithub>,
+    pub prompts_analysed: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageInsightsResult {
+    pub status: UsageInsightsStatus,
+    pub window_days: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub generated_at: Option<String>,
+    /// The harness and model that wrote the prose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub model: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub report: Option<UsageInsightsReport>,
+    /// Why there is no report, when there is none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -302,5 +435,34 @@ mod tests {
         assert!(wire.get("hourStart").is_none());
         assert_eq!(wire["costSource"], json!("model_priced"));
         assert_eq!(round_trip(&bucket), bucket);
+    }
+
+    #[test]
+    fn insights_params_are_strict_and_a_result_round_trips() {
+        let params: InsightsParams = serde_json::from_value(json!({ "windowDays": 30 })).unwrap();
+        assert!(!params.refresh);
+        assert!(serde_json::from_value::<InsightsParams>(json!({ "windowDays": 30, "extra": 1 })).is_err());
+        let result = UsageInsightsResult {
+            status: UsageInsightsStatus::Ready,
+            window_days: 30,
+            generated_at: Some("2026-09-10T00:00:00Z".into()),
+            harness: Some("claude".into()),
+            model: Some("sonnet".into()),
+            report: Some(UsageInsightsReport {
+                headline: "Steady week".into(),
+                summary: "Most work landed in the afternoons.".into(),
+                highlights: vec![UsageInsightHighlight { title: "Cache".into(), detail: "Two thirds of input was cached.".into(), tone: UsageInsightTone::Good }],
+                themes: vec![UsageInsightTheme { label: "Refactors".into(), share: 0.4, example: None }],
+                recommendations: vec!["Batch small edits.".into()],
+                harnesses: vec![UsageInsightHarness { harness: "codex".into(), processed_tokens: 10, cost_microusd: 5, records: 2, sessions: 1, prompts: 3 }],
+                hours: vec![UsageInsightHour { hour: 14, prompts: 3 }],
+                days: vec![UsageInsightDay { day: "2026-09-09".into(), processed_tokens: 10, prompts: 3 }],
+                github: None,
+                prompts_analysed: 3,
+            }),
+            detail: None,
+        };
+        assert_eq!(round_trip(&result), result);
+        assert_eq!(serde_json::to_value(UsageInsightsStatus::Unavailable).unwrap(), json!("unavailable"));
     }
 }

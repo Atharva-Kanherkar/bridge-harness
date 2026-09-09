@@ -78,6 +78,43 @@ export function harnessTintClass(harness?: string | null): string {
   return (harness && TINTS[harness]) || "text-muted-foreground";
 }
 
+// Chart series colours. Distinct from the mark tints above: Codex and Cursor
+// draw their marks in ink, but a chart needs every series to carry a hue, and
+// the four together are validated as one categorical palette (see index.css).
+// Colour follows the harness, never its rank in a legend.
+const CHART: Record<string, { stroke: string; fill: string; wash: string; dot: string; text: string }> = {
+  codex: { stroke: "stroke-chart-codex", fill: "fill-chart-codex", wash: "fill-chart-codex/15", dot: "bg-chart-codex", text: "text-chart-codex" },
+  cursor: { stroke: "stroke-chart-cursor", fill: "fill-chart-cursor", wash: "fill-chart-cursor/15", dot: "bg-chart-cursor", text: "text-chart-cursor" },
+  claude: { stroke: "stroke-chart-claude", fill: "fill-chart-claude", wash: "fill-chart-claude/15", dot: "bg-chart-claude", text: "text-chart-claude" },
+  opencode: { stroke: "stroke-chart-opencode", fill: "fill-chart-opencode", wash: "fill-chart-opencode/15", dot: "bg-chart-opencode", text: "text-chart-opencode" },
+};
+const CHART_FALLBACK = { stroke: "stroke-muted-foreground", fill: "fill-muted-foreground", wash: "fill-muted-foreground/15", dot: "bg-muted-foreground", text: "text-muted-foreground" };
+
+/** SVG stroke class for a harness's line or arc. */
+export function harnessChartStroke(harness?: string | null): string {
+  return ((harness && CHART[harness]) || CHART_FALLBACK).stroke;
+}
+
+/** SVG fill class for a harness's bar. */
+export function harnessChartFill(harness?: string | null): string {
+  return ((harness && CHART[harness]) || CHART_FALLBACK).fill;
+}
+
+/** SVG fill class for a harness's area wash: the hue at low opacity. */
+export function harnessChartWash(harness?: string | null): string {
+  return ((harness && CHART[harness]) || CHART_FALLBACK).wash;
+}
+
+/** Background class for a harness's legend swatch or meter bar. */
+export function harnessChartDot(harness?: string | null): string {
+  return ((harness && CHART[harness]) || CHART_FALLBACK).dot;
+}
+
+/** `currentColor` carrier for SVG marks that inherit their colour. */
+export function harnessChartText(harness?: string | null): string {
+  return ((harness && CHART[harness]) || CHART_FALLBACK).text;
+}
+
 function figure(harness?: string | null) {
   switch (harness) {
     case "codex":

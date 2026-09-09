@@ -189,19 +189,6 @@ describe("SessionToolbar", () => {
     expect(container.textContent).toContain("Usage");
   });
 
-  it("renders the bypass badge through props with its full wording intact", () => {
-    const onOpenSettings = vi.fn();
-    mount({
-      bypassBadge: (
-        <button type="button" onClick={onOpenSettings}>Approvals bypassed</button>
-      ),
-    });
-    const badge = [...container.querySelectorAll("button")].find(button => button.textContent === "Approvals bypassed")!;
-    expect(badge).toBeTruthy();
-    click(badge);
-    expect(onOpenSettings).toHaveBeenCalledTimes(1);
-  });
-
   it("hides the mobile nav button when no handler is given", () => {
     mount();
     expect(container.querySelector('button[aria-label="Open navigation"]')).toBeNull();

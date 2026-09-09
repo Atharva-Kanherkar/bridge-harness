@@ -9653,9 +9653,13 @@ fn maintain_worker_pool(core: &Arc<BridgeCore>) {
 }
 
 pub fn start_worker_maintenance(core: Arc<BridgeCore>) {
-    thread::spawn(move || loop {
-        thread::sleep(Duration::from_secs(1));
-        maintain_worker_pool(&core);
+    thread::spawn(move || {
+        let mut idle = crate::runtime_budget::IdleRuntimes::default();
+        loop {
+            thread::sleep(Duration::from_secs(1));
+            idle.maintain(&core);
+            maintain_worker_pool(&core);
+        }
     });
 }
 
@@ -10947,6 +10951,7 @@ fn submit_input_internal(
     force_new_turn: bool,
     attachments: Vec<wire::TurnImage>,
 ) -> Result<wire::SubmitInputResult, BridgeError> {
+    let _input_lease = core.input_activity.read().unwrap();
     let state = core;
     // An image-only send is legitimate: the images are the message. Text alone
     // still may not be empty.
@@ -11626,6 +11631,50 @@ fn announce_worker_cancellation(core: &Arc<BridgeCore>, child_session_id: &str, 
         &parent,
         summary,
     );
+}
+
+/// Composer Stop is a cancellation boundary, not an unbounded graceful abort.
+/// Close the reader gate and settle this chat before disposing its process.
+/// Its persisted provider session remains available for the next user send.
+pub fn cancel_visible_turn(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    let is_worker = core.db.lock().unwrap().query_row(
+        "SELECT parent_session_id IS NOT NULL FROM sessions WHERE id=?1",
+        [session_id], |row| row.get::<_, bool>(0),
+    )?;
+    if is_worker { return stop_worker_session(core, session_id, StopCause::User); }
+    let _lifecycle = core.claim_session_lifecycle(session_id, "cancel turn")?;
+    // The DB lock serializes this boundary with normalization/publication.
+    // Once released, no buffered frame can reopen the stopped turn.
+    let runtime = {
+        let db = core.db.lock().unwrap();
+        let transaction = db.unchecked_transaction()?;
+        void_orphaned_questions(&transaction, session_id, "turn_cancelled");
+        transaction.execute("UPDATE queued_session_input SET state='abandoned' WHERE session_id=?1 AND state='queued'", [session_id])?;
+        transaction.execute("UPDATE sessions SET status='stopped',active_turn_id=NULL,ended_at=?2 WHERE id=?1", params![session_id, Utc::now().to_rfc3339()])?;
+        transaction.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status IN ('working','waiting','checkpointing')) THEN 'working' ELSE 'stopped' END WHERE id=(SELECT workspace_id FROM sessions WHERE id=?1)", [session_id])?;
+        session_supervisor::SessionSupervisor::clear_adapter_process(&transaction, session_id)?;
+        let mut event = agent::NormalizedEvent::new("turn.completed");
+        event.status = Some("cancelled".into());
+        event.title = Some("Stopped".into());
+        event.data = serde_json::json!({"reason":"user_stopped"});
+        let stored = store::session_event_in_transaction(&transaction, session_id, &event, &serde_json::Value::Null)?;
+        transaction.commit()?;
+        core.deactivate_reader_launch(session_id);
+        // The reader gate suppresses shutdown frames. Do not leave a marker
+        // that could swallow a genuine error during the next cold resume.
+        core.user_stop_requested.lock().unwrap().remove(session_id);
+        let runtime = { core.adapters.lock().unwrap().remove(session_id) };
+        core.events.publish(CoreEvent::Agent(stored));
+        runtime
+    };
+    core.events.publish(CoreEvent::StateChanged);
+    core.browser_bridge.revoke_session(session_id);
+    if let Some(mut runtime) = runtime {
+        // Calling interrupt first could wait ten seconds on an HTTP abort or
+        // a blocked pipe. Process-group shutdown is the bounded hard guarantee.
+        runtime.stop(adapters::ShutdownReason::UserStopped);
+    }
+    Ok(())
 }
 
 pub fn stop_session(
@@ -12944,6 +12993,27 @@ mod submit_input_tests {
             )
             .unwrap();
         (fixture, Arc::new(core), managed_root)
+    }
+
+    #[test]
+    fn composer_stop_settles_only_its_chat_without_waiting_for_provider_abort() {
+        let (_dir, core, _guard) = core_with_chat("working");
+        let handles = attach_handles(&core, false);
+        core.db.lock().unwrap().execute(
+            "INSERT INTO sessions(id,harness,label,status,metric_source,kind) VALUES('other','codex','Other','working','reported','direct')", []
+        ).unwrap();
+        core.db.lock().unwrap().execute("UPDATE sessions SET active_turn_id='live',provider_session_id='saved-provider' WHERE id='chat'", []).unwrap();
+        let gate = Arc::new(Mutex::new(true));
+        core.reader_launches.lock().unwrap().insert("chat".into(), gate.clone());
+        cancel_visible_turn(&core, "chat").unwrap();
+        assert!(!*gate.lock().unwrap());
+        assert!(!core.user_stop_requested.lock().unwrap().contains("chat"));
+        assert!(!core.adapters.lock().unwrap().contains_key("chat"));
+        assert_eq!(handles.interrupts.load(Ordering::SeqCst), 0, "Stop cannot wait on a provider abort request");
+        let db = core.db.lock().unwrap();
+        let stopped: (String, Option<String>, String) = db.query_row("SELECT status,active_turn_id,provider_session_id FROM sessions WHERE id='chat'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!(stopped, ("stopped".into(), None, "saved-provider".into()));
+        assert_eq!(db.query_row("SELECT status FROM sessions WHERE id='other'", [], |r| r.get::<_,String>(0)).unwrap(), "working");
     }
 
     fn attach(core: &Arc<BridgeCore>, steering: bool) -> Arc<Mutex<Vec<String>>> {

@@ -1,4 +1,6 @@
-import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ForestCache } from "./forestCache";
+import { useSessionStops } from "./sessionStop";
+import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
@@ -42,7 +44,7 @@ import { SessionRecallSearch } from "./components/SessionRecallSearch";
 import { AppTitleBar } from "./components/AppTitleBar";
 import { WindowHistoryChevrons, WindowPanelButton } from "./components/WindowNavButtons";
 import { MissionControl } from "./components/MissionControl";
-import { BypassBadge } from "./components/BypassBadge";
+import { AccessControl, type AccessMode } from "./components/AccessControl";
 import type { Section as SettingsSection } from "./components/SettingsScreen";
 import { SteerComposer, WorkerDetail } from "./components/WorkerDetail";
 import { ComposerPill } from "./components/ComposerPill";
@@ -55,7 +57,6 @@ import { MemoryDialog, rememberAction } from "./components/MemoryDialog";
 import { MemoryUsedChip } from "./components/MemoryUsedChip";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
-import { MeterPopover } from "./components/meter/MeterPopover";
 import type { MeterRegistry } from "./types";
 import { formatElapsed, harnessLabel, slashOwnershipBadge } from "./utils";
 import { scheduleSuggestion } from "./suggestionTypeahead";
@@ -210,7 +211,6 @@ function AppContent() {
   const [configuredAgents, setConfiguredAgents] = useState<AgentDefinition[]>([]);
   const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
   const [busy, setBusy] = useState(false);
-  const [stopping, setStopping] = useState(false);
   const [browserSupervision, setBrowserSupervision] = useState<BrowserSupervision>();
   const [terminalActivity, setTerminalActivity] = useState<TerminalActivity>();
   const [acknowledgedTasks, setAcknowledgedTasks] = useState<Set<string>>(() => new Set());
@@ -218,7 +218,7 @@ function AppContent() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [highlightEntryId, setHighlightEntryId] = useState<string | null>(null);
   const [error, setError] = useState<string>();
-  const [forest, setForest] = useState<SessionForestSnapshot>();
+  const [loadedForest, setForest] = useState<SessionForestSnapshot>();
   // Completion blocks while a child's changes live only in its own worktree, so
   // the user must be able to see and resolve that here — otherwise the session
   // waits forever with no visible cause.
@@ -248,13 +248,7 @@ function AppContent() {
   // Menu-bar meter popover (CodexBar companion): opened from the Usage screen
   // or the native tray's left-click; live windows come from the same
   // account-usage channel as the usage ring.
-  const [meterOpen, setMeterOpen] = useState(false);
-  const [meterRegistry, setMeterRegistry] = useState<MeterRegistry | null>(null);
   const [meterRefreshing, setMeterRefreshing] = useState(false);
-  // Mirrored for the global Escape handler, which must close the topmost
-  // layer without resubscribing on every popover toggle.
-  const meterOpenRef = useRef(false);
-  meterOpenRef.current = meterOpen;
   // These handlers must be initialized before the startup effects subscribe.
   // The first render returns the loading shell, so handlers declared below
   // that return leave the tray listener with an uninitialized closure forever.
@@ -264,11 +258,11 @@ function AppContent() {
       .catch(value => setError(errorMessage(value)))
       .finally(() => setMeterRefreshing(false));
   }, []);
+  // The meter lives in the menu bar, in its own window. Opening it from the
+  // Usage screen opens that same panel rather than a second, in-app copy —
+  // one meter, one surface, wherever you ask for it from.
   const openMeter = useCallback(() => {
-    setMeterOpen(true);
-    void bridgeApi.getMeterSnapshot()
-      .then(setMeterRegistry)
-      .catch(value => setError(errorMessage(value)));
+    void bridgeApi.openMeterPanel().catch(value => setError(errorMessage(value)));
     refreshMeter();
   }, [refreshMeter]);
   const startedRef = useRef<Set<string>>(new Set());
@@ -280,7 +274,7 @@ function AppContent() {
   // One entry per session, so switching back to a chat that already loaded its
   // forest shows it immediately instead of flashing to empty while the poll
   // refetches. Never read across sessions.
-  const forestCacheRef = useRef(new Map<string, SessionForestSnapshot>());
+  const forestCacheRef = useRef(new ForestCache());
   const browserSessionRef = useRef<string>();
   const workQueryError = workBoardQueryError ? errorMessage(workBoardQueryError) : undefined;
   const workError = workBoard === undefined ? workQueryError : undefined;
@@ -344,7 +338,19 @@ function AppContent() {
     });
     void bridgeApi.onAccountUsage(payload => {
       const snapshot = extractUsageSnapshot({ rateLimits: payload.rateLimits });
-      if (!snapshot) return;
+      // An unreadable frame means the provider has no current limits — its
+      // last window reset with nothing running, say. Dropping the snapshot is
+      // what stops the old percentage sitting in the ring after it expired;
+      // the samples series is history and is deliberately left alone.
+      if (!snapshot) {
+        setUsageByProvider(current => {
+          if (!(payload.provider in current)) return current;
+          const next = { ...current };
+          delete next[payload.provider];
+          return next;
+        });
+        return;
+      }
       setUsageByProvider(current => ({ ...current, [payload.provider]: snapshot }));
       if (snapshot.windows.length) {
         const usedPercent = clampPercent(Math.max(...snapshot.windows.map(window => window.usedPercent)));
@@ -359,13 +365,11 @@ function AppContent() {
     // route through the same handlers as the in-app controls so the registry
     // loads and the spinner spins on every path.
     let offMeter: (() => void) | undefined;
+    // The tray opens the panel itself, natively — the app is not involved in
+    // showing the meter, which is what stops a menu-bar click raising the
+    // window. All the app does is service the refresh the tray asks for.
     void bridgeApi.onMeterTray(action => {
-      if (!active) return;
-      if (action === "open-popover") {
-        openMeter();
-        void bridgeApi.revealMainWindow().catch(value => setError(errorMessage(value)));
-      }
-      else refreshMeter();
+      if (active && action === "refresh") refreshMeter();
     }).then(fn => { if (!active) { fn(); return; } offMeter = fn; });
     return () => {
       active = false;
@@ -437,6 +441,9 @@ function AppContent() {
   // opened directly (from Mission Control or a blocked-approval link) so its own
   // conversation — and the approval card that lives on it — is reachable.
   const session = state.sessions.find(s => s.id === selectedSessionId && s.harness !== "shell" && !isHiddenSession(s));
+  // Selection changes before the history effect runs. Never paint the prior
+  // chat under the new header, even for that first render.
+  const forest = loadedForest?.sessionId === session?.id ? loadedForest : undefined;
   const workspace = session?.workspaceId ? state.workspaces.find(w => w.id === session.workspaceId) : undefined;
   // The new-thread hero names the project when it can, dotted-underlined.
   const projectName = (workspace?.projectId ? state.projects.find(p => p.id === workspace.projectId)?.name : undefined) ?? workspace?.title ?? undefined;
@@ -871,37 +878,15 @@ function AppContent() {
     active?.scrollIntoView({ block: "nearest" });
   }, [mentionOpen, mentionIndex]);
 
-  // Stop is honoured from the moment the user's bubble appears, not from the
-  // moment the backend confirms a turn. Pressed before `activeTurnId` exists,
-  // the request is held and fired the instant the turn is acknowledged; pressed
-  // during a live turn it interrupts at once.
-  const stopRequestedRef = useRef(false);
-  // The runtime can be interrupted as soon as Bridge has delivered the turn
-  // (the session reads `working`), with or without a provider turn id.
-  const turnDelivered = !!session?.activeTurnId || session?.status === "working";
+  const pendingStopIds = useMemo(() => new Set(pending.map(item => item.sessionId)), [pending]);
+  const sessionStops = useSessionStops(state.sessions, pendingStopIds,
+    id => bridgeApi.interruptTurn(id),
+    (id, error) => setError(`Could not stop chat ${id}: ${errorMessage(error)}`),
+  );
+  const stopping = sessionStops.has(session?.id);
   const requestStop = useCallback(() => {
-    if (!session) return;
-    setStopping(true);
-    if (session.activeTurnId || session.status === "working") {
-      stopRequestedRef.current = false;
-      void bridgeApi.interruptTurn(session.id).catch(() => undefined);
-    } else {
-      stopRequestedRef.current = true;
-    }
-  }, [session]);
-  useEffect(() => {
-    if (turnDelivered) {
-      if (stopRequestedRef.current && session) {
-        stopRequestedRef.current = false;
-        void bridgeApi.interruptTurn(session.id).catch(() => undefined);
-      }
-      return;
-    }
-    if (pendingForSession.length === 0) {
-      stopRequestedRef.current = false;
-      setStopping(false);
-    }
-  }, [session, turnDelivered, pendingForSession.length]);
+    if (session) sessionStops.request(session);
+  }, [session, sessionStops]);
 
   useEffect(() => {
     const sessionId = session?.id;
@@ -2088,9 +2073,8 @@ function AppContent() {
         return;
       }
       if (event.key === "Escape") {
-        // Topmost layer first: the meter popover, then an expanded dock, then
-        // fullscreen. The meter is a dialog over everything, so it wins.
-        if (meterOpenRef.current) { setMeterOpen(false); return; }
+        // Topmost layer first. The meter is no longer one of these layers: it
+        // is a separate menu-bar window with its own dismissal.
         // An expanded dock is the nearer layer: the first Escape restores it,
         // the next one leaves fullscreen.
         if (dockRef.current.open && dockRef.current.expanded) dispatchDock({ type: "toggle-expanded" });
@@ -2141,11 +2125,22 @@ function AppContent() {
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
   const isSessionChrome = view === "workspace" && paradigm !== "grid" && !!session;
-  const bypassBadge = <BypassBadge bypassing={!!permissionPolicy?.autoApproveProviderPermissions} onOpenSettings={() => { setSettingsSection("permissions"); setView("settings"); }} />;
+  // Access lives in the composer, chosen where the work happens: "Full access"
+  // grants every provider permission, "User approval" asks first. The saved
+  // policy publishes StateChanged, and `reload` re-reads it for every window.
+  const changeAccessMode = async (mode: AccessMode) => {
+    try {
+      const config = await bridgeApi.savePermissionPolicy({ ...(permissionPolicy ?? {}), autoApproveProviderPermissions: mode === "full" });
+      setPermissionPolicy(config.permissionPolicy);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    }
+  };
+  const accessControl = <AccessControl policy={permissionPolicy} onChange={mode => void changeAccessMode(mode)} />;
   const usageProps = { usage: usageByProvider, adapters: health?.adapters, samples: usageSamples, history: usageHistory, cacheDiagnostics, contextPercent: latestContext ?? undefined, contextSource: latestContextSource, focusedSessionId: session?.id ?? null, onOpenPromptStudio: () => { setSettingsSection("prompts"); setView("settings"); } };
   const usageWidget = <UsageWidget {...usageProps} />;
   const usageRing = <UsageWidget compact {...usageProps} />;
-  const titleBarActions = <>{usageWidget}{bypassBadge}</>;
+  const titleBarActions = <>{usageWidget}</>;
   // With the rail hidden there is no sidebar header to hold them, so the panel
   // toggle and the history chevrons move onto whichever chrome row is mounted.
   // They are the only pointer route back to the sidebar; the keymap keeps ⌘B.
@@ -2549,6 +2544,7 @@ function AppContent() {
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"
                       ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
+                    accessControl={accessControl}
                     footer={<ComposerContextStrip
                       workspaces={state.workspaces}
                       workspace={workspace ?? null}
@@ -2627,6 +2623,7 @@ function AppContent() {
           </SessionDock>
         </section>
       </> : <Welcome
+        accessControl={accessControl}
         adapters={adapters}
         harness={(newChatDraft ?? resolveDraftHarnessModel()).harness}
         model={(newChatDraft ?? resolveDraftHarnessModel()).model}
@@ -2709,9 +2706,6 @@ function AppContent() {
     />
     <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={acceptModelSetup} onClose={closeModal} onError={setError} />
     <ShortcutsSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
-    {meterOpen && <div role="presentation" className="fixed inset-0 z-50 grid place-items-center bg-background/60 p-4" onPointerDown={event => { if (event.target === event.currentTarget) setMeterOpen(false); }}>
-      <MeterPopover usage={usageByProvider} registry={meterRegistry} refreshing={meterRefreshing} onRefresh={refreshMeter} onClose={() => setMeterOpen(false)} />
-    </div>}
   </div>;
 }
 
@@ -2739,7 +2733,7 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
   </aside>;
 }
 
-function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, onNewWorkspace, workspaces, workspace, projectName, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree }: {
+function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, onNewWorkspace, workspaces, workspace, projectName, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl }: {
   adapters: import("./types").AdapterDescriptor[];
   harness: Harness;
   model: string | null;
@@ -2764,6 +2758,8 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
   onRequestBranches: () => void;
   onSelectBranch: (branch: string) => void;
   onToggleWorktree: (draft?: string) => void;
+  /** The composer's access-mode control, owned by App so both composers agree. */
+  accessControl?: ReactNode;
 }) {
   // Names the owning project in the hero when one is selected, dotted-underlined.
   // Falls back to the workspace title only when it has no distinct project.
@@ -2831,6 +2827,7 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
       // The unstarted draft is a real chat-in-waiting: let the model be chosen
       // before the first message, the same picker the session composer uses.
       modelControl={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} onEffortChange={onSelectEffort} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
+      accessControl={accessControl}
       footer={workspaces.length > 0 ? <ComposerContextStrip
         workspaces={workspaces}
         workspace={workspace}

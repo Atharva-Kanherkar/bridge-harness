@@ -751,6 +751,13 @@
       "resultSchema": "scan-history-result.json"
     },
     {
+      "command": "insights",
+      "domain": "usage",
+      "method": "usage/insights",
+      "paramsSchema": "insights-params.json",
+      "resultSchema": "usage-insights-result.json"
+    },
+    {
       "command": "get_meter_snapshot",
       "domain": "meter",
       "method": "meter/get_meter_snapshot",

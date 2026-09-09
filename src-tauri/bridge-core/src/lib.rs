@@ -61,6 +61,7 @@ pub mod memory_extraction_live;
 pub mod memory_ledger;
 pub mod memory_packet;
 pub mod meter;
+pub mod meter_sources;
 pub mod model;
 pub mod model_catalog;
 pub mod model_profiles;
@@ -106,6 +107,7 @@ pub mod switch_summary;
 pub mod verification_pipeline;
 pub mod usage;
 pub mod usage_pricing;
+pub mod usage_insights;
 pub mod usage_summary;
 pub mod usage_history;
 pub mod verified_catalog;
@@ -219,3 +221,5 @@ mod tests {
         }
     }
 }
+
+mod runtime_budget;

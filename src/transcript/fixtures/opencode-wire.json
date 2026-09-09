@@ -1,0 +1,399 @@
+{
+  "expected": [
+    {
+      "itemId": null,
+      "kind": "turn.started",
+      "role": null,
+      "status": "working",
+      "text": null
+    },
+    {
+      "itemId": "prt_13",
+      "kind": "reasoning.started",
+      "role": null,
+      "status": "inProgress",
+      "text": ""
+    },
+    {
+      "itemId": "prt_13",
+      "kind": "reasoning.delta",
+      "role": "assistant",
+      "status": "streaming",
+      "text": "Checking "
+    },
+    {
+      "itemId": "prt_13",
+      "kind": "reasoning.delta",
+      "role": "assistant",
+      "status": "streaming",
+      "text": "the facts."
+    },
+    {
+      "itemId": "prt_13",
+      "kind": "reasoning.completed",
+      "role": null,
+      "status": "completed",
+      "text": "Checking the facts."
+    },
+    {
+      "itemId": "prt_18",
+      "kind": "message.delta",
+      "role": "assistant",
+      "status": "streaming",
+      "text": "Here is "
+    },
+    {
+      "itemId": "prt_18",
+      "kind": "message.delta",
+      "role": "assistant",
+      "status": "streaming",
+      "text": "the answer."
+    },
+    {
+      "itemId": "prt_18",
+      "kind": "message.completed",
+      "role": "assistant",
+      "status": "completed",
+      "text": "Here is the answer."
+    },
+    {
+      "itemId": null,
+      "kind": "turn.completed",
+      "role": null,
+      "status": "completed",
+      "text": null
+    }
+  ],
+  "provenance": "OpenCode 1.18.3 /event capture with a loopback OpenAI-compatible fixture provider; IDs anonymized, filesystem paths removed. No paid provider requests.",
+  "wire": [
+    {
+      "id": "evt_1",
+      "properties": {
+        "info": {
+          "agent": "build",
+          "id": "msg_3",
+          "model": {
+            "modelID": "fixture",
+            "providerID": "fixture"
+          },
+          "role": "user",
+          "sessionID": "ses_2",
+          "time": {
+            "created": 1788985362225
+          }
+        },
+        "sessionID": "ses_2"
+      },
+      "type": "message.updated"
+    },
+    {
+      "id": "evt_4",
+      "properties": {
+        "part": {
+          "id": "prt_5",
+          "messageID": "msg_3",
+          "sessionID": "ses_2",
+          "text": "Reply briefly.",
+          "type": "text"
+        },
+        "sessionID": "ses_2",
+        "time": 1788985362372
+      },
+      "type": "message.part.updated"
+    },
+    {
+      "id": "evt_6",
+      "properties": {
+        "sessionID": "ses_2",
+        "status": {
+          "type": "busy"
+        }
+      },
+      "type": "session.status"
+    },
+    {
+      "id": "evt_7",
+      "properties": {
+        "info": {
+          "agent": "build",
+          "cost": 0,
+          "id": "msg_8",
+          "mode": "build",
+          "modelID": "fixture",
+          "parentID": "msg_3",
+          "providerID": "fixture",
+          "role": "assistant",
+          "sessionID": "ses_2",
+          "time": {
+            "created": 1788985362379
+          },
+          "tokens": {
+            "cache": {
+              "read": 0,
+              "write": 0
+            },
+            "input": 0,
+            "output": 0,
+            "reasoning": 0
+          }
+        },
+        "sessionID": "ses_2"
+      },
+      "type": "message.updated"
+    },
+    {
+      "id": "evt_9",
+      "properties": {
+        "sessionID": "ses_2",
+        "status": {
+          "type": "busy"
+        }
+      },
+      "type": "session.status"
+    },
+    {
+      "id": "evt_10",
+      "properties": {
+        "part": {
+          "id": "prt_11",
+          "messageID": "msg_8",
+          "sessionID": "ses_2",
+          "type": "step-start"
+        },
+        "sessionID": "ses_2",
+        "time": 1788985362893
+      },
+      "type": "message.part.updated"
+    },
+    {
+      "id": "evt_12",
+      "properties": {
+        "part": {
+          "id": "prt_13",
+          "messageID": "msg_8",
+          "sessionID": "ses_2",
+          "text": "",
+          "time": {
+            "start": 1788985362946
+          },
+          "type": "reasoning"
+        },
+        "sessionID": "ses_2",
+        "time": 1788985362946
+      },
+      "type": "message.part.updated"
+    },
+    {
+      "id": "evt_14",
+      "properties": {
+        "delta": "Checking ",
+        "field": "text",
+        "messageID": "msg_8",
+        "partID": "prt_13",
+        "sessionID": "ses_2"
+      },
+      "type": "message.part.delta"
+    },
+    {
+      "id": "evt_15",
+      "properties": {
+        "delta": "the facts.",
+        "field": "text",
+        "messageID": "msg_8",
+        "partID": "prt_13",
+        "sessionID": "ses_2"
+      },
+      "type": "message.part.delta"
+    },
+    {
+      "id": "evt_16",
+      "properties": {
+        "part": {
+          "id": "prt_13",
+          "messageID": "msg_8",
+          "sessionID": "ses_2",
+          "text": "Checking the facts.",
+          "time": {
+            "end": 1788985363053,
+            "start": 1788985362946
+          },
+          "type": "reasoning"
+        },
+        "sessionID": "ses_2",
+        "time": 1788985363053
+      },
+      "type": "message.part.updated"
+    },
+    {
+      "id": "evt_17",
+      "properties": {
+        "part": {
+          "id": "prt_18",
+          "messageID": "msg_8",
+          "sessionID": "ses_2",
+          "text": "",
+          "time": {
+            "start": 1788985363054
+          },
+          "type": "text"
+        },
+        "sessionID": "ses_2",
+        "time": 1788985363054
+      },
+      "type": "message.part.updated"
+    },
+    {
+      "id": "evt_19",
+      "properties": {
+        "delta": "Here is ",
+        "field": "text",
+        "messageID": "msg_8",
+        "partID": "prt_18",
+        "sessionID": "ses_2"
+      },
+      "type": "message.part.delta"
+    },
+    {
+      "id": "evt_20",
+      "properties": {
+        "delta": "the answer.",
+        "field": "text",
+        "messageID": "msg_8",
+        "partID": "prt_18",
+        "sessionID": "ses_2"
+      },
+      "type": "message.part.delta"
+    },
+    {
+      "id": "evt_21",
+      "properties": {
+        "part": {
+          "id": "prt_18",
+          "messageID": "msg_8",
+          "sessionID": "ses_2",
+          "text": "Here is the answer.",
+          "time": {
+            "end": 1788985363160,
+            "start": 1788985363054
+          },
+          "type": "text"
+        },
+        "sessionID": "ses_2",
+        "time": 1788985363160
+      },
+      "type": "message.part.updated"
+    },
+    {
+      "id": "evt_22",
+      "properties": {
+        "part": {
+          "cost": 0,
+          "id": "prt_23",
+          "messageID": "msg_8",
+          "reason": "stop",
+          "sessionID": "ses_2",
+          "tokens": {
+            "cache": {
+              "read": 0,
+              "write": 0
+            },
+            "input": 10,
+            "output": 10,
+            "reasoning": 0,
+            "total": 20
+          },
+          "type": "step-finish"
+        },
+        "sessionID": "ses_2",
+        "time": 1788985363162
+      },
+      "type": "message.part.updated"
+    },
+    {
+      "id": "evt_24",
+      "properties": {
+        "info": {
+          "agent": "build",
+          "cost": 0,
+          "finish": "stop",
+          "id": "msg_8",
+          "mode": "build",
+          "modelID": "fixture",
+          "parentID": "msg_3",
+          "providerID": "fixture",
+          "role": "assistant",
+          "sessionID": "ses_2",
+          "time": {
+            "completed": 1788985363165,
+            "created": 1788985362379
+          },
+          "tokens": {
+            "cache": {
+              "read": 0,
+              "write": 0
+            },
+            "input": 10,
+            "output": 10,
+            "reasoning": 0,
+            "total": 20
+          }
+        },
+        "sessionID": "ses_2"
+      },
+      "type": "message.updated"
+    },
+    {
+      "id": "evt_25",
+      "properties": {
+        "info": {
+          "agent": "build",
+          "cost": 0,
+          "finish": "stop",
+          "id": "msg_8",
+          "mode": "build",
+          "modelID": "fixture",
+          "parentID": "msg_3",
+          "providerID": "fixture",
+          "role": "assistant",
+          "sessionID": "ses_2",
+          "time": {
+            "completed": 1788985363165,
+            "created": 1788985362379
+          },
+          "tokens": {
+            "cache": {
+              "read": 0,
+              "write": 0
+            },
+            "input": 10,
+            "output": 10,
+            "reasoning": 0,
+            "total": 20
+          }
+        },
+        "sessionID": "ses_2"
+      },
+      "type": "message.updated"
+    },
+    {
+      "id": "evt_26",
+      "properties": {
+        "sessionID": "ses_2",
+        "status": {
+          "type": "busy"
+        }
+      },
+      "type": "session.status"
+    },
+    {
+      "id": "evt_27",
+      "properties": {
+        "sessionID": "ses_2",
+        "status": {
+          "type": "idle"
+        }
+      },
+      "type": "session.status"
+    }
+  ]
+}
