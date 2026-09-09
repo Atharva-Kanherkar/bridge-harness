@@ -8,6 +8,7 @@ import { HarnessMark } from "./harnessMarks";
 import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
 import { UsageChart, seriesDotClass } from "./UsageChart";
 import { UsageInsights } from "./UsageInsights";
+import { UsageHeatmap } from "./UsageHeatmap";
 import {
   buildChartSeries, buildUsageReport, costSourceLabel, enumeratePeriods, formatCount, formatDayShort, formatPercent, formatPeriodLabel, formatTokens, formatUsd, formatWindowLabel,
   makeUsageWindow, microToUsdPerMtok, readUsagePreferences, summaryParams, USAGE_WINDOW_OPTIONS, usdPerMtokToMicro, writeUsagePreferences,
@@ -275,6 +276,11 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
             <h2 className="mb-3 text-ui font-medium text-foreground">{window_.resolution === "hour" ? "Hourly" : "Daily"} {metric === "cost" ? "cost" : "processed tokens"}</h2>
             <UsageChart series={series} periods={periods} resolution={window_.resolution} timeZone={window_.timeZone} metric={metric} />
           </div>
+        </section>
+
+        <section className={cn(CARD, "mt-4")} aria-label="Activity">
+          <h2 className="mb-3 text-ui font-medium text-foreground">Activity</h2>
+          <UsageHeatmap periods={report.periods} resolution={window_.resolution} timeZone={window_.timeZone} metric={metric} />
         </section>
 
         <section className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6" aria-label="Totals">
