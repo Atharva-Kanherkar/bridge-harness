@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Prompt change review fixture</title></head>
+  <body class="bg-background text-foreground">
+    <main id="preview" class="relative mx-auto flex h-screen max-w-4xl flex-col overflow-hidden p-6"></main>
+    <script type="module">
+      import React from "react";
+      import { createRoot } from "react-dom/client";
+      import { AgentConversation } from "../../src/components/AgentConversation.tsx";
+      import "../../src/index.css";
+      import "@fontsource-variable/geist";
+      import "@fontsource-variable/geist-mono";
+      import "@fontsource-variable/bricolage-grotesque";
+
+      // Isolated browser fixture. No provider runs or durable app data changes.
+      const beforeText = "Report verification evidence.";
+      const afterText = `${beforeText}\n\nName the exact checks that passed and any checks that could not run.\nTreat <review-note> as literal text.`;
+      const session = { id: "preview-actor", workspaceId: "preview", harness: "codex", label: "Orchestrator", status: "waiting", kind: "orchestrator", depth: 0, startedAt: "now" };
+      const event = {
+        id: 7, sessionId: session.id, sequence: 7, protocolVersion: 1,
+        kind: "approval.requested", itemId: null, role: null, status: "pending",
+        title: "Review prompt change", text: "", providerMeta: {}, createdAt: "now",
+        data: {
+          approvalType: "prompt_mutation", proposalId: "preview-proposal", target: "worker:verification",
+          sectionId: "additional_guidance", operation: "append", beforeText, afterText,
+          appendedText: afterText.slice(beforeText.length + 2),
+          rationale: "The previous result omitted which checks actually ran. Keep future reports auditable.",
+          actorSessionId: session.id, actorTurnId: "preview-turn", actorRole: "orchestrator",
+          baseRevisionId: 1, baseHash: "fixture", effect: "next_launch",
+        },
+      };
+      createRoot(document.getElementById("preview")).render(React.createElement(AgentConversation, {
+        session, events: [event],
+        onResolve: async (eventId, decision) => {
+          window.lastPromptReviewAction = { eventId, decision };
+          const selected = new URLSearchParams(location.search).get("outcome") === "stale" ? "stale" : decision;
+          return { disposition: "resolved", interactionKind: "permission", status: selected, resolvedBy: "human", decision: selected };
+        },
+      }));
+    </script>
+  </body>
+</html>

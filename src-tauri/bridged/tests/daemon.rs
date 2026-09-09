@@ -690,14 +690,23 @@ fn oversized_frames_are_refused_with_a_bounded_error() {
     let mut client = Client::connect(&running.socket_path);
     client.handshake(&running.token);
 
+    // A background notification may precede the framing error. Leave one
+    // buffered deliberately so this verifies response matching independently
+    // of discovery/pricing startup timing.
+    running.daemon.core.events.publish(bridge_core::events::CoreEvent::AdaptersChanged);
+    assert!(!client.reader.fill_buf().expect("a notification arrives").is_empty());
+
     let huge = "x".repeat(bridged::MAX_FRAME_BYTES + 16);
     client.send(json!({
         "jsonrpc": "2.0", "id": 1, "method": "sessions/send_turn",
         "params": {"sessionId": "s", "text": huge},
     }));
-    let response = client.recv();
+    // The oversized body is never parsed, so its request id cannot be echoed.
+    let (response, notifications) = client.recv_response(Value::Null);
+    assert!(!notifications.is_empty(), "the error follows a valid notification");
     assert_eq!(response["error"]["code"], json!(-32600));
     assert!(response["error"]["message"].as_str().unwrap().contains("exceeds"));
+    assert!(serde_json::to_vec(&response).unwrap().len() < 1024, "the error must not echo the oversized body");
 
     running.stop();
 }

@@ -164,6 +164,7 @@ export function PromptStudio() {
 
   const targetLabel = TARGETS.find(item => item.id === target)?.label ?? target;
   const section = stack?.sections.find(item => item.id === sectionId);
+  const sectionLabel = section?.id === "additional_guidance" ? "Additional guidance" : section?.id;
   const docKey = sectionId ? docKeyFor(target, sectionId) : undefined;
   // CodeEditor only re-seeds its document when `docKey` changes (by design —
   // it owns undo history and cursor state otherwise). A save, reset, or
@@ -302,17 +303,19 @@ export function PromptStudio() {
 
   if (section && sectionId) {
     return <SettingsPage
-      title={section.id}
+      title={sectionLabel!}
       breadcrumb={[
         { label: "Prompts", onClick: () => setSectionId(undefined) },
         { label: targetLabel, onClick: () => setSectionId(undefined) },
-        { label: section.id },
+        { label: sectionLabel! },
       ]}
-      description="Bridge's own text for this section. Prompts change behavior, never permissions."
+      description={section.id === "additional_guidance"
+        ? "Shared guidance for this role, including approved agent proposals. Applies at the next start or relaunch; running turns keep their current instructions."
+        : "Bridge's own text for this section. Prompts change behavior, never permissions."}
       action={<TextButton
         disabled={busy || !canReset}
         onClick={() => void handleReset(section.id)}
-      >Reset {section.id}</TextButton>}
+      >Reset {sectionLabel}</TextButton>}
     >
       {errorRow}
 
@@ -350,8 +353,14 @@ export function PromptStudio() {
         {[...section.revisions].reverse().map(revision => <SettingsRow
           key={revision.id}
           label={revision.operation}
-          description={revision.createdAt}
-          mono
+          description={<>
+            <time className="block font-mono text-[11px]">{revision.createdAt}</time>
+            {revision.attribution && <>
+              <span className="mt-1 block">Proposed by {revision.attribution.actorRole} · session <code className="break-all font-mono text-[11px]">{revision.attribution.actorSessionId}</code> · approved by you</span>
+              <span className="mt-1 block whitespace-pre-wrap break-words">{revision.attribution.rationale}</span>
+              <span className="mt-1 block break-all font-mono text-[11px]">Proposal {revision.attribution.proposalId}</span>
+            </>}
+          </>}
           control={<TextButton
             disabled={busy}
             ariaLabel={`Restore ${section.id} to revision ${revision.id} (${revision.operation})`}
@@ -416,10 +425,12 @@ export function PromptStudio() {
               const key = docKeyFor(target, item.id);
               return <SettingsRow
                 key={item.id}
-                label={<span className="font-mono text-[12px]">{item.id}</span>}
+                label={<span className={item.id === "additional_guidance" ? undefined : "font-mono text-[12px]"}>{item.id === "additional_guidance" ? "Additional guidance" : item.id}</span>}
                 openLabel={`Edit ${item.id}`}
-                description={`${item.tokenEstimate} tok`}
-                mono
+                description={item.id === "additional_guidance"
+                  ? `Shared role guidance · ${item.tokenEstimate} tok · applies at next start or relaunch`
+                  : `${item.tokenEstimate} tok`}
+                mono={item.id !== "additional_guidance"}
                 onOpen={() => setSectionId(item.id)}
                 control={<>
                   {key in drafts && <StatusPill tone="info">Unsaved</StatusPill>}

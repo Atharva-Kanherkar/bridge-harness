@@ -49,7 +49,11 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// accept an older daemon and discover the missing methods only after the user
 /// opens the branch menu.
 /// **1.6 adds exact chat creation identity** for concurrent CLI clients.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 6 };
+///
+/// **1.7 adds worker prompt proposal grants and attributed prompt revisions.**
+/// A new client must not pair with an older daemon that silently discards
+/// `workerPromptProposalRoles` when saving the permission policy.
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 7 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -184,6 +188,19 @@ mod tests {
             );
             assert!(data["clientProtocolVersion"].is_object());
         }
+    }
+
+    #[test]
+    fn prompt_mutation_clients_cannot_pair_with_daemons_that_discard_worker_grants() {
+        let daemon_before_worker_grants = ProtocolVersion { major: 1, minor: 6 };
+        assert!(
+            !daemon_before_worker_grants.accepts(PROTOCOL_VERSION),
+            "a stale daemon would silently discard workerPromptProposalRoles on save"
+        );
+        assert!(
+            PROTOCOL_VERSION.accepts(daemon_before_worker_grants),
+            "the added permission field remains compatible with older clients"
+        );
     }
 
     #[test]

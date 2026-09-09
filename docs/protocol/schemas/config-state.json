@@ -140,9 +140,27 @@
         "updatedAt": {
           "default": "",
           "type": "string"
+        },
+        "workerPromptProposalRoles": {
+          "default": [],
+          "description": "Allows these worker roles to propose guidance; each edit still requires a separate human approval of its exact text.",
+          "items": {
+            "$ref": "#/definitions/PromptProposalWorkerRole"
+          },
+          "type": "array"
         }
       },
       "type": "object"
+    },
+    "PromptProposalWorkerRole": {
+      "enum": [
+        "research",
+        "implementation",
+        "verification",
+        "planning",
+        "documentation"
+      ],
+      "type": "string"
     }
   },
   "description": "The configuration snapshot every config mutation returns. Mirrors `bridge_core::agent_config::ConfigState`.",

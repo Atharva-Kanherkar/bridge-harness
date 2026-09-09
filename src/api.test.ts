@@ -95,7 +95,8 @@ describe("SQLite-shaped mock observability", () => {
     const target = "worker:research" as const;
     const stack = await bridgeApi.promptStack(target);
     expect(stack).toMatchObject({ target, depth: 0 });
-    expect(stack.sections.map(section => section.id)).toEqual(["worker_contract"]);
+    expect(stack.sections.map(section => section.id)).toEqual(["worker_contract", "additional_guidance"]);
+    expect(stack.sections[1].effectiveText).toBe("");
     expect(stack.sections[0]).toMatchObject({ state: { state: "default" }, effectiveText: stack.sections[0].defaultText });
 
     const saved = await bridgeApi.savePromptSection(target, "worker_contract", "Research only, no edits.");

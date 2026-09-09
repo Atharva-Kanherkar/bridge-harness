@@ -132,7 +132,7 @@ let mockConfigState: ConfigState = {
     { id: "bridge-documentation", name: "Documentation agent", description: "Produces concise project documentation.", role: "documentation", harness: "bridge", model: null, effort: "low", systemPrompt: "", enabled: true, isDefault: false, isBuiltIn: true, createdAt: "", updatedAt: "" },
   ],
   defaultAgentId: "bridge-orchestrator",
-  permissionPolicy: { autoApproveProviderPermissions: false, updatedAt: "" },
+  permissionPolicy: { autoApproveProviderPermissions: false, workerPromptProposalRoles: [], updatedAt: "" },
 };
 let mockOpenCodeCatalog: OpenCodeCatalog = {
   executablePath: "/usr/local/bin/opencode",
@@ -187,12 +187,13 @@ const MOCK_PROMPT_DEFAULTS: Record<PromptTargetChoice, { id: string; text: strin
   orchestrator: [
     { id: "bridge_role", text: "You are Bridge's starter orchestrator: a planner and router." },
     { id: "delegation_protocol", text: "## Delegating work\nEmit one fenced bridge-delegate JSON object after a short sentence naming the role and reason." },
+    { id: "additional_guidance", text: "" },
   ],
-  "worker:research": [{ id: "worker_contract", text: "You are a research worker. Collect scoped evidence and report back." }],
-  "worker:implementation": [{ id: "worker_contract", text: "You are an implementation worker. Make one focused change." }],
-  "worker:verification": [{ id: "worker_contract", text: "You are a verification worker. Verify outcomes independently." }],
-  "worker:planning": [{ id: "worker_contract", text: "You are a planning worker. Turn ambiguous work into an executable plan." }],
-  "worker:documentation": [{ id: "worker_contract", text: "You are a documentation worker. Produce concise project documentation." }],
+  "worker:research": [{ id: "worker_contract", text: "You are a research worker. Collect scoped evidence and report back." }, { id: "additional_guidance", text: "" }],
+  "worker:implementation": [{ id: "worker_contract", text: "You are an implementation worker. Make one focused change." }, { id: "additional_guidance", text: "" }],
+  "worker:verification": [{ id: "worker_contract", text: "You are a verification worker. Verify outcomes independently." }, { id: "additional_guidance", text: "" }],
+  "worker:planning": [{ id: "worker_contract", text: "You are a planning worker. Turn ambiguous work into an executable plan." }, { id: "additional_guidance", text: "" }],
+  "worker:documentation": [{ id: "worker_contract", text: "You are a documentation worker. Produce concise project documentation." }, { id: "additional_guidance", text: "" }],
   direct_session: [],
 };
 
@@ -284,7 +285,7 @@ function mockPromptResetAll() {
 async function mockPromptPreview(target: PromptTargetChoice, depth?: number): Promise<CompiledPromptPreviewResult> {
   const stack = mockPromptStack(target, depth);
   // Same envelope shape the real compiler serializes: sorted stable keys.
-  const stableSections = Object.fromEntries(stack.sections.filter(section => section.effectiveText !== null).map(section => [section.id, section.effectiveText]));
+  const stableSections = Object.fromEntries(stack.sections.filter(section => section.effectiveText != null && section.effectiveText.trim() !== "").map(section => [section.id, section.effectiveText]));
   const envelope = JSON.stringify({ schemaVersion: 1, role: mockPromptCompilerRole(target), stableSections, toolSchemas: {}, projectRules: {} });
   const stablePrefix = `<bridge-stable-prompt schema="1">\n${envelope}\n</bridge-stable-prompt>`;
   const variableSuffix = '<bridge-variable-context>\n{"sections":[]}\n</bridge-variable-context>';
@@ -1250,7 +1251,7 @@ export const bridgeApi = {
     mockConfigState.agents = mockConfigState.agents.filter(item => item.isBuiltIn).map(item => ({ ...item, enabled: true, model: null, systemPrompt: "", isDefault: item.id === "bridge-orchestrator" }));
     mockConfigState.defaultAgentId = "bridge-orchestrator";
     // Reset clears every configuration row on the real path, the policy included.
-    mockConfigState.permissionPolicy = { autoApproveProviderPermissions: false, updatedAt: "" };
+    mockConfigState.permissionPolicy = { autoApproveProviderPermissions: false, workerPromptProposalRoles: [], updatedAt: "" };
     // Prompt-section overrides are configuration rows too: cleared, but their
     // history survives as appended reset revisions.
     mockPromptResetAll();

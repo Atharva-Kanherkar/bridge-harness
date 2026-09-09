@@ -396,9 +396,8 @@ fn blocked_queue_items(db: &Connection) -> Result<Vec<Projected>, BridgeError> {
 /// and policy approvals carry `approvalId`. An entry is unresolved when neither
 /// match exists.
 ///
-/// Sessions in a terminal state are excluded. Their adapter is gone, so the
-/// approval genuinely cannot be answered any more, and showing it would put a
-/// button on the board that cannot work.
+/// Provider approvals require a live session. Prompt proposals change future
+/// role defaults and remain reviewable after the originating adapter stops.
 fn actionable_approvals(db: &Connection, now: DateTime<Utc>) -> Result<Vec<Projected>, BridgeError> {
     let mut statement = db.prepare(
         "SELECT e.session_id,e.sequence,e.created_at,
@@ -408,7 +407,8 @@ fn actionable_approvals(db: &Connection, now: DateTime<Utc>) -> Result<Vec<Proje
            FROM session_entries e
            JOIN sessions s ON s.id=e.session_id
           WHERE e.kind='approval.requested'
-            AND s.status NOT IN ('stopped','failed','completed','cancelled')
+            AND (s.status NOT IN ('stopped','failed','completed','cancelled')
+                 OR json_extract(e.payload,'$.approvalType')='prompt_mutation')
             AND NOT EXISTS (
                 SELECT 1 FROM session_entries r
                  WHERE r.session_id=e.session_id AND r.kind='approval.resolved'
@@ -1258,6 +1258,22 @@ mod tests {
             ],
             "blocking before attention, and oldest first inside a severity"
         );
+    }
+
+    #[test]
+    fn prompt_mutation_approval_remains_reviewable_after_origin_stops() {
+        let db = memory_db();
+        seed(&db);
+        add_session(&db, "child", None, "stopped");
+        add_entry(&db, "child", 4, "approval.requested",
+            r#"{"title":"Review shared role guidance","approvalType":"prompt_mutation","approvalId":"prompt-1"}"#);
+        let pending = facts(&db, now()).unwrap();
+        assert_eq!(keys(&pending), vec!["approval:child:4"]);
+        assert!(matches!(pending[0].action,
+            wire::WorkFactAction::AnswerApproval { approval_sequence: Some(4), .. }));
+        add_entry(&db, "child", 5, "approval.resolved",
+            r#"{"approvalId":"prompt-1","requestEventId":4,"decision":"decline"}"#);
+        assert!(facts(&db, now()).unwrap().is_empty());
     }
 
     #[test]

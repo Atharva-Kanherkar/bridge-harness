@@ -1243,7 +1243,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 6
+    "minor": 7
   },
   "reserved": {
     "cancel": "$/cancel",

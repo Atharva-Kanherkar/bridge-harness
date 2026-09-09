@@ -1659,6 +1659,22 @@ pub fn resolve_approval(
         // and has no provider response to deduplicate. Keep its existing
         // transaction, but return the same typed command result.
         "approval.requested" => {
+            let prompt_proposal = {
+                let db = core.db.lock().unwrap();
+                let payload: String = db.query_row(
+                    "SELECT payload FROM session_entries WHERE session_id=?1 AND sequence=?2",
+                    params![session_id, event_id], |row| row.get(0),
+                )?;
+                let payload: Value = serde_json::from_str(&payload)
+                    .map_err(|error| BridgeError::Invalid(format!("Approval metadata is invalid: {error}")))?;
+                if payload["approvalType"] == "prompt_mutation" {
+                    Some(payload["proposalId"].as_str().ok_or_else(||
+                        BridgeError::Invalid("Prompt approval has no proposal id".into()))?.to_owned())
+                } else { None }
+            };
+            if let Some(proposal_id) = prompt_proposal {
+                return resolve_prompt_mutation_approval(core, session_id, event_id, &proposal_id, decision);
+            }
             resolve_legacy_approval(core, session_id, event_id, decision)?;
             Ok(interaction_result(
                 wire::InteractionResolutionDisposition::Resolved,
@@ -1673,6 +1689,37 @@ pub fn resolve_approval(
             "The requested event is not a permission interaction".into(),
         )),
     }
+}
+
+fn resolve_prompt_mutation_approval(
+    core: &Arc<BridgeCore>, session_id: &str, event_id: i64, proposal_id: &str, decision: &str,
+) -> Result<wire::InteractionResolutionResult, BridgeError> {
+    if !matches!(decision, "accept" | "decline" | "cancel") {
+        return Err(BridgeError::Invalid("Prompt changes require an explicit decision for this exact change; session approval is unavailable".into()));
+    }
+    let resolved = {
+        let db = core.db.lock().unwrap();
+        let proposal = crate::prompt_mutations::get(&db, proposal_id)?
+            .ok_or_else(|| BridgeError::Invalid("Prompt proposal no longer exists".into()))?;
+        if proposal.approval_session_id != session_id || proposal.approval_event_id != event_id {
+            return Err(BridgeError::Invalid("This approval does not belong to the prompt proposal".into()));
+        }
+        crate::prompt_mutations::resolve(&db, proposal_id, decision == "accept")?
+    };
+    let status = resolved.status.as_str();
+    let reason = live_turn::prompt_mutation_outcome_reason(status);
+    // The durable queue receipt makes this safe on a repeated decision and
+    // lets a retry deliver an outcome whose first post-commit enqueue failed.
+    live_turn::queue_prompt_mutation_feedback(core, &resolved.proposal.actor_session_id,
+        Some(proposal_id), status, reason, None);
+    live_turn::notify_parent_prompt_mutation_resolved(core, &resolved.proposal.actor_session_id,
+        proposal_id, status);
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(interaction_result(
+        if resolved.already_resolved { wire::InteractionResolutionDisposition::AlreadyResolved }
+        else { wire::InteractionResolutionDisposition::Resolved },
+        "permission", status, "human", status, Some(reason),
+    ))
 }
 
 fn resolve_legacy_approval(

@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 54;
+const LATEST_SCHEMA_VERSION: i64 = 55;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -683,6 +683,10 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             52 => migration_52_worker_failure_class(&transaction)?,
             53 => migration_53_usage_tracking(&transaction)?,
             54 => migration_54_usage_ledger_repair(&transaction)?,
+            55 => {
+                crate::prompt_sections::install_guidance_revision_store(&transaction)?;
+                crate::prompt_mutations::install_store(&transaction)?;
+            }
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"

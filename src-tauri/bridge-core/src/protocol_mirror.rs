@@ -1414,6 +1414,7 @@ fn result_payloads_mirror_core() {
         default_agent_id: "reviewer".into(),
         permission_policy: agent_config::PermissionPolicy {
             auto_approve_provider_permissions: true,
+            worker_prompt_proposal_roles: vec![delegation::WorkerRole::Research],
             updated_at: "now".into(),
                     },
     });
@@ -1447,6 +1448,13 @@ fn prompt_studio_payloads_mirror_core() {
         state: overridden.clone(),
         restored_from_revision_id: None,
         created_at: "now".into(),
+        attribution: Some(prompt_sections::PromptRevisionAttribution {
+            actor_session_id: "worker".into(),
+            actor_turn_id: "turn".into(),
+            actor_role: "research".into(),
+            proposal_id: "proposal".into(),
+            rationale: "Preserve source citations.".into(),
+        }),
     };
     assert_mirrors::<wire::PromptRevisionView>(&revision_view);
     assert_mirrors::<wire::PromptSectionStatePayload>(&overridden);
