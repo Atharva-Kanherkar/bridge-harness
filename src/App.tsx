@@ -2347,7 +2347,6 @@ function AppContent() {
                   projectName={projectName}
                   onOpenSession={openSession}
                   workers={workerPanelSource}
-                  onExpandWorker={setExpandedWorkerId}
                   events={sessionEvents}
                   forestEntries={forest?.entries}
                   activeLeafId={forest?.head?.activeEntryId}

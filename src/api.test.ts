@@ -77,7 +77,10 @@ describe("SQLite-shaped mock observability", () => {
     expect(initial.entries.some(entry => entry.kind === "compaction")).toBe(true);
     expect(initial.head?.restorationMode).toBe("hot");
     expect(initial.workerQueue[0].request.reason).toBe("owned_path_conflict");
-    expect(initial.workerRuntimes.some(worker => worker.lastResult?.summary === "All 42 auth tests pass")).toBe(true);
+    expect(initial.workerRuntimes.some(worker => String(worker.lastResult?.summary ?? "").startsWith("All 42 auth tests pass"))).toBe(true);
+    // The demo's typed result carries the `{command, status}` test shape the
+    // real envelope uses, so the card's test band renders in mock mode too.
+    expect(initial.workerRuntimes.some(worker => Array.isArray(worker.lastResult?.tests) && (worker.lastResult?.tests as unknown[]).every(test => typeof test === "object"))).toBe(true);
 
     const entryCount = initial.entries.length;
     const rewound = await bridgeApi.activateSessionEntry("session-1", "entry-5a");
