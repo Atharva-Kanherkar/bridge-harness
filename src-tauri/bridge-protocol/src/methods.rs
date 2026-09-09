@@ -160,6 +160,9 @@ methods![
     (RefreshUsageRates, "usage", "refresh_rates"),
     (ListHistorySources, "usage", "list_history_sources"),
     (ScanHistory, "usage", "scan_history"),
+    // menu-bar meter (CodexBar port)
+    (GetMeterSnapshot, "meter", "get_meter_snapshot"),
+    (RefreshMeter, "meter", "refresh_meter"),
     // routing
     (GetRouterPreferences, "routing", "get_router_preferences"),
     (UpdateRouterPreferences, "routing", "update_router_preferences"),

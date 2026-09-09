@@ -6,6 +6,7 @@ pub use bridge_core::{
 pub mod agent_batch;
 pub mod daemon_host;
 pub mod menu;
+pub mod meter_tray;
 pub mod window_chrome;
 mod diagnostics;
 
@@ -775,6 +776,21 @@ async fn scan_history(
     })
     .await
     .map_err(|error| BridgeError::Invalid(error.to_string()))?
+}
+
+#[tauri::command]
+async fn get_meter_snapshot() -> bridge_core::meter::MeterRegistry {
+    api::meter_snapshot()
+}
+
+#[tauri::command]
+async fn refresh_meter(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
+    let core = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || api::refresh_meter(&core))
+        .await
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?
 }
 
 #[tauri::command]
@@ -2230,6 +2246,8 @@ pub fn run() -> i32 {
             refresh_rates,
             list_history_sources,
             scan_history,
+            get_meter_snapshot,
+            refresh_meter,
             register_verifier_manifest,
             verifier_candidates,
             get_router_preferences,
@@ -2348,6 +2366,9 @@ pub fn run() -> i32 {
             // show it once Ready arrives, outside the setup callback.
             let result = diagnostics::native_boundary(|| select_host(app, &setup_slot))
                 .and_then(|result| result.map_err(|error| error.to_string()));
+            // The menu-bar meter tray is best-effort: a tray failure must never
+            // fail startup (CodexBar port, v1 companion surface).
+            let _ = meter_tray::build(app);
             if let Err(error) = result {
                 let message = format!("Bridge could not start: {error}");
                 diagnostics::record(&message);

@@ -723,6 +723,20 @@
       "resultSchema": "scan-history-result.json"
     },
     {
+      "command": "get_meter_snapshot",
+      "domain": "meter",
+      "method": "meter/get_meter_snapshot",
+      "paramsSchema": null,
+      "resultSchema": "meter-registry.json"
+    },
+    {
+      "command": "refresh_meter",
+      "domain": "meter",
+      "method": "meter/refresh_meter",
+      "paramsSchema": null,
+      "resultSchema": "unit-result.json"
+    },
+    {
       "command": "get_router_preferences",
       "domain": "routing",
       "method": "routing/get_router_preferences",

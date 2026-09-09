@@ -1,0 +1,38 @@
+{
+  "_comment": "Shared pace fixtures consumed by both src/meter.test.ts and bridge-core/src/meter.rs. Resets are relative to `now` so both suites evaluate the same instants. Expected values are asserted with epsilon, not exact equality.",
+  "now": "2026-09-07T12:00:00Z",
+  "cases": [
+    {
+      "name": "half week gone at 75 percent is deep in deficit with an ETA",
+      "used_percent": 75.0,
+      "window_minutes": 10080,
+      "resets_in_seconds": 302400.0,
+      "resets_at": null,
+      "expected": { "delta": 25.0, "stage": "far_ahead", "will_last": false, "eta_some": true, "multiplier": 0.333333 }
+    },
+    {
+      "name": "half week gone at 20 percent is in reserve until reset",
+      "used_percent": 20.0,
+      "window_minutes": 10080,
+      "resets_in_seconds": 302400.0,
+      "resets_at": null,
+      "expected": { "delta": -30.0, "stage": "far_behind", "will_last": true, "eta_some": false, "multiplier": 4.0 }
+    },
+    {
+      "name": "exactly on pace lasts until reset with unit multiplier",
+      "used_percent": 50.0,
+      "window_minutes": 10080,
+      "resets_in_seconds": 302400.0,
+      "resets_at": null,
+      "expected": { "delta": 0.0, "stage": "on_track", "will_last": true, "eta_some": false, "multiplier": 1.0 }
+    },
+    {
+      "name": "absolute reset timestamp takes the same path as a countdown",
+      "used_percent": 75.0,
+      "window_minutes": 10080,
+      "resets_in_seconds": null,
+      "resets_at": "2026-09-11T00:00:00Z",
+      "expected": { "delta": 25.0, "stage": "far_ahead", "will_last": false, "eta_some": true, "multiplier": 0.333333 }
+    }
+  ]
+}

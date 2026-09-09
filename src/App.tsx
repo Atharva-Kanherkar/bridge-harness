@@ -55,6 +55,8 @@ import { MemoryDialog, rememberAction } from "./components/MemoryDialog";
 import { MemoryUsedChip } from "./components/MemoryUsedChip";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
+import { MeterPopover } from "./components/meter/MeterPopover";
+import type { MeterRegistry } from "./types";
 import { formatElapsed, harnessLabel, slashOwnershipBadge } from "./utils";
 import { scheduleSuggestion } from "./suggestionTypeahead";
 import { projectSessionConversation, reduceConversation, undeliveredPending } from "./conversation";
@@ -243,6 +245,16 @@ function AppContent() {
   const fallbackNoticeShownRef = useRef(false);
   const [usageByProvider, setUsageByProvider] = useState<Partial<Record<UsageProvider, UsageSnapshot>>>({});
   const [usageSamples, setUsageSamples] = useState<Partial<Record<UsageProvider, UsageRateSample[]>>>({});
+  // Menu-bar meter popover (CodexBar companion): opened from the Usage screen
+  // or the native tray's left-click; live windows come from the same
+  // account-usage channel as the usage ring.
+  const [meterOpen, setMeterOpen] = useState(false);
+  const [meterRegistry, setMeterRegistry] = useState<MeterRegistry | null>(null);
+  const [meterRefreshing, setMeterRefreshing] = useState(false);
+  // Mirrored for the global Escape handler, which must close the topmost
+  // layer without resubscribing on every popover toggle.
+  const meterOpenRef = useRef(false);
+  meterOpenRef.current = meterOpen;
   const startedRef = useRef<Set<string>>(new Set());
   // The first message of a just-created chat, tagged with its target session id so
   // the delivery effect can only ever hand it to that chat — never to a session that
@@ -326,9 +338,19 @@ function AppContent() {
         }));
       }
     }).then(fn => offUsage = fn);
+    // Native tray (menu-bar meter companion): left-click opens the meter
+    // popover, the tray menu's refresh triggers a shared usage refresh. Both
+    // route through the same handlers as the in-app controls so the registry
+    // loads and the spinner spins on every path.
+    let offMeter: (() => void) | undefined;
+    void bridgeApi.onMeterTray(action => {
+      if (!active) return;
+      if (action === "open-popover") openMeter();
+      else refreshMeter();
+    }).then(fn => { if (!active) { fn(); return; } offMeter = fn; });
     return () => {
       active = false;
-      offState?.(); offAgent?.(); offUsage?.(); offAdapters?.(); offProviderLogin?.();
+      offState?.(); offAgent?.(); offUsage?.(); offAdapters?.(); offProviderLogin?.(); offMeter?.();
       display.dispose();
     };
   }, [invalidateHealth, reload]);
@@ -2046,6 +2068,9 @@ function AppContent() {
         return;
       }
       if (event.key === "Escape") {
+        // Topmost layer first: the meter popover, then an expanded dock, then
+        // fullscreen. The meter is a dialog over everything, so it wins.
+        if (meterOpenRef.current) { setMeterOpen(false); return; }
         // An expanded dock is the nearer layer: the first Escape restores it,
         // the next one leaves fullscreen.
         if (dockRef.current.open && dockRef.current.expanded) dispatchDock({ type: "toggle-expanded" });
@@ -2100,6 +2125,16 @@ function AppContent() {
   const usageProps = { usage: usageByProvider, adapters: health?.adapters, samples: usageSamples, history: usageHistory, cacheDiagnostics, contextPercent: latestContext ?? undefined, contextSource: latestContextSource, focusedSessionId: session?.id ?? null, onOpenPromptStudio: () => { setSettingsSection("prompts"); setView("settings"); } };
   const usageWidget = <UsageWidget {...usageProps} />;
   const usageRing = <UsageWidget compact {...usageProps} />;
+  const openMeter = () => {
+    setMeterOpen(true);
+    bridgeApi.getMeterSnapshot().then(setMeterRegistry).catch(() => undefined);
+  };
+  const refreshMeter = () => {
+    setMeterRefreshing(true);
+    bridgeApi.refreshMeter()
+      .catch(value => setError(errorMessage(value)))
+      .finally(() => setMeterRefreshing(false));
+  };
   const titleBarActions = <>{usageWidget}{bypassBadge}</>;
   // With the rail hidden there is no sidebar header to hold them, so the panel
   // toggle and the history chevrons move onto whichever chrome row is mounted.
@@ -2201,7 +2236,7 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
+      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
         sessions={visibleSessions}
         runtimes={forest?.workerRuntimes ?? []}
         reasons={forest?.reasons ?? []}
@@ -2661,6 +2696,9 @@ function AppContent() {
     />
     <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={acceptModelSetup} onClose={closeModal} onError={setError} />
     <ShortcutsSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+    {meterOpen && <div role="presentation" className="fixed inset-0 z-50 grid place-items-center bg-background/60 p-4" onPointerDown={event => { if (event.target === event.currentTarget) setMeterOpen(false); }}>
+      <MeterPopover usage={usageByProvider} registry={meterRegistry} refreshing={meterRefreshing} onRefresh={refreshMeter} onClose={() => setMeterOpen(false)} />
+    </div>}
   </div>;
 }
 

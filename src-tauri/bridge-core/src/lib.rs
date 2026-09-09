@@ -60,6 +60,7 @@ pub mod memory_extraction;
 pub mod memory_extraction_live;
 pub mod memory_ledger;
 pub mod memory_packet;
+pub mod meter;
 pub mod model;
 pub mod model_catalog;
 pub mod model_profiles;

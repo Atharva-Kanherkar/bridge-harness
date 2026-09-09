@@ -5,7 +5,12 @@
 //! bridge exec --json [flags] --method <m> [--params <json>]
 //!                                                        call one protocol method
 //! bridge learning run --database <bridge.db> --trigger <...>
+//! bridge meter --json                                    print the menu-bar meter registry
 //! ```
+//!
+//! `meter` is the `codexbar serve` equivalent for scripts: the static provider
+//! registry (live vs planned) plus the adaptive cadence constants. Live quota
+//! windows ride the account-usage event channel, not this command.
 //!
 //! `exec` is the CI one-shot: it attaches to a running daemon when one owns
 //! the data directory, and otherwise hosts the runtime itself for exactly the
@@ -31,14 +36,37 @@ fn main() -> ExitCode {
         Some("learning") if args.get(1).map(String::as_str) == Some("run") => {
             learning_run(&args[2..])
         }
+        Some("meter") => meter(&args[1..]),
         _ => {
             eprintln!(
                 "usage:\n  bridge exec --json [--data-dir <dir>] [--timeout <secs>] \
                  (--harness <id> [--model <id>] \"<prompt>\" | --method <name> [--params <json>])\n  \
                  bridge learning run --database <bridge.db> --trigger \
-                 <manual|in-app|codex:ID|claude:ID|opencode:ID> [--credential-ref <reference>]"
+                 <manual|in-app|codex:ID|claude:ID|opencode:ID> [--credential-ref <reference>]\n  \
+                 bridge meter --json"
             );
             ExitCode::from(2)
+        }
+    }
+}
+
+// --- meter --------------------------------------------------------------------
+
+/// Print the static meter registry as JSON: live vs planned providers plus the
+/// adaptive cadence constants CodexBar's `codexbar serve` exposes for bars.
+fn meter(args: &[String]) -> ExitCode {
+    if args != ["--json"] {
+        eprintln!("usage:\n  bridge meter --json");
+        return ExitCode::from(2);
+    }
+    match serde_json::to_string_pretty(&bridge_core::meter::registry_snapshot()) {
+        Ok(document) => {
+            println!("{document}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("bridge meter: {error}");
+            ExitCode::from(1)
         }
     }
 }

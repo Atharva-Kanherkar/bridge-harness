@@ -51,8 +51,12 @@ Bridge's Graphite & Paper chrome with Tailwind v4 utilities only.
 8. **Sources and pricing.** A section lists every history source with its
    coverage state, records imported/skipped, last successful scan, and any
    coverage reason or error; unsupported sources show their reason. A
-   `Scan history` action calls `usage/scan_history`, then refetches the
-   summary. A pricing line shows the rate snapshot date, known model count,
+   With `Include history` enabled, opening Usage or refreshing incrementally
+   scans local history before declaring its total complete. `Scan history`
+   enables history and performs the same scan. Each API call remains bounded;
+   partial sources are resumed until complete, with progress visible. Failed
+   or non-advancing sources stop with a partial-total warning, not an endless
+   retry. A pricing line shows the rate snapshot date, known model count,
    override count, and a `Refresh rates` action calling `usage/refresh_rates`
    and then refetching.
 9. **Model prices.** A table over models seen in the window plus existing
@@ -77,13 +81,19 @@ Bridge's Graphite & Paper chrome with Tailwind v4 utilities only.
    a note that live rows were counted once against imported transcripts.
 5. **Partial coverage is stated.** Sources whose coverage is not `complete`
    render their state verbatim next to the source, and a `partial` or
-   `stale` source is called out above the chart.
+   `stale` source is called out above the chart. This includes discovered
+   sources that have never been indexed. Loading or failed imports label
+   the hero `Partial total`; disabling history explicitly says `Bridge
+   sessions only`.
 
 ## Data fetch
 
 - One `usage/summary` call per window/metric-independent key; toggling the
   metric never refetches. Refresh, scan, rate refresh, and override edits
-  refetch. No polling and no focus refetch.
+  refetch. Completing a history scan refetches the current window. No polling
+  and no focus refetch. Window, metric, and rate changes do not restart history
+  scans. Unmounting or disabling history stops scheduling further batches;
+  late summary responses cannot replace a newer selection.
 - Outside Tauri the mock host returns a deterministic multi-harness window
   so `bun run dev` renders the full page.
 
@@ -99,3 +109,21 @@ Bridge's Graphite & Paper chrome with Tailwind v4 utilities only.
   with the new params, shows the unpriced note and the source coverage
   state, scan action refetches, empty window copy.
 - `bun run build` and `bun run test` green.
+
+## Regression: missing device history
+
+Locked before this correction on `fix/usage-summary-honesty`:
+
+- The live database had zero history sources and observations despite the
+  default history toggle being enabled. T3's cached, deduplicated Aug 11-Sep 9
+  records in Asia/Kolkata priced to $5,455.37 Claude + $739.19 Codex.
+- Component tests must prove automatic import, more than one bounded batch,
+  retrying only partial sources, progress with an unchanged imported count
+  but an advancing cursor, stopping on a stuck cursor or failure, explicit
+  history-off scope, cancellation, and late-response protection.
+- Replay real local history into an isolated store and report the before/after
+  summary using the production importer and aggregator. Do not rewrite the
+  live ledger or change rates to force agreement with T3.
+- Desktop smoke: open Usage with history enabled, observe progress to
+  completion, refresh, switch windows, and turn history off. The total must
+  state its scope, and pending/failed history must never look complete.

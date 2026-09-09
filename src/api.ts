@@ -8,6 +8,7 @@ import { asWireKind, readWireKind } from "./transcript/wire";
 import type { AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
 import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, SummaryParams, UsageBucket, UsageHistorySource, UsagePriceOverride, UsagePricingStatus, UsageSummaryResult } from "./types";
+import type { MeterRegistry } from "./types";
 import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult } from "./protocol/generated/protocol";
@@ -585,6 +586,16 @@ const mockHistorySources: UsageHistorySource[] = [
   { id: "opencode:opencode.db", agent: "opencode", provider: "opencode", capability: "supported", location: "~/.local/share/opencode/opencode.db", detectedVersion: null, coverageState: "partial", coverageReason: "scan stopped at the record cap; run again to continue", coverageStartAt: "2026-05-20T12:00:00Z", coverageEndAt: now, lastSuccessfulScanAt: now, lastError: null, recordsImported: 10_019, recordsSkipped: 0 },
   { id: "cursor:~/.cursor/chats", agent: "cursor", provider: "cursor", capability: "unsupported", location: "~/.cursor/chats", detectedVersion: null, coverageState: "unsupported", coverageReason: "Cursor's local stores hold no token counts", coverageStartAt: null, coverageEndAt: null, lastSuccessfulScanAt: null, lastError: null, recordsImported: 0, recordsSkipped: 0 },
 ];
+const mockMeterRegistry: MeterRegistry = {
+  providers: [
+    { id: "codex", label: "Codex", supported: true, plannedSource: null },
+    { id: "claude", label: "Claude", supported: true, plannedSource: null },
+    { id: "openrouter", label: "OpenRouter", supported: false, plannedSource: "API token credit tracking" },
+  ],
+  adaptiveDefaultSeconds: 300,
+  nominalIntervalSeconds: 300,
+  attribution: "Meter math ported from steipete/CodexBar (MIT)",
+};
 const mockWorktreeUsage: WorktreeUsage = {
   totalCount: 3, totalBytes: 2_759_852_032,
   reclaimableCount: 1, reclaimableBytes: 2_684_354_560, retainedCount: 1,
@@ -1171,6 +1182,25 @@ export const bridgeApi = {
       recordsImported: scanned.some(source => source.agent === "codex") ? 122 : 0,
       recordsSkipped: 0,
       sources: scanned.map(source => ({ sourceId: source.id, agent: source.agent, provider: source.provider, capability: source.capability, location: source.location, coverage: source.coverageState, recordsImported: source.agent === "codex" ? 122 : 0, recordsSkipped: 0, nextCursor: null, warning: source.capability === "unsupported" ? source.coverageReason : null })),
+    });
+  },
+  // ── meter: the CodexBar-style menu-bar companion ──────────────────────────
+  //
+  // Live windows ride the existing account-usage channel; these two calls only
+  // fetch the static provider registry and trigger a refresh. Pace math lives
+  // in `src/meter.ts`, ported from the same CodexBar sources as the Rust core.
+  getMeterSnapshot: (): Promise<MeterRegistry> =>
+    isTauri() ? call("meter/get_meter_snapshot") : Promise.resolve(structuredClone(mockMeterRegistry)),
+  refreshMeter: (): Promise<void> => {
+    if (isTauri()) return call("meter/refresh_meter").then(() => undefined);
+    return Promise.resolve();
+  },
+  // The desktop shell owns this channel (native tray menu/left-click), not the
+  // protocol — same exemption as MENU_COMMAND_EVENT in api.boundary.test.ts.
+  onMeterTray: (handler: (action: "open-popover" | "refresh") => void): Promise<UnlistenFn> => {
+    if (!isTauri()) return Promise.resolve(() => undefined);
+    return listen<string>("bridge-meter-tray", event => {
+      if (event.payload === "open-popover" || event.payload === "refresh") handler(event.payload);
     });
   },
   // The composer's inline typeahead. Off by default; `configured: false` is a

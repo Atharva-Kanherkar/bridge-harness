@@ -18,7 +18,7 @@ use crate::{
     adapters, agent, agent_config, agent_integration, automations, binary, browser_bridge,
     claude_import, compaction_controller, completion, delegation, external_import, git, handoff,
     learning_job, learning_router, live_turn, marketplace, memory_ledger,
-    model_profiles, opencode_adapter, prompt_studio, prompts, routing_evaluation,
+    meter, model_profiles, opencode_adapter, prompt_studio, prompts, routing_evaluation,
     secret_interception,
     session_recall, session_supervisor,
     sessions, skill_marketplace, slash, store,
@@ -3692,6 +3692,34 @@ pub fn scan_usage_history(
 ) -> Result<usage_import::ScanReport, BridgeError> {
     let env = usage_import::SourceEnv::from_process();
     usage_history::scan_history(core, &env, max_records, source_ids)
+}
+
+// --- menu-bar meter (CodexBar port) ------------------------------------------------
+// Static provider registry plus the shared refresh trigger. Live windows ride
+// the existing `account-usage` event channel (see `refresh_account_usage`);
+// pace math lives in `meter` (Rust) and `src/meter.ts` (TypeScript), both
+// ported from CodexBar's `UsagePace.weekly`.
+
+/// The meter registry: live providers plus planned CodexBar follow-ups.
+pub fn meter_snapshot() -> meter::MeterRegistry {
+    meter::registry_snapshot()
+}
+
+/// Trigger the shared account-usage refresh (Claude `/usage` probe plus one
+/// live Codex session); results arrive on the `account-usage` channel.
+///
+/// Coalesced: calls within 10 seconds of an accepted one return `Ok` without
+/// spawning another probe pair. Neither the tray menu nor the popover button
+/// can show a spinner, so rapid re-clicks would otherwise stack a Claude PTY
+/// probe per click — the hammering the adaptive policy exists to prevent.
+pub fn refresh_meter(core: &Arc<BridgeCore>) -> Result<(), BridgeError> {
+    static LAST_REFRESH_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    let now = chrono::Utc::now().timestamp_millis();
+    if now - LAST_REFRESH_MS.load(std::sync::atomic::Ordering::SeqCst) < 10_000 {
+        return Ok(());
+    }
+    LAST_REFRESH_MS.store(now, std::sync::atomic::Ordering::SeqCst);
+    core.refresh_account_usage()
 }
 
 // --- worktree inventory --------------------------------------------------------

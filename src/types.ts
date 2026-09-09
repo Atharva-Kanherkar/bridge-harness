@@ -109,6 +109,8 @@ export type {
   MemoryInjectionSettings,
   MemoryPacketAudit,
   MemoryPacketItem,
+  MeterProviderEntry,
+  MeterRegistry,
   UsageLedgerRow,
   UsageBucket,
   UsageBucketTotals,
