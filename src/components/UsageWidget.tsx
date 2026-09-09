@@ -5,6 +5,7 @@ import { AlertTriangle, ChevronDown, Gauge, Layers, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
+import { harnessChartDot, HarnessMark } from "./harnessMarks";
 import { clampPercent, contextPressure, formatReset, projectUsageExhaustion, type CacheDiagnostic, type MetricSource, type UsageHistoryEntry, type UsageProvider, type UsageRateSample, type UsageSnapshot } from "../usage";
 import type { AdapterDescriptor } from "../types";
 import { useContextBreakdown } from "../contextBreakdown";
@@ -38,8 +39,10 @@ function sourceLabel(source: MetricSource): string {
   return source.charAt(0).toUpperCase() + source.slice(1);
 }
 
+/** Where a figure came from, said quietly: a word in muted ink, not a pill.
+ *  Provenance matters, but it is context, and it must not outweigh the number. */
 function SourceBadge({ source }: { source: MetricSource }) {
-  return <span className="shrink-0 whitespace-nowrap rounded-full border border-border px-1.5 py-0.5 text-caption font-semibold uppercase tracking-[0.08em] text-muted-foreground">{sourceLabel(source)}</span>;
+  return <span className="shrink-0 whitespace-nowrap text-[11px] text-muted-foreground">{sourceLabel(source)}</span>;
 }
 
 function highestUse(snapshot?: UsageSnapshot): number | undefined {
@@ -122,10 +125,10 @@ function UsageIndicatorRing({ percent, tier }: { percent: number | null; tier: U
   </svg>;
 }
 
-function UsageBar({ used }: { used: number }) {
+function UsageBar({ used, harness }: { used: number; harness?: string }) {
   const clamped = clampPercent(used);
   return <span className="block h-1.5 w-full overflow-hidden rounded-full bg-muted">
-    <span className="block h-full rounded-full bg-foreground transition-[width] duration-700 ease-out" style={{ width: `${clamped}%` }} />
+    <span className={cn("block h-full origin-left rounded-full transition-[width] duration-700 ease-out motion-safe:animate-[meter-fill_600ms_ease-out]", harnessChartDot(harness))} style={{ width: `${clamped}%` }} />
   </span>;
 }
 
@@ -219,19 +222,20 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
         // straight onto the frame it read as one shape with a seam through it:
         // the composer is rounded on all four corners, so a panel resting on it
         // can never continue that outline. It is its own popover instead.
+        // A card, not a sheet: it sits at the composer's left edge at a
+        // reading width and never spans the conversation.
         compact
-          ? frame
-            ? "inset-x-0 bottom-full mb-1.5"
-            : "bottom-full left-0 mb-1.5 w-[min(100vw-1.5rem,42rem)]"
+          ? "bottom-full left-0 mb-1.5 w-[min(100vw-1.5rem,26rem)]"
           : "right-0 top-full pt-2",
-        open ? "visible pointer-events-auto opacity-100" : "invisible pointer-events-none opacity-0",
+        "transition-[opacity,transform] duration-200 ease-out motion-reduce:transition-none",
+        open ? "visible translate-y-0 pointer-events-auto opacity-100" : "invisible translate-y-1 pointer-events-none opacity-0",
       )}
     >
       {/* Content scrolls inside the material, bounded by the space above the composer. */}
       <div
         style={compact && availableHeight !== undefined ? { maxHeight: availableHeight } : undefined}
         className={cn(
-          "@container/usage u-glass-popover flex max-h-[80dvh] flex-col overflow-hidden",
+          "@container/usage u-glass-popover flex max-h-[60dvh] flex-col overflow-hidden",
           // Every corner, both modes: a popover is a whole shape, and half-round
           // corners read as a rendering fault rather than as a join.
           compact ? "w-full rounded-2xl" : "w-[440px] max-w-[calc(100vw-1.5rem)] rounded-2xl",
@@ -247,8 +251,7 @@ export const UsageWidget = memo(function UsageWidget({ usage, adapters, samples 
           <div className="mb-2.5 flex items-center gap-2 px-0.5">
             <Gauge size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
             <h2 className="font-display text-sm font-semibold text-foreground">Usage health</h2>
-            <span className="ml-auto truncate text-caption text-muted-foreground">Provider usage</span>
-            <button type="button" onClick={() => setOpen(false)} className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label="Close usage health details"><X size={13} aria-hidden="true" /></button>
+            <button type="button" onClick={() => setOpen(false)} className="ml-auto grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label="Close usage health details"><X size={13} aria-hidden="true" /></button>
           </div>
 
           <div className="divide-y divide-border overflow-hidden rounded-lg border border-border bg-card">
@@ -378,9 +381,9 @@ function ProviderDetail({ provider, snapshot, samples, adapter, activeLogin, onS
   const used = status === "normal" ? highestUse(snapshot) : undefined;
   const projection = status === "normal" ? projectUsageExhaustion(samples) : null;
   const loginActive = activeLogin === provider.id;
-  return <section className="px-3 py-3" aria-label={`${provider.label} usage`}>
+  return <section className="px-3 py-2.5" aria-label={`${provider.label} usage`}>
     <div className="flex min-w-0 flex-wrap items-center gap-2">
-      <UsageRing used={used} inert={status !== "normal"} />
+      <HarnessMark harness={provider.id} size={12} />
       <b className="text-caption text-foreground">{provider.label}</b>
       {status === "normal" && snapshot?.planType && <span className="text-caption text-muted-foreground">{snapshot.planType}</span>}
       {status === "normal" && snapshot?.model && <span className="min-w-0 truncate font-mono text-caption text-muted-foreground">{snapshot.model}</span>}
@@ -402,16 +405,17 @@ function ProviderDetail({ provider, snapshot, samples, adapter, activeLogin, onS
     {loginActive ? <ProviderLoginPane provider={provider.id} label={provider.label} onClose={onCloseLogin} />
     : status === "not_installed" ? <p className="mt-2 text-caption leading-relaxed text-muted-foreground">{adapter?.unavailableReason ?? `${provider.label} isn't installed.`} Add it in Settings → Harnesses.</p>
     : status === "signed_out" ? <p className="mt-2 text-caption leading-relaxed text-muted-foreground">Sign in to see usage, quota, and context for this provider.</p>
-    : snapshot?.windows.length ? <div className="mt-2.5 grid gap-2.5">{snapshot.windows.map(window => {
+    : snapshot?.windows.length ? <div className="mt-2 grid gap-2">{snapshot.windows.map(window => {
       const clamped = clampPercent(window.usedPercent);
-      const reset = window.resetsLabel ?? formatReset(window.resetsInSeconds);
+      const reset = window.fresh ? "fresh window" : window.resetsLabel ?? formatReset(window.resetsInSeconds);
+      // The source is said once, on the provider line; a window inherits it.
       return <div key={window.id}>
-        <div className="mb-1 flex flex-wrap items-center gap-2 text-caption"><span className="min-w-0 truncate text-muted-foreground">{window.label}</span><span className="ml-auto whitespace-nowrap font-mono text-foreground">{Math.round(clamped)}% used</span><SourceBadge source={window.source} /></div>
-        <UsageBar used={clamped} />
-        <div className="mt-1 text-caption text-muted-foreground">{reset ?? "Reset unknown"}</div>
+        <div className="mb-1 flex items-baseline gap-2 text-caption"><span className="min-w-0 truncate text-muted-foreground">{window.label}</span><span className="ml-auto whitespace-nowrap tabular-nums text-foreground">{Math.round(clamped)}%</span></div>
+        <UsageBar used={clamped} harness={provider.id} />
+        <div className="mt-1 text-[11px] text-muted-foreground">{reset ?? "Reset unknown"}</div>
       </div>;
     })}</div> : <p className="mt-2 text-caption leading-relaxed text-muted-foreground">This provider has not reported its quota yet.</p>}
-    {projection && <div className="mt-2.5 flex gap-2 rounded-lg border border-warning/30 bg-warning/10 p-2 text-caption leading-relaxed text-warning"><AlertTriangle size={12} className="mt-0.5 shrink-0" aria-hidden="true" /><span>{projection.explanation} <b className="font-semibold uppercase tracking-wide">Estimated</b></span></div>}
+    {projection && <div className="mt-2 flex gap-2 rounded-lg border border-border p-2 text-[11px] leading-relaxed text-muted-foreground"><AlertTriangle size={12} className="mt-0.5 shrink-0" aria-hidden="true" /><span>{projection.explanation} <span className="text-foreground">Estimated</span></span></div>}
   </section>;
 }
 
