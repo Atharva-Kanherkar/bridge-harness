@@ -23,112 +23,27 @@
         <div>
           <p class="eyebrow">work, memory & learning</p>
           <h1>The work board</h1>
-          <p class="lede">One ranked, read-only list that answers what to do right now: Bridge's own blocked state plus actionable judgments from a briefing model reading your connectors.</p>
+          <p class="lede">A briefing of activity from your connected integrations in the past 24 hours: Slack, GitHub, Gmail, Linear, and Notion.</p>
           <div class="prose">
-            <h2 id="h-two-classes">Facts and Judgments</h2>
-            <p>The work board's trustworthiness depends on keeping these visibly separate. <strong>Facts</strong> come from Bridge's own SQLite: a worker blocked on human input, a failed check, a drifted branch, or an approval that has expired. <strong>Judgments</strong> come from a model reading your connected tools—Slack, GitHub, Gmail, Notion—and ranking what it finds. Facts are always available, even offline. Judgments only appear when your pinned briefing harness is logged in.</p>
+            <h2 id="h-two-classes">Recent integration activity</h2>
+            <p>Work shows one list, newest activity first. Each item has a source and account label, a source timestamp, a short summary, and a link to the original when available. Local Bridge checks, approvals, worker queues, and workspace drift stay off this screen.</p>
+            <p>The board is a briefing, not an exhaustive activity export. Each run can contribute up to 12 summaries, and the board shows up to 100 recent saved items. The status line tells you which tools were actually read and which could not be reached.</p>
 
-            <div class="table-scroll">
-              <table>
-                <thead>
-                  <tr>
-                    <th></th>
-                    <th>Facts</th>
-                    <th>Judgments</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  <tr>
-                    <td><strong>Source</strong></td>
-                    <td>Bridge's SQLite</td>
-                    <td>Model reading your connectors</td>
-                  </tr>
-                  <tr>
-                    <td><strong>Examples</strong></td>
-                    <td>worker blocked on human, failed completion check, branch divergence, expired approval</td>
-                    <td>"Reply to Priya's thread about the auth rollout", "PR #204 has been waiting three days"</td>
-                  </tr>
-                  <tr>
-                    <td><strong>Ranking</strong></td>
-                    <td>Deterministic rules</td>
-                    <td>Model-assigned with a stated reason</td>
-                  </tr>
-                  <tr>
-                    <td><strong>Dismissible</strong></td>
-                    <td>No—clears when its state clears</td>
-                    <td>Yes—user can dismiss</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
+            <h2 id="h-where-brief-runs">Open and set up Work</h2>
+            <p>Go to <strong>Settings → Work briefing → Open Work</strong>. Choose a supported briefing model and the connected tools it should read. You can also reach those settings through <strong>Set up integrations</strong> on an unconfigured board.</p>
+            <p>Opening Work reads the saved board. Clicking <strong>Refresh</strong> runs a new integration briefing when configured. The button is disabled while a run is active. The browser preview has no live connectors and shows an empty board instead of sample work.</p>
 
-            <p>Facts render above the fold under <strong>Needs you</strong> and never depend on a model call. Judgments render under <strong>Today</strong> (ranked high-value) and <strong>Later</strong> (snoozed or low-confidence). A judgment that correlates with a fact—"this Slack thread is about the stalled worker in <code>bridge/auth</code>"—is the highest-value row on the screen because the briefing prompt receives facts as context and can cite Bridge sources directly.</p>
+            <h2 id="h-task-contract">What “past 24 hours” means</h2>
+            <p>The window follows the activity timestamp reported by the source item, such as a Slack message time or a GitHub issue update. Reading an old item again does not make it recent. Missing, invalid, future, and expired source dates are excluded.</p>
+            <p>The briefing searches using explicit UTC bounds and reads individual items for evidence. A date on a multi-item search response cannot make every result recent. Existing saved items without source dates remain hidden until a dated source read replaces them.</p>
+            <p>The open board checks its clock every 30 seconds. Expired items disappear even without another refresh. A failed refresh keeps only previously read items still within the window and reports the failure.</p>
 
-            <h2 id="h-read-only">The read-only guarantee</h2>
-            <p>Every task on this screen is data you act on. Nothing is autonomous. Bridge never sends a message, creates a PR, replies to an email, or executes any side effect on the model's word alone. When you click <strong>Start</strong> on a task, a new session opens with the task title, its explanation, and a link to the evidence—quoted as material from your sources, never as system instructions.</p>
+            <h2 id="h-read-only">Read-only briefings and source links</h2>
+            <p>A briefing reads the selected integrations through the existing provider permission gate. It cannot run shell commands, access local files, or write to connected tools. The model summarizes returned data; it cannot supply its own source timestamp, identity, or link.</p>
+            <p>Source links open the original item and are checked again before opening. The board does not start local tasks, send messages, change issues, or route summaries into workspaces.</p>
 
-            <div class="callout">
-              <svg class="icon" style="width:17px;height:17px"><use href="#i-shield"></use></svg>
-              <p>This is a safety boundary, not a convenience feature. The model reads text written by other people. Without it, a briefing harness could inherit Slack send, GitHub comment, and Gmail reply permissions just by being logged in.</p>
-            </div>
-
-            <p>To enforce this, the briefing harness runs under a <code>Briefing</code> permission mode that is fail-closed on tool verbs. Local filesystem access is limited to read-only tools—<code>Read</code>, <code>Grep</code>, <code>Glob</code>. MCP tool access is an explicit allowlist of read verbs: <code>search</code>, <code>read</code>, <code>list</code>, <code>get</code>, <code>query</code>, <code>fetch</code>. Anything unclassified is denied by default, and background runs fail rather than parking on an approval that would never be seen.</p>
-
-            <h2 id="h-where-brief-runs">Where the briefing runs</h2>
-            <p>The briefing harness is pinned in Settings alongside your existing role profiles. If the pinned harness is not installed or not logged in, the screen shows facts plus a plain banner naming what to fix and links to Marketplace. No silent fallback.</p>
-
-            <p>Connector reach differs per harness. Bridge can enumerate available connectors for Claude and Codex (from its marketplace configuration), but not for OpenCode—a pinned OpenCode harness shows "connectors unknown" in the header rather than a confident list. The UI always reports what was actually read by looking at the briefing run evidence, never on the model's word alone.</p>
-
-            <p>A briefing session is a real session, workspace-less like a direct chat. It has its own row in the transcript history, separate from your sidebar tree and from Mission Control. Replay, usage accounting, and failure surfacing all work for free—a briefing that goes wrong is inspectable like any other transcript.</p>
-
-            <h2 id="h-task-contract">Task fingerprints and storage</h2>
-            <p>Each task on the work board carries a fingerprint derived from its source and external ID, not supplied by the model. When a new briefing run completes, tasks are upserted by fingerprint, preserving your user state across runs. This means you can pin, snooze, mark done, or dismiss a task, and if it reappears in the next briefing, your preferences survive.</p>
-
-            <p>A task with no resolvable external ID (thread timestamp, GitHub issue number, Gmail thread ID) gets a fingerprint from its normalized title and is marked ephemeral: it shows once and disappears on the next run instead of accumulating as stale entries. Tasks whose explanation does not cite evidence are dropped at parse time—never shown and argued with later.</p>
-
-            <p>Dismissed and done fingerprints are fed back into the next briefing prompt as a compact list. Re-proposals inside a 14-day cooldown are dropped during reconciliation unless the evidence has a newer timestamp than the dismissal. The model is not trusted to remember; the store enforces it. Your optional dismissal reason is also fed back, so the model can learn patterns—"I don't own deploys"—without a settings page for it.</p>
-
-            <div class="callout is-warning">
-              <svg class="icon" style="width:17px;height:17px"><use href="#i-info"></use></svg>
-              <p>A task absent from a run is <strong>not</strong> deleted. It needs two consecutive misses before going stale, so one flaky connector cannot wipe your list.</p>
-            </div>
-
-            <h2 id="h-reconciliation">Why reconciliation matters</h2>
-            <p>When a briefing run completes, every task is upserted by its fingerprint. Your state—pinned, snoozed until, done, dismissed—survives rewriting of the title, explanation, rank, and age. This is the part that decides whether the work board becomes something you love or something you mute.</p>
-
-            <p>The reconciliation step also tracks how many consecutive runs a task has missed. Only after two consecutive misses does a task move to stale and eventually disappear. This protection against flaky connectors means one failed Slack lookup won't erase a task you've been working through. At the same time, the dismissal cooldown prevents the model from endlessly re-proposing tasks you've already turned down—unless the underlying evidence changes.</p>
-
-            <h2 id="h-scheduling">Scheduling and cost</h2>
-            <p>Briefing runs follow the same scheduling pattern as learning jobs: <code>cadence_minutes</code>, <code>next_run_at</code>, <code>enabled</code>, <code>run_budget_microusd</code>, and <code>run_budget_tokens</code> all live in a single <code>LearningSchedule</code> field set. A 15-minute lease and idempotency key per run ensure that a focus-triggered refresh and a scheduled run won't double-charge.</p>
-
-            <p>The default cadence is conservative: the screen refreshes when you bring the app to focus, and scheduled runs happen hourly. You can tighten it, but cost drift is real—cadence multiplied by connector count multiplied by context size is a line item on your subscription. Every briefing turn writes to the usage ledger with its own source, so the Usage widget shows what background work costs. A background feature that quietly spends your subscription is a feature people turn off.</p>
-
-            <p>External wake-up is available via <code>bridge work brief --database &lt;db&gt; --trigger claude:ID</code>, mirroring the <code>bridge learning run</code> command with the same registration, expiry, and credential checks. Bridge does not create, enumerate, or repair a schedule—it hands you the command and a registration ID you can use from your own automation.</p>
-
-            <h2 id="h-ui-and-actions">The screen and user actions</h2>
-            <p>The work board follows Bridge's Graphite & Paper design: <strong>priority is carried by order and rank, not by color.</strong> A prioritized list is the last place you want status hue creating a wall of badges.</p>
-
-            <p>The header shows the last briefed time, which harness and model were used, connector chips (muted, mono, with unreachable ones struck through), and a Refresh button. Below that: <strong>Needs you</strong> lists facts in deterministic order, each with the one action that clears it. <strong>Today</strong> shows ranked judgments with title, explanation, source chip, age, and a right-aligned Start button. <strong>Later</strong> is collapsed by default, holding snoozed and low-confidence rows.</p>
-
-            <p>Empty and degraded states are first-class. "No harness pinned", "harness not logged in", "no connectors available", "brief failed to parse", "budget exhausted", and "nothing to do" each have explicit handling. That last one should feel like a reward, not a bug.</p>
-
-            <p>All actions are human-initiated. Clicking Start opens a normal Bridge session with the task title, explanation, and evidence link pre-filled. Your dismissals, snoozes, and done marks all persist across briefing runs.</p>
-
-            <h2 id="h-risks">Safety and risk considerations</h2>
-            <p><strong>Prompt injection is the headline risk.</strong> Every judgment on this screen was written by a model that read text authored by other people. The mitigations are the fail-closed tool allowlist, read-only filesystem, tasks-as-data with no auto-dispatch, evidence rendered as links rather than embedded content, and secret interception on the way out. This must be stated in the documentation that ships with the feature, not just in code comments.</p>
-
-            <p>A brief that is 70% right is worse than no brief. Hence the evidence requirement, the dismissal cooldown, and the separation of facts from judgments. A user who dismisses three bad rows in a row will never trust the fourth good one. This is why reconciliation is load-bearing: it's what keeps the board from becoming noise.</p>
-
-            <p>Cost can drift silently. Default the cadence conservatively and let people tighten it. Default the budget to something visible. Anything recurring needs cost visibility from day one.</p>
-
-            <p>OpenCode is a second-class citizen here. Bridge cannot enumerate its connectors, so a pinned OpenCode harness gets "connectors unknown" rather than a confident chip list. The UI must not pretend this uncertainty away.</p>
-
-            <h2 id="h-extensibility">Building something similar</h2>
-            <p>The work board's core patterns are reusable. The two-class structure—facts from your own state, judgments from a model reading external sources—separates signal you can always trust from signal that depends on a model call and a connector staying logged in. The reconciliation by fingerprint is the pattern that prevents a dismissed task from haunting you forever, and the 14-day cooldown is what prevents re-proposals unless evidence actually changed.</p>
-
-            <p>The permission mode is the part that makes it safe to let a background model read other people's text. Don't skip the fail-closed allowlist. If you enumerate only read verbs, you can enforce it at the sidecar layer and it stays enforced even when the allowlist grows—new tools default to denied until explicitly classified.</p>
-
-            <p>Task-as-data, not task-as-instruction, is the boundary that keeps everything human-controlled. The evidence goes as a link, not as quoted text in the system prompt. When you click Start, the evidence enters as quoted material attributed to its source. This means the model never has to guess where something came from.</p>
+            <h2 id="h-scheduling">Refresh settings</h2>
+            <p>Settings controls optional scheduled refreshes and refresh on focus. Both are off by default; manual refresh is available after setup. Existing cooldown, lease, and run-budget limits still apply. Use the run status and source coverage to distinguish a completed read from a skipped or failed refresh.</p>
           </div>
           <div id="pagerMount"></div>
         </div>
