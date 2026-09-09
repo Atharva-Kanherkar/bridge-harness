@@ -678,6 +678,106 @@ async fn discard_worker_worktree(
 }
 
 #[tauri::command]
+async fn summary(
+    since_day: String,
+    until_day: String,
+    resolution: bridge_core::usage_summary::UsageResolution,
+    time_zone: Option<String>,
+    workspace_id: Option<String>,
+    include_imported: bool,
+    since_time: Option<String>,
+    until_time: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::usage_summary::UsageSummary, BridgeError> {
+    let core = state.inner().clone();
+    let request = bridge_core::usage_summary::UsageSummaryRequest {
+        since_day,
+        until_day,
+        resolution,
+        time_zone,
+        workspace_id,
+        include_imported,
+        since_time,
+        until_time,
+    };
+    tauri::async_runtime::spawn_blocking(move || api::usage_summary(&core, &request))
+        .await
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?
+}
+
+#[tauri::command]
+async fn list_price_overrides(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Vec<bridge_core::usage_pricing::PriceOverride>, BridgeError> {
+    api::list_usage_price_overrides(state.inner())
+}
+
+#[tauri::command]
+async fn set_price_override(
+    model: String,
+    input_microusd_per_mtok: i64,
+    output_microusd_per_mtok: i64,
+    cache_read_microusd_per_mtok: Option<i64>,
+    cache_write_microusd_per_mtok: Option<i64>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Vec<bridge_core::usage_pricing::PriceOverride>, BridgeError> {
+    api::set_usage_price_override(
+        state.inner(),
+        &model,
+        input_microusd_per_mtok,
+        output_microusd_per_mtok,
+        cache_read_microusd_per_mtok,
+        cache_write_microusd_per_mtok,
+    )
+}
+
+#[tauri::command]
+async fn clear_price_override(
+    model: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Vec<bridge_core::usage_pricing::PriceOverride>, BridgeError> {
+    api::clear_usage_price_override(state.inner(), &model)
+}
+
+#[tauri::command]
+async fn refresh_rates(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::usage_pricing::PricingStatus, BridgeError> {
+    let core = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || api::refresh_usage_rates(&core))
+        .await
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?
+}
+
+#[tauri::command]
+async fn list_history_sources(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Vec<bridge_core::usage_history::UsageHistorySource>, BridgeError> {
+    let core = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || api::list_usage_history_sources(&core))
+        .await
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?
+}
+
+#[tauri::command]
+async fn scan_history(
+    max_records: Option<u64>,
+    source_ids: Option<Vec<String>>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::usage_import::ScanReport, BridgeError> {
+    let core = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        api::scan_usage_history(
+            &core,
+            max_records.map(|max| usize::try_from(max).unwrap_or(usize::MAX)),
+            source_ids.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| BridgeError::Invalid(error.to_string()))?
+}
+
+#[tauri::command]
 async fn register_verifier_manifest(
     source: String,
     manifest: completion::VerifierManifest,
@@ -2123,6 +2223,13 @@ pub fn run() -> i32 {
             sweep_worktrees,
             adopt_worker_worktree,
             discard_worker_worktree,
+            summary,
+            list_price_overrides,
+            set_price_override,
+            clear_price_override,
+            refresh_rates,
+            list_history_sources,
+            scan_history,
             register_verifier_manifest,
             verifier_candidates,
             get_router_preferences,

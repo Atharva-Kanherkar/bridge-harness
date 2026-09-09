@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 52;
+const LATEST_SCHEMA_VERSION: i64 = 53;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -681,6 +681,7 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             50 => migration_50_worktree_inventory(&transaction)?,
             51 => migration_51_archived_chats(&transaction)?,
             52 => migration_52_worker_failure_class(&transaction)?,
+            53 => migration_53_usage_tracking(&transaction)?,
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -832,6 +833,36 @@ fn migration_50_worktree_inventory(transaction: &Transaction<'_>) -> Result<(), 
 /// `format!` silently downgraded every stall to a generic failure. And the
 /// classification it was trying to recover is not in the summary anyway:
 /// a stall is something Bridge observed, not something the worker reported.
+/// Per-request usage tracking: the ledger learns the token breakdown and
+/// provenance fields the summary needs, user price overrides get a table, and
+/// the explicitly refreshed rate table gets one cached row. Additive only —
+/// every existing ledger row keeps its values.
+fn migration_53_usage_tracking(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(transaction, "usage_ledger", "reasoning_tokens", "INTEGER")?;
+    add_column_if_missing(transaction, "usage_ledger", "serving_model", "TEXT")?;
+    add_column_if_missing(transaction, "usage_ledger", "context_window_tokens", "INTEGER")?;
+    add_column_if_missing(transaction, "usage_ledger", "context_used_tokens", "INTEGER")?;
+    add_column_if_missing(transaction, "usage_ledger", "provider_record_id", "TEXT")?;
+    add_column_if_missing(transaction, "usage_ledger", "cache_savings_microusd", "INTEGER")?;
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS usage_price_overrides (
+            model TEXT PRIMARY KEY,
+            input_microusd_per_mtok INTEGER NOT NULL CHECK (input_microusd_per_mtok >= 0),
+            output_microusd_per_mtok INTEGER NOT NULL CHECK (output_microusd_per_mtok >= 0),
+            cache_read_microusd_per_mtok INTEGER CHECK (cache_read_microusd_per_mtok IS NULL OR cache_read_microusd_per_mtok >= 0),
+            cache_write_microusd_per_mtok INTEGER CHECK (cache_write_microusd_per_mtok IS NULL OR cache_write_microusd_per_mtok >= 0),
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS usage_rate_cache (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            fetched_at TEXT NOT NULL,
+            source_url TEXT NOT NULL,
+            body TEXT NOT NULL
+        );",
+    )?;
+    Ok(())
+}
+
 fn migration_52_worker_failure_class(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
     add_column_if_missing(transaction, "worker_runtime", "failure_class", "TEXT")?;
     Ok(())
@@ -3508,8 +3539,8 @@ pub fn update_worker_queue(
 
 pub fn append_usage_ledger(db: &Connection, usage: &UsageLedgerRow) -> Result<i64, BridgeError> {
     db.execute(
-        "INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,uncached_input_tokens,context_percent,capability_units,runtime_ms,cost_microusd,cost_source,stable_prefix_id,stable_prefix_hash,prompt_schema_version,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,source,created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)",
+        "INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,uncached_input_tokens,context_percent,capability_units,runtime_ms,cost_microusd,cost_source,stable_prefix_id,stable_prefix_hash,prompt_schema_version,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,source,created_at,reasoning_tokens,serving_model,context_window_tokens,context_used_tokens,provider_record_id,cache_savings_microusd)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31)",
         params![
             usage.workspace_id,
             usage.session_id,
@@ -3536,6 +3567,12 @@ pub fn append_usage_ledger(db: &Connection, usage: &UsageLedgerRow) -> Result<i6
             usage.cross_harness_reuse,
             usage.source,
             usage.created_at,
+            usage.reasoning_tokens,
+            usage.serving_model,
+            usage.context_window_tokens,
+            usage.context_used_tokens,
+            usage.provider_record_id,
+            usage.cache_savings_microusd,
         ],
     )?;
     Ok(db.last_insert_rowid())
@@ -3546,7 +3583,7 @@ pub fn usage_ledger(
     workspace_id: &str,
     session_id: Option<&str>,
 ) -> Result<Vec<UsageLedgerRow>, BridgeError> {
-    let sql = "SELECT id,workspace_id,session_id,turn_id,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,uncached_input_tokens,context_percent,capability_units,runtime_ms,cost_microusd,cost_source,stable_prefix_id,stable_prefix_hash,prompt_schema_version,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,source,created_at
+    let sql = "SELECT id,workspace_id,session_id,turn_id,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,uncached_input_tokens,context_percent,capability_units,runtime_ms,cost_microusd,cost_source,stable_prefix_id,stable_prefix_hash,prompt_schema_version,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,source,created_at,reasoning_tokens,serving_model,context_window_tokens,context_used_tokens,provider_record_id,cache_savings_microusd
                FROM usage_ledger WHERE workspace_id=?1 AND (?2 IS NULL OR session_id=?2) ORDER BY id";
     query_with_params(db, sql, params![workspace_id, session_id], |row| {
         Ok(UsageLedgerRow {
@@ -3576,6 +3613,12 @@ pub fn usage_ledger(
             cross_harness_reuse: row.get(23)?,
             source: row.get(24)?,
             created_at: row.get(25)?,
+            reasoning_tokens: row.get(26)?,
+            serving_model: row.get(27)?,
+            context_window_tokens: row.get(28)?,
+            context_used_tokens: row.get(29)?,
+            provider_record_id: row.get(30)?,
+            cache_savings_microusd: row.get(31)?,
         })
     })
 }
@@ -6426,6 +6469,12 @@ mod tests {
             task_family: Some("implementation".into()),
             restoration_mode: Some("fresh".into()),
             cross_harness_reuse: Some("not_applicable".into()),
+            reasoning_tokens: None,
+            serving_model: None,
+            context_window_tokens: None,
+            context_used_tokens: None,
+            provider_record_id: None,
+            cache_savings_microusd: None,
             source: "codex".into(),
             created_at: "now".into(),
         };
@@ -6597,6 +6646,70 @@ mod tests {
     // separate from the workspace-scoped usage ledger. These tests lock the
     // schema and its independence before any importer exists to fill it.
     #[test]
+    fn the_usage_tracking_migration_is_additive_and_idempotent() {
+        let mut db = open(Path::new(":memory:")).unwrap();
+        db.execute_batch(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/usage-migration','now');
+             INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','c','t','main','/tmp/usage-migration/w','ready','now');
+             INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('s','w','codex','s','ready');",
+        )
+        .unwrap();
+        // A row written with the pre-migration column set only.
+        db.execute(
+            "INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,output_tokens,cache_read_tokens,uncached_input_tokens,cost_microusd,cost_source,source,created_at)
+             VALUES('w','s','t',100,10,40,60,250,'provider_reported','provider.codex','then')",
+            [],
+        )
+        .unwrap();
+
+        // Running the migration again is a no-op rather than an error.
+        let transaction = db.transaction().unwrap();
+        migration_53_usage_tracking(&transaction).unwrap();
+        transaction.commit().unwrap();
+
+        let rows = usage_ledger(&db, "w", Some("s")).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].input_tokens, Some(100));
+        assert_eq!(rows[0].cache_read_tokens, Some(40));
+        assert_eq!(rows[0].uncached_input_tokens, Some(60));
+        assert_eq!(rows[0].cost_microusd, Some(250));
+        assert_eq!(rows[0].cost_source.as_deref(), Some("provider_reported"));
+        for missing in [
+            rows[0].reasoning_tokens,
+            rows[0].context_window_tokens,
+            rows[0].context_used_tokens,
+            rows[0].cache_savings_microusd,
+        ] {
+            assert_eq!(missing, None, "a pre-migration row gains no invented figure");
+        }
+        assert_eq!(rows[0].serving_model, None);
+        assert_eq!(rows[0].provider_record_id, None);
+
+        for table in ["usage_price_overrides", "usage_rate_cache"] {
+            let exists: bool = db
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    params![table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists, "{table} is missing after migration");
+        }
+        // The rate cache holds one row by construction.
+        db.execute(
+            "INSERT INTO usage_rate_cache(id,fetched_at,source_url,body) VALUES(1,'now','url','{}')",
+            [],
+        )
+        .unwrap();
+        assert!(db
+            .execute(
+                "INSERT INTO usage_rate_cache(id,fetched_at,source_url,body) VALUES(2,'now','url','{}')",
+                [],
+            )
+            .is_err());
+    }
+
+    #[test]
     fn opening_a_database_creates_the_analytics_schema_with_dedupe_indexes() {
         let dir = tempfile::tempdir().unwrap();
         let db = open(&dir.path().join("bridge.db")).unwrap();
@@ -6694,5 +6807,44 @@ mod tests {
             analytics_rows, 1,
             "device-wide analytics never belong to a workspace and must survive deletion"
         );
+    }
+
+    #[test]
+    fn agent_usage_observation_unique_constraint_holds_under_insert_or_ignore() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        db.execute_batch(
+            "INSERT INTO agent_usage_sources(id,agent,provider,location_fingerprint,coverage_state,importer_version,created_at,updated_at)
+                 VALUES('s1','claude','anthropic','sha256:loc','partial','test','now','now');",
+        )
+        .unwrap();
+        let insert = |id: &str, native: &str, tokens: i64| -> usize {
+            db.execute(
+                "INSERT OR IGNORE INTO agent_usage_observations(id,source_id,native_record_id,occurred_at,input_semantics,output_semantics,exact_total_formula,output_tokens,importer_version,created_at)
+                 VALUES(?1,'s1',?2,'t','exclusive','delta','anthropic_exclusive_input_plus_cache_and_output',?3,'test','now')",
+                params![id, native, tokens],
+            )
+            .unwrap()
+        };
+        assert_eq!(insert("o1", "msg_1:req_1", 10), 1);
+        // Same native record under a different row id: refused, silently.
+        assert_eq!(insert("o2", "msg_1:req_1", 999), 0);
+        // A different source may hold the same native id.
+        db.execute_batch(
+            "INSERT INTO agent_usage_sources(id,agent,provider,location_fingerprint,coverage_state,importer_version,created_at,updated_at)
+                 VALUES('s2','claude','anthropic','sha256:other','partial','test','now','now');
+             INSERT INTO agent_usage_observations(id,source_id,native_record_id,occurred_at,input_semantics,output_semantics,exact_total_formula,importer_version,created_at)
+                 VALUES('o3','s2','msg_1:req_1','t','exclusive','delta','anthropic_exclusive_input_plus_cache_and_output','test','now');",
+        )
+        .unwrap();
+        let (rows, kept): (i64, i64) = db
+            .query_row(
+                "SELECT COUNT(*), (SELECT output_tokens FROM agent_usage_observations WHERE id='o1') FROM agent_usage_observations",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(rows, 2);
+        assert_eq!(kept, 10, "the first observation wins");
     }
 }

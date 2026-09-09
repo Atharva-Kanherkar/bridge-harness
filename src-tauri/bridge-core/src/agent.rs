@@ -33,6 +33,9 @@ pub struct NormalizedEvent {
 #[derive(Debug, Default)]
 pub struct OpenCodeStreamState {
     message_roles: HashMap<String, String>,
+    /// `(modelID, providerID)` per assistant message, so a `step-finish` part
+    /// can name the model that produced its tokens.
+    message_models: HashMap<String, (Option<String>, Option<String>)>,
 }
 
 pub fn normalize_opencode_message_with_state(
@@ -91,30 +94,19 @@ pub fn normalize_opencode_message_with_state(
             if !message_id.is_empty() && !role.is_empty() {
                 state.message_roles.insert(message_id.into(), role.into());
             }
-            if role != "assistant" {
-                return vec![];
+            if role == "assistant" && !message_id.is_empty() {
+                let model = info.get("modelID").and_then(Value::as_str).map(str::to_owned);
+                let provider = info.get("providerID").and_then(Value::as_str).map(str::to_owned);
+                if model.is_some() || provider.is_some() {
+                    state.message_models.insert(message_id.into(), (model, provider));
+                }
             }
-            let Some(tokens) = info.get("tokens") else {
-                return vec![];
-            };
-            let mut event = with_data(
-                "usage.updated",
-                &properties,
-                json!({
-                    "usage": {
-                        "input_tokens": tokens.get("input").cloned().unwrap_or(Value::Null),
-                        "output_tokens": tokens.get("output").cloned().unwrap_or(Value::Null),
-                        "cached_input_tokens": tokens.pointer("/cache/read").cloned().unwrap_or(Value::Null),
-                        "cache_write_tokens": tokens.pointer("/cache/write").cloned().unwrap_or(Value::Null),
-                        "reasoning_tokens": tokens.get("reasoning").cloned().unwrap_or(Value::Null),
-                    },
-                    "cost": info.get("cost").cloned().unwrap_or(Value::Null),
-                    "model": info.get("modelID").cloned().unwrap_or(Value::Null),
-                    "provider": info.get("providerID").cloned().unwrap_or(Value::Null),
-                }),
-            );
-            event.item_id = (!message_id.is_empty()).then(|| message_id.into());
-            vec![event]
+            // The message's own `tokens` are the last step's figures and its
+            // `cost` the running sum over steps, so a row here would double
+            // count the `step-finish` parts that carry each request exactly
+            // once. Usage is read from those parts; this frame only names the
+            // model they belong to.
+            vec![]
         }
         "message.part.delta" => {
             let message_id = properties
@@ -367,7 +359,28 @@ fn normalize_opencode_part(
             vec![event]
         }
         "step-finish" => {
-            let mut event = with_data("usage.updated", &part, json!({"usage": part.get("tokens")}));
+            let tokens = part.get("tokens").cloned().unwrap_or(Value::Null);
+            let (model, provider) = state
+                .message_models
+                .get(message_id)
+                .cloned()
+                .unwrap_or((None, None));
+            let mut event = with_data(
+                "usage.updated",
+                &part,
+                json!({
+                    "usage": {
+                        "input_tokens": tokens.get("input").cloned().unwrap_or(Value::Null),
+                        "output_tokens": tokens.get("output").cloned().unwrap_or(Value::Null),
+                        "cache_read_tokens": tokens.pointer("/cache/read").cloned().unwrap_or(Value::Null),
+                        "cache_write_tokens": tokens.pointer("/cache/write").cloned().unwrap_or(Value::Null),
+                        "reasoning_tokens": tokens.get("reasoning").cloned().unwrap_or(Value::Null),
+                    },
+                    "cost": part.get("cost").cloned().unwrap_or(Value::Null),
+                    "model": model,
+                    "provider": provider,
+                }),
+            );
             event.item_id = item_id;
             vec![event]
         }
@@ -421,6 +434,10 @@ pub struct CodexStreamState {
     /// which compacts twice is recorded once; that is a smaller error than
     /// telling a reader the context shrank twice when it shrank once.
     pub compacted_turn: Option<String>,
+    /// The model Codex switched to mid-turn (`model/rerouted`). Stamped on
+    /// every usage frame until the turn ends, so the ledger attributes those
+    /// requests to the model that served them rather than the one asked for.
+    pub serving_model: Option<String>,
 }
 
 pub fn normalize_codex_message(message: &Value) -> Vec<NormalizedEvent> {
@@ -449,12 +466,14 @@ pub fn normalize_codex_message_with_state(
         "turn/started" => {
             state.active_reasoning_id = None;
             state.compacted_turn = None;
+            state.serving_model = None;
             let mut event = with_data("turn.started", &params, params.clone());
             event.status = Some("working".into());
             vec![event]
         }
         "turn/completed" => {
             state.active_reasoning_id = None;
+            state.serving_model = None;
             let status = params
                 .pointer("/turn/status")
                 .and_then(Value::as_str)
@@ -582,6 +601,9 @@ pub fn normalize_codex_message_with_state(
             // exists to keep out of the ledger. An empty object resolves to no
             // figures at all, so no row is written.
             data["usage"] = codex_request_usage(&params).unwrap_or_else(|| json!({}));
+            if let Some(serving_model) = &state.serving_model {
+                data["servingModel"] = Value::String(serving_model.clone());
+            }
             vec![with_data("usage.updated", &params, data)]
         }
         // Codex compacted its own context. Its schema marks this notification
@@ -627,6 +649,12 @@ pub fn normalize_codex_message_with_state(
                 .and_then(Value::as_str)
                 .unwrap_or("a fallback model");
             let reason = params.get("reason").and_then(Value::as_str);
+            state.serving_model = params
+                .get("toModel")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|model| !model.is_empty())
+                .map(str::to_owned);
             let mut event = with_data("model.rerouted", &params, params.clone());
             event.title = Some("Model rerouted".into());
             event.text = Some(match reason {
@@ -1498,10 +1526,19 @@ fn normalize_claude_result(message: &Value) -> Vec<NormalizedEvent> {
     });
     let mut events = vec![turn];
     if let Some(usage) = message.get("usage") {
+        // `modelUsage` splits a multi-model turn per model; the ledger writes
+        // one row per key and never the aggregate beside them.
         events.push(with_data(
             "usage.updated",
             message,
-            json!({"usage": usage, "totalCostUsd": message.get("total_cost_usd")}),
+            json!({
+                "usage": usage,
+                "totalCostUsd": message.get("total_cost_usd"),
+                "modelUsage": message.get("modelUsage"),
+                "durationMs": message.get("duration_ms"),
+                "durationApiMs": message.get("duration_api_ms"),
+                "numTurns": message.get("num_turns"),
+            }),
         ));
     }
     if let Some(denials) = message.get("permission_denials").and_then(Value::as_array) {
@@ -2494,37 +2531,67 @@ mod tests {
         assert_eq!(events[0].data["usage"], json!({}));
     }
 
+    fn opencode_step_finish(message_id: &str, tokens: Value, cost: Value) -> Value {
+        json!({
+            "type":"message.part.updated",
+            "properties":{"part":{"id":format!("prt_{message_id}"),"messageID":message_id,"sessionID":"ses_1","type":"step-finish","tokens":tokens,"cost":cost}}
+        })
+    }
+
     #[test]
     fn opencode_usage_reports_cache_writes_alongside_reads() {
         let mut state = OpenCodeStreamState::default();
         let usage = normalize_opencode_message_with_state(
-            &json!({
-                "type":"message.updated",
-                "properties":{"sessionID":"ses_1","info":{"id":"msg_1","role":"assistant","tokens":{"input":9,"output":2,"cache":{"read":6,"write":3}}}}
-            }),
+            &opencode_step_finish("msg_1", json!({"input":9,"output":2,"cache":{"read":6,"write":3}}), Value::Null),
             &mut state,
         );
-        assert_eq!(usage[0].data["usage"]["cached_input_tokens"], 6);
+        assert_eq!(usage[0].data["usage"]["cache_read_tokens"], 6);
         assert_eq!(usage[0].data["usage"]["cache_write_tokens"], 3);
 
         let no_write = normalize_opencode_message_with_state(
-            &json!({
-                "type":"message.updated",
-                "properties":{"sessionID":"ses_2","info":{"id":"msg_2","role":"assistant","tokens":{"input":9,"output":2,"cache":{"read":6}}}}
-            }),
+            &opencode_step_finish("msg_2", json!({"input":9,"output":2,"cache":{"read":6}}), Value::Null),
             &mut state,
         );
         assert!(no_write[0].data["usage"]["cache_write_tokens"].is_null());
     }
 
     #[test]
-    fn normalizes_opencode_streaming_messages_and_usage() {
+    fn opencode_message_updated_names_the_model_and_writes_no_usage_of_its_own() {
         let mut state = OpenCodeStreamState::default();
-        let usage = normalize_opencode_message_with_state(
+        // The message frame's `tokens` are the last step's and its `cost` the
+        // running sum, so it must not become a row beside the step parts.
+        let message = normalize_opencode_message_with_state(
             &json!({
                 "type":"message.updated",
-                "properties":{"sessionID":"ses_1","info":{"id":"msg_1","role":"assistant","tokens":{"input":4,"output":2,"reasoning":1,"cache":{"read":3,"write":0}},"cost":0.01,"modelID":"model","providerID":"provider"}}
+                "properties":{"sessionID":"ses_1","info":{"id":"msg_1","role":"assistant","tokens":{"input":4,"output":2},"cost":0.03,"modelID":"claude-opus-4-6","providerID":"anthropic"}}
             }),
+            &mut state,
+        );
+        assert!(message.iter().all(|event| event.kind != "usage.updated"));
+
+        let step = normalize_opencode_message_with_state(
+            &opencode_step_finish("msg_1", json!({"input":4,"output":2,"reasoning":1,"cache":{"read":3,"write":0}}), json!(0.01)),
+            &mut state,
+        );
+        assert_eq!(step[0].kind, "usage.updated");
+        assert_eq!(step[0].data["model"], "claude-opus-4-6");
+        assert_eq!(step[0].data["provider"], "anthropic");
+        assert_eq!(step[0].data["cost"], 0.01);
+        assert_eq!(step[0].data["usage"]["reasoning_tokens"], 1);
+    }
+
+    #[test]
+    fn normalizes_opencode_streaming_messages_and_usage() {
+        let mut state = OpenCodeStreamState::default();
+        normalize_opencode_message_with_state(
+            &json!({
+                "type":"message.updated",
+                "properties":{"sessionID":"ses_1","info":{"id":"msg_1","role":"assistant","modelID":"model","providerID":"provider"}}
+            }),
+            &mut state,
+        );
+        let usage = normalize_opencode_message_with_state(
+            &opencode_step_finish("msg_1", json!({"input":4,"output":2,"reasoning":1,"cache":{"read":3,"write":0}}), json!(0.01)),
             &mut state,
         );
         assert_eq!(usage[0].kind, "usage.updated");

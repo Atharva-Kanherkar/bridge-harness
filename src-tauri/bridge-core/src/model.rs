@@ -709,6 +709,22 @@ pub struct UsageLedgerRow {
     pub task_family: Option<String>,
     pub restoration_mode: Option<String>,
     pub cross_harness_reuse: Option<String>,
+    /// Thinking tokens, already counted inside `output_tokens`. A breakdown,
+    /// never an addend.
+    #[serde(serialize_with = "serialize_optional_js_safe_i64")]
+    pub reasoning_tokens: Option<i64>,
+    /// The model that actually served the request when the provider said it
+    /// differed from `model` (Codex `model/rerouted`).
+    pub serving_model: Option<String>,
+    #[serde(serialize_with = "serialize_optional_js_safe_i64")]
+    pub context_window_tokens: Option<i64>,
+    #[serde(serialize_with = "serialize_optional_js_safe_i64")]
+    pub context_used_tokens: Option<i64>,
+    /// The provider's own id for this request (`message.id:requestId` for
+    /// Claude) so a row can be checked against an imported transcript.
+    pub provider_record_id: Option<String>,
+    #[serde(serialize_with = "serialize_optional_js_safe_i64")]
+    pub cache_savings_microusd: Option<i64>,
     pub source: String,
     pub created_at: String,
 }

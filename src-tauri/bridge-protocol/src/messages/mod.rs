@@ -41,6 +41,7 @@ mod skills;
 mod slash;
 mod state;
 mod terminal;
+mod usage;
 mod work;
 mod workspaces;
 mod worktrees;
@@ -67,6 +68,7 @@ pub use skills::*;
 pub use slash::*;
 pub use state::*;
 pub use terminal::*;
+pub use usage::*;
 pub use work::*;
 pub use workspaces::*;
 pub use worktrees::*;
@@ -270,6 +272,14 @@ typed_methods![
     (ReclaimWorktree, ReclaimWorktreeParams, WorktreeReclaimResult),
     (SweepWorktrees, _, WorktreeSweepResult),
     (ArchiveChat, ArchiveChatParams, ArchiveChatResult),
+    // token and cost usage
+    (UsageSummary, SummaryParams, UsageSummaryResult),
+    (ListUsagePriceOverrides, _, ListUsagePriceOverridesResult),
+    (SetUsagePriceOverride, SetPriceOverrideParams, ListUsagePriceOverridesResult),
+    (ClearUsagePriceOverride, ClearPriceOverrideParams, ListUsagePriceOverridesResult),
+    (RefreshUsageRates, _, UsagePricingStatus),
+    (ListHistorySources, _, ListHistorySourcesResult),
+    (ScanHistory, ScanHistoryParams, ScanHistoryResult),
     // routing
     (GetRouterPreferences, GetRouterPreferencesParams, RouterPreferences),
     (UpdateRouterPreferences, UpdateRouterPreferencesParams, RouterPreferences),
