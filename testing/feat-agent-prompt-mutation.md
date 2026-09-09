@@ -4,6 +4,10 @@ Research completed against main at `1cffffc8`. This contract is written before
 implementation. The baseline is the adaptive-learning audit; this feature adds
 an approved prompt mutation path, not a learning loop.
 
+The PR integrates main at `2f2889e`, including the usage migrations and macOS
+release safeguards. Prompt storage uses migration 55, after usage migrations
+53 and 54.
+
 ## Product behavior
 
 - Add an initially empty `additional_guidance` section to the Bridge
@@ -103,17 +107,16 @@ roles initially disabled. Enable one role, then open Settings → Prompts and
 select Additional guidance. Save, reset and restore a revision; the editor
 and history must agree after each action.
 
-Node 25 enables a native Web Storage global that conflicts with the existing
-Vitest navigation fixture. In that environment, run the test script with
-`NODE_OPTIONS=--no-experimental-webstorage bun run test` so the suite uses its
-intended jsdom storage implementation.
-
 ## Validation recorded on 2026-09-09
 
 - `bun run build` and `bun run check` passed.
-- The full test script passed with the Node option above: 50 sidecar tests,
-  1,876 frontend tests and 2,409 native tests including doctests. The existing
-  skips remain: one sidecar test and 13 native tests.
+- `bun run test` passed after integrating current main: 28 release checks,
+  50 sidecar tests, 1,944 frontend tests and 2,505 native tests including
+  doctests. The existing skips remain: one sidecar test and 13 native tests.
+- Protocol artifacts were regenerated after integration with no drift. The
+  daemon oversized-frame regression now deliberately buffers a notification
+  before the invalid request and matches the response by id; all 18 daemon
+  integration tests passed both in isolation and in the complete test script.
 - A focused run passed 52 prompt-mutation, migration and permission-gate
   regressions before the final full run. This includes repeated migrations with
   attributed history, failed-worker settlement, parent queue boundaries,
