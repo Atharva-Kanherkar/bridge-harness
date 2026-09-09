@@ -513,6 +513,126 @@ fn a_killed_daemons_interrupted_turn_is_surfaced_after_restart() {
     daemon.shutdown(Duration::from_secs(5));
 }
 
+/// A real, tracked OS process without calling a live model provider.
+struct ShutdownRuntime {
+    child: std::process::Child,
+    provider_id: String,
+    reasons: std::sync::Arc<std::sync::Mutex<Vec<bridge_core::adapters::ShutdownReason>>>,
+}
+
+impl bridge_core::adapters::AdapterRuntime for ShutdownRuntime {
+    fn process_id(&self) -> u32 { self.child.id() }
+    fn provider_session_id(&self) -> &str { &self.provider_id }
+    fn current_turn(&self) -> std::sync::Arc<std::sync::Mutex<Option<String>>> {
+        Default::default()
+    }
+    fn send_turn(&self, _: &str) -> Result<(), bridge_core::BridgeError> { Ok(()) }
+    fn interrupt(&self) -> Result<(), bridge_core::BridgeError> { Ok(()) }
+    fn respond(&self, _: Value, _: &str) -> Result<(), bridge_core::BridgeError> { Ok(()) }
+    fn stop(&mut self, reason: bridge_core::adapters::ShutdownReason) {
+        self.reasons.lock().unwrap().push(reason);
+        let _ = self.child.kill();
+        self.child.wait().unwrap();
+    }
+}
+
+impl Drop for ShutdownRuntime {
+    fn drop(&mut self) {
+        // Also reap the fixture when an assertion fails before daemon shutdown.
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn clean_shutdown_retires_provider_claims_without_failing_finished_chats_on_restart() {
+    let fixture = tempfile::tempdir().unwrap();
+    let running = RunningDaemon::start(fixture.path());
+    let core = running.daemon.core.clone();
+    let reasons = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let cases = [
+        ("ready", "ready", "stopped"),
+        ("working", "working", "stopped"),
+        ("failed", "failed", "failed"),
+        ("completed", "completed", "completed"),
+        ("cancelled", "cancelled", "cancelled"),
+        ("reader-exit", "ready", "stopped"),
+    ];
+    for (id, status, _) in cases {
+        let provider_id = format!("native-{id}");
+        let mut command = std::process::Command::new("sleep");
+        command.arg("30");
+        bridge_core::adapters::configure_process_group(&mut command);
+        let mut runtime = ShutdownRuntime {
+            child: command.spawn().unwrap(),
+            provider_id: provider_id.clone(),
+            reasons: reasons.clone(),
+        };
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,kind,metric_source,provider_session_id,active_turn_id)
+                 VALUES(?1,NULL,'codex',?1,?4,'direct','reported',?2,?3)",
+                rusqlite::params![id, provider_id, (status == "working").then_some("active-turn"), status],
+            ).unwrap();
+            bridge_core::session_forest::SessionForest::new(&db).append(
+                id,
+                bridge_core::session_forest::EntryKind::AssistantMessage,
+                json!({"text": "The previous answer survives shutdown."}),
+            ).unwrap();
+            bridge_core::session_supervisor::SessionSupervisor::track_adapter_process(
+                &db, id, runtime.child.id(),
+            ).unwrap();
+        }
+        if id == "reader-exit" {
+            // The reader already removed the runtime, but its durable cleanup
+            // has not run yet when shutdown takes its snapshot.
+            runtime.child.kill().unwrap();
+            runtime.child.wait().unwrap();
+        } else {
+            core.adapters.lock().unwrap().insert(id.into(), Box::new(runtime));
+        }
+    }
+
+    running.stop();
+    assert_eq!(reasons.lock().unwrap().as_slice(), &[bridge_core::adapters::ShutdownReason::AppShutdown; 5]);
+    assert!(core.adapters.lock().unwrap().is_empty());
+    {
+        // Check before store::open can repair anything: shutdown itself must
+        // commit the stopped state and remove both durable process claims.
+        let db = core.db.lock().unwrap();
+        for (id, previous, expected) in cases {
+            let saved: (String, Option<String>, Option<i64>, Option<String>, String) = db.query_row(
+                "SELECT status,active_turn_id,adapter_pid,adapter_process_identity,provider_session_id FROM sessions WHERE id=?1",
+                [id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?)),
+            ).unwrap();
+            assert_eq!(saved, (expected.into(), None, None, None, format!("native-{id}")));
+            let entry = bridge_core::store::session_entries(&db, id).unwrap().pop().unwrap();
+            assert_eq!(entry.payload["reason"], "app_shutdown");
+            assert_eq!(entry.payload["interrupted"], previous == "working");
+        }
+    }
+    drop(core);
+
+    let restarted = RunningDaemon::start(fixture.path());
+    {
+        let db = restarted.daemon.core.db.lock().unwrap();
+        for (id, _, expected) in cases {
+            let status: String = db.query_row("SELECT status FROM sessions WHERE id=?1", [id], |row| row.get(0)).unwrap();
+            assert_eq!(status, expected);
+            let entries = bridge_core::store::session_entries(&db, id).unwrap();
+            assert!(entries.iter().any(|entry| entry.kind == "assistant.message"
+                && entry.payload["text"] == "The previous answer survives shutdown."));
+        }
+        let failures: i64 = db.query_row(
+            "SELECT COUNT(*) FROM events WHERE kind='adapter.request_failed' OR kind LIKE 'adapter.orphan_%'",
+            [], |row| row.get(0),
+        ).unwrap();
+        assert_eq!(failures, 0, "clean shutdown must not be diagnosed as orphan recovery");
+    }
+    restarted.stop();
+}
+
 #[test]
 fn graceful_shutdown_does_not_leave_chats_as_failed_orphans_after_restart() {
     let fixture = tempfile::tempdir().unwrap();
@@ -570,14 +690,23 @@ fn oversized_frames_are_refused_with_a_bounded_error() {
     let mut client = Client::connect(&running.socket_path);
     client.handshake(&running.token);
 
+    // A background notification may precede the framing error. Leave one
+    // buffered deliberately so this verifies response matching independently
+    // of discovery/pricing startup timing.
+    running.daemon.core.events.publish(bridge_core::events::CoreEvent::AdaptersChanged);
+    assert!(!client.reader.fill_buf().expect("a notification arrives").is_empty());
+
     let huge = "x".repeat(bridged::MAX_FRAME_BYTES + 16);
     client.send(json!({
         "jsonrpc": "2.0", "id": 1, "method": "sessions/send_turn",
         "params": {"sessionId": "s", "text": huge},
     }));
-    let response = client.recv();
+    // The oversized body is never parsed, so its request id cannot be echoed.
+    let (response, notifications) = client.recv_response(Value::Null);
+    assert!(!notifications.is_empty(), "the error follows a valid notification");
     assert_eq!(response["error"]["code"], json!(-32600));
     assert!(response["error"]["message"].as_str().unwrap().contains("exceeds"));
+    assert!(serde_json::to_vec(&response).unwrap().len() < 1024, "the error must not echo the oversized body");
 
     running.stop();
 }

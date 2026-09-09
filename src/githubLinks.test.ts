@@ -16,12 +16,14 @@ describe("parseGithubLink", () => {
 
   it("takes the sub-tab from the sub-path the pane has a view for", () => {
     expect(view("/bridge/harness/pull/12/files")).toEqual({ kind: "pull", number: 12, tab: "changes" });
+    expect(view("/bridge/harness/pull/12/commits")).toEqual({ kind: "pull", number: 12, tab: "commits" });
     expect(view("/bridge/harness/pull/12/checks")).toEqual({ kind: "pull", number: 12, tab: "checks" });
   });
 
   it("still lands on the pull request for sub-paths that have no view of their own", () => {
-    expect(view("/bridge/harness/pull/12/commits")).toEqual({ kind: "pull", number: 12, tab: "conversation" });
-    expect(view("/bridge/harness/pull/12/commits/9f8e7d6")).toEqual({ kind: "pull", number: 12, tab: "conversation" });
+    // One commit's own page: the Commits tab is the nearest thing the pane has.
+    expect(view("/bridge/harness/pull/12/commits/9f8e7d6")).toEqual({ kind: "pull", number: 12, tab: "commits" });
+    expect(view("/bridge/harness/pull/12/agent-sessions")).toEqual({ kind: "pull", number: 12, tab: "conversation" });
   });
 
   it("ignores the query and the fragment", () => {
@@ -113,6 +115,7 @@ describe("describeGithubLink", () => {
   it("names what the reader is about to open", () => {
     expect(describe_("/bridge/harness/pull/12")).toBe("Pull request #12");
     expect(describe_("/bridge/harness/pull/12/files")).toBe("Pull request #12 · Changes");
+    expect(describe_("/bridge/harness/pull/12/commits")).toBe("Pull request #12 · Commits");
     expect(describe_("/bridge/harness/pull/12/checks")).toBe("Pull request #12 · Checks");
     expect(describe_("/bridge/harness/issues/204")).toBe("Issue #204");
     expect(describe_("/bridge/harness/pulls")).toBe("Pull requests");

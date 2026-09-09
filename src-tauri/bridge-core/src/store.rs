@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 48;
+const LATEST_SCHEMA_VERSION: i64 = 55;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -677,6 +677,16 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             46 => crate::external_import::install_import_foundation(&transaction)?,
             47 => migration_47_model_profile_selection_mode(&transaction)?,
             48 => migration_48_harness_quota_cooldowns(&transaction)?,
+            49 => migration_49_worker_repair_budget(&transaction)?,
+            50 => migration_50_worktree_inventory(&transaction)?,
+            51 => migration_51_archived_chats(&transaction)?,
+            52 => migration_52_worker_failure_class(&transaction)?,
+            53 => migration_53_usage_tracking(&transaction)?,
+            54 => migration_54_usage_ledger_repair(&transaction)?,
+            55 => {
+                crate::prompt_sections::install_guidance_revision_store(&transaction)?;
+                crate::prompt_mutations::install_store(&transaction)?;
+            }
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -704,6 +714,222 @@ fn migration_47_model_profile_selection_mode(
     transaction.execute(
         "UPDATE model_profiles
          SET selection_mode=CASE WHEN pinned=1 THEN 'pinned' ELSE 'track_standard' END",
+        [],
+    )?;
+    Ok(())
+}
+
+/// Persist the repair budget and preserve attempts spent before this migration.
+/// The worktree inventory. Bridge cut worktrees from four places and recorded
+/// them — if at all — in whichever table happened to need one, so no query
+/// could answer "what exists on this disk, and who owns it". Orchestrator
+/// checkouts had no record of any kind: they were named only by `sessions.cwd`,
+/// which nothing consulted, so nothing could ever reclaim one.
+///
+/// Backfill works off recorded paths rather than the data directory, which this
+/// layer does not know. Anything it misses is still found later: the reconcile
+/// pass adopts unrecorded directories under the namespace root.
+/// Archiving a chat. Bridge could archive a *workspace* — which deletes every
+/// session in it — but had no way to put one conversation away, so the only
+/// route to reclaiming an isolated chat's checkout was a destructive operation
+/// on hundreds of unrelated chats. This is the per-chat marker: history is kept,
+/// the conversation is simply no longer listed.
+fn migration_51_archived_chats(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(transaction, "sessions", "archived_at", "TEXT")
+}
+
+fn migration_50_worktree_inventory(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS worktrees (
+            id TEXT PRIMARY KEY,
+            kind TEXT NOT NULL,
+            repo_root TEXT NOT NULL,
+            path TEXT NOT NULL UNIQUE,
+            branch TEXT,
+            owner_session_id TEXT,
+            owner_workspace_id TEXT,
+            base_commit TEXT,
+            state TEXT NOT NULL,
+            disposition TEXT,
+            retained_reason TEXT,
+            assessed_at TEXT,
+            size_bytes INTEGER,
+            size_measured_at TEXT,
+            created_at TEXT NOT NULL,
+            last_used_at TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_worktrees_repo ON worktrees(repo_root,state);
+        CREATE INDEX IF NOT EXISTS idx_worktrees_state ON worktrees(state,last_used_at);",
+    )?;
+
+    // Worker checkouts: the adoption row is the richer record (it carries the
+    // task worktree and the base commit), so it wins where both exist.
+    transaction.execute(
+        "INSERT OR IGNORE INTO worktrees(
+            id,kind,repo_root,path,branch,owner_session_id,owner_workspace_id,
+            base_commit,state,retained_reason,created_at,last_used_at)
+         SELECT lower(hex(randomblob(16))),'worker',a.task_worktree_path,a.worktree_path,
+                a.worktree_branch,a.session_id,a.workspace_id,a.base_commit,'idle',
+                'backfilled from an adoption record',a.created_at,a.updated_at
+           FROM worker_worktree_adoptions a
+          WHERE COALESCE(a.worktree_path,'')<>''
+            AND a.worktree_path<>a.task_worktree_path",
+        [],
+    )?;
+    transaction.execute(
+        "INSERT OR IGNORE INTO worktrees(
+            id,kind,repo_root,path,branch,owner_session_id,owner_workspace_id,
+            base_commit,state,retained_reason,created_at,last_used_at)
+         SELECT lower(hex(randomblob(16))),'worker',
+                COALESCE((SELECT w.path FROM sessions s JOIN workspaces w ON w.id=s.workspace_id
+                           WHERE s.id=r.session_id),''),
+                r.worktree_path,r.worktree_branch,r.session_id,
+                (SELECT s.workspace_id FROM sessions s WHERE s.id=r.session_id),
+                NULL,'idle','backfilled from a worker runtime record',
+                COALESCE(r.updated_at,?1),COALESCE(r.last_activity_at,r.updated_at,?1)
+           FROM worker_runtime r
+          WHERE COALESCE(r.worktree_path,'')<>''
+            -- An in-place worker writes into the user's own checkout rather than
+            -- one Bridge cut, so its recorded path can be the repository itself.
+            -- Claiming that would put a main working tree in front of a reclaim
+            -- decision.
+            AND r.worktree_path<>COALESCE(
+                (SELECT w.path FROM sessions s JOIN workspaces w ON w.id=s.workspace_id
+                  WHERE s.id=r.session_id),'')",
+        params![Utc::now().to_rfc3339()],
+    )?;
+
+    // Pull-request checkouts: registered as workspace nodes whose path sits
+    // under the worktrees namespace.
+    transaction.execute(
+        "INSERT OR IGNORE INTO worktrees(
+            id,kind,repo_root,path,branch,owner_session_id,owner_workspace_id,
+            base_commit,state,retained_reason,created_at,last_used_at)
+         SELECT lower(hex(randomblob(16))),'github','',w.path,w.branch,NULL,w.id,NULL,
+                'idle','backfilled from a pull-request checkout',
+                COALESCE(w.created_at,?1),COALESCE(w.created_at,?1)
+           FROM workspaces w
+          WHERE COALESCE(w.path,'')<>'' AND w.path LIKE '%/worktrees/github/%'",
+        params![Utc::now().to_rfc3339()],
+    )?;
+
+    // Orchestrator checkouts, recognisable only by the path convention they
+    // were created with. This is the class that previously leaked permanently.
+    transaction.execute(
+        "INSERT OR IGNORE INTO worktrees(
+            id,kind,repo_root,path,branch,owner_session_id,owner_workspace_id,
+            base_commit,state,retained_reason,created_at,last_used_at)
+         SELECT lower(hex(randomblob(16))),'orchestrator',
+                COALESCE((SELECT w.path FROM workspaces w WHERE w.id=s.workspace_id),''),
+                s.cwd,NULL,s.id,s.workspace_id,NULL,'idle',
+                'backfilled from a session working directory',?1,?1
+           FROM sessions s
+          WHERE COALESCE(s.cwd,'')<>'' AND s.cwd LIKE '%/worktrees/orchestrators/%'",
+        params![Utc::now().to_rfc3339()],
+    )?;
+    Ok(())
+}
+
+/// Bridge's own verdict on why a worker failed, kept next to the result
+/// rather than re-derived from it.
+///
+/// The UI used to decide "is this a stall?" with `/stopped responding/i` over
+/// the summary — a regex against a Rust format string, so rewording one
+/// `format!` silently downgraded every stall to a generic failure. And the
+/// classification it was trying to recover is not in the summary anyway:
+/// a stall is something Bridge observed, not something the worker reported.
+/// Per-request usage tracking: the ledger learns the token breakdown and
+/// provenance fields the summary needs, user price overrides get a table, and
+/// the explicitly refreshed rate table gets one cached row. Additive only —
+/// every existing ledger row keeps its values.
+fn migration_53_usage_tracking(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(transaction, "usage_ledger", "reasoning_tokens", "INTEGER")?;
+    add_column_if_missing(transaction, "usage_ledger", "serving_model", "TEXT")?;
+    add_column_if_missing(transaction, "usage_ledger", "context_window_tokens", "INTEGER")?;
+    add_column_if_missing(transaction, "usage_ledger", "context_used_tokens", "INTEGER")?;
+    add_column_if_missing(transaction, "usage_ledger", "provider_record_id", "TEXT")?;
+    add_column_if_missing(transaction, "usage_ledger", "cache_savings_microusd", "INTEGER")?;
+    transaction.execute_batch(
+        "CREATE TABLE IF NOT EXISTS usage_price_overrides (
+            model TEXT PRIMARY KEY,
+            input_microusd_per_mtok INTEGER NOT NULL CHECK (input_microusd_per_mtok >= 0),
+            output_microusd_per_mtok INTEGER NOT NULL CHECK (output_microusd_per_mtok >= 0),
+            cache_read_microusd_per_mtok INTEGER CHECK (cache_read_microusd_per_mtok IS NULL OR cache_read_microusd_per_mtok >= 0),
+            cache_write_microusd_per_mtok INTEGER CHECK (cache_write_microusd_per_mtok IS NULL OR cache_write_microusd_per_mtok >= 0),
+            updated_at TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS usage_rate_cache (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            fetched_at TEXT NOT NULL,
+            source_url TEXT NOT NULL,
+            body TEXT NOT NULL
+        );",
+    )?;
+    Ok(())
+}
+
+/// One-shot repair of Claude costs recorded before the per-turn normalizer.
+/// Codex rows have no persisted cumulative/per-request discriminator: neither
+/// timestamps nor monotonic counts prove provenance. Leave them unchanged;
+/// imported provider history supplies the per-request records instead.
+///
+/// Population note: the schema version was deliberately not bumped for the
+/// Codex half of this repair, so two populations exist and stay as they are.
+/// Databases that ran the earlier timestamp-gated Codex repair keep its delta
+/// rows (per-turn figures, the honest shape); databases upgrading now keep
+/// their raw cumulative rows until a history scan imports per-request
+/// observations for those sessions. Guessing a discriminator to reunite them
+/// would risk silently undercounting valid usage, which is worse than the
+/// split — so the split is documented here instead of repaired.
+fn migration_54_usage_ledger_repair(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    if !table_exists(transaction, "usage_ledger")? {
+        return Ok(());
+    }
+    repair_claude_cumulative_cost(transaction)?;
+    Ok(())
+}
+
+fn repair_claude_cumulative_cost(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    let mut statement = transaction.prepare(
+        "SELECT id, COALESCE(session_id,''), COALESCE(model,''), cost_microusd FROM usage_ledger
+         WHERE source='provider.claude' AND cost_microusd IS NOT NULL
+         ORDER BY session_id, model, id",
+    )?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?, row.get::<_, i64>(3)?))
+        })?
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut previous: Option<(String, String, i64)> = None;
+    for (id, session, model, cost) in rows {
+        let turn = match &previous {
+            Some((prev_session, prev_model, prev_cost)) if *prev_session == session && *prev_model == model && cost >= *prev_cost => cost - prev_cost,
+            _ => cost,
+        };
+        if turn != cost {
+            transaction.execute("UPDATE usage_ledger SET cost_microusd=?1 WHERE id=?2", params![turn, id])?;
+        }
+        previous = Some((session, model, cost));
+    }
+    Ok(())
+}
+
+fn migration_52_worker_failure_class(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(transaction, "worker_runtime", "failure_class", "TEXT")?;
+    Ok(())
+}
+
+fn migration_49_worker_repair_budget(transaction: &Transaction<'_>) -> Result<(), BridgeError> {
+    add_column_if_missing(
+        transaction,
+        "worker_runtime",
+        "result_repair_count",
+        "INTEGER NOT NULL DEFAULT 0",
+    )?;
+    transaction.execute(
+        "UPDATE worker_runtime SET result_repair_count=1
+         WHERE EXISTS(SELECT 1 FROM events WHERE entity_id=worker_runtime.session_id
+                      AND kind='worker.result.repair_requested')",
         [],
     )?;
     Ok(())
@@ -2649,7 +2875,12 @@ pub fn state(db: &Connection) -> Result<BridgeState, BridgeError> {
         },
     )?;
     let workspaces = query(db, "SELECT id,project_id,city,title,branch,path,status,dirty_files,additions,deletions,created_at FROM workspaces ORDER BY created_at", |r| Ok(Workspace { id:r.get(0)?, project_id:r.get(1)?, city:r.get(2)?, title:r.get(3)?, branch:r.get(4)?, path:r.get(5)?, status:status(&r.get::<_,String>(6)?), dirty_files:r.get(7)?, additions:r.get(8)?, deletions:r.get(9)?, created_at:r.get(10)? }))?;
-    let sessions = query(db, "SELECT s.id,s.workspace_id,s.harness,s.label,s.status,s.started_at,s.ended_at,s.context_percent,s.usage_percent,s.metric_source,s.provider_session_id,s.active_turn_id,s.model,s.requested_tier,s.effort,s.parent_session_id,s.depth,COALESCE(h.restoration_mode,'fresh'),s.continuation_fidelity,s.title,s.kind,s.cwd FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id ORDER BY s.rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)?, restoration_mode:restoration_mode(&r.get::<_,String>(17)?), continuation_fidelity:continuation_fidelity(&r.get::<_,String>(18)?), title:r.get(19)?, kind:r.get(20)?, cwd:r.get(21)? }))?;
+    let sessions = query(db, "SELECT s.id,s.workspace_id,s.harness,s.label,s.status,s.started_at,s.ended_at,s.context_percent,s.usage_percent,s.metric_source,s.provider_session_id,s.active_turn_id,s.model,s.requested_tier,s.effort,s.parent_session_id,s.depth,COALESCE(h.restoration_mode,'fresh'),s.continuation_fidelity,s.title,s.kind,s.cwd FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id
+         WHERE s.archived_at IS NULL
+           AND (s.parent_session_id IS NULL
+                OR NOT EXISTS(SELECT 1 FROM sessions p
+                               WHERE p.id=s.parent_session_id AND p.archived_at IS NOT NULL))
+         ORDER BY s.rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)?, restoration_mode:restoration_mode(&r.get::<_,String>(17)?), continuation_fidelity:continuation_fidelity(&r.get::<_,String>(18)?), title:r.get(19)?, kind:r.get(20)?, cwd:r.get(21)? }))?;
     let events = query(
         db,
         "SELECT id,source,kind,entity_id,body,created_at FROM events ORDER BY id DESC LIMIT 200",
@@ -3126,7 +3357,7 @@ pub fn session_head(db: &Connection, session_id: &str) -> Result<Option<SessionH
                 resume_eligibility: resume_eligibility(&row.get::<_, String>(4)?),
                 latest_checkpoint_entry_id: row.get(5)?,
                 updated_at: row.get(6)?,
-            })
+                            })
         },
     )
     .optional()
@@ -3174,7 +3405,7 @@ pub fn worker_leases(db: &Connection, workspace_id: &str) -> Result<Vec<WorkerLe
                 expires_at: row.get(8)?,
                 created_at: row.get(9)?,
                 updated_at: row.get(10)?,
-            })
+                            })
         },
     )
 }
@@ -3196,10 +3427,10 @@ pub fn upsert_worker_runtime(
     runtime: &WorkerRuntimeRecord,
 ) -> Result<(), BridgeError> {
     db.execute(
-        "INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,warm_until,worktree_path,worktree_branch,last_result,last_activity_at,updated_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)
-         ON CONFLICT(session_id) DO UPDATE SET parent_session_id=excluded.parent_session_id,lifecycle_state=excluded.lifecycle_state,task_family=excluded.task_family,compatibility_key=excluded.compatibility_key,result_status=excluded.result_status,retry_count=excluded.retry_count,warm_until=excluded.warm_until,worktree_path=excluded.worktree_path,worktree_branch=excluded.worktree_branch,last_result=excluded.last_result,last_activity_at=excluded.last_activity_at,updated_at=excluded.updated_at",
-        params![runtime.session_id,runtime.parent_session_id,runtime.lifecycle_state,runtime.task_family,runtime.compatibility_key,runtime.result_status,runtime.retry_count,runtime.warm_until,runtime.worktree_path,runtime.worktree_branch,runtime.last_result.as_ref().map(serde_json::Value::to_string),runtime.last_activity_at,runtime.updated_at],
+        "INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,warm_until,worktree_path,worktree_branch,last_result,last_activity_at,updated_at,failure_class)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)
+         ON CONFLICT(session_id) DO UPDATE SET parent_session_id=excluded.parent_session_id,lifecycle_state=excluded.lifecycle_state,task_family=excluded.task_family,compatibility_key=excluded.compatibility_key,result_status=excluded.result_status,retry_count=excluded.retry_count,warm_until=excluded.warm_until,worktree_path=excluded.worktree_path,worktree_branch=excluded.worktree_branch,last_result=excluded.last_result,last_activity_at=excluded.last_activity_at,updated_at=excluded.updated_at,failure_class=excluded.failure_class",
+        params![runtime.session_id,runtime.parent_session_id,runtime.lifecycle_state,runtime.task_family,runtime.compatibility_key,runtime.result_status,runtime.retry_count,runtime.warm_until,runtime.worktree_path,runtime.worktree_branch,runtime.last_result.as_ref().map(serde_json::Value::to_string),runtime.last_activity_at,runtime.updated_at,runtime.failure_class],
     )?;
     Ok(())
 }
@@ -3209,9 +3440,9 @@ pub fn worker_runtime(
     session_id: &str,
 ) -> Result<Option<WorkerRuntimeRecord>, BridgeError> {
     db.query_row(
-        "SELECT session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,warm_until,worktree_path,worktree_branch,last_result,last_activity_at,waiting_since,waiting_reason,progress_summary,updated_at FROM worker_runtime WHERE session_id=?1",
+        "SELECT session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,warm_until,worktree_path,worktree_branch,last_result,last_activity_at,waiting_since,waiting_reason,progress_summary,updated_at,failure_class FROM worker_runtime WHERE session_id=?1",
         params![session_id],
-        |row| Ok(WorkerRuntimeRecord { session_id:row.get(0)?, parent_session_id:row.get(1)?, lifecycle_state:row.get(2)?, task_family:row.get(3)?, compatibility_key:row.get(4)?, result_status:row.get(5)?, retry_count:row.get(6)?, warm_until:row.get(7)?, worktree_path:row.get(8)?, worktree_branch:row.get(9)?, last_result:row.get::<_,Option<String>>(10)?.and_then(|value| serde_json::from_str(&value).ok()), last_activity_at:row.get(11)?, waiting_since:row.get(12)?, waiting_reason:row.get(13)?, progress_summary:row.get(14)?, updated_at:row.get(15)? }),
+        |row| Ok(WorkerRuntimeRecord { session_id:row.get(0)?, parent_session_id:row.get(1)?, lifecycle_state:row.get(2)?, task_family:row.get(3)?, compatibility_key:row.get(4)?, result_status:row.get(5)?, retry_count:row.get(6)?, warm_until:row.get(7)?, worktree_path:row.get(8)?, worktree_branch:row.get(9)?, last_result:row.get::<_,Option<String>>(10)?.and_then(|value| serde_json::from_str(&value).ok()), last_activity_at:row.get(11)?, waiting_since:row.get(12)?, waiting_reason:row.get(13)?, progress_summary:row.get(14)?, updated_at:row.get(15)?, failure_class:row.get(16)? }),
     ).optional().map_err(BridgeError::from)
 }
 
@@ -3221,7 +3452,7 @@ pub fn worker_runtimes(
 ) -> Result<Vec<WorkerRuntimeRecord>, BridgeError> {
     query_with_params(
         db,
-        "SELECT r.session_id,r.parent_session_id,r.lifecycle_state,r.task_family,r.compatibility_key,r.result_status,r.retry_count,r.warm_until,r.worktree_path,r.worktree_branch,r.last_result,r.last_activity_at,r.waiting_since,r.waiting_reason,r.progress_summary,r.updated_at
+        "SELECT r.session_id,r.parent_session_id,r.lifecycle_state,r.task_family,r.compatibility_key,r.result_status,r.retry_count,r.warm_until,r.worktree_path,r.worktree_branch,r.last_result,r.last_activity_at,r.waiting_since,r.waiting_reason,r.progress_summary,r.updated_at,r.failure_class
          FROM worker_runtime r JOIN sessions s ON s.id=r.session_id
          WHERE s.workspace_id=?1 ORDER BY s.rowid",
         params![workspace_id],
@@ -3245,6 +3476,7 @@ pub fn worker_runtimes(
                 waiting_reason: row.get(13)?,
                 progress_summary: row.get(14)?,
                 updated_at: row.get(15)?,
+                failure_class: row.get(16)?,
             })
         },
     )
@@ -3358,8 +3590,8 @@ pub fn update_worker_queue(
 
 pub fn append_usage_ledger(db: &Connection, usage: &UsageLedgerRow) -> Result<i64, BridgeError> {
     db.execute(
-        "INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,uncached_input_tokens,context_percent,capability_units,runtime_ms,cost_microusd,cost_source,stable_prefix_id,stable_prefix_hash,prompt_schema_version,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,source,created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25)",
+        "INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,uncached_input_tokens,context_percent,capability_units,runtime_ms,cost_microusd,cost_source,stable_prefix_id,stable_prefix_hash,prompt_schema_version,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,source,created_at,reasoning_tokens,serving_model,context_window_tokens,context_used_tokens,provider_record_id,cache_savings_microusd)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26,?27,?28,?29,?30,?31)",
         params![
             usage.workspace_id,
             usage.session_id,
@@ -3386,6 +3618,12 @@ pub fn append_usage_ledger(db: &Connection, usage: &UsageLedgerRow) -> Result<i6
             usage.cross_harness_reuse,
             usage.source,
             usage.created_at,
+            usage.reasoning_tokens,
+            usage.serving_model,
+            usage.context_window_tokens,
+            usage.context_used_tokens,
+            usage.provider_record_id,
+            usage.cache_savings_microusd,
         ],
     )?;
     Ok(db.last_insert_rowid())
@@ -3396,7 +3634,7 @@ pub fn usage_ledger(
     workspace_id: &str,
     session_id: Option<&str>,
 ) -> Result<Vec<UsageLedgerRow>, BridgeError> {
-    let sql = "SELECT id,workspace_id,session_id,turn_id,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,uncached_input_tokens,context_percent,capability_units,runtime_ms,cost_microusd,cost_source,stable_prefix_id,stable_prefix_hash,prompt_schema_version,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,source,created_at
+    let sql = "SELECT id,workspace_id,session_id,turn_id,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,uncached_input_tokens,context_percent,capability_units,runtime_ms,cost_microusd,cost_source,stable_prefix_id,stable_prefix_hash,prompt_schema_version,prefix_token_estimate,harness,model,role,task_family,restoration_mode,cross_harness_reuse,source,created_at,reasoning_tokens,serving_model,context_window_tokens,context_used_tokens,provider_record_id,cache_savings_microusd
                FROM usage_ledger WHERE workspace_id=?1 AND (?2 IS NULL OR session_id=?2) ORDER BY id";
     query_with_params(db, sql, params![workspace_id, session_id], |row| {
         Ok(UsageLedgerRow {
@@ -3426,6 +3664,12 @@ pub fn usage_ledger(
             cross_harness_reuse: row.get(23)?,
             source: row.get(24)?,
             created_at: row.get(25)?,
+            reasoning_tokens: row.get(26)?,
+            serving_model: row.get(27)?,
+            context_window_tokens: row.get(28)?,
+            context_used_tokens: row.get(29)?,
+            provider_record_id: row.get(30)?,
+            cache_savings_microusd: row.get(31)?,
         })
     })
 }
@@ -5096,6 +5340,44 @@ mod tests {
     }
 
     #[test]
+    fn migration_49_preserves_existing_repair_spending_across_reopens() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        let db = open(&path).unwrap();
+        db.execute_batch(
+            "INSERT INTO sessions(id,harness,label,status,depth) VALUES('parent','codex','Parent','ready',0);
+             INSERT INTO sessions(id,harness,label,status,depth,parent_session_id)
+                 VALUES('spent','codex','Spent','ready',1,'parent'),('fresh','codex','Fresh','ready',1,'parent');
+             INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,updated_at)
+                 VALUES('spent','parent','working','implementation','key','now'),('fresh','parent','working','implementation','key','now');
+             ALTER TABLE worker_runtime DROP COLUMN result_repair_count;
+             DELETE FROM schema_version WHERE version>=49;"
+        ).unwrap();
+        event(
+            &db,
+            "delegation",
+            "worker.result.repair_requested",
+            "spent",
+            "missing fence",
+        )
+        .unwrap();
+        drop(db);
+        for _ in 0..2 {
+            let db = open(&path).unwrap();
+            for (id, expected) in [("spent", 1), ("fresh", 0)] {
+                let count: i64 = db
+                    .query_row(
+                        "SELECT result_repair_count FROM worker_runtime WHERE session_id=?1",
+                        params![id],
+                        |r| r.get(0),
+                    )
+                    .unwrap();
+                assert_eq!(count, expected);
+            }
+        }
+    }
+
+    #[test]
     fn migration_47_maps_legacy_profile_pins_to_selection_modes() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("bridge.db");
@@ -5759,6 +6041,117 @@ mod tests {
         assert_eq!(entries, 2, "backfilled entries survive the Work migration");
     }
 
+    /// The inventory has to arrive already knowing what the machine holds,
+    /// because the worktrees that motivated it were created long before it
+    /// existed. Backfill works off recorded paths — the data directory is not
+    /// visible from this layer — so each source table contributes its own rows.
+    #[test]
+    fn migration_50_backfills_the_worktrees_it_can_recognise() {
+        let db = open(Path::new(":memory:")).unwrap();
+        db.execute(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/repos/demo','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO workspaces(id,project_id,title,branch,path,status,created_at)
+             VALUES('w','p','Task','main','/repos/demo','idle','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO workspaces(id,project_id,title,branch,path,status,created_at)
+             VALUES('pr','p','PR #7','feat/x','/data/worktrees/github/pr-7-feat-x','idle','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,cwd,depth)
+             VALUES('chat','w','codex','Chat','idle','estimated','/data/worktrees/orchestrators/task/chat',0)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,depth)
+             VALUES('child','w','claude','Worker','completed','reported','chat',1)",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO worker_worktree_adoptions(
+                session_id,parent_session_id,workspace_id,worktree_path,worktree_branch,
+                task_worktree_path,state,base_commit,created_at,updated_at)
+             VALUES('child','chat','w','/data/worktrees/workers/task/child','main-worker-child',
+                    '/repos/demo','pending_adoption','abc123','now','now')",
+            [],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO worker_runtime(
+                session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,
+                worktree_path,worktree_branch,updated_at)
+             VALUES('child','chat','stopped','implementation','claude',
+                    '/data/worktrees/workers/task/child','main-worker-child','now')",
+            [],
+        )
+        .unwrap();
+
+        // Re-run the migration against the populated database: `open` applied it
+        // to an empty one, so this is what an upgrade in place actually does.
+        let mut db = db;
+        let transaction = db.transaction().unwrap();
+        migration_50_worktree_inventory(&transaction).unwrap();
+        transaction.commit().unwrap();
+
+        let rows = |kind: &str| -> Vec<(String, String)> {
+            let mut statement = db
+                .prepare("SELECT path,repo_root FROM worktrees WHERE kind=?1 ORDER BY path")
+                .unwrap();
+            let mapped = statement
+                .query_map(params![kind], |row| Ok((row.get(0)?, row.get(1)?)))
+                .unwrap();
+            mapped.map(Result::unwrap).collect()
+        };
+
+        assert_eq!(
+            rows("worker"),
+            vec![(
+                "/data/worktrees/workers/task/child".to_owned(),
+                "/repos/demo".to_owned()
+            )],
+            "the adoption row wins over the runtime row for the same path",
+        );
+        assert_eq!(
+            rows("orchestrator"),
+            vec![(
+                "/data/worktrees/orchestrators/task/chat".to_owned(),
+                "/repos/demo".to_owned()
+            )],
+            "the class that previously had no record of any kind",
+        );
+        assert_eq!(
+            rows("github"),
+            vec![("/data/worktrees/github/pr-7-feat-x".to_owned(), String::new())],
+        );
+        let base: Option<String> = db
+            .query_row(
+                "SELECT base_commit FROM worktrees WHERE kind='worker'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(base.as_deref(), Some("abc123"));
+
+        // Idempotent: a second pass adds nothing.
+        let transaction = db.transaction().unwrap();
+        migration_50_worktree_inventory(&transaction).unwrap();
+        transaction.commit().unwrap();
+        let total: i64 = db
+            .query_row("SELECT COUNT(*) FROM worktrees", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(total, 3);
+    }
+
     #[test]
     fn work_tables_declare_their_unique_constraints() {
         let db = open(Path::new(":memory:")).unwrap();
@@ -6039,7 +6432,7 @@ mod tests {
             expires_at: None,
             created_at: "now".into(),
             updated_at: "now".into(),
-        };
+                    };
         upsert_worker_lease(&db, &lease).unwrap();
         assert_eq!(worker_leases(&db, "w").unwrap(), vec![lease]);
 
@@ -6127,6 +6520,12 @@ mod tests {
             task_family: Some("implementation".into()),
             restoration_mode: Some("fresh".into()),
             cross_harness_reuse: Some("not_applicable".into()),
+            reasoning_tokens: None,
+            serving_model: None,
+            context_window_tokens: None,
+            context_used_tokens: None,
+            provider_record_id: None,
+            cache_savings_microusd: None,
             source: "codex".into(),
             created_at: "now".into(),
         };
@@ -6213,7 +6612,13 @@ mod tests {
             waiting_reason: None,
             progress_summary: None,
             updated_at: "now".into(),
+            failure_class: None,
         };
+        let mut runtime = runtime;
+        runtime.failure_class = Some("stalled".into());
+        upsert_worker_runtime(&db, &runtime).unwrap();
+        assert_eq!(worker_runtime(&db, "child").unwrap(), Some(runtime.clone()));
+        runtime.failure_class = None;
         upsert_worker_runtime(&db, &runtime).unwrap();
         assert_eq!(worker_runtime(&db, "child").unwrap(), Some(runtime));
         assert_eq!(outstanding_children(&db, "s").unwrap(), 1);
@@ -6238,7 +6643,7 @@ mod tests {
                     last_error: None,
                     created_at: "now".into(),
                     updated_at: "now".into(),
-                },
+                                    },
             )
             .unwrap();
         }
@@ -6291,6 +6696,146 @@ mod tests {
     // Issue #400 foundation: a whole-Mac analytics index that is structurally
     // separate from the workspace-scoped usage ledger. These tests lock the
     // schema and its independence before any importer exists to fill it.
+    #[test]
+    fn the_ledger_repair_corrects_claude_costs_without_guessing_codex_provenance() {
+        let mut db = open(Path::new(":memory:")).unwrap();
+        db.execute_batch(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/usage-repair','now');
+             INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','c','t','main','/tmp/usage-repair/w','ready','now');
+             INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('c','w','claude','c','ready');
+             INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('x-total','w','codex','x','ready');
+             INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('x-last','w','codex','y','ready');
+             INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('x-new','w','codex','z','ready');
+             INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('x-fresh','w','codex','fresh','ready');
+             -- Claude: a running total 0.50, 0.80, 1.10, then a fresh run at 0.20.
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,output_tokens,cost_microusd,cost_source,source,created_at) VALUES('w','c','t1',10,500000,'provider_reported','provider.claude','a');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,output_tokens,cost_microusd,cost_source,source,created_at) VALUES('w','c','t2',10,800000,'provider_reported','provider.claude','b');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,output_tokens,cost_microusd,cost_source,source,created_at) VALUES('w','c','t3',10,1100000,'provider_reported','provider.claude','c');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,output_tokens,cost_microusd,cost_source,source,created_at) VALUES('w','c','t4',10,200000,'provider_reported','provider.claude','d');
+             -- Codex, old monotonic rows: the stored figures do not prove cumulative semantics.
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-total','t',1000,1000,50,'provider.codex','2026-09-01T10:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-total','t',2500,2500,120,'provider.codex','2026-09-02T10:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-total','t',4000,4000,120,'provider.codex','2026-09-03T10:00:00+00:00');
+             -- Codex, per-request without a cache figure: left alone too.
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-last','t',1000,1000,300,'provider.codex','2026-09-01T10:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-last','t',1500,1500,90,'provider.codex','2026-09-02T10:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-last','t',2100,2100,400,'provider.codex','2026-09-03T10:00:00+00:00');
+             -- Codex, per-request with a cache figure: the new normalizer, never touched even when monotonic.
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,cache_read_tokens,output_tokens,source,created_at) VALUES('w','x-new','t',1000,100,900,10,'provider.codex','2026-09-01T10:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,cache_read_tokens,output_tokens,source,created_at) VALUES('w','x-new','t',2000,100,1900,20,'provider.codex','2026-09-02T10:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,cache_read_tokens,output_tokens,source,created_at) VALUES('w','x-new','t',3000,100,2900,30,'provider.codex','2026-09-03T10:00:00+00:00');
+             -- Codex, monotonic with no cache figure but written after the per-request normalizer:
+             -- a genuine per-request session the repair must never rewrite.
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-fresh','t',100,100,10,'provider.codex','2026-09-07T10:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-fresh','t',200,200,20,'provider.codex','2026-09-07T11:00:00+00:00');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-fresh','t',300,300,30,'provider.codex','2026-09-07T12:00:00+00:00');",
+        )
+        .unwrap();
+
+        let transaction = db.transaction().unwrap();
+        migration_54_usage_ledger_repair(&transaction).unwrap();
+        transaction.commit().unwrap();
+
+        let costs: Vec<i64> = usage_ledger(&db, "w", Some("c")).unwrap().iter().map(|row| row.cost_microusd.unwrap()).collect();
+        assert_eq!(costs, vec![500_000, 300_000, 300_000, 200_000]);
+
+        let inputs = |session: &str| -> Vec<(Option<i64>, Option<i64>, Option<i64>)> {
+            usage_ledger(&db, "w", Some(session)).unwrap().iter().map(|row| (row.input_tokens, row.uncached_input_tokens, row.output_tokens)).collect()
+        };
+        // Even rows before the old timestamp cutoff can be per-request.
+        // No persisted provenance proves these were cumulative counters.
+        assert_eq!(inputs("x-total"), vec![(Some(1000), Some(1000), Some(50)), (Some(2500), Some(2500), Some(120)), (Some(4000), Some(4000), Some(120))]);
+        assert_eq!(inputs("x-last"), vec![(Some(1000), Some(1000), Some(300)), (Some(1500), Some(1500), Some(90)), (Some(2100), Some(2100), Some(400))]);
+        assert_eq!(inputs("x-new"), vec![(Some(1000), Some(100), Some(10)), (Some(2000), Some(100), Some(20)), (Some(3000), Some(100), Some(30))]);
+        assert_eq!(inputs("x-fresh"), vec![(Some(100), Some(100), Some(10)), (Some(200), Some(200), Some(20)), (Some(300), Some(300), Some(30))]);
+    }
+
+    #[test]
+    fn the_ledger_repair_skips_codex_sessions_with_unparsable_timestamps() {
+        let mut db = open(Path::new(":memory:")).unwrap();
+        db.execute_batch(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/usage-repair-ts','now');
+             INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','c','t','main','/tmp/usage-repair-ts/w','ready','now');
+             INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('x-bad-ts','w','codex','x','ready');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-bad-ts','t',100,100,10,'provider.codex','not-a-timestamp');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-bad-ts','t',200,200,20,'provider.codex','also-not-a-timestamp');
+             INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,uncached_input_tokens,output_tokens,source,created_at) VALUES('w','x-bad-ts','t',300,300,30,'provider.codex','still-not-a-timestamp');",
+        )
+        .unwrap();
+
+        let transaction = db.transaction().unwrap();
+        migration_54_usage_ledger_repair(&transaction).unwrap();
+        transaction.commit().unwrap();
+
+        let rows = usage_ledger(&db, "w", Some("x-bad-ts")).unwrap();
+        let inputs: Vec<Option<i64>> = rows.iter().map(|row| row.input_tokens).collect();
+        assert_eq!(inputs, vec![Some(100), Some(200), Some(300)], "unprovable provenance is left alone");
+    }
+
+    #[test]
+    fn the_usage_tracking_migration_is_additive_and_idempotent() {
+        let mut db = open(Path::new(":memory:")).unwrap();
+        db.execute_batch(
+            "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo','/tmp/usage-migration','now');
+             INSERT INTO workspaces(id,project_id,city,title,branch,path,status,created_at) VALUES('w','p','c','t','main','/tmp/usage-migration/w','ready','now');
+             INSERT INTO sessions(id,workspace_id,harness,label,status) VALUES('s','w','codex','s','ready');",
+        )
+        .unwrap();
+        // A row written with the pre-migration column set only.
+        db.execute(
+            "INSERT INTO usage_ledger(workspace_id,session_id,turn_id,input_tokens,output_tokens,cache_read_tokens,uncached_input_tokens,cost_microusd,cost_source,source,created_at)
+             VALUES('w','s','t',100,10,40,60,250,'provider_reported','provider.codex','then')",
+            [],
+        )
+        .unwrap();
+
+        // Running the migration again is a no-op rather than an error.
+        let transaction = db.transaction().unwrap();
+        migration_53_usage_tracking(&transaction).unwrap();
+        transaction.commit().unwrap();
+
+        let rows = usage_ledger(&db, "w", Some("s")).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].input_tokens, Some(100));
+        assert_eq!(rows[0].cache_read_tokens, Some(40));
+        assert_eq!(rows[0].uncached_input_tokens, Some(60));
+        assert_eq!(rows[0].cost_microusd, Some(250));
+        assert_eq!(rows[0].cost_source.as_deref(), Some("provider_reported"));
+        for missing in [
+            rows[0].reasoning_tokens,
+            rows[0].context_window_tokens,
+            rows[0].context_used_tokens,
+            rows[0].cache_savings_microusd,
+        ] {
+            assert_eq!(missing, None, "a pre-migration row gains no invented figure");
+        }
+        assert_eq!(rows[0].serving_model, None);
+        assert_eq!(rows[0].provider_record_id, None);
+
+        for table in ["usage_price_overrides", "usage_rate_cache"] {
+            let exists: bool = db
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    params![table],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(exists, "{table} is missing after migration");
+        }
+        // The rate cache holds one row by construction.
+        db.execute(
+            "INSERT INTO usage_rate_cache(id,fetched_at,source_url,body) VALUES(1,'now','url','{}')",
+            [],
+        )
+        .unwrap();
+        assert!(db
+            .execute(
+                "INSERT INTO usage_rate_cache(id,fetched_at,source_url,body) VALUES(2,'now','url','{}')",
+                [],
+            )
+            .is_err());
+    }
+
     #[test]
     fn opening_a_database_creates_the_analytics_schema_with_dedupe_indexes() {
         let dir = tempfile::tempdir().unwrap();
@@ -6389,5 +6934,44 @@ mod tests {
             analytics_rows, 1,
             "device-wide analytics never belong to a workspace and must survive deletion"
         );
+    }
+
+    #[test]
+    fn agent_usage_observation_unique_constraint_holds_under_insert_or_ignore() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = open(&dir.path().join("bridge.db")).unwrap();
+        db.execute_batch(
+            "INSERT INTO agent_usage_sources(id,agent,provider,location_fingerprint,coverage_state,importer_version,created_at,updated_at)
+                 VALUES('s1','claude','anthropic','sha256:loc','partial','test','now','now');",
+        )
+        .unwrap();
+        let insert = |id: &str, native: &str, tokens: i64| -> usize {
+            db.execute(
+                "INSERT OR IGNORE INTO agent_usage_observations(id,source_id,native_record_id,occurred_at,input_semantics,output_semantics,exact_total_formula,output_tokens,importer_version,created_at)
+                 VALUES(?1,'s1',?2,'t','exclusive','delta','anthropic_exclusive_input_plus_cache_and_output',?3,'test','now')",
+                params![id, native, tokens],
+            )
+            .unwrap()
+        };
+        assert_eq!(insert("o1", "msg_1:req_1", 10), 1);
+        // Same native record under a different row id: refused, silently.
+        assert_eq!(insert("o2", "msg_1:req_1", 999), 0);
+        // A different source may hold the same native id.
+        db.execute_batch(
+            "INSERT INTO agent_usage_sources(id,agent,provider,location_fingerprint,coverage_state,importer_version,created_at,updated_at)
+                 VALUES('s2','claude','anthropic','sha256:other','partial','test','now','now');
+             INSERT INTO agent_usage_observations(id,source_id,native_record_id,occurred_at,input_semantics,output_semantics,exact_total_formula,importer_version,created_at)
+                 VALUES('o3','s2','msg_1:req_1','t','exclusive','delta','anthropic_exclusive_input_plus_cache_and_output','test','now');",
+        )
+        .unwrap();
+        let (rows, kept): (i64, i64) = db
+            .query_row(
+                "SELECT COUNT(*), (SELECT output_tokens FROM agent_usage_observations WHERE id='o1') FROM agent_usage_observations",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(rows, 2);
+        assert_eq!(kept, 10, "the first observation wins");
     }
 }

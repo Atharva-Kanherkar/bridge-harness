@@ -4,7 +4,9 @@
   "body": "Please review the typed GitHub surface.",
   "state": "OPEN",
   "isDraft": false,
-  "author": { "login": "review-author" },
+  "author": {
+    "login": "review-author"
+  },
   "headRefName": "fix/review",
   "headRefOid": "current-head-sha",
   "baseRefName": "main",
@@ -21,14 +23,48 @@
   "comments": [
     {
       "id": "IC_kwDO_fixture",
-      "author": { "login": "maintainer" },
+      "author": {
+        "login": "maintainer"
+      },
       "body": "Top-level PR conversation comment.",
       "createdAt": "2026-08-28T12:00:00Z",
       "url": "https://github.com/fixture/project/pull/103#issuecomment-1"
     }
   ],
   "labels": [
-    { "name": "bug", "color": "d73a4a", "description": "Something is broken" }
+    {
+      "name": "bug",
+      "color": "d73a4a",
+      "description": "Something is broken"
+    }
+  ],
+  "commits": [
+    {
+      "oid": "8f2a1c9d4e5b6a7c8d9e0f1a2b3c4d5e6f708192",
+      "messageHeadline": "fix(review): honour the requested changes",
+      "messageBody": "The reviewer asked for the guard to move up.",
+      "committedDate": "2026-08-28T11:40:00Z",
+      "authors": [
+        {
+          "login": "review-author",
+          "name": "Review Author",
+          "email": "author@example.com"
+        }
+      ]
+    },
+    {
+      "oid": "1b0c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e",
+      "messageHeadline": "test(review): cover the conflicting case",
+      "messageBody": "",
+      "committedDate": "2026-08-28T10:05:00Z",
+      "authors": [
+        {
+          "login": "",
+          "name": "Local Committer",
+          "email": "local@example.com"
+        }
+      ]
+    }
   ],
   "additions": 18,
   "deletions": 4,

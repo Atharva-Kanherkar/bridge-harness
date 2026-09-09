@@ -9,9 +9,20 @@ let host: HTMLDivElement;
 let root: Root;
 beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  // Node's global Storage can shadow jsdom's in Vitest 2. These interactions
+  // exercise persisted theme changes, so give each test browser-like storage.
+  const values = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (name: string) => values.get(name) ?? null,
+    setItem: (name: string, value: string) => { values.set(name, String(value)); },
+    removeItem: (name: string) => { values.delete(name); },
+    clear: () => values.clear(),
+    key: (index: number) => [...values.keys()][index] ?? null,
+    get length() { return values.size; },
+  } satisfies Storage);
   host = document.createElement("div"); document.body.append(host); root = createRoot(host);
 });
-afterEach(() => { act(() => root.unmount()); host.remove(); localStorage.clear(); vi.restoreAllMocks(); });
+afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 const key = (element: HTMLElement, value: string) => act(() => { element.dispatchEvent(new KeyboardEvent("keydown", { key: value, bubbles: true, cancelable: true })); });
 
 it("moves and selects appearance radios with arrow, Home, and End keys", () => {
@@ -20,6 +31,7 @@ it("moves and selects appearance radios with arrow, Home, and End keys", () => {
   expect(radios.filter(radio => radio.tabIndex === 0)).toHaveLength(1);
   radios[0].focus(); key(radios[0], "ArrowRight");
   expect(radios[1].getAttribute("aria-checked")).toBe("true");
+  expect(localStorage.getItem("bridge.theme")).toBe("light");
   expect(document.activeElement).toBe(radios[1]);
   key(radios[1], "End"); expect(radios[2].getAttribute("aria-checked")).toBe("true");
   key(radios[2], "Home"); expect(radios[0].getAttribute("aria-checked")).toBe("true");

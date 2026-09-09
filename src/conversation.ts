@@ -220,9 +220,14 @@ export function foldWorkerDelegations(items: ConversationItem[]): ConversationIt
     panel.data = { ...panel.data, ...item.data };
     panel.status = item.status ?? panel.status;
     panel.title = item.title ?? panel.title;
-    // A `[worker result] …` stamp is routing metadata for the panel, not a
-    // replacement for the human objective the spawn already showed.
-    if (item.text && !workerResultSummary(item.text)) panel.text = item.text;
+    // The panel's text is the *objective* — the one line saying what this
+    // worker was asked to do. A result's text is the worker's own prose, which
+    // is a different fact and can run to paragraphs; letting it overwrite the
+    // objective turned a finished card into a wall of summary with the ask
+    // gone, and then repeated the same prose in the result strip below. The
+    // summary has its own place on the card, read from the typed envelope.
+    // Fill only when the spawn carried no objective at all.
+    if (item.text && !panel.text && !workerResultSummary(item.text)) panel.text = item.text;
     // The panel keeps its own key and eventId: the key is what React reconciles
     // on, and the eventId is what the durable/live dedupe upstream matches.
   }

@@ -6,7 +6,9 @@ pub use bridge_core::{
 pub mod agent_batch;
 pub mod daemon_host;
 pub mod menu;
+pub mod meter_tray;
 pub mod window_chrome;
+mod diagnostics;
 
 use bridge_core::api;
 use bridge_core::managed_agents;
@@ -623,6 +625,43 @@ async fn pending_worker_adoptions(
 }
 
 #[tauri::command]
+async fn list_worktrees(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Vec<bridge_core::worktree_registry::WorktreeInventoryEntry>, BridgeError> {
+    api::list_worktrees(state.inner())
+}
+
+#[tauri::command]
+async fn worktree_usage(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::worktree_registry::WorktreeUsage, BridgeError> {
+    api::worktree_usage(state.inner())
+}
+
+#[tauri::command]
+async fn archive_chat(
+    session_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::worktree_registry::ArchiveChatResult, BridgeError> {
+    api::archive_chat(state.inner(), &session_id)
+}
+
+#[tauri::command]
+async fn reclaim_worktree(
+    worktree_id: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::worktree_registry::WorktreeReclaimResult, BridgeError> {
+    api::reclaim_worktree(state.inner(), &worktree_id)
+}
+
+#[tauri::command]
+async fn sweep_worktrees(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::worktree_registry::SweepOutcome, BridgeError> {
+    api::sweep_worktrees(state.inner())
+}
+
+#[tauri::command]
 async fn adopt_worker_worktree(
     session_id: String,
     state: State<'_, Arc<BridgeCore>>,
@@ -637,6 +676,121 @@ async fn discard_worker_worktree(
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_core::worker_adoption::WorkerRepositoryBinding, BridgeError> {
     api::discard_worker_worktree(state.inner(), &session_id, &reason)
+}
+
+#[tauri::command]
+async fn summary(
+    since_day: String,
+    until_day: String,
+    resolution: bridge_core::usage_summary::UsageResolution,
+    time_zone: Option<String>,
+    workspace_id: Option<String>,
+    include_imported: bool,
+    since_time: Option<String>,
+    until_time: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::usage_summary::UsageSummary, BridgeError> {
+    let core = state.inner().clone();
+    let request = bridge_core::usage_summary::UsageSummaryRequest {
+        since_day,
+        until_day,
+        resolution,
+        time_zone,
+        workspace_id,
+        include_imported,
+        since_time,
+        until_time,
+    };
+    tauri::async_runtime::spawn_blocking(move || api::usage_summary(&core, &request))
+        .await
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?
+}
+
+#[tauri::command]
+async fn list_price_overrides(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Vec<bridge_core::usage_pricing::PriceOverride>, BridgeError> {
+    api::list_usage_price_overrides(state.inner())
+}
+
+#[tauri::command]
+async fn set_price_override(
+    model: String,
+    input_microusd_per_mtok: i64,
+    output_microusd_per_mtok: i64,
+    cache_read_microusd_per_mtok: Option<i64>,
+    cache_write_microusd_per_mtok: Option<i64>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Vec<bridge_core::usage_pricing::PriceOverride>, BridgeError> {
+    api::set_usage_price_override(
+        state.inner(),
+        &model,
+        input_microusd_per_mtok,
+        output_microusd_per_mtok,
+        cache_read_microusd_per_mtok,
+        cache_write_microusd_per_mtok,
+    )
+}
+
+#[tauri::command]
+async fn clear_price_override(
+    model: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Vec<bridge_core::usage_pricing::PriceOverride>, BridgeError> {
+    api::clear_usage_price_override(state.inner(), &model)
+}
+
+#[tauri::command]
+async fn refresh_rates(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::usage_pricing::PricingStatus, BridgeError> {
+    let core = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || api::refresh_usage_rates(&core))
+        .await
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?
+}
+
+#[tauri::command]
+async fn list_history_sources(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<Vec<bridge_core::usage_history::UsageHistorySource>, BridgeError> {
+    let core = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || api::list_usage_history_sources(&core))
+        .await
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?
+}
+
+#[tauri::command]
+async fn scan_history(
+    max_records: Option<u64>,
+    source_ids: Option<Vec<String>>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_core::usage_import::ScanReport, BridgeError> {
+    let core = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        api::scan_usage_history(
+            &core,
+            max_records.map(|max| usize::try_from(max).unwrap_or(usize::MAX)),
+            source_ids.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| BridgeError::Invalid(error.to_string()))?
+}
+
+#[tauri::command]
+async fn get_meter_snapshot() -> bridge_core::meter::MeterRegistry {
+    api::meter_snapshot()
+}
+
+#[tauri::command]
+async fn refresh_meter(
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
+    let core = state.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || api::refresh_meter(&core))
+        .await
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?
 }
 
 #[tauri::command]
@@ -1160,9 +1314,10 @@ async fn carry_session_handoff(
 /// can offer a labeled `/` menu.
 #[tauri::command]
 async fn list_slash_commands(
+    session_id: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<Vec<slash::SlashCommand>, BridgeError> {
-    api::list_slash_commands(state.inner())
+    api::list_slash_commands(state.inner(), session_id.as_deref())
 }
 
 /// Resolve a composer `/command` against the catalog so the UI can auto-switch
@@ -1780,6 +1935,7 @@ async fn workspace_changes(
 pub enum HostMode {
     Embedded,
     Daemon(Arc<DaemonHostRuntime>),
+    Failed(String),
 }
 
 pub struct DaemonHostRuntime {
@@ -1808,9 +1964,29 @@ fn select_host(
     app: &tauri::App,
     host: &std::sync::OnceLock<HostMode>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let data = daemon_host::desktop_data_dir(
+        app.path().app_data_dir()?,
+        std::env::var_os("BRIDGE_DATA_DIR"),
+    )?;
+    // The single-instance plugin focuses an existing window. This OS lease
+    // also closes simultaneous-launch races before either copy starts a backend.
+    app.manage(daemon_host::DesktopLease::acquire(&data)?);
+    // Config windows normally build before our setup hook, where a failure
+    // becomes a Tauri panic in did_finish_launching. Build explicitly so the
+    // same startup-error handling covers the window and the runtime host.
+    let config = app
+        .config()
+        .app
+        .windows
+        .first()
+        .ok_or("main window config is missing")?;
+    let create_window = || -> Result<(), Box<dyn std::error::Error>> {
+        tauri::WebviewWindowBuilder::from_config(app, config)?.build()?;
+        Ok(())
+    };
+    create_window()?;
     if let Some(window) = app.get_webview_window("main") {
         let window = window.as_ref().window();
-        window_chrome::position_traffic_lights(&window);
         window_chrome::apply_wallpaper_tint(&window);
         window_chrome::sync_fullscreen_chrome(&window);
     }
@@ -1825,7 +2001,6 @@ fn select_host(
             }
         });
     });
-    let data = app.path().app_data_dir()?;
     let bundled_extension = app.path().resource_dir()?.join("browser-extension");
     let extension_path = if bundled_extension.exists() {
         bundled_extension
@@ -1982,11 +2157,12 @@ fn setup_embedded(
     bridge_core::routing_evaluation_live::start_evaluation_maintenance(core.clone());
     bridge_core::memory_consolidation_live::start_consolidation_maintenance(core.clone());
     live_turn::start_queued_input_maintenance(core.clone());
+    live_turn::start_worktree_maintenance(core.clone());
     live_turn::start_history_snapshot_maintenance(core);
     Ok(())
 }
 
-pub fn run() {
+pub fn run() -> i32 {
     let host: Arc<std::sync::OnceLock<HostMode>> = Arc::new(std::sync::OnceLock::new());
     let setup_slot = host.clone();
     let exit_host = host.clone();
@@ -2056,8 +2232,22 @@ pub fn run() {
             workspace_base_divergence,
             refresh_workspace_base,
             pending_worker_adoptions,
+            list_worktrees,
+            worktree_usage,
+            archive_chat,
+            reclaim_worktree,
+            sweep_worktrees,
             adopt_worker_worktree,
             discard_worker_worktree,
+            summary,
+            list_price_overrides,
+            set_price_override,
+            clear_price_override,
+            refresh_rates,
+            list_history_sources,
+            scan_history,
+            get_meter_snapshot,
+            refresh_meter,
             register_verifier_manifest,
             verifier_candidates,
             get_router_preferences,
@@ -2158,26 +2348,42 @@ pub fn run() {
             archive_workspace,
             workspace_changes
         ]);
-    tauri::Builder::default()
+    let application = tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_shell::init())
         .menu(|handle| menu::build(handle))
         .on_menu_event(menu::dispatch)
-        .setup(move |app| select_host(app, &setup_slot))
+        .setup(move |app| {
+            // Tauri panics on a setup Err inside tao's non-unwinding Cocoa
+            // did_finish_launching callback. Preserve the actual error and
+            // show it once Ready arrives, outside the setup callback.
+            let result = diagnostics::native_boundary(|| select_host(app, &setup_slot))
+                .and_then(|result| result.map_err(|error| error.to_string()));
+            // The menu-bar meter tray is best-effort: a tray failure must never
+            // fail startup (CodexBar port, v1 companion surface).
+            let _ = meter_tray::build(app);
+            if let Err(error) = result {
+                let message = format!("Bridge could not start: {error}");
+                diagnostics::record(&message);
+                let _ = setup_slot.set(HostMode::Failed(message));
+            }
+            Ok(())
+        })
         .on_window_event(|window, event| {
-            // macOS rebuilds the titlebar on these and forgets the button
-            // placement; putting it back here keeps the corner stable.
-            if matches!(
-                event,
-                tauri::WindowEvent::Resized(_)
-                    | tauri::WindowEvent::Focused(_)
-                    | tauri::WindowEvent::ThemeChanged(_)
-            ) {
-                window_chrome::position_traffic_lights(window);
+            // Native materials follow focus/theme themselves. Only geometry
+            // changes need a deferred, idempotent layer-radius update.
+            if matches!(event, tauri::WindowEvent::Resized(_)) {
                 window_chrome::sync_fullscreen_chrome(window);
             }
-            if matches!(event, tauri::WindowEvent::ThemeChanged(_)) {
-                window_chrome::apply_wallpaper_tint(window);
+            if matches!(event, tauri::WindowEvent::Destroyed) {
+                window_chrome::release_window_material(window.label());
             }
         })
         .invoke_handler(move |invoke| {
@@ -2186,6 +2392,10 @@ pub fn run() {
                     daemon_host::proxy_invoke(runtime.proxy.clone(), invoke)
                 }
                 Some(HostMode::Embedded) => embedded_commands(invoke),
+                Some(HostMode::Failed(message)) => {
+                    invoke.resolver.reject(message.clone());
+                    true
+                }
                 // Invokes cannot arrive before setup finishes; refuse rather
                 // than panic if that assumption ever breaks.
                 None => {
@@ -2194,15 +2404,40 @@ pub fn run() {
                 }
             }
         })
-        .build(tauri::generate_context!())
-        .expect("Bridge failed to start")
-        .run(move |_app, event| {
-            if matches!(event, tauri::RunEvent::Exit) {
-                if let Some(HostMode::Daemon(runtime)) = exit_host.get() {
-                    runtime.shutdown();
+        .build(tauri::generate_context!());
+    let app = match application {
+        Ok(app) => app,
+        Err(error) => {
+            eprintln!("Bridge could not initialize its desktop shell: {error}");
+            return 1;
+        }
+    };
+    diagnostics::install(app.path().app_log_dir().ok());
+    app.run_return(move |app, event| {
+        if matches!(event, tauri::RunEvent::Ready) {
+            if let Some(HostMode::Failed(message)) = exit_host.get() {
+                use tauri_plugin_dialog::DialogExt;
+                let mut detail = message.clone();
+                if let Some(path) = diagnostics::path() {
+                    detail.push_str(&format!("\n\nDetails: {}", path.display()));
                 }
+                let handle = app.clone();
+                app.dialog()
+                    .message(detail)
+                    .title("Bridge could not start")
+                    .kind(tauri_plugin_dialog::MessageDialogKind::Error)
+                    .buttons(tauri_plugin_dialog::MessageDialogButtons::OkCustom(
+                        "Quit".into(),
+                    ))
+                    .show(move |_| handle.exit(1));
             }
-        })
+        }
+        if matches!(event, tauri::RunEvent::Exit) {
+            if let Some(HostMode::Daemon(runtime)) = exit_host.get() {
+                runtime.shutdown();
+            }
+        }
+    })
 }
 
 #[cfg(test)]
@@ -3296,7 +3531,9 @@ mod tests {
 
     #[test]
     fn repair_and_fallback_store_audit_events() {
-        let db = store::open(Path::new(":memory:")).unwrap();
+        let db = policy_fixture();
+        db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,parent_session_id,depth) VALUES('worker','w','codex','Worker','working','parent',1)", []).unwrap();
+        db.execute("INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,updated_at) VALUES('worker','parent','working','implementation','key','now')", []).unwrap();
         let mut tracker = delegation::ResultRepairTracker::default();
         let first = process_worker_result_output(
             &db,

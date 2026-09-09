@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { WORKER_PANEL_FEED_LINES, workerFeedLines, workerPanelModel } from "./workerPanel";
+import { WORKER_PANEL_FEED_LINES, legibleWorkerLine, workerFeedLines, workerPanelModel } from "./workerPanel";
 import type { AgentEvent, Session, WorkerRuntimeRecord } from "../types";
 import { asWireKind } from "../transcript/wire";
 
@@ -126,5 +126,42 @@ describe("worker feed lines", () => {
   it("prefers text over title when both are present", () => {
     const lines = workerFeedLines([event(1, { title: "Bash", text: "cargo test auth" })], "child");
     expect(lines[0].text).toBe("cargo test auth");
+  });
+});
+
+/* ── Wire chatter is not activity ────────────────────────────────────────── */
+
+describe("legibleWorkerLine", () => {
+  it("drops the fences the typed protocol travels in", () => {
+    // Observed on a real card: the worker's one-line progress note read
+    // "```bridge-worker-result", because the adapter recorded the opening line
+    // of the envelope's fence as the newest thing the worker had done.
+    expect(legibleWorkerLine("```bridge-worker-result")).toBeUndefined();
+    expect(legibleWorkerLine("~~~bridge-delegate")).toBeUndefined();
+    expect(legibleWorkerLine("```")).toBeUndefined();
+    expect(legibleWorkerLine("bridge-worker-result")).toBeUndefined();
+  });
+
+  it("keeps anything a person would want to read", () => {
+    expect(legibleWorkerLine("  editing src/auth/store.rs  ")).toBe("editing src/auth/store.rs");
+    // A fenced *code* line is prose to a reader — only the bare fence goes.
+    expect(legibleWorkerLine("```rust\nlet x = 1;")).toBe("```rust\nlet x = 1;");
+    expect(legibleWorkerLine("")).toBeUndefined();
+    expect(legibleWorkerLine(null)).toBeUndefined();
+  });
+});
+
+describe("workerPanelModel sanitisation", () => {
+  it("hides a machine block recorded as the progress summary", () => {
+    const model = workerPanelModel("child", [session("child")], [runtime({ progressSummary: "```bridge-worker-result" })], []);
+    expect(model?.progressSummary).toBeUndefined();
+  });
+
+  it("keeps a machine block out of the feed", () => {
+    const lines = workerFeedLines([
+      event(1, { text: "reviewing the diff" }),
+      event(2, { text: "```bridge-worker-result" }),
+    ], "child");
+    expect(lines.map(line => line.text)).toEqual(["reviewing the diff"]);
   });
 });

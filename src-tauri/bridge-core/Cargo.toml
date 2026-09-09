@@ -17,6 +17,9 @@ rusqlite = { workspace = true }
 portable-pty = { workspace = true }
 uuid = { workspace = true }
 chrono = { workspace = true }
+# IANA zones for usage day buckets: a fixed offset is wrong for any window
+# that crosses a DST boundary, and the caller names the zone it lives in.
+chrono-tz = "0.10"
 which = "7"
 thiserror = "2"
 tiny_http = "0.12"

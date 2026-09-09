@@ -100,6 +100,7 @@ methods![
     (RetryWorkerTask, "sessions", "retry_worker_task"),
     (RefreshAccountUsage, "sessions", "refresh_account_usage"),
     (StopSession, "sessions", "stop_session"),
+    (ArchiveChat, "sessions", "archive_chat"),
     // memory — explicit named-scope pins; not recall, not the router
     (SaveMemoryRecord, "memory", "save_memory_record"),
     (ListMemoryRecords, "memory", "list_memory_records"),
@@ -146,6 +147,22 @@ methods![
     (PendingWorkerAdoptions, "worktrees", "pending_worker_adoptions"),
     (AdoptWorkerWorktree, "worktrees", "adopt_worker_worktree"),
     (DiscardWorkerWorktree, "worktrees", "discard_worker_worktree"),
+    // worktree inventory and retention
+    (ListWorktrees, "worktrees", "list_worktrees"),
+    (WorktreeUsageReport, "worktrees", "worktree_usage"),
+    (ReclaimWorktree, "worktrees", "reclaim_worktree"),
+    (SweepWorktrees, "worktrees", "sweep_worktrees"),
+    // token and cost usage
+    (UsageSummary, "usage", "summary"),
+    (ListUsagePriceOverrides, "usage", "list_price_overrides"),
+    (SetUsagePriceOverride, "usage", "set_price_override"),
+    (ClearUsagePriceOverride, "usage", "clear_price_override"),
+    (RefreshUsageRates, "usage", "refresh_rates"),
+    (ListHistorySources, "usage", "list_history_sources"),
+    (ScanHistory, "usage", "scan_history"),
+    // menu-bar meter (CodexBar port)
+    (GetMeterSnapshot, "meter", "get_meter_snapshot"),
+    (RefreshMeter, "meter", "refresh_meter"),
     // routing
     (GetRouterPreferences, "routing", "get_router_preferences"),
     (UpdateRouterPreferences, "routing", "update_router_preferences"),

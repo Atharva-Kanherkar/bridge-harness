@@ -423,6 +423,7 @@ impl SessionSupervisor {
                     suggested_task: None,
                 };
                 Self::record_result(db, &session_id, &result)?;
+
             }
             reconciled += 1;
         }
@@ -481,6 +482,7 @@ mod tests {
                 waiting_reason: None,
                 progress_summary: None,
                 updated_at: "now".into(),
+                failure_class: None,
             },
         )
         .unwrap();
@@ -843,6 +845,7 @@ mod tests {
                     waiting_reason: None,
                     progress_summary: None,
                     updated_at: "now".into(),
+                    failure_class: None,
                 },
             )
             .unwrap();
@@ -894,6 +897,12 @@ mod tests {
             .filter(|entry| entry.kind == "worker.result")
             .count();
         assert_eq!(parent_results, 3);
+        assert!(store::session_entries(&db, "parent").unwrap().iter()
+            .all(|entry| entry.kind != "delegation.rejected"));
+        SessionSupervisor::recover_orphaned_workers(&db).unwrap();
+        assert_eq!(store::session_entries(&db, "parent").unwrap().iter()
+            .filter(|entry| entry.kind == "worker.result").count(), 3);
+
     }
 
     #[test]

@@ -1,13 +1,10 @@
 import { briefingOptions, isBriefing } from "./briefing.mjs";
+import { readOnlyOptions } from "./read-only.mjs";
 
-export function permissionOptions(mode) {
+export function permissionOptions(mode, networkAllowed = false, mcpServers = {}) {
   switch (mode) {
     case "ReadOnly":
-      return {
-        permissionMode: "dontAsk",
-        allowedTools: ["Read", "Grep", "Glob", "Bash"],
-        disallowedTools: ["Edit", "Write", "NotebookEdit"],
-      };
+      return readOnlyOptions({ networkAllowed, mcpServers });
     case "Shared":
     case "Isolated":
       return { permissionMode: "acceptEdits" };
@@ -30,21 +27,26 @@ export function sdkEffort(effort) {
   return SDK_EFFORT_LEVELS.has(value) ? value : null;
 }
 
-export function buildOptions({ sessionId, model, cwd, resume, instructions, writeMode, plugins = [], mcpServers = {}, briefing = null, effort = null }) {
+export function buildOptions({ sessionId, model, cwd, resume, instructions, writeMode, networkAllowed = false, plugins = [], mcpServers = {}, briefing = null, effort = null }) {
   // A briefing run replaces the permission half of these options wholesale. It is
   // not a stricter write mode, so it does not layer on top of one — see
   // briefing.mjs and bridge-core/src/briefing_policy.rs.
   const authority = isBriefing({ briefing })
     ? briefingOptions(briefing, mcpServers)
     : {
-        // Provider discovery supplies enabled plugin paths and credential-free
-        // connector endpoints explicitly. Keep project/local settings, but do not
-        // inherit unrelated global hooks, permissions, or inline credentials.
-        settingSources: ["project", "local"],
+        // User settings are required for user skills, commands, agents, and native
+        // connector sign-in. Bridge's PreToolUse hook remains authoritative for
+        // read-only workers even when user permissions contain broader allows.
+        settingSources: ["user", "project", "local"],
+        skills: "all",
         strictMcpConfig: false,
         mcpServers,
-        plugins: plugins.map(path => ({ type: "local", path })),
-        ...permissionOptions(writeMode),
+        // Keep plugin skills/commands/agents, but fail closed on plugin-bundled
+        // MCP servers: their OAuth context is not transferable to this SDK query.
+        plugins: plugins.map(plugin => typeof plugin === "string"
+          ? { type: "local", path: plugin, skipMcpDiscovery: true }
+          : { type: "local", ...plugin }),
+        ...permissionOptions(writeMode, networkAllowed, mcpServers),
       };
   // Reasoning effort is handled natively by the SDK; low/medium are honoured
   // rather than dropped the way the old thinking-budget mapping dropped them.

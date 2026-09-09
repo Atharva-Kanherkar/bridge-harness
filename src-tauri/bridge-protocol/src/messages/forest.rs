@@ -83,6 +83,11 @@ pub struct WorkerRuntimeRecord {
     /// One line of "what it is doing right now", derived from the worker's
     /// own event stream.
     pub progress_summary: Option<String>,
+    /// Bridge's own verdict on a failure: `stalled`, `protocol_invalid`,
+    /// `transient` or `permanent`. Sent as a classification so surfaces do not
+    /// each re-derive one by pattern-matching the summary.
+    #[serde(default)]
+    pub failure_class: Option<String>,
     pub updated_at: String,
 }
 
@@ -136,6 +141,12 @@ pub struct UsageLedgerRow {
     pub task_family: Option<String>,
     pub restoration_mode: Option<String>,
     pub cross_harness_reuse: Option<String>,
+    pub reasoning_tokens: Option<JsSafeI64>,
+    pub serving_model: Option<String>,
+    pub context_window_tokens: Option<JsSafeI64>,
+    pub context_used_tokens: Option<JsSafeI64>,
+    pub provider_record_id: Option<String>,
+    pub cache_savings_microusd: Option<JsSafeI64>,
     pub source: String,
     pub created_at: String,
 }
@@ -287,6 +298,7 @@ mod tests {
                 waiting_since: Some("now".into()),
                 waiting_reason: Some("approval_requested".into()),
                 progress_summary: Some("Running: cargo test".into()),
+                failure_class: None,
                 updated_at: "now".into(),
             }],
             worker_queue: vec![QueuedWorkerRequest {
@@ -332,6 +344,12 @@ mod tests {
                 task_family: Some("rust".into()),
                 restoration_mode: Some("fresh".into()),
                 cross_harness_reuse: Some("same_harness".into()),
+                reasoning_tokens: Some(safe_i64(40)),
+                serving_model: Some("gpt-5-mini".into()),
+                context_window_tokens: Some(safe_i64(272_000)),
+                context_used_tokens: Some(safe_i64(81_600)),
+                provider_record_id: Some("msg_1:req_1".into()),
+                cache_savings_microusd: Some(safe_i64(900)),
                 source: "provider".into(),
                 created_at: "now".into(),
             }],

@@ -95,12 +95,30 @@ pub fn is_quota_signal(signal: &str) -> bool {
     QUOTA_SIGNALS.contains(&signal)
 }
 
+/// The first quota phrase in an already-lowercased haystack, if any.
+///
+/// Shared with `provider_limit`, which reads the adapter's error frame rather
+/// than the worker's result. Two detectors with two vocabularies would mean a
+/// phrase that cools the harness down on one path and is ignored on the other.
+pub fn quota_signal_in(haystack: &str) -> Option<&'static str> {
+    QUOTA_SIGNALS
+        .iter()
+        .find(|signal| haystack.contains(**signal))
+        .copied()
+}
+
 /// What Bridge believes about a failure, from evidence rather than from the
 /// worker's opinion of itself.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FailureClass {
     /// Bridge could not read the result. A transport fact, not a task outcome.
     ProtocolInvalid,
+    /// The worker went silent and Bridge killed it. Named rather than inferred
+    /// from prose: the synthetic summary says "stall timeout", which contains
+    /// the word "timeout", which made a hung worker classify `Transient` and
+    /// offer a retry — for the one failure whose whole evidence is that the
+    /// worker stopped producing evidence.
+    Stalled,
     /// Something outside the task failed and may not fail again.
     Transient { signal: String },
     /// The task did not work. Another identical attempt will not change that.
@@ -111,6 +129,7 @@ impl FailureClass {
     pub fn as_str(&self) -> &'static str {
         match self {
             Self::ProtocolInvalid => "protocol_invalid",
+            Self::Stalled => "stalled",
             Self::Transient { .. } => "transient",
             Self::Permanent { .. } => "permanent",
         }
@@ -123,6 +142,7 @@ impl FailureClass {
             Self::ProtocolInvalid => {
                 "the worker's result could not be read as a result".to_owned()
             }
+            Self::Stalled => "the worker stopped responding and was stopped".to_owned(),
             Self::Transient { signal } => format!("a transient failure ({signal})"),
             Self::Permanent { reason } => reason.clone(),
         }
@@ -217,8 +237,24 @@ pub fn decide(
             reason: format!("{} is not a failure", result.status.as_str()),
         };
     }
-    let class = classify(result);
+    decide_with_class(classify(result), retry_count, has_hot_process, attempts_spent)
+}
+
+/// [`decide`] once the failure has already been classified, for callers that
+/// know something `classify` cannot read off the result — a stall, which is
+/// Bridge's own observation rather than the worker's account of itself.
+pub fn decide_with_class(
+    class: FailureClass,
+    retry_count: i64,
+    has_hot_process: bool,
+    attempts_spent: i64,
+) -> RetryDecision {
     let signal = match &class {
+        FailureClass::Stalled => {
+            return RetryDecision::Decline {
+                reason: "the worker stopped responding and was stopped; the same objective on the same process has nothing new to offer".to_owned(),
+            }
+        }
         FailureClass::ProtocolInvalid => {
             return RetryDecision::Decline {
                 reason: "a formatting failure is not a task failure, and retrying it would repeat it".to_owned(),

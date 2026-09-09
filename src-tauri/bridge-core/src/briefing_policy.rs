@@ -247,10 +247,21 @@ pub struct BriefingRuntimePolicy {
 /// verb this list does not name — is denied. Fail closed: an unrecognised verb
 /// is not a read.
 pub const READ_TOOL_VERBS: &[&str] = &["search", "read", "list", "get", "query", "fetch", "find"];
+const MUTATION_TOOL_WORDS: &[&str] = &[
+    "add", "approve", "create", "delete", "edit", "merge", "patch", "post", "publish", "put",
+    "reject", "remove", "send", "set", "update", "write",
+];
 
 /// Is this bare tool name (the segment after `mcp__<server>__`) a read?
 fn is_read_verb_tool(tool: &str) -> bool {
     let lowered = tool.to_lowercase();
+    if lowered != tool
+        || lowered
+            .split(['_', '-'])
+            .any(|word| MUTATION_TOOL_WORDS.contains(&word))
+    {
+        return false;
+    }
     READ_TOOL_VERBS.iter().any(|verb| {
         lowered == *verb
             || lowered
@@ -1836,6 +1847,8 @@ mod tests {
             "mcp__notion__create_page",
             "mcp__notion__update_page",
             "mcp__slack__delete_message",
+            "mcp__notion__get_and_delete",
+            "mcp__notion__search_and_update",
             // Fail closed: an unrecognised verb is not a read, even a plausible one.
             "mcp__slack__summarise_channel",
             // And a read verb buried mid-name does not count.

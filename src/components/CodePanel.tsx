@@ -1,8 +1,9 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, CornerDownLeft, FileSearch, LoaderCircle, RefreshCw, X } from "lucide-react";
+import { ChevronRight, CornerDownLeft, FileSearch, Folder, FolderOpen, LoaderCircle, RefreshCw, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import { errorMessage } from "../errors";
 import { ancestorPaths, buildFileTree, collapseChains, rankPaths, type TreeNode } from "../fileTree";
+import { glyphFor } from "./fileGlyph";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Kbd } from "@/components/ui/kbd";
@@ -32,6 +33,14 @@ function flatten(nodes: TreeNode[], expanded: Set<string>, depth = 0, out: Row[]
   return out;
 }
 
+/**
+ * One row of the tree.
+ *
+ * Depth is drawn, not padded: a row at depth *n* renders *n* hairline guides,
+ * which both indents it and shows which trunk it hangs off. Left padding alone
+ * gave a deep tree no visible structure at all — every row was the same
+ * monospace grey at a slightly different offset.
+ */
 const TreeRow = memo(function TreeRow({ row, active, onToggle, onOpen }: {
   row: Row;
   active: boolean;
@@ -39,20 +48,41 @@ const TreeRow = memo(function TreeRow({ row, active, onToggle, onOpen }: {
   onOpen: (path: string) => void;
 }) {
   const isDir = Boolean(row.node.children);
+  const { Icon, tint } = isDir
+    ? { Icon: row.expanded ? FolderOpen : Folder, tint: "text-muted-foreground" }
+    : glyphFor(row.node.path);
   return <button
     type="button"
     onClick={() => (isDir ? onToggle(row.node.path) : onOpen(row.node.path))}
     aria-expanded={isDir ? row.expanded : undefined}
     className={cn(
-      "flex h-7 w-full items-center gap-1 truncate rounded-[5px] pr-2 text-left font-mono text-[12px] transition-colors",
-      active ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent/60 hover:text-foreground",
+      "group/row flex h-7 w-full items-stretch gap-0 truncate rounded-[5px] pr-2 text-left font-mono text-[12px] transition-colors",
+      active ? "bg-accent text-foreground" : "hover:bg-accent/60",
     )}
-    style={{ paddingLeft: `${6 + row.depth * 11}px` }}
   >
-    {isDir
-      ? <ChevronRight size={11} className={cn("shrink-0 text-muted-foreground transition-transform", row.expanded && "rotate-90")} aria-hidden="true" />
-      : <span className="w-[11px] shrink-0" aria-hidden="true" />}
-    <span className="truncate">{row.node.name}</span>
+    {Array.from({ length: row.depth }, (_, level) => <span
+      key={level}
+      // The guide is the indent. It sits at the *right* edge of each 11px
+      // step, which lines it up with the chevron column of the parent
+      // directory rather than floating between rows.
+      className="w-[11px] shrink-0 border-r border-border/50"
+      aria-hidden="true"
+    />)}
+    <span className="flex min-w-0 flex-1 items-center gap-1 pl-1.5">
+      {isDir
+        ? <ChevronRight size={11} className={cn("shrink-0 text-muted-foreground transition-transform", row.expanded && "rotate-90")} aria-hidden="true" />
+        : <span className="w-[11px] shrink-0" aria-hidden="true" />}
+      {/* Files tint from the syntax ramp — the same palette the file's own
+          code is painted with, so the tree previews what you are about to
+          open. Directories stay achromatic: they are chrome, not content. */}
+      <Icon size={12} strokeWidth={1.75} className={cn("shrink-0", tint)} aria-hidden="true" />
+      <span className={cn(
+        "truncate",
+        // A directory is a container and reads as one: full foreground and a
+        // touch of weight. Files stay quiet until hovered or active.
+        isDir ? "font-medium text-foreground/80" : active ? "text-foreground" : "text-muted-foreground group-hover/row:text-foreground",
+      )}>{row.node.name}</span>
+    </span>
   </button>;
 });
 
@@ -89,6 +119,7 @@ function FilePalette({ paths, onPick, onClose }: { paths: string[]; onPick: (pat
           ? <p className="px-2 py-6 text-center text-[12px] text-muted-foreground">No file matches “{query}”.</p>
           : results.map((path, position) => {
             const cut = path.lastIndexOf("/") + 1;
+            const { Icon, tint } = glyphFor(path);
             return <button
               key={path}
               type="button"
@@ -99,6 +130,7 @@ function FilePalette({ paths, onPick, onClose }: { paths: string[]; onPick: (pat
                 path === active ? "bg-accent text-foreground" : "text-muted-foreground",
               )}
             >
+              <Icon size={12} strokeWidth={1.75} className={cn("shrink-0", tint)} aria-hidden="true" />
               <span className="truncate">
                 <span className="text-foreground">{path.slice(cut)}</span>
                 {cut > 0 && <span className="ml-2 text-muted-foreground">{path.slice(0, cut - 1)}</span>}
@@ -349,14 +381,22 @@ export function CodePanel({ workspaceId, visible = true, reveal, driftSignal, on
           {open.map(file => {
             const name = file.path.slice(file.path.lastIndexOf("/") + 1);
             const marked = isDirty(file);
+            const { Icon, tint } = glyphFor(file.path);
             return <div
               key={file.path}
               className={cn(
-                "group/tab flex shrink-0 items-center gap-1.5 border-r border-border pl-3 pr-1.5 font-mono text-[12px] transition-colors",
+                "group/tab relative flex shrink-0 items-center gap-1.5 border-r border-border pl-3 pr-1.5 font-mono text-[12px] transition-colors",
                 file.path === activePath ? "bg-code text-foreground" : "text-muted-foreground hover:bg-accent/50",
               )}
             >
-              <button type="button" onClick={() => setActivePath(file.path)} className="min-h-8 max-w-[180px] truncate py-1" title={file.path}>{name}</button>
+              {/* The active tab is joined to the editor below it by a top
+                  rule, so the tab strip reads as a set of folders over one
+                  surface rather than a row of equal-weight buttons. */}
+              {file.path === activePath && <span className="pointer-events-none absolute inset-x-0 top-0 h-[2px] bg-foreground/70" aria-hidden="true" />}
+              <button type="button" onClick={() => setActivePath(file.path)} className="flex min-h-8 max-w-[180px] items-center gap-1.5 truncate py-1" title={file.path}>
+                <Icon size={12} strokeWidth={1.75} className={cn("shrink-0", tint)} aria-hidden="true" />
+                <span className="truncate">{name}</span>
+              </button>
               <button
                 type="button"
                 onClick={() => closeFile(file.path)}

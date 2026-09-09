@@ -561,6 +561,212 @@ fn base_branch_divergence_mirrors_core() {
 }
 
 #[test]
+fn worktree_inventory_entry_mirrors_core() {
+    assert_mirrors::<wire::WorktreeInventoryEntry>(
+        &crate::worktree_registry::WorktreeInventoryEntry {
+            id: "wt-1".into(),
+            kind: crate::worktree_registry::KIND_WORKER.into(),
+            repo_root: "/repos/demo".into(),
+            path: "/data/worktrees/workers/oslo/child".into(),
+            branch: Some("bridge/task-worker-child".into()),
+            owner_session_id: Some("child".into()),
+            owner_workspace_id: Some("w".into()),
+            state: crate::worktree_registry::STATE_IDLE.into(),
+            disposition: Some("retained".into()),
+            retained_reason: Some("uncommitted changes".into()),
+            assessed_at: Some("now".into()),
+            size_bytes: Some(4_194_304),
+            size_measured_at: Some("now".into()),
+            created_at: "now".into(),
+            last_used_at: "now".into(),
+            idle_seconds: 86_400,
+        },
+    );
+}
+
+#[test]
+fn archive_chat_result_mirrors_core() {
+    assert_mirrors::<wire::ArchiveChatResult>(&crate::worktree_registry::ArchiveChatResult {
+        archived: true,
+        bytes_freed: 0,
+        worktree_detail: Some("uncommitted changes".into()),
+    });
+}
+
+#[test]
+fn worktree_reclaim_result_mirrors_core() {
+    assert_mirrors::<wire::WorktreeReclaimResult>(
+        &crate::worktree_registry::WorktreeReclaimResult {
+            reclaimed: false,
+            bytes_freed: 0,
+            disposition: "at_risk".into(),
+            detail: Some("uncommitted changes".into()),
+        },
+    );
+}
+
+#[test]
+fn worktree_sweep_result_mirrors_core() {
+    assert_mirrors::<wire::WorktreeSweepResult>(&crate::worktree_registry::SweepOutcome {
+        removed: 2,
+        removed_bytes: 8_388_608,
+        retained: 3,
+        retained_bytes: 4_194_304,
+        over_budget_bytes: 0,
+        skipped: 1,
+        measurements_truncated: 0,
+    });
+}
+
+#[test]
+fn worktree_usage_mirrors_core() {
+    assert_mirrors::<wire::WorktreeUsage>(&crate::worktree_registry::WorktreeUsage {
+        total_count: 3,
+        total_bytes: 12_582_912,
+        reclaimable_count: 1,
+        reclaimable_bytes: 4_194_304,
+        retained_count: 2,
+        max_total_bytes: 10 * 1024 * 1024 * 1024,
+        max_per_repo: 12,
+        worker_idle_ttl_seconds: 86_400,
+        orchestrator_idle_ttl_seconds: 604_800,
+        github_idle_ttl_seconds: 604_800,
+        repositories: vec![crate::worktree_registry::WorktreeRepositoryUsage {
+            repo_root: "/repos/demo".into(),
+            count: 3,
+            size_bytes: 12_582_912,
+            reclaimable_bytes: 4_194_304,
+            over_budget: false,
+        }],
+    });
+}
+
+#[test]
+fn usage_payloads_mirror_core() {
+    use crate::usage_pricing::{CostSource, PriceOverride, PricingStatus};
+    use crate::usage_summary::{
+        UsageBucket, UsageBucketTotals, UsageResolution, UsageSummary, UsageSummarySource,
+    };
+    for (core, mirror) in [
+        (CostSource::ProviderReported, wire::UsageCostSource::ProviderReported),
+        (CostSource::ModelPriced, wire::UsageCostSource::ModelPriced),
+        (CostSource::Unpriced, wire::UsageCostSource::Unpriced),
+    ] {
+        assert_same_wire_value(&core, &mirror);
+    }
+    assert_same_wire_value(&UsageResolution::Day, &wire::UsageResolution::Day);
+    assert_same_wire_value(&UsageResolution::Hour, &wire::UsageResolution::Hour);
+    let pricing = PricingStatus {
+        status: "cached".into(),
+        fetched_at: Some("2026-01-01T00:00:00Z".into()),
+        snapshot_date: "2026-01-01".into(),
+        source: "https://example.test/rates.json".into(),
+        known_models: 12,
+        overrides: 1,
+    };
+    assert_mirrors::<wire::UsagePricingStatus>(&pricing);
+    let bucket = |hour_start: Option<&str>| UsageBucket {
+        day: "2026-01-01".into(),
+        hour_start: hour_start.map(str::to_owned),
+        harness: "codex".into(),
+        model: "gpt-5".into(),
+        totals: UsageBucketTotals {
+            uncached_input_tokens: 10,
+            cache_read_tokens: 20,
+            cache_write_tokens: 5,
+            output_tokens: 7,
+            reasoning_tokens: 3,
+        },
+        cost_microusd: 900,
+        cache_savings_microusd: 30,
+        cost_source: CostSource::ModelPriced,
+        records: 2,
+        unpriced_records: 0,
+        sessions: 1,
+    };
+    assert_mirrors::<wire::UsageSummaryResult>(&UsageSummary {
+        since_day: "2026-01-01".into(),
+        until_day: "2026-01-01".into(),
+        time_zone: "America/New_York".into(),
+        resolution: UsageResolution::Hour,
+        buckets: vec![bucket(None), bucket(Some("2026-01-01T05:00:00Z"))],
+        sources: vec![UsageSummarySource {
+            id: "claude-home".into(),
+            agent: "claude".into(),
+            provider: "anthropic".into(),
+            coverage_state: "partial".into(),
+            coverage_reason: Some("scan in progress".into()),
+            records_imported: 40,
+            records_skipped: 2,
+            last_successful_scan_at: Some("2026-01-01T00:00:00Z".into()),
+        }],
+        pricing,
+        scan_duration_ms: 12,
+        duplicates_dropped: 3,
+        live_records: 5,
+        imported_records: 40,
+    });
+    assert_mirrors::<wire::ListUsagePriceOverridesResult>(&vec![PriceOverride {
+        model: "my-fine-tune".into(),
+        input_microusd_per_mtok: 1_000_000,
+        output_microusd_per_mtok: 4_000_000,
+        cache_read_microusd_per_mtok: Some(100_000),
+        cache_write_microusd_per_mtok: None,
+        updated_at: "now".into(),
+    }]);
+}
+
+#[test]
+fn usage_history_payloads_mirror_core() {
+    use crate::analytics::{CoverageState, ImporterCapability};
+    for (core, mirror) in [
+        (CoverageState::Complete, wire::UsageCoverageState::Complete),
+        (CoverageState::Partial, wire::UsageCoverageState::Partial),
+        (CoverageState::Stale, wire::UsageCoverageState::Stale),
+        (CoverageState::Unsupported, wire::UsageCoverageState::Unsupported),
+        (CoverageState::Unreadable, wire::UsageCoverageState::Unreadable),
+        (CoverageState::Empty, wire::UsageCoverageState::Empty),
+    ] {
+        assert_same_wire_value(&core, &mirror);
+    }
+    assert_same_wire_value(&ImporterCapability::Supported, &wire::UsageImporterCapability::Supported);
+    assert_same_wire_value(&ImporterCapability::Unsupported, &wire::UsageImporterCapability::Unsupported);
+    assert_mirrors::<wire::ListHistorySourcesResult>(&vec![crate::usage_history::UsageHistorySource {
+        id: "claude-0123456789abcdef".into(),
+        agent: "claude".into(),
+        provider: "anthropic".into(),
+        location: "/Users/me/.claude/projects".into(),
+        detected_version: Some("2.1.261".into()),
+        capability: ImporterCapability::Supported,
+        coverage_state: CoverageState::Partial,
+        coverage_reason: Some("batch limit reached".into()),
+        coverage_start_at: Some("2026-01-01T00:00:00Z".into()),
+        coverage_end_at: Some("2026-02-01T00:00:00Z".into()),
+        records_imported: 120,
+        records_skipped: 3,
+        last_successful_scan_at: Some("2026-02-01T00:00:00Z".into()),
+        last_error: None,
+    }]);
+    assert_mirrors::<wire::ScanHistoryResult>(&crate::usage_import::ScanReport {
+        sources: vec![crate::usage_import::SourceScanOutcome {
+            source_id: "cursor-0123456789abcdef".into(),
+            agent: "cursor".into(),
+            provider: "cursor".into(),
+            location: "/Users/me/.cursor".into(),
+            capability: ImporterCapability::Unsupported,
+            coverage: CoverageState::Unsupported,
+            records_imported: 0,
+            records_skipped: 0,
+            next_cursor: Some("{}".into()),
+            warning: Some("Cursor stores no token counts locally".into()),
+        }],
+        records_imported: 7,
+        records_skipped: 1,
+        duration_ms: 42,
+    });
+}
+
+#[test]
 fn worker_repository_binding_mirrors_core() {
     assert_mirrors::<wire::WorkerRepositoryBinding>(
         &crate::worker_adoption::WorkerRepositoryBinding {
@@ -581,7 +787,7 @@ fn worker_repository_binding_mirrors_core() {
             detail: None,
             created_at: "now".into(),
             updated_at: "now".into(),
-        },
+                    },
     );
 }
 
@@ -660,7 +866,7 @@ fn configuration_payloads_mirror_core() {
         is_built_in: true,
         created_at: "now".into(),
         updated_at: "now".into(),
-    });
+            });
 }
 
 #[test]
@@ -919,7 +1125,7 @@ fn the_session_forest_snapshot_mirrors_core() {
             resume_eligibility: model::ResumeEligibility::CheckpointRestored,
             latest_checkpoint_entry_id: Some("e-0".into()),
             updated_at: "now".into(),
-        }),
+                    }),
         leaves: vec![entry],
         worker_leases: vec![model::WorkerLease {
             session_id: "worker-1".into(),
@@ -933,7 +1139,7 @@ fn the_session_forest_snapshot_mirrors_core() {
             expires_at: Some("later".into()),
             created_at: "now".into(),
             updated_at: "now".into(),
-        }],
+                    }],
         worker_runtimes: vec![model::WorkerRuntimeRecord {
             session_id: "worker-1".into(),
             parent_session_id: "s-1".into(),
@@ -951,6 +1157,7 @@ fn the_session_forest_snapshot_mirrors_core() {
             waiting_reason: Some("approval_requested".into()),
             progress_summary: Some("Running: cargo test".into()),
             updated_at: "now".into(),
+            failure_class: None,
         }],
         worker_queue: vec![model::QueuedWorkerRequest {
             id: "q-1".into(),
@@ -969,7 +1176,7 @@ fn the_session_forest_snapshot_mirrors_core() {
             last_error: Some("busy".into()),
             created_at: "now".into(),
             updated_at: "now".into(),
-        }],
+                    }],
         usage: vec![model::UsageLedgerRow {
             id: 1,
             workspace_id: "w-1".into(),
@@ -995,6 +1202,12 @@ fn the_session_forest_snapshot_mirrors_core() {
             task_family: Some("rust".into()),
             restoration_mode: Some("fresh".into()),
             cross_harness_reuse: Some("same_harness".into()),
+            reasoning_tokens: None,
+            serving_model: None,
+            context_window_tokens: None,
+            context_used_tokens: None,
+            provider_record_id: None,
+            cache_savings_microusd: None,
             source: "provider".into(),
             created_at: "now".into(),
         }],
@@ -1197,12 +1410,13 @@ fn result_payloads_mirror_core() {
             is_built_in: false,
             created_at: "now".into(),
             updated_at: "now".into(),
-        }],
+                    }],
         default_agent_id: "reviewer".into(),
         permission_policy: agent_config::PermissionPolicy {
             auto_approve_provider_permissions: true,
+            worker_prompt_proposal_roles: vec![delegation::WorkerRole::Research],
             updated_at: "now".into(),
-        },
+                    },
     });
     assert_mirrors::<wire::BrowserRouteDecision>(&browser_bridge::route_browser(
         browser_bridge::BrowserRouteRequest {
@@ -1234,6 +1448,13 @@ fn prompt_studio_payloads_mirror_core() {
         state: overridden.clone(),
         restored_from_revision_id: None,
         created_at: "now".into(),
+        attribution: Some(prompt_sections::PromptRevisionAttribution {
+            actor_session_id: "worker".into(),
+            actor_turn_id: "turn".into(),
+            actor_role: "research".into(),
+            proposal_id: "proposal".into(),
+            rationale: "Preserve source citations.".into(),
+        }),
     };
     assert_mirrors::<wire::PromptRevisionView>(&revision_view);
     assert_mirrors::<wire::PromptSectionStatePayload>(&overridden);

@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 import { adapterSupportsAgentRole, PermissionsSection } from "./SettingsScreen";
 import type { AdapterDescriptor, BridgeEvent, PermissionPolicy } from "../types";
 
-const policy = (autoApproveProviderPermissions: boolean): PermissionPolicy => ({ autoApproveProviderPermissions, updatedAt: "2026-08-21T10:00:00Z" });
+const policy = (autoApproveProviderPermissions: boolean): PermissionPolicy => ({ autoApproveProviderPermissions, workerPromptProposalRoles: [], updatedAt: "2026-08-21T10:00:00Z" });
 const ledgerRow = (id: number, body: string): BridgeEvent => ({
   id, source: "approval", kind: "approval.auto_allowed", entityId: "chat", body,
   createdAt: "2026-08-21T10:00:00Z",
@@ -35,12 +35,13 @@ describe("PermissionsSection", () => {
 
   /// The issue makes this copy part of the contract: a switch that claims to
   /// silence everything and then still prompts has to say where, up front.
-  it("names both gates that keep asking either way", async () => {
+  it("names the host gates that keep asking either way", async () => {
     const { container, unmount } = await mount(
       <PermissionsSection policy={policy(true)} autoApprovals={[]} busy={false} onChange={() => undefined} />,
     );
     expect(container.textContent).toContain("Worker write scope");
     expect(container.textContent).toContain("Browser outward effects");
+    expect(container.textContent).toContain("Agent prompt changes");
     expect(container.textContent).toContain("These keep asking either way");
     expect(container.textContent).toContain("Auto-approve provider permissions");
     expect(container.textContent).toContain("Questions and macOS prompts still wait for you");
@@ -56,7 +57,7 @@ describe("PermissionsSection", () => {
       <PermissionsSection policy={policy(false)} autoApprovals={[]} busy={false} onChange={onChange} />,
     );
     await act(async () => container.querySelector<HTMLButtonElement>('[role="switch"]')!.click());
-    expect(onChange).toHaveBeenCalledWith({ autoApproveProviderPermissions: true, updatedAt: "2026-08-21T10:00:00Z" });
+    expect(onChange).toHaveBeenCalledWith({ ...policy(false), autoApproveProviderPermissions: true });
     // Still off in the DOM: nothing changed until the host says so.
     expect(container.querySelector('[role="switch"]')!.getAttribute("aria-checked")).toBe("false");
     await unmount();
@@ -93,6 +94,43 @@ describe("PermissionsSection", () => {
     const toggle = container.querySelector<HTMLButtonElement>('[role="switch"]')!;
     expect(toggle.disabled).toBe(true);
     await act(async () => toggle.click());
+    expect(onChange).not.toHaveBeenCalled();
+    await unmount();
+  });
+
+  it("keeps every worker proposal role off by default even with provider auto-approval", async () => {
+    const { container, unmount } = await mount(
+      <PermissionsSection policy={policy(true)} autoApprovals={[]} busy={false} onChange={() => undefined} />,
+    );
+    const toggles = container.querySelectorAll('[role="switch"][aria-label$="prompt proposals"]');
+    expect(toggles.length).toBe(5);
+    expect([...toggles].every(item => item.getAttribute("aria-checked") === "false")).toBe(true);
+    expect(container.textContent).toContain("You review every change before it is saved to the shared role default");
+    await unmount();
+  });
+
+  it.each([true, false])("requests one role opt-in change while preserving other grants (enabled=%s)", async enabled => {
+    const current: PermissionPolicy = { ...policy(true), workerPromptProposalRoles: enabled ? ["research"] : ["research", "implementation"] };
+    const onChange = vi.fn();
+    const { container, unmount } = await mount(
+      <PermissionsSection policy={current} autoApprovals={[]} busy={false} onChange={onChange} />,
+    );
+    const toggle = container.querySelector<HTMLButtonElement>('[aria-label="Allow implementation prompt proposals"]')!;
+    await act(async () => toggle.click());
+    expect(onChange).toHaveBeenCalledWith({ ...current, workerPromptProposalRoles: enabled ? ["research", "implementation"] : ["research"] });
+    // The saved host policy owns the visible state even after a requested flip.
+    expect(toggle.getAttribute("aria-checked")).toBe(String(!enabled));
+    await unmount();
+  });
+
+  it("disables every role grant while the host saves", async () => {
+    const onChange = vi.fn();
+    const { container, unmount } = await mount(
+      <PermissionsSection policy={policy(false)} autoApprovals={[]} busy onChange={onChange} />,
+    );
+    const toggles = [...container.querySelectorAll<HTMLButtonElement>('[role="switch"][aria-label$="prompt proposals"]')];
+    expect(toggles.every(item => item.disabled)).toBe(true);
+    await act(async () => { for (const toggle of toggles) toggle.click(); });
     expect(onChange).not.toHaveBeenCalled();
     await unmount();
   });

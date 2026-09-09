@@ -33,6 +33,7 @@ mod imports;
 mod learning;
 mod marketplace;
 mod memory;
+mod meter;
 mod models;
 mod projects;
 mod routing;
@@ -41,8 +42,10 @@ mod skills;
 mod slash;
 mod state;
 mod terminal;
+mod usage;
 mod work;
 mod workspaces;
+mod worktrees;
 
 pub use agents::*;
 pub use approvals::*;
@@ -58,6 +61,7 @@ pub use imports::*;
 pub use learning::*;
 pub use marketplace::*;
 pub use memory::*;
+pub use meter::*;
 pub use models::*;
 pub use projects::*;
 pub use routing::*;
@@ -66,8 +70,10 @@ pub use skills::*;
 pub use slash::*;
 pub use state::*;
 pub use terminal::*;
+pub use usage::*;
 pub use work::*;
 pub use workspaces::*;
+pub use worktrees::*;
 
 use schemars::schema_for;
 use serde_json::Value;
@@ -247,7 +253,7 @@ typed_methods![
     (CloseTerminal, CloseTerminalParams, UnitResult),
     (ListTerminals, ListTerminalsParams, ListTerminalsResult),
     // slash commands
-    (ListSlashCommands, _, SlashCommandsResult),
+    (ListSlashCommands, ListSlashCommandsParams, SlashCommandsResult),
     (ResolveSlashCommand, ResolveSlashCommandParams, SlashCommandResolveResult),
     // completion / verification
     (CreateCompletionPlan, CreateCompletionPlanParams, CompletionSummary),
@@ -262,6 +268,22 @@ typed_methods![
     (PendingWorkerAdoptions, PendingWorkerAdoptionsParams, PendingWorkerAdoptionsResult),
     (AdoptWorkerWorktree, AdoptWorkerWorktreeParams, WorkerRepositoryBinding),
     (DiscardWorkerWorktree, DiscardWorkerWorktreeParams, WorkerRepositoryBinding),
+    // worktree inventory and retention
+    (ListWorktrees, _, WorktreeInventoryResult),
+    (WorktreeUsageReport, _, WorktreeUsage),
+    (ReclaimWorktree, ReclaimWorktreeParams, WorktreeReclaimResult),
+    (SweepWorktrees, _, WorktreeSweepResult),
+    (ArchiveChat, ArchiveChatParams, ArchiveChatResult),
+    // token and cost usage
+    (UsageSummary, SummaryParams, UsageSummaryResult),
+    (ListUsagePriceOverrides, _, ListUsagePriceOverridesResult),
+    (SetUsagePriceOverride, SetPriceOverrideParams, ListUsagePriceOverridesResult),
+    (ClearUsagePriceOverride, ClearPriceOverrideParams, ListUsagePriceOverridesResult),
+    (RefreshUsageRates, _, UsagePricingStatus),
+    (ListHistorySources, _, ListHistorySourcesResult),
+    (ScanHistory, ScanHistoryParams, ScanHistoryResult),
+    (GetMeterSnapshot, _, MeterRegistry),
+    (RefreshMeter, _, UnitResult),
     // routing
     (GetRouterPreferences, GetRouterPreferencesParams, RouterPreferences),
     (UpdateRouterPreferences, UpdateRouterPreferencesParams, RouterPreferences),
@@ -509,7 +531,6 @@ mod tests {
             MethodName::Health,
             MethodName::GetState,
             MethodName::RefreshAccountUsage,
-            MethodName::ListSlashCommands,
             MethodName::GetMemoryCapabilities,
             MethodName::GetExtractionSettings,
             MethodName::GetConsolidationSettings,

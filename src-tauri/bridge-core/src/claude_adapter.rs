@@ -41,6 +41,7 @@ pub fn discover_models() -> Result<Vec<crate::adapters::DiscoveredModel>, Bridge
     let node = binary::resolve("node").ok_or_else(|| BridgeError::Invalid("Node.js is required to discover Claude models".into()))?;
     let sidecar = sidecar_entry()?;
     let mut command = Command::new(node);
+    binary::hydrate_command_path(&mut command);
     command.arg(sidecar).arg(serde_json::json!({ "catalog": true }).to_string())
         .env_remove("NODE_OPTIONS").stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null());
     configure_sdk_environment(&mut command);
@@ -222,7 +223,36 @@ fn launch(
     } else {
         ContextLifecyclePhase::Start
     };
-    let context_inventory = claude_context_inventory(lifecycle_phase, &sdk_configuration)?;
+    let restricted_launch = briefing_config.is_some() || read_only_sandbox.is_some();
+    let network_allowed = read_only_sandbox
+        .map(|sandbox| sandbox.network_allowed())
+        .unwrap_or(true);
+    let launch_plugins = if restricted_launch {
+        Vec::new()
+    } else {
+        sdk_configuration.plugins.clone()
+    };
+    // Briefings and networked read-only workers both run under `strictMcpConfig:
+    // true` (see read-only.mjs / briefing.mjs), so on-disk MCP config never
+    // reaches them — the discovered/connected server map below is the only way
+    // they ever see a connector. A non-networked read-only sandbox has no route
+    // to reach any MCP server anyway, so it gets none.
+    let launch_mcp_servers = sidecar_mcp_servers(
+        briefing_config.is_some() || (read_only_sandbox.is_some() && network_allowed),
+        &sdk_configuration.mcp_servers,
+    );
+    let launch_configuration = crate::marketplace::ClaudeSdkConfiguration {
+        plugins: launch_plugins.clone(),
+        mcp_servers: launch_mcp_servers.clone(),
+        connector_health: sdk_configuration
+            .connector_health
+            .iter()
+            .filter(|(name, _)| launch_mcp_servers.contains_key(*name))
+            .map(|(name, health)| (name.clone(), *health))
+            .collect(),
+        diagnostics: sdk_configuration.diagnostics.clone(),
+    };
+    let context_inventory = claude_context_inventory(lifecycle_phase, &launch_configuration)?;
     let config = json!({
         "sessionId": session_id,
         "model": chosen_model,
@@ -232,8 +262,9 @@ fn launch(
         // system prompt so the child agent knows its single typed task.
         "instructions": instructions.map(str::trim).filter(|value| !value.is_empty()),
         "writeMode": write_mode.map(write_mode_label),
-        "plugins": sdk_configuration.plugins,
-        "mcpServers": sdk_configuration.mcp_servers,
+        "networkAllowed": network_allowed,
+        "plugins": launch_plugins,
+        "mcpServers": launch_mcp_servers,
         // Absent for every non-briefing session, so the sidecar's existing
         // write-mode handling is reached by exactly the same path as before.
         "briefing": briefing_config,
@@ -244,6 +275,7 @@ fn launch(
         "effort": effort.map(str::trim).filter(|value| !value.is_empty()),
     });
     let mut command = crate::worker_sandbox::command(&node, read_only_sandbox)?;
+    binary::hydrate_command_path(&mut command);
     command
         .arg(&sidecar)
         .arg(config.to_string())
@@ -288,6 +320,11 @@ fn launch(
     // Reasoning effort is passed to the SDK natively through the sidecar config
     // (Options.effort) rather than the deprecated MAX_THINKING_TOKENS budget, so
     // every level — low and medium included — reaches the model.
+    // See the note in `codex_adapter`: shared per-repository caches, and never
+    // for a read-only worker.
+    if read_only_sandbox.is_none() {
+        crate::build_cache::apply(&mut command, std::path::Path::new(cwd));
+    }
     crate::adapters::configure_process_group(&mut command);
     if let Some(on_progress) = on_progress {
         on_progress(crate::adapters::StartupPhase::Spawning);
@@ -317,7 +354,7 @@ fn launch(
         .ok_or_else(|| BridgeError::Invalid("Claude stdout unavailable".into()))?;
     let writer = Arc::new(Mutex::new(stdin));
     let reader = BufReader::new(stdout);
-    let startup_messages = vec![json!({
+    let mut startup_messages = vec![json!({
         "type": "system",
         "subtype": "session_ready",
         "session_id": session_id,
@@ -325,6 +362,13 @@ fn launch(
         "model": chosen_model,
         "resumed": resume_session_id.is_some(),
     })];
+    if !sdk_configuration.diagnostics.is_empty() {
+        startup_messages.push(json!({
+            "type": "system",
+            "subtype": "capability_discovery",
+            "diagnostics": sdk_configuration.diagnostics.clone(),
+        }));
+    }
     // Boundary named honestly: this is the fork plus the pipe handoff, not the
     // sidecar becoming usable, which this call never waits for.
     crate::process_ledger::log_spawn_to_ready("claude", "process_spawned", spawned_at);
@@ -352,23 +396,11 @@ fn prepare_isolated_claude_config(
     let Some(home) = std::env::var_os("HOME") else {
         return Ok(isolated_root);
     };
-    let source = PathBuf::from(home).join(".claude/.credentials.json");
-    if !source.is_file() {
-        return Ok(isolated_root);
-    }
-    let destination = isolated_root.join(".credentials.json");
-    if destination.exists() {
-        return Ok(isolated_root);
-    }
-    #[cfg(unix)]
-    std::os::unix::fs::symlink(source, destination)?;
-    #[cfg(not(unix))]
-    {
-        let _ = (source, destination);
-        return Err(BridgeError::Invalid(
-            "Read-only Claude authentication projection is unsupported on this platform".into(),
-        ));
-    }
+    crate::capability_projection::project_read_only_capabilities(
+        crate::capability_projection::CapabilityHarness::Claude,
+        &PathBuf::from(home),
+        sandbox.output_dir(),
+    )?;
     Ok(isolated_root)
 }
 
@@ -405,12 +437,36 @@ fn claude_oauth_token() -> Result<Option<String>, BridgeError> {
 /// presence check only — Bridge never reads the token value out of the
 /// Keychain entry, only whether the entry exists.
 pub fn auth_state() -> AuthState {
-    auth_state_from_home(std::env::var_os("HOME").map(PathBuf::from), claude_keychain_present())
+    auth_state_from_environment(
+        std::env::var_os("HOME").map(PathBuf::from),
+        &crate::capability_projection::CapabilityEnvironment::from_process(),
+        claude_keychain_present(),
+    )
 }
 
+#[cfg(test)]
 fn auth_state_from_home(home: Option<PathBuf>, keychain: AuthState) -> AuthState {
+    auth_state_from_environment(
+        home,
+        &crate::capability_projection::CapabilityEnvironment::default(),
+        keychain,
+    )
+}
+
+fn auth_state_from_environment(
+    home: Option<PathBuf>,
+    environment: &crate::capability_projection::CapabilityEnvironment,
+    keychain: AuthState,
+) -> AuthState {
     let file_present = home
-        .map(|home| home.join(".claude/.credentials.json"))
+        .map(|home| {
+            crate::capability_projection::user_config_root(
+                crate::capability_projection::CapabilityHarness::Claude,
+                &home,
+                environment,
+            )
+            .join(".credentials.json")
+        })
         .is_some_and(|path| path.is_file());
     if file_present {
         return AuthState::SignedIn;
@@ -818,6 +874,28 @@ impl AdapterRuntime for ClaudeRuntime {
     }
 }
 
+/// The connector list a sidecar session is handed explicitly.
+///
+/// A chat session gets none. Claude Code already loads every claude.ai
+/// connector natively, with the account's own sign-in. A copy handed through
+/// `options.mcpServers` is a separate, SDK-scoped instance that never shares
+/// that sign-in: the CLI reports it as needing authentication, re-attaches it
+/// on every turn, and gives it a 30-second handshake window before the turn may
+/// start — a flat 30 seconds of silence after every Send, even for connectors
+/// `mcp list` calls connected. Only a briefing run keeps the explicit list: it
+/// runs under `strictMcpConfig`, so the declared servers are the only ones it
+/// can reach at all.
+fn sidecar_mcp_servers(
+    briefing: bool,
+    discovered: &std::collections::BTreeMap<String, Value>,
+) -> std::collections::BTreeMap<String, Value> {
+    if briefing {
+        discovered.clone()
+    } else {
+        std::collections::BTreeMap::new()
+    }
+}
+
 pub(crate) fn claude_context_inventory(
     lifecycle_phase: ContextLifecyclePhase,
     configuration: &crate::marketplace::ClaudeSdkConfiguration,
@@ -842,10 +920,10 @@ pub(crate) fn claude_context_inventory(
                 ContextSegmentClass::ToolSchemas,
                 "Claude Agent SDK does not expose the provider-owned tool schemas compiled for the query",
             ),
-            ContextSegmentObservation::measured(
+            ContextSegmentObservation::unavailable_with_names(
                 ContextSegmentClass::McpDynamicTools,
                 &mcp_names,
-                ContextObservedSize::bounded(Some(mcp_names.len() as u64), None, None),
+                "Claude CLI discovery found these connected native servers, but the SDK does not expose which generated tools were actually presented",
             ),
             ContextSegmentObservation::measured(
                 ContextSegmentClass::SkillsPlugins,
@@ -1020,6 +1098,20 @@ mod tests {
     }
 
     #[test]
+    fn chat_sessions_get_no_explicit_connectors_but_briefings_keep_theirs() {
+        // An SDK-scoped connector copy never shares the account sign-in and
+        // costs every turn a 30-second handshake timeout; the CLI already
+        // loads the same connectors natively for a chat. A briefing runs under
+        // strictMcpConfig and would otherwise reach nothing.
+        let discovered = std::collections::BTreeMap::from([(
+            "claude.ai Notion".to_string(),
+            json!({"type": "http", "url": "https://mcp.example/notion"}),
+        )]);
+        assert!(sidecar_mcp_servers(false, &discovered).is_empty());
+        assert_eq!(sidecar_mcp_servers(true, &discovered), discovered);
+    }
+
+    #[test]
     fn claude_context_inventory_covers_start_resume_and_per_turn() {
         let secret = "sk-proj-abcdefghijklmnopqrstuvwxyz123456";
         let configuration = crate::marketplace::ClaudeSdkConfiguration {
@@ -1029,6 +1121,7 @@ mod tests {
                 json!({"type": "http", "url": "http://127.0.0.1"}),
             )]),
             connector_health: Default::default(),
+            diagnostics: Vec::new(),
         };
         for phase in [ContextLifecyclePhase::Start, ContextLifecyclePhase::Resume] {
             let inventories = claude_context_inventory(phase, &configuration).unwrap();
@@ -1037,21 +1130,19 @@ mod tests {
                 .iter()
                 .find(|item| item.scope == ContextInventoryScope::Catalog)
                 .unwrap();
-            for class in [
-                ContextSegmentClass::McpDynamicTools,
-                ContextSegmentClass::SkillsPlugins,
-            ] {
-                let observation = catalog
-                    .observations
-                    .iter()
-                    .find(|observation| observation.segment_class == class)
-                    .unwrap();
-                assert!(matches!(
-                    observation.provenance,
-                    ContextObservationProvenance::Measured { .. }
-                ));
-                assert!(observation.names.iter().all(|name| !name.contains(secret)));
-            }
+            let mcp = catalog
+                .observations
+                .iter()
+                .find(|observation| observation.segment_class == ContextSegmentClass::McpDynamicTools)
+                .unwrap();
+            assert!(matches!(mcp.provenance, ContextObservationProvenance::Unavailable { .. }));
+            let plugins = catalog
+                .observations
+                .iter()
+                .find(|observation| observation.segment_class == ContextSegmentClass::SkillsPlugins)
+                .unwrap();
+            assert!(matches!(plugins.provenance, ContextObservationProvenance::Measured { .. }));
+            assert!(mcp.names.iter().chain(&plugins.names).all(|name| !name.contains(secret)));
         }
         let per_turn = claude_turn_presented_inventory(
             ContextLifecyclePhase::PerTurn,
@@ -1367,6 +1458,25 @@ mod tests {
         assert_eq!(
             auth_state_from_home(Some(home.path().to_path_buf()), AuthState::Unknown),
             AuthState::Unknown
+        );
+    }
+
+    #[test]
+    fn auth_probe_respects_a_configured_claude_config_directory() {
+        let home = tempfile::tempdir().unwrap();
+        let configured = tempfile::tempdir().unwrap();
+        std::fs::write(configured.path().join(".credentials.json"), "opaque").unwrap();
+        let environment = crate::capability_projection::CapabilityEnvironment {
+            claude_config_dir: Some(configured.path().to_path_buf()),
+            ..Default::default()
+        };
+        assert_eq!(
+            auth_state_from_environment(
+                Some(home.path().to_path_buf()),
+                &environment,
+                AuthState::SignedOut,
+            ),
+            AuthState::SignedIn
         );
     }
 }

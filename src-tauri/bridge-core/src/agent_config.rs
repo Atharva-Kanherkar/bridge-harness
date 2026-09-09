@@ -1,4 +1,4 @@
-use crate::{delegation::Effort, opencode_adapter::OpenCodeSettings, BridgeError};
+use crate::{delegation::{Effort, WorkerRole}, opencode_adapter::OpenCodeSettings, BridgeError};
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -62,7 +62,7 @@ pub struct AgentDefinition {
 
 /// How much Bridge asks before an agent acts.
 ///
-/// One switch in this slice. Fields added later (auto-allow workers, inherited
+/// Fields added later (auto-allow workers, inherited
 /// grants, command allowlists) must be `#[serde(default)]` so a policy written by
 /// an older build still reads — the stored payload is durable and outlives the
 /// binary that wrote it.
@@ -78,6 +78,9 @@ pub struct PermissionPolicy {
     /// they are authorization, not convenience.
     #[serde(alias = "bypassAll")]
     pub auto_approve_provider_permissions: bool,
+    /// Roles allowed to propose additions to their own shared guidance.
+    /// This grants no write authority: every proposal still needs human review.
+    pub worker_prompt_proposal_roles: Vec<WorkerRole>,
     pub updated_at: String,
 }
 
@@ -364,6 +367,13 @@ pub fn save_permission_policy(
     db: &Connection,
     mut policy: PermissionPolicy,
 ) -> Result<ConfigState, BridgeError> {
+    let mut unique_roles = Vec::new();
+    for role in &policy.worker_prompt_proposal_roles {
+        if !unique_roles.contains(role) {
+            unique_roles.push(*role);
+        }
+    }
+    policy.worker_prompt_proposal_roles = unique_roles;
     // Stamped host-side: the client does not get to claim when a policy changed,
     // and the settings page renders what was actually stored.
     policy.updated_at = Utc::now().to_rfc3339();
@@ -774,6 +784,7 @@ mod tests {
             &db,
             PermissionPolicy {
                 auto_approve_provider_permissions: true,
+                worker_prompt_proposal_roles: Vec::new(),
                 // Claimed by the client and ignored: the host stamps it.
                 updated_at: "whenever-i-say".into(),
             },
@@ -805,6 +816,7 @@ mod tests {
             &db,
             PermissionPolicy {
                 auto_approve_provider_permissions: true,
+                worker_prompt_proposal_roles: Vec::new(),
                 updated_at: String::new(),
             },
         );
@@ -833,6 +845,7 @@ mod tests {
             &db,
             PermissionPolicy {
                 auto_approve_provider_permissions: true,
+                worker_prompt_proposal_roles: Vec::new(),
                 updated_at: String::new(),
             },
         )
@@ -858,10 +871,29 @@ mod tests {
         .unwrap();
 
         let policy = permission_policy(&db).unwrap();
+        assert!(policy.worker_prompt_proposal_roles.is_empty());
         assert!(
             policy.auto_approve_provider_permissions,
             "an unknown future field must not discard the whole policy"
         );
+    }
+
+    #[test]
+    fn worker_prompt_proposal_grants_are_explicit_typed_and_revocable() {
+        let db = store::open(std::path::Path::new(":memory:")).unwrap();
+        assert!(permission_policy(&db).unwrap().worker_prompt_proposal_roles.is_empty());
+        let saved = save_permission_policy(&db, PermissionPolicy {
+            worker_prompt_proposal_roles: vec![WorkerRole::Research, WorkerRole::Research],
+            ..PermissionPolicy::default()
+        }).unwrap();
+        assert_eq!(saved.permission_policy.worker_prompt_proposal_roles, vec![WorkerRole::Research]);
+        assert_eq!(permission_policy(&db).unwrap().worker_prompt_proposal_roles, vec![WorkerRole::Research]);
+        assert!(!saved.permission_policy.auto_approve_provider_permissions);
+        assert!(serde_json::from_value::<PermissionPolicy>(json!({
+            "workerPromptProposalRoles": ["administrator"]
+        })).is_err());
+        save_permission_policy(&db, PermissionPolicy::default()).unwrap();
+        assert!(permission_policy(&db).unwrap().worker_prompt_proposal_roles.is_empty());
     }
 
     #[test]

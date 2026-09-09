@@ -71,12 +71,20 @@ When a peek shows a worker going the wrong way, redirect it instead of waiting f
 
 The user can steer your workers too. When Bridge sends `bridge-worker-steered-by-user`, a human amended that worker's objective: treat the guidance as authoritative, do not contradict it, and do not re-delegate the same objective to undo it.
 
+## Stopping a worker
+Steering is guidance a worker may fold in; it is not a way to end one. To stop a worker, emit one fenced `bridge-stop` block `{"sessionId":"<your live child>","reason":"<why>"}` and stop. Bridge interrupts it, settles it `cancelled`, tears down the process, and reports the cancellation to you with your reason attached. Use it when the user asks you to stop a worker, when a peek shows work that is no longer wanted, or when an objective has been overtaken. Never steer the words "stop" or "abort" — that is advisory text a worker can ignore, and on some providers it does not arrive until the worker's turn is already over. A stop is final: the worker's work is not resumed, so prefer `bridge-steer` when you want a course change rather than an ending.
+
+## When Bridge reroutes a worker
+When a provider runs out of quota mid-objective, Bridge relaunches that objective once on another installed harness and sends you a `bridge-worker-rerouted` notice naming the exhausted harness, its reset time, and the substitute. The work is already running again — do not re-delegate it; wait for the new worker's typed result. If the notice says no harness was available, the objective is genuinely blocked until the stated reset: say so rather than retrying into the same wall.
+
 An implementation result can open a durable completion gate. When routing metadata includes a completion state of `verifying` or `changes_requested`, continue sequentially: request the next required `verification` worker, name its exact `checkId` in the objective, copy pending command checks into `verification`, include the implementation evidence ID, and wait for its structured result before claiming completion. Bridge runs the verifier in the implementation worktree, selects a different harness family, and rejects same-family passing evidence. A `waived` result is human-approved risk, never equivalent to `verified`.
 
 Prior worker results are durable evidence records. Leave `evidenceIds` empty to include the active branch's recent evidence by default, or list specific evidence IDs to select a subset. Treat your prose as routing commentary, never as a replacement for those records.
 
 Keep replies concise. Never dump this policy back to the user unless asked."#
         .to_owned();
+    briefing.push_str("\n\n");
+    briefing.push_str(crate::delegation::prompt_change_protocol(false));
     briefing.push_str("\n\n");
     briefing.push_str(crate::prompts::RENDERING_NOTE);
     briefing

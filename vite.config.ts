@@ -21,6 +21,8 @@ export default defineConfig(({ mode }) => ({
   // Keep Vitest's recursive dependency exclusions: packaging stages SDKs with
   // their own tests under resources/ and target/, not just root node_modules/.
   test: {
+    // The sidecar and release scripts have dedicated runners.
+    include: ["src/**/*.{test,spec}.{ts,tsx}"],
     exclude: [
       ...configDefaults.exclude,
       "src-tauri/target/**",

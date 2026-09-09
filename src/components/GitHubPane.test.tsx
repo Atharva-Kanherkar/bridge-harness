@@ -24,6 +24,10 @@ const detail: GithubPullRequestResult = {
     summary, baseBranch: "main", body: "<script>window.pwned = true</script>",
     comments: [{ id: "conversation", author: { login: "maintainer" }, body: "Main conversation comment", createdAt: "now", url: "https://example.test" }],
     labels: [{ name: "bug", color: "d73a4a", description: "Broken" }],
+    commits: [
+      { oid: "8f2a1c9d4e5b6a7c8d9e0f1a2b3c4d5e6f708192", abbreviatedOid: "8f2a1c9", messageHeadline: "Keep remote HTML inert", messageBody: "The renderer only emits text nodes.", committedAt: "2026-08-29T10:00:00Z", authors: [{ login: "atharva" }] },
+      { oid: "1b0c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e", abbreviatedOid: "1b0c3d4", messageHeadline: "Add the pane skeleton", messageBody: "", committedAt: "not-a-date", authors: [] },
+    ],
     additions: 3, deletions: 1, changedFiles: 2,
   },
   reviewThreads: [{
@@ -57,6 +61,13 @@ async function mount(props: Partial<Parameters<typeof GitHubPane>[0]> = {}) {
 }
 
 const click = async (button: HTMLButtonElement) => { await act(async () => { button.click(); await flush(); }); };
+/** React tracks a controlled field's value on the DOM node, so a plain
+ * assignment is invisible to it; go through the prototype setter. */
+const type = async (field: HTMLInputElement | HTMLTextAreaElement, value: string) => {
+  const prototype = field instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
+  Object.getOwnPropertyDescriptor(prototype, "value")!.set!.call(field, value);
+  await act(async () => { field.dispatchEvent(new Event("input", { bubbles: true })); await flush(); });
+};
 const buttonByText = (text: string) => [...document.body.querySelectorAll("button")].find(candidate => candidate.textContent?.includes(text)) as HTMLButtonElement;
 
 afterEach(async () => {
@@ -361,6 +372,246 @@ describe("GitHubPane", () => {
     expect(buttonByText("Check out")).toBeUndefined();
   });
 
+  it("lists the commits on the pull request with copyable SHAs", async () => {
+    mockReads();
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+
+    const tabs = [...host!.querySelectorAll<HTMLButtonElement>('[aria-label="Pull request detail"] [role="tab"]')];
+    expect(tabs.map(tab => tab.textContent)).toEqual(["conversation", "changes 2", "commits 2", "checks 2"]);
+    await click(tabs[2]);
+
+    const commits = host!.querySelector('[aria-label="Commits"]')!;
+    expect(commits.textContent).toContain("Keep remote HTML inert");
+    expect(commits.textContent).toContain("8f2a1c9");
+    expect(commits.textContent).toContain("The renderer only emits text nodes.");
+    // A junk commit date is omitted rather than printed raw, like every other
+    // timestamp on this surface.
+    expect(commits.querySelectorAll("time")).toHaveLength(1);
+
+    const copy = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: copy }, configurable: true });
+    await click(commits.querySelector('button[aria-label="Copy the SHA 8f2a1c9"]') as HTMLButtonElement);
+    expect(copy).toHaveBeenCalledWith("8f2a1c9d4e5b6a7c8d9e0f1a2b3c4d5e6f708192");
+  });
+
+  it("copies the pull request link and branch name out of the pane", async () => {
+    mockReads();
+    const copy = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { value: { writeText: copy }, configurable: true });
+    await mount();
+
+    // From the list row, without opening the pull request.
+    await click(host!.querySelector('button[aria-label="Copy the link to #1"]') as HTMLButtonElement);
+    expect(copy).toHaveBeenLastCalledWith("https://example.test/pr/1");
+
+    await click(buttonByText("Safe GitHub surface"));
+    await click(host!.querySelector('button[aria-label="Copy the branch name feat/safe"]') as HTMLButtonElement);
+    expect(copy).toHaveBeenLastCalledWith("feat/safe");
+    await click(host!.querySelector('button[aria-label="Copy bridge/harness"]') as HTMLButtonElement);
+    expect(copy).toHaveBeenLastCalledWith("bridge/harness");
+  });
+
+  it("filters the pull request list by facet and by query", async () => {
+    vi.spyOn(bridgeApi, "githubStatus").mockResolvedValue(status);
+    vi.spyOn(bridgeApi, "githubPullRequests").mockResolvedValue({ pullRequests: [
+      summary,
+      { ...summary, number: 2, title: "Draft groundwork", isDraft: true, headBranch: "feat/draft", reviewDecision: "none" as const },
+    ] });
+    await mount();
+    expect(host!.textContent).toContain("Draft groundwork");
+
+    await click(buttonByText("Draft"));
+    expect(host!.textContent).not.toContain("Safe GitHub surface");
+    expect(host!.textContent).toContain("Draft groundwork");
+
+    await click(buttonByText("All"));
+    const search = host!.querySelector('input[aria-label="Filter pull requests"]') as HTMLInputElement;
+    await type(search, "#1");
+    expect(host!.textContent).toContain("Safe GitHub surface");
+    expect(host!.textContent).not.toContain("Draft groundwork");
+
+    await type(search, "nothing matches this");
+    expect(host!.textContent).toContain("Nothing matches this filter");
+    await click(buttonByText("Clear the filter"));
+    expect(host!.textContent).toContain("Safe GitHub surface");
+  });
+
+  it("renders GitHub-flavoured markdown instead of printing its markup", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubRepository").mockResolvedValue({ nameWithOwner: "bridge/harness", description: "", visibility: "PUBLIC", defaultBranch: "main", primaryLanguage: "Rust", url: "https://example.test/repo", openIssues: 0, openPullRequests: 1, labels: [] });
+    vi.spyOn(bridgeApi, "githubPullRequest").mockResolvedValue({
+      ...detail,
+      pullRequest: {
+        ...detail.pullRequest,
+        body: [
+          "<!-- template instructions -->",
+          "Closes #412 for @atharva.",
+          "",
+          "- [x] done",
+          "- [ ] pending",
+          "",
+          "<details><summary>CI log</summary>",
+          "",
+          "the collapsed log",
+          "",
+          "</details>",
+        ].join("\n"),
+      },
+    });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    const description = host!.querySelector('[aria-label="Description"]')!;
+
+    // Template comments are invisible on GitHub, so they are invisible here.
+    expect(description.textContent).not.toContain("template instructions");
+    // A cross-reference and a handle become real links — both on the
+    // repository's own host, so an Enterprise mention does not land on a
+    // stranger's github.com account.
+    const links = [...description.querySelectorAll("a")].map(link => link.getAttribute("href"));
+    expect(links).toContain("https://example.test/repo/issues/412");
+    expect(links).toContain("https://example.test/atharva");
+    expect(links.join(" ")).not.toContain("github.com");
+    // Task lists read as statuses, not as literal brackets.
+    expect(description.textContent).toContain("☑ done");
+    expect(description.textContent).toContain("☐ pending");
+    expect(description.textContent).not.toContain("[x]");
+    // A <details> section is a real disclosure, not printed markup.
+    const disclosure = description.querySelector("details");
+    expect(disclosure?.querySelector("summary")?.textContent).toContain("CI log");
+    expect(disclosure?.textContent).toContain("the collapsed log");
+    expect(description.textContent).not.toContain("<summary>");
+  });
+
+  it("never turns a remote body into a link the webview would run in-app", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubPullRequest").mockResolvedValue({
+      ...detail,
+      pullRequest: {
+        ...detail.pullRequest,
+        body: [
+          '<a href="javascript:void%200">totally safe</a>',
+          "",
+          "[or this one](javascript:void%200)",
+          "",
+          '<img src="data:text/html,pwned">',
+          "",
+          "[real link](https://example.test/ok)",
+        ].join("\n"),
+      },
+    });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    const description = host!.querySelector('[aria-label="Description"]')!;
+
+    // Only the http(s) target — the one `externalLinks` would hand to the OS
+    // browser — is an anchor at all.
+    const hrefs = [...description.querySelectorAll("a")].map(link => link.getAttribute("href"));
+    expect(hrefs).toEqual(["https://example.test/ok"]);
+    expect(description.innerHTML).not.toContain("javascript:");
+    expect(description.innerHTML).not.toContain("data:text/html");
+    // The labels survive as text, so nothing silently disappears.
+    expect(description.textContent).toContain("totally safe");
+    expect(description.textContent).toContain("or this one");
+  });
+
+  it("groups checks by workflow and never spins a running check", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubChecks").mockResolvedValue({ checks: [
+      { name: "build", status: "completed", conclusion: "success", workflow: "CI", logUrl: "https://example.test/log" },
+      { name: "bundle size", status: "inProgress", conclusion: null, workflow: "Size", logUrl: "" },
+    ] });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    await click(host!.querySelector('[aria-label="Pull request detail"] [role="tab"]:nth-of-type(4)') as HTMLButtonElement);
+
+    const checks = host!.querySelector('[aria-label="Checks"]')!;
+    expect(checks.textContent).toContain("CI");
+    expect(checks.textContent).toContain("SIZE");
+    expect(checks.textContent).toContain("1/2 passed");
+    // The old surface spun a loader on every unfinished row; the live hint is
+    // now a breathe, and rotation is reserved for the explicit refresh.
+    expect(checks.querySelector(".animate-spin")).toBeNull();
+    expect(checks.querySelector(".github-check-live")).not.toBeNull();
+  });
+
+  it("posts a comment through the same confirmation gate as every other write", async () => {
+    mockReads();
+    const action = vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: true, message: "Commented on PR #1." });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+
+    const composer = host!.querySelector('textarea[aria-label="New comment"]') as HTMLTextAreaElement;
+    await type(composer, "This reads well now.");
+    await click(buttonByText("Comment"));
+
+    // The draft is shown back, not re-requested, and nothing has run yet.
+    expect(document.body.textContent).toContain("post a comment on PR #1");
+    expect(document.body.textContent).toContain("This reads well now.");
+    expect(action).not.toHaveBeenCalled();
+    await click(buttonByText("Confirm"));
+    expect(action).toHaveBeenCalledWith("w", { kind: "comment", target: "pullRequest", number: 1, body: "This reads well now." }, true);
+  });
+
+  it("closes a pull request and marks a draft ready behind a confirmation", async () => {
+    mockReads();
+    const action = vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: true, message: "Closed PR #1." });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    await click(buttonByText("Close"));
+    expect(document.body.textContent).toContain("close PR #1 on bridge/harness");
+    await click(buttonByText("Confirm"));
+    expect(action).toHaveBeenCalledWith("w", { kind: "setState", target: "pullRequest", number: 1, operation: "close" }, true);
+
+    // A draft offers the undraft transition instead.
+    await act(async () => { root?.unmount(); }); host?.remove();
+    vi.spyOn(bridgeApi, "githubPullRequest").mockResolvedValue({
+      ...detail,
+      pullRequest: { ...detail.pullRequest, summary: { ...summary, isDraft: true } },
+    });
+    await mount();
+    await click(buttonByText("Safe GitHub surface"));
+    await click(buttonByText("Ready for review"));
+    await click(buttonByText("Confirm"));
+    expect(action).toHaveBeenLastCalledWith("w", { kind: "ready", number: 1 }, true);
+  });
+
+  it("closes and reopens an issue, and comments on it", async () => {
+    mockReads();
+    const issueSummary = {
+      number: 17, title: "Stay inside Bridge", state: "open" as const, author: { login: "atharva" },
+      labels: [], createdAt: "now", updatedAt: "now", url: "https://example.test/issues/17",
+    };
+    vi.spyOn(bridgeApi, "githubIssues").mockResolvedValue({ issues: [issueSummary] });
+    const issueRead = vi.spyOn(bridgeApi, "githubIssue").mockResolvedValue({
+      issue: { summary: issueSummary, body: "Body", comments: [] },
+    });
+    const action = vi.spyOn(bridgeApi, "githubAct").mockResolvedValue({ executed: true, message: "Closed issue #17." });
+    await mount();
+    await click(host!.querySelector('button[aria-label="Issues"]') as HTMLButtonElement);
+    await click(buttonByText("Stay inside Bridge"));
+
+    await click(buttonByText("Close"));
+    expect(document.body.textContent).toContain("close issue #17 on bridge/harness");
+    await click(buttonByText("Confirm"));
+    expect(action).toHaveBeenCalledWith("w", { kind: "setState", target: "issue", number: 17, operation: "close" }, true);
+
+    const composer = host!.querySelector('textarea[aria-label="New comment"]') as HTMLTextAreaElement;
+    await type(composer, "On it.");
+    await click(buttonByText("Comment"));
+    // The drafted text is shown back before it posts, exactly as on a PR.
+    expect(document.body.textContent).toContain("post a comment on issue #17");
+    expect(document.querySelector('[role="dialog"] [aria-label="Comment body"]')?.textContent).toBe("On it.");
+    await click(buttonByText("Confirm"));
+    expect(action).toHaveBeenLastCalledWith("w", { kind: "comment", target: "issue", number: 17, body: "On it." }, true);
+
+    // A closed issue offers Reopen rather than Close.
+    issueRead.mockResolvedValue({ issue: { summary: { ...issueSummary, state: "closed" }, body: "Body", comments: [] } });
+    await click(buttonByText("All issues"));
+    await click(buttonByText("Stay inside Bridge"));
+    expect(buttonByText("Reopen")).toBeDefined();
+  });
+
   it("refetches the list when a CI-finished event lands for this workspace", async () => {
     const list = mockReads();
     let fire: ((payload: { workspaceId: string; number: number }) => void) | undefined;
@@ -466,7 +717,15 @@ describe("GitHubPane deep links", () => {
     await click(buttonByText("Safe GitHub surface"));
 
     const marked = (selector: string) => host!.querySelector(selector)?.hasAttribute("data-system-browser");
+    // Every "open on GitHub" affordance goes through one component, so the
+    // rule is asserted over all of them rather than anchor by anchor.
+    const allOpenOnGithubMarked = () => {
+      const anchors = [...host!.querySelectorAll('a[aria-label$="on GitHub"]')];
+      expect(anchors.length, "no open-on-GitHub affordance rendered").toBeGreaterThan(0);
+      return anchors.every(anchor => anchor.hasAttribute("data-system-browser"));
+    };
     expect(marked('a[aria-label="Open #1 on GitHub"]')).toBe(true);
+    expect(allOpenOnGithubMarked()).toBe(true);
 
     await click(detailTab("changes"));
     expect(host!.textContent).toContain("view the full diff on GitHub");
@@ -475,6 +734,7 @@ describe("GitHubPane deep links", () => {
     await click(detailTab("checks"));
     // A log URL is often shaped `/pull/<n>/checks`, which the pane would
     // otherwise swallow into a checks list holding no logs.
-    expect(marked('a[aria-label="Open logs for build"]')).toBe(true);
+    expect(marked('a[aria-label="Open logs for build on GitHub"]')).toBe(true);
+    expect(allOpenOnGithubMarked()).toBe(true);
   });
 });

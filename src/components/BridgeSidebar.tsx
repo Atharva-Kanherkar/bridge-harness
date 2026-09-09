@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { BarChart3, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, Home, Pin, Plus, RotateCw, Search, Settings2, SquarePen, Store, type LucideIcon } from "lucide-react";
+import {  Archive,
+ BarChart3, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, Home, Pin, Plus, RotateCw, Search, Settings2, SquarePen, Store, type LucideIcon } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
 import type { Session, SessionStatus, Workspace } from "../types";
@@ -52,26 +53,31 @@ function ChatRow({
   indented,
   time,
   onClick,
+  onArchive,
 }: {
   chat: Session;
   active: boolean;
   indented: boolean;
   time: string | null;
   onClick: () => void;
+  onArchive?: () => void;
 }) {
   const name = chatName(chat);
   const detail = `${name} — ${harnessLabel(chat.harness)}${chat.model ? ` · ${chat.model}` : ""}`;
   const status = rowStatus(chat.status);
   return (
+    <span className={cn(
+      "group/row relative flex items-center rounded-[7px] transition-colors",
+      active ? "bg-selection text-selection-foreground" : "hover:bg-accent",
+    )}>
     <button
       type="button"
       onClick={onClick}
       title={detail}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "flex h-11 w-full items-center gap-2 rounded-[7px] pr-2 text-left font-sans transition-colors active:scale-[0.99]",
+        "flex h-11 min-w-0 flex-1 items-center gap-2 rounded-[7px] pr-2 text-left font-sans transition-colors active:scale-[0.99]",
         indented ? "pl-7" : "pl-2",
-        active ? "bg-selection text-selection-foreground" : "hover:bg-accent",
       )}
     >
       <span className="flex min-w-0 flex-1 flex-col justify-center gap-0.5">
@@ -85,6 +91,22 @@ function ChatRow({
           rail and the chrome stays achromatic. The active row earns its tint. */}
       <HarnessMark harness={chat.harness} size={13} className={cn("shrink-0", !active && "text-muted-foreground")} />
     </button>
+    {/* Revealed on hover or keyboard focus, never at rest: a column of archive
+        buttons down the rail would compete with the chat names for attention,
+        and this is a rarely-wanted action. Achromatic like the rest of the
+        chrome — it is not a warning, it is filing something away. */}
+    {onArchive && (
+      <button
+        type="button"
+        onClick={event => { event.stopPropagation(); onArchive(); }}
+        title={`Archive ${name}`}
+        aria-label={`Archive ${name}`}
+        className="mr-1 grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100"
+      >
+        <Archive size={12} strokeWidth={1.7} aria-hidden="true" />
+      </button>
+    )}
+    </span>
   );
 }
 
@@ -238,6 +260,7 @@ export type BridgeSidebarProps = {
   projectsActive: boolean;
   memoryActive?: boolean;
   marketplaceActive: boolean;
+  usageActive?: boolean;
   missionControlActive: boolean;
   workActive?: boolean;
   settingsActive: boolean;
@@ -256,8 +279,12 @@ export type BridgeSidebarProps = {
   onOpenWorkBoard: () => void;
   /** Account memory. Not workspace-gated: a plain chat reaches it identically. */
   onOpenMemory: () => void;
+  /** Token and cost usage across harnesses. */
+  onOpenUsage?: () => void;
   onOpenSettings: () => void;
   onOpenSession: (id: string) => void;
+  /** Absent when the host cannot archive — the row then shows no action. */
+  onArchiveChat?: (chat: Session) => void;
   /** Hidden, not shrunk: from `sm` up a collapsed rail gives back every pixel
    * and leaves nothing on screen. When set, the rail uses this state instead of
    * its own. */
@@ -278,6 +305,7 @@ export function BridgeSidebar({
   projectsActive,
   memoryActive = false,
   marketplaceActive,
+  usageActive = false,
   missionControlActive,
   settingsActive,
   accountName,
@@ -290,8 +318,10 @@ export function BridgeSidebar({
   onOpenMarketplace,
   onOpenMissionControl,
   onOpenMemory,
+  onOpenUsage,
   onOpenSettings,
   onOpenSession,
+  onArchiveChat,
   collapsed: collapsedProp,
   onCollapsedChange,
   showWindowNav = true,
@@ -562,6 +592,7 @@ export function BridgeSidebar({
            * untouched. */}
           <ActionRow icon={FolderGit2} label="Projects" chord="open-projects" onClick={onOpenProjects} active={projectsActive} />
           <ActionRow icon={Pin} label="Memory" onClick={onOpenMemory} active={memoryActive} />
+          {onOpenUsage && <ActionRow icon={ChartNoAxesColumn} label="Usage" onClick={onOpenUsage} active={usageActive} />}
         </nav>
 
         <div className="-mr-2 min-h-0 flex-1 overflow-y-auto pr-2">
@@ -618,6 +649,7 @@ export function BridgeSidebar({
                     indented={!!group.label}
                     time={chatListTime(chatTimestamp(chat), now)}
                     onClick={() => onOpenSession(chat.id)}
+                    onArchive={onArchiveChat && (() => onArchiveChat(chat))}
                   />
                 ))}
                 {capped && !folded && (

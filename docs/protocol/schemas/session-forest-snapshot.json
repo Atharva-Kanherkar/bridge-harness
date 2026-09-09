@@ -461,6 +461,16 @@
             }
           ]
         },
+        "cacheSavingsMicrousd": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JsSafeI64"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "cacheWriteTokens": {
           "anyOf": [
             {
@@ -475,6 +485,26 @@
           "$ref": "#/definitions/JsSafeI64"
         },
         "contextPercent": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JsSafeI64"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contextUsedTokens": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JsSafeI64"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "contextWindowTokens": {
           "anyOf": [
             {
               "$ref": "#/definitions/JsSafeI64"
@@ -564,6 +594,22 @@
             }
           ]
         },
+        "providerRecordId": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "reasoningTokens": {
+          "anyOf": [
+            {
+              "$ref": "#/definitions/JsSafeI64"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "restorationMode": {
           "type": [
             "string",
@@ -584,6 +630,12 @@
             {
               "type": "null"
             }
+          ]
+        },
+        "servingModel": {
+          "type": [
+            "string",
+            "null"
           ]
         },
         "sessionId": {
@@ -699,6 +751,14 @@
       "properties": {
         "compatibilityKey": {
           "type": "string"
+        },
+        "failureClass": {
+          "default": null,
+          "description": "Bridge's own verdict on a failure: `stalled`, `protocol_invalid`, `transient` or `permanent`. Sent as a classification so surfaces do not each re-derive one by pattern-matching the summary.",
+          "type": [
+            "string",
+            "null"
+          ]
         },
         "lastActivityAt": {
           "type": [

@@ -89,7 +89,7 @@ impl fmt::Display for ParseWorkerLifecycleStateError {
 impl Error for ParseWorkerLifecycleStateError {}
 
 /// The complete transition relation locked by the issue #1 state diagram.
-pub const LEGAL_TRANSITIONS: [(WorkerLifecycleState, WorkerLifecycleState); 18] = [
+pub const LEGAL_TRANSITIONS: [(WorkerLifecycleState, WorkerLifecycleState); 25] = [
     (
         WorkerLifecycleState::Starting,
         WorkerLifecycleState::Working,
@@ -142,6 +142,35 @@ pub const LEGAL_TRANSITIONS: [(WorkerLifecycleState, WorkerLifecycleState); 18] 
     ),
     (
         WorkerLifecycleState::Waiting,
+        WorkerLifecycleState::Cancelled,
+    ),
+    // A stop has to be able to land wherever a worker actually is. When
+    // `Cancelled` was reachable only from `working` and `waiting`, stopping a
+    // `warm` worker tore its process down and told the parent it had ended
+    // while its lifecycle stayed `warm` — leaving a session with no process
+    // still eligible for reuse, so the next compatible objective resumed a
+    // corpse. Every non-terminal state can be cancelled; the terminal ones
+    // are already over.
+    (
+        WorkerLifecycleState::Starting,
+        WorkerLifecycleState::Cancelled,
+    ),
+    (WorkerLifecycleState::Warm, WorkerLifecycleState::Cancelled),
+    (
+        WorkerLifecycleState::Checkpointing,
+        WorkerLifecycleState::Cancelled,
+    ),
+    (
+        WorkerLifecycleState::Resuming,
+        WorkerLifecycleState::Cancelled,
+    ),
+    (
+        WorkerLifecycleState::Restored,
+        WorkerLifecycleState::Cancelled,
+    ),
+    (WorkerLifecycleState::Failed, WorkerLifecycleState::Cancelled),
+    (
+        WorkerLifecycleState::Stopped,
         WorkerLifecycleState::Cancelled,
     ),
 ];
@@ -207,7 +236,7 @@ mod tests {
     #[test]
     fn all_state_pairs_match_the_locked_transition_matrix() {
         let expected = LEGAL_TRANSITIONS.into_iter().collect::<HashSet<_>>();
-        assert_eq!(expected.len(), 18, "legal transitions must be unique");
+        assert_eq!(expected.len(), 25, "legal transitions must be unique");
 
         let mut accepted = 0;
         let mut rejected = 0;
@@ -227,8 +256,8 @@ mod tests {
             }
         }
 
-        assert_eq!(accepted, 18);
-        assert_eq!(rejected, 103);
+        assert_eq!(accepted, 25);
+        assert_eq!(rejected, 96);
     }
 
     #[test]

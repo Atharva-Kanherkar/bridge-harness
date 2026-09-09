@@ -8,6 +8,16 @@ const event = (id:number,kind:string,overrides:Partial<AgentEvent>={}):AgentEven
 const entry = (id:string,parentEntryId:string|null,kind:string,payload:Record<string,unknown>={},sequence=Number(id.replace(/\D/g,""))||1,overrides:Partial<SessionEntry>={}):SessionEntry => ({ id,sessionId:"s",parentEntryId,sequence,semanticSchemaVersion:2,kind,payload,providerEventId:null,contextVisibility:"eligible",tokenEstimate:null,createdAt:"now",...overrides });
 
 describe("normalized conversation reducer",()=>{
+  it("folds a restart-recovered canonical result into its worker panel", () => {
+    const items = projectSessionConversation([
+      entry("e1", null, "delegation.spawned", { text: "Review the code", data: { childSessionId: "child" } }),
+      entry("e2", "e1", "worker.result", { childSessionId: "child", status: "failed", summary: "Worker process ended when Bridge restarted" }),
+    ], "e2");
+    expect(delegationFacet(items[1])).toBe("result");
+    expect(items[1].text).toBe("Worker process ended when Bridge restarted");
+    expect(foldWorkerDelegations(items)).toHaveLength(1);
+  });
+
   it("assembles streaming assistant messages",()=>{const items=reduceConversation([event(1,"message.delta",{itemId:"m",role:"assistant",text:"hel"}),event(2,"message.delta",{itemId:"m",role:"assistant",text:"lo"}),event(3,"message.completed",{itemId:"m",role:"assistant",text:"hello",status:"completed"})]);expect(items).toHaveLength(1);expect(items[0].text).toBe("hello");expect(items[0].status).toBe("completed");});
   it("tracks approval resolution by normalized event id",()=>{const items=reduceConversation([event(7,"approval.requested",{title:"Approve command",status:"pending"}),event(8,"approval.resolved",{data:{requestEventId:7,decision:"accept"}})]);expect(items[0].type).toBe("approval");expect(items[0].status).toBe("accept");});
   it("keeps permissions and questions as distinct interaction types",()=>{
@@ -345,8 +355,19 @@ describe("worker delegation fold",()=>{
     // Both halves survive: the spawn's routing detail and the result's outcome.
     expect(folded[0].data.modelLabel).toBe("Fable");
     expect(folded[0].data.delivered).toBe(true);
-    expect(folded[0].text).toBe("done");
+    // The panel's text is the objective, and a result does not get to replace
+    // it: the worker's own prose can run to paragraphs, and overwriting the ask
+    // with it left a finished card that no longer said what it had been for.
+    // The summary travels on the typed envelope, which is where the card reads
+    // it from.
+    expect(folded[0].text).toBe("add rotation");
     expect(folded[0].key).toBe(spawn("x").key);
+  });
+
+  it("fills an empty objective from the result rather than leaving the panel blank",()=>{
+    const bare = {...spawn("x"), text: ""};
+    const folded = foldWorkerDelegations([bare, result("x")]);
+    expect(folded[0].text).toBe("done");
   });
 
   it("keeps each worker's panel separate",()=>{

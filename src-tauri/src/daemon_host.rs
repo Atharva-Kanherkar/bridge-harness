@@ -106,6 +106,91 @@ pub fn host_preference() -> Result<HostPreference, HostPreferenceError> {
     parse_host_preference(std::env::var("BRIDGE_DESKTOP_HOST").ok().as_deref())
 }
 
+/// Resolve the desktop's data directory before selecting either host. An
+/// explicit directory lets development and release smoke tests use their own
+/// state; requiring an absolute path avoids differences in Finder/shell cwd.
+pub fn desktop_data_dir(
+    default: PathBuf,
+    override_path: Option<std::ffi::OsString>,
+) -> Result<PathBuf, String> {
+    match override_path {
+        None => Ok(default),
+        Some(path) => {
+            let path = PathBuf::from(path);
+            if !path.is_absolute() {
+                return Err("BRIDGE_DATA_DIR must be a nonempty absolute path".into());
+            }
+            Ok(path)
+        }
+    }
+}
+
+/// Atomic desktop exclusion, independent of the backend's owner.lock. The
+/// single-instance plugin forwards focus requests, but its socket listener
+/// starts asynchronously and can fail open when two copies launch together.
+/// Keep this lease in application state before either desktop host starts.
+pub struct DesktopLease {
+    _file: std::fs::File,
+}
+
+impl DesktopLease {
+    pub fn acquire(data_dir: &Path) -> Result<Self, String> {
+        std::fs::create_dir_all(data_dir)
+            .map_err(|error| format!("Could not prepare the Bridge data directory: {error}"))?;
+        let lock_path = data_dir.join("desktop.lock");
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(&lock_path)
+            .map_err(|error| {
+                format!(
+                    "Could not open the Bridge desktop lock {}: {error}",
+                    lock_path.display()
+                )
+            })?;
+        if !file
+            .metadata()
+            .map_err(|error| format!("Could not inspect the Bridge desktop lock: {error}"))?
+            .is_file()
+        {
+            return Err("The Bridge desktop lock is not a regular file".into());
+        }
+        match file.try_lock() {
+            Ok(()) => {}
+            Err(std::fs::TryLockError::WouldBlock) => {
+                return Err(format!(
+                    "Bridge is already open for {}. Switch to that window, or quit it before opening another copy.",
+                    data_dir.display()
+                ));
+            }
+            Err(std::fs::TryLockError::Error(error)) => {
+                return Err(format!(
+                    "Could not acquire the Bridge desktop lock: {error}"
+                ));
+            }
+        }
+        // Change permissions only after owning the lock, through the open
+        // handle. A losing copy must not mutate the live owner's lock file.
+        file.set_permissions(std::fs::Permissions::from_mode(0o600))
+            .map_err(|error| format!("Could not secure the Bridge desktop lock: {error}"))?;
+        Ok(Self { _file: file })
+    }
+}
+
+impl Drop for DesktopLease {
+    fn drop(&mut self) {
+        // Release explicitly before close. A concurrent fork/exec can briefly
+        // inherit this descriptor despite CLOEXEC, retaining its flock after
+        // our close until the child's exec. Releasing the shared lock avoids
+        // a false conflict during an immediate desktop restart.
+        let _ = self._file.unlock();
+    }
+}
+
 /// The wire params for a proxied command payload. Parameterless methods send
 /// none — the daemon rejects stray payloads, and the JS `invoke` helper sends
 /// `{}` when the caller passes no arguments. Everything else forwards the
@@ -311,14 +396,9 @@ impl DaemonProxy {
 /// Whether an attached daemon is running different code than the binary this
 /// launcher would spawn.
 ///
-/// `ours` is the identity of the launcher's own `bridged` binary (`None` when
-/// the launcher is attach-only — it has nothing better to offer, so nothing is
-/// ever stale to it). `theirs` is what the daemon's handshake reported; a
-/// daemon that reports none predates the identity handshake and is stale by
-/// definition. This exists because the desktop app used to attach to *any*
-/// live daemon: a rebuild changed the binary on disk and nothing else, so
-/// every backend fix merged during a daemon's lifetime silently never ran —
-/// behind a webview that *did* update.
+/// Attach-only clients have no expected binary identity. A launcher with a
+/// bundled binary must not silently run against another build, but a mismatch
+/// does not grant it ownership of the running daemon or permission to stop it.
 fn daemon_is_stale(ours: Option<&str>, theirs: Option<&str>) -> bool {
     match (ours, theirs) {
         (None, _) => false,
@@ -367,33 +447,17 @@ impl Launcher {
         start_deadline: Duration,
         stop: Option<&AtomicBool>,
     ) -> Result<Vec<Arc<DaemonClient>>, String> {
+        bridge_client::socket_path_for_data_dir(&self.data_dir)
+            .map_err(|error| error.to_string())?;
         let initial: Result<Vec<Arc<DaemonClient>>, ClientError> = match self.attach() {
             Ok(clients) => {
-                let ours = self.binary_identity();
-                let theirs = clients
-                    .first()
-                    .and_then(|client| client.handshake().build_id.clone());
-                if !daemon_is_stale(ours.as_deref(), theirs.as_deref()) {
-                    return Ok(clients);
-                }
-                // The daemon is serving a different build than the one on
-                // disk. Attaching anyway is how a merged fix runs everywhere
-                // except the process that matters, so replace it: drop the
-                // pool, stop the daemon, and fall through to the spawn path
-                // below exactly as if nothing had been listening.
-                eprintln!(
-                    "bridge: bridged is serving build {} but the binary on disk is build {}; replacing the stale daemon",
-                    theirs.as_deref().unwrap_or("<pre-identity>"),
-                    ours.as_deref().unwrap_or("<unknown>"),
-                );
-                drop(clients);
-                self.stop_running_daemon();
-                Err(ClientError::Disconnected)
+                self.validate_build(&clients)?;
+                return Ok(clients);
             }
             Err(error) => Err(error),
         };
         match &initial {
-            Ok(_) => unreachable!("the Ok case returned or decayed above"),
+            Ok(_) => unreachable!("the Ok case returned above"),
             // A live daemon answered and said no (bad token, incompatible
             // protocol). Starting a second one cannot help — the socket is
             // owned. Surface its refusal verbatim.
@@ -431,7 +495,13 @@ impl Launcher {
             }
             std::thread::sleep(Duration::from_millis(200));
             match self.attach() {
-                Ok(clients) => return Ok(clients),
+                Ok(clients) => {
+                    // Another desktop may have won the startup race, or a
+                    // daemon may have restarted during the handshake retry.
+                    // Apply the same identity check on every successful attach.
+                    self.validate_build(&clients)?;
+                    return Ok(clients);
+                }
                 Err(ClientError::Handshake(error)) if !retryable_handshake(&error) => {
                     self.terminate_child();
                     return Err(format!(
@@ -482,41 +552,23 @@ impl Launcher {
         bridge_core::binary::file_identity(self.binary.as_deref()?).ok()
     }
 
-    /// Stop whatever daemon is serving the data directory: the launcher's own
-    /// child when it has one, otherwise the process the lease names — and only
-    /// when the lease says that process is a daemon, because an `embedded`
-    /// owner is an app and is never signalled. Bounded wait for the lease to
-    /// clear, so the spawn that follows does not lose the ownership race to a
-    /// daemon that is still draining.
-    fn stop_running_daemon(&mut self) {
-        if self.child.is_some() {
-            self.terminate_child();
-        } else {
-            let holder = bridge_core::ownership::DataDirLease::current_holder(&self.data_dir);
-            let Some(holder) = holder else { return };
-            if holder.kind != bridge_core::ownership::OwnerKind::Daemon {
-                eprintln!(
-                    "bridge: the data directory is owned by {:?} (pid {}), not a daemon; leaving it alone",
-                    holder.kind, holder.pid
-                );
-                return;
-            }
-            let pid = holder.pid as libc::pid_t;
-            if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
-                return;
-            }
-            let deadline = Instant::now() + CHILD_SHUTDOWN_DEADLINE;
-            while Instant::now() < deadline {
-                if bridge_core::ownership::DataDirLease::current_holder(&self.data_dir).is_none() {
-                    return;
-                }
-                std::thread::sleep(Duration::from_millis(50));
-            }
-            // Still holding past the drain budget: escalate once, then give
-            // the release race a beat to settle.
-            let _ = unsafe { libc::kill(pid, libc::SIGKILL) };
-            std::thread::sleep(Duration::from_millis(200));
+    fn validate_build(&self, clients: &[Arc<DaemonClient>]) -> Result<(), String> {
+        let ours = self.binary_identity();
+        let theirs = clients
+            .iter()
+            .map(|client| client.handshake().build_id.as_deref())
+            .find(|theirs| daemon_is_stale(ours.as_deref(), *theirs));
+        if let Some(theirs) = theirs {
+            return Err(format!(
+                "A different Bridge build is already using {} (running backend {}, bundled backend {}). \
+                 Quit the other Bridge copies, or stop a separately managed bridged daemon, then reopen this app. \
+                 The running backend was left untouched so its active work can finish.",
+                self.data_dir.display(),
+                theirs.unwrap_or("unknown"),
+                ours.as_deref().unwrap_or("unknown"),
+            ));
         }
+        Ok(())
     }
 
     fn attach(&self) -> Result<Vec<Arc<DaemonClient>>, ClientError> {
@@ -582,6 +634,20 @@ impl Launcher {
 
     fn terminate_child(&mut self) {
         if let Some(mut child) = self.child.take() {
+            // try_wait caches an exited child's status and releases its PID.
+            // Never signal that PID/group again: the group can still contain
+            // surviving processes, and the numeric PID may have been reused.
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => {}
+                Err(error) => {
+                    eprintln!(
+                        "bridge: could not verify owned daemon process {} before shutdown: {error}",
+                        child.id()
+                    );
+                    return;
+                }
+            }
             let group = -(child.id() as libc::pid_t);
             if unsafe { libc::kill(group, libc::SIGTERM) } != 0 {
                 let _ = unsafe { libc::kill(child.id() as libc::pid_t, libc::SIGTERM) };
@@ -793,6 +859,138 @@ mod tests {
     use std::os::unix::net::UnixListener;
 
     #[test]
+    fn desktop_data_directory_defaults_to_the_platform_directory() {
+        let default = PathBuf::from("/platform/Bridge");
+        assert_eq!(desktop_data_dir(default.clone(), None).unwrap(), default);
+    }
+
+    #[test]
+    fn desktop_data_directory_accepts_an_explicit_absolute_path() {
+        let explicit = PathBuf::from("/isolated release test/Bridge");
+        assert_eq!(
+            desktop_data_dir(
+                PathBuf::from("/platform/Bridge"),
+                Some(explicit.clone().into_os_string())
+            )
+            .unwrap(),
+            explicit
+        );
+    }
+
+    #[test]
+    fn desktop_data_directory_rejects_empty_and_relative_overrides() {
+        for path in ["", "relative/Bridge", "~/Bridge"] {
+            let error =
+                desktop_data_dir(PathBuf::from("/platform/Bridge"), Some(path.into())).unwrap_err();
+            assert!(error.contains("BRIDGE_DATA_DIR"), "{error}");
+            assert!(error.contains("absolute path"), "{error}");
+        }
+    }
+
+    #[test]
+    fn simultaneous_desktop_starts_have_exactly_one_owner() {
+        let fixture = tempfile::tempdir().unwrap();
+        let barrier = Arc::new(std::sync::Barrier::new(8));
+        let contenders = (0..8)
+            .map(|_| {
+                let directory = fixture.path().to_path_buf();
+                let barrier = barrier.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let lease = DesktopLease::acquire(&directory);
+                    // Hold the winner until every contender has tried, so
+                    // sequential reacquisition cannot mask an exclusion bug.
+                    barrier.wait();
+                    lease
+                })
+            })
+            .collect::<Vec<_>>();
+        let leases = contenders
+            .into_iter()
+            .map(|thread| thread.join().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(leases.iter().filter(|lease| lease.is_ok()).count(), 1);
+        for error in leases.iter().filter_map(|lease| lease.as_ref().err()) {
+            assert!(error.contains("already open"), "{error}");
+        }
+        drop(leases);
+        assert!(DesktopLease::acquire(fixture.path()).is_ok());
+    }
+
+    #[test]
+    fn a_losing_desktop_preserves_the_existing_lock_file() {
+        let fixture = tempfile::tempdir().unwrap();
+        let path = fixture.path().join("desktop.lock");
+        std::fs::write(&path, "existing lock contents").unwrap();
+        let lease = DesktopLease::acquire(fixture.path()).unwrap();
+        // Detect any chmod by the losing attempt as well as truncation.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(DesktopLease::acquire(fixture.path()).is_err());
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "existing lock contents"
+        );
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o640
+        );
+        drop(lease);
+        assert!(DesktopLease::acquire(fixture.path()).is_ok());
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn desktop_release_unlocks_a_descriptor_temporarily_inherited_by_a_child() {
+        let fixture = tempfile::tempdir().unwrap();
+        let lease = DesktopLease::acquire(fixture.path()).unwrap();
+        // dup shares the open-file description just as fork does before exec.
+        let inherited = lease._file.try_clone().unwrap();
+        drop(lease);
+        assert!(DesktopLease::acquire(fixture.path()).is_ok());
+        drop(inherited);
+    }
+
+    #[test]
+    fn desktop_lock_does_not_follow_a_symlink() {
+        let fixture = tempfile::tempdir().unwrap();
+        let target = fixture.path().join("other-file");
+        std::fs::write(&target, "preserve this file").unwrap();
+        std::os::unix::fs::symlink(&target, fixture.path().join("desktop.lock")).unwrap();
+        assert!(DesktopLease::acquire(fixture.path()).is_err());
+        assert_eq!(
+            std::fs::read_to_string(target).unwrap(),
+            "preserve this file"
+        );
+    }
+
+    #[test]
+    fn a_long_socket_path_is_rejected_before_spawning_a_daemon() {
+        let fixture = tempfile::tempdir().unwrap();
+        let data_dir = fixture.path().join("long-directory-".repeat(10));
+        let binary = fixture.path().join("fake-bridged");
+        std::fs::write(&binary, "#!/bin/sh\nexit 99\n").unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut launcher = Launcher::new(
+            data_dir.clone(),
+            fixture.path().join("extension"),
+            Some(binary),
+        );
+        let error = match launcher.ensure() {
+            Ok(_) => panic!("an overlong daemon path was accepted"),
+            Err(error) => error,
+        };
+        assert!(error.contains("shorter absolute directory"), "{error}");
+        assert!(launcher.child.is_none());
+        assert!(
+            !data_dir.exists(),
+            "preflight must not spawn or create a daemon log"
+        );
+    }
+
+    #[test]
     fn parameterless_methods_send_no_params() {
         // The JS invoke helper sends `{}` for argument-free calls; the daemon
         // contract requires their absence.
@@ -986,69 +1184,186 @@ mod tests {
         assert!(daemon_is_stale(Some("aaaa"), Some("bbbb")));
     }
 
-    /// The field failure end to end: a live daemon whose handshake names a
-    /// different build must be replaced by a spawn of the launcher's binary,
-    /// not attached to. The fake daemon completes a real handshake carrying a
-    /// stale id; the fake replacement binary drops a marker when started.
+    /// Runs a real second process that owns a data-directory lease and serves
+    /// handshakes. Keeping it outside the test process catches accidental
+    /// SIGTERM/SIGKILL of a foreign owner without endangering the test runner.
+    struct ForeignDaemon {
+        fixture: tempfile::TempDir,
+        child: Child,
+        data_dir: PathBuf,
+        binary: PathBuf,
+    }
+
+    impl ForeignDaemon {
+        fn start(build_id: Option<&str>, refuse_first: bool) -> Self {
+            let fixture = tempfile::tempdir().unwrap();
+            let data_dir = fixture.path().join("data");
+            std::fs::create_dir_all(&data_dir).unwrap();
+            let binary = fixture.path().join("fake-bridged");
+            std::fs::write(
+                &binary,
+                format!(
+                    "#!/bin/sh\necho spawned > '{}'\nexec sleep 30\n",
+                    fixture.path().join("spawned").display()
+                ),
+            )
+            .unwrap();
+            std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
+            let mut command = Command::new(std::env::current_exe().unwrap());
+            command
+                .args([
+                    "--exact",
+                    "daemon_host::tests::helper_foreign_daemon",
+                    "--nocapture",
+                ])
+                .env("BRIDGE_FOREIGN_DAEMON_TEST_DIR", &data_dir)
+                .env("BRIDGE_FOREIGN_DAEMON_TEST_BUILD", build_id.unwrap_or(""))
+                .env(
+                    "BRIDGE_FOREIGN_DAEMON_TEST_REFUSE_FIRST",
+                    if refuse_first { "1" } else { "0" },
+                )
+                .stdout(Stdio::null());
+            let child = command.spawn().unwrap();
+            let mut daemon = Self {
+                fixture,
+                child,
+                data_dir,
+                binary,
+            };
+            let deadline = Instant::now() + Duration::from_secs(15);
+            while !daemon.data_dir.join("ready").exists() {
+                assert!(
+                    daemon.child.try_wait().unwrap().is_none(),
+                    "helper exited before ready"
+                );
+                assert!(Instant::now() < deadline, "helper did not become ready");
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            daemon
+        }
+
+        fn launcher(&self, attach_only: bool) -> Launcher {
+            Launcher::new(
+                self.data_dir.clone(),
+                self.fixture.path().join("extension"),
+                (!attach_only).then(|| self.binary.clone()),
+            )
+        }
+
+        fn assert_untouched(&mut self) {
+            assert!(
+                self.child.try_wait().unwrap().is_none(),
+                "foreign daemon was stopped"
+            );
+            let owner = bridge_core::ownership::DataDirLease::current_holder(&self.data_dir)
+                .expect("foreign daemon must retain its lease");
+            assert_eq!(owner.pid, self.child.id());
+            assert!(
+                !self.fixture.path().join("spawned").exists(),
+                "replacement was started"
+            );
+        }
+    }
+
+    impl Drop for ForeignDaemon {
+        fn drop(&mut self) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+
     #[test]
-    fn a_stale_daemon_is_replaced_instead_of_attached_to() {
-        let fixture = tempfile::tempdir().unwrap();
-        let data_dir = fixture.path().join("data");
-        std::fs::create_dir_all(&data_dir).unwrap();
+    fn mismatched_foreign_daemons_are_refused_without_interrupting_the_owner() {
+        // Missing identities are mismatches too. Neither case permits this
+        // app to signal another desktop's backend or start a replacement.
+        for build_id in [Some("0000000000000000"), None] {
+            let mut daemon = ForeignDaemon::start(build_id, false);
+            let mut launcher = daemon.launcher(false);
+            let error = match launcher.ensure_with_deadline(Duration::from_secs(2)) {
+                Ok(_) => panic!("mismatched backend was attached to"),
+                Err(error) => error,
+            };
+            assert!(error.contains("different Bridge build"), "{error}");
+            assert!(error.contains("left untouched"), "{error}");
+            drop(launcher);
+            daemon.assert_untouched();
+        }
+    }
+
+    #[test]
+    fn a_mismatch_after_a_retryable_handshake_also_leaves_the_owner_running() {
+        let mut daemon = ForeignDaemon::start(Some("0000000000000000"), true);
+        let mut launcher = daemon.launcher(false);
+        let error = match launcher.ensure_with_deadline(Duration::from_secs(2)) {
+            Ok(_) => panic!("retry attached to a mismatched backend"),
+            Err(error) => error,
+        };
+        assert!(error.contains("different Bridge build"), "{error}");
+        drop(launcher);
+        daemon.assert_untouched();
+    }
+
+    #[test]
+    fn dropping_an_attach_only_launcher_leaves_the_foreign_daemon_running() {
+        let mut daemon = ForeignDaemon::start(Some("0000000000000000"), false);
+        let mut launcher = daemon.launcher(true);
+        let clients = launcher
+            .ensure()
+            .expect("attach-only clients accept the running build");
+        assert_eq!(clients.len(), POOL_SIZE);
+        drop(clients);
+        drop(launcher);
+        daemon.assert_untouched();
+    }
+
+    /// Re-exec target for ForeignDaemon. Without the marker it is a no-op.
+    #[test]
+    fn helper_foreign_daemon() {
+        let Some(data_dir) = std::env::var_os("BRIDGE_FOREIGN_DAEMON_TEST_DIR") else {
+            return;
+        };
+        let data_dir = PathBuf::from(data_dir);
+        let _lease = bridge_core::ownership::DataDirLease::acquire(
+            &data_dir,
+            bridge_core::ownership::OwnerKind::Daemon,
+        )
+        .unwrap();
         std::fs::write(data_dir.join(bridge_client::TOKEN_FILE_NAME), "test-token").unwrap();
-        let socket_path = data_dir.join(bridge_client::SOCKET_FILE_NAME);
-        let listener = UnixListener::bind(&socket_path).unwrap();
-        let server = std::thread::spawn(move || {
-            // First connection: a full, successful handshake reporting a build
-            // this test's launcher does not have. Later pool/loop connections
-            // are dropped unanswered; attach tolerates both.
-            let (mut socket, _) = listener.accept().unwrap();
+        let listener = UnixListener::bind(data_dir.join(bridge_client::SOCKET_FILE_NAME)).unwrap();
+        let build_id = std::env::var("BRIDGE_FOREIGN_DAEMON_TEST_BUILD").unwrap();
+        let mut refuse_next =
+            std::env::var("BRIDGE_FOREIGN_DAEMON_TEST_REFUSE_FIRST").unwrap() == "1";
+        let mut connections = Vec::new();
+        std::fs::write(data_dir.join("ready"), b"ready").unwrap();
+        for socket in listener.incoming() {
+            let mut socket = socket.unwrap();
             let mut request = String::new();
             BufReader::new(socket.try_clone().unwrap())
                 .read_line(&mut request)
                 .unwrap();
             let request: bridge_protocol::RpcRequest = serde_json::from_str(&request).unwrap();
             assert_eq!(request.method, bridge_protocol::HANDSHAKE_METHOD);
-            let response = bridge_protocol::RpcResponse::result(
-                request.id,
-                serde_json::json!({
-                    "protocolVersion": bridge_protocol::PROTOCOL_VERSION,
-                    "server": {"name": "bridge", "version": "0.1.0"},
-                    "capabilities": ["sessions"],
-                    "buildId": "0000000000000000",
-                }),
-            );
+            let response = if refuse_next {
+                refuse_next = false;
+                bridge_protocol::RpcResponse::error(
+                    request.id,
+                    bridge_protocol::RpcError::new(ErrorCode::ShuttingDown, "retry the daemon"),
+                )
+            } else {
+                bridge_protocol::RpcResponse::result(
+                    request.id,
+                    serde_json::json!({
+                        "protocolVersion": bridge_protocol::PROTOCOL_VERSION,
+                        "server": {"name": "bridge", "version": "0.1.0"},
+                        "capabilities": ["sessions"],
+                        "buildId": (!build_id.is_empty()).then_some(&build_id),
+                    }),
+                )
+            };
             serde_json::to_writer(&mut socket, &response).unwrap();
             socket.write_all(b"\n").unwrap();
-            // Hold the connection open until the launcher moves on.
-            std::thread::sleep(Duration::from_millis(600));
-        });
-
-        let spawned = fixture.path().join("spawned");
-        let binary = fixture.path().join("fake-bridged");
-        std::fs::write(
-            &binary,
-            format!(
-                "#!/bin/sh\necho spawned > '{}'\nexec sleep 30\n",
-                spawned.display()
-            ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let mut launcher = Launcher::new(data_dir, fixture.path().join("extension"), Some(binary));
-        let error = match launcher.ensure_with_deadline(Duration::from_millis(1500)) {
-            Ok(_) => panic!("a stale daemon was attached to"),
-            Err(error) => error,
-        };
-        server.join().unwrap();
-        // The replacement (a shell script) never serves, so ensure times out —
-        // what matters is that the launcher refused the stale daemon and
-        // started its own binary instead of settling for what answered.
-        assert!(error.contains("did not become reachable"), "{error}");
-        assert!(
-            spawned.is_file(),
-            "the launcher's own binary was never started: {error}"
-        );
+            connections.push(socket);
+        }
     }
 
     #[test]
@@ -1064,6 +1379,39 @@ mod tests {
         drop(launcher);
         let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0;
         assert!(!alive, "owned child {pid} survived launcher drop");
+    }
+
+    #[test]
+    fn dropping_a_reaped_child_does_not_signal_its_former_process_group() {
+        let fixture = tempfile::tempdir().unwrap();
+        let mut leader = Command::new("sleep")
+            .arg("30")
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let mut survivor = Command::new("sleep")
+            .arg("30")
+            .process_group(leader.id() as libc::pid_t)
+            .spawn()
+            .unwrap();
+        leader.kill().unwrap();
+        leader.wait().unwrap();
+
+        let mut launcher = Launcher::new(
+            fixture.path().join("data"),
+            fixture.path().join("extension"),
+            None,
+        );
+        launcher.child = Some(leader);
+        drop(launcher);
+        std::thread::sleep(Duration::from_millis(50));
+        let survived = survivor.try_wait().unwrap().is_none();
+        let _ = survivor.kill();
+        let _ = survivor.wait();
+        assert!(
+            survived,
+            "an already reaped child caused a process-group signal"
+        );
     }
 
     #[test]

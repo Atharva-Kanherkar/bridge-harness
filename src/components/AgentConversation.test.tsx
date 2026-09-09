@@ -229,6 +229,26 @@ describe("AgentConversation", () => {
     expect(html).not.toContain("First time opening this chat");
   });
 
+  it("shows a skeleton while an existing chat's history loads, not the new-chat greeting", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={undefined} />);
+    expect(html).toContain('aria-label="Loading conversation"');
+    expect(html).toContain("Loading conversation");
+    expect(html).not.toContain("What should we");
+  });
+
+  it("keeps the greeting for a loaded-but-empty chat", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={[]} />);
+    expect(html).not.toContain('aria-label="Loading conversation"');
+  });
+
+  it("shows live content through a forest refetch instead of the skeleton", () => {
+    const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[
+      event(1, "message.completed", { itemId: "m", role: "assistant", text: "Still here", status: "completed" }),
+    ]} forestEntries={undefined} />);
+    expect(html).toContain("Still here");
+    expect(html).not.toContain('aria-label="Loading conversation"');
+  });
+
   it("shows revision-bound verification without requiring a committed contract file", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} completion={{ attemptId:"a",contractId:"c",verdict:"waived",repository:{head:"abcdef1234567890",dirtyDigest:"clean"},passedRequired:1,totalRequired:2,markdownCommitted:false,waiverReason:"Browser unavailable",checks:[{checkId:"tests",kind:"deterministic",required:true,status:"passed",executor:"bridge.shell",command:"bun test",verifierFamily:null,detail:"159 passed",outputDigest:"d",artifactRefs:[]},{checkId:"journey",kind:"user_testing",required:true,status:"skipped",executor:"bridge.worker",command:null,verifierFamily:"claude",detail:"No browser",outputDigest:null,artifactRefs:[]}]} } />);
     expect(html).toContain("Verified with waiver");
@@ -526,7 +546,6 @@ describe("AgentConversation", () => {
         events: [workerActivity(31, "read store.rs"), workerActivity(32, "edit store.rs")],
       }}
       onOpenSession={() => undefined}
-      onExpandWorker={() => undefined}
     />);
     expect(html).toContain("Implementation · strong");
     expect(html).toContain("WORKING");
@@ -534,7 +553,9 @@ describe("AgentConversation", () => {
     expect(html).toContain("retry 1");
     // The mini-feed is the whole point: something visibly moving in the chat.
     expect(html).toContain("edit store.rs");
-    expect(html).toContain("Expand");
+    // One way in. "Expand" opened the same worker in an overlay and read as a
+    // second, different thing the reader had to choose between.
+    expect(html).not.toContain("Expand");
     expect(html).toContain("Open session");
     // And the old static line is gone.
     expect(html).not.toContain("Delegated · Delegated to");
@@ -582,6 +603,42 @@ describe("AgentConversation", () => {
     expect(html).not.toContain("Subagent finished");
     // And the live ticker stops: no half-finished feed under a finished result.
     expect(html).not.toContain("edit store.rs");
+    // The ask survives the outcome. A result's prose used to overwrite the
+    // objective, so a finished card no longer said what it had been asked for.
+    expect(html).toContain("Add refresh-token rotation");
+    // The summary is shown once. It used to open the card in full and then
+    // repeat its first sentence, truncated, three bands lower.
+    expect(html.split("Rotation added.").length - 1).toBe(1);
+  });
+
+  it("clamps a long result summary behind one affordance", () => {
+    const long = `Reviewed the auth module and posted a comment-only review. ${"Findings cite concrete files and lines. ".repeat(8)}`;
+    const result = event(33, "delegation.result", {
+      itemId: "result-w1", role: "system", status: "completed", title: "Worker result",
+      text: long, data: { childSessionId: "w1", delivered: true, status: "completed" },
+    });
+    const html = renderToStaticMarkup(<AgentConversation
+      session={session}
+      onResolve={() => undefined}
+      events={[spawned, result]}
+      workers={{
+        sessions: [session, workerSession({ status: "stopped" })],
+        runtimes: [workerRuntime({
+          resultStatus: "reported", lifecycleState: "completed",
+          // The fence the typed envelope arrives in is wire chatter, not the
+          // worker's newest activity, and the card used to print it as status.
+          progressSummary: "```bridge-worker-result",
+          lastResult: { status: "completed", summary: long, filesChanged: [], tests: [] },
+        })],
+        events: [],
+      }}
+      onOpenSession={() => undefined}
+    />);
+    expect(html).toContain("line-clamp-3");
+    expect(html).toContain("Read the full result");
+    expect(html).not.toContain("bridge-worker-result");
+    // The objective band is clamped too, so no card opens with a wall.
+    expect(html).toContain("line-clamp-2");
   });
 
   it("still shows a classified failure with its retry action after folding", () => {
@@ -611,7 +668,7 @@ describe("AgentConversation", () => {
       workers={{ sessions: [session], runtimes: [], events: [] }}
     />);
     expect(html).toContain("Delegated");
-    expect(html).not.toContain("Expand");
+    expect(html).not.toContain("Open session");
   });
 
   it("shows a chip when someone steers a worker", () => {

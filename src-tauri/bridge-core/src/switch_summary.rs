@@ -613,7 +613,7 @@ mod tests {
     fn background_request(core: &Arc<BridgeCore>) -> SwitchSummaryRequest {
         let db = core.db.lock().unwrap();
         let prompt = CompactionController::begin_background(&db, "s", CompactionReason::BeforeDowngrade, 100)
-            .unwrap()
+            .unwrap().prompt()
             .unwrap();
         let after: i64 = db
             .query_row(

@@ -51,8 +51,8 @@ signature and its caller (the CI toast); it just builds the wider intent.
 | # | Behaviour | Assertion |
 |---|---|---|
 | 1.1 | A pull request | `/o/r/pull/12` → `{ host: "github.com", owner: "o", name: "r", view: { kind: "pull", number: 12, tab: "conversation" } }` |
-| 1.2 | Its files and checks name a sub-tab | `/pull/12/files` → tab `changes`; `/pull/12/checks` → tab `checks` |
-| 1.3 | Sub-paths without their own view still land on the PR | `/pull/12/commits` and `/pull/12/commits/abc123` → tab `conversation` |
+| 1.2 | Its sub-paths name a sub-tab | `/pull/12/files` → `changes`; `/pull/12/commits` → `commits`; `/pull/12/checks` → `checks` |
+| 1.3 | Sub-paths without their own view still land on the PR | one commit's own page → the nearest view, `commits`; an unknown sub-path → `conversation` |
 | 1.4 | Query and fragment are not part of the route | `/pull/12/files?w=1#diff-a` → pull 12, tab `changes` |
 | 1.5 | An issue | `/o/r/issues/204` → `{ kind: "issue", number: 204 }` |
 | 1.6 | The three list/overview shapes | `/o/r/pulls` → `pulls`; `/o/r/issues` → `issues`; `/o/r` and `/o/r/` → `repository` |
@@ -120,9 +120,14 @@ Every existing case stays green unchanged.
 
 | # | Behaviour | Assertion |
 |---|---|---|
-| 5.1 | "Open on GitHub" is marked as leaving | the PR header anchor carries `data-system-browser` |
+Every "open on GitHub" affordance goes through one `OpenOnGithub` component,
+so the marker lives there rather than on each anchor.
+
+| # | Behaviour | Assertion |
+|---|---|---|
+| 5.1 | Every open-on-GitHub affordance is marked as leaving | each `a[aria-label$="on GitHub"]` on screen carries `data-system-browser`, asserted on the PR header and again on the checks tab |
 | 5.2 | The truncated-patch full-diff link is marked | the "view the full diff on GitHub" anchor carries it |
-| 5.3 | A check's log link is marked | the per-check log anchor carries it — a log URL shaped like `/pull/N/checks` must not be swallowed by the pane |
+| 5.3 | A check's log link is marked | it is one of the affordances above — a log URL shaped like `/pull/N/checks` must not be swallowed by the pane |
 
 ## 6. Bare URLs in prose — `src/components/Markdown.test.tsx` (extended)
 
@@ -141,6 +146,9 @@ from the way an agent actually writes.
 | 6.5 | A URL inside a fenced block is code | a fenced block containing a URL renders no anchor |
 | 6.6 | A written-out link stays one link | `[the PR](url)` renders exactly one anchor, titled by its text |
 | 6.7 | A scheme the app would never open is not linked | `javascript:` and `file://` render no anchor |
+
+The prose pattern admits only `http(s)`, so it sits inside the scheme gate
+`main` added for written-out links rather than around it.
 
 Explicitly **not** changed: the pane's own views, data, polling, mutations,
 confirmations and review threads; the `gh`-backed Rust surface and every

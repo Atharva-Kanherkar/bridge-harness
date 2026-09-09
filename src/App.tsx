@@ -57,6 +57,8 @@ import { MemoryDialog, rememberAction } from "./components/MemoryDialog";
 import { MemoryUsedChip } from "./components/MemoryUsedChip";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
+import { MeterPopover } from "./components/meter/MeterPopover";
+import type { MeterRegistry } from "./types";
 import { formatElapsed, harnessLabel, slashOwnershipBadge } from "./utils";
 import { scheduleSuggestion } from "./suggestionTypeahead";
 import { projectSessionConversation, reduceConversation, undeliveredPending } from "./conversation";
@@ -87,6 +89,7 @@ import { useUiStore } from "./uiStore";
 import { useBridgeServerState } from "./serverState";
 
 const MarketplaceScreen = lazy(() => import("./components/MarketplaceScreen").then(module => ({ default: module.MarketplaceScreen })));
+const UsageScreen = lazy(() => import("./components/UsageScreen").then(module => ({ default: module.UsageScreen })));
 const SettingsScreen = lazy(() => import("./components/SettingsScreen").then(module => ({ default: module.SettingsScreen })));
 const WorkView = lazy(() => import("./components/WorkView").then(module => ({ default: module.WorkView })));
 const TerminalPane = lazy(() => import("./components/TerminalPane").then(module => ({ default: module.TerminalPane })));
@@ -244,6 +247,16 @@ function AppContent() {
   const fallbackNoticeShownRef = useRef(false);
   const [usageByProvider, setUsageByProvider] = useState<Partial<Record<UsageProvider, UsageSnapshot>>>({});
   const [usageSamples, setUsageSamples] = useState<Partial<Record<UsageProvider, UsageRateSample[]>>>({});
+  // Menu-bar meter popover (CodexBar companion): opened from the Usage screen
+  // or the native tray's left-click; live windows come from the same
+  // account-usage channel as the usage ring.
+  const [meterOpen, setMeterOpen] = useState(false);
+  const [meterRegistry, setMeterRegistry] = useState<MeterRegistry | null>(null);
+  const [meterRefreshing, setMeterRefreshing] = useState(false);
+  // Mirrored for the global Escape handler, which must close the topmost
+  // layer without resubscribing on every popover toggle.
+  const meterOpenRef = useRef(false);
+  meterOpenRef.current = meterOpen;
   const startedRef = useRef<Set<string>>(new Set());
   // The first message of a just-created chat, tagged with its target session id so
   // the delivery effect can only ever hand it to that chat — never to a session that
@@ -327,9 +340,19 @@ function AppContent() {
         }));
       }
     }).then(fn => offUsage = fn);
+    // Native tray (menu-bar meter companion): left-click opens the meter
+    // popover, the tray menu's refresh triggers a shared usage refresh. Both
+    // route through the same handlers as the in-app controls so the registry
+    // loads and the spinner spins on every path.
+    let offMeter: (() => void) | undefined;
+    void bridgeApi.onMeterTray(action => {
+      if (!active) return;
+      if (action === "open-popover") openMeter();
+      else refreshMeter();
+    }).then(fn => { if (!active) { fn(); return; } offMeter = fn; });
     return () => {
       active = false;
-      offState?.(); offAgent?.(); offUsage?.(); offAdapters?.(); offProviderLogin?.();
+      offState?.(); offAgent?.(); offUsage?.(); offAdapters?.(); offProviderLogin?.(); offMeter?.();
       display.dispose();
     };
   }, [invalidateHealth, reload]);
@@ -649,11 +672,16 @@ function AppContent() {
   );
   const conversationStarted = useMemo(() => {
     if (!session) return false;
-    if (session.activeTurnId) return true;
+    if (session.activeTurnId || session.status === "working") return true;
     if (pendingForSession.length > 0) return true;
     const durable = forest?.entries?.length ? projectSessionConversation(forest.entries, forest.head?.activeEntryId ?? null) : [];
     return durable.some(item => item.type === "message" && item.role === "user");
   }, [forest, pendingForSession.length, session]);
+  // Three signals, oldest to newest: the provider acknowledged a turn, Bridge
+  // delivered one and marked the session working, or the send is still on its
+  // way. The middle one is what covers a provider that takes its time between
+  // receiving a message and starting on it.
+  const turnActive = !!session?.activeTurnId || session?.status === "working" || pendingForSession.length > 0;
   const [worktreeOn, setWorktreeOn] = useState(false);
   const [welcomeWorkspaceId, setWelcomeWorkspaceId] = useState<string | null>(null);
   const [newProjectOpen, setNewProjectOpen] = useState(false);
@@ -883,9 +911,37 @@ function AppContent() {
     active?.scrollIntoView({ block: "nearest" });
   }, [mentionOpen, mentionIndex]);
 
+  // Stop is honoured from the moment the user's bubble appears, not from the
+  // moment the backend confirms a turn. Pressed before `activeTurnId` exists,
+  // the request is held and fired the instant the turn is acknowledged; pressed
+  // during a live turn it interrupts at once.
+  const stopRequestedRef = useRef(false);
+  // The runtime can be interrupted as soon as Bridge has delivered the turn
+  // (the session reads `working`), with or without a provider turn id.
+  const turnDelivered = !!session?.activeTurnId || session?.status === "working";
+  const requestStop = useCallback(() => {
+    if (!session) return;
+    setStopping(true);
+    if (session.activeTurnId || session.status === "working") {
+      stopRequestedRef.current = false;
+      void bridgeApi.interruptTurn(session.id).catch(() => undefined);
+    } else {
+      stopRequestedRef.current = true;
+    }
+  }, [session]);
   useEffect(() => {
-    if (!session?.activeTurnId) setStopping(false);
-  }, [session?.activeTurnId]);
+    if (turnDelivered) {
+      if (stopRequestedRef.current && session) {
+        stopRequestedRef.current = false;
+        void bridgeApi.interruptTurn(session.id).catch(() => undefined);
+      }
+      return;
+    }
+    if (pendingForSession.length === 0) {
+      stopRequestedRef.current = false;
+      setStopping(false);
+    }
+  }, [session, turnDelivered, pendingForSession.length]);
 
   useEffect(() => {
     const sessionId = session?.id;
@@ -965,8 +1021,17 @@ function AppContent() {
     });
   }, [agentEvents, forest, session?.id]);
 
-  // Load available slash commands + skills from signed-in providers.
-  useEffect(() => { void bridgeApi.listSlashCommands().then(setSlashCommands).catch(() => undefined); }, [adaptersReady]);
+  // Load available slash commands + skills from signed-in providers. Guarded
+  // against staleness: switching sessions while a slower scan is still in
+  // flight must not let its response land after a newer session's, which
+  // would leave the menu showing the wrong session's commands.
+  useEffect(() => {
+    let active = true;
+    void bridgeApi.listSlashCommands(session?.id)
+      .then(commands => { if (active) setSlashCommands(commands); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [adaptersReady, session?.id]);
 
   // Always land on the Agent tab: focusing a session (especially a blocked
   // worker from Mission Control) must reveal its conversation and approval card,
@@ -981,6 +1046,25 @@ function AppContent() {
     const opened = state.sessions.find(candidate => candidate.id === id);
     if (opened?.workspaceId) writeLastWorkspaceId(opened.workspaceId);
   }
+
+  // Archiving a chat files the conversation away and reclaims the checkout it
+  // owns — not its workspace's, which belongs to every other chat in that
+  // project. History is kept either way, which is what makes this safe to offer
+  // on a hover button; the confirm exists because the worktree is not kept.
+  const archiveChat = useCallback(async (chat: Session) => {
+    const name = chat.title?.trim() || chat.label || "this chat";
+    if (!window.confirm(`Archive ${name}? Its history is kept, and its worktree is reclaimed if nothing is unsaved there.`)) return;
+    try {
+      const result = await bridgeApi.archiveChat(chat.id);
+      if (result.worktreeDetail) {
+        setError(`${name} was archived, but its worktree was kept: ${result.worktreeDetail}`);
+      }
+      setSelectedSessionId(current => (current === chat.id ? undefined : current));
+      await reload();
+    } catch (value) {
+      setError(errorMessage(value));
+    }
+  }, [reload]);
 
   const openWorkBoard = useCallback(() => {
     setView("work");
@@ -1632,10 +1716,15 @@ function AppContent() {
   /// in `sendPrompt` - an aside is pinned to its harness on purpose.
   async function deliverPrompt(target: Session, submittedText: string, sentAttachments?: ComposerAttachment[]): Promise<void> {
     const key = crypto.randomUUID();
-    const prepared = await bridgeApi.prepareTurn(target.id, submittedText);
-    const text = prepared.text;
+    // The bubble lands before the first round-trip, not after it: the user
+    // should see their words the instant they press Send, and the daemon may
+    // take a while to prepare the turn. If preparation rewrites the text, the
+    // same row is updated in place.
+    setPending(current => [...current, { key, sessionId: target.id, text: submittedText, attachment: sentAttachments?.[0]?.dataUri }]);
     try {
-      setPending(current => [...current, { key, sessionId: target.id, text, attachment: sentAttachments?.[0]?.dataUri }]);
+      const prepared = await bridgeApi.prepareTurn(target.id, submittedText);
+      const text = prepared.text;
+      if (text !== submittedText) setPending(current => current.map(item => item.key === key ? { ...item, text } : item));
       if (!liveStatuses.includes(target.status)) {
         startedRef.current.add(target.id);
         setState(await bridgeApi.startChat(target.id));
@@ -1725,14 +1814,17 @@ function AppContent() {
     setComposer("");
     setSlashIndex(0);
     setAttachments([]);
+    // The optimistic row lands synchronously, before the first round-trip: the
+    // user sees their bubble (and the image) the instant they press Send. The
+    // durable row the backend persists carries the same attachment data, so a
+    // reload replays it identically. If preparation rewrites the text, the
+    // same row is updated in place rather than re-added.
+    setPending(current => [...current, { key, sessionId: target.id, text: submittedText, attachment: sentAttachments[0]?.dataUri }]);
     try {
       const prepared = await bridgeApi.prepareTurn(target.id, submittedText);
       const text = prepared.text;
       retryText = text;
-      // The optimistic row shows the image immediately; the durable row the
-      // backend persists carries the same attachment data, so a reload
-      // replays it identically.
-      setPending(current => [...current, { key, sessionId: target.id, text, attachment: sentAttachments[0]?.dataUri }]);
+      if (text !== submittedText) setPending(current => current.map(item => item.key === key ? { ...item, text } : item));
       const resolved = await bridgeApi.resolveSlashCommand(target.id, text).catch(() => null);
       if (resolved?.switchHarness && target.kind === "direct") {
         const adapter = adapters.find(item => item.id === resolved.harness);
@@ -1815,6 +1907,11 @@ function AppContent() {
   // Re-run a failed worker's objective because the user asked. The reason it
   // failed is on the card next to this action, which is the point: Bridge no
   // longer spends this turn on a cause it cannot show has changed.
+  // Stopping a worker goes through the same seam the user's "End session"
+  // does, so a worker ends one way regardless of which surface asked.
+  const stopWorker = useCallback(async (childSessionId: string) => {
+    setState(await bridgeApi.stopSession(childSessionId));
+  }, []);
   const retryWorkerTask = useCallback(async (childSessionId: string) => {
     await bridgeApi.retryWorkerTask(childSessionId);
     await reload();
@@ -1966,7 +2063,7 @@ function AppContent() {
         return;
       case "interrupt-turn":
         // Reachable mid-sentence, so it has to be inert when nothing is running.
-        if (session?.activeTurnId) void bridgeApi.interruptTurn(session.id);
+        if (turnActive) requestStop();
         return;
       case "open-recall":
         if (!session) return;
@@ -2030,6 +2127,9 @@ function AppContent() {
         return;
       }
       if (event.key === "Escape") {
+        // Topmost layer first: the meter popover, then an expanded dock, then
+        // fullscreen. The meter is a dialog over everything, so it wins.
+        if (meterOpenRef.current) { setMeterOpen(false); return; }
         // An expanded dock is the nearer layer: the first Escape restores it,
         // the next one leaves fullscreen.
         if (dockRef.current.open && dockRef.current.expanded) dispatchDock({ type: "toggle-expanded" });
@@ -2072,11 +2172,10 @@ function AppContent() {
   }, []);
 
   const chromeFullscreen = fullscreen || flushWindow;
-  const turnActive = !!session?.activeTurnId || pendingForSession.length > 0;
   const startupError = error ?? (healthError ? errorMessage(healthError) : modelSetupError ? errorMessage(modelSetupError) : undefined);
   if (!health || !modelSetup) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{startupError ? <><X size={14} className="text-destructive" aria-hidden="true" />{startupError}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
   if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard adapters={health.adapters} onComplete={acceptModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
-  const chromeTitle = view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "settings" ? "Settings" : paradigm === "grid" ? "Activity" : session?.title || session?.label || "New Chat";
+  const chromeTitle = view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "settings" ? "Settings" : paradigm === "grid" ? "Activity" : session?.title || session?.label || "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -2085,6 +2184,16 @@ function AppContent() {
   const usageProps = { usage: usageByProvider, adapters: health?.adapters, samples: usageSamples, history: usageHistory, cacheDiagnostics, contextPercent: latestContext ?? undefined, contextSource: latestContextSource, focusedSessionId: session?.id ?? null, onOpenPromptStudio: () => { setSettingsSection("prompts"); setView("settings"); } };
   const usageWidget = <UsageWidget {...usageProps} />;
   const usageRing = <UsageWidget compact {...usageProps} />;
+  const openMeter = () => {
+    setMeterOpen(true);
+    bridgeApi.getMeterSnapshot().then(setMeterRegistry).catch(() => undefined);
+  };
+  const refreshMeter = () => {
+    setMeterRefreshing(true);
+    bridgeApi.refreshMeter()
+      .catch(value => setError(errorMessage(value)))
+      .finally(() => setMeterRefreshing(false));
+  };
   const titleBarActions = <>{usageWidget}{bypassBadge}</>;
   // With the rail hidden there is no sidebar header to hold them, so the panel
   // toggle and the history chevrons move onto whichever chrome row is mounted.
@@ -2105,6 +2214,7 @@ function AppContent() {
       projectsActive={view === "projects"}
       memoryActive={view === "memory"}
       marketplaceActive={view === "marketplace"}
+      usageActive={view === "usage"}
       missionControlActive={view === "workspace" && paradigm === "grid"}
       workActive={view === "work"}
       settingsActive={view === "settings"}
@@ -2117,8 +2227,10 @@ function AppContent() {
       onOpenMissionControl={() => { setView("workspace"); setParadigm("grid"); }}
       onOpenWorkBoard={openWorkBoard}
       onOpenMemory={() => setView("memory")}
+      onOpenUsage={() => setView("usage")}
       onOpenSettings={() => setView("settings")}
       onOpenSession={openSession}
+      onArchiveChat={archiveChat}
       collapsed={sidebarCollapsed}
       onCollapsedChange={setSidebarCollapsed}
       showWindowNav
@@ -2183,7 +2295,7 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
+      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
         sessions={visibleSessions}
         runtimes={forest?.workerRuntimes ?? []}
         reasons={forest?.reasons ?? []}
@@ -2329,7 +2441,6 @@ function AppContent() {
                   projectName={projectName}
                   onOpenSession={openSession}
                   workers={workerPanelSource}
-                  onExpandWorker={setExpandedWorkerId}
                   events={sessionEvents}
                   forestEntries={forest?.entries}
                   activeLeafId={forest?.head?.activeEntryId}
@@ -2338,6 +2449,7 @@ function AppContent() {
                   onWaiveCompletion={waiveCompletion}
                   onRefreshBase={refreshWorkspaceBase}
                   onRetryWorker={retryWorkerTask}
+                  onStopWorker={stopWorker}
                   onRetryCompaction={() => retryCompaction(session.id)}
                   pendingAdoptions={pendingAdoptions}
                   onResolveAdoption={resolveAdoption}
@@ -2360,7 +2472,7 @@ function AppContent() {
                   highlightEntryId={highlightEntryId}
                   onRemember={rememberMessage}
                   stopping={stopping}
-                  onInterrupt={session ? () => { setStopping(true); void bridgeApi.interruptTurn(session.id); } : undefined}
+                  onInterrupt={session ? requestStop : undefined}
                 />
               </div>
               <div className="pointer-events-none absolute bottom-0 left-0 right-0 h-16 bg-gradient-to-t from-background to-transparent sm:h-20" />
@@ -2469,12 +2581,12 @@ function AppContent() {
                     } : undefined}
                     suggestion={draftSuggestion?.suggestion}
                     onAcceptSuggestion={acceptSuggestion}
-                    placeholder={session.activeTurnId ? "Send a follow-up…" : "Message Bridge…"}
+                    placeholder={turnActive ? "Send a follow-up…" : "Message Bridge…"}
                     disabled={!session}
-                    working={!!session?.activeTurnId}
+                    working={turnActive}
                     activeAction={activeAction}
                     stopping={stopping}
-                    onStop={session ? () => { setStopping(true); void bridgeApi.interruptTurn(session.id); } : undefined}
+                    onStop={session ? requestStop : undefined}
                     inputRef={composerRef}
                     onPlusClick={() => void attachFile()}
                     plusIcon="paperclip"
@@ -2524,6 +2636,7 @@ function AppContent() {
                 onOpenSession={openSession}
                 onExpandWorker={setExpandedWorkerId}
                 onRetryWorker={id => void retryWorkerTask(id)}
+                onStopWorker={id => void stopWorker(id)}
                 onOpenTerminal={() => dispatchDock({ type: "open-pane", pane: "terminal" })}
               />;
               if (pane === "browser") return <BrowserSurface
@@ -2650,6 +2763,9 @@ function AppContent() {
     />
     <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={acceptModelSetup} onClose={closeModal} onError={setError} />
     <ShortcutsSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
+    {meterOpen && <div role="presentation" className="fixed inset-0 z-50 grid place-items-center bg-background/60 p-4" onPointerDown={event => { if (event.target === event.currentTarget) setMeterOpen(false); }}>
+      <MeterPopover usage={usageByProvider} registry={meterRegistry} refreshing={meterRefreshing} onRefresh={refreshMeter} onClose={() => setMeterOpen(false)} />
+    </div>}
   </div>;
 }
 

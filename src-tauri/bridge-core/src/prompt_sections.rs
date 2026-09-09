@@ -82,6 +82,17 @@ pub struct PromptSectionRevision {
     pub state: PromptSectionState,
     pub restored_from_revision_id: Option<i64>,
     pub created_at: String,
+    pub attribution: Option<PromptRevisionAttribution>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct PromptRevisionAttribution {
+    pub actor_session_id: String,
+    pub actor_turn_id: String,
+    pub actor_role: String,
+    pub proposal_id: String,
+    pub rationale: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,15 +116,17 @@ pub fn resolve(
     for default in prompts::default_sections(target, worker_depth) {
         let key = PromptSectionKey::new(target, default.id)?;
         match current_state(db, &key)? {
-            PromptSectionState::Default => sections.push(ResolvedPromptSection {
-                id: default.id.into(),
-                text: default.text,
-            }),
+            PromptSectionState::Default if !default.text.is_empty() => {
+                sections.push(ResolvedPromptSection {
+                    id: default.id.into(),
+                    text: default.text,
+                })
+            }
             PromptSectionState::Overridden { text } => sections.push(ResolvedPromptSection {
                 id: default.id.into(),
                 text,
             }),
-            PromptSectionState::Deleted => {}
+            PromptSectionState::Default | PromptSectionState::Deleted => {}
         }
     }
     Ok(ResolvedPromptStack { target, sections })
@@ -228,7 +241,7 @@ pub fn revisions(
 ) -> Result<Vec<PromptSectionRevision>, BridgeError> {
     validate_key(key)?;
     let mut statement = db.prepare(
-        "SELECT id,operation,state,content,restored_from_revision_id,created_at
+        "SELECT id,operation,state,content,restored_from_revision_id,created_at,attribution
          FROM prompt_section_revisions
          WHERE target=?1 AND section_id=?2
          ORDER BY id",
@@ -242,12 +255,21 @@ pub fn revisions(
                 row.get::<_, Option<String>>(3)?,
                 row.get::<_, Option<i64>>(4)?,
                 row.get::<_, String>(5)?,
+                row.get::<_, Option<String>>(6)?,
             ))
         })?
         .collect::<Result<Vec<_>, _>>()?;
     rows.into_iter()
         .map(
-            |(id, operation, state, content, restored_from_revision_id, created_at)| {
+            |(
+                id,
+                operation,
+                state,
+                content,
+                restored_from_revision_id,
+                created_at,
+                attribution,
+            )| {
                 Ok(PromptSectionRevision {
                     id,
                     key: key.clone(),
@@ -255,6 +277,15 @@ pub fn revisions(
                     state: state_from_columns(&state, content)?,
                     restored_from_revision_id,
                     created_at,
+                    attribution: attribution
+                        .map(|value| {
+                            serde_json::from_str(&value).map_err(|error| {
+                                BridgeError::Invalid(format!(
+                                    "invalid prompt revision attribution: {error}"
+                                ))
+                            })
+                        })
+                        .transpose()?,
                 })
             },
         )
@@ -345,11 +376,22 @@ fn append_revision(
     state: &PromptSectionState,
     restored_from_revision_id: Option<i64>,
 ) -> Result<PromptSectionRevision, BridgeError> {
+    append_attributed_revision(db, key, operation, state, restored_from_revision_id, None)
+}
+
+fn append_attributed_revision(
+    db: &Connection,
+    key: &PromptSectionKey,
+    operation: PromptSectionOperation,
+    state: &PromptSectionState,
+    restored_from_revision_id: Option<i64>,
+    attribution: Option<&PromptRevisionAttribution>,
+) -> Result<PromptSectionRevision, BridgeError> {
     let (state_name, content) = state_columns(state);
     let created_at = Utc::now().to_rfc3339();
     db.execute(
-        "INSERT INTO prompt_section_revisions(target,section_id,operation,state,content,restored_from_revision_id,created_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7)",
+        "INSERT INTO prompt_section_revisions(target,section_id,operation,state,content,restored_from_revision_id,created_at,attribution)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8)",
         params![
             key.target.storage_key(),
             key.section_id,
@@ -357,7 +399,8 @@ fn append_revision(
             state_name,
             content,
             restored_from_revision_id,
-            created_at
+            created_at,
+            attribution.map(serde_json::to_string).transpose().map_err(|error| BridgeError::Invalid(error.to_string()))?,
         ],
     )?;
     Ok(PromptSectionRevision {
@@ -367,7 +410,40 @@ fn append_revision(
         state: state.clone(),
         restored_from_revision_id,
         created_at,
+        attribution: attribution.cloned(),
     })
+}
+
+/// Caller owns the transaction together with proposal and approval settlement.
+pub(crate) fn save_attributed_override_tx(
+    transaction: &Transaction<'_>,
+    key: &PromptSectionKey,
+    text: String,
+    attribution: &PromptRevisionAttribution,
+) -> Result<PromptSectionRevision, BridgeError> {
+    validate_key(key)?;
+    let state = PromptSectionState::Overridden { text };
+    validate_state(key, &state)?;
+    apply_active_state(transaction, key, &state)?;
+    append_attributed_revision(
+        transaction,
+        key,
+        PromptSectionOperation::Override,
+        &state,
+        None,
+        Some(attribution),
+    )
+}
+
+pub(crate) fn latest_revision_id(
+    db: &Connection,
+    key: &PromptSectionKey,
+) -> Result<Option<i64>, BridgeError> {
+    Ok(db.query_row(
+        "SELECT MAX(id) FROM prompt_section_revisions WHERE target=?1 AND section_id=?2",
+        params![key.target.storage_key(), key.section_id],
+        |row| row.get(0),
+    )?)
 }
 
 fn revision_state(
@@ -457,6 +533,7 @@ pub(crate) fn install_revision_store(transaction: &Transaction<'_>) -> Result<()
             content TEXT,
             restored_from_revision_id INTEGER REFERENCES prompt_section_revisions(id),
             created_at TEXT NOT NULL,
+            attribution TEXT CHECK(attribution IS NULL OR json_valid(attribution)),
             CHECK(
                 (state='overridden' AND content IS NOT NULL AND length(trim(content)) > 0)
                 OR (state IN ('default','deleted') AND content IS NULL)
@@ -472,14 +549,15 @@ pub(crate) fn install_revision_store(transaction: &Transaction<'_>) -> Result<()
                 OR (operation='reset' AND state='default')
             ),
             CHECK(
-                (target='orchestrator' AND section_id IN ('bridge_role','delegation_protocol'))
+                (target='orchestrator' AND section_id IN ('bridge_role','delegation_protocol','additional_guidance'))
                 OR (
                     target IN (
                         'worker:research','worker:implementation','worker:verification',
                         'worker:planning','worker:documentation'
                     )
-                    AND section_id='worker_contract'
+                    AND section_id IN ('worker_contract','additional_guidance')
                 )
+                OR (target='direct_session' AND section_id='rendering_note')
             )
         );
         CREATE INDEX IF NOT EXISTS idx_prompt_section_revisions_key
@@ -498,11 +576,97 @@ pub(crate) fn install_revision_store(transaction: &Transaction<'_>) -> Result<()
     Ok(())
 }
 
+/// SQLite CHECK constraints cannot be widened with ALTER COLUMN. Rebuild the
+/// revision store without changing any historical ids, content, or restore
+/// references, then reinstate its immutable-history triggers.
+pub(crate) fn install_guidance_revision_store(
+    transaction: &Transaction<'_>,
+) -> Result<(), BridgeError> {
+    // Older-store repair paths may replay migrations over an already-current
+    // table. Leave that table in place: rebuilding it would erase attribution
+    // and rewrite foreign keys from durable proposals to the temporary name.
+    let already_current: bool = transaction.query_row(
+        "SELECT EXISTS(SELECT 1 FROM pragma_table_info('prompt_section_revisions') WHERE name='attribution')",
+        [], |row| row.get(0),
+    )?;
+    if already_current {
+        return install_revision_store(transaction);
+    }
+    transaction.execute_batch(
+        "ALTER TABLE prompt_section_revisions RENAME TO prompt_section_revisions_previous;
+         DROP INDEX idx_prompt_section_revisions_key;
+         DROP TRIGGER prompt_section_revisions_no_update;
+         DROP TRIGGER prompt_section_revisions_no_delete;
+         DROP TRIGGER prompt_section_revisions_no_replace;",
+    )?;
+    install_revision_store(transaction)?;
+    transaction.execute_batch(
+        "INSERT INTO prompt_section_revisions(id,target,section_id,operation,state,content,restored_from_revision_id,created_at)
+         SELECT id,target,section_id,operation,state,content,restored_from_revision_id,created_at
+         FROM prompt_section_revisions_previous ORDER BY id;
+         DROP TABLE prompt_section_revisions_previous;"
+    )?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{agent_config, delegation::WorkerRole, store};
     use std::path::Path;
+
+    #[test]
+    fn guidance_migration_preserves_legacy_revision_ids_restore_links_and_immutability() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch("PRAGMA foreign_keys=ON;
+            CREATE TABLE prompt_section_revisions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,target TEXT NOT NULL,section_id TEXT NOT NULL,
+                operation TEXT NOT NULL,state TEXT NOT NULL,content TEXT,
+                restored_from_revision_id INTEGER REFERENCES prompt_section_revisions(id),created_at TEXT NOT NULL
+            );
+            CREATE INDEX idx_prompt_section_revisions_key ON prompt_section_revisions(target,section_id,id DESC);
+            CREATE TRIGGER prompt_section_revisions_no_update BEFORE UPDATE ON prompt_section_revisions BEGIN SELECT RAISE(ABORT,'immutable'); END;
+            CREATE TRIGGER prompt_section_revisions_no_delete BEFORE DELETE ON prompt_section_revisions BEGIN SELECT RAISE(ABORT,'immutable'); END;
+            CREATE TRIGGER prompt_section_revisions_no_replace BEFORE INSERT ON prompt_section_revisions WHEN EXISTS(SELECT 1 FROM prompt_section_revisions WHERE id=NEW.id) BEGIN SELECT RAISE(ABORT,'immutable'); END;
+            INSERT INTO prompt_section_revisions VALUES(41,'orchestrator','bridge_role','override','overridden','Original',NULL,'before');
+            INSERT INTO prompt_section_revisions VALUES(42,'orchestrator','bridge_role','restore','overridden','Original',41,'after');").unwrap();
+        let tx = db.unchecked_transaction().unwrap();
+        install_guidance_revision_store(&tx).unwrap();
+        tx.commit().unwrap();
+        let key = PromptSectionKey::new(
+            prompts::PromptTarget::Orchestrator,
+            prompts::BRIDGE_ROLE_SECTION_ID,
+        )
+        .unwrap();
+        let history = revisions(&db, &key).unwrap();
+        assert_eq!(
+            history
+                .iter()
+                .map(|revision| revision.id)
+                .collect::<Vec<_>>(),
+            [41, 42]
+        );
+        assert_eq!(history[1].restored_from_revision_id, Some(41));
+        assert!(history
+            .iter()
+            .all(|revision| revision.attribution.is_none()));
+        assert_eq!(history[0].created_at, "before");
+        assert!(db
+            .execute(
+                "UPDATE prompt_section_revisions SET content='changed' WHERE id=41",
+                []
+            )
+            .is_err());
+        assert!(db
+            .execute("DELETE FROM prompt_section_revisions WHERE id=42", [])
+            .is_err());
+        let violations: i64 = db
+            .query_row("SELECT COUNT(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(violations, 0);
+    }
 
     fn db() -> Connection {
         store::open(Path::new(":memory:")).unwrap()
@@ -625,7 +789,10 @@ mod tests {
             params![CONFIG_KIND, key.configuration_id(), "not-json"],
         )
         .unwrap();
-        assert_eq!(current_state(&db, &key).unwrap(), PromptSectionState::Default);
+        assert_eq!(
+            current_state(&db, &key).unwrap(),
+            PromptSectionState::Default
+        );
         let stack = resolve(&db, key.target, 0).unwrap();
         assert!(stack
             .sections
@@ -772,7 +939,9 @@ mod tests {
         agent_config::reset_all(&db).unwrap();
 
         let remaining: i64 = db
-            .query_row("SELECT COUNT(*) FROM configuration_entries", [], |row| row.get(0))
+            .query_row("SELECT COUNT(*) FROM configuration_entries", [], |row| {
+                row.get(0)
+            })
             .unwrap();
         assert_eq!(remaining, 0);
     }

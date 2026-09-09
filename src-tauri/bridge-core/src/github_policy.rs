@@ -1,8 +1,8 @@
 //! The per-action approval gate for mutating GitHub operations.
 //!
-//! Every mutation on the GitHub surface — merge, review, reply, re-run — is an
-//! approval-tier operation: it runs only after the user confirms the exact
-//! statement of what will happen. This module owns two things and nothing else:
+//! Every mutation on the GitHub surface — merge, review, reply, re-run, label,
+//! comment, close/reopen, ready-for-review — is an approval-tier operation: it
+//! runs only after the user confirms the exact statement of what will happen. This module owns two things and nothing else:
 //! the decision (approve vs deny) and the canonical statement shown in the
 //! confirmation. It never spawns a subprocess and never touches `gh`; the api
 //! layer consults it *before* the surface is reached, so a denial provably
@@ -14,7 +14,9 @@
 //! proceed — and conflating them is exactly the hierarchy-mixing bug the
 //! architecture warns against.
 
-use crate::github_surface::{review_label, strategy_label, GithubAction, LabelOperation, LabelTarget};
+use crate::github_surface::{
+    review_label, strategy_label, GithubAction, LabelOperation, StateOperation,
+};
 
 /// The outcome of the approval gate for a single action.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,8 +62,17 @@ pub fn summary(action: &GithubAction) -> String {
             "{} label {label:?} {} {} #{number}",
             match operation { LabelOperation::Add => "add", LabelOperation::Remove => "remove" },
             match operation { LabelOperation::Add => "to", LabelOperation::Remove => "from" },
-            match target { LabelTarget::PullRequest => "PR", LabelTarget::Issue => "issue" },
+            target.label(),
         ),
+        GithubAction::Comment { target, .. } => {
+            format!("post a comment on {} #{number}", target.label())
+        }
+        GithubAction::SetState { target, operation, .. } => format!(
+            "{} {} #{number}",
+            match operation { StateOperation::Close => "close", StateOperation::Reopen => "reopen" },
+            target.label(),
+        ),
+        GithubAction::Ready { .. } => format!("mark PR #{number} ready for review"),
     }
 }
 
@@ -76,7 +87,7 @@ pub fn describe(action: &GithubAction, repository: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::github_surface::{MergeStrategy, ReviewEvent};
+    use crate::github_surface::{GithubTarget, MergeStrategy, ReviewEvent, StateOperation};
 
     #[test]
     fn a_confirmed_action_authorizes_to_approved() {
@@ -116,11 +127,35 @@ mod tests {
         assert_eq!(describe(&rerun, "owner/repo"), "re-run failed checks on PR #104 on owner/repo");
 
         let label = GithubAction::Label {
-            target: LabelTarget::Issue,
+            target: GithubTarget::Issue,
             number: 9,
             label: "bug".into(),
             operation: LabelOperation::Add,
         };
         assert_eq!(describe(&label, "owner/repo"), "add label \"bug\" to issue #9 on owner/repo");
+
+        let comment = GithubAction::Comment {
+            target: GithubTarget::PullRequest,
+            number: 341,
+            body: "looks good".into(),
+        };
+        assert_eq!(describe(&comment, "owner/repo"), "post a comment on PR #341 on owner/repo");
+
+        let close = GithubAction::SetState {
+            target: GithubTarget::Issue,
+            number: 9,
+            operation: StateOperation::Close,
+        };
+        assert_eq!(describe(&close, "owner/repo"), "close issue #9 on owner/repo");
+
+        let reopen = GithubAction::SetState {
+            target: GithubTarget::PullRequest,
+            number: 341,
+            operation: StateOperation::Reopen,
+        };
+        assert_eq!(describe(&reopen, "owner/repo"), "reopen PR #341 on owner/repo");
+
+        let ready = GithubAction::Ready { number: 341 };
+        assert_eq!(describe(&ready, "owner/repo"), "mark PR #341 ready for review on owner/repo");
     }
 }

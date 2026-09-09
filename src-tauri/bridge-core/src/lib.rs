@@ -21,8 +21,10 @@ pub mod backend_binding;
 pub mod binary;
 pub mod briefing_conformance;
 pub mod briefing_policy;
+pub mod build_cache;
 pub mod browser_bridge;
 pub mod builtin_compatibility;
+pub mod capability_projection;
 pub mod check_runner;
 pub mod claude_adapter;
 pub mod claude_import;
@@ -58,6 +60,7 @@ pub mod memory_extraction;
 pub mod memory_extraction_live;
 pub mod memory_ledger;
 pub mod memory_packet;
+pub mod meter;
 pub mod model;
 pub mod model_catalog;
 pub mod model_profiles;
@@ -66,6 +69,7 @@ pub mod orchestrator;
 pub mod ownership;
 pub mod policy;
 pub mod policy_coordinator;
+pub mod provider_limit;
 pub mod policy_replay;
 pub mod project_onboarding;
 pub mod process_ledger;
@@ -73,6 +77,8 @@ pub mod prompt_authority;
 pub mod prompt_compiler;
 pub mod prompt_sections;
 pub mod prompt_studio;
+pub mod prompt_mutation_policy;
+pub mod prompt_mutations;
 pub mod prompts;
 /// Test-only: asserts core DTOs and their bridge-protocol mirrors agree.
 #[cfg(test)]
@@ -94,9 +100,14 @@ pub mod sessions;
 pub mod skill_marketplace;
 pub mod slash;
 pub mod store;
+pub mod usage_import;
 pub mod suggestion_engine;
 pub mod switch_summary;
 pub mod verification_pipeline;
+pub mod usage;
+pub mod usage_pricing;
+pub mod usage_summary;
+pub mod usage_history;
 pub mod verified_catalog;
 pub mod worker_adoption;
 pub mod worker_guard;
@@ -121,6 +132,7 @@ pub mod work_observation;
 pub mod workspace_files;
 pub mod workspaces;
 pub mod worktree_coordinator;
+pub mod worktree_registry;
 
 pub use runtime::{
     start_health_server, BootConfig, BridgeCore, DelegationState, RuntimeSession,

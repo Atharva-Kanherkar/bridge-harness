@@ -77,7 +77,10 @@ describe("SQLite-shaped mock observability", () => {
     expect(initial.entries.some(entry => entry.kind === "compaction")).toBe(true);
     expect(initial.head?.restorationMode).toBe("hot");
     expect(initial.workerQueue[0].request.reason).toBe("owned_path_conflict");
-    expect(initial.workerRuntimes.some(worker => worker.lastResult?.summary === "All 42 auth tests pass")).toBe(true);
+    expect(initial.workerRuntimes.some(worker => String(worker.lastResult?.summary ?? "").startsWith("All 42 auth tests pass"))).toBe(true);
+    // The demo's typed result carries the `{command, status}` test shape the
+    // real envelope uses, so the card's test band renders in mock mode too.
+    expect(initial.workerRuntimes.some(worker => Array.isArray(worker.lastResult?.tests) && (worker.lastResult?.tests as unknown[]).every(test => typeof test === "object"))).toBe(true);
 
     const entryCount = initial.entries.length;
     const rewound = await bridgeApi.activateSessionEntry("session-1", "entry-5a");
@@ -95,7 +98,8 @@ describe("SQLite-shaped mock observability", () => {
     const target = "worker:research" as const;
     const stack = await bridgeApi.promptStack(target);
     expect(stack).toMatchObject({ target, depth: 0 });
-    expect(stack.sections.map(section => section.id)).toEqual(["worker_contract"]);
+    expect(stack.sections.map(section => section.id)).toEqual(["worker_contract", "additional_guidance"]);
+    expect(stack.sections[1].effectiveText).toBe("");
     expect(stack.sections[0]).toMatchObject({ state: { state: "default" }, effectiveText: stack.sections[0].defaultText });
 
     const saved = await bridgeApi.savePromptSection(target, "worker_contract", "Research only, no edits.");

@@ -30,6 +30,15 @@ impl PolicyCoordinator {
                 params![parent_session_id],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )?;
+        // Capacity is part of the routing decision, not an afterthought: an
+        // over-budget repository queues the delegation on
+        // `ChildWorktreeUnavailable` instead of cutting another checkout.
+        let child_worktrees_available = child_worktrees_available
+            && crate::worktree_registry::has_capacity(
+                db,
+                &path,
+                &crate::worktree_registry::WorktreeRetention::default(),
+            )?;
         let budget = policy::load_request_budget(db, &workspace_id, turn_id)?;
         let owned_path_provenance = if request.write_mode == crate::delegation::WriteMode::ReadOnly
         {
@@ -431,6 +440,61 @@ mod tests {
             harness: Some("codex".into()),
             model: None,
         }
+    }
+
+    /// `child_worktrees_available` used to ask only whether the namespace root
+    /// had a parent directory, so `ChildWorktreeUnavailable` could never fire
+    /// and no amount of accumulated worktrees ever slowed a delegation down.
+    /// A repository at its cap now queues the work instead of cutting another.
+    #[test]
+    fn a_repository_at_its_worktree_cap_queues_instead_of_spawning() {
+        let workspace = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(workspace.path().join("src/auth")).unwrap();
+        std::fs::write(workspace.path().join("src/auth/session.rs"), "").unwrap();
+        let db = database(workspace.path());
+        SessionForest::new(&db)
+            .append(
+                "parent",
+                EntryKind::UserMessage,
+                json!({"text":"Write scope: src/auth/session.rs"}),
+            )
+            .unwrap();
+
+        let repo = crate::worktree_registry::canonical_key(workspace.path());
+        let cap = crate::worktree_registry::WorktreeRetention::default().max_per_repo;
+        for index in 0..cap {
+            crate::worktree_registry::register(
+                &db,
+                &crate::worktree_registry::NewWorktree {
+                    kind: crate::worktree_registry::KIND_WORKER.to_owned(),
+                    repo_root: repo.clone(),
+                    path: format!("{repo}/.bridge-worktrees/worker-{index}"),
+                    branch: Some(format!("bridge/worker-{index}")),
+                    owner_session_id: None,
+                    owner_workspace_id: Some("w".to_owned()),
+                    base_commit: None,
+                },
+            )
+            .unwrap();
+        }
+
+        let route = PolicyCoordinator::decide_worker_route(
+            &db,
+            "parent",
+            "turn-cap",
+            &request(&["src/auth/session.rs"]),
+            true,
+        )
+        .unwrap();
+        assert!(
+            matches!(route.outcome.decision, policy::RouteDecision::Queue),
+            "{:?}",
+            route.outcome.decision,
+        );
+        assert_eq!(
+            route.outcome.reason,
+            policy::RouteReason::ChildWorktreeUnavailable,
+        );
     }
 
     #[test]

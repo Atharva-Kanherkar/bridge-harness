@@ -21,6 +21,8 @@ use std::{
 };
 use uuid::Uuid;
 
+const MINIMUM_VERSION: (u64, u64, u64) = (0, 153, 4);
+
 pub struct CodexRuntime {
     pub writer: Arc<Mutex<ChildStdin>>,
     pub child: Child,
@@ -37,6 +39,34 @@ pub struct StartedCodex {
     pub runtime: CodexRuntime,
     pub reader: BufReader<ChildStdout>,
     pub startup_messages: Vec<Value>,
+}
+
+struct SpawnedChildGuard {
+    child: Option<Child>,
+}
+
+impl SpawnedChildGuard {
+    fn new(child: Child) -> Self {
+        Self { child: Some(child) }
+    }
+
+    fn child_mut(&mut self) -> &mut Child {
+        self.child.as_mut().expect("spawn guard owns child")
+    }
+
+    fn disarm(mut self) -> Child {
+        self.child.take().expect("spawn guard owns child")
+    }
+}
+
+impl Drop for SpawnedChildGuard {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = crate::adapters::terminate_process_group(child.id());
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
 }
 
 pub fn start(request: StartRequest<'_>) -> Result<StartedCodex, BridgeError> {
@@ -62,8 +92,11 @@ pub fn resume(request: ResumeRequest<'_>) -> Result<StartedCodex, BridgeError> {
 
 pub fn discover_models() -> Result<Vec<crate::adapters::DiscoveredModel>, BridgeError> {
     let binary = resolve_runtime().ok_or_else(|| BridgeError::Invalid("Codex binary is not installed".into()))?;
-    let mut child = Command::new(binary).args(["app-server", "--listen", "stdio://"])
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?;
+    ensure_supported_version(&binary)?;
+    let mut command = crate::adapters::supervised_command(&binary, ["app-server", "--listen", "stdio://"]);
+    binary::hydrate_command_path(&mut command);
+    crate::adapters::configure_process_group(&mut command);
+    let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?;
     let stdin = child.stdin.take().ok_or_else(|| BridgeError::Adapter("Codex catalogue stdin unavailable".into()))?;
     let stdout = child.stdout.take().ok_or_else(|| BridgeError::Adapter("Codex catalogue stdout unavailable".into()))?;
     let writer = Arc::new(Mutex::new(stdin));
@@ -106,6 +139,7 @@ pub fn discover_models() -> Result<Vec<crate::adapters::DiscoveredModel>, Bridge
         }).collect::<Vec<_>>();
         if models.is_empty() { Err(BridgeError::Adapter("Codex returned an empty model catalogue".into())) } else { Ok(models) }
     })();
+    let _ = crate::adapters::terminate_process_group(child.id());
     let _ = child.kill();
     let _ = child.wait();
     result
@@ -139,7 +173,9 @@ fn launch(
     }
     let binary = resolve_runtime()
         .ok_or_else(|| BridgeError::Invalid("Codex binary is not installed".into()))?;
+    ensure_supported_version(&binary)?;
     let mut command = crate::worker_sandbox::command(&binary, read_only_sandbox)?;
+    binary::hydrate_command_path(&mut command);
     let sandbox_policy = read_only_sandbox.map(|sandbox| {
         json!({
             "type": "workspaceWrite",
@@ -149,42 +185,49 @@ fn launch(
     });
     command
         .args(["app-server", "--listen", "stdio://"])
-        .current_dir(
-            read_only_sandbox
-                .map(|sandbox| sandbox.output_dir())
-                .unwrap_or_else(|| std::path::Path::new(cwd)),
-        )
+        .current_dir(std::path::Path::new(cwd))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         // Piped and tail-captured: a worker that dies before its typed result
         // reports the provider's own error, not a generic exit.
         .stderr(Stdio::piped());
     if let Some(sandbox) = read_only_sandbox {
-        prepare_isolated_codex_home(sandbox)?;
+        let codex_home = prepare_isolated_codex_home(sandbox)?;
         command
+            .env("CODEX_HOME", codex_home)
             .env("HOME", sandbox.output_dir())
             .env("TMPDIR", sandbox.output_dir())
             .env("BRIDGE_WORKER_OUTPUT_DIR", sandbox.output_dir());
-        // The redirected HOME leaves `gh` with no config or keychain; a networked
-        // worker (e.g. a PR review) needs the host token or every `gh` call 401s.
+        // The seatbelt cannot use the host keychain; a networked worker (e.g. a
+        // PR review) needs the host token or every `gh` call returns 401.
         if sandbox.network_allowed() {
             if let Some(token) = crate::worker_sandbox::github_cli_token() {
                 command.env("GH_TOKEN", token);
             }
         }
     }
+    // Build output belongs to the repository, not to this checkout. Skipped for
+    // a read-only worker: its seatbelt permits writes only under its own output
+    // directory, and widening that to reach a shared cache would trade away part
+    // of the read-only guarantee for the speed of a worker that is not meant to
+    // be building.
+    if read_only_sandbox.is_none() {
+        crate::build_cache::apply(&mut command, std::path::Path::new(cwd));
+    }
     crate::adapters::configure_process_group(&mut command);
     if let Some(on_progress) = on_progress {
         on_progress(crate::adapters::StartupPhase::Spawning);
     }
     let spawned_at = std::time::Instant::now();
-    let mut child = command.spawn()?;
-    let stderr_tail = crate::adapters::StderrTail::capture(&mut child);
+    let mut child = SpawnedChildGuard::new(command.spawn()?);
+    let stderr_tail = crate::adapters::StderrTail::capture(child.child_mut());
     let stdin = child
+        .child_mut()
         .stdin
         .take()
         .ok_or_else(|| BridgeError::Invalid("Codex app-server stdin unavailable".into()))?;
     let stdout = child
+        .child_mut()
         .stdout
         .take()
         .ok_or_else(|| BridgeError::Invalid("Codex app-server stdout unavailable".into()))?;
@@ -237,7 +280,7 @@ fn launch(
     Ok(StartedCodex {
         runtime: CodexRuntime {
             writer,
-            child,
+            child: child.disarm(),
             thread_id,
             current_turn: Arc::new(Mutex::new(None)),
             request_id: AtomicI64::new(10),
@@ -253,33 +296,18 @@ fn launch(
 
 fn prepare_isolated_codex_home(
     sandbox: &crate::worker_sandbox::ReadOnlySandbox,
-) -> Result<(), BridgeError> {
-    let Some(home) = std::env::var_os("HOME") else {
-        return Ok(());
-    };
-    let source_root = std::path::PathBuf::from(home).join(".codex");
+) -> Result<PathBuf, BridgeError> {
     let isolated_root = sandbox.output_dir().join(".codex");
     std::fs::create_dir_all(&isolated_root)?;
-    for filename in ["auth.json", "config.toml"] {
-        let source = source_root.join(filename);
-        if !source.is_file() {
-            continue;
-        }
-        let destination = isolated_root.join(filename);
-        if destination.exists() {
-            continue;
-        }
-        #[cfg(unix)]
-        std::os::unix::fs::symlink(&source, &destination)?;
-        #[cfg(not(unix))]
-        {
-            let _ = (source, destination);
-            return Err(BridgeError::Invalid(
-                "Read-only Codex authentication projection is unsupported on this platform".into(),
-            ));
-        }
-    }
-    Ok(())
+    let Some(home) = std::env::var_os("HOME") else {
+        return Ok(isolated_root);
+    };
+    crate::capability_projection::project_read_only_capabilities(
+        crate::capability_projection::CapabilityHarness::Codex,
+        &PathBuf::from(home),
+        sandbox.output_dir(),
+    )?;
+    Ok(isolated_root)
 }
 
 fn sandbox_settings(write_mode: Option<WriteMode>) -> (&'static str, &'static str) {
@@ -667,18 +695,77 @@ pub fn binary_version() -> Option<String> {
     binary::version_at(&resolve_runtime()?)
 }
 
+pub fn is_supported_version(version: &str) -> bool {
+    version
+        .split_whitespace()
+        .find_map(|token| {
+            let token = token.strip_prefix('v').unwrap_or(token);
+            let parts = token.split('.').collect::<Vec<_>>();
+            if parts.len() != 3
+                || parts.iter().any(|part| {
+                    part.is_empty()
+                        || !part
+                            .chars()
+                            .all(|character| character.is_ascii_digit())
+                })
+            {
+                return None;
+            }
+            Some((
+                parts[0].parse::<u64>().ok()?,
+                parts[1].parse::<u64>().ok()?,
+                parts[2].parse::<u64>().ok()?,
+            ))
+        })
+        .is_some_and(|version| version >= MINIMUM_VERSION)
+}
+
+fn ensure_supported_version(executable: &std::path::Path) -> Result<(), BridgeError> {
+    let version = binary::version_at(executable).ok_or_else(|| {
+        BridgeError::Invalid(format!(
+            "Cannot read Codex version from {}",
+            executable.display()
+        ))
+    })?;
+    if is_supported_version(&version) {
+        return Ok(());
+    }
+    Err(BridgeError::Invalid(format!(
+        "Codex {version} is incompatible with Bridge. Upgrade to Codex 0.153.4 or newer."
+    )))
+}
+
 /// Whether `~/.codex/auth.json` parses with a non-empty token payload —
 /// independent of whether the `codex` binary itself resolves.
 pub fn auth_state() -> AuthState {
-    auth_state_from_home(std::env::var_os("HOME").map(PathBuf::from))
+    auth_state_from_environment(
+        std::env::var_os("HOME").map(PathBuf::from),
+        &crate::capability_projection::CapabilityEnvironment::from_process(),
+    )
 }
 
+#[cfg(test)]
 fn auth_state_from_home(home: Option<PathBuf>) -> AuthState {
+    auth_state_from_environment(
+        home,
+        &crate::capability_projection::CapabilityEnvironment::default(),
+    )
+}
+
+fn auth_state_from_environment(
+    home: Option<PathBuf>,
+    environment: &crate::capability_projection::CapabilityEnvironment,
+) -> AuthState {
     let Some(home) = home else {
         return AuthState::Unknown;
     };
+    let config = crate::capability_projection::user_config_root(
+        crate::capability_projection::CapabilityHarness::Codex,
+        &home,
+        environment,
+    );
     // Metadata only: Bridge never opens or parses credential contents.
-    let Ok(metadata) = std::fs::metadata(home.join(".codex/auth.json")) else {
+    let Ok(metadata) = std::fs::metadata(config.join("auth.json")) else {
         return AuthState::SignedOut;
     };
     if metadata.len() > 0 {
@@ -792,6 +879,17 @@ mod tests {
         let orchestrator = thread_start_params("/tmp/work", None, None, None, None);
         assert_eq!(orchestrator["sandbox"], "danger-full-access");
         assert_eq!(orchestrator["approvalPolicy"], "never");
+    }
+
+    #[test]
+    fn codex_version_gate_is_strict_and_matches_the_certified_runtime() {
+        assert!(!is_supported_version("codex-cli 0.153.3"));
+        assert!(is_supported_version("codex-cli 0.153.4"));
+        assert!(is_supported_version("codex-cli 0.200.0"));
+        assert!(is_supported_version("codex-cli 1.0.0"));
+        assert!(!is_supported_version("build 9"));
+        assert!(!is_supported_version("codex-cli 0.153"));
+        assert!(!is_supported_version("codex-cli 0.153.4-beta.1"));
     }
 
     #[test]
@@ -1209,5 +1307,20 @@ mod tests {
     #[test]
     fn auth_probe_reports_unknown_when_home_is_missing() {
         assert_eq!(auth_state_from_home(None), AuthState::Unknown);
+    }
+
+    #[test]
+    fn auth_probe_respects_codex_home() {
+        let home = tempfile::tempdir().unwrap();
+        let configured = tempfile::tempdir().unwrap();
+        std::fs::write(configured.path().join("auth.json"), "opaque").unwrap();
+        let environment = crate::capability_projection::CapabilityEnvironment {
+            codex_home: Some(configured.path().to_path_buf()),
+            ..Default::default()
+        };
+        assert_eq!(
+            auth_state_from_environment(Some(home.path().to_path_buf()), &environment),
+            AuthState::SignedIn
+        );
     }
 }

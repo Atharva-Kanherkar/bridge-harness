@@ -11,19 +11,29 @@ export function workerStatus(session: Session, runtime?: WorkerRuntimeRecord): W
   const lastResult = reported ? (runtime?.lastResult as { status?: string; summary?: string } | null | undefined) : undefined;
   const resultStatus = typeof lastResult?.status === "string" ? lastResult.status : undefined;
   const summary = typeof lastResult?.summary === "string" ? lastResult.summary : undefined;
+  // Bridge's own verdict, sent as a classification. This used to be
+  // `/stopped responding/i` against the summary — a regex over a Rust
+  // `format!` string, so rewording one line in `live_turn.rs` silently
+  // downgraded every stall to a generic failure.
+  const failureClass = runtime?.failureClass ?? undefined;
   if (reported && resultStatus) {
     if (resultStatus === "failed") {
-      const stalled = !!summary && /stopped responding/i.test(summary);
-      return { tone: stalled ? "stalled" : "failed", label: stalled ? "STALLED" : "FAILED", detail: summary };
+      if (failureClass === "stalled") return { tone: "stalled", label: "STALLED", detail: summary };
+      if (failureClass === "protocol_invalid") return { tone: "attention", label: "UNREADABLE RESULT", detail: summary };
+      return { tone: "failed", label: "FAILED", detail: summary };
     }
-    if (resultStatus === "cancelled") return { tone: "failed", label: "CANCELLED", detail: summary };
+    // A cancellation is a decision someone made, not a fault. Rendering it in
+    // the same destructive red as a crash made every deliberate stop look
+    // like something had gone wrong.
+    if (resultStatus === "cancelled") return { tone: "idle", label: "CANCELLED", detail: summary };
+    if (resultStatus === "protocol_invalid") return { tone: "attention", label: "UNREADABLE RESULT", detail: summary };
     if (resultStatus === "blocked") return { tone: "attention", label: "BLOCKED", detail: summary };
     if (resultStatus === "needs_delegation") return { tone: "attention", label: "NEEDS DELEGATION", detail: summary };
     if (resultStatus === "completed") return { tone: "done", label: "DONE", detail: summary };
   }
   const lifecycle = runtime?.lifecycleState ?? session.status;
   if (lifecycle === "failed") return { tone: "failed", label: "FAILED" };
-  if (lifecycle === "cancelled") return { tone: "failed", label: "CANCELLED" };
+  if (lifecycle === "cancelled") return { tone: "idle", label: "CANCELLED" };
   if (lifecycle === "working") return { tone: "working", label: "WORKING" };
   if (lifecycle === "waiting") return { tone: "waiting", label: "NEEDS YOU" };
   if (lifecycle === "warm") return { tone: "warm", label: "WARM" };

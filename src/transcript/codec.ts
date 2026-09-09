@@ -592,7 +592,18 @@ export function normalizeSessionEntry(entry: SessionEntry): TranscriptEvent | nu
       resolution: payload,
     };
   }
-  if (kind.startsWith("delegation.") || kind === "worker.result") {
+  if (kind === "worker.result") {
+    // Canonical results also exist after restart, without a live delivery
+    // event. Give them the same result facet so they settle the spawn panel.
+    return {
+      type: "delegation.updated",
+      envelope: { ...envelope, providerData: { ...flat, delivered: false } },
+      title: "Worker result",
+      text: stringValue(payload.summary) ?? body,
+      status,
+    };
+  }
+  if (kind.startsWith("delegation.")) {
     return { type: "delegation.updated", envelope, title, text: body, status };
   }
   if (kind.startsWith("artifact.")) {

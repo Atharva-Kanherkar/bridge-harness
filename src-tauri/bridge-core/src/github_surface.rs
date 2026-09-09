@@ -40,7 +40,7 @@ const PR_POLL_LIMIT: &str = "25";
 /// Cheap identity fields only — reliable at `--limit 100` on any repository.
 const PR_LIST_BASE_FIELDS: &str = "number,title,state,isDraft,author,headRefName,url";
 const PR_LIST_FIELDS: &str = "number,title,state,isDraft,author,headRefName,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,url";
-const PR_DETAIL_FIELDS: &str = "number,title,body,state,isDraft,author,headRefName,baseRefName,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,url,comments,labels,additions,deletions,changedFiles";
+const PR_DETAIL_FIELDS: &str = "number,title,body,state,isDraft,author,headRefName,baseRefName,reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,url,comments,labels,commits,additions,deletions,changedFiles";
 const PR_CHECK_FIELDS: &str = "name,state,bucket,link,workflow";
 const PR_HEAD_FIELDS: &str = "headRefOid";
 const ISSUE_LIST_FIELDS: &str = "number,title,state,author,labels,createdAt,updatedAt,url";
@@ -176,12 +176,24 @@ pub struct PullRequestSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PullRequestCommit {
+    pub oid: String,
+    pub abbreviated_oid: String,
+    pub message_headline: String,
+    pub message_body: String,
+    pub committed_at: String,
+    pub authors: Vec<GithubActor>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PullRequestDetail {
     pub summary: PullRequestSummary,
     pub body: String,
     pub base_branch: String,
     pub comments: Vec<GithubComment>,
     pub labels: Vec<GithubLabel>,
+    pub commits: Vec<PullRequestCommit>,
     pub additions: u64,
     pub deletions: u64,
     pub changed_files: u64,
@@ -323,9 +335,27 @@ pub enum ReviewEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub enum LabelTarget {
+pub enum GithubTarget {
     PullRequest,
     Issue,
+}
+
+impl GithubTarget {
+    /// The `gh` noun for this target — `gh pr …` or `gh issue …`.
+    fn noun(self) -> &'static str {
+        match self {
+            GithubTarget::PullRequest => "pr",
+            GithubTarget::Issue => "issue",
+        }
+    }
+
+    /// How a confirmation statement names this target.
+    pub fn label(self) -> &'static str {
+        match self {
+            GithubTarget::PullRequest => "PR",
+            GithubTarget::Issue => "issue",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -333,6 +363,23 @@ pub enum LabelTarget {
 pub enum LabelOperation {
     Add,
     Remove,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StateOperation {
+    Close,
+    Reopen,
+}
+
+impl StateOperation {
+    /// The `gh pr`/`gh issue` subcommand that performs this transition.
+    fn subcommand(self) -> &'static str {
+        match self {
+            StateOperation::Close => "close",
+            StateOperation::Reopen => "reopen",
+        }
+    }
 }
 
 /// One mutating GitHub action. The tag mirrors the protocol payload so the api
@@ -360,10 +407,23 @@ pub enum GithubAction {
         number: u64,
     },
     Label {
-        target: LabelTarget,
+        target: GithubTarget,
         number: u64,
         label: String,
         operation: LabelOperation,
+    },
+    Comment {
+        target: GithubTarget,
+        number: u64,
+        body: String,
+    },
+    SetState {
+        target: GithubTarget,
+        number: u64,
+        operation: StateOperation,
+    },
+    Ready {
+        number: u64,
     },
 }
 
@@ -375,7 +435,10 @@ impl GithubAction {
             | GithubAction::Review { number, .. }
             | GithubAction::Reply { number, .. }
             | GithubAction::Rerun { number }
-            | GithubAction::Label { number, .. } => *number,
+            | GithubAction::Label { number, .. }
+            | GithubAction::Comment { number, .. }
+            | GithubAction::SetState { number, .. }
+            | GithubAction::Ready { number } => *number,
         }
     }
 }
@@ -1127,10 +1190,7 @@ impl GithubSurface {
                 label,
                 operation,
             } => {
-                let noun = match target {
-                    LabelTarget::PullRequest => "pr",
-                    LabelTarget::Issue => "issue",
-                };
+                let noun = target.noun();
                 let flag = match operation {
                     LabelOperation::Add => "--add-label",
                     LabelOperation::Remove => "--remove-label",
@@ -1139,7 +1199,7 @@ impl GithubSurface {
                     workspace,
                     "edit labels",
                     &[
-                        noun.into(),
+                        noun.to_string(),
                         "edit".into(),
                         number.to_string(),
                         "--repo".into(),
@@ -1160,6 +1220,68 @@ impl GithubSurface {
                         LabelOperation::Remove => "from",
                     }
                 ))
+            }
+            GithubAction::Comment {
+                target,
+                number,
+                body,
+            } => {
+                self.run_gh(
+                    workspace,
+                    "post comment",
+                    &[
+                        target.noun().to_string(),
+                        "comment".into(),
+                        number.to_string(),
+                        "--repo".into(),
+                        selector.clone(),
+                        "--body".into(),
+                        body.clone(),
+                    ],
+                    false,
+                )?;
+                Ok(format!("Commented on {} #{number}.", target.label()))
+            }
+            GithubAction::SetState {
+                target,
+                number,
+                operation,
+            } => {
+                self.run_gh(
+                    workspace,
+                    "set state",
+                    &[
+                        target.noun().to_string(),
+                        operation.subcommand().into(),
+                        number.to_string(),
+                        "--repo".into(),
+                        selector.clone(),
+                    ],
+                    false,
+                )?;
+                Ok(format!(
+                    "{} {} #{number}.",
+                    match operation {
+                        StateOperation::Close => "Closed",
+                        StateOperation::Reopen => "Reopened",
+                    },
+                    target.label()
+                ))
+            }
+            GithubAction::Ready { number } => {
+                self.run_gh(
+                    workspace,
+                    "pr ready",
+                    &[
+                        "pr".into(),
+                        "ready".into(),
+                        number.to_string(),
+                        "--repo".into(),
+                        selector.clone(),
+                    ],
+                    false,
+                )?;
+                Ok(format!("Marked PR #{number} ready for review."))
             }
         };
         if result.is_ok() {
@@ -1390,6 +1512,32 @@ struct RawComment {
     url: String,
 }
 
+/// `gh pr view --json commits` names the author fields `login`/`name`, and a
+/// commit whose email GitHub cannot map to an account carries an empty login.
+/// Falling back to the git name keeps the row attributed instead of blank.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawCommitAuthor {
+    #[serde(default)]
+    login: String,
+    #[serde(default)]
+    name: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawPullRequestCommit {
+    oid: String,
+    #[serde(default)]
+    message_headline: String,
+    #[serde(default)]
+    message_body: String,
+    #[serde(default)]
+    committed_date: String,
+    #[serde(default)]
+    authors: Vec<RawCommitAuthor>,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawCheckRollup {
@@ -1442,6 +1590,8 @@ struct RawPullRequestDetail {
     comments: Vec<RawComment>,
     #[serde(default)]
     labels: Vec<RawLabel>,
+    #[serde(default)]
+    commits: Vec<RawPullRequestCommit>,
     additions: u64,
     deletions: u64,
     changed_files: u64,
@@ -1672,6 +1822,11 @@ impl TryFrom<RawPullRequestDetail> for PullRequestDetail {
             base_branch: raw.base_ref_name,
             comments: raw.comments.into_iter().map(GithubComment::from).collect(),
             labels: raw.labels.into_iter().map(GithubLabel::from).collect(),
+            commits: raw
+                .commits
+                .into_iter()
+                .map(PullRequestCommit::from)
+                .collect(),
             additions: raw.additions,
             deletions: raw.deletions,
             changed_files: raw.changed_files,
@@ -1682,6 +1837,29 @@ impl TryFrom<RawPullRequestDetail> for PullRequestDetail {
 impl From<RawActor> for GithubActor {
     fn from(raw: RawActor) -> Self {
         Self { login: raw.login }
+    }
+}
+
+impl From<RawPullRequestCommit> for PullRequestCommit {
+    fn from(raw: RawPullRequestCommit) -> Self {
+        // Seven is what GitHub's own UI shows, and `git log --abbrev-commit`
+        // agrees on every repository small enough to matter here.
+        let abbreviated_oid = raw.oid.chars().take(7).collect();
+        Self {
+            oid: raw.oid,
+            abbreviated_oid,
+            message_headline: raw.message_headline,
+            message_body: raw.message_body,
+            committed_at: raw.committed_date,
+            authors: raw
+                .authors
+                .into_iter()
+                .filter_map(|author| {
+                    let login = if author.login.is_empty() { author.name } else { author.login };
+                    (!login.is_empty()).then_some(GithubActor { login })
+                })
+                .collect(),
+        }
     }
 }
 
@@ -2268,6 +2446,8 @@ mod tests {
                 "if [ \"$1 $2\" = \"api graphql\" ]; then cat '{fixtures}/review-threads.json'; exit 0; fi\n",
                 "if [ \"$1 $2\" = \"pr merge\" ]; then if [ -f \"$root/pr-merge-blocked\" ]; then echo 'GraphQL: Branch protections: at least 1 approving review is required (mergePullRequest)' >&2; exit 1; fi; exit 0; fi\n",
                 "if [ \"$1 $2\" = \"pr review\" ] || [ \"$1 $2\" = \"pr comment\" ] || [ \"$1 $2\" = \"pr edit\" ] || [ \"$1 $2\" = \"issue edit\" ]; then exit 0; fi\n",
+                "if [ \"$1 $2\" = \"issue comment\" ] || [ \"$1 $2\" = \"pr ready\" ]; then exit 0; fi\n",
+                "if [ \"$2\" = \"close\" ] || [ \"$2\" = \"reopen\" ]; then exit 0; fi\n",
                 "if [ \"$1 $2\" = \"run list\" ]; then fixture=runs.json; if [ -f \"$root/run-list-clean\" ]; then fixture=runs-clean.json; fi; cat '{fixtures}/'$fixture; exit 0; fi\n",
                 "if [ \"$1 $2\" = \"run rerun\" ]; then exit 0; fi\n",
                 "if [ \"$1\" = \"api\" ] && [ \"$2\" = \"--method\" ]; then exit 0; fi\n",
@@ -2555,6 +2735,14 @@ mod tests {
         assert_eq!(detail.comments[0].author.as_ref().unwrap().login, "maintainer");
         assert_eq!(detail.labels[0].name, "bug");
         assert_eq!((detail.additions, detail.deletions, detail.changed_files), (18, 4, 2));
+        // Commits ride the same `pr view` read the pane already pays for.
+        assert_eq!(detail.commits.len(), 2);
+        assert_eq!(detail.commits[0].abbreviated_oid, "8f2a1c9");
+        assert_eq!(detail.commits[0].message_headline, "fix(review): honour the requested changes");
+        assert_eq!(detail.commits[0].authors[0].login, "review-author");
+        // A commit GitHub cannot map to an account falls back to its git name
+        // rather than rendering an unattributed row.
+        assert_eq!(detail.commits[1].authors[0].login, "Local Committer");
     }
 
     #[test]
@@ -2648,7 +2836,7 @@ mod tests {
         surface.issue_detail(repository.path(), 17).unwrap();
 
         surface.act(repository.path(), &GithubAction::Label {
-            target: LabelTarget::Issue,
+            target: GithubTarget::Issue,
             number: 17,
             label: "bug".into(),
             operation: LabelOperation::Add,
@@ -2662,7 +2850,7 @@ mod tests {
         assert_eq!(invocation_count(&fake, "issue view"), 2);
 
         surface.act(repository.path(), &GithubAction::Label {
-            target: LabelTarget::PullRequest,
+            target: GithubTarget::PullRequest,
             number: 103,
             label: "bug".into(),
             operation: LabelOperation::Remove,
@@ -2991,6 +3179,76 @@ mod tests {
             "pr comment 103 --repo fixture/project --body cursor review"
         ));
         assert_eq!(invocation_count(&fake, "pr view"), 2);
+    }
+
+    #[test]
+    fn conversation_and_state_actions_build_the_gh_argv_for_each_target() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        for (action, expected) in [
+            (
+                GithubAction::Comment {
+                    target: GithubTarget::PullRequest,
+                    number: 103,
+                    body: "looks good".into(),
+                },
+                "pr comment 103 --repo fixture/project --body looks good",
+            ),
+            (
+                GithubAction::Comment {
+                    target: GithubTarget::Issue,
+                    number: 17,
+                    body: "on it".into(),
+                },
+                "issue comment 17 --repo fixture/project --body on it",
+            ),
+            (
+                GithubAction::SetState {
+                    target: GithubTarget::PullRequest,
+                    number: 103,
+                    operation: StateOperation::Close,
+                },
+                "pr close 103 --repo fixture/project",
+            ),
+            (
+                GithubAction::SetState {
+                    target: GithubTarget::Issue,
+                    number: 17,
+                    operation: StateOperation::Reopen,
+                },
+                "issue reopen 17 --repo fixture/project",
+            ),
+            (GithubAction::Ready { number: 103 }, "pr ready 103 --repo fixture/project"),
+        ] {
+            surface.act(repository.path(), &action).unwrap();
+            assert!(
+                invocations(&fake).contains(expected),
+                "expected {expected:?} in the invocation log"
+            );
+        }
+    }
+
+    #[test]
+    fn a_state_change_invalidates_the_cached_views_of_its_target() {
+        let repository = repository_with_origin();
+        let fake = fake_gh(true, None);
+        let surface = GithubSurface::discover_on_path(fake.path());
+        surface.pr_detail(repository.path(), 103).unwrap();
+        surface.pr_detail(repository.path(), 103).unwrap();
+        assert_eq!(invocation_count(&fake, "pr view"), 1, "the second read is cached");
+        surface
+            .act(
+                repository.path(),
+                &GithubAction::SetState {
+                    target: GithubTarget::PullRequest,
+                    number: 103,
+                    operation: StateOperation::Close,
+                },
+            )
+            .unwrap();
+        surface.pr_detail(repository.path(), 103).unwrap();
+        assert_eq!(invocation_count(&fake, "pr view"), 2, "the write dropped the cached view");
     }
 
     #[test]

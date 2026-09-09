@@ -400,7 +400,10 @@ pub fn dispatch(
             }))
         }
 
-        MethodName::ListSlashCommands => reply(api::list_slash_commands(core)),
+        MethodName::ListSlashCommands => {
+            let p: wire::ListSlashCommandsParams = decode(method, params)?;
+            reply(api::list_slash_commands(core, p.session_id.as_deref()))
+        }
         MethodName::ResolveSlashCommand => {
             let p: wire::ResolveSlashCommandParams = decode(method, params)?;
             reply(api::resolve_slash_command(core, &p.text, &p.session_id))
@@ -452,6 +455,50 @@ pub fn dispatch(
             let p: wire::DiscardWorkerWorktreeParams = decode(method, params)?;
             reply(api::discard_worker_worktree(core, &p.session_id, &p.reason))
         }
+        MethodName::ListWorktrees => reply(api::list_worktrees(core)),
+        MethodName::WorktreeUsageReport => reply(api::worktree_usage(core)),
+        MethodName::ReclaimWorktree => {
+            let p: wire::ReclaimWorktreeParams = decode(method, params)?;
+            reply(api::reclaim_worktree(core, &p.worktree_id))
+        }
+        MethodName::SweepWorktrees => reply(api::sweep_worktrees(core)),
+        MethodName::ArchiveChat => {
+            let p: wire::ArchiveChatParams = decode(method, params)?;
+            reply(api::archive_chat(core, &p.session_id))
+        }
+        MethodName::UsageSummary => {
+            let p: wire::SummaryParams = decode(method, params)?;
+            let request = into_core(method, &p)?;
+            reply(api::usage_summary(core, &request))
+        }
+        MethodName::ListUsagePriceOverrides => reply(api::list_usage_price_overrides(core)),
+        MethodName::SetUsagePriceOverride => {
+            let p: wire::SetPriceOverrideParams = decode(method, params)?;
+            reply(api::set_usage_price_override(
+                core,
+                &p.model,
+                p.input_microusd_per_mtok,
+                p.output_microusd_per_mtok,
+                p.cache_read_microusd_per_mtok,
+                p.cache_write_microusd_per_mtok,
+            ))
+        }
+        MethodName::ClearUsagePriceOverride => {
+            let p: wire::ClearPriceOverrideParams = decode(method, params)?;
+            reply(api::clear_usage_price_override(core, &p.model))
+        }
+        MethodName::RefreshUsageRates => reply(api::refresh_usage_rates(core)),
+        MethodName::ListHistorySources => reply(api::list_usage_history_sources(core)),
+        MethodName::ScanHistory => {
+            let p: wire::ScanHistoryParams = decode(method, params)?;
+            reply(api::scan_usage_history(
+                core,
+                p.max_records.map(|max| usize::try_from(max).unwrap_or(usize::MAX)),
+                p.source_ids.as_deref(),
+            ))
+        }
+        MethodName::GetMeterSnapshot => reply(Ok(api::meter_snapshot())),
+        MethodName::RefreshMeter => reply(api::refresh_meter(core)),
         MethodName::VerifierCandidates => {
             let p: wire::VerifierCandidatesParams = decode(method, params)?;
             reply(api::verifier_candidates(core, &p.change_labels, p.available_capabilities))

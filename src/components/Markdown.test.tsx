@@ -280,6 +280,24 @@ describe("CodeBlock async colorization", () => {
   });
 });
 
+describe("link scheme allowlist", () => {
+  it("only anchors schemes the shell will open, and keeps the rest as text", () => {
+    // The Tauri webview sets no CSP and the click interceptor in
+    // `externalLinks` only claims http(s)/mailto, so any other scheme would
+    // keep the webview's default action — in-app execution for `javascript:`.
+    for (const hostile of ["javascript:void%200", "data:text/html,<script>x</script>", "file:///etc/passwd"]) {
+      const html = renderToStaticMarkup(<Markdown text={`a [click me](${hostile}) b`} />);
+      expect(html).not.toContain("<a ");
+      expect(html).not.toContain(hostile.split(":")[0] + ":");
+      // The label survives, so the reader still sees what was written.
+      expect(html).toContain("click me");
+    }
+    const safe = renderToStaticMarkup(<Markdown text={"[docs](https://example.test/x) and [mail](mailto:me@example.test)"} />);
+    expect(safe).toContain('href="https://example.test/x"');
+    expect(safe).toContain('href="mailto:me@example.test"');
+  });
+});
+
 describe("existing markdown behavior is preserved", () => {
   it("still renders headings, lists, and inline styles", () => {
     const html = renderToStaticMarkup(<Markdown text={"# Title\n\n- one\n- two\n\n**bold** and `code`"} />);

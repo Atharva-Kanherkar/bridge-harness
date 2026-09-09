@@ -1,19 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <defs>
-    <linearGradient id="g" x1="220" y1="250" x2="804" y2="780" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#e8ff8a"/>
-      <stop offset="1" stop-color="#a9d83e"/>
-    </linearGradient>
-  </defs>
-
-  <rect width="1024" height="1024" rx="220" fill="#0b0e0d"/>
-
-  <g fill="none" stroke="url(#g)" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M228 470C304 274 720 274 796 470" stroke-width="88"/>
-    <path d="M350 382V492M512 338V492M674 382V492" stroke-width="34"/>
+  <title>Bridge — Span</title>
+  <rect width="1024" height="1024" rx="220" fill="#111411"/>
+  <g fill="#f2f1ec">
+    <rect x="264" y="400" width="96" height="312"/>
+    <rect x="664" y="400" width="96" height="312"/>
   </g>
-
-  <rect x="184" y="470" width="656" height="104" rx="52" fill="url(#g)"/>
-  <rect x="246" y="548" width="96" height="230" rx="48" fill="url(#g)"/>
-  <rect x="682" y="548" width="96" height="230" rx="48" fill="url(#g)"/>
+  <rect x="192" y="304" width="640" height="104" fill="#44e3a4"/>
 </svg>

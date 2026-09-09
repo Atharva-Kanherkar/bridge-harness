@@ -18,13 +18,16 @@ use crate::{
     adapters, agent, agent_config, agent_integration, automations, binary, browser_bridge,
     claude_import, compaction_controller, completion, delegation, external_import, git, handoff,
     learning_job, learning_router, live_turn, marketplace, memory_ledger,
-    model_profiles, opencode_adapter, prompt_studio, prompts, routing_evaluation,
+    meter, model_profiles, opencode_adapter, prompt_studio, prompts, routing_evaluation,
     secret_interception,
     session_recall, session_supervisor,
     sessions, skill_marketplace, slash, store,
-    suggestion_engine, switch_summary, verification_pipeline, verified_catalog, work, work_actions,
+    suggestion_engine, switch_summary, usage_history, usage_import, usage_pricing, usage_summary,
+    verification_pipeline,
+    verified_catalog, work, work_actions,
     work_observation, work_reconcile, work_task_state, worker_adoption,
-    worker_lifecycle, workspace_files, BridgeCore, BridgeError, RuntimeSession,
+    worker_lifecycle, workspace_files, worktree_registry, BridgeCore, BridgeError,
+    RuntimeSession,
 };
 use bridge_protocol::messages as wire;
 use portable_pty::{native_pty_system, CommandBuilder, PtySize};
@@ -1656,6 +1659,22 @@ pub fn resolve_approval(
         // and has no provider response to deduplicate. Keep its existing
         // transaction, but return the same typed command result.
         "approval.requested" => {
+            let prompt_proposal = {
+                let db = core.db.lock().unwrap();
+                let payload: String = db.query_row(
+                    "SELECT payload FROM session_entries WHERE session_id=?1 AND sequence=?2",
+                    params![session_id, event_id], |row| row.get(0),
+                )?;
+                let payload: Value = serde_json::from_str(&payload)
+                    .map_err(|error| BridgeError::Invalid(format!("Approval metadata is invalid: {error}")))?;
+                if payload["approvalType"] == "prompt_mutation" {
+                    Some(payload["proposalId"].as_str().ok_or_else(||
+                        BridgeError::Invalid("Prompt approval has no proposal id".into()))?.to_owned())
+                } else { None }
+            };
+            if let Some(proposal_id) = prompt_proposal {
+                return resolve_prompt_mutation_approval(core, session_id, event_id, &proposal_id, decision);
+            }
             resolve_legacy_approval(core, session_id, event_id, decision)?;
             Ok(interaction_result(
                 wire::InteractionResolutionDisposition::Resolved,
@@ -1670,6 +1689,37 @@ pub fn resolve_approval(
             "The requested event is not a permission interaction".into(),
         )),
     }
+}
+
+fn resolve_prompt_mutation_approval(
+    core: &Arc<BridgeCore>, session_id: &str, event_id: i64, proposal_id: &str, decision: &str,
+) -> Result<wire::InteractionResolutionResult, BridgeError> {
+    if !matches!(decision, "accept" | "decline" | "cancel") {
+        return Err(BridgeError::Invalid("Prompt changes require an explicit decision for this exact change; session approval is unavailable".into()));
+    }
+    let resolved = {
+        let db = core.db.lock().unwrap();
+        let proposal = crate::prompt_mutations::get(&db, proposal_id)?
+            .ok_or_else(|| BridgeError::Invalid("Prompt proposal no longer exists".into()))?;
+        if proposal.approval_session_id != session_id || proposal.approval_event_id != event_id {
+            return Err(BridgeError::Invalid("This approval does not belong to the prompt proposal".into()));
+        }
+        crate::prompt_mutations::resolve(&db, proposal_id, decision == "accept")?
+    };
+    let status = resolved.status.as_str();
+    let reason = live_turn::prompt_mutation_outcome_reason(status);
+    // The durable queue receipt makes this safe on a repeated decision and
+    // lets a retry deliver an outcome whose first post-commit enqueue failed.
+    live_turn::queue_prompt_mutation_feedback(core, &resolved.proposal.actor_session_id,
+        Some(proposal_id), status, reason, None);
+    live_turn::notify_parent_prompt_mutation_resolved(core, &resolved.proposal.actor_session_id,
+        proposal_id, status);
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(interaction_result(
+        if resolved.already_resolved { wire::InteractionResolutionDisposition::AlreadyResolved }
+        else { wire::InteractionResolutionDisposition::Resolved },
+        "permission", status, "human", status, Some(reason),
+    ))
 }
 
 fn resolve_legacy_approval(
@@ -2816,8 +2866,23 @@ fn available_adapter_ids(core: &BridgeCore) -> HashSet<String> {
 /// can offer a labeled `/` menu.
 pub fn list_slash_commands(
     core: &Arc<BridgeCore>,
+    session_id: Option<&str>,
 ) -> Result<Vec<slash::SlashCommand>, BridgeError> {
-    Ok(slash::list_commands(&available_adapter_ids(core)))
+    let project = session_id
+        .map(|session_id| {
+            core.db.lock().unwrap().query_row(
+                "SELECT cwd FROM sessions WHERE id=?1",
+                params![session_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+        })
+        .transpose()?
+        .flatten()
+        .map(PathBuf::from);
+    Ok(slash::list_commands_for_project(
+        &available_adapter_ids(core),
+        project.as_deref(),
+    ))
 }
 
 /// Resolve a composer `/command` against the catalog so the UI can auto-switch
@@ -2836,12 +2901,12 @@ pub fn resolve_slash_command(
         .next()
         .filter(|value| !value.is_empty())
         .ok_or_else(|| BridgeError::Invalid("Empty slash command".into()))?;
-    let (kind, session_harness): (String, String) = {
+    let (kind, session_harness, cwd): (String, String, Option<String>) = {
         let db = core.db.lock().unwrap();
         db.query_row(
-            "SELECT kind, harness FROM sessions WHERE id=?1",
+            "SELECT kind, harness, cwd FROM sessions WHERE id=?1",
             params![session_id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?
     };
     if slash::is_bridge_local(name) {
@@ -2853,7 +2918,8 @@ pub fn resolve_slash_command(
         }));
     }
     let available = available_adapter_ids(core);
-    let catalog = slash::list_commands(&available);
+    let project = cwd.as_deref().map(Path::new);
+    let catalog = slash::list_commands_for_project(&available, project);
     let matches: Vec<_> = catalog
         .iter()
         .filter(|command| command.name.eq_ignore_ascii_case(name))
@@ -3549,6 +3615,250 @@ pub fn pending_worker_adoptions(
     session_id: &str,
 ) -> Result<Vec<worker_adoption::WorkerRepositoryBinding>, BridgeError> {
     worker_adoption::pending_for_parent(&core.db.lock().unwrap(), session_id)
+}
+
+// --- token and cost usage --------------------------------------------------------
+
+/// Day or hour roll-ups of the usage ledger per harness and model.
+pub fn usage_summary(
+    core: &Arc<BridgeCore>,
+    request: &usage_summary::UsageSummaryRequest,
+) -> Result<usage_summary::UsageSummary, BridgeError> {
+    usage_summary::summarize(&core.db.lock().unwrap(), request)
+}
+
+pub fn list_usage_price_overrides(
+    core: &Arc<BridgeCore>,
+) -> Result<Vec<usage_pricing::PriceOverride>, BridgeError> {
+    usage_pricing::list_price_overrides(&core.db.lock().unwrap())
+}
+
+/// Set a user rate for one model and return every override in force.
+pub fn set_usage_price_override(
+    core: &Arc<BridgeCore>,
+    model: &str,
+    input_microusd_per_mtok: i64,
+    output_microusd_per_mtok: i64,
+    cache_read_microusd_per_mtok: Option<i64>,
+    cache_write_microusd_per_mtok: Option<i64>,
+) -> Result<Vec<usage_pricing::PriceOverride>, BridgeError> {
+    let db = core.db.lock().unwrap();
+    usage_pricing::set_price_override(
+        &db,
+        model,
+        input_microusd_per_mtok,
+        output_microusd_per_mtok,
+        cache_read_microusd_per_mtok,
+        cache_write_microusd_per_mtok,
+    )?;
+    usage_pricing::list_price_overrides(&db)
+}
+
+pub fn clear_usage_price_override(
+    core: &Arc<BridgeCore>,
+    model: &str,
+) -> Result<Vec<usage_pricing::PriceOverride>, BridgeError> {
+    let db = core.db.lock().unwrap();
+    usage_pricing::clear_price_override(&db, model)?;
+    usage_pricing::list_price_overrides(&db)
+}
+
+/// Fetch a fresh LiteLLM rate table and cache it. The only place usage
+/// pricing touches the network, and only because a client asked. The fetch
+/// runs before the database lock is taken so a slow upstream never stalls
+/// other callers.
+pub fn refresh_usage_rates(
+    core: &Arc<BridgeCore>,
+) -> Result<usage_pricing::PricingStatus, BridgeError> {
+    let document = usage_pricing::fetch_rate_document()?;
+    usage_pricing::refresh_rates_from_document(&core.db.lock().unwrap(), &document)
+}
+
+/// The history sources the importers can see on this machine, with what has
+/// been indexed from each. Discovery reads the filesystem, so it runs before
+/// the database lock is taken.
+pub fn list_usage_history_sources(
+    core: &Arc<BridgeCore>,
+) -> Result<Vec<usage_history::UsageHistorySource>, BridgeError> {
+    let env = usage_import::SourceEnv::from_process();
+    usage_history::list_history_sources(&core.db.lock().unwrap(), &env)
+}
+
+/// One bounded, incremental import pass over the chosen history sources.
+pub fn scan_usage_history(
+    core: &Arc<BridgeCore>,
+    max_records: Option<usize>,
+    source_ids: Option<&[String]>,
+) -> Result<usage_import::ScanReport, BridgeError> {
+    let env = usage_import::SourceEnv::from_process();
+    usage_history::scan_history(core, &env, max_records, source_ids)
+}
+
+// --- menu-bar meter (CodexBar port) ------------------------------------------------
+// Static provider registry plus the shared refresh trigger. Live windows ride
+// the existing `account-usage` event channel (see `refresh_account_usage`);
+// pace math lives in `meter` (Rust) and `src/meter.ts` (TypeScript), both
+// ported from CodexBar's `UsagePace.weekly`.
+
+/// The meter registry: live providers plus planned CodexBar follow-ups.
+pub fn meter_snapshot() -> meter::MeterRegistry {
+    meter::registry_snapshot()
+}
+
+/// Trigger the shared account-usage refresh (Claude `/usage` probe plus one
+/// live Codex session); results arrive on the `account-usage` channel.
+///
+/// Coalesced: calls within 10 seconds of an accepted one return `Ok` without
+/// spawning another probe pair. Neither the tray menu nor the popover button
+/// can show a spinner, so rapid re-clicks would otherwise stack a Claude PTY
+/// probe per click — the hammering the adaptive policy exists to prevent.
+pub fn refresh_meter(core: &Arc<BridgeCore>) -> Result<(), BridgeError> {
+    static LAST_REFRESH_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    let now = chrono::Utc::now().timestamp_millis();
+    if now - LAST_REFRESH_MS.load(std::sync::atomic::Ordering::SeqCst) < 10_000 {
+        return Ok(());
+    }
+    LAST_REFRESH_MS.store(now, std::sync::atomic::Ordering::SeqCst);
+    core.refresh_account_usage()
+}
+
+// --- worktree inventory --------------------------------------------------------
+
+/// Every worktree Bridge knows about, with the last assessment of what may be
+/// done with it. A read: the sweep owns reclaiming.
+pub fn list_worktrees(
+    core: &Arc<BridgeCore>,
+) -> Result<Vec<worktree_registry::WorktreeInventoryEntry>, BridgeError> {
+    worktree_registry::inventory(&core.db.lock().unwrap())
+}
+
+/// What the worktrees cost against the caps in force.
+pub fn worktree_usage(
+    core: &Arc<BridgeCore>,
+) -> Result<worktree_registry::WorktreeUsage, BridgeError> {
+    worktree_registry::usage(
+        &core.db.lock().unwrap(),
+        &worktree_registry::WorktreeRetention::default(),
+    )
+}
+
+/// Put one chat away and reclaim the checkout it owns.
+///
+/// Deliberately *not* `archive_workspace`. That archives a workspace, which
+/// deletes every session in it — and a workspace here holds many chats (one on
+/// the machine this was written for holds 836), so wiring a per-chat button to
+/// it would destroy hundreds of unrelated conversations to reclaim one
+/// directory.
+///
+/// History is kept. The session row, its forest entries and its evidence all
+/// survive; the chat is marked archived so it is no longer listed, and its own
+/// worktree goes through the same classification and refusals as any other
+/// reclaim. A checkout that cannot be proven expendable is *kept* rather than
+/// blocking the archive, and the reason comes back with the result — putting a
+/// conversation away should not require first resolving its uncommitted work.
+pub fn archive_chat(
+    core: &Arc<BridgeCore>,
+    session_id: &str,
+) -> Result<worktree_registry::ArchiveChatResult, BridgeError> {
+    let (status, active_turn, adapter_pid): (String, Option<String>, Option<i64>) =
+        core.db.lock().unwrap().query_row(
+            "SELECT status,active_turn_id,adapter_pid FROM sessions WHERE id=?1",
+            params![session_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+    // A `ready` chat has no turn in flight but still owns a live provider
+    // process. Hiding it would take away the only route to that process while
+    // it goes on holding memory, a port and a model session — and the worktree
+    // would be retained anyway, since the same claim marks it in use. Archiving
+    // has to mean the chat is really finished.
+    if active_turn.is_some()
+        || adapter_pid.is_some()
+        || matches!(
+            status.as_str(),
+            "working" | "waiting" | "starting" | "resuming" | "checkpointing" | "ready"
+        )
+    {
+        return Err(BridgeError::Invalid(
+            "Stop this chat before archiving it".into(),
+        ));
+    }
+
+    let owned = { worktree_registry::owned_by_session(&core.db.lock().unwrap(), session_id)? };
+    let reclaim = match owned {
+        Some(record) => Some(worktree_registry::reclaim(
+            &core.db,
+            &core.worktrees,
+            &record.id,
+            &worktree_registry::WorktreeRetention::default(),
+        )?),
+        None => None,
+    };
+
+    core.db.lock().unwrap().execute(
+        "UPDATE sessions SET archived_at=?2,ended_at=COALESCE(ended_at,?2),active_turn_id=NULL
+          WHERE id=?1 AND archived_at IS NULL",
+        params![session_id, chrono::Utc::now().to_rfc3339()],
+    )?;
+    {
+        let db = core.db.lock().unwrap();
+        let freed = reclaim
+            .as_ref()
+            .filter(|outcome| outcome.reclaimed)
+            .map(|outcome| worktree_registry::human_bytes(outcome.bytes_freed.max(0) as u64))
+            .unwrap_or_else(|| "nothing".to_owned());
+        store::event(
+            &db,
+            "supervisor",
+            "session.archived",
+            session_id,
+            &format!("Chat archived; reclaimed {freed}"),
+        )?;
+    }
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(worktree_registry::ArchiveChatResult {
+        archived: true,
+        bytes_freed: reclaim
+            .as_ref()
+            .filter(|outcome| outcome.reclaimed)
+            .map(|outcome| outcome.bytes_freed)
+            .unwrap_or(0),
+        worktree_detail: reclaim
+            .filter(|outcome| !outcome.reclaimed)
+            .and_then(|outcome| outcome.detail),
+    })
+}
+
+/// Reclaim one checkout because a person asked. A refusal comes back in the
+/// result, with its reason, rather than as an error.
+pub fn reclaim_worktree(
+    core: &Arc<BridgeCore>,
+    worktree_id: &str,
+) -> Result<worktree_registry::WorktreeReclaimResult, BridgeError> {
+    let outcome = worktree_registry::reclaim(
+        &core.db,
+        &core.worktrees,
+        worktree_id,
+        &worktree_registry::WorktreeRetention::default(),
+    )?;
+    if outcome.reclaimed {
+        core.events.publish(CoreEvent::StateChanged);
+    }
+    Ok(outcome)
+}
+
+/// Run the maintenance pass now instead of waiting for the tick.
+pub fn sweep_worktrees(
+    core: &Arc<BridgeCore>,
+) -> Result<worktree_registry::SweepOutcome, BridgeError> {
+    let outcome = worktree_registry::run_requested_pass(
+        &core.db,
+        &core.worktrees,
+        &worktree_registry::WorktreeRetention::default(),
+    )?;
+    if outcome.removed > 0 {
+        core.events.publish(CoreEvent::StateChanged);
+    }
+    Ok(outcome)
 }
 
 /// Merge a worker's isolated worktree into the task checkout. Integration
@@ -4394,6 +4704,227 @@ mod tests {
         expect_executed: bool,
     }
 
+    use rusqlite::params;
+    use std::path::Path;
+    use std::process::Command;
+
+    fn git_cmd(cwd: &Path, args: &[&str]) -> String {
+        let output = Command::new("git").args(args).current_dir(cwd).output().unwrap();
+        assert!(
+            output.status.success(),
+            "git {args:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
+    }
+
+    /// A core with a repository, a workspace, and a chat that owns its own
+    /// isolated checkout — the shape archiving has to get right.
+    struct ChatFixture {
+        _scratch: tempfile::TempDir,
+        core: std::sync::Arc<crate::runtime::BridgeCore>,
+        chat_worktree: std::path::PathBuf,
+        repo: std::path::PathBuf,
+    }
+
+    fn chat_fixture() -> ChatFixture {
+        let scratch = tempfile::tempdir().unwrap();
+        let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
+        let repo = std::fs::canonicalize(scratch.path()).unwrap().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git_cmd(&repo, &["init", "-q", "-b", "main"]);
+        git_cmd(&repo, &["config", "user.email", "t@example.invalid"]);
+        git_cmd(&repo, &["config", "user.name", "Bridge Test"]);
+        git_cmd(&repo, &["config", "commit.gpgsign", "false"]);
+        std::fs::write(repo.join("base.txt"), "base\n").unwrap();
+        git_cmd(&repo, &["add", "."]);
+        git_cmd(&repo, &["commit", "-q", "-m", "base"]);
+
+        let chat_worktree = core
+            .worktrees
+            .join("orchestrators")
+            .join("task")
+            .join("chat");
+        std::fs::create_dir_all(chat_worktree.parent().unwrap()).unwrap();
+        git_cmd(
+            &repo,
+            &["worktree", "add", "-q", "-b", "bridge/task-chat", chat_worktree.to_str().unwrap(), "HEAD"],
+        );
+        {
+            let db = core.db.lock().unwrap();
+            db.execute(
+                "INSERT INTO projects(id,name,path,created_at) VALUES('p','Demo',?1,'now')",
+                params![repo.to_string_lossy()],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO workspaces(id,project_id,title,branch,path,status,created_at)
+                 VALUES('w','p','Task','main',?1,'idle','now')",
+                params![repo.to_string_lossy()],
+            )
+            .unwrap();
+            // A sibling chat in the same workspace: archiving one must not touch it.
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,cwd,depth)
+                 VALUES('sibling','w','claude','Other','idle','estimated','orchestrator',?1,0)",
+                params![repo.to_string_lossy()],
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,kind,cwd,depth)
+                 VALUES('chat','w','claude','Chat','idle','estimated','orchestrator',?1,0)",
+                params![chat_worktree.to_string_lossy()],
+            )
+            .unwrap();
+            crate::worktree_registry::register(
+                &db,
+                &crate::worktree_registry::NewWorktree {
+                    kind: crate::worktree_registry::KIND_ORCHESTRATOR.to_owned(),
+                    repo_root: repo.to_string_lossy().to_string(),
+                    path: chat_worktree.to_string_lossy().to_string(),
+                    branch: Some("bridge/task-chat".to_owned()),
+                    owner_session_id: Some("chat".to_owned()),
+                    owner_workspace_id: Some("w".to_owned()),
+                    base_commit: None,
+                },
+            )
+            .unwrap();
+        }
+        ChatFixture { _scratch: scratch, core, chat_worktree, repo }
+    }
+
+    fn session_count(core: &crate::runtime::BridgeCore) -> usize {
+        crate::store::state(&core.db.lock().unwrap()).unwrap().sessions.len()
+    }
+
+    /// The whole point of not reusing `archive_workspace`: a workspace holds
+    /// many chats, so archiving one must leave its siblings — and their
+    /// checkout — exactly where they are.
+    #[test]
+    fn archiving_a_chat_reclaims_its_own_worktree_and_leaves_its_siblings_alone() {
+        let fixture = chat_fixture();
+        assert_eq!(session_count(&fixture.core), 2);
+
+        let result = super::archive_chat(&fixture.core, "chat").unwrap();
+        assert!(result.archived);
+        assert!(result.bytes_freed > 0, "it says what it freed: {result:?}");
+        assert_eq!(result.worktree_detail, None);
+        assert!(!fixture.chat_worktree.exists(), "the chat's checkout is reclaimed");
+
+        assert!(fixture.repo.is_dir(), "the workspace's own checkout is untouched");
+        assert!(fixture.repo.join("base.txt").is_file());
+        let remaining = crate::store::state(&fixture.core.db.lock().unwrap()).unwrap();
+        assert_eq!(remaining.sessions.len(), 1, "the sibling chat survives");
+        assert_eq!(remaining.sessions[0].id, "sibling");
+        assert_eq!(
+            remaining.workspaces.len(),
+            1,
+            "and so does the workspace every other chat lives in",
+        );
+    }
+
+    /// History is kept: archiving hides a conversation, it does not delete it.
+    #[test]
+    fn an_archived_chat_keeps_its_row_and_stops_being_listed() {
+        let fixture = chat_fixture();
+        super::archive_chat(&fixture.core, "chat").unwrap();
+        let (archived, stored): (Option<String>, i64) = fixture
+            .core
+            .db
+            .lock()
+            .unwrap()
+            .query_row(
+                "SELECT archived_at,(SELECT COUNT(*) FROM sessions WHERE id='chat') FROM sessions WHERE id='chat'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert!(archived.is_some(), "marked archived");
+        assert_eq!(stored, 1, "and still there");
+        assert_eq!(session_count(&fixture.core), 1);
+    }
+
+    /// Putting a conversation away should not require first resolving its
+    /// uncommitted work, so the checkout is kept and the reason is reported.
+    #[test]
+    fn archiving_keeps_a_dirty_checkout_and_says_so_instead_of_refusing() {
+        let fixture = chat_fixture();
+        std::fs::write(fixture.chat_worktree.join("scratch.txt"), "unsaved\n").unwrap();
+
+        let result = super::archive_chat(&fixture.core, "chat").unwrap();
+        assert!(result.archived, "the archive still happens");
+        assert_eq!(result.bytes_freed, 0);
+        assert!(
+            result.worktree_detail.unwrap().contains("uncommitted"),
+            "and the reason reaches the caller",
+        );
+        assert!(fixture.chat_worktree.is_dir());
+    }
+
+    /// A `ready` chat has no turn in flight but still owns a live provider
+    /// process. Archiving it would hide the only route to that process while it
+    /// went on holding memory and a model session — and the worktree would be
+    /// retained anyway, since the same claim marks it in use.
+    #[test]
+    fn archiving_refuses_a_chat_whose_adapter_is_still_alive() {
+        let fixture = chat_fixture();
+        fixture
+            .core
+            .db
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET status='ready',adapter_pid=4242,
+                    adapter_process_identity='claude:4242' WHERE id='chat'",
+                [],
+            )
+            .unwrap();
+        let error = super::archive_chat(&fixture.core, "chat").unwrap_err();
+        assert!(error.to_string().contains("Stop this chat"), "{error:?}");
+        assert!(fixture.chat_worktree.is_dir());
+        let archived: Option<String> = fixture
+            .core
+            .db
+            .lock()
+            .unwrap()
+            .query_row("SELECT archived_at FROM sessions WHERE id='chat'", [], |row| row.get(0))
+            .unwrap();
+        assert!(archived.is_none(), "and it is not hidden");
+    }
+
+    /// Boot recovery clears the claim for a process that is really gone, so a
+    /// `ready` row left by a crashed run must not block archiving forever.
+    #[test]
+    fn archiving_a_ready_chat_with_no_live_adapter_still_works() {
+        let fixture = chat_fixture();
+        fixture
+            .core
+            .db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET status='idle',adapter_pid=NULL WHERE id='chat'", [])
+            .unwrap();
+        assert!(super::archive_chat(&fixture.core, "chat").unwrap().archived);
+    }
+
+    #[test]
+    fn archiving_refuses_a_chat_that_is_still_running() {
+        let fixture = chat_fixture();
+        fixture
+            .core
+            .db
+            .lock()
+            .unwrap()
+            .execute("UPDATE sessions SET status='working' WHERE id='chat'", [])
+            .unwrap();
+        let error = super::archive_chat(&fixture.core, "chat").unwrap_err();
+        assert!(
+            error.to_string().contains("Stop this chat"),
+            "{error:?}",
+        );
+        assert!(fixture.chat_worktree.is_dir());
+    }
+
     /// Replays the recorded approve/deny decision for every action kind through
     /// the real `github_act` gate. A denied case must return `executed:false`
     /// *without* consulting the surface — the test core's surface is
@@ -4407,7 +4938,7 @@ mod tests {
             .join("../../testing/fixtures/github-act-policy.json");
         let cases: Vec<PolicyReplayCase> =
             serde_json::from_slice(&std::fs::read(fixture).unwrap()).unwrap();
-        assert_eq!(cases.len(), 12, "approve and deny for PR and issue action kinds");
+        assert_eq!(cases.len(), 20, "approve and deny for PR and issue action kinds");
         let scratch = tempfile::tempdir().unwrap();
         let core = std::sync::Arc::new(crate::runtime::BridgeCore::for_tests(scratch.path()));
         for case in cases {

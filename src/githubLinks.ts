@@ -7,7 +7,7 @@ import type { GithubRepository } from "./protocol/generated/protocol";
 // Actions run, a discussion, a profile) has no inline view and keeps going to
 // the browser, which is why parsing returns null rather than a best guess.
 
-export type PullRequestView = "conversation" | "changes" | "checks";
+export type PullRequestView = "conversation" | "changes" | "commits" | "checks";
 
 export type GithubLinkView =
   | { kind: "pull"; number: number; tab: PullRequestView }
@@ -25,10 +25,11 @@ export type GithubLink = {
 };
 
 /** The sub-paths of a pull request that the detail view has a tab for.
- * Anything else under `/pull/<n>` (a commit, a comparison) still names that
- * pull request, so it lands on the conversation rather than nowhere. */
+ * Anything else under `/pull/<n>` (a comparison, a review anchor) still names
+ * that pull request, so it lands on the conversation rather than nowhere. */
 const PULL_REQUEST_TABS: Record<string, PullRequestView> = {
   files: "changes",
+  commits: "commits",
   checks: "checks",
 };
 
@@ -123,7 +124,7 @@ export function describeGithubLink(link: GithubLink): string {
   const view = link.view;
   switch (view.kind) {
     case "pull": {
-      const tab = view.tab === "changes" ? " · Changes" : view.tab === "checks" ? " · Checks" : "";
+      const tab = view.tab === "conversation" ? "" : ` · ${view.tab[0].toUpperCase()}${view.tab.slice(1)}`;
       return `Pull request #${view.number}${tab}`;
     }
     case "issue": return `Issue #${view.number}`;
