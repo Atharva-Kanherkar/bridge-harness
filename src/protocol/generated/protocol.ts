@@ -110,6 +110,8 @@ export type BridgeMethod =
   | "usage/refresh_rates"
   | "usage/list_history_sources"
   | "usage/scan_history"
+  | "meter/get_meter_snapshot"
+  | "meter/refresh_meter"
   | "routing/get_router_preferences"
   | "routing/update_router_preferences"
   | "routing/rollback_routing_policy"
@@ -289,6 +291,8 @@ export const BRIDGE_METHODS = [
   { method: "usage/refresh_rates", domain: "usage", command: "refresh_rates" },
   { method: "usage/list_history_sources", domain: "usage", command: "list_history_sources" },
   { method: "usage/scan_history", domain: "usage", command: "scan_history" },
+  { method: "meter/get_meter_snapshot", domain: "meter", command: "get_meter_snapshot" },
+  { method: "meter/refresh_meter", domain: "meter", command: "refresh_meter" },
   { method: "routing/get_router_preferences", domain: "routing", command: "get_router_preferences" },
   { method: "routing/update_router_preferences", domain: "routing", command: "update_router_preferences" },
   { method: "routing/rollback_routing_policy", domain: "routing", command: "rollback_routing_policy" },
@@ -528,6 +532,8 @@ export interface BridgeMethodParams {
   "usage/refresh_rates": undefined;
   "usage/list_history_sources": undefined;
   "usage/scan_history": ScanHistoryParams;
+  "meter/get_meter_snapshot": undefined;
+  "meter/refresh_meter": undefined;
   "routing/get_router_preferences": GetRouterPreferencesParams;
   "routing/update_router_preferences": UpdateRouterPreferencesParams;
   "routing/rollback_routing_policy": RollbackRoutingPolicyParams;
@@ -709,6 +715,8 @@ export interface BridgeMethodResults {
   "usage/refresh_rates": UsagePricingStatus;
   "usage/list_history_sources": ListHistorySourcesResult;
   "usage/scan_history": ScanHistoryResult;
+  "meter/get_meter_snapshot": MeterRegistry;
+  "meter/refresh_meter": UnitResult;
   "routing/get_router_preferences": RouterPreferences;
   "routing/update_router_preferences": RouterPreferences;
   "routing/rollback_routing_policy": unknown;
@@ -1274,6 +1282,13 @@ export interface MergeStrategies {
 export type MergeStrategy = "merge" | "squash" | "rebase";
 
 export type Mergeability = "mergeable" | "conflicting" | "unknown";
+
+export interface MeterProviderEntry {
+  id: string;
+  label: string;
+  plannedSource?: string | null;
+  supported: boolean;
+}
 
 export interface ModelCatalogDiagnostics {
   expiresAt?: string | null;
@@ -2936,6 +2951,13 @@ export interface ScanHistoryResult {
   recordsImported: number;
   recordsSkipped: number;
   sources: UsageHistoryScanOutcome[];
+}
+
+export interface MeterRegistry {
+  adaptiveDefaultSeconds: number;
+  attribution: string;
+  nominalIntervalSeconds: number;
+  providers: MeterProviderEntry[];
 }
 
 export interface GetRouterPreferencesParams {

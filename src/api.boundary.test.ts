@@ -19,14 +19,15 @@ describe("the api boundary consumes the generated contract", () => {
 
   it("routes every event subscription through the typed subscribe() helper", () => {
     // Naming the call sites rather than counting them: a raw listen() is only
-    // allowed for subscribe()'s own body and for the two Tauri events the
-    // desktop shell owns rather than the protocol — the menu channel, and the
-    // batched agent stream the shell coalesces on its way to the webview
+    // allowed for subscribe()'s own body and for the three Tauri events the
+    // desktop shell owns rather than the protocol — the menu channel, the
+    // meter-tray channel (native tray menu/left-click, same exemption), and
+    // the batched agent stream the shell coalesces on its way to the webview
     // (`src-tauri/src/agent_batch.rs`; the daemon still speaks `agent-event`
     // one frame at a time). Any other literal here would be a hand-typed wire
     // shape.
     const targets = [...source.matchAll(/\blisten(?:<[^>]*>)?\(([^,]+),/g)].map(match => match[1].trim());
-    expect(targets).toEqual(["notification", "MENU_COMMAND_EVENT", "AGENT_EVENT_BATCH"]);
+    expect(targets).toEqual(["notification", '"bridge-meter-tray"', "MENU_COMMAND_EVENT", "AGENT_EVENT_BATCH"]);
   });
 
   it("only calls methods the generated registry declares", () => {

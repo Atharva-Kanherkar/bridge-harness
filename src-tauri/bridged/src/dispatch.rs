@@ -497,6 +497,8 @@ pub fn dispatch(
                 p.source_ids.as_deref(),
             ))
         }
+        MethodName::GetMeterSnapshot => reply(Ok(api::meter_snapshot())),
+        MethodName::RefreshMeter => reply(api::refresh_meter(core)),
         MethodName::VerifierCandidates => {
             let p: wire::VerifierCandidatesParams = decode(method, params)?;
             reply(api::verifier_candidates(core, &p.change_labels, p.available_capabilities))

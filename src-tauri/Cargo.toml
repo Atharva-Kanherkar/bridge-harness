@@ -36,7 +36,7 @@ serde_json = { workspace = true }
 bridge-core = { path = "bridge-core" }
 bridge-protocol = { path = "bridge-protocol" }
 bridge-client = { path = "bridge-client" }
-tauri = { version = "2", features = ["macos-private-api"] }
+tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-single-instance = "2"
