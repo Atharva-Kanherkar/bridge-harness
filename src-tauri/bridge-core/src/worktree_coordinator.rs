@@ -18,7 +18,7 @@ pub struct PullRequestCheckout {
 
 impl WorktreeCoordinator {
     pub fn prepare_isolated_worker(
-        db: &Connection,
+        db: &std::sync::Mutex<Connection>,
         namespace_root: &Path,
         workspace_id: &str,
         task_worktree: &Path,
@@ -26,7 +26,7 @@ impl WorktreeCoordinator {
         session_id: &str,
         owned_paths: &[String],
     ) -> Result<(PathBuf, String), BridgeError> {
-        let active_writers = store::worker_leases(db, workspace_id)?
+        let active_writers = store::worker_leases(&db.lock().unwrap(), workspace_id)?
             .into_iter()
             .filter(|lease| lease.session_id != session_id && lease.lease_status == "active")
             .filter(|lease| lease.write_mode != "read_only")
@@ -41,7 +41,7 @@ impl WorktreeCoordinator {
         // paths that reach creation anyway.
         let repo_root = task_worktree.to_string_lossy().to_string();
         if let Some(reason) =
-            worktree_registry::over_capacity(db, &repo_root, &WorktreeRetention::default())?
+            worktree_registry::over_capacity(&db.lock().unwrap(), &repo_root, &WorktreeRetention::default())?
         {
             return Err(BridgeError::Invalid(format!(
                 "cannot create an isolated worker worktree: {reason}"
@@ -56,12 +56,15 @@ impl WorktreeCoordinator {
             owned_paths,
             &active_writers,
         )?;
+        let seed = crate::dependency_seed::seed(task_worktree, &worktree.path);
+        let db = db.lock().unwrap();
+        store::event(&db, "storage", "worktree.dependencies", session_id, seed)?;
         db.execute(
             "UPDATE worker_runtime SET worktree_path=?2,worktree_branch=?3,updated_at=?4 WHERE session_id=?1",
             rusqlite::params![session_id, worktree.path.to_string_lossy(), worktree.branch, chrono::Utc::now().to_rfc3339()],
         )?;
         worktree_registry::register(
-            db,
+            &db,
             &NewWorktree {
                 kind: worktree_registry::KIND_WORKER.to_owned(),
                 repo_root,

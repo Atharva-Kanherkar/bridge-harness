@@ -1699,34 +1699,19 @@ fn run_bounded_bytes<'a, I>(
 where
     I: IntoIterator<Item = &'a str>,
 {
-    let mut child = git_command(cwd)
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()?;
-    let stderr = child.stderr.take().expect("piped stderr");
-    let stderr_reader = thread::spawn(move || read_capped(stderr, MAX_GIT_ERROR_BYTES));
-    let mut stdout = Vec::with_capacity(limit.min(64 * 1024).saturating_add(1));
-    child
-        .stdout
-        .take()
-        .expect("piped stdout")
-        .take(limit as u64 + 1)
-        .read_to_end(&mut stdout)?;
+    let output = command_output_deadline(git_command(cwd).args(args), std::time::Duration::from_secs(30))?;
+    let mut stdout = output.stdout;
     let truncated = stdout.len() > limit;
     if truncated {
         stdout.truncate(limit);
-        let _ = child.kill();
     }
-    let status = child.wait()?;
-    let stderr = stderr_reader.join().unwrap_or_default();
     if !truncated
-        && !status
+        && !output.status
             .code()
             .is_some_and(|code| accepted_statuses.contains(&code))
     {
         return Err(BridgeError::Git(
-            String::from_utf8_lossy(&stderr).trim().into(),
+            String::from_utf8_lossy(&output.stderr).trim().into(),
         ));
     }
     Ok(BoundedOutput { stdout, truncated })
@@ -1752,7 +1737,7 @@ fn run_bytes<'a, I>(cwd: &Path, args: I) -> Result<Vec<u8>, BridgeError>
 where
     I: IntoIterator<Item = &'a str>,
 {
-    let output = git_command(cwd).args(args).output()?;
+    let output = command_output_deadline(git_command(cwd).args(args), std::time::Duration::from_secs(30))?;
     if !output.status.success() {
         return Err(BridgeError::Git(
             String::from_utf8_lossy(&output.stderr).trim().into(),
@@ -1771,13 +1756,45 @@ fn run<'a, I>(cwd: &Path, args: I) -> Result<String, BridgeError>
 where
     I: IntoIterator<Item = &'a str>,
 {
-    let output = git_command(cwd).args(args).output()?;
-    if !output.status.success() {
-        return Err(BridgeError::Git(
-            String::from_utf8_lossy(&output.stderr).trim().into(),
-        ));
+    Ok(String::from_utf8_lossy(&run_bytes(cwd, args)?).into())
+}
+
+/// Bound wall time as well as output, including a child that keeps a pipe open.
+/// The caller never joins a blocked reader after its deadline.
+pub(crate) fn command_output_deadline(command: &mut Command, timeout: std::time::Duration) -> Result<std::process::Output, BridgeError> {
+    #[cfg(unix)]
+    { use std::os::unix::process::CommandExt; command.process_group(0); }
+    let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    let (send_out, receive_out) = std::sync::mpsc::channel();
+    let (send_err, receive_err) = std::sync::mpsc::channel();
+    const LIMIT: usize = 16 * 1024 * 1024;
+    thread::spawn(move || { let _ = send_out.send(read_capped(stdout, LIMIT + 1)); });
+    thread::spawn(move || { let _ = send_err.send(read_capped(stderr, MAX_GIT_ERROR_BYTES)); });
+    let start = std::time::Instant::now();
+    let mut out = None;
+    let mut err = None;
+    loop {
+        if out.is_none() { out = receive_out.try_recv().ok(); }
+        if err.is_none() { err = receive_err.try_recv().ok(); }
+        if let Some(status) = child.try_wait()? {
+            if out.is_some() && err.is_some() {
+                let stdout = out.unwrap();
+                if stdout.len() > LIMIT { return Err(BridgeError::Git("repository observation exceeded its output limit".into())); }
+                return Ok(std::process::Output { status, stdout, stderr: err.unwrap() });
+            }
+        }
+        if start.elapsed() >= timeout {
+            #[cfg(unix)]
+            unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL); }
+            let _ = child.kill();
+            // Reap off the caller: an uninterruptible filesystem must not hold it.
+            thread::spawn(move || { let _ = child.wait(); });
+            return Err(BridgeError::Git(format!("repository command timed out after {} ms", timeout.as_millis())));
+        }
+        thread::sleep(std::time::Duration::from_millis(2));
     }
-    Ok(String::from_utf8_lossy(&output.stdout).into())
 }
 pub fn workspace_path(base: &Path, project: &str, city: &str) -> PathBuf {
     base.join(slug(project)).join(city)
@@ -1786,6 +1803,17 @@ pub fn workspace_path(base: &Path, project: &str, city: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(unix)]
+    fn slow_repository_process_and_inherited_pipes_have_a_deadline() {
+        let started = std::time::Instant::now();
+        let result = command_output_deadline(Command::new("sh").args(["-c", "sleep 10 & wait"]), std::time::Duration::from_millis(50));
+        assert!(result.unwrap_err().to_string().contains("timed out"));
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        let output = command_output_deadline(Command::new("git").arg("--version"), std::time::Duration::from_secs(2)).unwrap();
+        assert!(output.status.success());
+    }
 
     #[test]
     fn no_production_git_spawn_bypasses_the_counted_constructor() {

@@ -908,7 +908,14 @@ pub fn route(
         .as_ref()
         .map(|profile| format!("{}:{}", profile.provider, profile.model))
         .filter(|key| candidate_for_key(&evaluations, key).is_some());
-    let baseline = profile_baseline.or_else(|| baseline_key(descriptors, request));
+    let settings = crate::worker_settings::load(db, &workspace_id)?;
+    let mut default_request = request.clone();
+    if request.harness.is_none() && request.model.is_none() {
+        default_request.harness = settings.default_harness.or_else(|| descriptors.iter()
+            .find(|descriptor| descriptor.available && descriptor.models.iter().any(|model| model.tier == request.capability_tier && model.default_for_tier))
+            .map(|descriptor| descriptor.id.clone()));
+    }
+    let baseline = profile_baseline.or_else(|| baseline_key(descriptors, &default_request));
     // Only role families are published as preferences, so only role families
     // are consulted here. The fingerprint recurs in exactly one situation — a
     // retry of the same task — and that is where escalation belongs: after a

@@ -466,6 +466,22 @@ pub fn dispatch(
             let p: wire::ArchiveChatParams = decode(method, params)?;
             reply(api::archive_chat(core, &p.session_id))
         }
+        MethodName::ListArchivedChats => {
+            let p: wire::ListArchivedChatsParams = decode(method, params)?;
+            reply(api::list_archived_chats(core, &p))
+        }
+        MethodName::GetWorkerSettings => {
+            let p: wire::GetWorkerSettingsParams = decode(method, params)?;
+            reply(bridge_core::worker_settings::load(&core.db.lock().unwrap(), &p.workspace_id))
+        }
+        MethodName::SaveWorkerSettings => {
+            let p: wire::SaveWorkerSettingsParams = decode(method, params)?;
+            reply(bridge_core::worker_settings::save(&core.db.lock().unwrap(), &p.workspace_id, &p.settings))
+        }
+        MethodName::UnarchiveChat => {
+            let p: wire::ArchiveChatParams = decode(method, params)?;
+            reply(api::unarchive_chat(core, &p.session_id))
+        }
         MethodName::UsageSummary => {
             let p: wire::SummaryParams = decode(method, params)?;
             let request = into_core(method, &p)?;

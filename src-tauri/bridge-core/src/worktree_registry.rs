@@ -980,8 +980,12 @@ pub fn reconcile(
         if !repo.is_dir() {
             continue;
         }
-        let Ok(entries) = git::list_worktrees(&repo) else {
-            continue;
+        let entries = match git::list_worktrees(&repo) {
+            Ok(entries) => entries,
+            Err(error) => {
+                store::event(&db.lock().unwrap(), "storage", "worktree.observation_failed", &repo.to_string_lossy(), &error.to_string())?;
+                continue;
+            }
         };
         let mut prunable = 0usize;
         let canonical_repo = canonical_key(&repo);
@@ -1092,19 +1096,36 @@ const SIZE_WALK_ENTRY_LIMIT: usize = 400_000;
 /// so far. Both bias the number *downward*, which biases a cap decision toward
 /// keeping a checkout — the safe direction.
 pub fn directory_size(path: &Path) -> (u64, bool) {
+    let path = path.to_path_buf();
+    let timeout = Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + timeout;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || { let _ = sender.send(directory_size_until(&path, deadline)); });
+    // A blocked filesystem syscall cannot be cancelled portably. The observer
+    // checks the same deadline when it returns; the maintenance caller never joins it.
+    receiver.recv_timeout(timeout).unwrap_or((0, false))
+}
+
+fn directory_size_until(path: &Path, deadline: std::time::Instant) -> (u64, bool) {
     let mut total = 0u64;
+    let mut complete = true;
     let mut visited = 0usize;
     let mut stack = vec![path.to_path_buf()];
     while let Some(directory) = stack.pop() {
+        if std::time::Instant::now() >= deadline { return (total, false); }
         let Ok(entries) = std::fs::read_dir(&directory) else {
+            complete = false;
             continue;
         };
-        for entry in entries.flatten() {
+        for entry in entries {
+            if std::time::Instant::now() >= deadline { return (total, false); }
+            let Ok(entry) = entry else { complete = false; continue; };
             visited += 1;
             if visited > SIZE_WALK_ENTRY_LIMIT {
                 return (total, false);
             }
             let Ok(metadata) = entry.metadata() else {
+                complete = false;
                 continue;
             };
             if metadata.is_dir() {
@@ -1114,7 +1135,7 @@ pub fn directory_size(path: &Path) -> (u64, bool) {
             }
         }
     }
-    (total, true)
+    (total, complete)
 }
 
 // --- capacity -----------------------------------------------------------------
@@ -1709,6 +1730,15 @@ mod tests {
     use super::*;
     use rusqlite::params;
     use std::process::Command;
+
+    #[test]
+    fn an_expired_measurement_is_reported_as_incomplete() {
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("file"), "content").unwrap();
+        assert_eq!(directory_size_until(root.path(), std::time::Instant::now()), (0, false));
+        assert_eq!(directory_size(root.path()), (7, true));
+        assert!(!directory_size(&root.path().join("missing")).1);
+    }
 
     fn git_cmd(cwd: &Path, args: &[&str]) -> String {
         let output = Command::new("git")

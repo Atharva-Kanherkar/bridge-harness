@@ -4916,6 +4916,7 @@ pub fn launch_worker_outcome(
         &routed.decision.id,
         "reserved",
     );
+    let _ = store::event(&state.db.lock().unwrap(), "router", "worker.route.selected", &reservation.session_id, &routed.decision.explanation);
     let completion_input = serde_json::to_string(directive)
         .map_err(|error| BridgeError::Invalid(format!("Could not serialize worker completion input: {error}")))
         .and_then(|serialized| state.db.lock().unwrap().execute(
@@ -5010,7 +5011,7 @@ pub fn launch_worker_outcome(
         .unwrap_or_else(|| reservation.path.clone());
     if requires_child_worktree {
         match worktree_coordinator::WorktreeCoordinator::prepare_isolated_worker(
-            &state.db.lock().unwrap(),
+            &state.db,
             &state.worktrees.join("workers"),
             &reservation.workspace_id,
             Path::new(&reservation.path),
@@ -7662,6 +7663,9 @@ fn fail_over_exhausted_worker(
                 reason: "the worker has no parent to report a reroute to".into(),
             };
         };
+        if !crate::worker_settings::for_session(&db, child_session_id).provider_failover {
+            return FailoverOutcome::NoRoute { reason: "Automatic provider failover is disabled in Workers settings".into() };
+        }
         // One automatic attempt per objective, whatever spends it. A failover
         // is Bridge choosing to pay for the work again, which is exactly what
         // that budget counts — checked before anything else, because an
@@ -8006,13 +8010,13 @@ fn settle_worker_after_result(
         let class = classify_worker_failure(&db, child_session_id, result);
         // Stored where it is decided. Every surface then reads one verdict
         // instead of four re-derivations of it.
-        if matches!(
-            result.status,
-            delegation::WorkerResultStatus::Failed
-                | delegation::WorkerResultStatus::ProtocolInvalid
-        ) {
+        if matches!(result.status, delegation::WorkerResultStatus::Failed | delegation::WorkerResultStatus::ProtocolInvalid) {
             persist_failure_class(&db, child_session_id, &class);
-            worker_retry::decide_with_class(class, retry_count, hot, spent)
+            if crate::worker_settings::for_session(&db, child_session_id).automatic_retry {
+                worker_retry::decide_with_class(class, retry_count, hot, spent)
+            } else {
+                worker_retry::RetryDecision::Decline { reason: "Automatic retries are disabled in Workers settings".into() }
+            }
         } else {
             worker_retry::decide(result, retry_count, hot, spent)
         }
@@ -8196,10 +8200,11 @@ fn settle_worker_after_result(
             match attributes.map(|(role, tier, mode)| {
                 worker_pool::retention_action_for_attributes(&role, &tier, &mode, Utc::now())
             }) {
-                Some(worker_pool::RetentionAction::KeepWarmUntil(until)) => (
-                    worker_lifecycle::WorkerLifecycleState::Warm,
-                    Some(until.to_rfc3339()),
-                ),
+                Some(worker_pool::RetentionAction::KeepWarmUntil(_)) => {
+                    let minutes = crate::worker_settings::for_session(&state.db.lock().unwrap(), child_session_id).warm_retention_minutes;
+                    if minutes == 0 { (worker_lifecycle::WorkerLifecycleState::Completed, None) }
+                    else { (worker_lifecycle::WorkerLifecycleState::Warm, Some((Utc::now() + chrono::Duration::minutes(minutes)).to_rfc3339())) }
+                },
                 _ => (worker_lifecycle::WorkerLifecycleState::Completed, None),
             }
         }
@@ -9004,9 +9009,10 @@ fn synthetic_failure_result(
 ///      generic "ended without reporting".
 fn notify_parent_on_worker_stalled(core: &Arc<BridgeCore>, child_session_id: &str) {
     let state = core.clone();
+    let stall_timeout = crate::worker_settings::for_session(&state.db.lock().unwrap(), child_session_id).stall_timeout_seconds;
     // (1) Confirm the worker is still silent — closes the snapshot→act race.
     match worker_silence_secs(&state, child_session_id) {
-        Some(silent) if silent >= WORKER_STALL_TIMEOUT_SECONDS => {}
+        Some(silent) if silent >= stall_timeout => {}
         _ => return,
     }
     let Some(label) = unreported_worker_meta(core, child_session_id) else {
@@ -9033,7 +9039,7 @@ fn notify_parent_on_worker_stalled(core: &Arc<BridgeCore>, child_session_id: &st
         schema_version: delegation::SCHEMA_VERSION,
         status: delegation::WorkerResultStatus::Failed,
         summary: format!(
-            "{label} stopped responding (no output for {WORKER_STALL_TIMEOUT_SECONDS}s) and was stopped"
+            "{label} stopped responding (no output for {stall_timeout}s) and was stopped"
         ),
         files_changed: vec![],
         tests: vec![],
@@ -9058,7 +9064,7 @@ fn notify_parent_on_worker_stalled(core: &Arc<BridgeCore>, child_session_id: &st
         "supervisor",
         WORKER_STALLED_OBSERVED,
         child_session_id,
-        &format!("no output for {WORKER_STALL_TIMEOUT_SECONDS}s"),
+        &format!("no output for {stall_timeout}s"),
     );
     // (3) Claim the result before the process can die and race us.
     report_synthetic_worker_failure(core, child_session_id, &result);
@@ -9594,7 +9600,7 @@ fn maintain_worker_pool(core: &Arc<BridgeCore>) {
         ).ok();
         if status.as_deref() == Some("reported")
             || (status.is_some() && worker_silence_secs(&state, &id)
-                .is_some_and(|silent| silent >= WORKER_STALL_TIMEOUT_SECONDS)) {
+                .is_some_and(|silent| silent >= crate::worker_settings::for_session(&state.db.lock().unwrap(), &id).stall_timeout_seconds)) {
             forward_turn_result(core, &id);
         }
     }
@@ -9613,7 +9619,7 @@ fn maintain_worker_pool(core: &Arc<BridgeCore>) {
         let activity = state.worker_activity.lock().unwrap();
         activity
             .iter()
-            .filter(|(_, seen)| seen.elapsed().as_secs() >= WORKER_STALL_TIMEOUT_SECONDS)
+            .filter(|(_, seen)| seen.elapsed().as_secs() >= 60)
             .map(|(session_id, _)| session_id.clone())
             .collect()
     };
@@ -16429,6 +16435,44 @@ mod retry_settlement_tests {
                 |row| row.get(0),
             )
             .ok()
+    }
+
+    #[test]
+    fn worker_settings_disable_real_retry_and_failover() {
+        let (_fixture, core, sent, _guard) = core_with_working_worker();
+        let settings = bridge_protocol::messages::WorkerSettings {
+            automatic_retry: false, provider_failover: false, warm_retention_minutes: 0,
+            ..Default::default()
+        };
+        crate::worker_settings::save(&core.db.lock().unwrap(), "w", &settings).unwrap();
+        assert!(matches!(fail_over_exhausted_worker(&core, "child", "quota"), FailoverOutcome::NoRoute { .. }));
+        settle_worker_after_result(&core, "child", &failed("connection reset" )).unwrap();
+        assert!(sent.lock().unwrap().iter().all(|message| message == "STOPPED"));
+        assert!(declined_reason(&core).unwrap().contains("disabled"));
+    }
+
+    #[test]
+    fn a_longer_stall_setting_keeps_a_quiet_worker_alive() {
+        let (_fixture, core, sent, _guard) = core_with_working_worker();
+        let settings = bridge_protocol::messages::WorkerSettings { stall_timeout_seconds: 1200, ..Default::default() };
+        crate::worker_settings::save(&core.db.lock().unwrap(), "w", &settings).unwrap();
+        core.worker_activity.lock().unwrap().insert("child".into(), std::time::Instant::now() - Duration::from_secs(700));
+        notify_parent_on_worker_stalled(&core, "child");
+        assert!(sent.lock().unwrap().is_empty());
+        assert!(core.adapters.lock().unwrap().contains_key("child"));
+    }
+
+    #[test]
+    fn zero_warm_retention_completes_instead_of_parking_a_worker() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        let settings = bridge_protocol::messages::WorkerSettings { warm_retention_minutes: 0, ..Default::default() };
+        crate::worker_settings::save(&core.db.lock().unwrap(), "w", &settings).unwrap();
+        let mut result = failed("Finished");
+        result.status = delegation::WorkerResultStatus::Completed;
+        settle_worker_after_result(&core, "child", &result).unwrap();
+        let runtime = store::worker_runtime(&core.db.lock().unwrap(), "child").unwrap().unwrap();
+        assert_eq!(runtime.lifecycle_state, "completed");
+        assert!(runtime.warm_until.is_none());
     }
 
     #[test]

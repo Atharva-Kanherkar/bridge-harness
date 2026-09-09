@@ -274,6 +274,10 @@ typed_methods![
     (ReclaimWorktree, ReclaimWorktreeParams, WorktreeReclaimResult),
     (SweepWorktrees, _, WorktreeSweepResult),
     (ArchiveChat, ArchiveChatParams, ArchiveChatResult),
+    (GetWorkerSettings, GetWorkerSettingsParams, WorkerSettings),
+    (SaveWorkerSettings, SaveWorkerSettingsParams, WorkerSettings),
+    (ListArchivedChats, ListArchivedChatsParams, ArchivedChatsResult),
+    (UnarchiveChat, ArchiveChatParams, UnitResult),
     // token and cost usage
     (UsageSummary, SummaryParams, UsageSummaryResult),
     (ListUsagePriceOverrides, _, ListUsagePriceOverridesResult),

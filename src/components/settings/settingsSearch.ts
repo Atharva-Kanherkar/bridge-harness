@@ -26,6 +26,9 @@ export type SearchGroup = {
 
 /** Every row a page shows regardless of what the user has configured. */
 export const STATIC_SETTINGS_ROWS: SearchableRow[] = [
+  { section: "workers", label: "Worker limits and routing", description: "Default harness, concurrency, retries, failover, stall timeout and warm retention" },
+  { section: "archives", label: "Archived chats", description: "Search, read and unarchive conversations without restoring worktrees" },
+  { section: "storage", label: "Worktree storage", description: "Disk usage, safe cleanup, repositories and retention" },
   { section: "appearance", label: "Mode", description: "Match macOS, Paper, or Graphite" },
   { section: "appearance", label: "Shell", description: "Solid or Cursor translucency" },
   { section: "appearance", label: "Thinking control", description: "Slider, Sentence, or List effort picker" },

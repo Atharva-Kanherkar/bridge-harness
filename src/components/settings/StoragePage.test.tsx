@@ -61,6 +61,8 @@ it("reports what a reclaim freed and drops the row", async () => {
   await act(async () => {
     button("Reclaim")?.click();
   });
+  expect(host.textContent).toContain("Confirm cleanup");
+  await act(async () => { button("Confirm cleanup")?.click(); });
   expect(host.textContent).toContain("Reclaimed 2.5 GiB");
   expect(host.textContent).not.toContain("bridge/demo-session2");
 });
@@ -71,8 +73,10 @@ it("says plainly when a sweep could reclaim nothing", async () => {
   await act(async () => {
     button("Sweep")?.click();
   });
+  await act(async () => { button("Confirm cleanup")?.click(); });
   await act(async () => {
     button("Sweep")?.click();
   });
+  await act(async () => { button("Confirm cleanup")?.click(); });
   expect(host.textContent).toContain("Nothing could be reclaimed safely");
 });

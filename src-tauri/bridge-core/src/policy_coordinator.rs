@@ -64,7 +64,7 @@ impl PolicyCoordinator {
             requires_user_approval: false,
             child_worktrees_available,
         };
-        let outcome = policy::PolicyEngine::default().decide(&input);
+        let outcome = policy::PolicyEngine::new(crate::worker_settings::policy(db, &workspace_id)?).decide(&input);
         let pending_approval_id =
             policy::record_decision(db, parent_session_id, turn_id, &input, &outcome)?;
         Ok(WorkerRouteContext {

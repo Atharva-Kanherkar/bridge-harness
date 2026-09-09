@@ -117,3 +117,29 @@ pub struct ArchiveChatResult {
     pub bytes_freed: i64,
     pub worktree_detail: Option<String>,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListArchivedChatsParams {
+    #[serde(default)]
+    pub query: String,
+    #[serde(default)]
+    pub offset: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchivedChat {
+    pub id: String,
+    pub title: String,
+    pub harness: String,
+    pub workspace_title: Option<String>,
+    pub archived_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchivedChatsResult {
+    pub chats: Vec<ArchivedChat>,
+    pub has_more: bool,
+}

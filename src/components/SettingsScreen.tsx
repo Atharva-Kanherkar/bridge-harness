@@ -17,6 +17,8 @@ import { HarnessesPage, type HarnessDraft } from "./settings/HarnessesPage";
 import { PresetsPage, newAgent } from "./settings/PresetsPage";
 import { ModelsPage } from "./settings/ModelsPage";
 import { StoragePage } from "./settings/StoragePage";
+import { ArchivedChatsPage } from "./settings/ArchivedChatsPage";
+import { WorkersPage } from "./settings/WorkersPage";
 import { STATIC_SETTINGS_ROWS, type SearchableRow } from "./settings/settingsSearch";
 import { type Section } from "./settings/sections";
 
@@ -247,6 +249,8 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       {section === "prompts" && <PromptStudio />}
       {section === "import" && <ImportHarnessSection onError={onError} />}
       {section === "storage" && <StoragePage onError={onError} />}
+      {section === "archives" && <ArchivedChatsPage />}
+      {section === "workers" && <WorkersPage adapters={adapters} />}
       {section === "work" && <WorkSettingsSection onError={onError} />}
 
       {section === "agents" && config && <PresetsPage

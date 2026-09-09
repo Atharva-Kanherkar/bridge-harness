@@ -130,7 +130,7 @@ describe("MissionControl", () => {
     expect(html).not.toContain("DONE");
   });
 
-  it("hides a worker whose runtime was not loaded so its status is never guessed", () => {
+  it("names missing runtime state instead of guessing success or hiding the worker", () => {
     const html = renderToStaticMarkup(
       <MissionControl
         sessions={[session("worker-elsewhere", { label: "Foreign worker", status: "working", parentSessionId: "other-orchestrator" })]}
@@ -141,8 +141,9 @@ describe("MissionControl", () => {
         onFocusSession={() => undefined}
       />,
     );
-    expect(html).toContain("No agents running yet");
-    expect(html).not.toContain("Foreign worker");
+    expect(html).toContain("STATUS UNAVAILABLE");
+    expect(html).toContain("Foreign worker");
+    expect(html).not.toContain("Needs your approval");
   });
 
   it("drops finished sessions so completed history does not grow the grid", () => {

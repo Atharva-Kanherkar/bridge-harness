@@ -101,6 +101,10 @@ methods![
     (RefreshAccountUsage, "sessions", "refresh_account_usage"),
     (StopSession, "sessions", "stop_session"),
     (ArchiveChat, "sessions", "archive_chat"),
+    (GetWorkerSettings, "config", "get_worker_settings"),
+    (SaveWorkerSettings, "config", "save_worker_settings"),
+    (ListArchivedChats, "sessions", "list_archived_chats"),
+    (UnarchiveChat, "sessions", "unarchive_chat"),
     // memory — explicit named-scope pins; not recall, not the router
     (SaveMemoryRecord, "memory", "save_memory_record"),
     (ListMemoryRecords, "memory", "list_memory_records"),

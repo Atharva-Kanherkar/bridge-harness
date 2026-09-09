@@ -15,6 +15,8 @@ import { formatElapsed, harnessLabel, modelLabel } from "../utils";
 import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionStagger, useMotionTransition } from "../motion";
 import { workerPanelModel, type WorkerPanelModel } from "./workerPanel";
+import { WorkerDiagnostics } from "./WorkerControls";
+import type { BridgeEvent } from "../types";
 import type { WorkerTone } from "./workerStatus";
 import { bridgeApi } from "../api";
 import { quoteSelection } from "../sideChat";
@@ -1627,6 +1629,7 @@ function DelegationRow({ item, workers, now, onOpenSession, onRetryWorker, onSto
   if (panel && childSessionId) {
     return <WorkerPanel
       model={panel}
+      reasons={workers?.reasons ?? []}
       objective={item.text}
       modelLabel={model}
       effort={effort}
@@ -1652,6 +1655,7 @@ function DelegationRow({ item, workers, now, onOpenSession, onRetryWorker, onSto
 /// who the worker is, what the host knows about it, and what it just did — and
 /// a panel is useless with any of them missing.
 export interface WorkerPanelSource {
+  reasons?: BridgeEvent[];
   sessions: Session[];
   runtimes: WorkerRuntimeRecord[];
   /** The *global* live stream, not this session's slice: the worker's frames
@@ -1711,7 +1715,8 @@ function useLiveClock(active: boolean, override?: number): number {
 /// the ask, clamped, and the summary band is the outcome, clamped and expandable
 /// on request. A finished card used to open with a dozen lines of unbroken prose
 /// and then repeat its first sentence, truncated, three bands lower.
-function WorkerPanel({ model, objective, modelLabel: requestedModel, effort, now, onOpenSession, onStopWorker }: {
+function WorkerPanel({ model, objective, modelLabel: requestedModel, effort, now, onOpenSession, onStopWorker, reasons }: {
+  reasons: BridgeEvent[];
   model: WorkerPanelModel;
   objective?: string;
   modelLabel?: string;
@@ -1798,6 +1803,7 @@ function WorkerPanel({ model, objective, modelLabel: requestedModel, effort, now
         thing — "Expand" put the worker in an overlay, "Open session" made it
         the selected conversation — and the pair read as a choice the reader had
         to understand before they could look at their worker. */}
+    <div className="px-3.5 pb-2"><WorkerDiagnostics reasons={reasons} sessionId={model.session.id} /></div>
     {onOpenSession && <footer className="flex items-center justify-end border-t border-border px-3.5 py-2">
       <button type="button" onClick={() => onOpenSession(model.session.id)} className="inline-flex min-h-7 items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><CornerDownRight size={11} aria-hidden="true"/> Open session</button>
     </footer>}

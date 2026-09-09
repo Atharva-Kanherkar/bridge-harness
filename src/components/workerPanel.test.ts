@@ -52,7 +52,7 @@ describe("worker panel projection", () => {
   it("works without a runtime record", () => {
     const model = workerPanelModel("child", [session("child")], [], []);
     expect(model?.retryCount).toBe(0);
-    expect(model?.status.label).toBe("WORKING");
+    expect(model?.status.label).toBe("STATUS UNAVAILABLE");
   });
 
   it("surfaces the reported result once the envelope is in", () => {

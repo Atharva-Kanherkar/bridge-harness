@@ -3756,6 +3756,39 @@ pub fn worktree_usage(
 /// reclaim. A checkout that cannot be proven expendable is *kept* rather than
 /// blocking the archive, and the reason comes back with the result — putting a
 /// conversation away should not require first resolving its uncommitted work.
+pub fn list_archived_chats(core: &Arc<BridgeCore>, request: &wire::ListArchivedChatsParams) -> Result<wire::ArchivedChatsResult, BridgeError> {
+    let db = core.db.lock().unwrap();
+    let mut statement = db.prepare(
+        "SELECT s.id,COALESCE(NULLIF(s.title,''),s.label),s.harness,w.title,s.archived_at
+         FROM sessions s LEFT JOIN workspaces w ON w.id=s.workspace_id
+         WHERE s.archived_at IS NOT NULL
+           AND instr(lower(COALESCE(s.title,'')||' '||s.label||' '||COALESCE(w.title,'')),lower(?1))>0
+         ORDER BY s.archived_at DESC,s.id LIMIT 51 OFFSET ?2",
+    )?;
+    let mut chats = statement.query_map(params![request.query.trim(), request.offset], |row| {
+        Ok(wire::ArchivedChat { id: row.get(0)?, title: row.get(1)?, harness: row.get(2)?, workspace_title: row.get(3)?, archived_at: row.get(4)? })
+    })?.collect::<Result<Vec<_>, _>>()?;
+    let has_more = chats.len() > 50;
+    chats.truncate(50);
+    Ok(wire::ArchivedChatsResult { chats, has_more })
+}
+
+/// Visibility only: never restore a checkout or start a provider here.
+pub fn unarchive_chat(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    {
+        let mut db = core.db.lock().unwrap();
+        let tx = db.transaction()?;
+        let archived: Option<String> = tx.query_row("SELECT archived_at FROM sessions WHERE id=?1", params![session_id], |row| row.get(0))?;
+        if archived.is_some() {
+            tx.execute("UPDATE sessions SET archived_at=NULL WHERE id=?1", params![session_id])?;
+            store::event(&tx, "user", "session.unarchived", session_id, "Chat returned to history; no checkout restored or model started")?;
+        }
+        tx.commit()?;
+    }
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(())
+}
+
 pub fn archive_chat(
     core: &Arc<BridgeCore>,
     session_id: &str,
@@ -4842,6 +4875,31 @@ mod tests {
         assert!(archived.is_some(), "marked archived");
         assert_eq!(stored, 1, "and still there");
         assert_eq!(session_count(&fixture.core), 1);
+    }
+
+    #[test]
+    fn archive_list_and_unarchive_restore_only_visibility() {
+        let fixture = chat_fixture();
+        super::archive_chat(&fixture.core, "chat").unwrap();
+        let request = super::wire::ListArchivedChatsParams { query: "chat".into(), offset: 0 };
+        let archived = super::list_archived_chats(&fixture.core, &request).unwrap();
+        assert_eq!(archived.chats.len(), 1);
+        assert_eq!(archived.chats[0].id, "chat");
+        assert!(!archived.has_more);
+        super::unarchive_chat(&fixture.core, "chat").unwrap();
+        super::unarchive_chat(&fixture.core, "chat").unwrap();
+        assert_eq!(session_count(&fixture.core), 2);
+        assert!(!fixture.chat_worktree.exists());
+        let db = fixture.core.db.lock().unwrap();
+        let (pid, turn, ended): (Option<i64>, Option<String>, Option<String>) = db.query_row(
+            "SELECT adapter_pid,active_turn_id,ended_at FROM sessions WHERE id='chat'", [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!((pid, turn), (None, None));
+        assert!(ended.is_some());
+        drop(db);
+        assert!(super::list_archived_chats(&fixture.core, &request).unwrap().chats.is_empty());
+        assert!(super::unarchive_chat(&fixture.core, "missing").is_err());
     }
 
     /// Putting a conversation away should not require first resolving its

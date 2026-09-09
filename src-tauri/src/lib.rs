@@ -647,6 +647,30 @@ async fn archive_chat(
 }
 
 #[tauri::command]
+async fn list_archived_chats(
+    query: String,
+    offset: u32,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ArchivedChatsResult, BridgeError> {
+    api::list_archived_chats(state.inner(), &bridge_protocol::messages::ListArchivedChatsParams { query, offset })
+}
+
+#[tauri::command]
+async fn unarchive_chat(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
+    api::unarchive_chat(state.inner(), &session_id)
+}
+
+#[tauri::command]
+async fn get_worker_settings(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::WorkerSettings, BridgeError> {
+    bridge_core::worker_settings::load(&state.db.lock().unwrap(), &workspace_id)
+}
+
+#[tauri::command]
+async fn save_worker_settings(workspace_id: String, settings: bridge_protocol::messages::WorkerSettings, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::WorkerSettings, BridgeError> {
+    bridge_core::worker_settings::save(&state.db.lock().unwrap(), &workspace_id, &settings)
+}
+
+#[tauri::command]
 async fn reclaim_worktree(
     worktree_id: String,
     state: State<'_, Arc<BridgeCore>>,
@@ -2235,6 +2259,10 @@ pub fn run() -> i32 {
             list_worktrees,
             worktree_usage,
             archive_chat,
+            list_archived_chats,
+            unarchive_chat,
+            get_worker_settings,
+            save_worker_settings,
             reclaim_worktree,
             sweep_worktrees,
             adopt_worker_worktree,

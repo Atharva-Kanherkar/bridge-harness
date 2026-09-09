@@ -13,7 +13,7 @@ import type { MeterRegistry } from "./types";
 import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult } from "./protocol/generated/protocol";
-import type { TurnImage } from "./protocol/generated/protocol";
+import type { TurnImage, ArchivedChatsResult, WorkerSettings } from "./protocol/generated/protocol";
 import type {
   CommitExternalImportParams,
   DiscoverExternalImportParams,
@@ -1519,6 +1519,22 @@ export const bridgeApi = {
     }
     emitState();
     return { archived: true, bytesFreed: 0, worktreeDetail: owned?.retainedReason ?? null };
+  },
+  listArchivedChats: async (query = "", offset = 0): Promise<ArchivedChatsResult> => {
+    if (isTauri()) return call("sessions/list_archived_chats", { query, offset });
+    return { chats: [], hasMore: false };
+  },
+  workerSettings: async (workspaceId: string): Promise<WorkerSettings> => {
+    if (isTauri()) return call("config/get_worker_settings", { workspaceId });
+    return { defaultHarness: null, maxConcurrentWorkers: 2, maxWorkersPerTurn: 3, stallTimeoutSeconds: 600, warmRetentionMinutes: 5, automaticRetry: true, providerFailover: true };
+  },
+  saveWorkerSettings: async (workspaceId: string, settings: WorkerSettings): Promise<WorkerSettings> => {
+    if (isTauri()) return call("config/save_worker_settings", { workspaceId, settings });
+    return structuredClone(settings);
+  },
+  unarchiveChat: async (sessionId: string): Promise<void> => {
+    if (isTauri()) { await call("sessions/unarchive_chat", { sessionId }); return; }
+    throw new Error("Unarchiving a chat needs the desktop app");
   },
   // What the worktrees cost. Read-only on purpose: reclaiming is the
   // retention sweep's decision, taken against a fresh safety classification,
