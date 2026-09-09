@@ -69,7 +69,10 @@ describe("MeterPopover", () => {
     expect(text).toContain("1 more providers planned");
     expect(text).toContain("OpenRouter");
     expect(container.querySelector('[role="dialog"]')?.getAttribute("aria-label")).toBe("Usage meter");
-    expect(container.querySelector('[role="dialog"]')?.getAttribute("aria-modal")).toBe("true");
+    // The meter is its own menu-bar window, not a modal over the app: there
+    // is nothing behind it to make inert, so claiming modality would mislead
+    // a screen reader about what is reachable.
+    expect(container.querySelector('[role="dialog"]')?.getAttribute("aria-modal")).toBeNull();
     expect(document.activeElement).toBe(container.querySelector('[role="dialog"]'));
   });
 

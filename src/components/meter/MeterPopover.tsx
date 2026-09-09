@@ -42,12 +42,15 @@ function WindowRow({ window, nowMs }: { window: RateWindow; nowMs: number }) {
   </div>;
 }
 
-export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose }: {
+export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose, onOpenBridge }: {
   usage: Partial<Record<UsageProvider, UsageSnapshot>>;
   registry: MeterRegistry | null;
   refreshing: boolean;
   onRefresh: () => void;
   onClose: () => void;
+  /** Present only on the menu-bar panel, which is otherwise a dead end: from
+   *  the menu bar there is no other way through to the app. */
+  onOpenBridge?: () => void;
 }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
   // Countdowns and pace go stale against a frozen clock, so tick while open.
@@ -64,12 +67,17 @@ export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose }
   const awaiting = (registry?.providers ?? []).filter(entry => entry.supported && !liveProviders.has(entry.id as UsageProvider));
   const planned = (registry?.providers ?? []).filter(entry => !entry.supported);
   const worst = live.flatMap(({ snapshot }) => snapshot.windows).reduce<number | null>((max, window) => (max == null ? window.usedPercent : Math.max(max, window.usedPercent)), null);
-  return <div ref={dialogRef} role="dialog" aria-modal="true" aria-label="Usage meter" tabIndex={-1} className="u-glass-popover flex max-h-[80dvh] w-[min(24rem,calc(100vw-2rem))] flex-col overflow-hidden rounded-2xl outline-none">
+  // The meter is its own menu-bar window, so the card fills that window rather
+  // than floating inside the app. Nothing sits behind it to be made inert,
+  // which is why there is no `aria-modal` here.
+  return <div ref={dialogRef} role="dialog" aria-label="Usage meter" tabIndex={-1} className="u-glass-popover flex h-dvh w-full flex-col overflow-hidden rounded-2xl outline-none">
     <div className="flex items-center gap-2 border-b border-border px-3.5 py-2.5">
       <Gauge size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />
       <h2 className="font-display text-sm font-semibold text-foreground">Meter</h2>
-      <span className="truncate text-caption tabular-nums text-muted-foreground">{worst == null ? "no live windows" : `${Math.round(worst)}% worst window`}</span>
-      <span className="ml-auto flex items-center gap-1">
+      {/* The worst window is the headline — it is the one about to bite. Kept
+          terse because the header has to survive a 360pt panel. */}
+      <span className="truncate text-caption tabular-nums text-muted-foreground">{worst == null ? "no limits" : `${Math.round(worst)}% worst`}</span>
+      <span className="ml-auto flex shrink-0 items-center gap-1">
         <button type="button" onClick={onRefresh} disabled={refreshing} aria-label="Refresh meter" className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">
           <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />
         </button>
@@ -104,6 +112,9 @@ export function MeterPopover({ usage, registry, refreshing, onRefresh, onClose }
         </ul>
       </details>}
     </div>
-    <p className="border-t border-border px-3.5 py-2 text-[11px] text-muted-foreground">Pace math from CodexBar (MIT). Limits refresh from your provider sessions — no passwords stored.</p>
+    <div className="flex items-center gap-2 border-t border-border px-3.5 py-2">
+      <p className="min-w-0 flex-1 text-[11px] text-muted-foreground">Pace math from CodexBar (MIT). Limits come from your provider's own records — no passwords stored.</p>
+      {onOpenBridge && <button type="button" onClick={onOpenBridge} className="shrink-0 rounded-md px-2 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Open Bridge</button>}
+    </div>
   </div>;
 }

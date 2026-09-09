@@ -1,7 +1,6 @@
 import { recordStreamReceipt } from "./streamTiming";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { normalizeAgentToken } from "./agentMention";
 import { createInvokeQueue } from "./invokeQueue";
@@ -1193,23 +1192,41 @@ export const bridgeApi = {
   // in `src/meter.ts`, ported from the same CodexBar sources as the Rust core.
   getMeterSnapshot: (): Promise<MeterRegistry> =>
     isTauri() ? call("meter/get_meter_snapshot") : Promise.resolve(structuredClone(mockMeterRegistry)),
+  // Raising the main window is the shell's job, not the webview's. Going
+  // through `@tauri-apps/api/window` made this an ACL-gated IPC call that the
+  // capability file never granted, so every caller got `window.show not
+  // allowed` at the click. It also could not work from the meter panel, whose
+  // `getCurrentWindow()` is the panel, not `main`. The shell owns the handle
+  // and shows it natively, which needs no permission and targets the right
+  // window — same channel pattern as `notifyLayoutFullscreen`.
   revealMainWindow: async (): Promise<void> => {
     if (!isTauri()) return;
-    const mainWindow = getCurrentWindow();
-    await mainWindow.show();
-    await mainWindow.unminimize();
-    await mainWindow.setFocus();
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit("bridge-reveal-main");
   },
   refreshMeter: (): Promise<void> => {
     if (isTauri()) return call("meter/refresh_meter").then(() => undefined);
     return Promise.resolve();
   },
+  // Opening and closing the meter is window work, so the shell does it. Same
+  // channel pattern as `revealMainWindow`: the panel is positioned against the
+  // status item's rect, which only the tray handler knows.
+  openMeterPanel: async (): Promise<void> => {
+    if (!isTauri()) return;
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit("bridge-meter-panel", "toggle");
+  },
+  hideMeterPanel: async (): Promise<void> => {
+    if (!isTauri()) return;
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit("bridge-meter-panel", "hide");
+  },
   // The desktop shell owns this channel (native tray menu/left-click), not the
   // protocol — same exemption as MENU_COMMAND_EVENT in api.boundary.test.ts.
-  onMeterTray: (handler: (action: "open-popover" | "refresh") => void): Promise<UnlistenFn> => {
+  onMeterTray: (handler: (action: "refresh") => void): Promise<UnlistenFn> => {
     if (!isTauri()) return Promise.resolve(() => undefined);
     return listen<string>("bridge-meter-tray", event => {
-      if (event.payload === "open-popover" || event.payload === "refresh") handler(event.payload);
+      if (event.payload === "refresh") handler(event.payload);
     });
   },
   // The composer's inline typeahead. Off by default; `configured: false` is a

@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "meter",
+  "description": "The menu-bar meter panel. A borderless companion window that hides itself on blur, Escape, or its close control, so it needs the window permissions the main capability grants plus nothing else. Bridge's own commands are not ACL-gated, so the panel reaches the meter registry and usage stream without an entry here.",
+  "windows": ["meter"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-hide",
+    "core:window:allow-show",
+    "core:window:allow-set-focus",
+    "core:window:allow-close"
+  ]
+}
