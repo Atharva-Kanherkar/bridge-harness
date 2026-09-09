@@ -224,7 +224,7 @@ describe("the dock in the session view", () => {
     expect(welcomeCalls.some(args => args[1] === "Build session supervisor")).toBe(false);
   });
 
-  it("opens, refreshes, and reveals the meter from the startup tray listener", async () => {
+  it("opens and refreshes the meter from the startup tray listener without raising the app", async () => {
     let trayAction: ((action: "open-popover" | "refresh") => void) | undefined;
     const onTray = vi.spyOn(bridgeApi, "onMeterTray").mockImplementation(async handler => {
       trayAction = handler;
@@ -237,7 +237,10 @@ describe("the dock in the session view", () => {
     await act(async () => { trayAction?.("open-popover"); });
     await settle(2);
 
-    expect(reveal).toHaveBeenCalledTimes(1);
+    // A menu-bar click shows the meter. It must not pull the main window
+    // forward — that is what made the tray feel like it opened "in the app",
+    // and the reveal it attempted was the ungranted `window.show` IPC.
+    expect(reveal).not.toHaveBeenCalled();
     expect(refresh).toHaveBeenCalledTimes(1);
     expect(container.querySelector('[role="dialog"][aria-label="Usage meter"]')).not.toBeNull();
     expect(container.textContent).toContain("Codex");

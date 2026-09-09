@@ -1,7 +1,6 @@
 import { recordStreamReceipt } from "./streamTiming";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import { MENU_COMMAND_EVENT, type CommandId } from "./keymap";
 import { normalizeAgentToken } from "./agentMention";
 import { createInvokeQueue } from "./invokeQueue";
@@ -1193,12 +1192,17 @@ export const bridgeApi = {
   // in `src/meter.ts`, ported from the same CodexBar sources as the Rust core.
   getMeterSnapshot: (): Promise<MeterRegistry> =>
     isTauri() ? call("meter/get_meter_snapshot") : Promise.resolve(structuredClone(mockMeterRegistry)),
+  // Raising the main window is the shell's job, not the webview's. Going
+  // through `@tauri-apps/api/window` made this an ACL-gated IPC call that the
+  // capability file never granted, so every caller got `window.show not
+  // allowed` at the click. It also could not work from the meter panel, whose
+  // `getCurrentWindow()` is the panel, not `main`. The shell owns the handle
+  // and shows it natively, which needs no permission and targets the right
+  // window — same channel pattern as `notifyLayoutFullscreen`.
   revealMainWindow: async (): Promise<void> => {
     if (!isTauri()) return;
-    const mainWindow = getCurrentWindow();
-    await mainWindow.show();
-    await mainWindow.unminimize();
-    await mainWindow.setFocus();
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit("bridge-reveal-main");
   },
   refreshMeter: (): Promise<void> => {
     if (isTauri()) return call("meter/refresh_meter").then(() => undefined);

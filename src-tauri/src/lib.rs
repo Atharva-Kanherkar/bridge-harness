@@ -1990,6 +1990,20 @@ fn select_host(
         window_chrome::apply_wallpaper_tint(&window);
         window_chrome::sync_fullscreen_chrome(&window);
     }
+    // Raising the main window natively. The webview cannot do this itself: the
+    // window APIs are ACL-gated, and from the meter panel `getCurrentWindow()`
+    // is the panel rather than `main`. Rust holds the real handle.
+    let reveal_handle = app.handle().clone();
+    let _ = app.listen("bridge-reveal-main", move |_event| {
+        let handle = reveal_handle.clone();
+        let _ = reveal_handle.run_on_main_thread(move || {
+            if let Some(window) = handle.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        });
+    });
     let handle = app.handle().clone();
     let _ = app.listen("bridge-layout-fullscreen", move |event| {
         let fullscreen = window_chrome::parse_layout_fullscreen_payload(event.payload());

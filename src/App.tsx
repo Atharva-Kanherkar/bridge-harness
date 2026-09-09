@@ -361,10 +361,9 @@ function AppContent() {
     let offMeter: (() => void) | undefined;
     void bridgeApi.onMeterTray(action => {
       if (!active) return;
-      if (action === "open-popover") {
-        openMeter();
-        void bridgeApi.revealMainWindow().catch(value => setError(errorMessage(value)));
-      }
+      // The tray must not drag the whole app forward. Opening the meter from
+      // the menu bar shows the meter, and nothing else.
+      if (action === "open-popover") openMeter();
       else refreshMeter();
     }).then(fn => { if (!active) { fn(); return; } offMeter = fn; });
     return () => {
