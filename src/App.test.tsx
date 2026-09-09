@@ -224,6 +224,28 @@ describe("the dock in the session view", () => {
     expect(welcomeCalls.some(args => args[1] === "Build session supervisor")).toBe(false);
   });
 
+  it("opens, refreshes, and reveals the meter from the startup tray listener", async () => {
+    let trayAction: ((action: "open-popover" | "refresh") => void) | undefined;
+    const onTray = vi.spyOn(bridgeApi, "onMeterTray").mockImplementation(async handler => {
+      trayAction = handler;
+      return () => undefined;
+    });
+    const reveal = vi.spyOn(bridgeApi, "revealMainWindow").mockResolvedValue();
+    const refresh = vi.spyOn(bridgeApi, "refreshMeter").mockResolvedValue();
+    await mountApp();
+
+    await act(async () => { trayAction?.("open-popover"); });
+    await settle(2);
+
+    expect(reveal).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(container.querySelector('[role="dialog"][aria-label="Usage meter"]')).not.toBeNull();
+    expect(container.textContent).toContain("Codex");
+    onTray.mockRestore();
+    reveal.mockRestore();
+    refresh.mockRestore();
+  });
+
   it("cancels new orchestrator setup without creating a session", async () => {
     await mountApp();
     await click(container.querySelector<HTMLButtonElement>('button[aria-label="Projects"]')!);

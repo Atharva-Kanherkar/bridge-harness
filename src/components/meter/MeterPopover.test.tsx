@@ -73,9 +73,27 @@ describe("MeterPopover", () => {
     expect(document.activeElement).toBe(container.querySelector('[role="dialog"]'));
   });
 
-  it("says when no live windows exist yet", async () => {
+  it("shows registered providers while fresh live usage is loading", async () => {
     await mount({ usage: {} });
-    expect(container.textContent).toContain("No live windows yet");
+    expect(container.textContent).toContain("Codex");
+    expect(container.textContent).toContain("Claude");
+    expect(container.textContent).toContain("Awaiting live usage");
+  });
+
+  it("shows a loading state until the registry arrives", async () => {
+    await mount({ usage: {}, registry: null });
+    expect(container.textContent).toContain("Loading meter");
+  });
+
+  it("expands and collapses a meter bar on click", async () => {
+    await mount();
+    const bar = container.querySelector<HTMLButtonElement>('[aria-controls="meter-window-weekly"]')!;
+    expect(bar.getAttribute("aria-expanded")).toBe("false");
+    act(() => { bar.click(); });
+    expect(bar.getAttribute("aria-expanded")).toBe("true");
+    expect(container.querySelector("#meter-window-weekly")?.textContent).toContain("75% of this window is used");
+    act(() => { bar.click(); });
+    expect(bar.getAttribute("aria-expanded")).toBe("false");
   });
 
   it("refreshes and closes on request", async () => {

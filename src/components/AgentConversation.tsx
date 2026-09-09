@@ -1047,19 +1047,14 @@ function GreetingEmpty({ seed, projectName }: { seed?: string; projectName?: str
   return <Empty title={greeting.headline} copy={greeting.hint} parts={greeting.parts} />;
 }
 
-/// Placeholder rows shaped like a transcript while an existing chat's history
-/// loads. `forestEntries === undefined` means "not yet fetched"; `[]` means
-/// "fetched and empty" (a genuinely new chat) and keeps the greeting. Minimal
-/// by contract: shimmer rows plus a screen-reader label, no explanatory copy.
+/// A quiet loading state for an existing chat. `forestEntries === undefined`
+/// means "not yet fetched"; `[]` means "fetched and empty" (a genuinely new
+/// chat) and keeps the greeting.
 function ChatHistorySkeleton() {
-  return <div role="status" aria-label="Loading conversation" className="absolute inset-0 overflow-y-auto overscroll-y-none px-4 py-5 sm:px-8 sm:py-6">
-    <div className="mx-auto flex w-full min-w-0 max-w-conversation flex-col gap-5" aria-hidden="true">
-      <span className="ml-auto block h-9 w-2/5 animate-pulse rounded-2xl bg-muted-foreground/10" />
-      <span className="block h-3 w-11/12 animate-pulse rounded bg-muted-foreground/10" />
-      <span className="block h-3 w-3/5 animate-pulse rounded bg-muted-foreground/10" />
-      <span className="block h-24 animate-pulse rounded-xl border border-border/80" />
-      <span className="ml-auto block h-9 w-1/3 animate-pulse rounded-2xl bg-muted-foreground/10" />
-      <span className="block h-3 w-4/5 animate-pulse rounded bg-muted-foreground/10" />
+  return <div role="status" aria-label="Loading conversation" className="absolute inset-0 grid place-items-center px-4">
+    <div className="inline-flex items-center gap-2 text-caption text-muted-foreground" aria-hidden="true">
+      <LoaderCircle size={12} className="animate-spin" />
+      <span>Opening conversation</span>
     </div>
     <span className="sr-only">Loading conversation</span>
   </div>;

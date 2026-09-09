@@ -88,8 +88,11 @@ describe("UsageScreen", () => {
     expect(text()).toContain("Partly unpriced");
     expect(text()).toContain("2 records have no known rate");
     expect(text()).toContain("3 live records were counted once");
-    expect(text()).toContain("Codex history is partial: scan hit the cap");
-    expect(container.querySelector('[aria-label="History sources"]')?.textContent).toContain("~/.codex/sessions");
+    expect(text()).toContain("Codex history is still loading.");
+    expect(text()).not.toContain("Codex history is partial: scan hit the cap");
+    const details = container.querySelector<HTMLDetailsElement>('[aria-label="History sources"] details');
+    expect(details?.open).toBe(false);
+    expect(details?.textContent).toContain("~/.codex/sessions");
     expect(container.querySelector('svg[role="img"]')?.getAttribute("aria-label")).toBe("Daily cost by harness");
   });
 
@@ -182,7 +185,8 @@ describe("UsageScreen", () => {
     expect(scanSpy).not.toHaveBeenCalled();
     expect(text()).toContain("Bridge sessions only");
     expect(text()).not.toContain("Codex history is partial");
-    click(buttonByText("Include history"));
+    expect(text()).toContain("Adds usage totals from supported chats already on this device.");
+    click(buttonByText("Include local history"));
     await flush();
     expect(scanSpy).toHaveBeenCalledTimes(1);
   });
@@ -254,7 +258,7 @@ describe("UsageScreen", () => {
     const pending = deferred<ScanHistoryResult>();
     scanSpy.mockReturnValueOnce(pending.promise);
     await mount();
-    click(buttonByText("Include history"));
+    click(buttonByText("Include local history"));
     await flush();
     await act(async () => { pending.resolve(batch("partial", 10_000, "more")); });
     expect(scanSpy).toHaveBeenCalledTimes(1);
@@ -268,6 +272,17 @@ describe("UsageScreen", () => {
     act(() => { root.render(null); });
     await act(async () => { pending.resolve(batch("partial", 10_000, "more")); });
     expect(scanSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps storage paths and scan internals behind an explicit disclosure", async () => {
+    vi.mocked(bridgeApi.listUsageHistorySources).mockResolvedValue([{ ...source, location: "chats/store.db", coverageReason: "ai-tracking/ai-code-tracking.db records have no token counts" }]);
+    await mount();
+    expect(text()).toContain("Codex history is still loading.");
+    expect(text()).not.toContain("Codex history is partial");
+    const details = container.querySelector<HTMLDetailsElement>("details");
+    expect(details?.open).toBe(false);
+    expect(details?.textContent).toContain("chats/store.db");
+    expect(details?.textContent).toContain("ai-tracking/ai-code-tracking.db");
   });
 
   it("ignores an old summary response after the window changes", async () => {

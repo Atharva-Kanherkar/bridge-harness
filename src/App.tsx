@@ -255,6 +255,22 @@ function AppContent() {
   // layer without resubscribing on every popover toggle.
   const meterOpenRef = useRef(false);
   meterOpenRef.current = meterOpen;
+  // These handlers must be initialized before the startup effects subscribe.
+  // The first render returns the loading shell, so handlers declared below
+  // that return leave the tray listener with an uninitialized closure forever.
+  const refreshMeter = useCallback(() => {
+    setMeterRefreshing(true);
+    bridgeApi.refreshMeter()
+      .catch(value => setError(errorMessage(value)))
+      .finally(() => setMeterRefreshing(false));
+  }, []);
+  const openMeter = useCallback(() => {
+    setMeterOpen(true);
+    void bridgeApi.getMeterSnapshot()
+      .then(setMeterRegistry)
+      .catch(value => setError(errorMessage(value)));
+    refreshMeter();
+  }, [refreshMeter]);
   const startedRef = useRef<Set<string>>(new Set());
   // The first message of a just-created chat, tagged with its target session id so
   // the delivery effect can only ever hand it to that chat — never to a session that
@@ -345,7 +361,10 @@ function AppContent() {
     let offMeter: (() => void) | undefined;
     void bridgeApi.onMeterTray(action => {
       if (!active) return;
-      if (action === "open-popover") openMeter();
+      if (action === "open-popover") {
+        openMeter();
+        void bridgeApi.revealMainWindow().catch(value => setError(errorMessage(value)));
+      }
       else refreshMeter();
     }).then(fn => { if (!active) { fn(); return; } offMeter = fn; });
     return () => {
@@ -353,7 +372,7 @@ function AppContent() {
       offState?.(); offAgent?.(); offUsage?.(); offAdapters?.(); offProviderLogin?.(); offMeter?.();
       display.dispose();
     };
-  }, [invalidateHealth, reload]);
+  }, [invalidateHealth, openMeter, refreshMeter, reload]);
   useThemePreference();
   useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
   // Navigating away from an unstarted draft discards it silently — nothing was
@@ -2126,16 +2145,6 @@ function AppContent() {
   const usageProps = { usage: usageByProvider, adapters: health?.adapters, samples: usageSamples, history: usageHistory, cacheDiagnostics, contextPercent: latestContext ?? undefined, contextSource: latestContextSource, focusedSessionId: session?.id ?? null, onOpenPromptStudio: () => { setSettingsSection("prompts"); setView("settings"); } };
   const usageWidget = <UsageWidget {...usageProps} />;
   const usageRing = <UsageWidget compact {...usageProps} />;
-  const openMeter = () => {
-    setMeterOpen(true);
-    bridgeApi.getMeterSnapshot().then(setMeterRegistry).catch(() => undefined);
-  };
-  const refreshMeter = () => {
-    setMeterRefreshing(true);
-    bridgeApi.refreshMeter()
-      .catch(value => setError(errorMessage(value)))
-      .finally(() => setMeterRefreshing(false));
-  };
   const titleBarActions = <>{usageWidget}{bypassBadge}</>;
   // With the rail hidden there is no sidebar header to hold them, so the panel
   // toggle and the history chevrons move onto whichever chrome row is mounted.
