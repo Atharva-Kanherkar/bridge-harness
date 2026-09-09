@@ -33,7 +33,6 @@ export type Entry =
 export type DockFile = { dir: string; name: string; added: number; removed: number };
 
 export type Dock = {
-  heading: string;
   origin: string;
   added: number;
   removed: number;
@@ -108,7 +107,6 @@ export const scenes: Scene[] = [
       { kind: "rail", label: "Checkpoint", status: "Saved", text: "Reclaim ordering and its regression test" },
     ],
     dock: {
-      heading: "2 files changed",
       origin: "feat/worktree-lifecycle · uncommitted vs HEAD (8d0babe)",
       added: 38,
       removed: 12,
@@ -153,7 +151,6 @@ export const scenes: Scene[] = [
       { kind: "rail", label: "Recorded", status: "Saved", text: "Both decisions are durable either way" },
     ],
     dock: {
-      heading: "2 files changed",
       origin: "feat/worktree-lifecycle · uncommitted vs HEAD (8d0babe)",
       added: 38,
       removed: 12,
@@ -207,7 +204,6 @@ export const scenes: Scene[] = [
       },
     ],
     dock: {
-      heading: "3 files changed",
       origin: "feat/usage-tracking · uncommitted vs HEAD (8d0babe)",
       added: 96,
       removed: 14,
@@ -251,7 +247,6 @@ export const scenes: Scene[] = [
       { kind: "rail", label: "Checkpoint", status: "Saved", text: "Verified boundary at turn 14" },
     ],
     dock: {
-      heading: "2 files changed",
       origin: "feat/worktree-lifecycle · uncommitted vs HEAD (8d0babe)",
       added: 38,
       removed: 12,
@@ -295,7 +290,6 @@ export const scenes: Scene[] = [
       { kind: "rail", label: "Context health", status: "healthy", text: "Orchestrator 62% · worker 41% of window" },
     ],
     dock: {
-      heading: "2 files changed",
       origin: "feat/worktree-lifecycle · uncommitted vs HEAD (8d0babe)",
       added: 38,
       removed: 12,

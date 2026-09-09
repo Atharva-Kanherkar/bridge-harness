@@ -78,6 +78,8 @@
   --font-display: var(--font-bricolage), var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
   --font-heading: var(--font-bricolage), var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
   --animate-fade-up: fade-up 360ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  --animate-entry-in: entry-in 420ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  --animate-caret: caret 1s step-end infinite;
 
   @keyframes fade-up {
     from {
@@ -87,6 +89,28 @@
     to {
       opacity: 1;
       transform: translateY(0);
+    }
+  }
+
+  @keyframes entry-in {
+    from {
+      opacity: 0;
+      transform: translateY(10px) scale(0.985);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  @keyframes caret {
+    0%,
+    50% {
+      opacity: 1;
+    }
+    50.01%,
+    100% {
+      opacity: 0;
     }
   }
 }
