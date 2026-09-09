@@ -1064,7 +1064,10 @@ fn decode_event(value: &Value) -> Option<NormalizedEvent> {
 }
 
 fn send_cursor_event(sender: &crate::frame_queue::FrameSender, event: &NormalizedEvent) -> Result<(), crate::frame_queue::Disconnected> {
-    if matches!(event.kind.as_str(), "message.delta" | "reasoning.delta") {
+    // Prose is lossless at this boundary: a slow reader backpressures its
+    // producer instead of relying on a later assembled message to repair it.
+    // Thinking has an authoritative completion supplied by AcpThoughtRun.
+    if event.kind == "reasoning.delta" {
         sender.send_transient(encode_event(event)).map(|_| ())
     } else {
         sender.send_durable(encode_event(event))
@@ -2380,20 +2383,61 @@ mod tests {
     }
 
     #[test]
-    fn stalled_cursor_reader_bounds_deltas_and_retains_terminal_content() {
-        let (sender, receiver, metrics) = crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget { max_items: 4, max_bytes: 2048 });
-        let mut delta = NormalizedEvent::new("message.delta");
-        delta.text = Some("x".repeat(128));
-        for _ in 0..10_000 { send_cursor_event(&sender, &delta).unwrap(); }
-        assert!(metrics.snapshot().bytes <= 2048);
-        assert!(metrics.snapshot().dropped_transient > 0);
-        let mut terminal = NormalizedEvent::new("message.completed");
-        terminal.text = Some("complete authoritative response".into());
+    fn stalled_cursor_reader_preserves_every_acp_message_chunk() {
+        use std::sync::mpsc;
+        let chunk = |index: usize| crate::acp_events::session_update_event(
+            &serde_json::from_value(json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "type": "text", "text": format!("chunk-{index};") }
+            })).unwrap(),
+        );
+        let (sender, receiver, metrics) = crate::frame_queue::bounded_frame_queue(
+            crate::frame_queue::QueueBudget { max_items: 4, max_bytes: 4096 },
+        );
+        for index in 0..4 { send_cursor_event(&sender, &chunk(index)).unwrap(); }
+        let (done_tx, done_rx) = mpsc::channel();
+        let producer = thread::spawn(move || {
+            for index in 4..1000 { send_cursor_event(&sender, &chunk(index)).unwrap(); }
+            done_tx.send(()).unwrap();
+        });
+        // A stalled consumer must backpressure prose, never evict it. No
+        // fabricated message.completed can conceal a lost chunk in this test.
+        assert!(matches!(done_rx.recv_timeout(Duration::from_millis(100)), Err(mpsc::RecvTimeoutError::Timeout)));
+        assert!(metrics.snapshot().bytes <= 4096);
+        let mut received = Vec::new();
+        while let Ok(line) = receiver.recv() {
+            let event = decode_event(&serde_json::from_str(&line).unwrap()).unwrap();
+            assert_eq!(event.kind, "message.delta");
+            received.push(event.text.unwrap());
+        }
+        producer.join().unwrap();
+        assert_eq!(received, (0..1000).map(|index| format!("chunk-{index};")).collect::<Vec<_>>());
+        assert_eq!(metrics.snapshot().dropped_transient, 0);
+    }
+
+    #[test]
+    fn stalled_cursor_reader_sheds_only_recoverable_thinking() {
+        let (sender, receiver, metrics) = crate::frame_queue::bounded_frame_queue(
+            crate::frame_queue::QueueBudget { max_items: 4, max_bytes: 2048 },
+        );
+        let mut run = crate::acp_events::AcpThoughtRun::default();
+        for _ in 0..100 {
+            let mut delta = crate::acp_events::session_update_event(
+                &serde_json::from_value(json!({
+                    "sessionUpdate": "agent_thought_chunk",
+                    "content": { "type": "text", "text": "thinking;" }
+                })).unwrap(),
+            );
+            assert!(run.absorb(&mut delta).is_none());
+            send_cursor_event(&sender, &delta).unwrap();
+        }
+        let terminal = run.close().unwrap();
         send_cursor_event(&sender, &terminal).unwrap();
         drop(sender);
         let mut last = None;
         while let Ok(line) = receiver.recv() { last = decode_event(&serde_json::from_str(&line).unwrap()); }
         assert_eq!(last, Some(terminal));
+        assert!(metrics.snapshot().dropped_transient > 0);
     }
 
     #[test]

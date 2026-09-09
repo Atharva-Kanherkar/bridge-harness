@@ -88,7 +88,7 @@ native WebKit latency benchmark. Real paid-provider end-to-end sessions for all
 four harnesses were not run. The recorded local OpenCode capture is the live
 transport check.
 
-## Final verification
+## Initial PR verification
 
 - `bun run build`: passed on merged main `5ed1967`.
 - `bun run test`: passed (2,046 frontend tests; 2,569 Rust tests across the
@@ -115,3 +115,7 @@ The review's claim that no answer accumulator exists is incomplete:
 `acp_session::TurnMessage` already assembles live completions. Nevertheless,
 backpressuring answer chunks makes this queue's guarantee independent of that
 assembly and preserves live prose through downstream stalls.
+
+Follow-up verification: the answer-chunk regression failed before the fix, then
+passed. All 45 Cursor-filtered tests and 113 ACP-filtered tests pass, as does
+`bun run build`. The full workspace run above predates this focused follow-up.
