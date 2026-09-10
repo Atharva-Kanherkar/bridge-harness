@@ -65,9 +65,9 @@ function options(): WorkBriefingOptions {
 let host: HTMLDivElement;
 let root: Root;
 
-async function render() {
+async function render(onOpenBoard?: () => void) {
   await act(async () => {
-    root.render(<WorkSettingsSection onError={() => undefined} />);
+    root.render(<WorkSettingsSection onError={() => undefined} onOpenBoard={onOpenBoard} />);
   });
 }
 
@@ -158,7 +158,7 @@ describe("Work briefing", () => {
     expect(text()).toContain("Codex");
     expect(text()).toContain("no per-tool authority");
     // Off is still a reachable, stored choice, so the switch is still there.
-    expect(switchFor("Suggested work")?.getAttribute("aria-checked")).toBe("false");
+    expect(switchFor("Integration briefing")?.getAttribute("aria-checked")).toBe("false");
   });
 
   it("keeps cadence and refresh on focus, and persists each on change", async () => {
@@ -177,3 +177,10 @@ describe("Work briefing", () => {
     expect(writeWorkSettings.mock.calls.at(-1)![0].refreshIntervalMinutes).toBe(60);
   });
 });
+
+ it("opens the integration board from Work settings", async () => {
+   const open = vi.fn(); await render(open);
+   await click(Array.from(host.querySelectorAll("button")).find(button => button.textContent === "Open Work"));
+   expect(open).toHaveBeenCalledOnce();
+   expect(text()).toContain("past 24 hours");
+ });

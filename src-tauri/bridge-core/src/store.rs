@@ -10,7 +10,7 @@ use std::{
 };
 use uuid::Uuid;
 
-const LATEST_SCHEMA_VERSION: i64 = 56;
+const LATEST_SCHEMA_VERSION: i64 = 57;
 const MIGRATION_BACKUP_TIMESTAMP_FORMAT: &str = "%Y%m%dT%H%M%S%fZ";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -689,6 +689,10 @@ fn run_migrations(connection: &mut Connection, path: &Path) -> Result<Option<Pat
             }
             // The Insights tab's stored report: one row, replaced on each run.
             56 => crate::usage_insights::install_store(&transaction)?,
+            57 => {
+                add_column_if_missing(&transaction, "work_tasks", "source_activity_at", "TEXT")?;
+                add_column_if_missing(&transaction, "work_evidence", "source_activity_at", "TEXT")?;
+            }
             _ => {
                 return Err(BridgeError::Invalid(format!(
                     "unknown schema migration {version}"
@@ -7458,4 +7462,22 @@ mod tests {
         assert_eq!(rows, 2);
         assert_eq!(kept, 10, "the first observation wins");
     }
+    #[test]
+    fn integration_activity_migration_preserves_legacy_rows_without_faking_dates() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("bridge.db");
+        let db = open(&path).unwrap();
+        db.execute_batch("INSERT INTO work_tasks(id,connector_instance_id,source_kind,title,why,rank,confidence_bps,created_at,updated_at)
+            VALUES('legacy','slack','slack.message','Old task','old',1,8000,'now','now');
+            ALTER TABLE work_tasks DROP COLUMN source_activity_at;
+            ALTER TABLE work_evidence DROP COLUMN source_activity_at;
+            DELETE FROM schema_version WHERE version=57;").unwrap();
+        drop(db);
+        let db = open(&path).unwrap();
+        let (title, date): (String, Option<String>) = db.query_row("SELECT title,source_activity_at FROM work_tasks WHERE id='legacy'", [], |row| Ok((row.get(0)?, row.get(1)?))).unwrap();
+        assert_eq!(title, "Old task");
+        assert!(date.is_none());
+        assert!(crate::work::board(&db).unwrap().tasks.is_empty());
+    }
+
 }

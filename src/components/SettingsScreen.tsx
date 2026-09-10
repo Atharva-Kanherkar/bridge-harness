@@ -30,7 +30,7 @@ export function adapterSupportsAgentRole(adapter: AdapterDescriptor, role: strin
   return supportsSandbox("read_only");
 }
 
-export function SettingsScreen({ adapters, autoApprovals = [], initialSection = "agents", onModelSetupChange, onSuggestionSettingsChange, onError }: { adapters: AdapterDescriptor[]; autoApprovals?: BridgeEvent[]; initialSection?: Section; onModelSetupChange: (setup: ModelSetupState) => void; onSuggestionSettingsChange: (snapshot: SuggestionSettingsSnapshot) => void; onError: (message: string) => void }) {
+export function SettingsScreen({ adapters, autoApprovals = [], initialSection = "agents", onModelSetupChange, onSuggestionSettingsChange, onOpenWorkBoard, onError }: { adapters: AdapterDescriptor[]; autoApprovals?: BridgeEvent[]; initialSection?: Section; onOpenWorkBoard?: () => void; onModelSetupChange: (setup: ModelSetupState) => void; onSuggestionSettingsChange: (snapshot: SuggestionSettingsSnapshot) => void; onError: (message: string) => void }) {
   const [section, setSection] = useState<Section>(initialSection);
   const [query, setQuery] = useState("");
   const [config, setConfig] = useState<ConfigState>();
@@ -247,7 +247,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       {section === "prompts" && <PromptStudio />}
       {section === "import" && <ImportHarnessSection onError={onError} />}
       {section === "storage" && <StoragePage onError={onError} />}
-      {section === "work" && <WorkSettingsSection onError={onError} />}
+      {section === "work" && <WorkSettingsSection onError={onError} onOpenBoard={onOpenWorkBoard} />}
 
       {section === "agents" && config && <PresetsPage
         agents={config.agents}

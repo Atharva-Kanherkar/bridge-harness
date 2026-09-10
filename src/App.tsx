@@ -156,7 +156,7 @@ function AppContent() {
   const closeModal = useUiStore(state => state.closeModal);
   const {
     health, healthError, modelSetup, modelSetupError, workBoard,
-    workBoardQueryError, refetchWorkBoard, acceptModelSetup, invalidateHealth,
+    workBoardQueryError, refetchWorkBoard, followWorkBriefing, acceptModelSetup, invalidateHealth,
   } = useBridgeServerState();
   const [state, setState] = useState<BridgeState>(emptyState);
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
@@ -1095,6 +1095,7 @@ function AppContent() {
   const runWorkBriefing = useCallback(async (trigger: "manual" | "focus"): Promise<void> => {
     try {
       const receipt = await bridgeApi.runWorkBriefing(trigger);
+      if (receipt.outcome !== "refused" && receipt.runId) followWorkBriefing(receipt.runId);
       if (receipt.outcome === "refused" && trigger === "manual") {
         setWorkBriefingError(receipt.detail ?? receipt.code ?? "the briefing was refused");
       } else if (trigger === "manual") {
@@ -1104,7 +1105,7 @@ function AppContent() {
       if (trigger === "manual") setWorkBriefingError(errorMessage(error));
     }
     void refetchWorkBoard();
-  }, [refetchWorkBoard]);
+  }, [refetchWorkBoard, followWorkBriefing]);
 
   // The opt-in focus trigger. Gated on the stored settings the board carries, so
   // a user who never opted in gets no background model run from switching apps.
@@ -2222,6 +2223,7 @@ function AppContent() {
         onOpenEvidence={task => void openWorkTaskEvidence(task)}
         onOpenTask={openWorkTask}
         onRunBriefing={() => void runWorkBriefing("manual")}
+        onOpenSettings={() => { setSettingsSection("work"); setView("settings"); }}
       /></Suspense> : view === "projects" ? <ProjectsScreen
         workspaces={state.workspaces}
         chats={topSessions}
@@ -2241,7 +2243,7 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
+      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
         sessions={visibleSessions}
         runtimes={forest?.workerRuntimes ?? []}
         reasons={forest?.reasons ?? []}

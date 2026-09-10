@@ -770,12 +770,7 @@ function saveMockProfiles(profiles: ModelProfileDraft[]): ModelSetupState {
   return structuredClone(mockModelSetup);
 }
 
-// A board covering every fact kind and every freshness, so the browser fallback
-// renders the screen's real range instead of one token row.
-//
-// Built per call rather than once: the timestamps are relative to *now*, and a module
-// literal would freeze them at import, so a long-lived `bun run dev` preview would age
-// "10s ago" into hours while `freshness` stayed the value it was written with.
+// Legacy task-action fixtures are separate from the empty browser activity feed.
 const workBoardObserved = (secondsAgo: number): string =>
   new Date(Date.now() - secondsAgo * 1000).toISOString();
 
@@ -874,93 +869,15 @@ const mockBriefingOptions: WorkBriefingOptions = {
 
 function browserWorkBoard(): WorkBoard {
   return {
-    facts: [
-      {
-        kind: "failed_completion_check",
-        dedupeKey: "check:a-1:cargo-test",
-        severity: "blocking",
-        title: "cargo-test failed on Kyoto",
-        detail: "A required check failed on an attempt nobody has verified or waived.",
-        target: { kind: "completionAttempt", sessionId: "session-1", attemptId: "a-1" },
-        actionableAt: workBoardObserved(3_600),
-        observedAt: workBoardObserved(10),
-        freshness: "live",
-        action: { kind: "reviewCompletionCheck", sessionId: "session-1", attemptId: "a-1", checkId: "cargo-test" },
-      },
-      {
-        kind: "actionable_approval",
-        dedupeKey: "approval:session-2:4",
-        severity: "blocking",
-        title: "Approve command — waiting 41 minutes, past its deadline",
-        detail: "Lisbon asked to run a command and nobody answered.",
-        target: { kind: "session", sessionId: "session-2" },
-        actionableAt: workBoardObserved(2_460),
-        observedAt: workBoardObserved(10),
-        freshness: "live",
-        action: { kind: "answerApproval", sessionId: "session-2", approvalSequence: 4 },
-      },
-      {
-        kind: "blocked_worker_queue_item",
-        dedupeKey: "queue:q-1",
-        severity: "blocking",
-        title: "3 queued workers are parked behind Lisbon",
-        detail: "They are waiting on the approval above, not on each other.",
-        target: { kind: "workerQueueItem", queueId: "q-1", workspaceId: "workspace-2" },
-        actionableAt: workBoardObserved(1_800),
-        observedAt: workBoardObserved(10),
-        freshness: "live",
-        action: { kind: "answerApproval", sessionId: "session-2", approvalSequence: null },
-      },
-      {
-        kind: "workspace_behind_base",
-        dedupeKey: "workspace-base:workspace-1",
-        severity: "attention",
-        title: "Kyoto has drifted behind its base branch",
-        detail: "This workspace is 41 commit(s) behind and 2 ahead of origin/main, measured against a freshly fetched ref.",
-        target: { kind: "workspace", workspaceId: "workspace-1", sessionId: "session-1" },
-        actionableAt: workBoardObserved(7_200),
-        observedAt: workBoardObserved(120),
-        freshness: "live",
-        action: { kind: "refreshWorkspaceBase", sessionId: "session-1", workspaceId: "workspace-1" },
-      },
-      {
-        kind: "workspace_behind_base",
-        dedupeKey: "workspace-base:workspace-2",
-        severity: "attention",
-        title: "Lisbon has drifted behind its base branch",
-        detail: "This workspace is 63 commit(s) behind and 0 ahead of origin/main.",
-        target: { kind: "workspace", workspaceId: "workspace-2", sessionId: "session-2" },
-        actionableAt: workBoardObserved(9_000),
-        observedAt: workBoardObserved(1_440),
-        freshness: "stale",
-        action: { kind: "refreshBaseObservation", sessionId: "session-2", workspaceId: "workspace-2" },
-      },
-      {
-        kind: "workspace_behind_base",
-        dedupeKey: "workspace-base:workspace-3",
-        severity: "attention",
-        title: "Oslo could not be measured against its base branch",
-        detail: "No upstream or default branch ref is available to compare against.",
-        target: { kind: "workspace", workspaceId: "workspace-3", sessionId: "session-3" },
-        actionableAt: workBoardObserved(10_800),
-        observedAt: workBoardObserved(300),
-        freshness: "unknown",
-        action: { kind: "refreshBaseObservation", sessionId: "session-3", workspaceId: "workspace-3" },
-      },
-    ],
-    tasks: structuredClone(mockWorkTasks),
+    facts: [],
+    tasks: [],
     latestRun: null,
     generatedAt: new Date().toISOString(),
     sources: [],
-    settings: {
-      briefing: null,
-      enabledConnectorInstances: [],
-      refreshOnFocus: false,
-      refreshIntervalMinutes: null,
-      cooldownMinutes: 15,
-      limits: { maxWallSeconds: 600, maxTurns: 12, maxToolCalls: 24, maxOutputTokens: null, costCeilingMicrousd: null },
-    },
-    suggestions: { state: "not_configured", detail: null },
+    settings: structuredClone(mockWorkSettings.settings),
+    suggestions: mockWorkSettings.settings.briefing
+      ? { state: "ready", detail: null }
+      : { state: "not_configured", detail: null },
   };
 }
 
@@ -1547,7 +1464,7 @@ export const bridgeApi = {
     if (!mockWorkSettings.configured || !mockWorkSettings.settings.briefing) {
       return { outcome: "refused", runId: null, code: "not_configured", detail: "Work has never been configured" };
     }
-    return { outcome: "started", runId: "run-mock-1", code: null, detail: null };
+    return { outcome: "refused", runId: null, code: "desktop_required", detail: "Reading connected integrations requires the desktop app." };
   },
   cancelWorkBriefing: async (): Promise<WorkBriefReceipt> => {
     if (isTauri()) return call("work/cancel_briefing");

@@ -1,11 +1,11 @@
-//! The Work board: what needs doing, read from SQLite and nothing else.
+//! The Work board: connected integration activity from the past 24 hours.
 //!
 //! [`board`] is the whole read path behind `work/get_work_board`, and it is
 //! **store-only** by construction: it takes a `&Connection`, not a
 //! `&Arc<BridgeCore>`, so it cannot reach an adapter map, a connector, or a
-//! process spawner even by accident. Anything the board needs that SQLite does
-//! not already hold is observed elsewhere and served from `work_fact_cache`
-//! with the timestamp of that observation.
+//! process spawner even by accident. The briefing runner reads integrations and
+//! stores source activity dates separately from observation dates. Legacy local
+//! fact projections remain available internally, but are never part of the board.
 //!
 //! The DTOs are `bridge_protocol::messages`' Work types used directly. A second
 //! copy in this crate would only create something to drift.
@@ -624,16 +624,17 @@ fn suggested_tasks(db: &Connection, now: DateTime<Utc>) -> Result<Vec<wire::Work
     let mut statement = db.prepare(
         "SELECT id,fingerprint,connector_instance_id,canonical_resource_id,source_kind,
                 title,why,rank,confidence_bps,state,pinned,snoozed_until,evidence_digest,
-                evidence_target,evidence_observed_at,miss_count,workspace_id,created_at,updated_at
+                evidence_target,evidence_observed_at,miss_count,workspace_id,created_at,updated_at,source_activity_at
            FROM work_tasks
-          WHERE state IN ('active','snoozed','dismissed') OR (state='stale' AND pinned=1)
-          ORDER BY CASE WHEN state IN ('active','stale') THEN 0 ELSE 1 END,
-                   pinned DESC,
-                   CASE WHEN state IN ('snoozed','dismissed') THEN updated_at END DESC,
-                   rank,id
+          WHERE state='active'
+            AND julianday(source_activity_at) >= julianday(?1) - 1
+            AND julianday(source_activity_at) <= julianday(?1)
+            AND source_kind IN ('slack.message','github.item','gmail.thread','linear.issue','notion.page')
+            AND connector_instance_id != ''
+          ORDER BY julianday(source_activity_at) DESC,id
           LIMIT 100",
     )?;
-    let rows = statement.query_map([], |row| {
+    let rows = statement.query_map([&now_text], |row| {
         Ok((
             row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?, row.get::<_, String>(2)?,
             row.get::<_, Option<String>>(3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?,
@@ -641,7 +642,7 @@ fn suggested_tasks(db: &Connection, now: DateTime<Utc>) -> Result<Vec<wire::Work
             row.get::<_, String>(9)?, row.get::<_, i64>(10)? != 0, row.get::<_, Option<String>>(11)?,
             row.get::<_, Option<String>>(12)?, row.get::<_, Option<String>>(13)?,
             row.get::<_, Option<String>>(14)?, row.get::<_, i64>(15)?,
-            row.get::<_, Option<String>>(16)?, row.get::<_, String>(17)?, row.get::<_, String>(18)?,
+            row.get::<_, Option<String>>(16)?, row.get::<_, String>(17)?, row.get::<_, String>(18)?, row.get::<_, Option<String>>(19)?,
         ))
     })?;
     let mut tasks = Vec::new();
@@ -649,7 +650,7 @@ fn suggested_tasks(db: &Connection, now: DateTime<Utc>) -> Result<Vec<wire::Work
         let (id, fingerprint, connector_instance_id, canonical_resource_id, source_kind, title, why,
             rank, confidence_bps, stored_state, pinned, snoozed_until, evidence_digest,
             evidence_target, evidence_observed_at, miss_count, workspace_id, created_at,
-            updated_at) = row?;
+            updated_at, source_activity_at) = row?;
         let state = TaskState::parse(&stored_state);
         if !state.visible(pinned) && !matches!(state, TaskState::Snoozed | TaskState::Dismissed) {
             continue;
@@ -659,7 +660,7 @@ fn suggested_tasks(db: &Connection, now: DateTime<Utc>) -> Result<Vec<wire::Work
             source_kind: source_kind.clone(), title, why, rank, confidence_bps,
             state: wire_task_state(state), pinned, snoozed_until, evidence_digest,
             evidence_target: checked_evidence_target(evidence_target.as_deref(), &source_kind),
-            evidence_observed_at, miss_count, workspace_id, created_at, updated_at,
+            evidence_observed_at, source_activity_at, miss_count, workspace_id, created_at, updated_at,
         });
     }
     Ok(tasks)
@@ -692,7 +693,7 @@ pub fn board(db: &Connection) -> Result<wire::WorkBoard, BridgeError> {
         None if settings.briefing.is_none() => wire::WorkSuggestions {
             state: wire::WorkSuggestionsState::NotConfigured,
             detail: Some(
-                "no briefing model is configured, so Work is showing facts only".to_owned(),
+                "Set up a briefing model in Settings → Work to read your connected integrations.".to_owned(),
             ),
         },
         None => match latest_run.as_ref().map(|run| run.status) {
@@ -710,7 +711,7 @@ pub fn board(db: &Connection) -> Result<wire::WorkBoard, BridgeError> {
     let now = Utc::now();
     Ok(wire::WorkBoard {
         generated_at: now.to_rfc3339(),
-        facts: facts(db, now)?,
+        facts: Vec::new(),
         tasks: suggested_tasks(db, now)?,
         latest_run,
         sources,
@@ -1375,11 +1376,7 @@ mod tests {
 
         assert_eq!(after, before, "the board read must not shell out to git");
         assert_eq!(facts.len(), 4, "and it must still project every kind while doing so");
-        assert_eq!(board.facts.len(), 4);
-        assert!(board
-            .facts
-            .iter()
-            .any(|fact| fact.kind == wire::WorkFactKind::WorkspaceBehindBase));
+        assert!(board.facts.is_empty(), "local facts never appear in integration activity");
     }
 
     #[test]
@@ -1466,7 +1463,7 @@ mod tests {
         let board = crate::api::get_work_board(&core).unwrap();
         assert_eq!(crate::git::git_processes_started_on_this_thread(), before);
 
-        assert_eq!(board.facts.len(), 1, "the fixture's approval is on the board");
+        assert!(board.facts.is_empty(), "local approvals stay off the integration board");
         assert!(
             core.adapters.lock().unwrap().is_empty(),
             "no adapter runtime may be started to render a board"
@@ -1508,10 +1505,10 @@ mod tests {
             "INSERT INTO work_tasks(
                  id,fingerprint,connector_instance_id,canonical_resource_id,source_kind,
                  title,why,rank,confidence_bps,state,snoozed_until,evidence_target,
-                 ephemeral,created_at,updated_at)
+                 ephemeral,created_at,updated_at,source_activity_at)
              VALUES('task-1','v1:one','slack-1','slack:slack-1:1','slack.message',
                     'Reply','Asked twice',1,8200,'snoozed','2026-08-19T08:00:00+00:00',?1,0,
-                    '2026-08-19T07:00:00+00:00','2026-08-19T07:00:00+00:00')",
+                    '2026-08-19T07:00:00+00:00','2026-08-19T07:00:00+00:00','2026-08-19T07:00:00+00:00')",
             rusqlite::params![safe_target],
         ).unwrap();
 
@@ -1532,7 +1529,7 @@ mod tests {
     }
 
     #[test]
-    fn the_board_hides_resolved_tasks_but_keeps_a_pinned_stale_task_visible() {
+    fn the_board_hides_legacy_tasks_even_when_pinned() {
         let db = memory_db();
         for (id, state, pinned) in [("hidden", "done", 1), ("pinned", "stale", 1)] {
             db.execute(
@@ -1544,7 +1541,7 @@ mod tests {
             ).unwrap();
         }
         let tasks = suggested_tasks(&db, now()).unwrap();
-        assert_eq!(tasks.iter().map(|task| task.id.as_str()).collect::<Vec<_>>(), vec!["pinned"]);
+        assert!(tasks.is_empty());
     }
 
     #[test]
@@ -1588,4 +1585,28 @@ mod tests {
             .as_deref()
             .is_some_and(|detail| detail.contains("could not be read")));
     }
+    #[test]
+    fn integration_window_filters_before_limiting_and_uses_source_time_only() {
+        let db = memory_db();
+        let end = instant("2026-09-10T12:00:00Z").unwrap();
+        let insert = |id: &str, activity: Option<&str>, state: &str, source: &str, rank: i64| {
+            db.execute("INSERT INTO work_tasks(id,connector_instance_id,source_kind,title,why,rank,confidence_bps,state,pinned,created_at,updated_at,evidence_observed_at,source_activity_at)
+                VALUES(?1,'integration',?2,?1,'update',?3,8000,?4,1,?5,?5,?5,?6)",
+                rusqlite::params![id, source, rank, state, end.to_rfc3339(), activity]).unwrap();
+        };
+        for index in 0..110 {
+            insert(&format!("stale-{index}"), Some("2026-09-10T11:59:00Z"), "stale", "slack.message", 1);
+            insert(&format!("old-{index}"), Some("2020-01-01T00:00:00Z"), "active", "slack.message", 1);
+        }
+        for (id, at) in [("undated", None), ("invalid", Some("garbage")), ("expired", Some("2026-09-09T11:59:59Z")), ("future", Some("2026-09-10T12:00:01Z"))] {
+            insert(id, at, "active", "github.item", 1);
+        }
+        insert("local", Some("2026-09-10T12:00:00Z"), "active", "bridge.check", 1);
+        insert("boundary", Some("2026-09-09T12:00:00Z"), "active", "slack.message", 1);
+        insert("newest", Some("2026-09-10T12:00:00Z"), "active", "github.item", 1000);
+        let tasks = suggested_tasks(&db, end).unwrap();
+        assert_eq!(tasks.iter().map(|task| task.id.as_str()).collect::<Vec<_>>(), ["newest", "boundary"]);
+        assert_eq!(tasks[1].source_activity_at.as_deref(), Some("2026-09-09T12:00:00Z"));
+    }
+
 }
