@@ -674,9 +674,10 @@ async fn save_worker_settings(workspace_id: String, settings: bridge_protocol::m
 #[tauri::command]
 async fn reclaim_worktree(
     worktree_id: String,
+    force: Option<bool>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_core::worktree_registry::WorktreeReclaimResult, BridgeError> {
-    api::reclaim_worktree(state.inner(), &worktree_id)
+    api::reclaim_worktree(state.inner(), &worktree_id, force.unwrap_or(false))
 }
 
 #[tauri::command]

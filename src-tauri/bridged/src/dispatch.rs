@@ -459,7 +459,7 @@ pub fn dispatch(
         MethodName::WorktreeUsageReport => reply(api::worktree_usage(core)),
         MethodName::ReclaimWorktree => {
             let p: wire::ReclaimWorktreeParams = decode(method, params)?;
-            reply(api::reclaim_worktree(core, &p.worktree_id))
+            reply(api::reclaim_worktree(core, &p.worktree_id, p.force))
         }
         MethodName::SweepWorktrees => reply(api::sweep_worktrees(core)),
         MethodName::ArchiveChat => {
