@@ -1436,6 +1436,36 @@ async fn start_provider_login(
 }
 
 #[tauri::command]
+async fn create_terminal(workspace_id: String, terminal_id: String, agent_id: Option<String>, cwd: Option<String>, restart: Option<bool>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::TerminalRecord, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Create terminal", move || bridge_core::terminal_workspace::create(&core, &wire::CreateTerminalParams { workspace_id, terminal_id, agent_id, cwd, restart: restart.unwrap_or(false) })).await
+}
+
+#[tauri::command]
+async fn get_terminal_snapshot(workspace_id: String, terminal_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::TerminalSnapshot, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Terminal snapshot", move || bridge_core::terminal_workspace::snapshot(&core, &workspace_id, &terminal_id)).await
+}
+
+#[tauri::command]
+async fn get_terminal_workspace(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::TerminalWorkspace, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Terminal workspace", move || bridge_core::terminal_workspace::workspace(&core, &workspace_id)).await
+}
+
+#[tauri::command]
+async fn save_terminal_workspace(workspace_id: String, layout: serde_json::Value, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
+    let core = state.inner().clone();
+    blocking("Save terminal workspace", move || bridge_core::terminal_workspace::save_layout(&core, &workspace_id, layout)).await
+}
+
+#[tauri::command]
+async fn rename_terminal(workspace_id: String, terminal_id: String, title: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::TerminalRecord, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Rename terminal", move || bridge_core::terminal_workspace::rename(&core, &workspace_id, &terminal_id, &title)).await
+}
+
+#[tauri::command]
 async fn open_terminal(
     workspace_id: String,
     terminal_id: String,
@@ -1900,7 +1930,8 @@ async fn resize_terminal(
     cols: u16,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    api::resize_terminal(state.inner(), &workspace_id, &terminal_id, rows, cols)
+    let core = state.inner().clone();
+    blocking("Terminal resize", move || api::resize_terminal(&core, &workspace_id, &terminal_id, rows, cols)).await
 }
 
 #[tauri::command]
@@ -2382,6 +2413,11 @@ pub fn run() -> i32 {
             start_session,
             start_chat,
             open_terminal,
+            create_terminal,
+            get_terminal_snapshot,
+            get_terminal_workspace,
+            save_terminal_workspace,
+            rename_terminal,
             write_terminal,
             resize_terminal,
             close_terminal,

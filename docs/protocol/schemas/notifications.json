@@ -31,6 +31,10 @@
     },
     {
       "delivery": "transient",
+      "notification": "terminal-frame"
+    },
+    {
+      "delivery": "transient",
       "notification": "terminal-exited"
     },
     {

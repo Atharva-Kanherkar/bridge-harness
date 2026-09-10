@@ -377,6 +377,26 @@ pub fn dispatch(
             reply(api::start_provider_login(core, &p.provider))
         }
 
+        MethodName::CreateTerminal => {
+            let p: wire::CreateTerminalParams = decode(method, params)?;
+            reply(bridge_core::terminal_workspace::create(core, &p))
+        }
+        MethodName::GetTerminalSnapshot => {
+            let p: wire::GetTerminalSnapshotParams = decode(method, params)?;
+            reply(bridge_core::terminal_workspace::snapshot(core, &p.workspace_id, &p.terminal_id))
+        }
+        MethodName::GetTerminalWorkspace => {
+            let p: wire::GetTerminalWorkspaceParams = decode(method, params)?;
+            reply(bridge_core::terminal_workspace::workspace(core, &p.workspace_id))
+        }
+        MethodName::SaveTerminalWorkspace => {
+            let p: wire::SaveTerminalWorkspaceParams = decode(method, params)?;
+            reply(bridge_core::terminal_workspace::save_layout(core, &p.workspace_id, p.layout))
+        }
+        MethodName::RenameTerminal => {
+            let p: wire::RenameTerminalParams = decode(method, params)?;
+            reply(bridge_core::terminal_workspace::rename(core, &p.workspace_id, &p.terminal_id, &p.title))
+        }
         MethodName::OpenTerminal => {
             let p: wire::OpenTerminalParams = decode(method, params)?;
             reply(api::open_terminal(core, &p.workspace_id, &p.terminal_id))
