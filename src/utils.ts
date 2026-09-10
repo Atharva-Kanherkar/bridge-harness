@@ -1,4 +1,4 @@
-import type { CapabilityTier, SessionStatus } from "./types";
+import type { CapabilityTier, SessionStatus, SlashCommand } from "./types";
 
 const MODEL_LABELS: Record<string, string> = { "gpt-5.6-luna": "GPT Luna", "gpt-5.6-terra": "GPT Terra", "gpt-5.6-sol": "GPT Sol", "gpt-5.3-codex": "GPT-5.3 Codex", sonnet: "Sonnet", opus: "Opus", haiku: "Haiku", fable: "Fable" };
 
@@ -34,6 +34,16 @@ export function harnessLabel(harness?: string | null): string {
  */
 export function slashOwnershipBadge(harness: string): string {
   return harness === "bridge" ? "this Mac" : harnessLabel(harness);
+}
+
+/**
+ * Which catalog entries this session can actually run: its own harness, plus
+ * Bridge-local builtins (`btw`, `recall`, `pin`, …), which work everywhere.
+ * The server already scopes `listSlashCommands` this way; this mirrors it so
+ * a stale client-side cache never dangles an unusable suggestion.
+ */
+export function slashCommandsForHarness(commands: SlashCommand[], harness: string | undefined): SlashCommand[] {
+  return commands.filter(command => command.harness === "bridge" || command.harness === harness);
 }
 
 export function safeSlug(value: string): string {

@@ -58,7 +58,7 @@ import { MemoryUsedChip } from "./components/MemoryUsedChip";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
 import type { MeterRegistry } from "./types";
-import { formatElapsed, harnessLabel, slashOwnershipBadge } from "./utils";
+import { formatElapsed, harnessLabel, slashCommandsForHarness, slashOwnershipBadge } from "./utils";
 import { scheduleSuggestion } from "./suggestionTypeahead";
 import { projectSessionConversation, reduceConversation, undeliveredPending } from "./conversation";
 import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
@@ -198,6 +198,7 @@ function AppContent() {
   const worktreeBySessionRef = useRef(new Map<string, boolean>());
   const [composer, setComposer] = useState("");
   const [slashCommands, setSlashCommands] = useState<import("./types").SlashCommand[]>([]);
+  const [asideSlashCommands, setAsideSlashCommands] = useState<import("./types").SlashCommand[]>([]);
   const [slashIndex, setSlashIndex] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
@@ -703,7 +704,7 @@ function AppContent() {
   const slashMatches = useMemo(() => {
     if (slashQuery == null) return [];
     const query = slashQuery.toLowerCase();
-    return slashCommands
+    return slashCommandsForHarness(slashCommands, session?.harness)
       .filter(command => !query || command.name.toLowerCase().includes(query) || command.description.toLowerCase().includes(query))
       .sort((a, b) => {
         const aName = a.name.toLowerCase();
@@ -711,9 +712,6 @@ function AppContent() {
         const aPrefix = query ? Number(aName.startsWith(query)) : 0;
         const bPrefix = query ? Number(bName.startsWith(query)) : 0;
         if (aPrefix !== bPrefix) return bPrefix - aPrefix;
-        const aHarness = Number(a.harness === session?.harness);
-        const bHarness = Number(b.harness === session?.harness);
-        if (aHarness !== bHarness) return bHarness - aHarness;
         return aName.localeCompare(bName);
       });
   }, [slashQuery, slashCommands, session?.harness]);
@@ -970,14 +968,30 @@ function AppContent() {
   // Load available slash commands + skills from signed-in providers. Guarded
   // against staleness: switching sessions while a slower scan is still in
   // flight must not let its response land after a newer session's, which
-  // would leave the menu showing the wrong session's commands.
+  // would leave the menu showing the wrong session's commands. Also refetches
+  // on a harness switch within the same session — the server scopes the
+  // catalog to session.harness, so a stale response would otherwise filter
+  // down to nothing but Bridge builtins until the user navigates away and back.
   useEffect(() => {
     let active = true;
     void bridgeApi.listSlashCommands(session?.id)
       .then(commands => { if (active) setSlashCommands(commands); })
       .catch(() => undefined);
     return () => { active = false; };
-  }, [adaptersReady, session?.id]);
+  }, [adaptersReady, session?.id, session?.harness]);
+
+  // An aside can open on a different harness than the chat it floats over
+  // (`$claude …` from a Codex session, say), so it needs its own server-scoped
+  // catalog rather than reusing the parent's — the parent's is scoped to the
+  // parent's harness and would filter down to nothing for the aside.
+  useEffect(() => {
+    if (!asideSession) { setAsideSlashCommands([]); return; }
+    let active = true;
+    void bridgeApi.listSlashCommands(asideSession.id)
+      .then(commands => { if (active) setAsideSlashCommands(commands); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [adaptersReady, asideSession?.id, asideSession?.harness]);
 
   // Always land on the Agent tab: focusing a session (especially a blocked
   // worker from Mission Control) must reveal its conversation and approval card,
@@ -2325,7 +2339,7 @@ function AppContent() {
             pendingMessages={asidePending}
             working={!!asideSession.activeTurnId || asideSession.status === "working"}
             workspaceFiles={hasRepo ? workspaceFiles : []}
-            slashCommands={slashCommands}
+            slashCommands={asideSlashCommands}
             modelSwitch={modelSwitch?.sessionId === asideSession.id ? modelSwitch : null}
             lifecycle={asideLifecycle}
             initialDraft={asideLifecycle?.recoveryDraft}

@@ -7,7 +7,7 @@ import { AgentConversation } from "./AgentConversation";
 import { ComposerPill } from "./ComposerPill";
 import { ChatModelControl } from "./ChatModelControl";
 import { HarnessMark, harnessTintClass } from "./harnessMarks";
-import { harnessLabel, slashOwnershipBadge } from "../utils";
+import { harnessLabel, slashCommandsForHarness, slashOwnershipBadge } from "../utils";
 import { bridgeApi } from "../api";
 import { mergeForestSnapshot } from "../forest";
 import { startSerialPoll } from "../polling";
@@ -88,7 +88,7 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
     // A side chat cannot open a side chat of its own: the panel is a single
     // overlay and the aside is pinned to its harness, so Bridge's /btw and
     // /side are hidden here instead of offered and then refused on send.
-    return slashCommands
+    return slashCommandsForHarness(slashCommands, session.harness)
       .filter(command => !SIDE_CHAT_COMMANDS.includes(command.name.toLowerCase()))
       .filter(command => !query || command.name.toLowerCase().includes(query) || command.description.toLowerCase().includes(query))
       .sort((a, b) => {
@@ -97,9 +97,6 @@ export function AsideChat({ session, adapters, events, pendingMessages, working,
         const aPrefix = query ? Number(aName.startsWith(query)) : 0;
         const bPrefix = query ? Number(bName.startsWith(query)) : 0;
         if (aPrefix !== bPrefix) return bPrefix - aPrefix;
-        const aHarness = Number(a.harness === session.harness);
-        const bHarness = Number(b.harness === session.harness);
-        if (aHarness !== bHarness) return bHarness - aHarness;
         return aName.localeCompare(bName);
       });
   }, [slashQuery, slashCommands, session.harness]);
