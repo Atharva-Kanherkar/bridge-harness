@@ -2,6 +2,8 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { bridgeApi } from "../../api";
+import type { WorktreeInventoryEntry, WorktreeUsage } from "../../types";
 import { StoragePage } from "./StoragePage";
 
 let host: HTMLDivElement;
@@ -100,4 +102,47 @@ it("says plainly when a sweep could reclaim nothing", async () => {
   });
   await act(async () => { button("Confirm cleanup")?.click(); });
   expect(host.textContent).toContain("Nothing could be reclaimed safely");
+});
+
+
+it("confirms deletion of an unreadable checkout and refreshes rows and totals", async () => {
+  const entry: WorktreeInventoryEntry = {
+    id: "orphan", kind: "worker", repoRoot: "/repo", path: "/worktrees/workers/repo/orphan",
+    branch: "orphan-branch", ownerSessionId: null, ownerWorkspaceId: null,
+    state: "unverifiable", disposition: "unverifiable", retainedReason: "git cannot read this checkout",
+    assessedAt: null, sizeBytes: 4096, sizeMeasuredAt: null, createdAt: "2026-09-01", lastUsedAt: "2026-09-01", idleSeconds: 500,
+  };
+  const usage: WorktreeUsage = {
+    totalCount: 1, totalBytes: 4096, reclaimableCount: 0, reclaimableBytes: 0, retainedCount: 1,
+    maxTotalBytes: 10240, maxPerRepo: 12, workerIdleTtlSeconds: 86400, orchestratorIdleTtlSeconds: 86400, githubIdleTtlSeconds: 86400,
+    repositories: [{ repoRoot: "/repo", count: 1, sizeBytes: 4096, reclaimableBytes: 0, overBudget: false }],
+  };
+  const inventory = vi.spyOn(bridgeApi, "listWorktrees").mockResolvedValue([entry]);
+  const totals = vi.spyOn(bridgeApi, "worktreeUsage").mockResolvedValue(usage);
+  const reclaim = vi.spyOn(bridgeApi, "reclaimWorktree").mockResolvedValue({ reclaimed: true, bytesFreed: 4096, disposition: "unverifiable", detail: null });
+  await render();
+  await act(async () => { button("Delete")!.click(); });
+  expect(host.textContent).toContain(entry.path);
+  expect(reclaim).not.toHaveBeenCalled();
+  await act(async () => { button("Cancel")!.click(); });
+  expect(reclaim).not.toHaveBeenCalled();
+  await act(async () => { button("Delete")!.click(); });
+  inventory.mockResolvedValue([]);
+  totals.mockResolvedValue({ ...usage, totalCount: 0, totalBytes: 0, retainedCount: 0, repositories: [] });
+  await act(async () => { button("Delete anyway")!.click(); });
+  expect(reclaim).toHaveBeenCalledWith("orphan", true);
+  expect(host.textContent).toContain("Deleted 4.0 KiB");
+  expect(host.textContent).toContain("across 0 checkouts");
+  expect(host.textContent).not.toContain("orphan-branch");
+});
+
+it("explains external counts, unknown sizes and the scope of retention", async () => {
+  const entries = await bridgeApi.listWorktrees();
+  const external = entries.find(entry => entry.state === "external")!;
+  vi.spyOn(bridgeApi, "listWorktrees").mockResolvedValue([{ ...external, sizeBytes: null }]);
+  await render();
+  expect(host.textContent).toContain("including 1 external");
+  expect(host.textContent).toContain("1 checkout not yet measured");
+  expect(host.textContent).toContain("targets at most");
+  expect(host.textContent).toContain("Confirmed Delete can discard dirty or unreadable checkouts");
 });
