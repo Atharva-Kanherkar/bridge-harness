@@ -1436,33 +1436,33 @@ async fn start_provider_login(
 }
 
 #[tauri::command]
-async fn create_terminal(workspace_id: String, terminal_id: String, agent_id: Option<String>, cwd: Option<String>, restart: Option<bool>, state: State<'_, Arc<BridgeCore>>) -> Result<wire::TerminalRecord, BridgeError> {
+async fn create_terminal(workspace_id: String, terminal_id: String, agent_id: Option<String>, cwd: Option<String>, restart: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::TerminalRecord, BridgeError> {
     let core = state.inner().clone();
-    blocking("Create terminal", move || bridge_core::terminal_workspace::create(&core, &wire::CreateTerminalParams { workspace_id, terminal_id, agent_id, cwd, restart: restart.unwrap_or(false) })).await
+    blocking("Create terminal", move || api::create_terminal(&core, &wire::CreateTerminalParams { workspace_id, terminal_id, agent_id, cwd, restart })).await
 }
 
 #[tauri::command]
 async fn get_terminal_snapshot(workspace_id: String, terminal_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::TerminalSnapshot, BridgeError> {
     let core = state.inner().clone();
-    blocking("Terminal snapshot", move || bridge_core::terminal_workspace::snapshot(&core, &workspace_id, &terminal_id)).await
+    blocking("Terminal snapshot", move || api::get_terminal_snapshot(&core, &workspace_id, &terminal_id)).await
 }
 
 #[tauri::command]
 async fn get_terminal_workspace(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::TerminalWorkspace, BridgeError> {
     let core = state.inner().clone();
-    blocking("Terminal workspace", move || bridge_core::terminal_workspace::workspace(&core, &workspace_id)).await
+    blocking("Terminal workspace", move || api::get_terminal_workspace(&core, &workspace_id)).await
 }
 
 #[tauri::command]
 async fn save_terminal_workspace(workspace_id: String, layout: serde_json::Value, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
     let core = state.inner().clone();
-    blocking("Save terminal workspace", move || bridge_core::terminal_workspace::save_layout(&core, &workspace_id, layout)).await
+    blocking("Save terminal workspace", move || api::save_terminal_workspace(&core, &workspace_id, layout)).await
 }
 
 #[tauri::command]
 async fn rename_terminal(workspace_id: String, terminal_id: String, title: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::TerminalRecord, BridgeError> {
     let core = state.inner().clone();
-    blocking("Rename terminal", move || bridge_core::terminal_workspace::rename(&core, &workspace_id, &terminal_id, &title)).await
+    blocking("Rename terminal", move || api::rename_terminal(&core, &workspace_id, &terminal_id, &title)).await
 }
 
 #[tauri::command]
@@ -2934,6 +2934,7 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum ParameterShape {
+        Json,
         String,
         Boolean,
         Integer(String),
@@ -2966,6 +2967,7 @@ mod tests {
 
         let leaf = kind.rsplit("::").next().unwrap_or(kind);
         match leaf {
+            "Value" if kind == "serde_json::Value" => ParameterShape::Json,
             "String" => match (method, field) {
                 (bridge_protocol::MethodName::ResolveApproval, "decision") => {
                     ParameterShape::Reference("ApprovalDecision".into())
@@ -3017,6 +3019,10 @@ mod tests {
     }
 
     fn schema_parameter_shape(schema: &serde_json::Value) -> ParameterShape {
+        // JSON Schema's `true` accepts any JSON value, matching serde_json::Value.
+        if schema == &serde_json::Value::Bool(true) {
+            return ParameterShape::Json;
+        }
         if let Some(reference) = schema.get("$ref").and_then(serde_json::Value::as_str) {
             return ParameterShape::Reference(reference.rsplit('/').next().unwrap().into());
         }

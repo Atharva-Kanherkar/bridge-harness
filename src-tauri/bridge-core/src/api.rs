@@ -2495,6 +2495,14 @@ pub(crate) fn login_shell() -> String {
     "/bin/bash".to_owned()
 }
 
+// Both desktop transports expose this shared API seam; the terminal module
+// owns the implementation and its PTY/checkpoint lifecycle.
+pub use crate::terminal_workspace::{
+    create as create_terminal, rename as rename_terminal,
+    save_layout as save_terminal_workspace, snapshot as get_terminal_snapshot,
+    workspace as get_terminal_workspace,
+};
+
 pub fn open_terminal(core: &Arc<BridgeCore>, workspace_id: &str, terminal_id: &str) -> Result<(), BridgeError> {
     crate::terminal_workspace::create(core, &wire::CreateTerminalParams {
         workspace_id: workspace_id.into(), terminal_id: terminal_id.into(), agent_id: None, cwd: None, restart: true,
