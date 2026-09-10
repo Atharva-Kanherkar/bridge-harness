@@ -47,7 +47,7 @@ function DiffLine({ row, numbered, onQuoteHunk }: { row: DiffRow; numbered: bool
   const line = row.newLine ?? row.oldLine;
   return <div className={cn("group/hunk flex", band && "pt-px", style.tint || "bg-card")}>
     <span className={cn(
-      "relative sticky left-0 z-10 flex shrink-0 select-none items-start gap-1.5 bg-inherit px-1.5",
+      "sticky left-0 z-10 flex shrink-0 select-none items-start gap-1.5 bg-inherit px-1.5",
       numbered && !band && !style.edge && "border-r border-border/60",
     )}>
       {numbered && (
