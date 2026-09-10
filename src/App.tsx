@@ -156,7 +156,7 @@ function AppContent() {
   const closeModal = useUiStore(state => state.closeModal);
   const {
     health, healthError, modelSetup, modelSetupError, workBoard,
-    workBoardQueryError, refetchWorkBoard, acceptModelSetup, invalidateHealth,
+    workBoardQueryError, refetchWorkBoard, followWorkBriefing, acceptModelSetup, invalidateHealth,
   } = useBridgeServerState();
   const [state, setState] = useState<BridgeState>(emptyState);
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
@@ -1095,6 +1095,7 @@ function AppContent() {
   const runWorkBriefing = useCallback(async (trigger: "manual" | "focus"): Promise<void> => {
     try {
       const receipt = await bridgeApi.runWorkBriefing(trigger);
+      if (receipt.outcome !== "refused" && receipt.runId) followWorkBriefing(receipt.runId);
       if (receipt.outcome === "refused" && trigger === "manual") {
         setWorkBriefingError(receipt.detail ?? receipt.code ?? "the briefing was refused");
       } else if (trigger === "manual") {
@@ -1104,7 +1105,7 @@ function AppContent() {
       if (trigger === "manual") setWorkBriefingError(errorMessage(error));
     }
     void refetchWorkBoard();
-  }, [refetchWorkBoard]);
+  }, [refetchWorkBoard, followWorkBriefing]);
 
   // The opt-in focus trigger. Gated on the stored settings the board carries, so
   // a user who never opted in gets no background model run from switching apps.

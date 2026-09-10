@@ -56,7 +56,7 @@ describe("opening Work starts nothing", () => {
     const query = SERVER_STATE.slice(SERVER_STATE.indexOf("const workBoard"));
     expect(query.match(/bridgeApi\.\w+/g)).toEqual(["bridgeApi.workBoard"]);
     expect(query).toContain("queryKey: queryKeys.workBoard");
-    expect(query).toContain("enabled: false");
+    expect(query).toContain('enabled: query => !!followedRunId || query.state.data?.suggestions.state === "running"');
     expect(query).not.toMatch(/createSession|startTurn|setSelectedSessionId|openSession/);
   });
 

@@ -13,8 +13,10 @@ Only providers that pass the existing briefing conformance gate can run a briefi
 
 **Refresh** on a configured board starts a connector briefing through the existing
 `work/run_briefing` path. Opening the screen only reads the stored board. While a
-run is active, Refresh is disabled. Without a configured model, the screen explains
-setup and shows no invented work. The browser preview has no live integrations:
+run is active, Refresh is disabled and the board is polled every two seconds until
+it reaches a terminal state. Polling survives transient read failures, stops after
+the run settles, and never starts an unopened idle board. Without a configured
+model, the screen explains setup and shows no invented work. The browser preview has no live integrations:
 it returns an empty board and refuses a briefing with `desktop_required`.
 
 ## What appears
@@ -53,8 +55,9 @@ substitute for the cited item's date.
 
 `sourceActivityAt` is stored separately from `evidenceObservedAt`, which records
 when Bridge read the result. The source date survives the evidence ledger and task
-reconciliation. Reading, pinning, or otherwise updating a local record does not
-renew its window. Database migration 57 adds nullable source-date columns without
+reconciliation. Duplicate reads retain already-earned dates and links when a later
+partial response omits them; fields supplied by a later read can still update.
+Reading, pinning, or otherwise updating a local record does not renew its window. Database migration 57 adds nullable source-date columns without
 backfilling old rows from observation dates; legacy undated rows remain stored but
 are not displayed until a dated source read replaces them.
 

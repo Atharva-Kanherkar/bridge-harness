@@ -183,15 +183,22 @@ impl RunLedger {
             self.entries.iter_mut().find(|entry| entry.canonical_resource_id.as_ref() == Some(canonical_id))
         }) {
             let reused = existing.evidence_ref.clone();
-            // Reuse identity, not the first read's metadata. A discovery result
-            // may omit the date/link that the subsequent individual read earns.
-            existing.target = target;
-            existing.source_activity_at = crate::work_connectors::source_activity_at(family, result);
+            // Duplicate calls share a resource reference. Keep metadata earned
+            // by an earlier read when a later search/partial response omits it.
+            // Supplied fields still refresh independently of one another.
+            if target != EvidenceTarget::None {
+                existing.target = target;
+            }
+            if let Some(activity_at) = crate::work_connectors::source_activity_at(family, result) {
+                existing.source_activity_at = Some(activity_at);
+            }
             existing.result_digest = result_digest(result);
             existing.observed_at = observed_at.to_owned();
             existing.tool_call_id = tool_call_id.to_owned();
             existing.tool_definition_digest = tool_definition_digest.to_owned();
-            existing.account_identity = account_identity.map(str::to_owned);
+            if let Some(account) = account_identity {
+                existing.account_identity = Some(account.to_owned());
+            }
             self.record_source(
                 instance_id,
                 family.as_str(),
@@ -579,6 +586,32 @@ mod tests {
         assert_eq!(ledger.entries()[0].tool_call_id, "read");
         assert_eq!(ledger.entries()[0].source_activity_at.as_deref(), Some(SEEN));
         assert!(matches!(ledger.entries()[0].target, EvidenceTarget::ExternalLink { .. }));
+    }
+
+    #[test]
+    fn partial_duplicate_reads_preserve_dates_and_links_already_earned() {
+        let mut ledger = RunLedger::new("run");
+        let complete = json!({"node_id":"I_1","updated_at":SEEN,"html_url":"https://github.com/o/r/issues/1"});
+        let first = ledger.record_succeeded(ConnectorFamily::GitHub, "gh", Some("account"), "complete", "d1", &complete, SEEN).unwrap();
+        let target = ledger.entries()[0].target.clone();
+        let second = ledger.record_succeeded(ConnectorFamily::GitHub, "gh", None, "partial", "d2", &json!({"node_id":"I_1"}), SEEN).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(ledger.entries().len(), 1);
+        let entry = ledger.entry(&first).unwrap();
+        assert_eq!(entry.source_activity_at.as_deref(), Some(SEEN));
+        assert_eq!(entry.target, target);
+        assert_eq!(entry.account_identity.as_deref(), Some("account"));
+
+        let later = "2026-08-19T13:00:00+00:00";
+        ledger.record_succeeded(ConnectorFamily::GitHub, "gh", None, "dated", "d3", &json!({"node_id":"I_1","updated_at":later}), later).unwrap();
+        assert_eq!(ledger.entry(&first).unwrap().source_activity_at.as_deref(), Some(later));
+        assert_eq!(ledger.entry(&first).unwrap().target, target);
+        ledger.record_succeeded(ConnectorFamily::GitHub, "gh", None, "linked", "d4", &json!({"node_id":"I_1","html_url":"https://github.com/o/r/issues/2"}), later).unwrap();
+        let entry = ledger.entry(&first).unwrap();
+        assert_eq!(entry.source_activity_at.as_deref(), Some(later));
+        assert!(matches!(&entry.target, EvidenceTarget::ExternalLink { url, .. } if url.ends_with("/2")));
+        assert_eq!(entry.tool_call_id, "linked");
+        assert_eq!(entry.tool_definition_digest, "d4");
     }
 
 }
