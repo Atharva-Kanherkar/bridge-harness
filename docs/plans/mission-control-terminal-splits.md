@@ -1,6 +1,6 @@
 # Mission Control terminal splits
 
-Research date: 2026-09-10. Status: proposed implementation plan; application code has not been changed by this research.
+Research date: 2026-09-10. Status: approved design, implemented. See [usage, lifecycle, and verification](../mission-control-terminal-splits.md) for the delivered behavior and validation limits. The sections below retain the original research and design.
 
 The user confirmed that Mission Control should contain **terminals running agent CLIs**. The target is a persistent terminal workspace with nested splits, direct keyboard input, and independent agent processes in each pane.
 
@@ -27,7 +27,7 @@ Source inspection was pinned to Orca commit `f2d5711b2d32e9f11277cd63805c76b0b5f
 | Layout | `src/dockLayout.ts` stores one dock's dimensions and selection. Terminal tab names and roster live in memory. | Persist terminal tabs, a recursive split tree, ratios, titles, and focus per workspace. |
 | CLI discovery | `src-tauri/bridge-core/src/managed_agents.rs` resolves managed and external runtimes. | Resolve and validate an interactive CLI launch target; SDK availability alone does not establish a usable terminal CLI. |
 
-Bridge already supports a detached daemon. Its desktop shutdown disconnects the client and joins its connection supervisor. The embedded fallback has a different process lifetime; survival across desktop exit must be verified specifically in daemon mode.
+Bridge can attach to a separately running daemon. Its desktop shutdown disconnects the client and joins its connection supervisor. Native verification also confirmed that the launcher terminates a daemon it owns on app exit. Live reattachment therefore requires a surviving, separately managed daemon; otherwise the saved history returns with an ended state. The embedded fallback also ends with the desktop process.
 
 ## Proposed user experience
 
