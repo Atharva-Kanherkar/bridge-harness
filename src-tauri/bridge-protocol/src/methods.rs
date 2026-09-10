@@ -168,6 +168,7 @@ methods![
     // menu-bar meter (CodexBar port)
     (GetMeterSnapshot, "meter", "get_meter_snapshot"),
     (RefreshMeter, "meter", "refresh_meter"),
+    (SaveOpencodeUsageSession, "usage", "save_opencode_usage_session"),
     (GetProviderUsageOverviews, "usage", "get_provider_usage_overviews"),
     (RefreshProviderUsageOverviews, "usage", "refresh_provider_usage_overviews"),
     (GetUsageOverview, "usage", "get_usage_overview"),

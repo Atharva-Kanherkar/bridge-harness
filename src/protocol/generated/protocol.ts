@@ -117,6 +117,7 @@ export type BridgeMethod =
   | "usage/insights"
   | "meter/get_meter_snapshot"
   | "meter/refresh_meter"
+  | "usage/save_opencode_usage_session"
   | "usage/get_provider_usage_overviews"
   | "usage/refresh_provider_usage_overviews"
   | "usage/get_usage_overview"
@@ -309,6 +310,7 @@ export const BRIDGE_METHODS = [
   { method: "usage/insights", domain: "usage", command: "insights" },
   { method: "meter/get_meter_snapshot", domain: "meter", command: "get_meter_snapshot" },
   { method: "meter/refresh_meter", domain: "meter", command: "refresh_meter" },
+  { method: "usage/save_opencode_usage_session", domain: "usage", command: "save_opencode_usage_session" },
   { method: "usage/get_provider_usage_overviews", domain: "usage", command: "get_provider_usage_overviews" },
   { method: "usage/refresh_provider_usage_overviews", domain: "usage", command: "refresh_provider_usage_overviews" },
   { method: "usage/get_usage_overview", domain: "usage", command: "get_usage_overview" },
@@ -561,6 +563,7 @@ export interface BridgeMethodParams {
   "usage/insights": InsightsParams;
   "meter/get_meter_snapshot": undefined;
   "meter/refresh_meter": undefined;
+  "usage/save_opencode_usage_session": SaveOpencodeUsageSessionParams;
   "usage/get_provider_usage_overviews": undefined;
   "usage/refresh_provider_usage_overviews": undefined;
   "usage/get_usage_overview": undefined;
@@ -755,6 +758,7 @@ export interface BridgeMethodResults {
   "usage/insights": UsageInsightsResult;
   "meter/get_meter_snapshot": MeterRegistry;
   "meter/refresh_meter": UnitResult;
+  "usage/save_opencode_usage_session": UnitResult;
   "usage/get_provider_usage_overviews": ProviderUsageOverviews;
   "usage/refresh_provider_usage_overviews": ProviderUsageOverviews;
   "usage/get_usage_overview": UsageOverviewSnapshot;
@@ -3225,6 +3229,11 @@ export interface MeterRegistry {
   attribution: string;
   nominalIntervalSeconds: number;
   providers: MeterProviderEntry[];
+}
+
+export interface SaveOpencodeUsageSessionParams {
+  cookie: string;
+  workspace: string;
 }
 
 export interface ProviderUsageOverviews {

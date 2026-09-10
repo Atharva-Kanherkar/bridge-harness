@@ -69,6 +69,18 @@ fn call_with_params(
                     bridge_core::api::refresh_provider_usage_overviews(&core)
                         .map_err(|e| e.to_string())?,
                 ),
+                MethodName::SaveOpencodeUsageSession => {
+                    let params: bridge_protocol::messages::SaveOpencodeUsageSessionParams =
+                        serde_json::from_value(params.ok_or("Missing OpenCode session")?)
+                            .map_err(|_| "Invalid OpenCode session")?;
+                    bridge_core::api::save_opencode_usage_session(
+                        &core,
+                        &params.cookie,
+                        &params.workspace,
+                    )
+                    .map_err(|e| e.to_string())?;
+                    Ok(Value::Null)
+                }
                 MethodName::SaveMenuBarSettings => {
                     let params: bridge_protocol::messages::SaveMenuBarSettingsParams =
                         serde_json::from_value(params.ok_or("Missing menu settings")?)
@@ -168,8 +180,9 @@ pub fn install(app: &tauri::App, host: Arc<OnceLock<HostMode>>) -> Result<bool, 
             let _ = signal.try_send(Work::SettingsChanged);
         });
         let connection_app = handle.clone();
+        let connection_host = host.clone();
         app.listen("bridge-menu-bar-connect-opencode", move |_| {
-            if let Err(error) = connect::open(&connection_app) {
+            if let Err(error) = connect::open(&connection_app, connection_host.clone()) {
                 let _ = connection_app.emit("bridge-menu-bar-connection", error);
             }
         });

@@ -827,6 +827,12 @@ async fn get_meter_snapshot() -> bridge_core::meter::MeterRegistry {
 }
 
 #[tauri::command]
+async fn save_opencode_usage_session(cookie: String, workspace: String, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
+    let core = state.inner().clone();
+    blocking("Connect OpenCode usage", move || api::save_opencode_usage_session(&core, &cookie, &workspace)).await
+}
+
+#[tauri::command]
 async fn get_provider_usage_overviews(state: State<'_, Arc<BridgeCore>>) -> Result<wire::ProviderUsageOverviews, BridgeError> {
     let core = state.inner().clone();
     blocking("Provider usage", move || api::get_provider_usage_overviews(&core)).await
@@ -2360,6 +2366,7 @@ pub fn run() -> i32 {
             scan_history,
             insights,
             get_meter_snapshot,
+            save_opencode_usage_session,
             get_provider_usage_overviews,
             refresh_provider_usage_overviews,
             get_usage_overview,

@@ -1,7 +1,10 @@
 //! First-party login window. No Bridge capabilities are assigned to this webview.
 use tauri::{Emitter, Manager};
 const LABEL: &str = "menu-bar-opencode-login";
-pub(super) fn open(app: &tauri::AppHandle) -> Result<(), String> {
+pub(super) fn open(
+    app: &tauri::AppHandle,
+    host: std::sync::Arc<std::sync::OnceLock<crate::HostMode>>,
+) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(LABEL) {
         let _ = window.set_focus();
         return Ok(());
@@ -29,8 +32,9 @@ pub(super) fn open(app: &tauri::AppHandle) -> Result<(), String> {
                         let cookie = cookies.iter().filter(|c| ["auth","__Host-auth"].contains(&c.name()))
                             .map(|c| format!("{}={}",c.name(),c.value())).collect::<Vec<_>>().join("; ");
                         if !cookie.is_empty() {
-                            match bridge_core::provider_usage::credentials::save_opencode_session(&cookie,&workspace) {
-                                Ok(()) => { let _ = app.emit("bridge-menu-bar-connected", ()); let _ = app.emit("bridge-menu-bar-connection", "OpenCode connected. Refresh usage to read the selected workspace."); let _ = window.close(); }
+                            match super::call_with_params(&app, &host, bridge_protocol::methods::MethodName::SaveOpencodeUsageSession,
+                                Some(serde_json::json!({"cookie":cookie,"workspace":workspace}))) {
+                                Ok(_) => { let _ = app.emit("bridge-menu-bar-connected", ()); let _ = app.emit("bridge-menu-bar-connection", "OpenCode connected. Refresh usage to read the selected workspace."); let _ = window.close(); }
                                 Err(error) => { let _ = app.emit("bridge-menu-bar-connection", error); }
                             }
                             return;

@@ -519,6 +519,10 @@ pub fn dispatch(
         }
         MethodName::GetMeterSnapshot => reply(Ok(api::meter_snapshot())),
         MethodName::RefreshMeter => reply(api::refresh_meter(core)),
+        MethodName::SaveOpencodeUsageSession => {
+            let p: wire::SaveOpencodeUsageSessionParams = decode(method, params)?;
+            reply(api::save_opencode_usage_session(core, &p.cookie, &p.workspace))
+        }
         MethodName::GetProviderUsageOverviews => reply(api::get_provider_usage_overviews(core)),
         MethodName::RefreshProviderUsageOverviews => reply(api::refresh_provider_usage_overviews(core)),
         MethodName::GetUsageOverview => reply(api::get_usage_overview(core)),

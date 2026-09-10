@@ -3735,6 +3735,11 @@ pub fn meter_snapshot() -> meter::MeterRegistry {
     meter::registry_snapshot()
 }
 
+pub fn save_opencode_usage_session(core: &Arc<BridgeCore>, cookie: &str, workspace: &str) -> Result<(), BridgeError> {
+    crate::provider_usage::credentials::save_opencode_session(cookie, workspace).map_err(BridgeError::Invalid)?;
+    crate::usage_overview::invalidate_opencode(core)
+}
+
 pub fn get_provider_usage_overviews(core: &Arc<BridgeCore>) -> Result<wire::ProviderUsageOverviews, BridgeError> {
     crate::usage_overview::provider_snapshots(core)
 }

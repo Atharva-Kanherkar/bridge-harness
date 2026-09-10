@@ -583,3 +583,16 @@ mod provider_tests {
         assert_eq!(q.metrics[0].value.value, Some(0.0));
     }
 }
+
+/// Account connection changes invalidate both the old identity and refresh gate.
+pub fn invalidate_opencode(core: &BridgeCore) -> Result<(), BridgeError> {
+    let mut last = core.usage_overview.providers[2]
+        .lock()
+        .map_err(|_| BridgeError::Invalid("OpenCode refresh unavailable".into()))?;
+    core.db.lock().unwrap().execute(
+        "DELETE FROM configuration_entries WHERE kind='usage_overview' AND id='opencode'",
+        [],
+    )?;
+    *last = None;
+    Ok(())
+}

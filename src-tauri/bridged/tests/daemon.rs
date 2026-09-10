@@ -191,6 +191,9 @@ fn menu_settings_persist_and_unknown_usage_stays_unknown_over_the_socket() {
     let rows = group["result"]["providers"].as_array().unwrap();
     assert_eq!(rows.iter().map(|r| r["provider"].as_str().unwrap()).collect::<Vec<_>>(), vec!["codex", "claude", "cursor", "opencode"]);
     for row in rows { assert!(row["today"]["tokens"]["value"].is_null()); }
+    let (invalid_session, _) = client.call(7, "usage/save_opencode_usage_session", Some(json!({"cookie":"unrelated=secret","workspace":"wrk_fixture"})));
+    assert!(invalid_session.get("error").is_some());
+    assert!(!invalid_session.to_string().contains("secret"));
     drop(client);
     running.stop();
 

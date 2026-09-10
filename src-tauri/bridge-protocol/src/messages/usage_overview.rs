@@ -234,6 +234,17 @@ mod tests {
         assert!(settings.opencode_workspace.is_none());
     }
 
+    #[test]
+    fn connection_debug_output_redacts_the_session_cookie() {
+        let session = SaveOpencodeUsageSessionParams {
+            cookie: "auth=secret-session".into(),
+            workspace: "wrk_fixture".into(),
+        };
+        let debug = format!("{session:?}");
+        assert!(!debug.contains("secret-session"));
+        assert!(debug.contains("[REDACTED]"));
+    }
+
     /// This exact fixture is also decoded by the Swift presentation tests.
     #[test]
     fn native_fixture_matches_the_versioned_wire_contract() {
@@ -254,5 +265,22 @@ mod tests {
             UsageMetricStatus::Stale
         );
         assert_eq!(usage.month.cost_microusd.value, None);
+    }
+}
+
+/// Shell-to-backend only. This session is written to Keychain and never returned
+/// by a settings, usage, or credential-read API.
+#[derive(Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SaveOpencodeUsageSessionParams {
+    pub cookie: String,
+    pub workspace: String,
+}
+impl std::fmt::Debug for SaveOpencodeUsageSessionParams {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SaveOpencodeUsageSessionParams")
+            .field("cookie", &"[REDACTED]")
+            .field("workspace", &self.workspace)
+            .finish()
     }
 }

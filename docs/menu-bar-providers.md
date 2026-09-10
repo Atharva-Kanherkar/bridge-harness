@@ -36,7 +36,9 @@ authentication prompts. Expired credentials require sign-in again.
 
 Connect OpenCode opens a separate HTTPS sign-in window with no Bridge IPC
 capabilities. Only first-party auth cookies from an opened workspace are saved
-in macOS Keychain. API keys are never treated as Zen session cookies. The
+in macOS Keychain by the active backend (embedded or daemon). This keeps
+Keychain ownership with the process that refreshes the session. The authenticated
+local RPC only writes the session; it provides no credential-read method. API keys are never treated as Zen session cookies. The
 workspace ID can be overridden in settings; it is not a credential. Dashboard
 server-function IDs can change upstream and return an unavailable state.
 

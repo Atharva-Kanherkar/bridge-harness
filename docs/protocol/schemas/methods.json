@@ -772,6 +772,13 @@
       "resultSchema": "unit-result.json"
     },
     {
+      "command": "save_opencode_usage_session",
+      "domain": "usage",
+      "method": "usage/save_opencode_usage_session",
+      "paramsSchema": "save-opencode-usage-session-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
       "command": "get_provider_usage_overviews",
       "domain": "usage",
       "method": "usage/get_provider_usage_overviews",
