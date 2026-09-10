@@ -1309,8 +1309,9 @@ function AppContent() {
     setError(undefined);
     setAsideLifecycle({ sourceSessionId: carryFromSessionId, phase: "creating" });
     try {
-      const title = text.length > 64 ? `${text.slice(0, 63).trimEnd()}…` : text;
-      const result = await bridgeApi.createAsideChat(carryFromSessionId, adapter.id as Harness, model, title);
+      // Let the shared naming pipeline choose a concise title after the turn.
+      // Passing the prompt here would mark it as a user-chosen, permanent name.
+      const result = await bridgeApi.createAsideChat(carryFromSessionId, adapter.id as Harness, model, null);
       setAsideLifecycle({
         sourceSessionId: result.sourceSessionId,
         sessionId: result.sessionId,

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session, Workspace } from "../types";
 import { BridgeSidebar, type BridgeSidebarProps } from "./BridgeSidebar";
 import { CHAT_VIEW_KEY } from "./sidebarChats";
+import { SIDEBAR_CHAT_DRAG } from "./missionControl/drag";
 
 // The static suite covers what the rail renders. This one covers what it does:
 // folding a group and following the chat that just opened.
@@ -180,6 +181,19 @@ describe("BridgeSidebar account actions", () => {
 });
 
 describe("BridgeSidebar action rows", () => {
+  it("exports idle chats for Mission Control without opening the chat", () => {
+    const onOpenSession = vi.fn();
+    mount({ onOpenSession });
+    const row = container.querySelector<HTMLButtonElement>("button[title^='Japan relocation']")!;
+    expect(row.draggable).toBe(true);
+    const dataTransfer = { setData: vi.fn(), effectAllowed: "none" };
+    const event = new Event("dragstart", { bubbles: true });
+    Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+    act(() => row.dispatchEvent(event));
+    expect(dataTransfer.setData).toHaveBeenCalledWith(SIDEBAR_CHAT_DRAG, "plain");
+    expect(dataTransfer.effectAllowed).toBe("copy");
+    expect(onOpenSession).not.toHaveBeenCalled();
+  });
   it("fires the matching handler from each action row", () => {
     const onOpenNewChat = vi.fn();
     const onOpenMarketplace = vi.fn();

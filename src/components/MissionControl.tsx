@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type ReactNode } from "react";
-import { ArrowUpRight, GripVertical, LayoutGrid, Maximize2, Minimize2, Square } from "lucide-react";
+import { ArrowUpRight, GripVertical, LayoutGrid, Maximize2, Minimize2, Pin, PinOff, Square, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import { cn } from "@/lib/utils";
 import type { AgentEvent, Session, SessionForestSnapshot, Workspace, WorkerRuntimeRecord } from "../types";
 import type { ApprovalDecision, InteractionResolutionResult, QuestionAction } from "../protocol/generated/protocol";
 import { formatElapsed, harnessLabel } from "../utils";
-import { leafIds, resizeNode, type PaneNode, type SplitDirection } from "../terminal/layout";
+import { leafIds, resizeNode, type PaneNode } from "../terminal/layout";
 import { AgentConversation } from "./AgentConversation";
 import { ComposerPill } from "./ComposerPill";
-import { isRunning, workerStatus, type WorkerTone } from "./workerStatus";
-import { dropEdge, moveLeaf, readLayout, reconcileLeaves, writeLayout, type DropEdge } from "./missionControl/layout";
+import { workerStatus, type WorkerTone } from "./workerStatus";
+import { dropEdge, insertLeaf, minimumSize, moveLeaf, readLayout, reconcileLeaves, writeLayout, type DropEdge } from "./missionControl/layout";
+import { isChatDrag, readChatDrag, SIDEBAR_CHAT_DRAG, TILE_DRAG } from "./missionControl/drag";
 
 export type MissionControlProps = {
   sessions: Session[];
@@ -20,7 +21,6 @@ export type MissionControlProps = {
   onStopWorker?: (childSessionId: string) => Promise<void>;
 };
 
-const TILE_DRAG = "application/x-bridge-mission-tile";
 const ACTIVE_STATUSES = new Set<Session["status"]>(["working", "waiting", "starting", "resuming", "checkpointing"]);
 const FOREST_DEBOUNCE_MS = 300;
 
@@ -36,9 +36,9 @@ const TONE_INK: Record<WorkerTone, { text: string; dot: string }> = {
   idle: { text: "text-muted-foreground", dot: "bg-muted-foreground/50" },
 };
 
-export function isActiveSession(session: Session, runtime?: WorkerRuntimeRecord): boolean {
-  if (ACTIVE_STATUSES.has(session.status)) return true;
-  return !!session.parentSessionId && !!runtime && isRunning(workerStatus(session, runtime).tone);
+export function isActiveSession(session: Session): boolean {
+  // Session updates are live; forest runtime snapshots can outlive a worker's turn.
+  return ACTIVE_STATUSES.has(session.status) || session.activeTurnId != null;
 }
 
 type TileActions = {
@@ -53,7 +53,12 @@ type TileActions = {
   onStopWorker?: (childSessionId: string) => Promise<void>;
   onForest: (sessionId: string, forest: SessionForestSnapshot) => void;
   toggleExpanded: (id: string) => void;
-  move: (id: string, target: string, direction: SplitDirection, before: boolean) => void;
+  dropChat: (id: string, fromSidebar: boolean, target?: string, edge?: DropEdge) => void;
+  pinnedSessionIds: string[];
+  pin: (id: string) => void;
+  unpin: (id: string) => void;
+  drafts: Record<string, string>;
+  setDraft: (id: string, draft: string) => void;
   resize: (path: string, ratio: number) => void;
 };
 
@@ -79,11 +84,18 @@ function useSessionForest(sessionId: string, events: AgentEvent[], onForest: (se
 
 function Tile({ id, actions }: { id: string; actions: TileActions }) {
   const session = actions.sessions.get(id);
-  const [draft, setDraft] = useState("");
+  const draft = actions.drafts[id] ?? "";
+  const setDraft = (value: string) => actions.setDraft(id, value);
   const [sending, setSending] = useState(false);
   const [stopping, setStopping] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [drop, setDrop] = useState<DropEdge>();
+  useEffect(() => {
+    const clear = () => setDrop(undefined);
+    window.addEventListener("dragend", clear);
+    window.addEventListener("drop", clear);
+    return () => { window.removeEventListener("dragend", clear); window.removeEventListener("drop", clear); };
+  }, []);
   const events = useMemo(() => actions.events.filter(event => event.sessionId === id), [actions.events, id]);
   const forest = useSessionForest(id, events, actions.onForest);
   if (!session) return null;
@@ -115,27 +127,31 @@ function Tile({ id, actions }: { id: string; actions: TileActions }) {
   }
 
   return <section aria-label={`Chat ${title}`} data-session-id={id}
-    onDragOver={event => { if (event.dataTransfer.types.includes(TILE_DRAG)) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDrop(dropEdge(event.currentTarget.getBoundingClientRect(), event.clientX, event.clientY)); } }}
+    onDragOver={event => { if (isChatDrag(event.dataTransfer)) { event.preventDefault(); event.stopPropagation(); event.dataTransfer.dropEffect = event.dataTransfer.types.includes(SIDEBAR_CHAT_DRAG) ? "copy" : "move"; setDrop(dropEdge(event.currentTarget.getBoundingClientRect(), event.clientX, event.clientY)); } }}
     onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDrop(undefined); }}
     onDrop={(event: DragEvent) => {
       setDrop(undefined);
-      const source = event.dataTransfer.getData(TILE_DRAG);
-      if (!source || !actions.sessions.has(source)) return;
+      const source = readChatDrag(event.dataTransfer);
+      if (!source.id || !actions.sessions.has(source.id)) return;
       event.preventDefault();
+      event.stopPropagation();
       const edge = dropEdge(event.currentTarget.getBoundingClientRect(), event.clientX, event.clientY);
-      actions.move(source, id, edge === "left" || edge === "right" ? "horizontal" : "vertical", edge === "left" || edge === "top");
+      actions.dropChat(source.id, source.fromSidebar, id, edge);
     }}
     className={cn("relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-md border border-border bg-background", focused && "ring-1 ring-foreground/30")}>
-    <header draggable onDragStart={event => { event.dataTransfer.setData(TILE_DRAG, id); event.dataTransfer.effectAllowed = "move"; }} className="flex h-9 shrink-0 cursor-grab items-center gap-1.5 border-b border-border bg-card px-2 active:cursor-grabbing">
+    <header draggable title="Drag to rearrange. Drop on an edge to split." onDragStart={event => { event.dataTransfer.setData(TILE_DRAG, id); event.dataTransfer.effectAllowed = "move"; }} className="flex h-9 shrink-0 cursor-grab select-none items-center gap-1.5 border-b border-border bg-card px-2 active:cursor-grabbing">
       <GripVertical size={12} className="shrink-0 text-muted-foreground/60" aria-hidden="true" />
       <span title={status.detail ?? status.label} className={cn("h-1.5 w-1.5 shrink-0 rounded-full", ink.dot)} />
       <span className="min-w-0 flex-1 truncate text-xs font-medium" title={title}>{title}</span>
       <span className={cn("shrink-0 font-mono text-[10px] uppercase tracking-wide", ink.text)}>{status.label}</span>
-      <span className="hidden shrink-0 text-[10px] text-muted-foreground sm:inline">{harnessLabel(session.harness)}{workspace ? ` · ${workspace.title}` : ""}</span>
+      <span className="hidden max-w-28 truncate text-[10px] text-muted-foreground sm:inline" title={`${harnessLabel(session.harness)}${workspace ? ` · ${workspace.title}` : ""}`}>{harnessLabel(session.harness)}{workspace ? ` · ${workspace.title}` : ""}</span>
       <span className="shrink-0 font-mono text-[10px] text-muted-foreground" title="Elapsed">{formatElapsed(session.startedAt, actions.now)}</span>
       <IconButton title="Focus chat" onClick={() => actions.onFocusSession(id)}><ArrowUpRight size={13} /></IconButton>
       <IconButton title={expanded ? "Restore grid" : "Maximize tile"} onClick={() => actions.toggleExpanded(id)}>{expanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}</IconButton>
       {isWorker && actions.onStopWorker && <IconButton title="Stop worker" onClick={() => { void actions.onStopWorker?.(id); }}><Square size={12} /></IconButton>}
+      {actions.pinnedSessionIds.includes(id)
+        ? <IconButton title={isActiveSession(session) ? "Unpin chat (stays while active)" : "Remove from Mission Control"} onClick={() => actions.unpin(id)}>{isActiveSession(session) ? <PinOff size={13} /> : <X size={13} />}</IconButton>
+        : <IconButton title="Pin chat in Mission Control" onClick={() => actions.pin(id)}><Pin size={13} /></IconButton>}
     </header>
     <div className="relative min-h-0 flex-1 overflow-y-auto">
       <AgentConversation
@@ -162,20 +178,22 @@ function Tile({ id, actions }: { id: string; actions: TileActions }) {
       <ComposerPill layout="dock" className="max-w-none px-2 pb-2 pt-2 sm:px-2 sm:pb-2" value={draft} onChange={setDraft} onSubmit={() => { void submit(); }} onKeyDown={onKeyDown}
         placeholder={working ? `Steer ${title}` : `Message ${title}`} working={working} activeAction="steer" disabled={sending} onStop={() => { void interrupt(); }} stopping={stopping} />
     </div>
-    {drop && <div aria-hidden="true" className={cn("pointer-events-none absolute z-10 rounded border-2 border-ring bg-selection/40", drop === "left" && "inset-y-0 left-0 w-1/2", drop === "right" && "inset-y-0 right-0 w-1/2", drop === "top" && "inset-x-0 top-0 h-1/2", drop === "bottom" && "inset-x-0 bottom-0 h-1/2")} />}
+    {drop && <div aria-hidden="true" data-drop-edge={drop} className={cn("pointer-events-none absolute z-10 flex items-center justify-center rounded border-2 border-ring bg-selection/80 text-xs font-medium text-selection-foreground", drop === "left" && "inset-y-0 left-0 w-1/2", drop === "right" && "inset-y-0 right-0 w-1/2", drop === "top" && "inset-x-0 top-0 h-1/2", drop === "bottom" && "inset-x-0 bottom-0 h-1/2")}>Drop to split {drop}</div>}
   </section>;
 }
 
 function SplitTree({ node, path = "", actions }: { node: PaneNode; path?: string; actions: TileActions }) {
   const container = useRef<HTMLDivElement>(null);
-  if (node.type === "leaf") return <Tile id={node.leafId} actions={actions} />;
+  if (node.type === "leaf") return <Tile key={node.leafId} id={node.leafId} actions={actions} />;
   const horizontal = node.direction === "horizontal";
+  const firstSize = minimumSize(node.first);
+  const secondSize = minimumSize(node.second);
   const position = (x: number, y: number) => {
     const rect = container.current?.getBoundingClientRect();
     if (rect) actions.resize(path, horizontal ? (x - rect.left) / rect.width : (y - rect.top) / rect.height);
   };
   // the ratio is runtime state, so the track template is the one inline value.
-  return <div ref={container} className="grid h-full min-h-0 min-w-0" style={horizontal ? { gridTemplateColumns: `minmax(0, ${node.ratio}fr) 6px minmax(0, ${1 - node.ratio}fr)` } : { gridTemplateRows: `minmax(0, ${node.ratio}fr) 6px minmax(0, ${1 - node.ratio}fr)` }}>
+  return <div ref={container} className="grid h-full min-h-0 min-w-0" style={horizontal ? { gridTemplateColumns: `minmax(${firstSize.width}px, ${node.ratio}fr) 6px minmax(${secondSize.width}px, ${1 - node.ratio}fr)` } : { gridTemplateRows: `minmax(${firstSize.height}px, ${node.ratio}fr) 6px minmax(${secondSize.height}px, ${1 - node.ratio}fr)` }}>
     <SplitTree node={node.first} path={`${path}0`} actions={actions} />
     <div role="separator" tabIndex={0} aria-label="Resize chat split" aria-orientation={horizontal ? "vertical" : "horizontal"} aria-valuemin={10} aria-valuemax={90} aria-valuenow={Math.round(node.ratio * 100)}
       onPointerDown={event => { event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); }}
@@ -190,11 +208,17 @@ function SplitTree({ node, path = "", actions }: { node: PaneNode; path?: string
 }
 
 export function MissionControl({ sessions, workspaces, events, activeSessionId, onFocusSession, onStopWorker }: MissionControlProps) {
-  const [showAll, setShowAll] = useState(false);
   const [forests, setForests] = useState<Record<string, SessionForestSnapshot>>({});
   const [stored, setStored] = useState(() => readLayout());
+  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [dropOnCanvas, setDropOnCanvas] = useState(false);
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => { const timer = setInterval(() => setNow(Date.now()), 30_000); return () => clearInterval(timer); }, []);
+  useEffect(() => {
+    const clear = () => setDropOnCanvas(false);
+    window.addEventListener("dragend", clear);
+    return () => window.removeEventListener("dragend", clear);
+  }, []);
 
   const onForest = useCallback((sessionId: string, forest: SessionForestSnapshot) => setForests(prev => ({ ...prev, [sessionId]: forest })), []);
   const runtimes = useMemo(() => {
@@ -204,35 +228,58 @@ export function MissionControl({ sessions, workspaces, events, activeSessionId, 
   }, [forests]);
   const sessionMap = useMemo(() => new Map(sessions.map(session => [session.id, session])), [sessions]);
   const workspaceMap = useMemo(() => new Map(workspaces.map(workspace => [workspace.id, workspace])), [workspaces]);
-  const live = useMemo(() => sessions.filter(session => isActiveSession(session, runtimes.get(session.id))), [sessions, runtimes]);
-  const visible = showAll ? sessions : live;
-  const ids = useMemo(() => visible.map(session => session.id), [visible]);
+  const live = useMemo(() => sessions.filter(isActiveSession), [sessions]);
+  const pinnedSessionIds = useMemo(() => stored.pinnedSessionIds.filter(id => sessionMap.has(id)), [stored.pinnedSessionIds, sessionMap]);
+  const ids = useMemo(() => [...new Set([...live.map(session => session.id), ...pinnedSessionIds])], [live, pinnedSessionIds]);
   const idsKey = ids.join(" ");
   const root = useMemo(() => reconcileLeaves(stored.root, ids), [stored.root, idsKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const expandedLeafId = stored.expandedLeafId && root && leafIds(root).includes(stored.expandedLeafId) ? stored.expandedLeafId : null;
-  useEffect(() => { writeLayout({ version: 1, root, expandedLeafId }); }, [root, expandedLeafId]);
+  const size = root ? minimumSize(expandedLeafId ? { type: "leaf", leafId: expandedLeafId } : root) : undefined;
+  useEffect(() => { setStored(prev => prev.root === root && prev.expandedLeafId === expandedLeafId && prev.pinnedSessionIds.length === pinnedSessionIds.length ? prev : { version: 1, root, expandedLeafId, pinnedSessionIds }); }, [root, expandedLeafId, pinnedSessionIds]);
+  useEffect(() => { writeLayout({ version: 1, root, expandedLeafId, pinnedSessionIds }); }, [root, expandedLeafId, pinnedSessionIds]);
+
+  function dropChat(id: string, fromSidebar: boolean, target?: string, edge?: DropEdge) {
+    setDropOnCanvas(false);
+    if (!sessionMap.has(id) || (!fromSidebar && !ids.includes(id))) return;
+    const next = root && target && edge
+      ? moveLeaf(root, id, target, edge === "left" || edge === "right" ? "horizontal" : "vertical", edge === "left" || edge === "top")
+      : insertLeaf(root, id);
+    setStored({ version: 1, root: next, expandedLeafId: null, pinnedSessionIds: fromSidebar ? [...new Set([...pinnedSessionIds, id])] : pinnedSessionIds });
+  }
 
   const actions: TileActions = {
     sessions: sessionMap, workspaces: workspaceMap, events, runtimes, activeSessionId, expandedLeafId, now, onFocusSession, onStopWorker, onForest,
     toggleExpanded: id => setStored(prev => ({ ...prev, root, expandedLeafId: prev.expandedLeafId === id ? null : id })),
-    move: (id, target, direction, before) => { if (root) setStored(prev => ({ ...prev, root: moveLeaf(root, id, target, direction, before), expandedLeafId: null })); },
+    dropChat, pinnedSessionIds, drafts,
+    setDraft: (id, draft) => setDrafts(prev => ({ ...prev, [id]: draft })),
+    pin: id => setStored(prev => ({ ...prev, pinnedSessionIds: [...new Set([...prev.pinnedSessionIds, id])] })),
+    unpin: id => setStored(prev => ({ ...prev, pinnedSessionIds: prev.pinnedSessionIds.filter(pinned => pinned !== id) })),
     resize: (path, ratio) => { if (root) setStored(prev => ({ ...prev, root: resizeNode(root, path, ratio) })); },
   };
 
-  return <main aria-label="Mission Control" className="flex min-h-0 flex-1 flex-col bg-background">
+  return <main aria-label="Mission Control"
+    onDragOver={event => { if (isChatDrag(event.dataTransfer)) { event.preventDefault(); event.dataTransfer.dropEffect = event.dataTransfer.types.includes(SIDEBAR_CHAT_DRAG) ? "copy" : "move"; setDropOnCanvas(true); } }}
+    onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropOnCanvas(false); }}
+    onDrop={event => {
+      setDropOnCanvas(false);
+      if (!isChatDrag(event.dataTransfer)) return;
+      event.preventDefault();
+      const source = readChatDrag(event.dataTransfer);
+      dropChat(source.id, source.fromSidebar);
+    }}
+    className={cn("flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background", dropOnCanvas && !root && "ring-2 ring-inset ring-ring")}>
     <header className="flex h-11 shrink-0 items-center gap-3 border-b border-border px-4">
       <LayoutGrid size={14} className="text-muted-foreground" aria-hidden="true" />
       <h1 className="font-display text-sm font-medium">Mission Control</h1>
       <span aria-label={`${live.length} live`} className="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] text-muted-foreground">{live.length} live</span>
-      <div className="flex-1" />
-      <button type="button" aria-pressed={showAll} onClick={() => setShowAll(value => !value)} className={cn("rounded-md border px-2.5 py-1 text-xs transition-colors", showAll ? "border-foreground/30 bg-accent text-foreground" : "border-border text-muted-foreground hover:bg-accent hover:text-foreground")}>Show all</button>
+      {pinnedSessionIds.length > 0 && <span className="text-xs text-muted-foreground">{pinnedSessionIds.length} pinned</span>}
+      <span className="ml-auto hidden truncate text-xs text-muted-foreground lg:block">Drag chats here · Drag headers to rearrange</span>
     </header>
-    {root ? <div className="min-h-0 flex-1 p-2">{expandedLeafId ? <Tile id={expandedLeafId} actions={actions} /> : <SplitTree node={root} actions={actions} />}</div>
+    {root ? <div className="min-h-0 min-w-0 flex-1 overflow-auto p-2"><div className="h-full" style={{ minWidth: size?.width, minHeight: size?.height }}>{expandedLeafId ? <Tile key={expandedLeafId} id={expandedLeafId} actions={actions} /> : <SplitTree node={root} actions={actions} />}</div></div>
       : <div role="status" className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center">
         <LayoutGrid size={30} strokeWidth={1.2} className="text-muted-foreground" aria-hidden="true" />
         <h2 className="font-display text-xl">No active chats</h2>
-        <p className="max-w-sm text-sm leading-relaxed text-muted-foreground">Active chats appear here automatically as live tiles you can type into. {sessions.length > 0 ? `${sessions.length} idle or finished ${sessions.length === 1 ? "chat is" : "chats are"} hidden.` : "Start a chat from the sidebar to see it here."}</p>
-        {sessions.length > 0 && !showAll && <button type="button" onClick={() => setShowAll(true)} className="mt-1 rounded-md border border-border-card bg-card px-4 py-2 text-xs font-medium shadow-control hover:bg-accent">Show all chats</button>}
+        <p className="max-w-sm text-sm leading-relaxed text-muted-foreground">Chats and agents appear here automatically while working or waiting for your input. Drag any chat from the sidebar to keep it here, even when idle.</p>
       </div>}
   </main>;
 }

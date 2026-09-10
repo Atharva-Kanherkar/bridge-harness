@@ -24,6 +24,7 @@
       "titleBarStyle": "Overlay",
       "hiddenTitle": true,
       "acceptFirstMouse": true,
+      "dragDropEnabled": false,
       "zoomHotkeysEnabled": true
     }],
     "security": { "csp": null }
