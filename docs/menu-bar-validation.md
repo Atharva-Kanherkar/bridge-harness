@@ -140,17 +140,26 @@ This is a build configuration change, not an environment-variable workaround.
 Bun still fails before starting its scripts with `CouldntReadCurrentDirectory`;
 validation uses the equivalent npm, Swift, and Cargo stages.
 
-### Preview installation remains outstanding
+### Updated preview installed
 
 The implementation worktree and completed preview bundle disappeared immediately
 before signing/installing the update. Both implementation commits were already
 saved in Git. Sources were restored into `/private/tmp/bridge-menu-bar-providers`.
-The build caches are also unavailable and less than 1 GB of disk space remains.
-The installed `Bridge Menu Bar Preview.app` is still the earlier Codex-only
-version; the expanded provider UI has not been verified interactively. Live
-Claude/Cursor account reads and the OpenCode sign-in round trip remain unverified.
+After the user freed disk space, the production frontend and release-mode app
+were rebuilt successfully from the restored source. The fresh bundle was signed
+with the existing Developer ID and hardened runtime, then installed at:
 
-Once disk space is available, rebuild the isolated preview, sign it through the
-existing Developer ID workflow, and verify the native switcher, provider status,
+`/Users/yashaf/Applications/Bridge Menu Bar Preview.app`
+
+The old preview process was stopped before replacement. The installed bundle
+passes strict/deep signature verification, and its executable matches the signed
+build artifact byte for byte. The Mach-O minimum OS is 12.0 and its runtime search
+path includes `/usr/lib/swift`. The executable SHA-256 is
+`f954f3290a37507b3b72c109036aa20a80aad0370d1c704250a8e8e59e30ea7e`.
+
+Interactive verification is pending because macOS is locked and the desktop tool
+could not unlock it. The expanded provider UI, live Claude/Cursor account reads,
+and the OpenCode sign-in round trip have not yet been verified in this installed
+build. Once the Mac is unlocked, verify the native switcher, provider status,
 settings persistence, and OpenCode connection. The normal release signing,
 notarization, and macOS 12 runtime gates from the original milestone still apply.
