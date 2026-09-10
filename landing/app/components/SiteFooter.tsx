@@ -25,7 +25,7 @@ export default function SiteFooter() {
     <footer className="border-t border-border">
       <div className="mx-auto grid max-w-6xl gap-10 px-6 py-14 sm:grid-cols-3">
         <div>
-          <span className="font-display text-[15px] font-semibold text-foreground">Bridge</span>
+          <span className="font-pixel text-[24px] uppercase leading-none tracking-[0.04em] text-foreground">Bridge</span>
           <p className="mt-2 max-w-xs text-[13px] leading-6 text-muted-foreground">
             A native macOS control room for supervised coding-agent work.
           </p>

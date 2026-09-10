@@ -1,35 +1,31 @@
+import SectionHeader from "./SectionHeader";
 
 const rules = [
   {
-    title: "The three hierarchies stay separate",
-    text: "The workspace tree, the agent tree, and the conversation tree are related but independent. Forking a conversation does not undo filesystem changes, and ending a session does not discard a worktree. Conflating them is the recurring design bug, so Bridge surfaces divergence instead of hiding it.",
+    title: "The three hierarchies stay separate.",
+    text: "Workspace tree, agent tree, conversation tree. Forking a conversation does not undo files, and ending a session does not discard a worktree. Bridge surfaces divergence instead of hiding it.",
   },
   {
-    title: "Learning may rank. Only policy may grant",
-    text: "Routing and adaptive learning can order the candidates the policy engine has already found eligible. They can never grant a permission, widen a write scope, or skip an approval. Every safety gate has exactly one owner.",
+    title: "Learning may rank. Only policy may grant.",
+    text: "Routing and adaptive learning order the candidates the policy engine already allows. They never grant a permission, widen a scope, or skip an approval.",
   },
   {
-    title: "History is appended, never rewritten",
-    text: "Compaction preserves the original events and adds a verified checkpoint boundary. A resumed session reports how context actually came back rather than implying continuity it does not have.",
+    title: "History is appended, never rewritten.",
+    text: "Compaction keeps the original events and adds a verified checkpoint. A resumed session reports how context actually came back.",
   },
 ];
 
 export default function Principles() {
   return (
     <section className="border-t border-border">
-      <div className="mx-auto max-w-6xl px-6 py-20">
-        <div>
-          <h2 className="max-w-2xl font-display text-3xl font-semibold tracking-tight sm:text-4xl">Three rules the code keeps</h2>
-          <p className="mt-4 max-w-2xl text-[15px] leading-7 text-muted-foreground">
-            Most of Bridge follows from refusing to blur three distinctions.
-          </p>
-        </div>
-        <div className="mt-12 grid gap-8 md:grid-cols-3">
+      <div className="mx-auto max-w-6xl px-6 py-24">
+        <SectionHeader eyebrow="Principles" title="Three rules the code keeps." text="Most of Bridge follows from refusing to blur three distinctions." />
+        <div className="mt-14 grid gap-10 md:grid-cols-3">
           {rules.map((rule, i) => (
-            <div key={rule.title} className="border-t border-border pt-5">
+            <div key={rule.title} className="reveal">
               <span className="font-mono text-[11px] text-faint">0{i + 1}</span>
-              <h3 className="mt-3 text-base font-medium leading-6">{rule.title}</h3>
-              <p className="mt-3 text-[14px] leading-6 text-muted-foreground">{rule.text}</p>
+              <h3 className="mt-4 font-display text-[1.375rem] font-semibold leading-[1.2] tracking-[-0.02em] text-foreground">{rule.title}</h3>
+              <p className="mt-4 text-[14px] leading-6 text-muted-foreground">{rule.text}</p>
             </div>
           ))}
         </div>

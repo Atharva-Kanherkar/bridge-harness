@@ -14,7 +14,7 @@ export default function Docs() {
     <div className="min-h-screen bg-background text-foreground">
       <SiteHeader />
       <main className="mx-auto max-w-3xl px-6 pb-24 pt-16">
-        <h1 className="font-display text-4xl font-semibold tracking-tight sm:text-5xl">Docs</h1>
+        <h1 className="font-display text-5xl font-semibold tracking-[-0.03em] sm:text-6xl">Docs</h1>
         <p className="mt-4 text-[15px] leading-7 text-muted-foreground">
           The design references that ship with the repository, rendered here rather than linked away.
         </p>

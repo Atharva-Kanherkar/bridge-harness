@@ -1,4 +1,6 @@
 
+import SectionHeader from "./SectionHeader";
+
 const questions = [
   {
     q: "What is Bridge?",
@@ -45,22 +47,22 @@ const questions = [
 export default function Faq() {
   return (
     <section className="border-t border-border">
-      <div className="mx-auto max-w-6xl px-6 py-20">
-        <div>
-          <h2 className="font-display text-3xl font-semibold tracking-tight sm:text-4xl">Frequently asked questions</h2>
-        </div>
-        <div className="mt-10 max-w-3xl">
+      <div className="mx-auto max-w-6xl px-6 py-24">
+        <div className="grid gap-12 lg:grid-cols-[1fr_1.6fr]">
+          <SectionHeader eyebrow="FAQ" title="Questions, answered." />
+          <div className="reveal">
           {questions.map((item) => (
             <details key={item.q} className="group border-b border-border">
-              <summary className="flex cursor-pointer list-none items-center justify-between gap-4 py-4 text-[15px] font-medium marker:content-none">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-4 py-4 text-[15px] font-medium marker:content-none transition-colors hover:text-foreground/80">
                 {item.q}
-                <span className="shrink-0 text-faint transition-transform group-open:rotate-45" aria-hidden="true">
+                <span className="grid size-6 shrink-0 place-items-center rounded-full border border-border text-faint transition-transform duration-300 group-open:rotate-45" aria-hidden="true">
                   +
                 </span>
               </summary>
               <p className="pb-5 pr-8 text-[14px] leading-6 text-muted-foreground">{item.a}</p>
             </details>
           ))}
+          </div>
         </div>
       </div>
     </section>

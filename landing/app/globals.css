@@ -73,10 +73,11 @@
   --text-caption--line-height: 1.5;
   --text-message: 0.9375rem;
   --text-message--line-height: 1.7;
-  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-pixel: var(--font-doto), ui-monospace, monospace;
   --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  --font-display: var(--font-bricolage), var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
-  --font-heading: var(--font-bricolage), var(--font-geist-sans), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-display: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-heading: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
   --animate-fade-up: fade-up 360ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
   --animate-entry-in: entry-in 420ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
   --animate-caret: caret 1s step-end infinite;
@@ -113,6 +114,158 @@
       opacity: 0;
     }
   }
+
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(18px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes draw {
+    from {
+      stroke-dashoffset: var(--draw, 400);
+    }
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+
+  @keyframes pop {
+    from {
+      opacity: 0;
+      transform: scale(0.6);
+    }
+    to {
+      opacity: 1;
+      transform: scale(1);
+    }
+  }
+
+  @keyframes grow-x {
+    from {
+      transform: scaleX(0);
+    }
+    to {
+      transform: scaleX(1);
+    }
+  }
+
+  @keyframes light {
+    from {
+      opacity: 0.25;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes ticker {
+    from {
+      transform: translateX(0);
+    }
+    to {
+      transform: translateX(-50%);
+    }
+  }
+
+  @keyframes breathe {
+    0%,
+    100% {
+      opacity: 0.55;
+      transform: translate(-50%, 0) scale(1);
+    }
+    50% {
+      opacity: 0.85;
+      transform: translate(-50%, 0) scale(1.06);
+    }
+  }
+}
+
+/* Load-time entrance for above-the-fold content. Staggered with --i. */
+@utility enter {
+  animation: rise 800ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: calc(var(--i, 0) * 110ms);
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
+
+/* Scroll-driven reveal. Content is fully visible where scroll timelines are unsupported. */
+@utility reveal {
+  @supports (animation-timeline: view()) {
+    @media (prefers-reduced-motion: no-preference) {
+      animation: rise linear both;
+      animation-timeline: view();
+      animation-range: entry 5% entry 45%;
+    }
+  }
+}
+
+/* Illustration parts animate as the card scrolls into view; --i staggers, final state is the resting state. */
+@utility ill-part {
+  @supports (animation-timeline: view()) {
+    @media (prefers-reduced-motion: no-preference) {
+      animation-name: var(--ill, pop);
+      animation-timing-function: cubic-bezier(0.2, 0.7, 0.2, 1);
+      animation-fill-mode: both;
+      animation-timeline: view();
+      animation-range: entry calc(20% + var(--i, 0) * 8%) entry calc(60% + var(--i, 0) * 8%);
+    }
+  }
+}
+
+/* Sparse starfield: three offset layers of single-pixel radial dots. */
+@utility bg-stars {
+  background-image:
+    radial-gradient(1.6px 1.6px at 12% 18%, color-mix(in srgb, var(--color-foreground) 70%, transparent) 50%, transparent 51%),
+    radial-gradient(1.6px 1.6px at 78% 8%, color-mix(in srgb, var(--color-foreground) 60%, transparent) 50%, transparent 51%),
+    radial-gradient(2.2px 2.2px at 33% 62%, color-mix(in srgb, var(--color-foreground) 55%, transparent) 50%, transparent 51%),
+    radial-gradient(1.6px 1.6px at 61% 41%, color-mix(in srgb, var(--color-foreground) 45%, transparent) 50%, transparent 51%),
+    radial-gradient(1.6px 1.6px at 90% 70%, color-mix(in srgb, var(--color-foreground) 65%, transparent) 50%, transparent 51%),
+    radial-gradient(2.2px 2.2px at 6% 84%, color-mix(in srgb, var(--color-foreground) 40%, transparent) 50%, transparent 51%),
+    radial-gradient(1.6px 1.6px at 47% 12%, color-mix(in srgb, var(--color-foreground) 50%, transparent) 50%, transparent 51%),
+    radial-gradient(1.6px 1.6px at 24% 38%, color-mix(in srgb, var(--color-foreground) 35%, transparent) 50%, transparent 51%),
+    radial-gradient(1.6px 1.6px at 70% 88%, color-mix(in srgb, var(--color-foreground) 55%, transparent) 50%, transparent 51%),
+    radial-gradient(1.6px 1.6px at 95% 25%, color-mix(in srgb, var(--color-foreground) 45%, transparent) 50%, transparent 51%);
+  background-size:
+    520px 380px,
+    640px 460px,
+    720px 540px,
+    460px 340px,
+    820px 600px,
+    580px 420px,
+    380px 300px,
+    900px 660px,
+    660px 480px,
+    440px 360px;
+}
+
+@utility bg-grid {
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--color-foreground) 5%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--color-foreground) 5%, transparent) 1px, transparent 1px);
+  background-size: 56px 56px;
+}
+
+@utility mask-fade-b {
+  mask-image: linear-gradient(to bottom, black 40%, transparent 100%);
+}
+
+@utility mask-fade-x {
+  mask-image: linear-gradient(to right, transparent, black 12%, black 88%, transparent);
+}
+
+@utility eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-faint);
 }
 
 @layer base {

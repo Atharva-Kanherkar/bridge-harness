@@ -26,7 +26,7 @@ const inkTone: Record<Tone, string> = {
 
 function Code({ children }: { children: string }) {
   return (
-    <code className="mt-1 block overflow-x-auto whitespace-pre rounded-md border border-border bg-code px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-foreground">
+    <code className="mt-1 block max-w-full overflow-x-auto whitespace-pre rounded-md border border-border bg-code px-2.5 py-2 font-mono text-[11.5px] leading-relaxed text-foreground">
       {children}
     </code>
   );

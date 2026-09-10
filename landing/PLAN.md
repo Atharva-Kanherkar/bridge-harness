@@ -8,7 +8,7 @@ Modeled on onorca.dev (Orca by Stably: Next.js, Motion, dark chrome, real-DOM mo
 |---|---|---|---|
 | 1 | Sticky nav: logo, Docs, Changelog, Enterprise, Discord, X, GitHub star count, Download | Bridge, Docs, Changelog, GitHub, Download. No star count while the repo is private. | Done |
 | 2 | Hero: "Backed by Y Combinator" badge, "Ship 100x with the agent IDE", one concrete subhead, Download for Mac + "Also for Intel · Windows · Linux", View on GitHub | Eyebrow "macOS 12 or later · Apple Silicon · v0.5.5", "Delegate the coding. Keep the judgment.", subhead, Download for Mac, View on GitHub | Done |
-| 3 | Tabbed real-DOM app mockup, 5 tabs | Five scenes in content/scenes.ts driving AppMockup | Done |
+| 3 | Tabbed real-DOM app mockup, 5 tabs | Five real captures of the app in content/hero.ts driving HeroFrame | Done |
 | 4 | "Used by engineers at" logo strip | Skip until real logos exist | Never fabricate |
 | 5 | "Your dev loop, agentified." vertical tabs (Workspaces, Orchestration, Browser, Terminal, Tasks, Editor, Notes, Ship with AI), each with a mini mock | "Your dev loop, supervised." Six vertical tabs: Workspaces, Delegation, Conversation, Work board, Terminal and browser, Ship | Done |
 | 6 | "Bring your own agent / subscription", 27 agent logos | "Bring your own harness": three cards for Codex, Claude Code, OpenCode with harness tints | Done |
@@ -34,7 +34,7 @@ Built as SiteHeader, HarnessSection, FeatureGrid, CallToAction, SiteFooter, and 
 
 ## Phase 2: depth sections (done)
 
-1. "Your dev loop, supervised." Vertical tab list on the left, heading plus two sentences plus a mini mock on the right, built from the Card and Row primitives in AppMockup. Data in content/loop.ts. Same keyboard model as FeatureTabs.
+1. "Your dev loop, supervised." Vertical tab list on the left, heading plus two sentences plus a mini mock on the right, built from the entry primitives in MockEntry. Data in content/loop.ts. Same keyboard model as the hero capability strip in HeroFrame.
 2. Comparison table, eight rows. Built with two verdict columns rather than the planned three, because naming two rival categories separately would have meant claims about products that change weekly. A caption says the right column generalizes across a category.
 3. "Three rules" section in the testimonial slot: the three hierarchies stay separate; learning and routing can rank but never grant; history is appended, never rewritten. One sentence each, lifted from docs/.
 4. FAQ: What is Bridge? How is it different from running claude or codex in a terminal? Which agents does it support? Do I need API keys? Is it macOS only? Is it open source? What is a session forest? What does the policy engine gate? Can CI use it? Where does my data live?
@@ -49,7 +49,7 @@ The blog and docs routes were added beyond the original table: `/blog` with thre
 2. /changelog: six releases from 0.5.0 to 0.5.5, each with date, headline, bullets, and a link to its GitHub notes. Written as a typed data file rather than MDX, which avoids adding an MDX toolchain for prose that is already short. Copied from release notes at authoring time; no GitHub API because the repo is private.
 3. Bento tiles open a dialog with a larger mock, then a short recording once real captures exist.
 4. Open Graph image and metadataBase once the domain is chosen.
-5. Optional: bring the scroll-in animation back as a CSS scroll timeline behind an @supports guard, so an unsupported browser shows plain visible content instead of nothing.
+5. Done: scroll-in reveals and the capability illustrations run on CSS scroll timelines (`reveal`, `ill-part` utilities in globals.css) behind an @supports guard, so unsupported browsers and reduced-motion viewers see the finished state.
 
 ## Honesty gates, owner decisions
 
@@ -60,13 +60,13 @@ The blog and docs routes were added beyond the original table: `/blog` with thre
 
 ## Carried over from Orca
 
-- Mockups are real DOM, data-driven, never screenshots. Ours goes further: the markup is lifted from the running app rather than approximated, down to the 248px sidebar and the ui/caption/message type scale.
+- Orca uses real-DOM mockups. Bridge went the other way after the DOM copy drifted from the product: the hero shows real captures from the app's preview mode, recaptured with each redesign. Smaller mocks in the loop section stay as DOM.
 - Dark achromatic chrome; color appears only inside mockups and only for meaning.
 - One headline step, hairline dividers, max-w-6xl, generous vertical rhythm.
 - Tabs, tiles, and FAQ items are real controls with roles.
 
 ## Stays Bridge
 
-- Bricolage Grotesque display, Geist body, Geist Mono code.
+- Instrument Serif display (italic for the emphasized clause), Geist body, Geist Mono for labels and eyebrows.
 - Tokens mirror the Graphite palette in src/index.css. No new palette.
 - Tailwind v4 utilities only, CSS-first config in app/globals.css.

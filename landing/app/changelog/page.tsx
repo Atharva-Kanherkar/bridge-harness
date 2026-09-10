@@ -14,7 +14,7 @@ export default function Changelog() {
     <div className="min-h-screen bg-background text-foreground">
       <SiteHeader />
       <main className="mx-auto max-w-3xl px-6 pb-24 pt-16">
-        <h1 className="font-display text-4xl font-semibold tracking-tight sm:text-5xl">Changelog</h1>
+        <h1 className="font-display text-5xl font-semibold tracking-[-0.03em] sm:text-6xl">Changelog</h1>
         <p className="mt-4 text-[15px] leading-7 text-muted-foreground">
           What shipped in each Bridge release. Every build is Developer ID signed, notarized, and stapled.
         </p>
@@ -23,7 +23,7 @@ export default function Changelog() {
           {releases.map((release) => (
             <article key={release.version}>
               <div className="flex items-baseline gap-3">
-                <h2 className="font-display text-2xl font-semibold tracking-tight">{release.version}</h2>
+                <h2 className="font-display text-[1.75rem] font-semibold tracking-[-0.03em]">{release.version}</h2>
                 <span className="text-[13px] text-faint">{release.date}</span>
               </div>
               <h3 className="mt-3 text-base font-medium">{release.headline}</h3>

@@ -13,9 +13,9 @@ bun run lint
 
 ## Layout
 
-- `app/page.tsx` — hero, feature tabs, how-it-works, feature grid, footer
-- `app/components/AppMockup.tsx` — the desktop app mockup, rendered from `app/content/scenes.ts`
-- `app/components/FeatureTabs.tsx` — the tab strip that switches mockup scenes
+- `app/page.tsx` — hero, feature tabs, claims ticker, how-it-works, harnesses, loop, capabilities, principles, comparison, FAQ, CTA, footer
+- `public/screens/` — real captures of the app for the hero, listed in `app/content/hero.ts`
+- `app/components/HeroFrame.tsx` — the capability strip and app frame that cycles mockup scenes
 - `app/content/site.ts` — external links and the advertised release
 
 ## Styling

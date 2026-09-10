@@ -1,4 +1,6 @@
 
+import SectionHeader from "./SectionHeader";
+
 type Verdict = "yes" | "partial" | "no";
 
 const rows: { capability: string; bridge: Verdict; others: Verdict }[] = [
@@ -21,7 +23,7 @@ const mark: Record<Verdict, { glyph: string; className: string; label: string }>
 function Cell({ verdict }: { verdict: Verdict }) {
   const value = mark[verdict];
   return (
-    <td className="border-t border-border px-4 py-3 text-center">
+    <td className="border-t border-border px-4 py-3.5 text-center">
       <span className={value.className} aria-hidden="true">
         {value.glyph}
       </span>
@@ -33,21 +35,21 @@ function Cell({ verdict }: { verdict: Verdict }) {
 export default function Comparison() {
   return (
     <section className="border-t border-border">
-      <div className="mx-auto max-w-6xl px-6 py-20">
-        <div>
-          <h2 className="max-w-2xl font-display text-3xl font-semibold tracking-tight sm:text-4xl">
-            Built for supervision, not retrofitted
-          </h2>
-          <p className="mt-4 max-w-2xl text-[15px] leading-7 text-muted-foreground">
-            Terminal wrappers stop at a prompt and an editor was built for one person typing. Bridge is the layer that decides
-            what an agent is allowed to do before it does it.
-          </p>
-        </div>
-        <div className="mt-12 overflow-x-auto">
+      <div className="mx-auto max-w-6xl px-6 py-24">
+        <SectionHeader
+          eyebrow="Comparison"
+          title={
+            <>
+              Built for supervision, <em className="not-italic text-muted-foreground">not retrofitted.</em>
+            </>
+          }
+          text="Terminal wrappers stop at a prompt and editors were built for one person typing. Bridge decides what an agent is allowed to do before it does it."
+        />
+        <div className="reveal mt-14 overflow-x-auto rounded-xl border border-border-card bg-card">
           <table className="w-full min-w-[560px] border-collapse text-[13.5px]">
             <thead>
               <tr className="text-left text-[11px] uppercase tracking-wider text-faint">
-                <th className="px-4 py-3 font-normal">Capability</th>
+                <th className="px-5 py-3.5 font-normal">Capability</th>
                 <th className="w-32 px-4 py-3 text-center font-normal">Bridge</th>
                 <th className="w-48 px-4 py-3 text-center font-normal">Wrappers and agent IDEs</th>
               </tr>
@@ -55,7 +57,7 @@ export default function Comparison() {
             <tbody>
               {rows.map((row) => (
                 <tr key={row.capability}>
-                  <td className="border-t border-border px-4 py-3 text-muted-foreground">{row.capability}</td>
+                  <td className="border-t border-border px-5 py-3.5 text-body">{row.capability}</td>
                   <Cell verdict={row.bridge} />
                   <Cell verdict={row.others} />
                 </tr>

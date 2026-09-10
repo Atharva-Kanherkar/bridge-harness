@@ -19,7 +19,7 @@ export default function SiteHeader() {
       className={`sticky top-0 z-50 transition-colors ${scrolled ? "border-b border-border bg-background/80 backdrop-blur-md" : "border-b border-transparent"}`}
     >
       <div className="mx-auto flex max-w-6xl items-center justify-between px-6 py-4">
-        <Link href="/" className="font-display text-[15px] font-semibold tracking-tight">
+        <Link href="/" className="font-pixel text-[20px] leading-none tracking-[0.04em] uppercase">
           Bridge
         </Link>
         <nav className="flex items-center gap-6 text-[13px] text-muted-foreground">
@@ -32,7 +32,7 @@ export default function SiteHeader() {
           <Link href={blogPath} className="hidden hover:text-foreground sm:inline">
             Blog
           </Link>
-          <Link href={downloadPath} className="rounded-md bg-foreground px-3 py-1.5 text-background hover:bg-foreground/90">
+          <Link href={downloadPath} className="rounded-full bg-foreground px-3.5 py-1.5 text-background transition-colors hover:bg-foreground/90">
             Download
           </Link>
         </nav>
