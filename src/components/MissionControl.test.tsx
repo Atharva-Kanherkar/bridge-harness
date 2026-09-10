@@ -295,3 +295,27 @@ it("treats old saved layouts as unpinned and validates stored pins", () => {
   expect(parseLayout(JSON.stringify({ version: 1, root })).pinnedSessionIds).toEqual([]);
   expect(parseLayout(JSON.stringify({ version: 1, root, pinnedSessionIds: ["a", "a", "missing", 7] })).pinnedSessionIds).toEqual(["a"]);
 });
+
+it("pins from the tile header and keeps the chat visible after completion and reopening", async () => {
+  await render({ sessions: [session("a", "working")] });
+  await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Pin chat in Mission Control']")!.click());
+  expect(savedLayout().pinnedSessionIds).toEqual(["a"]);
+  await render({ sessions: [session("a", "completed")] });
+  expect(tiles()).toEqual(["a"]);
+  act(() => root.unmount()); root = createRoot(host);
+  await render({ sessions: [session("a", "completed")] });
+  expect(tiles()).toEqual(["a"]);
+  await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Remove from Mission Control']")!.click());
+  expect(tiles()).toEqual([]);
+});
+
+it("unpins an active chat without stopping it and removes it when work finishes", async () => {
+  await render({ sessions: [session("a", "working")] });
+  await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Pin chat in Mission Control']")!.click());
+  await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Unpin chat (stays while active)']")!.click());
+  expect(tiles()).toEqual(["a"]);
+  expect(savedLayout().pinnedSessionIds).toEqual([]);
+  expect(bridgeApi.interruptTurn).not.toHaveBeenCalled();
+  await render({ sessions: [session("a", "completed")] });
+  expect(tiles()).toEqual([]);
+});
