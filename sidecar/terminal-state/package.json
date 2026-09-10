@@ -1,0 +1,15 @@
+{
+  "name": "@bridge/terminal-state",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test *.test.mjs"
+  },
+  "dependencies": {
+    "@xterm/headless": "6.1.0-beta.302",
+    "@xterm/xterm": "6.1.0-beta.303",
+    "@xterm/addon-serialize": "0.15.0-beta.300",
+    "@xterm/addon-unicode11": "0.10.0-beta.300"
+  }
+}
