@@ -155,7 +155,15 @@ The old preview process was stopped before replacement. The installed bundle
 passes strict/deep signature verification, and its executable matches the signed
 build artifact byte for byte. The Mach-O minimum OS is 12.0 and its runtime search
 path includes `/usr/lib/swift`. The executable SHA-256 is
-`f954f3290a37507b3b72c109036aa20a80aad0370d1c704250a8e8e59e30ea7e`.
+`11f3c676c12a59b0f96883bab7a7c44f460bf736342fd6ca92ccc16f02df1341`.
+
+The installed preview also includes the app-logo correction: the native menu
+uses the exact foreground rectangles from `assets/bridge-icon.svg`, preserving
+the span and support proportions and omitting the rounded-square background.
+It remains an 18-point monochrome alpha-mask template for macOS recoloring.
+The existing native Swift checks passed, an enlarged native rendering was
+visually checked against the app mark, and the rebuilt/installed bundle passed
+strict/deep signing verification again.
 
 Interactive verification is pending because macOS is locked and the desktop tool
 could not unlock it. The expanded provider UI, live Claude/Cursor account reads,

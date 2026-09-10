@@ -45,23 +45,21 @@ final class MenuController: NSObject, NSMenuDelegate {
     }
 
     static func templateIcon() -> NSImage {
-        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: false) { _ in
-            NSColor.black.setStroke()
-            let path = NSBezierPath()
-            path.lineWidth = 1.6
-            path.lineCapStyle = .round
-            path.lineJoinStyle = .round
-            path.move(to: NSPoint(x: 2, y: 4))
-            path.line(to: NSPoint(x: 2, y: 13))
-            path.curve(to: NSPoint(x: 16, y: 13), controlPoint1: NSPoint(x: 5, y: 6), controlPoint2: NSPoint(x: 13, y: 6))
-            path.line(to: NSPoint(x: 16, y: 4))
-            path.move(to: NSPoint(x: 1, y: 4))
-            path.line(to: NSPoint(x: 17, y: 4))
-            path.move(to: NSPoint(x: 6, y: 4))
-            path.line(to: NSPoint(x: 6, y: 9))
-            path.move(to: NSPoint(x: 12, y: 4))
-            path.line(to: NSPoint(x: 12, y: 9))
-            path.stroke()
+        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: true) { _ in
+            // Foreground rectangles from assets/bridge-icon.svg, with its
+            // background omitted. Center the original proportions at 16pt wide.
+            let scale: CGFloat = 16 / 640
+            let top = (18 - 408 * scale) / 2
+            NSColor.black.setFill()
+            for rect in [
+                NSRect(x: 264, y: 400, width: 96, height: 312),
+                NSRect(x: 664, y: 400, width: 96, height: 312),
+                NSRect(x: 192, y: 304, width: 640, height: 104),
+            ] {
+                NSRect(x: 1 + (rect.minX - 192) * scale,
+                    y: top + (rect.minY - 304) * scale,
+                    width: rect.width * scale, height: rect.height * scale).fill()
+            }
             return true
         }
         image.isTemplate = true
