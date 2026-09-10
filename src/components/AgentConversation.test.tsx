@@ -259,6 +259,9 @@ describe("AgentConversation", () => {
     expect(html).toContain("abcdef123456");
     expect(html).toContain("Browser unavailable");
     expect(html).toContain("Skipped");
+    expect(html).toContain("border-x-2");
+    expect(html).toContain("border-x-warning");
+    expect(html).not.toContain("border-l-2");
   });
 
   it.each([

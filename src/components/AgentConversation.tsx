@@ -51,9 +51,9 @@ function providerLabel(harness?: string | null): string | undefined {
 /// needs.
 const BUBBLE = "ml-auto w-fit max-w-[85%] whitespace-pre-wrap break-words rounded-2xl border border-border bg-accent/70 px-4 py-2.5 text-message tracking-[-0.006em] text-foreground";
 /// Transcript-level notice: a quiet card that reads as a margin note.
-const NOTICE = "mb-4 rounded-lg border border-border border-l-2 bg-card px-3 py-2 text-xs text-muted-foreground";
+const NOTICE = "mb-4 rounded-xl border border-border border-x-2 bg-card px-3 py-2 text-xs text-muted-foreground";
 /// A decision the user has to make — approvals, adoptions, stale bases.
-const PANEL = "min-w-0 overflow-hidden rounded-lg border border-border border-l-2 bg-card";
+const PANEL = "min-w-0 overflow-hidden rounded-xl border border-border border-x-2 bg-card";
 /// Verbatim text — paths, commands, diffstats — sits in an inset code well.
 const WELL = "block rounded-md border border-border bg-code px-2.5 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words overflow-x-auto text-foreground";
 const BTN_PRIMARY = "inline-flex min-h-8 items-center gap-1.5 rounded-lg bg-primary px-3 py-1 text-[13px] font-medium text-primary-foreground transition-colors hover:bg-primary/90 disabled:opacity-50";
@@ -537,7 +537,7 @@ function StallNotice({ onStop }: { onStop?: () => void }) {
   const [keepWaiting, setKeepWaiting] = useState(false);
   if (keepWaiting) return null;
   return (
-    <div role="status" className={`${NOTICE} border-l-warning`}>
+    <div role="status" className={`${NOTICE} border-x-warning`}>
       <p>This turn has gone quiet. Stop it, or keep waiting.</p>
       <div className="mt-2 flex flex-wrap gap-2">
         <button type="button" className={BTN_SECONDARY} onClick={() => onStop?.()}>Stop</button>
@@ -661,14 +661,14 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   const olderHidden = entryWindow ? Math.max(0, entryWindow.total - entryWindow.returned) : 0;
   return <FileLinkContext.Provider value={fileLinks}><ScrollFollow sessionKey={session?.id ?? historySessionId ?? "preview"} populated={populated} signature={scrollSignature} className="absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth px-4 py-5 pb-16 sm:px-8 sm:py-6">
     <div data-conversation-content className="mx-auto flex w-full min-w-0 max-w-conversation flex-col gap-5">
-      {olderHidden > 0 && <div role="status" className={`${NOTICE} border-l-info`}>
+      {olderHidden > 0 && <div role="status" className={`${NOTICE} border-x-info`}>
         Showing the most recent {entryWindow!.returned.toLocaleString()} of {entryWindow!.total.toLocaleString()} events in this chat. {olderHidden.toLocaleString()} earlier {olderHidden === 1 ? "event is" : "events are"} kept in history but not rendered here.
       </div>}
       {pendingAdoptions.map(binding => <AdoptionCard key={binding.sessionId} binding={binding} onResolve={readOnly ? undefined : onResolveAdoption}/>)}
       {completion && <VerificationCard summary={completion} onWaive={readOnly ? undefined : onWaiveCompletion}/>}
-      {repositoryDivergence === "diverged" && <div role="alert" className={`${NOTICE} border-l-warning`}>This branch&apos;s context predates the current file state.</div>}
-      {continuationFidelity === "projected_at_boundary" && <div role="status" className={`${NOTICE} border-l-info`}>Continuation restored from a phase-boundary projection; provider reasoning state was not transferred.</div>}
-      {continuationFidelity === "projected_mid_turn" && <div role="alert" className={`${NOTICE} border-l-warning`}>Continuation fidelity degraded: context was projected mid-turn and provider reasoning state was lost.</div>}
+      {repositoryDivergence === "diverged" && <div role="alert" className={`${NOTICE} border-x-warning`}>This branch&apos;s context predates the current file state.</div>}
+      {continuationFidelity === "projected_at_boundary" && <div role="status" className={`${NOTICE} border-x-info`}>Continuation restored from a phase-boundary projection; provider reasoning state was not transferred.</div>}
+      {continuationFidelity === "projected_mid_turn" && <div role="alert" className={`${NOTICE} border-x-warning`}>Continuation fidelity degraded: context was projected mid-turn and provider reasoning state was lost.</div>}
       {preview && <div className="w-fit mx-auto mb-[22px] px-2.5 py-1 border border-dashed border-border rounded-full text-muted-foreground text-[11px] tracking-[0.04em]">Design preview — sample conversation</div>}
       {/* `initial={false}`: the rows already on screen when a session opens must
           not replay their entrance. Only what actually arrives afterwards rises
@@ -700,7 +700,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
           </div>}
         </div></TranscriptRow>)}
         {startupNarration.mounted && <TranscriptRow key="working"><div className="flex justify-start"><StartupStatusRow view={startupNarration} harness={modelSwitch?.harness ?? session?.harness}/></div></TranscriptRow>}
-        {stopping && <TranscriptRow key="stopping"><p role="status" className={`${NOTICE} border-l-info`}>Stopping…</p></TranscriptRow>}
+        {stopping && <TranscriptRow key="stopping"><p role="status" className={`${NOTICE} border-x-info`}>Stopping…</p></TranscriptRow>}
         {stalled && <TranscriptRow key="stalled"><StallNotice onStop={onInterrupt}/></TranscriptRow>}
       </AnimatePresence>
       </div>
@@ -813,7 +813,7 @@ function AdoptionCard({ binding, onResolve }: { binding: WorkerRepositoryBinding
     catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(null); }
   };
-  return <div role="alert" className={`${PANEL} border-l-warning`}>
+  return <div role="alert" className={`${PANEL} border-x-warning`}>
     <header className="flex flex-wrap items-center gap-x-2 gap-y-1 px-4 pt-3">
       <b className="text-ui font-semibold text-foreground">Worker changes are ready to review</b>
       {settling && <small className="text-caption text-warning">Finishing…</small>}
@@ -852,10 +852,10 @@ function VerificationCard({ summary, onWaive }: { summary: CompletionSummary; on
   const unresolved = summary.checks.filter(check => check.required && check.status !== "passed");
   const failedVerdict = summary.verdict === "changes_requested" || summary.verdict === "failed";
   // Neutral card plus a colored tick; only a real failure earns a wash.
-  const tone = summary.verdict === "verified" ? "border-l-success" : summary.verdict === "waived" ? "border-l-warning" : failedVerdict ? "border-l-destructive bg-destructive/5" : "border-l-info";
+  const tone = summary.verdict === "verified" ? "border-x-success" : summary.verdict === "waived" ? "border-x-warning" : failedVerdict ? "border-x-destructive bg-destructive/5" : "border-x-info";
   const title = summary.verdict === "verified" ? "Verified" : summary.verdict === "waived" ? "Verified with waiver" : summary.verdict === "changes_requested" ? "Changes requested" : summary.verdict === "superseded" ? "Evidence superseded" : summary.verdict === "failed" ? "Verification failed" : "Verifying";
   const statusIcon = (status: string) => status === "passed" ? <Check size={12} className="mt-0.5 shrink-0 text-success" aria-hidden="true"/> : status === "failed" ? <X size={12} className="mt-0.5 shrink-0 text-destructive" aria-hidden="true"/> : status === "skipped" || status === "blocked" || status === "stale" ? <AlertTriangle size={12} className="mt-0.5 shrink-0 text-warning" aria-hidden="true"/> : <Circle size={10} className="mt-1 shrink-0 text-muted-foreground" aria-hidden="true"/>;
-  return <section aria-label="Completion verification" className={`min-w-0 overflow-hidden rounded-lg border border-border border-l-2 bg-card ${tone}`}>
+  return <section aria-label="Completion verification" className={`${PANEL} ${tone}`}>
     <details className="group/verification">
       <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center gap-x-2 gap-y-1 px-4 py-2.5 text-ui [&::-webkit-details-marker]:hidden">
         <ChevronRight size={14} className="shrink-0 text-muted-foreground transition-transform group-open/verification:rotate-90" aria-hidden="true" />
@@ -867,9 +867,9 @@ function VerificationCard({ summary, onWaive }: { summary: CompletionSummary; on
         <p className="break-all font-mono text-caption text-muted-foreground">Revision {summary.repository.head.slice(0, 12)} · {summary.repository.dirtyDigest === "clean" ? "clean" : `tree ${summary.repository.dirtyDigest.slice(0, 8)}`}</p>
         {!summary.markdownCommitted && <p className="text-caption text-muted-foreground">Verification record is saved locally and has not been committed.</p>}
         {summary.checks.map(check => <div key={check.checkId} className="flex items-start gap-2 text-xs text-muted-foreground">{statusIcon(check.status)}<div className="min-w-0 flex-1"><div className="flex flex-wrap gap-x-2"><span className="text-foreground">{check.command || check.checkId}</span><span>{humanizeCheckKind(check.kind)}</span>{check.verifierFamily && <span>· {check.verifierFamily}</span>}</div>{check.detail && <p className="mt-0.5 truncate font-mono text-[11px]">{check.detail}</p>}</div><span className="shrink-0 text-[11px] tracking-wide">{humanizeCheckStatus(check.status)}</span></div>)}
-        {summary.waiverReason && <p className="mt-2 rounded-md border border-border border-l-2 border-l-warning bg-background px-2 py-1.5 text-xs text-warning">Waiver: {summary.waiverReason}</p>}
+        {summary.waiverReason && <p className="mt-2 rounded-md border border-border border-x-2 border-x-warning bg-background px-2 py-1.5 text-xs text-warning">Waiver: {summary.waiverReason}</p>}
         {onWaive && unresolved.length > 0 && !["verified", "waived", "superseded"].includes(summary.verdict) && <div className="pt-2">
-          {!waiverOpen ? <button type="button" onClick={() => setWaiverOpen(true)} className="min-h-8 rounded-lg border border-input px-2.5 py-1.5 text-ui font-medium text-warning transition-colors hover:bg-accent">Waive unresolved checks</button> : <form onSubmit={event => { event.preventDefault(); const reason = waiverReason.trim(); if (!reason) { setWaiverError("Explain why these checks can be waived."); return; } setWaiving(true); setWaiverError(undefined); void onWaive(summary.attemptId, unresolved.map(check => check.checkId), reason).then(() => { setWaiverOpen(false); setWaiverReason(""); }).catch(error => setWaiverError(error instanceof Error ? error.message : String(error))).finally(() => setWaiving(false)); }} className="space-y-2 rounded-lg border border-border border-l-2 border-l-warning bg-background p-2.5">
+          {!waiverOpen ? <button type="button" onClick={() => setWaiverOpen(true)} className="min-h-8 rounded-lg border border-input px-2.5 py-1.5 text-ui font-medium text-warning transition-colors hover:bg-accent">Waive unresolved checks</button> : <form onSubmit={event => { event.preventDefault(); const reason = waiverReason.trim(); if (!reason) { setWaiverError("Explain why these checks can be waived."); return; } setWaiving(true); setWaiverError(undefined); void onWaive(summary.attemptId, unresolved.map(check => check.checkId), reason).then(() => { setWaiverOpen(false); setWaiverReason(""); }).catch(error => setWaiverError(error instanceof Error ? error.message : String(error))).finally(() => setWaiving(false)); }} className="space-y-2 rounded-lg border border-border border-x-2 border-x-warning bg-background p-2.5">
             <p className="text-xs text-warning">This records human-approved risk for: {unresolved.map(check => check.command || check.checkId).join(", ")}. It remains distinct from Verified.</p>
             <textarea autoFocus value={waiverReason} onChange={event => setWaiverReason(event.target.value)} rows={2} placeholder="Reason for waiver" aria-label="Waiver reason" className="w-full resize-none rounded-md border border-input bg-card px-2.5 py-2 text-xs text-foreground placeholder:text-muted-foreground"/>
             {waiverError && <p role="alert" className="text-xs text-destructive">{waiverError}</p>}
@@ -1148,7 +1148,7 @@ function ErrorCard({ item, errorContext }: { item: ConversationItem; errorContex
   const transition = useMotionTransition(MOTION_DURATION.tick, MOTION_DURATION.reveal);
   // A rate limit is a wait, not a failure — it gets the tick. A real error
   // is the one place a full wash is warranted.
-  return <div role="alert" className={`my-4 flex min-w-0 gap-2.5 rounded-lg border border-l-2 p-3 ${isUsage ? "border-border border-l-warning bg-card text-warning" : "border-destructive/30 border-l-destructive bg-destructive/5 text-destructive"}`}>
+  return <div role="alert" className={`my-4 flex min-w-0 gap-2.5 rounded-xl border border-x-2 p-3 ${isUsage ? "border-border border-x-warning bg-card text-warning" : "border-destructive/30 border-x-destructive bg-destructive/5 text-destructive"}`}>
     <motion.span
       className="mt-0.5 flex shrink-0"
       initial={{ opacity: 0, scale: 0.6 }}
@@ -1199,7 +1199,7 @@ function ForestCard({ item, onRetryCompaction }: { item: ConversationItem; onRet
     catch (cause) { setRetryError(cause instanceof Error ? cause.message : String(cause)); }
     finally { retryingRef.current = false; setRetrying(false); }
   };
-  return <div role={item.status === "failed" ? "alert" : undefined} className={`min-w-0 border-l-2 py-1 pl-3 ${item.status === "failed" ? "rounded-r-lg border-destructive bg-destructive/5 pr-3 py-3" : "border-border"} ${item.type}`}>
+  return <div role={item.status === "failed" ? "alert" : undefined} className={`min-w-0 overflow-hidden rounded-xl border border-border border-x-2 px-3 py-2.5 ${item.status === "failed" ? "border-x-destructive bg-destructive/5" : ""} ${item.type}`}>
     <header className="flex items-center gap-2 text-ui"><GitFork size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" /><b className="min-w-0 truncate font-medium text-foreground">{item.title || label}</b><small className="ml-auto shrink-0 text-caption text-muted-foreground">{!item.status || item.status === "durable" ? "Saved" : item.status}</small></header>
     {/* The former raw reason block only repeated the primary copy and exposed
         protocol diagnostics. Failure details now remain in the inspector data
@@ -1335,7 +1335,7 @@ function PermissionCard({ item, onResolve }: { item: ConversationItem; onResolve
     catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(null); }
   };
-  return <div role={pending ? "alert" : "status"} className={`${PANEL} border-l-warning`}>
+  return <div role={pending ? "alert" : "status"} className={`${PANEL} border-x-warning`}>
     <header className="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-3.5 pt-3 sm:px-4">
       <b className="text-[13px] font-semibold text-foreground">{item.title || "Permission needed"}</b>
       {pending && <small className="text-[11px] tracking-[0.03em] text-warning">waiting for you</small>}
@@ -1408,7 +1408,7 @@ function QuestionCard({ item, onResolve }: { item: ConversationItem; onResolve: 
     catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(null); }
   };
-  return <div role={pending ? "alert" : "status"} className={`${PANEL} border-l-info`}>
+  return <div role={pending ? "alert" : "status"} className={`${PANEL} border-x-info`}>
     <header className="flex flex-wrap items-baseline gap-x-2 gap-y-1 px-3.5 pt-3 sm:px-4">
       <b className="text-[13px] font-semibold text-foreground">{item.title || "Question"}</b>
       {pending && <small className="text-[11px] tracking-[0.03em] text-info">waiting for your answer</small>}
@@ -1458,7 +1458,7 @@ function ApprovalCard({ item, onResolve }: { item: ConversationItem; onResolve: 
   const reason = typeof item.data.reason === "string" ? item.data.reason : "";
   const remediation = typeof item.data.remediation === "string" ? item.data.remediation : "";
   const human = reason ? humanizeApprovalReason(reason) : { title: item.title || "Approval needed", detail: undefined };
-  return <div className={`${PANEL} border-l-warning`}>
+  return <div className={`${PANEL} border-x-warning`}>
     <header className="flex flex-wrap items-baseline gap-x-2 gap-y-1 pt-3 px-3.5 sm:px-4"><b className="text-[13px] font-semibold text-foreground">{human.title}</b>{pending && <small className="text-warning text-[11px] tracking-[0.03em]">waiting for you</small>}</header>
     {human.detail ? <p className="mt-1.5 px-3.5 text-muted-foreground text-[13px] leading-relaxed sm:px-4">{human.detail}</p> : null}
     {item.data.objective ? <p className="mt-1.5 px-3.5 text-muted-foreground text-[13px] leading-relaxed sm:px-4">{String(item.data.objective)}</p> : null}
@@ -1531,7 +1531,7 @@ function StaleBaseCard({ item, onRefresh }: { item: ConversationItem; onRefresh?
     catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)); }
     finally { setBusy(false); }
   };
-  return <div role="alert" className={`${PANEL} border-l-warning`}>
+  return <div role="alert" className={`${PANEL} border-x-warning`}>
     <header className="flex items-baseline gap-[9px] px-3.5 pt-3 sm:px-4">
       <b className="text-[13px] font-semibold text-foreground">{item.title || `Workspace is ${behind} commits behind ${baseRef}`}</b>
     </header>
@@ -1584,7 +1584,7 @@ function DelegationRow({ item, workers, now, onOpenSession, onRetryWorker, onSto
         <span className="min-w-0 truncate">{item.title || "Worker approval resolved"}</span>
       </div>;
     }
-    return <div className="my-3 min-w-0 rounded-lg border border-border border-l-2 border-l-warning bg-card px-3 py-2 text-xs text-muted-foreground" role="alert">
+    return <div className="my-3 min-w-0 rounded-xl border border-border border-x-2 border-x-warning bg-card px-3 py-2 text-xs text-muted-foreground" role="alert">
       <div className="flex items-center gap-1.5 font-medium text-warning"><AlertTriangle size={13} className="shrink-0" aria-hidden="true" /> <span className="min-w-0">{item.title || "A worker needs your approval"}</span></div>
       {item.data.objective ? <p className="mt-1">{String(item.data.objective)}</p> : null}
       {item.text && <p className="mt-1">{item.text}</p>}
@@ -1603,7 +1603,7 @@ function DelegationRow({ item, workers, now, onOpenSession, onRetryWorker, onSto
     const reason = String(item.data.reason ?? item.text ?? "");
     const willRetry = item.data.willRetry === true;
     const launchFailed = item.data.launchFailed === true;
-    return <div className="my-3 min-w-0 rounded-lg border border-border border-l-2 border-l-warning bg-card px-3 py-2 text-xs text-muted-foreground" role="alert">
+    return <div className="my-3 min-w-0 rounded-xl border border-border border-x-2 border-x-warning bg-card px-3 py-2 text-xs text-muted-foreground" role="alert">
       <div className="flex items-center gap-1.5 font-medium text-warning"><AlertTriangle size={13} className="shrink-0" aria-hidden="true" /> <span className="min-w-0">{launchFailed ? "Worker failed to start" : "Delegation rejected — no worker started"}</span></div>
       {reason && <p className="mt-1 font-mono text-[11px] leading-relaxed break-words text-foreground">{reason}</p>}
       <p className="mt-1 text-muted-foreground">{launchFailed ? (item.data.orchestratorNotified === true ? "The orchestrator was notified and will not wait for this worker." : "The orchestrator could not be notified; retry after fixing the launch failure.") : willRetry ? "Asked the orchestrator to correct and re-emit the request." : "Automatic correction limit reached; the orchestrator will not retry on its own."}</p>
@@ -1893,7 +1893,7 @@ function WorkerFailureRow({ title, summary, cause, failureClass, childSessionId,
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
   const transport = failureClass === "protocol_invalid";
-  return <div className="my-3 min-w-0 rounded-lg border border-border border-l-2 border-l-warning bg-card px-3 py-2 text-xs text-muted-foreground" role="alert">
+  return <div className="my-3 min-w-0 rounded-xl border border-border border-x-2 border-x-warning bg-card px-3 py-2 text-xs text-muted-foreground" role="alert">
     <div className="flex items-center gap-1.5 font-medium text-warning"><AlertTriangle size={13} className="shrink-0" aria-hidden="true" /> <span className="min-w-0">{title}</span></div>
     <p className="mt-1 text-foreground">{cause}</p>
     {transport && <p className="mt-1 text-muted-foreground">Bridge could not read this worker&apos;s result, so nothing below has been verified. Retrying would not change that on its own.</p>}
