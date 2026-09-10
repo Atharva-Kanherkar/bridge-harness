@@ -7,7 +7,9 @@ import { StringDecoder } from 'node:string_decoder';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile, rename, appendFile, readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
+import { hostname } from 'node:os';
 import { advancePartialEscapeTail } from './orca/terminal-partial-escape-tail.mjs';
+import { TerminalMouseModeMirror } from './orca/terminal-mouse-mode-mirror.mjs';
 import { serializeWithAbsoluteCursor, readSavedCursorRegister } from './orca/terminal-serialize-absolute-cursor.mjs';
 
 export const LOG_LIMIT = 512 * 1024;
@@ -62,16 +64,19 @@ export class TerminalStateStore {
     terminal.loadAddon(serializer);
     terminal.loadAddon(new unicode.Unicode11Addon());
     terminal.unicode.activeVersion = '11';
-    const state = { terminal, serializer, record: { ...record }, sequence: 0, partial: '', decoder: new StringDecoder('utf8'), logBytes: 0 };
+    const state = { terminal, serializer, mouseModes: new TerminalMouseModeMirror(), record: { ...record }, sequence: 0, partial: '', decoder: new StringDecoder('utf8'), logBytes: 0 };
     // Host observes these values; terminal-controlled text never becomes a path
     // to execute without the Rust launch boundary validating it.
     terminal.parser.registerOscHandler(7, data => {
-      try { const url = new URL(data); if (url.protocol === 'file:' && (!url.hostname || ['localhost', process.env.HOSTNAME].includes(url.hostname))) state.record.cwd = decodeURIComponent(url.pathname); } catch {}
+      try { const url = new URL(data); if (url.protocol === 'file:' && (!url.hostname || ['localhost', hostname(), process.env.HOSTNAME].some(host => host?.toLowerCase() === url.hostname.toLowerCase()))) state.record.cwd = decodeURIComponent(url.pathname); } catch {}
       return false;
     });
     return state;
   }
-  parse(state, data) { return new Promise(resolve => state.terminal.write(data, resolve)); }
+  parse(state, data) {
+    state.mouseModes.scan(data);
+    return new Promise(resolve => state.terminal.write(data, resolve));
+  }
   serialize(state) {
     let scrollback = 5000;
     let ansi;
@@ -80,6 +85,13 @@ export class TerminalStateStore {
       scrollback = Math.floor(scrollback / 2);
     } while (Buffer.byteLength(ansi) > SNAPSHOT_LIMIT && scrollback > 0);
     if (Buffer.byteLength(ansi) > SNAPSHOT_LIMIT) throw new Error('Terminal snapshot exceeds its storage budget');
+    // SerializeAddon omits mouse encoding and Kitty keyboard negotiation.
+    // Follow Orca's mode mirror and private-core flags reader so a restored
+    // interactive CLI gets the same input protocol as its live terminal.
+    if (state.mouseModes.sgrMouseMode) ansi += '\x1b[?1006h';
+    if (state.mouseModes.sgrMousePixelsMode) ansi += '\x1b[?1016h';
+    const flags = state.terminal._core?.coreService?.kittyKeyboard?.flags;
+    if (typeof flags === 'number' && flags > 0) ansi += `\x1b[=${flags}u`;
     return ansi;
   }
   async checkpoint(key, state) {
@@ -119,23 +131,35 @@ export class TerminalStateStore {
   }
   async describe(key) {
     const state = await this.ensure(key);
-    return { record: state.record, sequence: state.sequence };
+    const result = { record: state.record, sequence: state.sequence };
+    this.releaseEnded(key, state);
+    return result;
   }
   async snapshot(key) {
     const state = await this.ensure(key);
-    return { record: state.record, sequence: state.sequence, ansi: this.serialize(state) + state.partial };
+    const result = { record: state.record, sequence: state.sequence, ansi: this.serialize(state) + state.partial };
+    this.releaseEnded(key, state);
+    return result;
+  }
+  releaseEnded(key, state) {
+    if (state.record.status !== 'running') {
+      this.states.delete(key);
+      state.terminal.dispose();
+    }
   }
   async update(key, changes) {
     const state = await this.ensure(key);
-    if (changes.generation && changes.generation !== state.record.generation) return state.record;
+    if (changes.generation && changes.generation !== state.record.generation) {
+      this.releaseEnded(key, state);
+      return state.record;
+    }
     const closed = state.record.status === 'closed';
     Object.assign(state.record, changes);
     if (changes.status) state.sequence++;
     if (closed) state.record.status = 'closed';
     await this.checkpoint(key, state);
     if (state.record.status !== 'running') {
-      this.states.delete(key);
-      state.terminal.dispose();
+      this.releaseEnded(key, state);
       await this.prune();
     }
     return state.record;

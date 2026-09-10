@@ -149,6 +149,18 @@ pub fn snapshot(
     workspace: &str,
     terminal: &str,
 ) -> Result<TerminalSnapshot, BridgeError> {
+    let operation = core.workspace_operation(workspace);
+    let _operation = operation.lock().unwrap();
+    snapshot_inner(core, workspace, terminal)
+}
+
+// The workspace operation also covers creation's checkpoint-before-spawn
+// interval, which must never be mistaken for a dead process during recovery.
+fn snapshot_inner(
+    core: &Arc<BridgeCore>,
+    workspace: &str,
+    terminal: &str,
+) -> Result<TerminalSnapshot, BridgeError> {
     core.workspace_path(workspace)?;
     validate_id(terminal)?;
     let mut snapshot: TerminalSnapshot = state_call(
@@ -156,7 +168,14 @@ pub fn snapshot(
         json!({"op":"snapshot", "key":key(workspace, terminal)}),
     )?;
     if snapshot.record.status == "running" && !is_live(core, workspace, terminal) {
-        snapshot.record.status = "exited".into();
+        let _: TerminalRecord = state_call(
+            core,
+            json!({"op":"update", "key":key(workspace, terminal), "changes":{"generation":snapshot.record.generation,"status":"exited"}}),
+        )?;
+        snapshot = state_call(
+            core,
+            json!({"op":"snapshot", "key":key(workspace, terminal)}),
+        )?;
     }
     Ok(snapshot)
 }
@@ -165,12 +184,17 @@ pub fn workspace(
     core: &Arc<BridgeCore>,
     workspace_id: &str,
 ) -> Result<TerminalWorkspace, BridgeError> {
+    let operation = core.workspace_operation(workspace_id);
+    let _operation = operation.lock().unwrap();
     core.workspace_path(workspace_id)?;
     let mut terminals: Vec<TerminalRecord> =
         state_call(core, json!({"op":"list", "workspaceId":workspace_id}))?;
     for terminal in &mut terminals {
         if terminal.status == "running" && !is_live(core, workspace_id, &terminal.terminal_id) {
-            terminal.status = "exited".into();
+            *terminal = state_call(
+                core,
+                json!({"op":"update", "key":key(workspace_id, &terminal.terminal_id), "changes":{"generation":terminal.generation,"status":"exited"}}),
+            )?;
         }
     }
     let layout = state_call(core, json!({"op":"layout", "workspaceId":workspace_id}))?;
@@ -225,11 +249,13 @@ pub fn create(
     let _operation = operation.lock().unwrap();
     let _lifecycle = core.claim_session_lifecycle(&runtime_id, "terminal create")?;
     if is_live(core, workspace_id, terminal_id) {
-        return Ok(snapshot(core, workspace_id, terminal_id)?.record);
+        return Ok(snapshot_inner(core, workspace_id, terminal_id)?.record);
     }
-    let previous = snapshot(core, workspace_id, terminal_id)
-        .ok()
-        .map(|s| s.record);
+    let previous = match snapshot_inner(core, workspace_id, terminal_id) {
+        Ok(snapshot) => Some(snapshot.record),
+        Err(BridgeError::Invalid(message)) if message.contains("ENOENT") => None,
+        Err(error) => return Err(error),
+    };
     if let Some(record) = &previous {
         if !params.restart {
             return Ok(record.clone());
@@ -287,12 +313,6 @@ pub fn create(
         exit_code: None,
         history_truncated: false,
     };
-    // Validate history availability before creating a process, so a failed
-    // helper cannot leave an untracked agent running in the background.
-    let _: TerminalRecord = state_call(
-        core,
-        json!({"op":"create", "key":runtime_id, "record":record}),
-    )?;
     let pair = native_pty_system()
         .openpty(PtySize {
             rows: record.rows,
@@ -301,6 +321,20 @@ pub fn create(
             pixel_height: 0,
         })
         .map_err(|e| BridgeError::Pty(e.to_string()))?;
+    // Acquire every fallible PTY handle before publishing a running record or
+    // spawning a child. A failed reader/writer must not orphan a process.
+    let mut reader = pair
+        .master
+        .try_clone_reader()
+        .map_err(|e| BridgeError::Pty(e.to_string()))?;
+    let writer = pair
+        .master
+        .take_writer()
+        .map_err(|e| BridgeError::Pty(e.to_string()))?;
+    let _: TerminalRecord = state_call(
+        core,
+        json!({"op":"create", "key":runtime_id, "record":record}),
+    )?;
     let child = match pair.slave.spawn_command(command) {
         Ok(child) => child,
         Err(error) => {
@@ -312,14 +346,6 @@ pub fn create(
         }
     };
     drop(pair.slave);
-    let mut reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| BridgeError::Pty(e.to_string()))?;
-    let writer = pair
-        .master
-        .take_writer()
-        .map_err(|e| BridgeError::Pty(e.to_string()))?;
     let epoch = super::api::TERMINAL_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     core.runtimes.lock().unwrap().insert(
         runtime_id.clone(),
@@ -579,6 +605,31 @@ mod tests {
         crate::api::close_terminal(&restored_core, "w", "pane").unwrap();
         assert!(workspace(&restored_core, "w").unwrap().terminals.is_empty());
     }
+    #[test]
+    fn terminal_workspace_persists_ended_state_after_a_host_restart() {
+        let root = tempfile::tempdir().unwrap();
+        let core = fixture(root.path());
+        // A crashed host can leave a running checkpoint without a live PTY.
+        let _: Value = state_call(
+            &core,
+            json!({"op":"create", "key":"terminal:w:pane", "record":{
+                "workspaceId":"w", "terminalId":"pane", "generation":"before-crash",
+                "title":"Shell", "cwd":root.path(), "status":"running", "rows":24, "cols":80,
+                "createdAt":"now", "agentId":null, "exitCode":null, "historyTruncated":false
+            }}),
+        )
+        .unwrap();
+        core.terminal_state.lock().unwrap().take();
+        assert_eq!(workspace(&core, "w").unwrap().terminals[0].status, "exited");
+        let persisted: Vec<TerminalRecord> =
+            state_call(&core, json!({"op":"list", "workspaceId":"w"})).unwrap();
+        assert_eq!(persisted[0].status, "exited");
+        let snapshot = snapshot(&core, "w", "pane").unwrap();
+        assert_eq!(snapshot.record.generation, "before-crash");
+        assert_eq!(snapshot.sequence, 1);
+        assert!(core.runtimes.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn terminal_workspace_rejects_invalid_launches_before_spawning() {
         let root = tempfile::tempdir().unwrap();

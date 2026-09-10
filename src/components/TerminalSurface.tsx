@@ -7,7 +7,7 @@ import { Unicode11Addon } from "@xterm/addon-unicode11";
 import { WebLinksAddon } from "@xterm/addon-web-links";
 import { openExternalUrl } from "../externalLinks";
 import { bridgeApi } from "../api";
-import { terminalTheme } from "../terminal/theme";
+import { terminalTheme, terminalSearchDecorations } from "../terminal/theme";
 import { attachWebgl } from "../terminal/webgl";
 import { TerminalReplay } from "../terminal/replay";
 import type { TerminalRecord } from "../terminal/types";
@@ -38,7 +38,8 @@ export function TerminalSurface({ record, focused, onRecord, searchRequest = 0 }
     let status = record.status;
     let scheduled = 0;
     let lastSize = "";
-    let resizeChain = Promise.resolve();
+    let resizing = false;
+    let pendingSize: { rows: number; cols: number } | undefined;
     const terminal = new Terminal({ fontFamily: "'Geist Mono Variable', monospace", fontSize: 12, lineHeight: 1.35, cursorBlink: true, cursorStyle: "bar", scrollback: 5000, allowProposedApi: true, theme: terminalTheme(), vtExtensions: { kittyKeyboard: true } });
     const fit = new FitAddon();
     const search = new SearchAddon();
@@ -53,6 +54,18 @@ export function TerminalSurface({ record, focused, onRecord, searchRequest = 0 }
     termRef.current = terminal; searchRef.current = search;
     const write = (data: string) => new Promise<void>(resolve => terminal.write(data, resolve));
     function report(value: unknown) { if (!disposed) setError(String(value)); }
+    async function flushResize() {
+      if (resizing) return;
+      resizing = true;
+      try {
+        while (pendingSize && !disposed) {
+          const size = pendingSize;
+          pendingSize = undefined;
+          await bridgeApi.resizeTerminal(workspaceId, terminalId, size.rows, size.cols);
+        }
+      } catch (error) { lastSize = ""; report(error); }
+      finally { resizing = false; }
+    }
     function scheduleFit() {
       cancelAnimationFrame(scheduled);
       scheduled = requestAnimationFrame(() => {
@@ -64,8 +77,9 @@ export function TerminalSurface({ record, focused, onRecord, searchRequest = 0 }
         const key = `${cols}:${rows}`;
         if (status === "running" && key !== lastSize) {
           lastSize = key;
-          // Serialized requests preserve the final size after rapid dragging.
-          resizeChain = resizeChain.then(() => disposed ? undefined : bridgeApi.resizeTerminal(workspaceId, terminalId, rows, cols)).catch(report);
+          // Keep only the latest pending dimensions during rapid dragging.
+          pendingSize = { rows, cols };
+          void flushResize();
         }
       });
     }
@@ -93,13 +107,23 @@ export function TerminalSurface({ record, focused, onRecord, searchRequest = 0 }
       },
       error: value => { replaying = true; setRestoring(false); report(value); },
     });
-    retry.current = () => { void feed.recover(); };
     const unlisten: (() => void)[] = [];
     // Install both listeners before requesting the snapshot boundary.
-    void Promise.all([
-      bridgeApi.onTerminalFrame(frame => { if (frame.workspaceId === workspaceId && frame.terminalId === terminalId) feed.receive(frame); }),
-      bridgeApi.onTerminalLagged(() => { void feed.recover(); }),
-    ]).then(listeners => { if (disposed) listeners.forEach(fn => fn()); else { unlisten.push(...listeners); void feed.recover(); } }).catch(report);
+    async function connect() {
+      if (unlisten.length) { await feed.recover(); return; }
+      const results = await Promise.allSettled([
+        bridgeApi.onTerminalFrame(frame => { if (frame.workspaceId === workspaceId && frame.terminalId === terminalId) feed.receive(frame); }),
+        bridgeApi.onTerminalLagged(() => { void feed.recover(); }),
+      ]);
+      const listeners = results.flatMap(result => result.status === "fulfilled" ? [result.value] : []);
+      const failure = results.find(result => result.status === "rejected");
+      if (disposed || failure) listeners.forEach(fn => fn());
+      if (disposed) return;
+      if (failure?.status === "rejected") { setRestoring(false); report(failure.reason); }
+      else { unlisten.push(...listeners); await feed.recover(); }
+    }
+    retry.current = () => { void connect(); };
+    void connect();
     const input = terminal.onData(data => { if (!replaying && status === "running") void bridgeApi.writeTerminal(workspaceId, terminalId, data).catch(report); });
     terminal.attachCustomKeyEventHandler(event => {
       if (event.type !== "keydown") return true;
@@ -122,13 +146,13 @@ export function TerminalSurface({ record, focused, onRecord, searchRequest = 0 }
   useEffect(() => { if (focused && !searchOpen) termRef.current?.focus(); }, [focused, searchOpen]);
   useEffect(() => { if (searchRequest) setSearchOpen(true); }, [searchRequest]);
   function find(previous = false) {
-    const options = { decorations: { matchBackground: "#b58900", matchOverviewRuler: "#b58900", activeMatchBackground: "#d79921", activeMatchColorOverviewRuler: "#d79921" } };
+    const options = { decorations: terminalSearchDecorations() };
     if (previous) searchRef.current?.findPrevious(query, options); else searchRef.current?.findNext(query, options);
   }
   return <div className="relative flex min-h-0 min-w-0 flex-1 flex-col bg-code">
     {searchOpen && <div className="flex shrink-0 items-center gap-1 border-b border-border bg-background px-2 py-1">
       <Search size={12} aria-hidden="true" />
-      <input autoFocus aria-label="Search terminal scrollback" className="min-w-0 flex-1 bg-transparent px-1 py-1 text-xs outline-none" value={query} onChange={event => { setQuery(event.target.value); searchRef.current?.findNext(event.target.value, { incremental: true }); }} onKeyDown={event => { if (event.key === "Enter") find(event.shiftKey); if (event.key === "Escape") setSearchOpen(false); event.stopPropagation(); }} />
+      <input autoFocus aria-label="Search terminal scrollback" className="min-w-0 flex-1 bg-transparent px-1 py-1 text-xs outline-none" value={query} onChange={event => { setQuery(event.target.value); searchRef.current?.findNext(event.target.value, { incremental: true, decorations: terminalSearchDecorations() }); }} onKeyDown={event => { if (event.key === "Enter") find(event.shiftKey); if (event.key === "Escape") setSearchOpen(false); event.stopPropagation(); }} />
       <span className="text-[10px] text-muted-foreground">{query && matches}</span>
       <button type="button" aria-label="Previous match" className="rounded p-1 hover:bg-accent" onClick={() => find(true)}><ChevronUp size={13} /></button>
       <button type="button" aria-label="Next match" className="rounded p-1 hover:bg-accent" onClick={() => find()}><ChevronDown size={13} /></button>

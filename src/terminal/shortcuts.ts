@@ -14,7 +14,7 @@ export const TERMINAL_SHORTCUTS: { id: TerminalCommand; key: string; shift?: boo
 const isMac = () => /Mac|iPhone|iPad/.test(navigator.platform);
 export function terminalChord(id: TerminalCommand) {
   const s = TERMINAL_SHORTCUTS.find(s => s.id === id)!;
-  return `${isMac() ? "⌘" : "Ctrl+Alt+"}${s.alt ? (isMac() ? "⌥" : "Alt+") : ""}${s.shift ? (isMac() ? "⇧" : "Shift+") : ""}${s.key.replace("ArrowRight", "→").replace("ArrowLeft", "←").replace("Enter", "↩").toUpperCase()}`;
+  return `${isMac() ? "⌘" : "Ctrl+Alt+"}${s.alt && isMac() ? "⌥" : ""}${s.shift ? (isMac() ? "⇧" : "Shift+") : ""}${s.key.replace("ArrowRight", "→").replace("ArrowLeft", "←").replace("Enter", "↩").toUpperCase()}`;
 }
 export function terminalCommand(event: Pick<KeyboardEvent, "metaKey" | "ctrlKey" | "shiftKey" | "altKey" | "key" | "code">): TerminalCommand | undefined {
   // Plain Control belongs to the CLI, including Ctrl+C, Ctrl+D and Ctrl+F.

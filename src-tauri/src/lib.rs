@@ -2231,6 +2231,7 @@ fn setup_embedded(
                     for event in receiver.reconciliation_events() {
                         batcher.emit(event.kind().as_str(), event.payload());
                     }
+                    batcher.emit(bridge_protocol::notifications::NotificationName::StreamLagged.as_str(), serde_json::Value::Null);
                     continue;
                 }
                 Err(bridge_core::events::ReceiveError::Closed) => break,

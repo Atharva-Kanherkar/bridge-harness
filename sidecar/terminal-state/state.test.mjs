@@ -16,7 +16,7 @@ async function fixture(fn) {
 const write = (store, text) => store.increment('w:t', { generation: 'first', bytes: Buffer.from(text).toString('base64') });
 const visible = terminal => Array.from({ length: terminal.rows }, (_, row) => terminal.buffer.active.getLine(terminal.buffer.active.baseY + row)?.translateToString(true) ?? '');
 async function replay(snapshot, continuation = '') {
-  const terminal = new headless.Terminal({ rows: snapshot.record.rows, cols: snapshot.record.cols, allowProposedApi: true });
+  const terminal = new headless.Terminal({ rows: snapshot.record.rows, cols: snapshot.record.cols, allowProposedApi: true, vtExtensions: { kittyKeyboard: true } });
   await new Promise(resolve => terminal.write(snapshot.ansi + continuation, resolve));
   return terminal;
 }
@@ -86,6 +86,35 @@ test('close remains closed when its process reports exit later', () => fixture(a
   await store.update('w:t', { status: 'closed' });
   await store.update('w:t', { generation: 'first', status: 'exited' });
   assert.deepEqual(await store.inventory('w'), []);
+}));
+
+test('reading ended history does not retain a hidden terminal emulator', () => fixture(async store => {
+  await write(store, 'saved output');
+  await store.update('w:t', { status: 'exited' });
+  assert.equal(store.states.size, 0);
+  assert.ok((await store.snapshot('w:t')).ansi.includes('saved output'));
+  assert.equal(store.states.size, 0);
+  assert.equal((await store.describe('w:t')).record.status, 'exited');
+  assert.equal(store.states.size, 0);
+}));
+
+test('restored CLIs retain mouse encoding and negotiated keyboard modes', () => fixture(async (store, root) => {
+  await write(store, '\x1b[?1002;100');
+  await write(store, '6h\x1b[>3u');
+  await store.checkpoint('w:t', await store.ensure('w:t'));
+  const reopened = new TerminalStateStore(root);
+  try {
+    const terminal = await replay(await reopened.snapshot('w:t'));
+    assert.equal(terminal.modes.mouseTrackingMode, 'drag');
+    assert.equal(terminal._core.mouseStateService.activeEncoding, 'SGR');
+    assert.equal(terminal._core.coreService.kittyKeyboard.flags, 3);
+    terminal.dispose();
+    await write(reopened, '\x1bc');
+    const reset = await replay(await reopened.snapshot('w:t'));
+    assert.equal(reset.modes.mouseTrackingMode, 'none');
+    assert.equal(reset._core.coreService.kittyKeyboard.flags, 0);
+    reset.dispose();
+  } finally { reopened.dispose(); }
 }));
 
 test('checkpoint replay does not duplicate an older retained journal', () => fixture(async (store, root) => {

@@ -85,11 +85,12 @@ function SplitTree({ node, path = "", actions }: { node: PaneNode; path?: string
   const container = useRef<HTMLDivElement>(null);
   if (node.type === "leaf") return <Pane id={node.leafId} actions={actions} />;
   const horizontal = node.direction === "horizontal";
+  const firstMin = minimumSize(node.first), secondMin = minimumSize(node.second);
   const position = (x: number, y: number) => {
     const rect = container.current?.getBoundingClientRect();
     if (rect) actions.resize(path, horizontal ? (x - rect.left) / rect.width : (y - rect.top) / rect.height);
   };
-  return <div ref={container} className="grid h-full min-h-0 min-w-0" style={horizontal ? { gridTemplateColumns: `minmax(0, ${node.ratio}fr) 6px minmax(0, ${1 - node.ratio}fr)` } : { gridTemplateRows: `minmax(0, ${node.ratio}fr) 6px minmax(0, ${1 - node.ratio}fr)` }}>
+  return <div ref={container} className="grid h-full min-h-0 min-w-0" style={horizontal ? { gridTemplateColumns: `minmax(${firstMin.width}px, ${node.ratio}fr) 6px minmax(${secondMin.width}px, ${1 - node.ratio}fr)` } : { gridTemplateRows: `minmax(${firstMin.height}px, ${node.ratio}fr) 6px minmax(${secondMin.height}px, ${1 - node.ratio}fr)` }}>
     <SplitTree node={node.first} path={`${path}0`} actions={actions} />
     <div role="separator" tabIndex={0} aria-label="Resize terminal split" aria-orientation={horizontal ? "vertical" : "horizontal"} aria-valuemin={10} aria-valuemax={90} aria-valuenow={Math.round(node.ratio * 100)}
       onPointerDown={event => { event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); }}

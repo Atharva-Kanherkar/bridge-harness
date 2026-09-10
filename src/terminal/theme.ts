@@ -50,3 +50,14 @@ export function terminalTheme(): ITheme {
   };
 }
 
+
+export function terminalSearchDecorations() {
+  const theme = terminalTheme();
+  return {
+    matchBackground: theme.selectionBackground ?? "transparent",
+    matchOverviewRuler: theme.yellow ?? "transparent",
+    activeMatchBackground: theme.foreground ?? "transparent",
+    activeMatchForeground: theme.background ?? "transparent",
+    activeMatchColorOverviewRuler: theme.foreground ?? "transparent",
+  };
+}
