@@ -5,12 +5,13 @@ Two screens, two jobs. **Agent Fleet** is the terminal split workspace for agent
 ## Functional Behavior
 
 ### Mission Control (`src/components/MissionControl.tsx`)
-- Shows every *active* session (status `working`, `waiting`, `starting`, `resuming`, `checkpointing`, or a worker whose runtime is running) as a tile. Idle/completed sessions are hidden by default behind a "Show all" toggle.
+- Shows every *active* session (status `working`, `waiting`, `starting`, `resuming`, `checkpointing`, or a non-null active turn) as a tile. Cached worker runtime snapshots do not keep finished chats visible. There is no "Show all" toggle.
+- Drag any sidebar chat into the empty canvas or onto a tile's left/right/top/bottom edge to pin it, even while idle. Only explicitly dragged chats stay after completion; other idle history stays hidden. Pins persist with the layout. Remove an idle pin with its close button, or unpin a working chat so it leaves when finished. Removing a pin never archives, stops, or deletes the chat.
 - Each tile renders the real `AgentConversation` for that session (live `events` filtered by `sessionId`, plus the session's forest loaded via `bridgeApi.sessionForest`) and a real composer that submits through `bridgeApi.submitInput(sessionId, text)`. Approvals and questions resolve through `bridgeApi.resolveApproval` / `bridgeApi.resolveQuestion` for that tile's session, never the globally selected one.
-- Tiles are laid out with the split-tree model from `src/terminal/layout.ts` (`PaneNode`), so they can be resized with drag separators and rearranged by dragging a tile header onto another tile's edge. New active sessions auto-insert into the tree; sessions that stop are removed. Layout persists in `localStorage` under `bridge.mission-control.layout`.
+- Tiles are laid out with the split-tree model from `src/terminal/layout.ts` (`PaneNode`), so they can be resized with drag separators and rearranged by dragging a tile header onto another tile's edge, with a labeled edge preview. Drafts stay with their session when tiles move. New active sessions auto-insert into the tree; unpinned sessions that stop are removed. Tiles have a 420 × 360 minimum size, with scrolling when necessary. Layout persists in `localStorage` under `bridge.mission-control.layout`.
 - A tile header shows title, harness, status tone (reuse `workerStatus`/tone vocabulary), and actions: focus (opens the session in the single view via `onFocusSession`), maximize/restore, and stop for workers (`onStopWorker`).
 - The tile whose session is `activeSessionId` carries a subtle ring.
-- Empty state explains that active chats appear here automatically and offers a button to open Projects/New chat via `onFocusSession` alternatives (no new App props).
+- Empty state explains automatic active chats and dragging sidebar chats into the grid.
 - Achromatic chrome; only status ink carries hue. Tailwind v4 utilities only.
 
 ### Agent Fleet (`src/components/TerminalWorkspace.tsx`, `src/components/AgentFleet.tsx`)
@@ -20,7 +21,8 @@ Two screens, two jobs. **Agent Fleet** is the terminal split workspace for agent
 - Header dedupe: the workspace title no longer repeats the branch that is already shown on the right. Tab labels use the agent display name ("Claude Code", "Codex") instead of the raw id.
 
 ## Unit Tests
-- `src/components/MissionControl.test.tsx`: active filter and Show-all toggle; a tile renders the conversation and composer; submit calls `bridgeApi.submitInput` with that tile's `sessionId`; approval resolve targets the tile's session; new session auto-inserts; removed session drops out; layout persists and restores; focus button calls `onFocusSession`.
+- `src/components/MissionControl.test.tsx`: active filter with 501 idle chats; no Show-all controls; a tile renders the conversation and composer; submit and approval resolve target the tile's session; new session auto-inserts; completed workers drop out despite stale runtimes; layout persists and restores; focus and maximize; minimum tile dimensions; sidebar drops into the empty canvas and all four tile edges; pin persistence, removal, and deduplication; invalid drops; rearranging tiles preserves drafts.
+- `src/components/BridgeSidebar.interaction.test.tsx`: an idle chat exports the shared sidebar drag payload without navigating away.
 - `src/terminal/layout.test.ts`: `autoSplitDirection` helper (or equivalent) and "append to last leaf" insertion.
 - `src/components/TerminalWorkspace.test.tsx`: New Agent splits into the current tab (tab count unchanged, leaf count +1); New tab still creates a tab; drop on empty panel background appends; tab label shows agent display name.
 - Existing `AgentFleet.test.tsx`, `BridgeSidebar*.test.tsx`, `navigationHistory.test.ts`, `workWiring.test.ts`, `App.test.tsx` stay green.

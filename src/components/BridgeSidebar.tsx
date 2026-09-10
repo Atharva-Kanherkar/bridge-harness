@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionTransition } from "../motion";
 import { harnessLabel } from "../utils";
 import { SidebarFilterMenu } from "./SidebarFilterMenu";
+import { SIDEBAR_CHAT_DRAG } from "./missionControl/drag";
 import {
   GROUP_ROW_CAP,
   NO_PROJECT_GROUP_KEY,
@@ -72,8 +73,14 @@ function ChatRow({
     )}>
     <button
       type="button"
+      draggable
+      onDragStart={event => {
+        event.dataTransfer.setData(SIDEBAR_CHAT_DRAG, chat.id);
+        event.dataTransfer.effectAllowed = "copy";
+      }}
       onClick={onClick}
       title={detail}
+      aria-description="Drag into Mission Control to keep this chat in the grid"
       aria-current={active ? "page" : undefined}
       className={cn(
         "flex h-11 min-w-0 flex-1 items-center gap-2 rounded-[7px] pr-2 text-left font-sans transition-colors active:scale-[0.99]",

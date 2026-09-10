@@ -1,7 +1,7 @@
 import { leafIds, removeLeaf, splitLeaf, type PaneNode, type SplitDirection } from "../../terminal/layout";
 
 export const MISSION_LAYOUT_KEY = "bridge.mission-control.layout";
-export type MissionLayout = { version: 1; root: PaneNode | null; expandedLeafId: string | null };
+export type MissionLayout = { version: 1; root: PaneNode | null; expandedLeafId: string | null; pinnedSessionIds: string[] };
 export type DropEdge = "left" | "right" | "top" | "bottom";
 
 // assumed screen aspect for picking which way to cut a tile. unmeasured on
@@ -45,8 +45,8 @@ export function reconcileLeaves(root: PaneNode | null, ids: readonly string[]): 
 }
 
 export function moveLeaf(root: PaneNode, id: string, target: string, direction: SplitDirection, before: boolean): PaneNode {
-  if (id === target || !leafIds(root).includes(target) || !leafIds(root).includes(id)) return root;
-  const stripped = removeLeaf(root, id);
+  if (id === target || !leafIds(root).includes(target)) return root;
+  const stripped = leafIds(root).includes(id) ? removeLeaf(root, id) : root;
   return stripped ? splitLeaf(stripped, target, id, direction, before) : root;
 }
 
@@ -58,7 +58,7 @@ export function dropEdge(rect: { left: number; top: number; width: number; heigh
 
 // persisted input is untrusted: bounded depth, deduped leaves, clamped ratios.
 export function parseLayout(raw: string | null): MissionLayout {
-  const empty: MissionLayout = { version: 1, root: null, expandedLeafId: null };
+  const empty: MissionLayout = { version: 1, root: null, expandedLeafId: null, pinnedSessionIds: [] };
   if (!raw) return empty;
   let value: unknown;
   try { value = JSON.parse(raw); } catch { return empty; }
@@ -78,14 +78,16 @@ export function parseLayout(raw: string | null): MissionLayout {
     const ratio = typeof n.ratio === "number" && Number.isFinite(n.ratio) ? Math.min(0.9, Math.max(0.1, n.ratio)) : 0.5;
     return { type: "split", direction: n.direction, first, second, ratio };
   };
-  const stored = value as { root?: unknown; expandedLeafId?: unknown };
+  const stored = value as { root?: unknown; expandedLeafId?: unknown; pinnedSessionIds?: unknown };
   const root = parseNode(stored.root);
   const expanded = typeof stored.expandedLeafId === "string" && root && leafIds(root).includes(stored.expandedLeafId) ? stored.expandedLeafId : null;
-  return { version: 1, root, expandedLeafId: expanded };
+  const pinnedSessionIds = Array.isArray(stored.pinnedSessionIds)
+    ? [...new Set(stored.pinnedSessionIds.filter((id): id is string => typeof id === "string" && seen.has(id)))] : [];
+  return { version: 1, root, expandedLeafId: expanded, pinnedSessionIds };
 }
 
 export function readLayout(): MissionLayout {
-  try { return parseLayout(globalThis.localStorage?.getItem(MISSION_LAYOUT_KEY) ?? null); } catch { return { version: 1, root: null, expandedLeafId: null }; }
+  try { return parseLayout(globalThis.localStorage?.getItem(MISSION_LAYOUT_KEY) ?? null); } catch { return { version: 1, root: null, expandedLeafId: null, pinnedSessionIds: [] }; }
 }
 
 export function writeLayout(layout: MissionLayout) {

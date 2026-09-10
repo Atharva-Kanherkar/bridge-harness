@@ -4,7 +4,8 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AgentEvent, Session, SessionForestSnapshot, Workspace } from "../types";
 import { isActiveSession, MissionControl } from "./MissionControl";
-import { minimumSize, MISSION_LAYOUT_KEY } from "./missionControl/layout";
+import { minimumSize, MISSION_LAYOUT_KEY, parseLayout } from "./missionControl/layout";
+import { SIDEBAR_CHAT_DRAG, TILE_DRAG } from "./missionControl/drag";
 import { leafIds, type PaneNode } from "../terminal/layout";
 
 vi.mock("../api", () => ({
@@ -55,6 +56,20 @@ const tiles = () => [...host.querySelectorAll<HTMLElement>("[data-session-id]")]
 const render = async (props: Partial<Parameters<typeof MissionControl>[0]>) => {
   await act(async () => root.render(<MissionControl sessions={[]} workspaces={workspaces} events={noEvents} onFocusSession={vi.fn()} {...props} />));
 };
+
+function transfer(type: string, id: string) {
+  const data = new Map([[type, id]]);
+  return { types: [type], getData: (key: string) => data.get(key) ?? "", setData: (key: string, value: string) => data.set(key, value), effectAllowed: "none", dropEffect: "none" };
+}
+
+async function dragEvent(target: Element, type: string, dataTransfer: ReturnType<typeof transfer>, x = 0, y = 0) {
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y });
+  Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+  await act(async () => { target.dispatchEvent(event); });
+  return event;
+}
+
+const savedLayout = () => parseLayout(localStorage.getItem(MISSION_LAYOUT_KEY));
 
 it("shows only active sessions even with hundreds of idle chats", async () => {
   const sessions = [session("a", "working"), session("c", "waiting"), ...Array.from({ length: 501 }, (_, i) => session(`idle-${i}`, "completed"))];
@@ -191,4 +206,92 @@ it("does not transfer a draft when another active chat replaces the only tile", 
   expect(tiles()).toEqual(["b"]);
   expect(host.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("");
   expect(bridgeApi.sessionForest).toHaveBeenCalledWith("b");
+});
+
+it("accepts an idle sidebar chat into an empty grid and persists it until removed", async () => {
+  const sessions = [session("idle", "completed"), session("other", "completed")];
+  await render({ sessions });
+  const data = transfer(SIDEBAR_CHAT_DRAG, "idle");
+  const canvas = host.querySelector("main")!;
+  expect((await dragEvent(canvas, "dragover", data)).defaultPrevented).toBe(true);
+  expect(data.dropEffect).toBe("copy");
+  await dragEvent(canvas, "drop", data);
+  expect(tiles()).toEqual(["idle"]);
+  expect(savedLayout().pinnedSessionIds).toEqual(["idle"]);
+  expect(host.textContent).toContain("0 live");
+  expect(host.textContent).toContain("1 pinned");
+  expect(bridgeApi.submitInput).not.toHaveBeenCalled();
+  act(() => root.unmount()); root = createRoot(host);
+  await render({ sessions });
+  expect(tiles()).toEqual(["idle"]);
+  await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Remove from Mission Control']")!.click());
+  expect(tiles()).toEqual([]);
+  expect(savedLayout().pinnedSessionIds).toEqual([]);
+});
+
+it.each([
+  ["left", 1, 180, "horizontal", ["idle", "a"]],
+  ["right", 419, 180, "horizontal", ["a", "idle"]],
+  ["top", 210, 1, "vertical", ["idle", "a"]],
+  ["bottom", 210, 359, "vertical", ["a", "idle"]],
+] as const)("inserts an idle sidebar chat at the %s edge without a duplicate from bubbling", async (edge, x, y, direction, order) => {
+  await render({ sessions: [session("a", "working"), session("idle", "completed")] });
+  const tile = host.querySelector("[data-session-id='a']")!;
+  vi.spyOn(tile, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0, width: 420, height: 360 } as DOMRect);
+  const data = transfer(SIDEBAR_CHAT_DRAG, "idle");
+  await dragEvent(tile, "dragover", data, x, y);
+  expect(tile.querySelector(`[data-drop-edge='${edge}']`)).not.toBeNull();
+  await dragEvent(tile, "drop", data, x, y);
+  const saved = savedLayout();
+  expect(leafIds(saved.root!)).toEqual(order);
+  expect(saved.root).toMatchObject({ type: "split", direction });
+  expect(saved.pinnedSessionIds).toEqual(["idle"]);
+});
+
+it("rearranges existing tiles while preserving their drafts", async () => {
+  await render({ sessions: [session("a", "working"), session("b", "working")] });
+  const textarea = host.querySelector<HTMLTextAreaElement>("[data-session-id='a'] textarea")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "keep this draft");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const data = transfer(TILE_DRAG, "");
+  await dragEvent(host.querySelector("[data-session-id='a'] header")!, "dragstart", data);
+  expect(data.getData(TILE_DRAG)).toBe("a");
+  expect(data.effectAllowed).toBe("move");
+  await dragEvent(host.querySelector("[data-session-id='b']")!, "drop", data);
+  expect(leafIds(savedLayout().root!)).toEqual(["b", "a"]);
+  expect(savedLayout().pinnedSessionIds).toEqual([]);
+  expect(host.querySelector<HTMLTextAreaElement>("[data-session-id='a'] textarea")!.value).toBe("keep this draft");
+  expect(host.querySelector<HTMLTextAreaElement>("[data-session-id='b'] textarea")!.value).toBe("");
+});
+
+it("pins an already visible chat once and keeps it after its turn finishes", async () => {
+  await render({ sessions: [session("a", "working")] });
+  const data = transfer(SIDEBAR_CHAT_DRAG, "a");
+  await dragEvent(host.querySelector("[data-session-id='a']")!, "drop", data);
+  await dragEvent(host.querySelector("[data-session-id='a']")!, "drop", data);
+  expect(tiles()).toEqual(["a"]);
+  expect(savedLayout().pinnedSessionIds).toEqual(["a"]);
+  await render({ sessions: [session("a", "completed")] });
+  expect(tiles()).toEqual(["a"]);
+  await render({ sessions: [] });
+  expect(tiles()).toEqual([]);
+  expect(savedLayout().pinnedSessionIds).toEqual([]);
+});
+
+it("ignores unknown chat ids and unrelated drags", async () => {
+  await render({ sessions: [session("idle", "completed")] });
+  const canvas = host.querySelector("main")!;
+  await dragEvent(canvas, "drop", transfer(SIDEBAR_CHAT_DRAG, "missing"));
+  await dragEvent(canvas, "drop", transfer("text/plain", "idle"));
+  await dragEvent(canvas, "drop", transfer(TILE_DRAG, "idle"));
+  expect(tiles()).toEqual([]);
+  expect(savedLayout().pinnedSessionIds).toEqual([]);
+});
+
+it("treats old saved layouts as unpinned and validates stored pins", () => {
+  const root = { type: "leaf", leafId: "a" };
+  expect(parseLayout(JSON.stringify({ version: 1, root })).pinnedSessionIds).toEqual([]);
+  expect(parseLayout(JSON.stringify({ version: 1, root, pinnedSessionIds: ["a", "a", "missing", 7] })).pinnedSessionIds).toEqual(["a"]);
 });
