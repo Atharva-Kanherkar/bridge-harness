@@ -1,3 +1,5 @@
+import { mockTerminalWorkspace, mockCreateTerminal, mockSnapshot, mockSaveLayout, mockRenameTerminal, mockCloseTerminal } from "./terminal/mock";
+import type { TerminalRecord, TerminalSnapshot, TerminalWorkspace, CreateTerminalParams, TerminalFrame } from "./terminal/types";
 import { recordStreamReceipt } from "./streamTiming";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -1984,10 +1986,17 @@ export const bridgeApi = {
   },
   startProviderLogin: (provider: string): Promise<{ workspaceId: string; terminalId: string }> =>
     isTauri() ? call("auth/start_provider_login", { provider }) : Promise.resolve({ workspaceId: "provider-login", terminalId: provider }),
+  createTerminal: async (params: CreateTerminalParams): Promise<TerminalRecord> => isTauri() ? call("terminal/create_terminal", params) : mockCreateTerminal(params),
+  terminalSnapshot: async (workspaceId: string, terminalId: string): Promise<TerminalSnapshot> => isTauri() ? call("terminal/get_terminal_snapshot", { workspaceId, terminalId }) : mockSnapshot(workspaceId, terminalId),
+  terminalWorkspace: async (workspaceId: string): Promise<TerminalWorkspace> => isTauri() ? call("terminal/get_terminal_workspace", { workspaceId }) : mockTerminalWorkspace(workspaceId),
+  saveTerminalLayout: async (workspaceId: string, layout: unknown): Promise<void> => isTauri() ? unit(call("terminal/save_terminal_workspace", { workspaceId, layout })) : mockSaveLayout(workspaceId, layout),
+  renameTerminal: async (workspaceId: string, terminalId: string, title: string): Promise<TerminalRecord> => isTauri() ? call("terminal/rename_terminal", { workspaceId, terminalId, title }) : mockRenameTerminal(workspaceId, terminalId, title),
+  onTerminalFrame: async (handler: (frame: TerminalFrame) => void): Promise<UnlistenFn> => isTauri() ? subscribe<TerminalFrame>("terminal-frame", handler) : () => undefined,
+  onTerminalLagged: async (handler: () => void): Promise<UnlistenFn> => isTauri() ? subscribe("stream-lagged", handler) : () => undefined,
   openTerminal: (workspaceId: string, terminalId: string): Promise<void> => isTauri() ? unit(call("terminal/open_terminal", { workspaceId, terminalId })) : Promise.resolve(),
   writeTerminal: (workspaceId: string, terminalId: string, data: string): Promise<void> => isTauri() ? unit(call("terminal/write_terminal", { workspaceId, terminalId, data })) : Promise.resolve(),
   resizeTerminal: (workspaceId: string, terminalId: string, rows: number, cols: number): Promise<void> => isTauri() ? unit(call("terminal/resize_terminal", { workspaceId, terminalId, rows, cols })) : Promise.resolve(),
-  closeTerminal: (workspaceId: string, terminalId: string): Promise<void> => isTauri() ? unit(call("terminal/close_terminal", { workspaceId, terminalId })) : Promise.resolve(),
+  closeTerminal: (workspaceId: string, terminalId: string): Promise<void> => isTauri() ? unit(call("terminal/close_terminal", { workspaceId, terminalId })) : Promise.resolve(mockCloseTerminal(workspaceId, terminalId)),
   listTerminals: async (workspaceId: string): Promise<string[]> => {
     if (isTauri()) return ((await call("terminal/list_terminals", { workspaceId })) as { terminalIds: string[] }).terminalIds;
     return [];

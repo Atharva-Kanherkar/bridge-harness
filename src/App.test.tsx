@@ -898,10 +898,11 @@ describe("the dock in the session view", () => {
   // shell — rail, title bar, session chrome, or the keymap/menu table —
   // may offer a way into them. Sidebar-only tests would miss a later
   // title-bar, menu, or chord entry point.
-  it("exposes no Mission Control or Work board navigation control in the shell", async () => {
+  it("exposes Mission Control while keeping the Work board out of navigation", async () => {
     await mountApp();
 
-    const hiddenNav = /^(Mission Control|Work board)$/;
+    expect(container.querySelector('button[aria-label="Mission Control"]')).not.toBeNull();
+    const hiddenNav = /^Work board$/;
     const namedControls = (root: ParentNode) =>
       [...root.querySelectorAll<HTMLElement>("button, [role='menuitem'], [role='link'], a")]
         .filter(node => hiddenNav.test((node.getAttribute("aria-label") ?? node.textContent ?? "").trim()));

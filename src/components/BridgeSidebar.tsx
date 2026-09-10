@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {  Archive,
- BarChart3, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, Home, Pin, Plus, RotateCw, Search, Settings2, SquarePen, Store, type LucideIcon } from "lucide-react";
+ BarChart3, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, Home, Pin, Plus, RotateCw, Search, Settings2, SquarePen, Store, type LucideIcon } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
 import type { Session, SessionStatus, Workspace } from "../types";
@@ -591,6 +591,7 @@ export function BridgeSidebar({
            * type (and wired in App) so the screens and their data plumbing are
            * untouched. */}
           <ActionRow icon={FolderGit2} label="Projects" chord="open-projects" onClick={onOpenProjects} active={projectsActive} />
+          <ActionRow icon={TerminalSquare} label="Mission Control" onClick={onOpenMissionControl} active={missionControlActive} />
           <ActionRow icon={Pin} label="Memory" onClick={onOpenMemory} active={memoryActive} />
           {onOpenUsage && <ActionRow icon={ChartNoAxesColumn} label="Usage" onClick={onOpenUsage} active={usageActive} />}
         </nav>
@@ -681,7 +682,7 @@ export function BridgeSidebar({
           <RailBottomButton label="Source control" onClick={onOpenProjects}>
             <GitBranch size={16} strokeWidth={1.6} aria-hidden="true" />
           </RailBottomButton>
-          <RailBottomButton label="Usage" active={missionControlActive} onClick={onOpenMissionControl}>
+          <RailBottomButton label="Usage" active={usageActive} onClick={() => onOpenUsage?.()}>
             <BarChart3 size={16} strokeWidth={1.6} aria-hidden="true" />
           </RailBottomButton>
           <RailBottomButton label="Refresh" onClick={() => window.location.reload()}>
