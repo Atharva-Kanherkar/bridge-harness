@@ -650,9 +650,10 @@ async fn archive_chat(
 async fn list_archived_chats(
     query: String,
     offset: u32,
+    root_session_id: Option<String>,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_protocol::messages::ArchivedChatsResult, BridgeError> {
-    api::list_archived_chats(state.inner(), &bridge_protocol::messages::ListArchivedChatsParams { query, offset })
+    api::list_archived_chats(state.inner(), &bridge_protocol::messages::ListArchivedChatsParams { query, offset, root_session_id })
 }
 
 #[tauri::command]

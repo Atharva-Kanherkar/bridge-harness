@@ -3038,6 +3038,7 @@ export interface SaveWorkerSettingsParams {
 export interface ListArchivedChatsParams {
   offset?: number;
   query?: string;
+  rootSessionId?: string | null;
 }
 
 export interface ArchivedChatsResult {

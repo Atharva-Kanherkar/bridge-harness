@@ -12,6 +12,14 @@
     "query": {
       "default": "",
       "type": "string"
+    },
+    "rootSessionId": {
+      "default": null,
+      "description": "When set, list descendants within this archived root instead of roots.",
+      "type": [
+        "string",
+        "null"
+      ]
     }
   },
   "title": "ListArchivedChatsParams",

@@ -3779,13 +3779,24 @@ pub fn worktree_usage(
 pub fn list_archived_chats(core: &Arc<BridgeCore>, request: &wire::ListArchivedChatsParams) -> Result<wire::ArchivedChatsResult, BridgeError> {
     let db = core.db.lock().unwrap();
     let mut statement = db.prepare(
-        "SELECT s.id,COALESCE(NULLIF(s.title,''),s.label),s.harness,w.title,s.archived_at
+        "WITH RECURSIVE family(root_id,id) AS (
+             SELECT id,id FROM sessions WHERE archived_at IS NOT NULL AND (?3 IS NULL OR id=?3)
+             UNION
+             SELECT f.root_id,s.id FROM sessions s JOIN family f ON s.parent_session_id=f.id
+         )
+         SELECT s.id,COALESCE(NULLIF(s.title,''),s.label),s.harness,w.title,COALESCE(s.archived_at,r.archived_at)
          FROM sessions s LEFT JOIN workspaces w ON w.id=s.workspace_id
-         WHERE s.archived_at IS NOT NULL
-           AND instr(lower(COALESCE(s.title,'')||' '||s.label||' '||COALESCE(w.title,'')),lower(?1))>0
-         ORDER BY s.archived_at DESC,s.id LIMIT 51 OFFSET ?2",
+         LEFT JOIN sessions r ON r.id=?3
+         WHERE (?3 IS NULL AND s.archived_at IS NOT NULL
+             AND NOT EXISTS(SELECT 1 FROM family f WHERE f.id=s.id AND f.root_id<>s.id)
+             AND EXISTS(SELECT 1 FROM family f JOIN sessions child ON child.id=f.id
+                 WHERE f.root_id=s.id AND instr(lower(COALESCE(child.title,'')||' '||child.label||' '||COALESCE(w.title,'')),lower(?1))>0))
+            OR (?3 IS NOT NULL
+                AND EXISTS(SELECT 1 FROM family f WHERE f.root_id=?3 AND f.id=s.id AND f.id<>f.root_id)
+                AND instr(lower(COALESCE(s.title,'')||' '||s.label||' '||COALESCE(w.title,'')),lower(?1))>0)
+         ORDER BY COALESCE(s.archived_at,r.archived_at) DESC,s.id LIMIT 51 OFFSET ?2",
     )?;
-    let mut chats = statement.query_map(params![request.query.trim(), request.offset], |row| {
+    let mut chats = statement.query_map(params![request.query.trim(), request.offset, request.root_session_id], |row| {
         Ok(wire::ArchivedChat { id: row.get(0)?, title: row.get(1)?, harness: row.get(2)?, workspace_title: row.get(3)?, archived_at: row.get(4)? })
     })?.collect::<Result<Vec<_>, _>>()?;
     let has_more = chats.len() > 50;
@@ -4901,7 +4912,7 @@ mod tests {
     fn archive_list_and_unarchive_restore_only_visibility() {
         let fixture = chat_fixture();
         super::archive_chat(&fixture.core, "chat").unwrap();
-        let request = super::wire::ListArchivedChatsParams { query: "chat".into(), offset: 0 };
+        let request = super::wire::ListArchivedChatsParams { query: "chat".into(), offset: 0, root_session_id: None };
         let archived = super::list_archived_chats(&fixture.core, &request).unwrap();
         assert_eq!(archived.chats.len(), 1);
         assert_eq!(archived.chats[0].id, "chat");
@@ -4920,6 +4931,34 @@ mod tests {
         drop(db);
         assert!(super::list_archived_chats(&fixture.core, &request).unwrap().chats.is_empty());
         assert!(super::unarchive_chat(&fixture.core, "missing").is_err());
+    }
+
+    #[test]
+    fn archived_roots_expose_and_search_their_descendants_without_restoring_them() {
+        let fixture = chat_fixture();
+        {
+            let db = fixture.core.db.lock().unwrap();
+            for (id, parent, title) in [("worker", "chat", "Worker trace"), ("aside", "chat", "Aside notes"), ("deep", "worker", "Nested investigation"), ("kept", "chat", "Separate archive")] {
+                db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,kind) VALUES(?1,'w','codex',?3,'idle','reported',?2,'chat')", params![id, parent, title]).unwrap();
+            }
+            crate::session_forest::SessionForest::new(&db).append("deep", crate::session_forest::EntryKind::AssistantMessage, serde_json::json!({"text":"The descendant history is preserved"})).unwrap();
+        }
+        super::archive_chat(&fixture.core, "kept").unwrap();
+        super::archive_chat(&fixture.core, "chat").unwrap();
+        assert_eq!(session_count(&fixture.core), 1, "every descendant is hidden from normal state");
+        let roots = super::list_archived_chats(&fixture.core, &super::wire::ListArchivedChatsParams { query: "Nested investigation".into(), offset: 0, root_session_id: None }).unwrap();
+        assert_eq!(roots.chats.iter().map(|chat| chat.id.as_str()).collect::<Vec<_>>(), ["chat"]);
+        let family = super::list_archived_chats(&fixture.core, &super::wire::ListArchivedChatsParams { query: String::new(), offset: 0, root_session_id: Some("chat".into()) }).unwrap();
+        let ids = family.chats.iter().map(|chat| chat.id.as_str()).collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(ids, ["worker", "aside", "deep", "kept"].into_iter().collect());
+        let replay = crate::store::session_events_after(&fixture.core.db.lock().unwrap(), "deep", 0, 200).unwrap();
+        assert_eq!(replay[0].text.as_deref(), Some("The descendant history is preserved"));
+        assert!(!fixture.chat_worktree.exists());
+        super::unarchive_chat(&fixture.core, "chat").unwrap();
+        assert_eq!(session_count(&fixture.core), 5, "the independent child archive remains hidden");
+        let roots = super::list_archived_chats(&fixture.core, &super::wire::ListArchivedChatsParams { query: String::new(), offset: 0, root_session_id: None }).unwrap();
+        assert_eq!(roots.chats[0].id, "kept");
+        assert!(!fixture.chat_worktree.exists());
     }
 
     /// Putting a conversation away should not require first resolving its

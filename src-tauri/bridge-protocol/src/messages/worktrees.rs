@@ -131,6 +131,9 @@ pub struct ListArchivedChatsParams {
     pub query: String,
     #[serde(default)]
     pub offset: u32,
+    /// When set, list descendants within this archived root instead of roots.
+    #[serde(default)]
+    pub root_session_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]

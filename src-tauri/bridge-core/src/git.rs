@@ -1699,7 +1699,7 @@ fn run_bounded_bytes<'a, I>(
 where
     I: IntoIterator<Item = &'a str>,
 {
-    let output = command_output_deadline(git_command(cwd).args(args), std::time::Duration::from_secs(30))?;
+    let output = command_output_prefix_deadline(git_command(cwd).args(args), std::time::Duration::from_secs(30), limit)?;
     let mut stdout = output.stdout;
     let truncated = stdout.len() > limit;
     if truncated {
@@ -1762,6 +1762,17 @@ where
 /// Bound wall time as well as output, including a child that keeps a pipe open.
 /// The caller never joins a blocked reader after its deadline.
 pub(crate) fn command_output_deadline(command: &mut Command, timeout: std::time::Duration) -> Result<std::process::Output, BridgeError> {
+    const LIMIT: usize = 16 * 1024 * 1024;
+    let output = command_output_prefix_deadline(command, timeout, LIMIT)?;
+    if output.stdout.len() > LIMIT {
+        return Err(BridgeError::Git("repository observation exceeded its output limit".into()));
+    }
+    Ok(output)
+}
+
+// Keep one extra byte so prefix callers can distinguish exact output from
+// truncation. Pipes are still drained even after the retention budget is spent.
+fn command_output_prefix_deadline(command: &mut Command, timeout: std::time::Duration, limit: usize) -> Result<std::process::Output, BridgeError> {
     #[cfg(unix)]
     { use std::os::unix::process::CommandExt; command.process_group(0); }
     let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()?;
@@ -1769,8 +1780,7 @@ pub(crate) fn command_output_deadline(command: &mut Command, timeout: std::time:
     let stderr = child.stderr.take().unwrap();
     let (send_out, receive_out) = std::sync::mpsc::channel();
     let (send_err, receive_err) = std::sync::mpsc::channel();
-    const LIMIT: usize = 16 * 1024 * 1024;
-    thread::spawn(move || { let _ = send_out.send(read_capped(stdout, LIMIT + 1)); });
+    thread::spawn(move || { let _ = send_out.send(read_capped(stdout, limit.saturating_add(1))); });
     thread::spawn(move || { let _ = send_err.send(read_capped(stderr, MAX_GIT_ERROR_BYTES)); });
     let start = std::time::Instant::now();
     let mut out = None;
@@ -1781,7 +1791,6 @@ pub(crate) fn command_output_deadline(command: &mut Command, timeout: std::time:
         if let Some(status) = child.try_wait()? {
             if out.is_some() && err.is_some() {
                 let stdout = out.unwrap();
-                if stdout.len() > LIMIT { return Err(BridgeError::Git("repository observation exceeded its output limit".into())); }
                 return Ok(std::process::Output { status, stdout, stderr: err.unwrap() });
             }
         }
@@ -1813,6 +1822,21 @@ mod tests {
         assert!(started.elapsed() < std::time::Duration::from_secs(2));
         let output = command_output_deadline(Command::new("git").arg("--version"), std::time::Duration::from_secs(2)).unwrap();
         assert!(output.status.success());
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn oversized_git_output_preserves_the_callers_truncated_prefix() {
+        let root = tempfile::tempdir().unwrap();
+        let args = ["-c", "alias.large-output=!dd if=/dev/zero bs=1048576 count=17 2>/dev/null", "large-output"];
+        let prefix = run_bounded_bytes(root.path(), args, 64 * 1024, &[0]).unwrap();
+        assert!(prefix.truncated);
+        assert_eq!(prefix.stdout, vec![0; 64 * 1024]);
+        let whole = command_output_deadline(git_command(root.path()).args(args), std::time::Duration::from_secs(10));
+        assert!(whole.unwrap_err().to_string().contains("output limit"));
+        let empty = run_bounded_bytes(root.path(), ["--version"], 0, &[0]).unwrap();
+        assert!(empty.truncated);
+        assert!(empty.stdout.is_empty());
     }
 
     #[test]

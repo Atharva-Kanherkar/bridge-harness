@@ -1081,24 +1081,25 @@ pub fn route(
                 }
             )));
         }
-        // A harness that is not installed, or that Bridge already knows is out
-        // of quota or context, cannot serve this request no matter which
-        // router mode chose it — unlike a cost/quality preference, a caller
-        // cannot override a supply gap by asking nicely. Manual overrides and
+        // Supply gaps and explicit user exclusions apply in every router mode.
+        // A default, manual override or locked profile cannot revive an excluded
+        // harness/model. Manual overrides and
         // locked profiles used to skip straight past this and reserve a
         // worker the adapter registry would refuse to start; substitute the
         // best eligible alternative this workspace has installed, and only
         // fail when there genuinely isn't one, so a single-harness setup gets
         // a real answer instead of a launch failure two steps later.
-        let hard_supply_gap = selected.exclusions.iter().any(|exclusion| {
+        let requires_substitution = selected.exclusions.iter().any(|exclusion| {
             matches!(
                 exclusion,
                 CandidateExclusion::HarnessUnavailable
                     | CandidateExclusion::QuotaExhausted
                     | CandidateExclusion::ContextExhausted
+                    | CandidateExclusion::UserExcludedHarness
+                    | CandidateExclusion::UserExcludedModel
             )
         });
-        if hard_supply_gap {
+        if requires_substitution {
             if let Some(alternative) = decision
                 .candidates
                 .iter()
@@ -1118,6 +1119,10 @@ pub fn route(
                     ),
                 );
                 decision.executed_candidate = Some(alternative.candidate.key());
+                decision.explanation.push_str(&format!(
+                    "; {} was not usable ({:?}), substituted {}",
+                    selected.candidate.key(), selected.exclusions, alternative.candidate.key(),
+                ));
                 selected = alternative;
             } else {
                 persist_decision(db, &decision)?;
@@ -2229,6 +2234,32 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM routing_catalogs WHERE hash=?1", params![catalog_hash], |row| row.get(0))
             .unwrap();
         assert_eq!(catalogs, 1, "the catalog lives once, keyed by its hash");
+    }
+
+    #[test]
+    fn defaults_and_overrides_never_bypass_user_exclusions() {
+        for mode in [RouterMode::Shadow, RouterMode::Disabled] {
+            for exclude_model in [false, true] {
+                for explicit_override in [false, true] {
+                    let db = routing_db();
+                    crate::worker_settings::save(&db, "w", &bridge_protocol::messages::WorkerSettings {
+                        default_harness: Some("codex".into()), ..Default::default()
+                    }).unwrap();
+                    save_preferences(&db, "w", &RouterPreferences {
+                        mode,
+                        excluded_harnesses: if exclude_model { vec![] } else { vec!["codex".into()] },
+                        excluded_models: if exclude_model { vec!["codex-standard".into()] } else { vec![] },
+                        ..Default::default()
+                    }).unwrap();
+                    let mut request = request();
+                    if explicit_override { request.harness = Some("codex".into()); }
+                    let routed = route(&db, "parent", "turn", &request, &descriptors()).unwrap();
+                    assert_eq!(routed.request.runtime_harness(), "claude");
+                    assert!(routed.decision.explanation.contains("substituted claude:claude-standard"));
+                    assert!(route(&db, "parent", "no-alternative", &request, &descriptors()[..1]).is_err());
+                }
+            }
+        }
     }
 
     #[test]

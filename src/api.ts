@@ -1592,8 +1592,8 @@ export const bridgeApi = {
     emitState();
     return { archived: true, bytesFreed: 0, worktreeDetail: owned?.retainedReason ?? null };
   },
-  listArchivedChats: async (query = "", offset = 0): Promise<ArchivedChatsResult> => {
-    if (isTauri()) return call("sessions/list_archived_chats", { query, offset });
+  listArchivedChats: async (query = "", offset = 0, rootSessionId: string | null = null): Promise<ArchivedChatsResult> => {
+    if (isTauri()) return call("sessions/list_archived_chats", { query, offset, rootSessionId });
     return { chats: [], hasMore: false };
   },
   workerSettings: async (workspaceId: string): Promise<WorkerSettings> => {

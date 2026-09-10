@@ -1,5 +1,28 @@
 # Worker and storage verification
 
+## Connector review follow-up
+
+The four connector findings are covered by
+[worker-storage-review-fixes.md](worker-storage-review-fixes.md).
+
+- Defaults and explicit overrides respect harness/model exclusions in Shadow and
+  Disabled modes; an eligible substitute is selected or launch is refused.
+- Archived transcripts use the shared renderer, including non-message events and
+  tool pairs spanning fetched pages. Historical approval, permission, question and
+  prompt-change controls are disabled. Metadata-only pages explain their state.
+- Archived roots expose and are searchable through their recursive descendants.
+  Normal state hides the entire archived subtree; independent child archives
+  survive root unarchive. Reading descendants restores no checkout or provider.
+- A real Git alias producing 17 MiB verifies caller-specific prefix truncation;
+  whole-output reads still reject overflow and deadline coverage remains green.
+
+Follow-up verification: `bun run build` and `bun run test` passed. Vitest has
+2,065 passing tests across 162 files; the Rust workspace/doctests have 2,583
+passing tests with the same 13 explicit ignores. Protocol generation and the
+Tauri command-surface checks passed. The environment isolation below was reused.
+
+## Initial implementation
+
 Implementation tested at `76c1cbf`, including main through `93b57f4`.
 Contract: [feat-worker-storage-management.md](feat-worker-storage-management.md).
 Audit: [worker-storage-audit.md](../docs/worker-storage-audit.md).

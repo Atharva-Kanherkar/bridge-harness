@@ -73,10 +73,16 @@ Native build output is still relocated by the existing per-repository cache.
 ## Archived chats
 
 Settings now lists archived conversations in bounded pages with name/project search.
-A read-only transcript view uses bounded history replay. Unarchive only clears the
+A root is searchable through descendant names and exposes its workers and side
+chats without unarchiving. The shared conversation renderer consumes durable
+events, preserving reasoning, tools, diffs, errors and interactions; historical
+approval controls are disabled. Explicitly loading another history page retains
+earlier events so tool and interaction pairs can still be grouped across pages.
+Unarchive only clears the
 archive marker and publishes a state change. It does not start a provider, change
 the ended timestamp, recreate a worktree or alter sibling chats. Resuming a chat
 later remains a separate action with the existing checkout restoration rules.
+Independently archived descendants remain archived when the root is unarchived.
 
 ## Operational limits
 
