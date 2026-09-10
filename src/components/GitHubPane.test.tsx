@@ -156,7 +156,8 @@ describe("GitHubPane", () => {
     expect(copy.className).toMatch(/\bmin-w-0\b/);
     expect(copy.className).toMatch(/\bshrink\b/);
     expect(copy.className).not.toMatch(/\bshrink-0\b/);
-    expect(host!.querySelector("header")!.className).toContain("px-2");
+    expect(host!.querySelector("header")!.className).toContain("p-1.5");
+    expect(host!.querySelector("header")!.className).not.toContain("u-glass");
   });
 
   it("confirms label changes before calling the typed action", async () => {

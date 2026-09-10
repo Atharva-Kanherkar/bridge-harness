@@ -563,7 +563,7 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   }
 
   return <section className="relative flex h-full w-full flex-col" aria-label="GitHub repository">
-    <header className="u-glass flex shrink-0 flex-col gap-1.5 border-b border-border px-2 py-1.5">
+    <header className="flex shrink-0 flex-col gap-1.5 border-b border-border bg-background p-1.5">
       <div className="flex h-8 items-center gap-1.5">
         <div className="flex min-w-0 flex-1 items-center gap-1.5">
           <span className="inline-flex size-7 shrink-0 items-center justify-center text-muted-foreground">
