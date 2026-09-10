@@ -69,7 +69,7 @@ import { recommendedProfileDrafts } from "./modelProfiles";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 let mockMenuBarSettings: MenuBarSettings = {
-  schemaVersion: 1, enabled: true, codexEnabled: true, displayMode: "remaining", quotaWindow: "session",
+  schemaVersion: 1, enabled: true, codexEnabled: true, displayMode: "remaining", quotaWindow: "auto",
   showAccount: true, showTokens: true, showCost: true, refreshSeconds: 300,
 };
 

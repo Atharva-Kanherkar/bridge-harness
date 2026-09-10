@@ -59,8 +59,9 @@ export function MenuBarSettingsPage() {
             { value: "icon", label: "Icon only" }, { value: "remaining", label: "Quota remaining" },
             { value: "used", label: "Quota used" }, { value: "cost", label: "Today's spend" },
           ]} onChange={displayMode => void save({ displayMode: displayMode as MenuBarSettings["displayMode"] })} />} />
-        <SettingsRow label="Quota window" control={<Select label="Quota window" value={settings.quotaWindow} disabled={busy}
-          options={[{ value: "session", label: "Session" }, { value: "weekly", label: "Weekly" }]}
+        <SettingsRow label="Quota window" description="Automatic uses the available session or weekly limit."
+          control={<Select label="Quota window" value={settings.quotaWindow} disabled={busy}
+          options={[{ value: "auto", label: "Automatic" }, { value: "session", label: "Session" }, { value: "weekly", label: "Weekly" }]}
           onChange={quotaWindow => void save({ quotaWindow: quotaWindow as MenuBarSettings["quotaWindow"] })} />} />
       </SettingsGroup>
       <SettingsGroup label="Providers & accounts" note="Codex is available first">

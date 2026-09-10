@@ -49,6 +49,12 @@ struct UsageOverview: Decodable {
     var month: UsagePeriod
     var coverage: String
     var error: String?
+
+    func menuWindow(_ preference: String, now: Int64) -> QuotaWindow? {
+        if preference != "auto" { return windows.first { $0.id == preference } }
+        return windows.first { $0.usedPercent.current != nil && ($0.resetsAt.map { $0 > now } ?? true) }
+            ?? windows.first
+    }
 }
 
 struct MenuSettings: Decodable {
@@ -62,7 +68,7 @@ struct MenuSettings: Decodable {
     var showCost: Bool
     var refreshSeconds: UInt64
     static let initial = MenuSettings(schemaVersion: 1, enabled: true, codexEnabled: true,
-        displayMode: "remaining", quotaWindow: "session", showAccount: true,
+        displayMode: "remaining", quotaWindow: "auto", showAccount: true,
         showTokens: true, showCost: true, refreshSeconds: 300)
 }
 
@@ -82,6 +88,9 @@ func countLabel(_ metric: Metric) -> String {
     let format = NumberFormatter()
     format.numberStyle = .decimal
     format.locale = Locale(identifier: "en_US_POSIX")
+    format.usesGroupingSeparator = true
+    format.groupingSize = 3
+    format.secondaryGroupingSize = 3
     format.maximumFractionDigits = 0
     let label = format.string(from: NSNumber(value: value)) ?? "Unavailable"
     return metric.qualifier.map { "\(label) · \($0.lowercased())" } ?? label

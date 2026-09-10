@@ -124,8 +124,8 @@ final class MenuController: NSObject, NSMenuDelegate {
                 title = usage.map { moneyLabel($0.today.costMicrousd) } ?? "—"
                 if title == "Unavailable" { title = "—" }
             } else if settings.displayMode != "icon" {
-                let window = usage?.windows.first { $0.id == settings.quotaWindow }
                 let now = Int64(Date().timeIntervalSince1970)
+                let window = usage?.menuWindow(settings.quotaWindow, now: now)
                 let fresh = presentation.error == nil && usage?.observedAt.map { now - $0 < 600 && now >= $0 } == true
                     && (window?.resetsAt.map { $0 > now } ?? true)
                 let quota = fresh ? window?.usedPercent.current : nil
@@ -134,7 +134,9 @@ final class MenuController: NSObject, NSMenuDelegate {
         }
         item.button?.title = title.isEmpty ? "" : " \(title)"
         item.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-        item.button?.toolTip = title.isEmpty ? "Bridge usage" : "Bridge · Codex · \(title) \(settings.displayMode)"
+        let windowLabel = usage?.menuWindow(settings.quotaWindow, now: Int64(Date().timeIntervalSince1970))?.label ?? "Quota"
+        let metricLabel = settings.displayMode == "cost" ? "Today" : windowLabel
+        item.button?.toolTip = title.isEmpty ? "Bridge usage" : "Bridge · Codex · \(metricLabel) · \(title) \(settings.displayMode)"
         // Avoid structural changes during menu tracking; data updates in place.
         if !tracking { rebuildCard() }
         else if let scroll = card.view as? NSScrollView, let view = scroll.documentView as? NSHostingView<MenuCard> {

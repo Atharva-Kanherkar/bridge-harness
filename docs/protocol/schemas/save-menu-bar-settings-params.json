@@ -14,6 +14,7 @@
     },
     "MenuBarQuotaWindow": {
       "enum": [
+        "auto",
         "session",
         "weekly"
       ],

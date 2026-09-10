@@ -158,13 +158,37 @@ fn number(value: &Value, camel: &str, snake: &str) -> Option<f64> {
 }
 
 fn windows(quota: Option<&AccountQuota>, failed: bool, now: i64) -> Vec<UsageQuotaWindow> {
+    let primary = quota
+        .and_then(|q| q.limits.get("primary"))
+        .filter(|v| v.is_object());
+    let secondary = quota
+        .and_then(|q| q.limits.get("secondary"))
+        .filter(|v| v.is_object());
+    let minutes =
+        |raw: Option<&Value>| raw.and_then(|r| number(r, "windowDurationMins", "window_minutes"));
+    // Codex can put its only weekly limit in `primary`, or return the slots
+    // reversed. Reported durations define the roles, not their wire positions.
+    let (session, weekly) = if (minutes(primary) == Some(10080.0)
+        && minutes(secondary) != Some(10080.0))
+        || (minutes(secondary) == Some(300.0) && minutes(primary) != Some(300.0))
+    {
+        (secondary, primary)
+    } else {
+        (primary, secondary)
+    };
     [
-        ("primary", "session", "Session"),
-        ("secondary", "weekly", "Weekly"),
+        (session, "session", "Session"),
+        (weekly, "weekly", "Weekly"),
     ]
     .into_iter()
-    .map(|(key, id, label)| {
-        let raw = quota.and_then(|q| q.limits.get(key));
+    .map(|(raw, id, label)| {
+        // Do not label a second known weekly window as a session (or vice
+        // versa), even if a provider response contains duplicate durations.
+        let raw = raw.filter(|r| match minutes(Some(r)) {
+            Some(10080.0) => id == "weekly",
+            Some(300.0) => id == "session",
+            _ => true,
+        });
         let reset = raw
             .and_then(|r| number(r, "resetsAt", "resets_at"))
             .map(|v| v as i64);
@@ -267,6 +291,29 @@ fn cost(rows: &[&UsageBucket]) -> UsageMetric {
 mod tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn reported_durations_identify_weekly_only_and_reversed_windows() {
+        let mut quota = AccountQuota {
+            account: None,
+            plan: None,
+            observed_at: 100,
+            limits: json!({"primary":{"usedPercent":58,"resetsAt":100000,"windowDurationMins":10080},"secondary":null}),
+        };
+        let value = windows(Some(&quota), false, 101);
+        assert_eq!(value[0].used_percent.status, Status::Unavailable);
+        assert_eq!(value[1].used_percent.value, Some(58.0));
+        assert_eq!(value[1].window_minutes, Some(10080));
+        quota.limits["secondary"] =
+            json!({"usedPercent":0,"resetsAt":200,"windowDurationMins":300});
+        let reversed = windows(Some(&quota), false, 101);
+        assert_eq!(reversed[0].used_percent.value, Some(0.0));
+        assert_eq!(reversed[1].used_percent.value, Some(58.0));
+        quota.limits["primary"] = Value::Null;
+        assert_eq!(
+            windows(Some(&quota), false, 101)[0].used_percent.value,
+            Some(0.0)
+        );
+    }
     #[test]
     fn expired_and_failed_reads_keep_stale_values_without_inventing_zero() {
         let q = AccountQuota {

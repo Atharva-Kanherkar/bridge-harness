@@ -7,6 +7,7 @@ func check(_ condition: @autoclosure () -> Bool, _ message: String) {
 
 let zero = Metric(value: 0, source: "reported", status: "current")
 check(countLabel(zero) == "0", "Reported zero must remain zero")
+check(countLabel(Metric(value: 27_933_293, source: "measured", status: "current")) == "27,933,293", "Large token counts must be readable")
 check(moneyLabel(zero) == "$0.00", "A reported zero cost is valid")
 check(countLabel(.unavailable) == "Unavailable", "Unknown tokens must not become zero")
 check(moneyLabel(.unavailable) == "Unavailable", "Unpriced usage must not become $0")
@@ -23,6 +24,12 @@ check(fixture.usage?.windows[1].usedPercent.current == nil, "Stale usage stays h
 check(moneyLabel(fixture.usage!.today.costMicrousd) == "≈$1.20", "Estimated cost survives Rust to Swift")
 check(moneyLabel(fixture.usage!.month.costMicrousd) == "Unavailable", "Unpriced totals stay unavailable")
 check(fixture.usage?.today.models[0].totalTokens.current == 60, "Model token fields must agree")
+var available = fixture.usage!
+available.windows[1].usedPercent = Metric(value: 58, source: "reported", status: "current")
+check(available.menuWindow("auto", now: 100)?.id == "session", "Automatic prefers a current session")
+available.windows[0].usedPercent = .unavailable
+check(available.menuWindow("auto", now: 100)?.id == "weekly", "Automatic supports weekly-only accounts")
+check(available.menuWindow("session", now: 100)?.usedPercent.current == nil, "Explicit selection must not silently switch windows")
 
 let image = MenuController.templateIcon()
 check(image.isTemplate, "Menu icon must be a system template")

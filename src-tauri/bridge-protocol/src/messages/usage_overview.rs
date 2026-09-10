@@ -106,6 +106,7 @@ pub enum MenuBarDisplayMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum MenuBarQuotaWindow {
+    Auto,
     Session,
     Weekly,
 }
@@ -132,7 +133,7 @@ impl Default for MenuBarSettings {
             enabled: true,
             codex_enabled: true,
             display_mode: MenuBarDisplayMode::Remaining,
-            quota_window: MenuBarQuotaWindow::Session,
+            quota_window: MenuBarQuotaWindow::Auto,
             show_account: true,
             show_tokens: true,
             show_cost: true,

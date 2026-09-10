@@ -46,6 +46,11 @@ Numeric metrics carry independent value, source and status fields:
   priced/unpriced totals. Tokens still count. Model-priced amounts are estimates.
 - Reasoning tokens are part of output and are not added twice.
 - Quota percentages are never converted into an invented token budget.
+- Reported window duration identifies session and weekly quotas, including
+  accounts whose only weekly limit occupies the provider's primary slot.
+  Automatic status-item selection prefers a current session, then a current
+  weekly limit. An explicit selection stays unavailable when that window is
+  missing.
 - Costs and token totals cover records on this Mac, potentially across accounts;
   the account heading identifies the quota account, not a billing attribution
   for the device-wide history.

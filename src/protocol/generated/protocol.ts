@@ -1319,7 +1319,7 @@ export interface MemoryRecord {
 
 export type MenuBarDisplayMode = "icon" | "used" | "remaining" | "cost";
 
-export type MenuBarQuotaWindow = "session" | "weekly";
+export type MenuBarQuotaWindow = "auto" | "session" | "weekly";
 
 export interface MenuBarSettings {
   codexEnabled: boolean;
