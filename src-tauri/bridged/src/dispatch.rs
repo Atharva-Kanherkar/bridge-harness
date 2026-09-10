@@ -519,6 +519,8 @@ pub fn dispatch(
         }
         MethodName::GetMeterSnapshot => reply(Ok(api::meter_snapshot())),
         MethodName::RefreshMeter => reply(api::refresh_meter(core)),
+        MethodName::GetProviderUsageOverviews => reply(api::get_provider_usage_overviews(core)),
+        MethodName::RefreshProviderUsageOverviews => reply(api::refresh_provider_usage_overviews(core)),
         MethodName::GetUsageOverview => reply(api::get_usage_overview(core)),
         MethodName::RefreshUsageOverview => reply(api::refresh_usage_overview(core)),
         MethodName::GetMenuBarSettings => reply(api::get_menu_bar_settings(core)),

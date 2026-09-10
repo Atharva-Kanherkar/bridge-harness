@@ -1,4 +1,4 @@
-//! Shared data authority for the Codex vertical slice. The native menu and
+//! Shared provider usage authority. The native menu and
 //! desktop consume this contract; neither authenticates, scans, or prices.
 use crate::{
     codex_adapter::account::AccountQuota,
@@ -19,6 +19,7 @@ use std::{collections::BTreeMap, sync::Mutex, time::Instant};
 #[derive(Default)]
 pub struct UsageOverviewService {
     refresh: Mutex<Option<Instant>>,
+    providers: [Mutex<Option<Instant>>; 3],
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -86,6 +87,7 @@ pub fn snapshot(core: &BridgeCore) -> Result<UsageOverviewSnapshot, BridgeError>
         plan: cache.quota.as_ref().and_then(|q| q.plan.clone()),
         observed_at: cache.quota.as_ref().map(|q| q.observed_at),
         windows: windows(cache.quota.as_ref(), cache.error.is_some(), now.timestamp()),
+        account_metrics: vec![],
         today: period(&today_rows),
         month: period(&rows),
         coverage: if partial {
@@ -366,5 +368,218 @@ mod tests {
             Some(Source::Estimated)
         );
         assert_eq!(period(&[]).tokens.value, None);
+    }
+}
+
+#[derive(Default, Serialize, Deserialize)]
+struct CachedProvider {
+    usage: Option<crate::provider_usage::AccountUsage>,
+    error: Option<String>,
+}
+fn load_provider(db: &Connection, provider: &str) -> Result<CachedProvider, BridgeError> {
+    let payload: Option<String> = db
+        .query_row(
+            "SELECT payload FROM configuration_entries WHERE kind='usage_overview' AND id=?1",
+            [provider],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(payload
+        .map(|p| {
+            serde_json::from_str(&p).unwrap_or_else(|_| CachedProvider {
+                usage: None,
+                error: Some("Cached account usage is unavailable. Try Refresh.".into()),
+            })
+        })
+        .unwrap_or_default())
+}
+
+pub fn provider_snapshots(
+    core: &BridgeCore,
+) -> Result<bridge_protocol::messages::ProviderUsageOverviews, BridgeError> {
+    use bridge_protocol::messages::{MenuBarProvider, ProviderUsageOverviews};
+    let now = Utc::now();
+    let mut providers = vec![snapshot(core)?];
+    let zone = iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".into());
+    let tz: chrono_tz::Tz = zone.parse().unwrap_or(chrono_tz::UTC);
+    let today = now.with_timezone(&tz).date_naive();
+    let db = core.db.lock().unwrap();
+    let summary = usage_summary::summarize(
+        &db,
+        &UsageSummaryRequest {
+            since_day: (today - Duration::days(29)).to_string(),
+            until_day: today.to_string(),
+            resolution: UsageResolution::Day,
+            time_zone: Some(tz.to_string()),
+            workspace_id: None,
+            include_imported: true,
+            since_time: None,
+            until_time: None,
+        },
+    )?;
+    for provider in MenuBarProvider::ALL.into_iter().skip(1) {
+        let cache = load_provider(&db, provider.id())?;
+        let mut quota = cache.usage.unwrap_or_default();
+        expire_provider(&mut quota, cache.error.is_some(), now.timestamp());
+        let rows: Vec<_> = summary
+            .buckets
+            .iter()
+            .filter(|b| b.harness == provider.id())
+            .collect();
+        let todays: Vec<_> = rows
+            .iter()
+            .copied()
+            .filter(|b| b.day == today.to_string())
+            .collect();
+        let partial = summary
+            .sources
+            .iter()
+            .any(|s| s.agent == provider.id() && s.coverage_state != "complete");
+        providers.push(UsageOverviewSnapshot {
+            schema_version: 1,
+            generated_at: now.timestamp(),
+            provider: provider.id().into(),
+            account: quota.account,
+            plan: quota.plan,
+            observed_at: (quota.observed_at > 0).then_some(quota.observed_at),
+            windows: quota.windows,
+            account_metrics: quota.metrics,
+            today: period(&todays),
+            month: period(&rows),
+            coverage: if provider == MenuBarProvider::Cursor {
+                "Recorded by Bridge on this Mac · Cursor history is not imported"
+            } else if partial {
+                "Recorded on this Mac · history import is incomplete"
+            } else {
+                "Recorded on this Mac · may include multiple accounts"
+            }
+            .into(),
+            error: cache.error,
+        });
+    }
+    Ok(ProviderUsageOverviews {
+        schema_version: 1,
+        generated_at: now.timestamp(),
+        providers,
+    })
+}
+fn expire_provider(quota: &mut crate::provider_usage::AccountUsage, failed: bool, now: i64) {
+    let stale = failed || now < quota.observed_at || now - quota.observed_at >= 600;
+    for window in &mut quota.windows {
+        if window.used_percent.value.is_some()
+            && (stale || window.resets_at.is_some_and(|r| r <= now))
+        {
+            window.used_percent.status = Status::Stale;
+        }
+    }
+    if stale {
+        for amount in &mut quota.metrics {
+            if amount.value.value.is_some() {
+                amount.value.status = Status::Stale;
+            }
+        }
+    }
+}
+fn refresh_provider(
+    core: &BridgeCore,
+    provider: bridge_protocol::messages::MenuBarProvider,
+    settings: &bridge_protocol::messages::MenuBarSettings,
+    index: usize,
+) -> Result<(), BridgeError> {
+    let mut last = core.usage_overview.providers[index]
+        .lock()
+        .map_err(|_| BridgeError::Invalid("Provider refresh unavailable".into()))?;
+    if last.is_some_and(|v| v.elapsed().as_secs() < 15) {
+        return Ok(());
+    }
+    let prior = load_provider(&core.db.lock().unwrap(), provider.id())?;
+    let cache = match crate::provider_usage::read(provider, settings) {
+        Ok(usage) => CachedProvider {
+            usage: Some(usage),
+            error: None,
+        },
+        Err(error) => CachedProvider {
+            usage: prior.usage.map(|mut q| {
+                q.account = None;
+                q.plan = None;
+                q
+            }),
+            error: Some(error),
+        },
+    };
+    core.db.lock().unwrap().execute("INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at) VALUES('usage_overview',?1,?2,?3,?3) ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
+        params![provider.id(),serde_json::to_string(&cache).map_err(|e| BridgeError::Invalid(e.to_string()))?,Utc::now().to_rfc3339()])?;
+    let env = crate::usage_import::SourceEnv::from_process();
+    let ids: Vec<_> = crate::usage_import::discover_sources(&env)
+        .iter()
+        .filter(|s| s.agent == provider.id())
+        .map(crate::usage_import::source_id_for)
+        .collect();
+    if !ids.is_empty() {
+        let _ = crate::usage_history::scan_history(core, &env, Some(10_000), Some(&ids));
+    }
+    *last = Some(Instant::now());
+    Ok(())
+}
+pub fn refresh_providers(
+    core: &BridgeCore,
+) -> Result<bridge_protocol::messages::ProviderUsageOverviews, BridgeError> {
+    use bridge_protocol::messages::MenuBarProvider;
+    let settings = crate::menu_bar::load(&core.db.lock().unwrap())?;
+    // Independent provider deadlines and caches; one rejected login cannot
+    // cancel another provider. No database lock crosses a network operation.
+    std::thread::scope(|scope| -> Result<(), BridgeError> {
+        let jobs: Vec<_> = MenuBarProvider::ALL
+            .into_iter()
+            .enumerate()
+            .filter(|(_, p)| settings.provider_enabled(*p))
+            .map(|(index, p)| {
+                let settings = &settings;
+                scope.spawn(move || {
+                    if p == MenuBarProvider::Codex {
+                        refresh(core).map(|_| ())
+                    } else {
+                        refresh_provider(core, p, settings, index - 1)
+                    }
+                })
+            })
+            .collect();
+        for job in jobs {
+            job.join().map_err(|_| {
+                BridgeError::Invalid("Provider collector stopped unexpectedly".into())
+            })??;
+        }
+        Ok(())
+    })?;
+    provider_snapshots(core)
+}
+
+#[cfg(test)]
+mod provider_tests {
+    use super::*;
+    #[test]
+    fn failures_and_passed_resets_expire_account_amounts_independently() {
+        let mut q = crate::provider_usage::AccountUsage {
+            observed_at: 100,
+            windows: vec![UsageQuotaWindow {
+                id: "monthly".into(),
+                label: "Monthly".into(),
+                used_percent: UsageMetric::known(0.0, Source::Reported),
+                resets_at: Some(110),
+                window_minutes: None,
+            }],
+            metrics: vec![bridge_protocol::messages::UsageAccountMetric {
+                id: "balance".into(),
+                label: "Balance".into(),
+                value: UsageMetric::known(0.0, Source::Reported),
+            }],
+            ..Default::default()
+        };
+        expire_provider(&mut q, false, 111);
+        assert_eq!(q.windows[0].used_percent.status, Status::Stale);
+        assert_eq!(q.metrics[0].value.status, Status::Current);
+        expire_provider(&mut q, true, 112);
+        assert_eq!(q.metrics[0].value.status, Status::Stale);
+        assert_eq!(q.metrics[0].value.value, Some(0.0));
     }
 }

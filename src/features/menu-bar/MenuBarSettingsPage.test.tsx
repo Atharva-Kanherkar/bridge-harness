@@ -6,7 +6,7 @@ import { bridgeApi } from "../../api";
 import type { MenuBarSettings } from "../../protocol/generated/protocol";
 import { MenuBarSettingsPage } from "./MenuBarSettingsPage";
 
-const settings: MenuBarSettings = { schemaVersion: 1, enabled: true, codexEnabled: true,
+const settings: MenuBarSettings = { schemaVersion: 1, enabled: true, codexEnabled: true, claudeEnabled: false, cursorEnabled: false, opencodeEnabled: false, selectedProvider: "codex", opencodeWorkspace: null,
   displayMode: "remaining", quotaWindow: "session", showAccount: true, showTokens: true, showCost: true, refreshSeconds: 300 };
 let root: Root;
 let container: HTMLDivElement;
@@ -14,8 +14,8 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   container = document.createElement("div"); document.body.append(container); root = createRoot(container);
   vi.spyOn(bridgeApi, "getMenuBarSettings").mockResolvedValue(structuredClone(settings));
-  vi.spyOn(bridgeApi, "getUsageOverview").mockResolvedValue(null);
-  vi.spyOn(bridgeApi, "onUsageOverview").mockResolvedValue(() => undefined);
+  vi.spyOn(bridgeApi, "getProviderUsageOverviews").mockResolvedValue(null);
+  vi.spyOn(bridgeApi, "onProviderUsageOverviews").mockResolvedValue(() => undefined);
 });
 afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.restoreAllMocks(); });
 const toggle = () => container.querySelector<HTMLButtonElement>('[aria-label="Show in menu bar"]')!;
@@ -43,7 +43,7 @@ it("retains stored settings and reports a failed save", async () => {
 });
 
 it("keeps menu controls usable when the usage snapshot fails", async () => {
-  vi.mocked(bridgeApi.getUsageOverview).mockRejectedValue(new Error("Usage unavailable"));
+  vi.mocked(bridgeApi.getProviderUsageOverviews).mockRejectedValue(new Error("Usage unavailable"));
   await act(async () => root.render(<MenuBarSettingsPage />));
   expect(toggle().getAttribute("aria-checked")).toBe("true");
   expect(toggle().disabled).toBe(false);
@@ -53,9 +53,30 @@ it("keeps menu controls usable when the usage snapshot fails", async () => {
 it("cleans up a subscription that resolves after the settings page closes", async () => {
   const unlisten = vi.fn();
   let finish: (fn: () => void) => void = () => undefined;
-  vi.mocked(bridgeApi.onUsageOverview).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  vi.mocked(bridgeApi.onProviderUsageOverviews).mockImplementation(() => new Promise(resolve => { finish = resolve; }));
   await act(async () => root.render(<MenuBarSettingsPage />));
   await act(async () => root.render(null));
   await act(async () => finish(unlisten));
   expect(unlisten).toHaveBeenCalledOnce();
+});
+
+it("enables Claude without changing the other provider preferences", async () => {
+  const save = vi.spyOn(bridgeApi, "saveMenuBarSettings").mockImplementation(async value => value);
+  await act(async () => root.render(<MenuBarSettingsPage />));
+  for (const provider of ["Codex", "Claude", "Cursor", "OpenCode"]) {
+    expect(container.querySelector(`[aria-label="Show ${provider}"]`)).not.toBeNull();
+  }
+  await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Show Claude"]')!.click());
+  expect(save).toHaveBeenCalledWith({ ...settings, claudeEnabled: true });
+});
+
+it("refreshes the provider group and opens the explicit OpenCode connection flow", async () => {
+  const refresh = vi.spyOn(bridgeApi, "refreshProviderUsageOverviews").mockResolvedValue(null);
+  const connect = vi.spyOn(bridgeApi, "connectMenuBarOpenCode").mockResolvedValue();
+  await act(async () => root.render(<MenuBarSettingsPage />));
+  await act(async () => [...container.querySelectorAll("button")].find(b => b.textContent === "Refresh usage")!.click());
+  expect(refresh).toHaveBeenCalledOnce();
+  await act(async () => [...container.querySelectorAll("button")].find(b => b.textContent === "Connect OpenCode")!.click());
+  expect(connect).toHaveBeenCalledOnce();
+  expect(container.textContent).toContain("Complete sign-in");
 });

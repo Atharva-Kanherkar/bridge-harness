@@ -19,17 +19,33 @@ check(moneyLabel(Metric(value: 0, source: "reported", status: "stale")) == "$0.0
 // Rust round-trips this same fixture against its generated wire contract.
 let fixture = try JSONDecoder().decode(Presentation.self, from: Data(contentsOf: URL(fileURLWithPath: CommandLine.arguments[1])))
 check(fixture.settings.schemaVersion == 1 && fixture.settings.displayMode == "remaining", "Settings wire names must agree")
-check(fixture.usage?.windows[0].usedPercent.current == 0, "Reported zero survives Rust to Swift")
-check(fixture.usage?.windows[1].usedPercent.current == nil, "Stale usage stays historical")
-check(moneyLabel(fixture.usage!.today.costMicrousd) == "≈$1.20", "Estimated cost survives Rust to Swift")
-check(moneyLabel(fixture.usage!.month.costMicrousd) == "Unavailable", "Unpriced totals stay unavailable")
-check(fixture.usage?.today.models[0].totalTokens.current == 60, "Model token fields must agree")
-var available = fixture.usage!
+check(fixture.selectedUsage?.windows[0].usedPercent.current == 0, "Reported zero survives Rust to Swift")
+check(fixture.selectedUsage?.windows[1].usedPercent.current == nil, "Stale usage stays historical")
+check(moneyLabel(fixture.selectedUsage!.today.costMicrousd) == "≈$1.20", "Estimated cost survives Rust to Swift")
+check(moneyLabel(fixture.selectedUsage!.month.costMicrousd) == "Unavailable", "Unpriced totals stay unavailable")
+check(fixture.selectedUsage?.today.models[0].totalTokens.current == 60, "Model token fields must agree")
+var available = fixture.selectedUsage!
 available.windows[1].usedPercent = Metric(value: 58, source: "reported", status: "current")
 check(available.menuWindow("auto", now: 100)?.id == "session", "Automatic prefers a current session")
 available.windows[0].usedPercent = .unavailable
 check(available.menuWindow("auto", now: 100)?.id == "weekly", "Automatic supports weekly-only accounts")
 check(available.menuWindow("session", now: 100)?.usedPercent.current == nil, "Explicit selection must not silently switch windows")
+
+var switched = fixture
+switched.settings.cursorEnabled = true
+switched.settings.selectedProvider = "cursor"
+check(switched.selectedUsage?.provider == "cursor", "The selected provider owns the card and status item")
+check(switched.selectedUsage?.menuWindow("auto", now: 100)?.usedPercent.current == 0.36, "Cursor percentages must not be multiplied by 100")
+check(moneyLabel(switched.selectedUsage!.accountMetrics![0].value) == "$1.00", "Account money shares micro-USD units")
+switched.settings.cursorEnabled = false
+check(switched.selectedUsage?.provider == "codex", "Disabling the selected provider falls back to an enabled provider")
+switched.settings.codexEnabled = false
+check(switched.selectedUsage == nil, "All providers disabled hides usage")
+switched.settings.claudeEnabled = true
+check(switched.selectedUsage?.provider == "claude", "Claude can be the only enabled provider")
+switched.settings.claudeEnabled = false
+switched.settings.opencodeEnabled = true
+check(switched.selectedUsage?.provider == "opencode", "OpenCode can be the only enabled provider")
 
 let image = MenuController.templateIcon()
 check(image.isTemplate, "Menu icon must be a system template")

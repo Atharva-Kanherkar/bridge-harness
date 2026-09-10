@@ -36,6 +36,8 @@ fn main() {
         } else {
             "-Onone"
         })
+        .arg("-module-cache-path")
+        .arg(out.join("swift-module-cache"))
         .args(&sources)
         .arg("-o")
         .arg(out.join("libBridgeMenuBar.a"))

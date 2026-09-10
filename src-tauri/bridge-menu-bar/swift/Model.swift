@@ -37,6 +37,18 @@ struct UsagePeriod: Decodable {
     var models: [ModelUsage]
 }
 
+struct AccountMetric: Decodable, Identifiable {
+    var id: String
+    var label: String
+    var value: Metric
+}
+
+struct ProviderOverviews: Decodable {
+    var schemaVersion: Int
+    var generatedAt: Int64
+    var providers: [UsageOverview]
+}
+
 struct UsageOverview: Decodable {
     var schemaVersion: Int
     var generatedAt: Int64
@@ -45,6 +57,7 @@ struct UsageOverview: Decodable {
     var plan: String?
     var observedAt: Int64?
     var windows: [QuotaWindow]
+    var accountMetrics: [AccountMetric]?
     var today: UsagePeriod
     var month: UsagePeriod
     var coverage: String
@@ -61,25 +74,36 @@ struct MenuSettings: Decodable {
     var schemaVersion: Int
     var enabled: Bool
     var codexEnabled: Bool
+    var claudeEnabled: Bool
+    var cursorEnabled: Bool
+    var opencodeEnabled: Bool
+    var selectedProvider: String
+    var opencodeWorkspace: String?
+    var enabledProviders: [String] {
+        [("codex", codexEnabled), ("claude", claudeEnabled), ("cursor", cursorEnabled), ("opencode", opencodeEnabled)].filter { $0.1 }.map { $0.0 }
+    }
+    var activeProvider: String? { enabledProviders.contains(selectedProvider) ? selectedProvider : enabledProviders.first }
     var displayMode: String
     var quotaWindow: String
     var showAccount: Bool
     var showTokens: Bool
     var showCost: Bool
     var refreshSeconds: UInt64
-    static let initial = MenuSettings(schemaVersion: 1, enabled: true, codexEnabled: true,
+    static let initial = MenuSettings(schemaVersion: 1, enabled: true, codexEnabled: true, claudeEnabled: false, cursorEnabled: false, opencodeEnabled: false, selectedProvider: "codex", opencodeWorkspace: nil,
         displayMode: "remaining", quotaWindow: "auto", showAccount: true,
         showTokens: true, showCost: true, refreshSeconds: 300)
 }
 
 struct Presentation: Decodable {
     var settings: MenuSettings
-    var usage: UsageOverview?
+    var usage: ProviderOverviews?
+    var selectedUsage: UsageOverview? { usage?.providers.first { $0.provider == settings.activeProvider } }
     var refreshing: Bool
     var error: String?
 }
 
 final class MenuState: ObservableObject {
+    var selectProvider: (String) -> Void = { _ in }
     @Published var presentation = Presentation(settings: .initial, usage: nil, refreshing: false, error: nil)
 }
 
@@ -102,3 +126,5 @@ func moneyLabel(_ metric: Metric) -> String {
     let qualified = metric.source == "estimated" ? "≈\(label)" : label
     return metric.status == "stale" ? "\(qualified) · stale" : qualified
 }
+
+func providerName(_ id: String) -> String { ["codex": "Codex", "claude": "Claude", "cursor": "Cursor", "opencode": "OpenCode"][id] ?? id }

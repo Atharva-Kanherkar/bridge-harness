@@ -3735,6 +3735,14 @@ pub fn meter_snapshot() -> meter::MeterRegistry {
     meter::registry_snapshot()
 }
 
+pub fn get_provider_usage_overviews(core: &Arc<BridgeCore>) -> Result<wire::ProviderUsageOverviews, BridgeError> {
+    crate::usage_overview::provider_snapshots(core)
+}
+
+pub fn refresh_provider_usage_overviews(core: &Arc<BridgeCore>) -> Result<wire::ProviderUsageOverviews, BridgeError> {
+    crate::usage_overview::refresh_providers(core)
+}
+
 pub fn get_usage_overview(core: &Arc<BridgeCore>) -> Result<wire::UsageOverviewSnapshot, BridgeError> {
     crate::usage_overview::snapshot(core)
 }

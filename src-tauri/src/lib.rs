@@ -827,6 +827,18 @@ async fn get_meter_snapshot() -> bridge_core::meter::MeterRegistry {
 }
 
 #[tauri::command]
+async fn get_provider_usage_overviews(state: State<'_, Arc<BridgeCore>>) -> Result<wire::ProviderUsageOverviews, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Provider usage", move || api::get_provider_usage_overviews(&core)).await
+}
+
+#[tauri::command]
+async fn refresh_provider_usage_overviews(state: State<'_, Arc<BridgeCore>>) -> Result<wire::ProviderUsageOverviews, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Refresh provider usage", move || api::refresh_provider_usage_overviews(&core)).await
+}
+
+#[tauri::command]
 async fn get_usage_overview(state: State<'_, Arc<BridgeCore>>) -> Result<wire::UsageOverviewSnapshot, BridgeError> {
     let core = state.inner().clone();
     blocking("Usage overview", move || api::get_usage_overview(&core)).await
@@ -2348,6 +2360,8 @@ pub fn run() -> i32 {
             scan_history,
             insights,
             get_meter_snapshot,
+            get_provider_usage_overviews,
+            refresh_provider_usage_overviews,
             get_usage_overview,
             refresh_usage_overview,
             get_menu_bar_settings,

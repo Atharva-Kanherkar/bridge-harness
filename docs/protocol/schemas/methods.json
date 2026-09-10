@@ -772,6 +772,20 @@
       "resultSchema": "unit-result.json"
     },
     {
+      "command": "get_provider_usage_overviews",
+      "domain": "usage",
+      "method": "usage/get_provider_usage_overviews",
+      "paramsSchema": null,
+      "resultSchema": "provider-usage-overviews.json"
+    },
+    {
+      "command": "refresh_provider_usage_overviews",
+      "domain": "usage",
+      "method": "usage/refresh_provider_usage_overviews",
+      "paramsSchema": null,
+      "resultSchema": "provider-usage-overviews.json"
+    },
+    {
       "command": "get_usage_overview",
       "domain": "usage",
       "method": "usage/get_usage_overview",
@@ -1320,7 +1334,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 8
+    "minor": 9
   },
   "reserved": {
     "cancel": "$/cancel",

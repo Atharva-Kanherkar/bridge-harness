@@ -29,7 +29,7 @@ describe("the api boundary consumes the generated contract", () => {
     const targets = [...source.matchAll(/\blisten(?:<[^>]*>)?\(([^,]+),/g)].map(match => match[1].trim());
     // Shell-owned usage presentation carries a generated snapshot; navigation
     // belongs to the native host, like the main menu channel.
-    expect(targets).toEqual(["notification", '"bridge-usage-overview"', '"bridge-menu-bar-settings"', '"bridge-meter-tray"', "MENU_COMMAND_EVENT", "AGENT_EVENT_BATCH"]);
+    expect(targets).toEqual(["notification", '"bridge-provider-usage-overviews"', '"bridge-menu-bar-connection"', '"bridge-menu-bar-settings-changed"', '"bridge-usage-overview"', '"bridge-menu-bar-settings"', '"bridge-meter-tray"', "MENU_COMMAND_EVENT", "AGENT_EVENT_BATCH"]);
   });
 
   it("only calls methods the generated registry declares", () => {

@@ -291,6 +291,8 @@ typed_methods![
     (UsageInsights, InsightsParams, UsageInsightsResult),
     (GetMeterSnapshot, _, MeterRegistry),
     (RefreshMeter, _, UnitResult),
+    (GetProviderUsageOverviews, _, ProviderUsageOverviews),
+    (RefreshProviderUsageOverviews, _, ProviderUsageOverviews),
     (GetUsageOverview, _, UsageOverviewSnapshot),
     (RefreshUsageOverview, _, UsageOverviewSnapshot),
     (GetMenuBarSettings, _, MenuBarSettings),

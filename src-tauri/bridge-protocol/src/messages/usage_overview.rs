@@ -87,11 +87,53 @@ pub struct UsageOverviewSnapshot {
     pub plan: Option<String>,
     pub observed_at: Option<i64>,
     pub windows: Vec<UsageQuotaWindow>,
+    /// Provider-reported account amounts, separate from the device ledger.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub account_metrics: Vec<UsageAccountMetric>,
     pub today: UsagePeriodOverview,
     pub month: UsagePeriodOverview,
     /// The ledger currently covers this device, not an entire billing account.
     pub coverage: String,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UsageAccountMetric {
+    pub id: String,
+    pub label: String,
+    /// Amounts use micro-USD, like the shared ledger.
+    pub value: UsageMetric,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderUsageOverviews {
+    pub schema_version: u32,
+    pub generated_at: i64,
+    pub providers: Vec<UsageOverviewSnapshot>,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum MenuBarProvider {
+    #[default]
+    Codex,
+    Claude,
+    Cursor,
+    OpenCode,
+}
+
+impl MenuBarProvider {
+    pub const ALL: [Self; 4] = [Self::Codex, Self::Claude, Self::Cursor, Self::OpenCode];
+    pub fn id(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::Claude => "claude",
+            Self::Cursor => "cursor",
+            Self::OpenCode => "opencode",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -117,6 +159,16 @@ pub struct MenuBarSettings {
     pub schema_version: u32,
     pub enabled: bool,
     pub codex_enabled: bool,
+    #[serde(default)]
+    pub claude_enabled: bool,
+    #[serde(default)]
+    pub cursor_enabled: bool,
+    #[serde(default)]
+    pub opencode_enabled: bool,
+    #[serde(default)]
+    pub selected_provider: MenuBarProvider,
+    #[serde(default)]
+    pub opencode_workspace: Option<String>,
     pub display_mode: MenuBarDisplayMode,
     pub quota_window: MenuBarQuotaWindow,
     pub show_account: bool,
@@ -132,12 +184,28 @@ impl Default for MenuBarSettings {
             schema_version: 1,
             enabled: true,
             codex_enabled: true,
+            claude_enabled: false,
+            cursor_enabled: false,
+            opencode_enabled: false,
+            selected_provider: MenuBarProvider::Codex,
+            opencode_workspace: None,
             display_mode: MenuBarDisplayMode::Remaining,
             quota_window: MenuBarQuotaWindow::Auto,
             show_account: true,
             show_tokens: true,
             show_cost: true,
             refresh_seconds: 300,
+        }
+    }
+}
+
+impl MenuBarSettings {
+    pub fn provider_enabled(&self, provider: MenuBarProvider) -> bool {
+        match provider {
+            MenuBarProvider::Codex => self.codex_enabled,
+            MenuBarProvider::Claude => self.claude_enabled,
+            MenuBarProvider::Cursor => self.cursor_enabled,
+            MenuBarProvider::OpenCode => self.opencode_enabled,
         }
     }
 }
@@ -152,6 +220,20 @@ pub struct SaveMenuBarSettingsParams {
 mod tests {
     use super::*;
 
+    #[test]
+    fn existing_codex_preferences_migrate_without_enabling_new_collectors() {
+        let original = serde_json::json!({"schemaVersion":1,"enabled":false,"codexEnabled":true,"displayMode":"used","quotaWindow":"weekly","showAccount":false,"showTokens":false,"showCost":true,"refreshSeconds":900});
+        let settings: MenuBarSettings = serde_json::from_value(original).unwrap();
+        assert!(!settings.enabled);
+        assert_eq!(settings.display_mode, MenuBarDisplayMode::Used);
+        assert_eq!(settings.refresh_seconds, 900);
+        assert_eq!(settings.selected_provider, MenuBarProvider::Codex);
+        for provider in MenuBarProvider::ALL.into_iter().skip(1) {
+            assert!(!settings.provider_enabled(provider));
+        }
+        assert!(settings.opencode_workspace.is_none());
+    }
+
     /// This exact fixture is also decoded by the Swift presentation tests.
     #[test]
     fn native_fixture_matches_the_versioned_wire_contract() {
@@ -161,10 +243,11 @@ mod tests {
         .unwrap();
         let settings: MenuBarSettings =
             serde_json::from_value(fixture["settings"].clone()).unwrap();
-        let usage: UsageOverviewSnapshot =
+        let group: ProviderUsageOverviews =
             serde_json::from_value(fixture["usage"].clone()).unwrap();
         assert_eq!(serde_json::to_value(settings).unwrap(), fixture["settings"]);
-        assert_eq!(serde_json::to_value(&usage).unwrap(), fixture["usage"]);
+        assert_eq!(serde_json::to_value(&group).unwrap(), fixture["usage"]);
+        let usage = &group.providers[0];
         assert_eq!(usage.windows[0].used_percent.value, Some(0.0));
         assert_eq!(
             usage.windows[1].used_percent.status,

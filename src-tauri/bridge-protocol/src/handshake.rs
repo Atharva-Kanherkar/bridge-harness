@@ -55,7 +55,9 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// `workerPromptProposalRoles` when saving the permission policy.
 /// **1.8 adds the versioned usage overview and Menu Bar preferences.** A
 /// desktop that needs these methods must reject a daemon that predates them.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 8 };
+/// **1.9 adds grouped provider usage and provider selection preferences.**
+/// Reject older daemons that cannot preserve these fields.
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 9 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -157,7 +159,7 @@ mod tests {
 
     #[test]
     fn menu_bar_client_rejects_daemon_without_usage_overview() {
-        let older = ProtocolVersion { major: 1, minor: 7 };
+        let older = ProtocolVersion { major: 1, minor: 8 };
         assert!(!older.accepts(PROTOCOL_VERSION));
         assert!(PROTOCOL_VERSION.accepts(older));
     }

@@ -169,6 +169,11 @@ fn menu_settings_persist_and_unknown_usage_stays_unknown_over_the_socket() {
     assert_eq!(settings["schemaVersion"], 1);
     settings["displayMode"] = json!("used");
     settings["enabled"] = json!(false);
+    settings["claudeEnabled"] = json!(true);
+    settings["cursorEnabled"] = json!(true);
+    settings["opencodeEnabled"] = json!(true);
+    settings["selectedProvider"] = json!("cursor");
+    settings["opencodeWorkspace"] = json!("wrk_fixture");
     let (saved, _) = client.call(2, "menu_bar/save_menu_bar_settings", Some(json!({"settings": settings})));
     assert_eq!(saved["result"], settings);
 
@@ -181,6 +186,11 @@ fn menu_settings_persist_and_unknown_usage_stays_unknown_over_the_socket() {
     assert_eq!(usage["result"]["windows"][0]["usedPercent"]["status"], "unavailable");
     assert!(usage["result"]["windows"][0]["usedPercent"]["value"].is_null());
     assert!(usage["result"]["today"]["costMicrousd"]["value"].is_null());
+    let (group, _) = client.call(6, "usage/get_provider_usage_overviews", None);
+    assert!(group.get("error").is_none());
+    let rows = group["result"]["providers"].as_array().unwrap();
+    assert_eq!(rows.iter().map(|r| r["provider"].as_str().unwrap()).collect::<Vec<_>>(), vec!["codex", "claude", "cursor", "opencode"]);
+    for row in rows { assert!(row["today"]["tokens"]["value"].is_null()); }
     drop(client);
     running.stop();
 

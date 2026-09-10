@@ -9,7 +9,7 @@ repo_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 test_dir=$(mktemp -d "${TMPDIR:-/tmp}/bridge-menu-bar-tests.XXXXXX")
 trap 'rm -rf "$test_dir"' EXIT HUP INT TERM
 case "$(uname -m)" in arm64) target_arch=arm64 ;; *) target_arch=x86_64 ;; esac
-xcrun swiftc -swift-version 5 -target "${target_arch}-apple-macosx12.0" \
+xcrun swiftc -module-cache-path "$test_dir/module-cache" -swift-version 5 -target "${target_arch}-apple-macosx12.0" \
   "$repo_dir"/src-tauri/bridge-menu-bar/swift/*.swift \
   "$repo_dir/src-tauri/bridge-menu-bar/tests/main.swift" \
   -o "$test_dir/menu-bar-tests"

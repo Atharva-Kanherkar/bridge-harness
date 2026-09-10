@@ -225,3 +225,5 @@ mod tests {
 }
 
 mod runtime_budget;
+
+pub mod provider_usage;

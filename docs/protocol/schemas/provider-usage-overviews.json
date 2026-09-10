@@ -101,6 +101,81 @@
       ],
       "type": "object"
     },
+    "UsageOverviewSnapshot": {
+      "properties": {
+        "account": {
+          "description": "Public account identity returned by the provider; never a credential.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "accountMetrics": {
+          "description": "Provider-reported account amounts, separate from the device ledger.",
+          "items": {
+            "$ref": "#/definitions/UsageAccountMetric"
+          },
+          "type": "array"
+        },
+        "coverage": {
+          "description": "The ledger currently covers this device, not an entire billing account.",
+          "type": "string"
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "generatedAt": {
+          "format": "int64",
+          "type": "integer"
+        },
+        "month": {
+          "$ref": "#/definitions/UsagePeriodOverview"
+        },
+        "observedAt": {
+          "format": "int64",
+          "type": [
+            "integer",
+            "null"
+          ]
+        },
+        "plan": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "provider": {
+          "type": "string"
+        },
+        "schemaVersion": {
+          "format": "uint32",
+          "minimum": 0.0,
+          "type": "integer"
+        },
+        "today": {
+          "$ref": "#/definitions/UsagePeriodOverview"
+        },
+        "windows": {
+          "items": {
+            "$ref": "#/definitions/UsageQuotaWindow"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "coverage",
+        "generatedAt",
+        "month",
+        "provider",
+        "schemaVersion",
+        "today",
+        "windows"
+      ],
+      "type": "object"
+    },
     "UsagePeriodOverview": {
       "properties": {
         "costMicrousd": {
@@ -158,77 +233,27 @@
     }
   },
   "properties": {
-    "account": {
-      "description": "Public account identity returned by the provider; never a credential.",
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "accountMetrics": {
-      "description": "Provider-reported account amounts, separate from the device ledger.",
-      "items": {
-        "$ref": "#/definitions/UsageAccountMetric"
-      },
-      "type": "array"
-    },
-    "coverage": {
-      "description": "The ledger currently covers this device, not an entire billing account.",
-      "type": "string"
-    },
-    "error": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
     "generatedAt": {
       "format": "int64",
       "type": "integer"
     },
-    "month": {
-      "$ref": "#/definitions/UsagePeriodOverview"
-    },
-    "observedAt": {
-      "format": "int64",
-      "type": [
-        "integer",
-        "null"
-      ]
-    },
-    "plan": {
-      "type": [
-        "string",
-        "null"
-      ]
-    },
-    "provider": {
-      "type": "string"
+    "providers": {
+      "items": {
+        "$ref": "#/definitions/UsageOverviewSnapshot"
+      },
+      "type": "array"
     },
     "schemaVersion": {
       "format": "uint32",
       "minimum": 0.0,
       "type": "integer"
-    },
-    "today": {
-      "$ref": "#/definitions/UsagePeriodOverview"
-    },
-    "windows": {
-      "items": {
-        "$ref": "#/definitions/UsageQuotaWindow"
-      },
-      "type": "array"
     }
   },
   "required": [
-    "coverage",
     "generatedAt",
-    "month",
-    "provider",
-    "schemaVersion",
-    "today",
-    "windows"
+    "providers",
+    "schemaVersion"
   ],
-  "title": "UsageOverviewSnapshot",
+  "title": "ProviderUsageOverviews",
   "type": "object"
 }

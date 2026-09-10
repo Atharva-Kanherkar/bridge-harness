@@ -1,8 +1,9 @@
 //! Native menu host. UI actions cross a bounded queue; all provider, ledger,
 //! and preference operations use the same versioned backend methods as React.
+mod connect;
 use crate::{diagnostics, HostMode};
 use bridge_protocol::{
-    messages::{MenuBarSettings, UsageOverviewSnapshot},
+    messages::{MenuBarProvider, MenuBarSettings, ProviderUsageOverviews},
     methods::MethodName,
 };
 use serde::Serialize;
@@ -15,6 +16,7 @@ use tauri::{Emitter, Listener, Manager};
 #[derive(Clone, Copy)]
 enum Work {
     Refresh,
+    Select(MenuBarProvider),
     Opened,
     SettingsChanged,
     Snapshot,
@@ -32,7 +34,7 @@ static ACTIVE: AtomicBool = AtomicBool::new(false);
 #[serde(rename_all = "camelCase")]
 struct Presentation {
     settings: MenuBarSettings,
-    usage: Option<UsageOverviewSnapshot>,
+    usage: Option<ProviderUsageOverviews>,
     refreshing: bool,
     error: Option<String>,
 }
@@ -42,20 +44,40 @@ fn call(
     host: &OnceLock<HostMode>,
     method: MethodName,
 ) -> Result<Value, String> {
+    call_with_params(app, host, method, None)
+}
+
+fn call_with_params(
+    app: &tauri::AppHandle,
+    host: &OnceLock<HostMode>,
+    method: MethodName,
+    params: Option<Value>,
+) -> Result<Value, String> {
     match host.get() {
-        Some(HostMode::Daemon(runtime)) => runtime.proxy.call(method, None),
+        Some(HostMode::Daemon(runtime)) => runtime.proxy.call(method, params),
         Some(HostMode::Embedded) => {
             let core = app.state::<Arc<bridge_core::BridgeCore>>();
             let value = match method {
                 MethodName::GetMenuBarSettings => serde_json::to_value(
                     bridge_core::api::get_menu_bar_settings(&core).map_err(|e| e.to_string())?,
                 ),
-                MethodName::GetUsageOverview => serde_json::to_value(
-                    bridge_core::api::get_usage_overview(&core).map_err(|e| e.to_string())?,
+                MethodName::GetProviderUsageOverviews => serde_json::to_value(
+                    bridge_core::api::get_provider_usage_overviews(&core)
+                        .map_err(|e| e.to_string())?,
                 ),
-                MethodName::RefreshUsageOverview => serde_json::to_value(
-                    bridge_core::api::refresh_usage_overview(&core).map_err(|e| e.to_string())?,
+                MethodName::RefreshProviderUsageOverviews => serde_json::to_value(
+                    bridge_core::api::refresh_provider_usage_overviews(&core)
+                        .map_err(|e| e.to_string())?,
                 ),
+                MethodName::SaveMenuBarSettings => {
+                    let params: bridge_protocol::messages::SaveMenuBarSettingsParams =
+                        serde_json::from_value(params.ok_or("Missing menu settings")?)
+                            .map_err(|e| e.to_string())?;
+                    serde_json::to_value(
+                        bridge_core::api::save_menu_bar_settings(&core, &params.settings)
+                            .map_err(|e| e.to_string())?,
+                    )
+                }
                 _ => return Err("Unsupported menu request".into()),
             };
             value.map_err(|e| e.to_string())
@@ -87,6 +109,11 @@ extern "C" fn action(action: i32) {
             }
         }
         bridge_menu_bar::QUIT => native.app.exit(0),
+        100..=103 => {
+            let _ = native
+                .send
+                .try_send(Work::Select(MenuBarProvider::ALL[(action - 100) as usize]));
+        }
         _ => {}
     }
 }
@@ -96,7 +123,10 @@ fn publish(app: &tauri::AppHandle, presentation: &Presentation) {
         return;
     };
     if let Some(usage) = &presentation.usage {
-        let _ = app.emit("bridge-usage-overview", usage);
+        let _ = app.emit("bridge-provider-usage-overviews", usage);
+        if let Some(codex) = usage.providers.iter().find(|p| p.provider == "codex") {
+            let _ = app.emit("bridge-usage-overview", codex);
+        }
     }
     #[cfg(target_os = "macos")]
     let _ = app.run_on_main_thread(move || {
@@ -137,6 +167,16 @@ pub fn install(app: &tauri::App, host: Arc<OnceLock<HostMode>>) -> Result<bool, 
         app.listen("bridge-menu-bar-settings-changed", move |_| {
             let _ = signal.try_send(Work::SettingsChanged);
         });
+        let connection_app = handle.clone();
+        app.listen("bridge-menu-bar-connect-opencode", move |_| {
+            if let Err(error) = connect::open(&connection_app) {
+                let _ = connection_app.emit("bridge-menu-bar-connection", error);
+            }
+        });
+        let signal = send.clone();
+        app.listen("bridge-menu-bar-connected", move |_| {
+            let _ = signal.try_send(Work::Refresh);
+        });
         let signal = send.clone();
         app.listen("account-usage", move |_| {
             let _ = signal.try_send(Work::Snapshot);
@@ -159,6 +199,8 @@ pub fn install(app: &tauri::App, host: Arc<OnceLock<HostMode>>) -> Result<bool, 
                     }
                     // Settings are read before every refresh, so a hidden or
                     // disabled provider never starts another scheduled probe.
+                    let previous_settings = presentation.settings.clone();
+                    let mut selection_error = None;
                     let settings_error = match call(&handle, &host, MethodName::GetMenuBarSettings)
                         .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
                     {
@@ -168,13 +210,42 @@ pub fn install(app: &tauri::App, host: Arc<OnceLock<HostMode>>) -> Result<bool, 
                         }
                         Err(error) => Some(error),
                     };
+                    if let Work::Select(provider) = next {
+                        if presentation.settings.provider_enabled(provider) {
+                            let mut settings = presentation.settings.clone();
+                            settings.selected_provider = provider;
+                            match call_with_params(
+                                &handle,
+                                &host,
+                                MethodName::SaveMenuBarSettings,
+                                Some(serde_json::json!({"settings":settings})),
+                            ) {
+                                Ok(value) => {
+                                    if let Ok(settings) = serde_json::from_value(value) {
+                                        presentation.settings = settings;
+                                    }
+                                }
+                                Err(error) => selection_error = Some(error),
+                            }
+                            let _ = handle.emit("bridge-menu-bar-settings-changed", ());
+                        }
+                    }
                     let enabled = settings_error.is_none()
-                        && presentation.settings.enabled
-                        && presentation.settings.codex_enabled;
+                        && (presentation.settings.enabled || matches!(next, Work::Refresh))
+                        && MenuBarProvider::ALL
+                            .into_iter()
+                            .any(|p| presentation.settings.provider_enabled(p));
                     let interval = presentation.settings.refresh_seconds;
                     let due = interval > 0
                         && last_refresh.is_none_or(|t| t.elapsed().as_secs() >= interval);
-                    let should_refresh = enabled && (matches!(next, Work::Refresh) || due);
+                    let newly_enabled = MenuBarProvider::ALL.into_iter().any(|p| {
+                        presentation.settings.provider_enabled(p)
+                            && !previous_settings.provider_enabled(p)
+                    });
+                    let should_refresh = enabled
+                        && (matches!(next, Work::Refresh)
+                            || due
+                            || (newly_enabled && interval > 0));
                     if should_refresh {
                         presentation.refreshing = true;
                         publish(&handle, &presentation);
@@ -184,12 +255,12 @@ pub fn install(app: &tauri::App, host: Arc<OnceLock<HostMode>>) -> Result<bool, 
                     let should_snapshot = should_refresh
                         || presentation.usage.is_none()
                         || last_snapshot.elapsed().as_secs() >= 30
-                        || matches!(next, Work::Opened | Work::SettingsChanged);
+                        || matches!(next, Work::Opened | Work::SettingsChanged | Work::Select(_));
                     if should_snapshot {
                         let method = if should_refresh {
-                            MethodName::RefreshUsageOverview
+                            MethodName::RefreshProviderUsageOverviews
                         } else {
-                            MethodName::GetUsageOverview
+                            MethodName::GetProviderUsageOverviews
                         };
                         match call(&handle, &host, method)
                             .and_then(|v| serde_json::from_value(v).map_err(|e| e.to_string()))
@@ -205,7 +276,7 @@ pub fn install(app: &tauri::App, host: Arc<OnceLock<HostMode>>) -> Result<bool, 
                     if should_refresh {
                         last_refresh = Some(Instant::now());
                     }
-                    if let Some(error) = settings_error {
+                    if let Some(error) = settings_error.or(selection_error) {
                         presentation.error = Some(error);
                     }
                     presentation.refreshing = false;

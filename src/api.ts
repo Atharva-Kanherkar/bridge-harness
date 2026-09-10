@@ -64,12 +64,12 @@ import type {
   SuggestionSettingsSnapshot,
 } from "./protocol/generated/protocol";
 import type { AccountUsagePayload } from "./usage";
-import type { MenuBarSettings, UsageOverviewSnapshot } from "./protocol/generated/protocol";
+import type { MenuBarSettings, UsageOverviewSnapshot, ProviderUsageOverviews } from "./protocol/generated/protocol";
 import { recommendedProfileDrafts } from "./modelProfiles";
 
 const isTauri = () => typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
 let mockMenuBarSettings: MenuBarSettings = {
-  schemaVersion: 1, enabled: true, codexEnabled: true, displayMode: "remaining", quotaWindow: "auto",
+  schemaVersion: 1, enabled: true, codexEnabled: true, claudeEnabled: false, cursorEnabled: false, opencodeEnabled: false, selectedProvider: "codex", opencodeWorkspace: null, displayMode: "remaining", quotaWindow: "auto",
   showAccount: true, showTokens: true, showCost: true, refreshSeconds: 300,
 };
 
@@ -1196,6 +1196,27 @@ export const bridgeApi = {
     await emit("bridge-menu-bar-settings-changed").catch(() => undefined);
     return saved;
   },
+  getProviderUsageOverviews: (): Promise<ProviderUsageOverviews | null> => isTauri()
+    ? call("usage/get_provider_usage_overviews") : Promise.resolve(null),
+  refreshProviderUsageOverviews: async (): Promise<ProviderUsageOverviews | null> => {
+    if (!isTauri()) return null;
+    const snapshot = await call("usage/refresh_provider_usage_overviews");
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit("bridge-provider-usage-overviews", snapshot).catch(() => undefined);
+    await emit("bridge-menu-bar-settings-changed").catch(() => undefined);
+    return snapshot;
+  },
+  onProviderUsageOverviews: (handler: (snapshot: ProviderUsageOverviews) => void): Promise<UnlistenFn> => isTauri()
+    ? listen<ProviderUsageOverviews>("bridge-provider-usage-overviews", event => handler(event.payload)) : Promise.resolve(() => undefined),
+  connectMenuBarOpenCode: async (): Promise<void> => {
+    if (!isTauri()) throw new Error("Open Bridge desktop to connect OpenCode.");
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit("bridge-menu-bar-connect-opencode");
+  },
+  onMenuBarConnection: (handler: (message: string) => void): Promise<UnlistenFn> => isTauri()
+    ? listen<string>("bridge-menu-bar-connection", event => handler(event.payload)) : Promise.resolve(() => undefined),
+  onMenuBarSettingsChanged: (handler: () => void): Promise<UnlistenFn> => isTauri()
+    ? listen("bridge-menu-bar-settings-changed", handler) : Promise.resolve(() => undefined),
   getUsageOverview: (): Promise<UsageOverviewSnapshot | null> => isTauri()
     ? call("usage/get_usage_overview") : Promise.resolve(null),
   refreshUsageOverview: async (): Promise<UsageOverviewSnapshot | null> => {

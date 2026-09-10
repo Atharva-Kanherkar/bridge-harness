@@ -29,14 +29,33 @@ fn validate(settings: &MenuBarSettings) -> Result<(), BridgeError> {
             "Unsupported Menu Bar settings version or refresh interval".into(),
         ));
     }
+    if settings
+        .opencode_workspace
+        .as_deref()
+        .is_some_and(|v| !crate::provider_usage::credentials::valid_workspace(v))
+    {
+        return Err(BridgeError::Invalid(
+            "OpenCode workspace must be a wrk_ workspace ID".into(),
+        ));
+    }
     Ok(())
 }
 
 pub fn save(db: &Connection, settings: &MenuBarSettings) -> Result<MenuBarSettings, BridgeError> {
     validate(settings)?;
-    db.execute("INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at) VALUES('menu_bar','default',?1,?2,?2)
+    let previous = load(db)?;
+    let transaction = db.unchecked_transaction()?;
+    if previous.opencode_workspace != settings.opencode_workspace {
+        // Never present the previous workspace's quota under a new selection.
+        transaction.execute(
+            "DELETE FROM configuration_entries WHERE kind='usage_overview' AND id='opencode'",
+            [],
+        )?;
+    }
+    transaction.execute("INSERT INTO configuration_entries(kind,id,payload,created_at,updated_at) VALUES('menu_bar','default',?1,?2,?2)
         ON CONFLICT(kind,id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
         params![serde_json::to_string(settings).map_err(|e| BridgeError::Invalid(e.to_string()))?, chrono::Utc::now().to_rfc3339()])?;
+    transaction.commit()?;
     load(db)
 }
 
@@ -50,6 +69,13 @@ mod tests {
         let mut settings = load(&db).unwrap();
         settings.enabled = false;
         save(&db, &settings).unwrap();
+        settings.opencode_workspace = Some("wrk_../wrong".into());
+        assert!(save(&db, &settings).is_err());
+        settings.opencode_workspace = Some("wrk_example".into());
+        assert_eq!(
+            save(&db, &settings).unwrap().opencode_workspace.as_deref(),
+            Some("wrk_example")
+        );
         settings.refresh_seconds = 2;
         assert!(save(&db, &settings).is_err());
         assert!(!load(&db).unwrap().enabled);

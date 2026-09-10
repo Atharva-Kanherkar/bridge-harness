@@ -12,6 +12,15 @@
       ],
       "type": "string"
     },
+    "MenuBarProvider": {
+      "enum": [
+        "codex",
+        "claude",
+        "cursor",
+        "opencode"
+      ],
+      "type": "string"
+    },
     "MenuBarQuotaWindow": {
       "enum": [
         "auto",
@@ -22,7 +31,15 @@
     }
   },
   "properties": {
+    "claudeEnabled": {
+      "default": false,
+      "type": "boolean"
+    },
     "codexEnabled": {
+      "type": "boolean"
+    },
+    "cursorEnabled": {
+      "default": false,
       "type": "boolean"
     },
     "displayMode": {
@@ -30,6 +47,17 @@
     },
     "enabled": {
       "type": "boolean"
+    },
+    "opencodeEnabled": {
+      "default": false,
+      "type": "boolean"
+    },
+    "opencodeWorkspace": {
+      "default": null,
+      "type": [
+        "string",
+        "null"
+      ]
     },
     "quotaWindow": {
       "$ref": "#/definitions/MenuBarQuotaWindow"
@@ -44,6 +72,14 @@
       "format": "uint32",
       "minimum": 0.0,
       "type": "integer"
+    },
+    "selectedProvider": {
+      "allOf": [
+        {
+          "$ref": "#/definitions/MenuBarProvider"
+        }
+      ],
+      "default": "codex"
     },
     "showAccount": {
       "type": "boolean"

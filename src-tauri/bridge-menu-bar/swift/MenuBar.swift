@@ -19,6 +19,10 @@ final class MenuController: NSObject, NSMenuDelegate {
         self.callback = callback
         item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
+        state.selectProvider = { [weak self] id in
+            guard let index = ["codex", "claude", "cursor", "opencode"].firstIndex(of: id) else { return }
+            self?.callback(Int32(100 + index))
+        }
         item.isVisible = false
         item.autosaveName = "BridgeMenuBar"
         item.button?.image = Self.templateIcon()
@@ -86,7 +90,7 @@ final class MenuController: NSObject, NSMenuDelegate {
         scroll.reflectScrolledClipView(scroll.contentView)
         card.view = scroll
         let details = NSMenu()
-        let usage = state.presentation.usage
+        let usage = state.presentation.selectedUsage
         let showCost = state.presentation.settings.showCost
         for (title, period) in [("Today", usage?.today), ("Last 30 days", usage?.month)] {
             details.addItem(withTitle: title, action: nil, keyEquivalent: "").isEnabled = false
@@ -108,18 +112,18 @@ final class MenuController: NSObject, NSMenuDelegate {
             if title == "Today" { details.addItem(.separator()) }
         }
         breakdown.submenu = details
-        breakdown.isHidden = !state.presentation.settings.codexEnabled || !state.presentation.settings.showTokens
+        breakdown.isHidden = state.presentation.settings.enabledProviders.isEmpty || !state.presentation.settings.showTokens
     }
 
     func update(_ presentation: Presentation) {
         state.presentation = presentation
         item.isVisible = presentation.settings.enabled || tracking
-        refresh.isEnabled = presentation.settings.codexEnabled && !presentation.refreshing
+        refresh.isEnabled = !presentation.settings.enabledProviders.isEmpty && !presentation.refreshing
         refresh.title = presentation.refreshing ? "Refreshing usage…" : "Refresh usage"
         let settings = presentation.settings
-        let usage = presentation.usage
+        let usage = presentation.selectedUsage
         var title = ""
-        if settings.codexEnabled {
+        if !settings.enabledProviders.isEmpty {
             if settings.displayMode == "cost" {
                 title = usage.map { moneyLabel($0.today.costMicrousd) } ?? "—"
                 if title == "Unavailable" { title = "—" }
@@ -136,7 +140,7 @@ final class MenuController: NSObject, NSMenuDelegate {
         item.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
         let windowLabel = usage?.menuWindow(settings.quotaWindow, now: Int64(Date().timeIntervalSince1970))?.label ?? "Quota"
         let metricLabel = settings.displayMode == "cost" ? "Today" : windowLabel
-        item.button?.toolTip = title.isEmpty ? "Bridge usage" : "Bridge · Codex · \(metricLabel) · \(title) \(settings.displayMode)"
+        item.button?.toolTip = title.isEmpty ? "Bridge usage" : "Bridge · \(providerName(settings.activeProvider ?? "")) · \(metricLabel) · \(title) \(settings.displayMode)"
         // Avoid structural changes during menu tracking; data updates in place.
         if !tracking { rebuildCard() }
         else if let scroll = card.view as? NSScrollView, let view = scroll.documentView as? NSHostingView<MenuCard> {
@@ -169,7 +173,8 @@ public func createMenuBar(_ callback: @escaping @convention(c) (Int32) -> Void) 
 public func updateMenuBar(_ bytes: UnsafePointer<UInt8>, _ count: Int) -> Bool {
     guard Thread.isMainThread, let controller = controller, count >= 0, count <= 1_048_576,
           let value = try? JSONDecoder().decode(Presentation.self, from: Data(bytes: bytes, count: count)),
-          value.settings.schemaVersion == 1, value.usage == nil || value.usage?.schemaVersion == 1 else { return false }
+          value.settings.schemaVersion == 1, value.usage == nil || value.usage?.schemaVersion == 1,
+          value.usage?.providers.allSatisfy({ $0.schemaVersion == 1 }) ?? true else { return false }
     controller.update(value)
     return true
 }

@@ -8,18 +8,23 @@ struct MenuCard: View {
         VStack(alignment: .leading, spacing: 13) {
             HStack(spacing: 7) {
                 Image(systemName: "terminal.fill").font(.system(size: 14))
-                Text("Codex").font(.system(size: 12, weight: .semibold))
+                Text("Usage").font(.system(size: 12, weight: .semibold))
                 Spacer()
                 if presentation.refreshing { ProgressView().controlSize(.small) }
                 else { Text("Bridge").font(.system(size: 11)).foregroundColor(.secondary) }
             }
+            if settings.enabledProviders.count > 1 {
+                Picker("Provider", selection: Binding(get: { settings.activeProvider ?? "codex" }, set: { state.selectProvider($0) })) {
+                    ForEach(settings.enabledProviders, id: \.self) { id in Text(providerName(id)).tag(id) }
+                }.pickerStyle(.segmented).labelsHidden().accessibilityLabel("Usage provider")
+            }
             Divider()
-            if !settings.codexEnabled {
-                Text("Codex is hidden").font(.headline)
-                Text("Enable Codex in Menu Bar settings to see its usage.").foregroundColor(.secondary)
-            } else if let usage = presentation.usage {
+            if settings.enabledProviders.isEmpty {
+                Text("No providers enabled").font(.headline)
+                Text("Enable a provider in Menu Bar settings to see its usage.").foregroundColor(.secondary)
+            } else if let usage = presentation.selectedUsage {
                 HStack(alignment: .firstTextBaseline) {
-                    Text("Codex").font(.system(size: 20, weight: .semibold))
+                    Text(providerName(usage.provider)).font(.system(size: 20, weight: .semibold))
                     Spacer()
                     if let plan = usage.plan { Text(plan.capitalized).font(.system(size: 11, weight: .medium)).foregroundColor(.secondary) }
                 }
@@ -39,6 +44,11 @@ struct MenuCard: View {
                 }
                 if let error = presentation.error ?? usage.error {
                     Text(error).font(.system(size: 11)).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                if settings.showCost, let amounts = usage.accountMetrics, !amounts.isEmpty {
+                    Divider()
+                    Text("Account billing").fontWeight(.semibold)
+                    ForEach(amounts) { amount in detail(amount.label, moneyLabel(amount.value)) }
                 }
                 if settings.showTokens || settings.showCost {
                     Divider()
@@ -72,7 +82,7 @@ struct MenuCard: View {
                     Text(usage.coverage).font(.system(size: 10)).foregroundColor(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
             } else {
-                Text(presentation.refreshing ? "Reading Codex usage…" : "Usage unavailable").font(.headline)
+                Text(presentation.refreshing ? "Reading provider usage…" : "Usage unavailable").font(.headline)
                 Text(presentation.error ?? "Refresh to read your account limits and recorded token usage.").foregroundColor(.secondary)
             }
         }
