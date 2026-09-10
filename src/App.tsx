@@ -58,7 +58,7 @@ import { MemoryUsedChip } from "./components/MemoryUsedChip";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
 import type { MeterRegistry } from "./types";
-import { formatElapsed, harnessLabel, slashOwnershipBadge } from "./utils";
+import { formatElapsed, harnessLabel, slashCommandsForHarness, slashOwnershipBadge } from "./utils";
 import { scheduleSuggestion } from "./suggestionTypeahead";
 import { projectSessionConversation, reduceConversation, undeliveredPending } from "./conversation";
 import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
@@ -703,7 +703,7 @@ function AppContent() {
   const slashMatches = useMemo(() => {
     if (slashQuery == null) return [];
     const query = slashQuery.toLowerCase();
-    return slashCommands
+    return slashCommandsForHarness(slashCommands, session?.harness)
       .filter(command => !query || command.name.toLowerCase().includes(query) || command.description.toLowerCase().includes(query))
       .sort((a, b) => {
         const aName = a.name.toLowerCase();
@@ -711,9 +711,6 @@ function AppContent() {
         const aPrefix = query ? Number(aName.startsWith(query)) : 0;
         const bPrefix = query ? Number(bName.startsWith(query)) : 0;
         if (aPrefix !== bPrefix) return bPrefix - aPrefix;
-        const aHarness = Number(a.harness === session?.harness);
-        const bHarness = Number(b.harness === session?.harness);
-        if (aHarness !== bHarness) return bHarness - aHarness;
         return aName.localeCompare(bName);
       });
   }, [slashQuery, slashCommands, session?.harness]);

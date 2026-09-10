@@ -2862,27 +2862,46 @@ fn available_adapter_ids(core: &BridgeCore) -> HashSet<String> {
         .collect()
 }
 
-/// Enumerate slash commands + skills from every signed-in provider, so the UI
-/// can offer a labeled `/` menu.
+/// Enumerate slash commands + skills scoped to this session's active harness
+/// (plus Bridge-local builtins, which work on every harness), so the UI's `/`
+/// menu never dangles suggestions the session can't actually run.
 pub fn list_slash_commands(
     core: &Arc<BridgeCore>,
     session_id: Option<&str>,
 ) -> Result<Vec<slash::SlashCommand>, BridgeError> {
-    let project = session_id
+    let (project, session_harness): (Option<PathBuf>, Option<String>) = session_id
         .map(|session_id| {
             core.db.lock().unwrap().query_row(
-                "SELECT cwd FROM sessions WHERE id=?1",
+                "SELECT cwd, harness FROM sessions WHERE id=?1",
                 params![session_id],
-                |row| row.get::<_, Option<String>>(0),
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?.map(PathBuf::from),
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
             )
         })
         .transpose()?
-        .flatten()
-        .map(PathBuf::from);
-    Ok(slash::list_commands_for_project(
-        &available_adapter_ids(core),
-        project.as_deref(),
-    ))
+        .unwrap_or((None, None));
+    let catalog = slash::list_commands_for_project(&available_adapter_ids(core), project.as_deref());
+    Ok(filter_catalog_for_session_harness(catalog, session_harness.as_deref()))
+}
+
+/// Keep only commands the session's active harness (or Bridge itself) can
+/// actually run. `None` (session-less callers, e.g. onboarding) skips the
+/// filter and returns every discovered command.
+fn filter_catalog_for_session_harness(
+    catalog: Vec<slash::SlashCommand>,
+    session_harness: Option<&str>,
+) -> Vec<slash::SlashCommand> {
+    match session_harness {
+        Some(harness) => catalog
+            .into_iter()
+            .filter(|command| command.harness == "bridge" || command.harness == harness)
+            .collect(),
+        None => catalog,
+    }
 }
 
 /// Resolve a composer `/command` against the catalog so the UI can auto-switch
@@ -4771,6 +4790,36 @@ mod tests {
     use rusqlite::params;
     use std::path::Path;
     use std::process::Command;
+
+    fn command(name: &str, harness: &str) -> crate::slash::SlashCommand {
+        crate::slash::SlashCommand {
+            name: name.into(),
+            description: String::new(),
+            harness: harness.into(),
+            kind: "builtin".into(),
+        }
+    }
+
+    #[test]
+    fn slash_catalog_filter_hides_other_harnesses_but_keeps_bridge_builtins() {
+        let catalog = vec![
+            command("recall", "bridge"),
+            command("review", "claude"),
+            command("review", "codex"),
+            command("plan", "opencode"),
+        ];
+
+        let claude_only = super::filter_catalog_for_session_harness(catalog.clone(), Some("claude"));
+        assert_eq!(
+            claude_only.iter().map(|c| (c.name.as_str(), c.harness.as_str())).collect::<Vec<_>>(),
+            vec![("recall", "bridge"), ("review", "claude")]
+        );
+
+        // A session-less caller (no session_id resolved yet) gets the full,
+        // unfiltered catalog rather than an empty menu.
+        let unfiltered = super::filter_catalog_for_session_harness(catalog, None);
+        assert_eq!(unfiltered.len(), 4);
+    }
 
     fn git_cmd(cwd: &Path, args: &[&str]) -> String {
         let output = Command::new("git").args(args).current_dir(cwd).output().unwrap();
