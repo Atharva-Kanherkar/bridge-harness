@@ -7,7 +7,9 @@
 //! 1. the harness's own title, where it keeps one — Claude Code writes a
 //!    `custom-title` entry into its transcript once it has seen enough of the
 //!    conversation to name it;
-//! 2. a heading cut from the session's first user message.
+//! 2. a short topic label extracted from the first substantive user message.
+//!
+//! Automatic names contain at most three words. User-chosen names are preserved.
 //!
 //! Codex keeps no title of its own. A full rollout file carries `session_meta`,
 //! `event_msg`, `response_item`, `world_state` and `turn_context` entries and none
@@ -27,6 +29,20 @@ pub const PLACEHOLDER_TITLES: [&str; 3] = ["Orchestrator", "Bridge orchestrator"
 
 /// Longest heading worth keeping; past this a rail row truncates anyway.
 const MAX_HEADING: usize = 60;
+const MAX_TITLE_WORDS: usize = 3;
+
+/// Request scaffolding is not a topic: "can you please fix the" should never
+/// occupy all three words of a chat's name. This is a local fallback, not an
+/// additional model turn; an available harness title still takes precedence.
+const TITLE_FILLER: &[&str] = &[
+    "a", "an", "the", "i", "i'm", "im", "we", "you", "me", "my", "our", "your",
+    "can", "could", "would", "will", "should", "please", "want", "wanted", "need",
+    "like", "help", "to", "with", "in", "on", "at", "of", "for", "from", "by",
+    "and", "or", "but", "so", "that", "this", "it", "its", "is", "are", "was",
+    "be", "been", "have", "has", "do", "does", "some", "all", "just", "also",
+    "fix", "review", "implement", "build", "add", "update", "make", "look", "check",
+    "tell", "explain", "why", "how", "what", "first", "then", "every", "single",
+];
 
 /// Openers that say nothing about a conversation. A chat that starts "hello" is
 /// better left unnamed until it says something, because "Hello" as a heading is
@@ -84,15 +100,20 @@ pub fn needs_title(title: Option<&str>) -> bool {
     }
 }
 
-/// Cuts a heading out of a user message: its first meaningful line, stripped of
-/// markdown furniture and shortened on a word boundary.
+/// Extracts up to three topic words, excluding conversational request scaffolding.
 pub fn heading_from_message(text: &str) -> Option<String> {
     let line = text
         .lines()
         .map(strip_furniture)
         .find(|line| !line.is_empty())?;
 
-    let trimmed = shorten(&line);
+    let topic = line.split_whitespace()
+        .map(|word| word.trim_matches(|c: char| !c.is_alphanumeric() && c != '/' && c != '_' && c != '-'))
+        .filter(|word| !word.is_empty() && !TITLE_FILLER.contains(&word.to_lowercase().as_str()))
+        .take(MAX_TITLE_WORDS)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let trimmed = shorten(&topic);
     if trimmed.is_empty() {
         return None;
     }
@@ -160,7 +181,7 @@ fn strip_furniture(line: &str) -> String {
 }
 
 fn shorten(value: &str) -> String {
-    let collapsed = value.split_whitespace().collect::<Vec<_>>().join(" ");
+    let collapsed = value.split_whitespace().take(MAX_TITLE_WORDS).collect::<Vec<_>>().join(" ");
     if collapsed.chars().count() <= MAX_HEADING {
         return collapsed;
     }
@@ -301,7 +322,7 @@ pub fn plan(db: &Connection, session_id: &str) -> Result<Option<TitlePlan>, Brid
             return Ok(Some(TitlePlan {
                 harness,
                 provider_session_id,
-                naming_message: None,
+                naming_message: naming_message(db, session_id)?,
                 replaceable: true,
             }))
         }
@@ -331,11 +352,7 @@ pub fn resolve(plan: &TitlePlan) -> Option<(String, TitleSource)> {
     if let Some(provider) = provider {
         return Some((provider, TitleSource::Provider));
     }
-    // A heading already cut from this conversation is as good as it will get; only
-    // the harness can improve on it.
-    if plan.replaceable {
-        return None;
-    }
+    // Recompute derived names too, so old sentence-length titles can be repaired.
     plan.naming_message
         .as_deref()
         .and_then(heading_from_message)
@@ -349,8 +366,9 @@ pub fn commit(
     title: &str,
     source: TitleSource,
 ) -> Result<(), BridgeError> {
+    let title = shorten(title);
     db.execute(
-        "UPDATE sessions SET title=?2,title_source=?3 WHERE id=?1",
+        "UPDATE sessions SET title=?2,title_source=?3 WHERE id=?1 AND (title IS NOT ?2 OR title_source IS NOT ?3)",
         params![session_id, title, source.as_str()],
     )?;
     Ok(())
@@ -370,36 +388,51 @@ pub fn refresh(db: &Connection, session_id: &str) -> Result<Option<String>, Brid
     Ok(Some(title))
 }
 
-/// One-time catch-up for chats that predate titles: gives every placeholder
-/// session a heading cut from its first message.
+/// Catch up placeholders and old automatic names to the concise-title policy.
+/// Explicit user titles (no recorded automatic source) are never rewritten.
 ///
 /// Deliberately does no file or network I/O. Opening the database must stay cheap
 /// and side-effect free, and the harness's own title is picked up on that session's
 /// next completed turn anyway.
 pub fn backfill_from_messages(db: &Connection) -> Result<usize, BridgeError> {
-    let mut untitled: Vec<String> = Vec::new();
+    let mut untitled: Vec<(String, Option<String>, bool)> = Vec::new();
+    let mut provider_titles = Vec::new();
     {
-        let mut statement = db.prepare("SELECT id,title,label FROM sessions")?;
+        let mut statement = db.prepare("SELECT id,title,label,title_source FROM sessions")?;
         let mut rows = statement.query([])?;
         while let Some(row) = rows.next()? {
             let id: String = row.get(0)?;
             let title: Option<String> = row.get(1)?;
             let label: String = row.get(2)?;
-            if needs_title(title.as_deref().or(Some(label.as_str()))) {
-                untitled.push(id);
+            let source: Option<String> = row.get(3)?;
+            if needs_title(title.as_deref().or(Some(label.as_str()))) || source.as_deref() == Some("derived") {
+                // An old derived name can still be shortened if its original
+                // message has been pruned or carries no usable topic words.
+                untitled.push((id, title, source.as_deref() == Some("derived")));
+            } else if source.as_deref() == Some("provider") {
+                if let Some(title) = title {
+                    let concise = shorten(&title);
+                    if concise != title { provider_titles.push((id, concise)); }
+                }
             }
         }
     }
 
     let mut named = 0usize;
-    for id in untitled {
+    for (id, previous, derived) in untitled {
         let Some(heading) = naming_message(db, &id)?
             .as_deref()
             .and_then(heading_from_message)
+            .or_else(|| derived.then(|| previous.as_deref().map(shorten)).flatten())
         else {
             continue;
         };
+        if previous.as_deref() == Some(heading.as_str()) { continue; }
         commit(db, &id, &heading, TitleSource::Derived)?;
+        named += 1;
+    }
+    for (id, title) in provider_titles {
+        commit(db, &id, &title, TitleSource::Provider)?;
         named += 1;
     }
     Ok(named)
@@ -443,12 +476,12 @@ mod tests {
         said(&db, "s1", "and then look at the rail");
         assert_eq!(
             refresh(&db, "s1").expect("refresh"),
-            Some("Fix the model profile migration".into())
+            Some("Model profile migration".into())
         );
         let stored: Option<String> = db
             .query_row("SELECT title FROM sessions WHERE id='s1'", [], |row| row.get(0))
             .expect("title");
-        assert_eq!(stored.as_deref(), Some("Fix the model profile migration"));
+        assert_eq!(stored.as_deref(), Some("Model profile migration"));
     }
 
     #[test]
@@ -482,7 +515,7 @@ mod tests {
         said(&db, "s1", "can you fix the rail grouping");
         assert_eq!(
             refresh(&db, "s1").expect("refresh"),
-            Some("Can you fix the rail grouping".into())
+            Some("Rail grouping".into())
         );
     }
 
@@ -547,16 +580,14 @@ mod tests {
     }
 
     #[test]
-    fn resolving_a_derived_title_again_changes_nothing() {
-        // Without a provider title there is nothing better than the heading that is
-        // already stored, so the row is left alone rather than rewritten.
+    fn an_old_derived_title_can_be_replaced_by_a_concise_topic() {
         let pending = TitlePlan {
             harness: "codex".into(),
             provider_session_id: Some("prov-1".into()),
             naming_message: Some("fix the rail grouping".into()),
             replaceable: true,
         };
-        assert_eq!(resolve(&pending), None);
+        assert_eq!(resolve(&pending), Some(("Rail grouping".into(), TitleSource::Derived)));
     }
 
     #[test]
@@ -582,6 +613,60 @@ mod tests {
     }
 
     #[test]
+    fn automatic_titles_are_one_to_three_words() {
+        for message in [
+            "Can you please fix the Mission Control dragging behavior?",
+            "I would like you to add persistent chat pinning",
+            "Please implement OAuth callback validation and error handling",
+            "检查 中文 会话 标题 长度",
+        ] {
+            let title = heading_from_message(message).unwrap();
+            assert!((1..=3).contains(&title.split_whitespace().count()), "{title}");
+        }
+        assert_eq!(heading_from_message("Can you please fix the Mission Control dragging behavior?"), Some("Mission Control dragging".into()));
+        assert_eq!(heading_from_message("I would like you to add persistent chat pinning"), Some("Persistent chat pinning".into()));
+    }
+
+    #[test]
+    fn provider_titles_are_bounded_and_still_preferred() {
+        assert_eq!(title_from_transcript(r#"{"type":"custom-title","customTitle":"Mission Control drag and drop fixes"}"#), Some("Mission Control drag".into()));
+        let db = seeded();
+        session(&db, "s1", None, "claude");
+        commit(&db, "s1", "Mission Control drag and drop fixes", TitleSource::Provider).unwrap();
+        assert!(plan(&db, "s1").unwrap().is_none());
+        let title: String = db.query_row("SELECT title FROM sessions WHERE id='s1'", [], |row| row.get(0)).unwrap();
+        assert_eq!(title, "Mission Control drag");
+    }
+
+    #[test]
+    fn backfill_repairs_automatic_names_but_preserves_user_names_and_is_idempotent() {
+        let db = seeded();
+        session(&db, "derived", Some("Can you please fix the Mission Control dragging behavior?"), "codex");
+        said(&db, "derived", "Can you please fix the Mission Control dragging behavior?");
+        session(&db, "provider", Some("Mission Control drag and drop fixes"), "claude");
+        session(&db, "manual", Some("My deliberately long personal chat name"), "codex");
+        db.execute("UPDATE sessions SET title_source='derived' WHERE id='derived'", []).unwrap();
+        db.execute("UPDATE sessions SET title_source='provider' WHERE id='provider'", []).unwrap();
+        assert_eq!(backfill_from_messages(&db).unwrap(), 2);
+        let title = |id: &str| db.query_row("SELECT title FROM sessions WHERE id=?1", [id], |row| row.get::<_, String>(0)).unwrap();
+        assert_eq!(title("derived"), "Mission Control dragging");
+        assert_eq!(title("provider"), "Mission Control drag");
+        assert_eq!(title("manual"), "My deliberately long personal chat name");
+        assert_eq!(backfill_from_messages(&db).unwrap(), 0);
+    }
+
+    #[test]
+    fn backfill_shortens_a_derived_title_even_without_its_original_message() {
+        let db = seeded();
+        session(&db, "s1", Some("Mission Control drag and drop"), "codex");
+        db.execute("UPDATE sessions SET title_source='derived' WHERE id='s1'", []).unwrap();
+        assert_eq!(backfill_from_messages(&db).unwrap(), 1);
+        let title: String = db.query_row("SELECT title FROM sessions WHERE id='s1'", [], |row| row.get(0)).unwrap();
+        assert_eq!(title, "Mission Control drag");
+        assert_eq!(backfill_from_messages(&db).unwrap(), 0);
+    }
+
+    #[test]
     fn a_session_that_has_said_nothing_yet_keeps_its_placeholder() {
         let db = seeded();
         session(&db, "s1", None, "codex");
@@ -596,7 +681,7 @@ mod tests {
         said(&db, "s1", "review PR 115 adversarially");
         assert_eq!(
             refresh(&db, "s1").expect("refresh"),
-            Some("Review PR 115 adversarially".into())
+            Some("PR 115 adversarially".into())
         );
     }
 
@@ -625,8 +710,8 @@ mod tests {
             titles,
             vec![
                 ("named".to_string(), Some("Chosen by hand".to_string())),
-                ("old-1".to_string(), Some("Freeze AxonHub output_format drop".to_string())),
-                ("old-2".to_string(), Some("Review the referral jobs page".to_string())),
+                ("old-1".to_string(), Some("Freeze AxonHub output_format".to_string())),
+                ("old-2".to_string(), Some("Referral jobs page".to_string())),
                 ("silent".to_string(), None),
             ]
         );
@@ -655,11 +740,11 @@ mod tests {
     fn a_heading_is_the_first_meaningful_line_capitalised() {
         assert_eq!(
             heading_from_message("fix the model profile migration"),
-            Some("Fix the model profile migration".into())
+            Some("Model profile migration".into())
         );
         assert_eq!(
             heading_from_message("\n\n  ## Review PR 115 adversarially\nmore detail below"),
-            Some("Review PR 115 adversarially".into())
+            Some("PR 115 adversarially".into())
         );
         assert_eq!(
             heading_from_message("/review-checkpoint"),
@@ -676,23 +761,20 @@ mod tests {
     }
 
     #[test]
-    fn a_long_message_is_cut_on_a_boundary() {
+    fn a_long_request_becomes_three_topic_words_instead_of_a_prompt_prefix() {
         let heading = heading_from_message(
             "Please look at the sidebar rail and tell me why every single chat in the list is labelled the same",
         )
         .expect("heading");
-        assert!(heading.chars().count() <= MAX_HEADING + 1, "{heading}");
-        assert!(heading.ends_with('…'), "{heading}");
-        // Cut between words, never mid-word.
-        assert!(!heading.trim_end_matches('…').ends_with(' '));
-        assert!(heading.starts_with("Please look at the sidebar rail"));
+        assert_eq!(heading, "Sidebar rail chat");
+        assert_eq!(heading.split_whitespace().count(), 3);
     }
 
     #[test]
-    fn a_long_first_sentence_ends_at_the_sentence() {
+    fn a_multiple_sentence_request_still_has_at_most_three_topic_words() {
         let heading = heading_from_message("Fix the migration first. Then look at the rail grouping and the headers")
             .expect("heading");
-        assert_eq!(heading, "Fix the migration first");
+        assert_eq!(heading, "Migration rail grouping");
     }
 
     #[test]

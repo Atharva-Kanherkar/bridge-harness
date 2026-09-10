@@ -672,7 +672,9 @@ describe("the dock in the session view", () => {
     const promote = [...aside.querySelectorAll("button")].find(button => button.textContent?.includes("Open as chat"))!;
     await click(promote);
     expect(document.body.querySelector('div[role="dialog"][aria-label^="Aside"]')).toBeNull();
-    expect(container.querySelector("h1")!.textContent).toContain("is the plan sound?");
+    // The browser mock has no native title resolver. Keep its placeholder rather
+    // than treating the full first message as an explicitly chosen chat name.
+    expect(container.querySelector("h1")!.textContent).toBe("New aside");
   });
 
   // Contract: testing/fix-side-chat-model.md. A side chat begins on a resolved
@@ -699,7 +701,8 @@ describe("the dock in the session view", () => {
     await type("$codex sanity check");
     const aside = document.body.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Codex"]');
     expect(aside).not.toBeNull();
-    expect(createSpy).toHaveBeenCalledWith(expect.any(String), "codex", "gpt-5.6-terra", expect.anything());
+    // The prompt is conversation content, not a permanent user-chosen title.
+    expect(createSpy).toHaveBeenCalledWith(expect.any(String), "codex", "gpt-5.6-terra", null);
   });
 
   // Contract: testing/fix-side-chat-model.md. The header picker switches the
