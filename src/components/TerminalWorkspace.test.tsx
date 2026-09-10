@@ -42,6 +42,20 @@ it("moves a split to its own tab and maximizes without spawning again", async ()
   expect(host.querySelectorAll('[role="tab"]')).toHaveLength(2);
   expect(api.createTerminal).toHaveBeenCalledTimes(1);
 });
+it("releases terminal focus before moving its input out of the DOM", async () => {
+  await mount(); await click("Split right");
+  const terminal = host.querySelector<HTMLElement>("[data-terminal=a]")!;
+  terminal.classList.add("xterm");
+  const input = document.createElement("textarea");
+  terminal.append(input);
+  let blurredBeforeRemoval = false;
+  input.addEventListener("blur", () => { blurredBeforeRemoval = input.isConnected; });
+  await act(async () => input.focus());
+  expect(document.activeElement).toBe(input);
+  await click("Move focused pane to a new tab");
+  expect(blurredBeforeRemoval).toBe(true);
+  expect(document.activeElement).not.toBe(input);
+});
 it("retains a pane when close fails and closes only the addressed terminal on success", async () => {
   await mount(); api.closeTerminal.mockRejectedValueOnce(new Error("host disconnected"));
   await click("Close a"); expect(host.querySelector("[data-terminal=a]")).not.toBeNull();

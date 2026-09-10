@@ -138,7 +138,7 @@ export function TerminalSurface({ record, focused, onRecord, onSearchHandled, se
     const gpu = attachWebgl(terminal, scheduleFit);
     return () => {
       disposed = true; feed.dispose(); unlisten.forEach(fn => fn()); cancelAnimationFrame(scheduled);
-      observer.disconnect(); theme.disconnect(); input.dispose(); searchResult.dispose(); gpu(); terminal.dispose(); termRef.current = undefined;
+      observer.disconnect(); theme.disconnect(); input.dispose(); searchResult.dispose(); terminal.blur(); gpu(); terminal.dispose(); termRef.current = undefined;
     };
     // Identity creates presentation. Mutable metadata must never remount xterm.
     // eslint-disable-next-line react-hooks/exhaustive-deps

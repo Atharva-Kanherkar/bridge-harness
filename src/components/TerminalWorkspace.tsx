@@ -111,6 +111,13 @@ function minimumSize(node: PaneNode): { width: number; height: number } {
   return node.direction === "horizontal" ? { width: a.width + b.width + 6, height: Math.max(a.height, b.height) } : { width: Math.max(a.width, b.width), height: a.height + b.height + 6 };
 }
 
+function releaseTerminalFocus() {
+  const active = document.activeElement;
+  // Move focus before React removes a pane's textarea, so browser focus and
+  // accessibility bookkeeping never retain a detached terminal input.
+  if (active instanceof HTMLElement && active.closest(".xterm")?.closest("[data-terminal-workspace]")) active.blur();
+}
+
 export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string; branch: string }) {
   const [state, setState] = useState<WorkspaceState | null>(null);
   const [error, setError] = useState<string>();
@@ -142,7 +149,8 @@ export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string
   useEffect(() => () => {
     if (dirty.current && current.current) void saveLayout(workspaceId, current.current.layout).catch(() => {});
   }, [workspaceId]);
-  const change = (update: (layout: TerminalLayout) => TerminalLayout) => {
+  const change = (update: (layout: TerminalLayout) => TerminalLayout, movesPanes = false) => {
+    if (movesPanes) releaseTerminalFocus();
     dirty.current = true;
     setState(s => s ? { ...s, layout: update(s.layout) } : s);
   };
@@ -153,6 +161,7 @@ export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string
       const source = target ? await bridgeApi.terminalSnapshot(workspaceId, target) : undefined;
       const record = await bridgeApi.createTerminal({ workspaceId, terminalId: crypto.randomUUID(), agentId, cwd: source?.record.cwd, restart: false });
       if (!alive.current) return;
+      releaseTerminalFocus();
       dirty.current = true;
       setState(s => {
         const previous = s ?? { layout: emptyLayout(), records: {} };
@@ -166,6 +175,7 @@ export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string
     try {
       await bridgeApi.closeTerminal(workspaceId, id);
       if (!alive.current) return;
+      releaseTerminalFocus();
       dirty.current = true;
       setState(s => { if (!s) return s; const records = { ...s.records }; delete records[id]; return { records, layout: closeLeaf(s.layout, id) }; });
     } catch (value) { errorHandler(value); }
@@ -188,10 +198,10 @@ export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string
     } catch (value) { errorHandler(value); }
   }
   function selectTab(id: string) {
-    change(layout => { const tab = layout.tabs.find(t => t.id === id); return tab ? { ...layout, activeTabId: id, activeLeafId: leafIds(tab.root)[0], expandedLeafId: null } : layout; });
+    change(layout => { const tab = layout.tabs.find(t => t.id === id); return tab ? { ...layout, activeTabId: id, activeLeafId: leafIds(tab.root)[0], expandedLeafId: null } : layout; }, true);
   }
   function detachToTab(id: string) {
-    if (state?.records[id]) change(layout => addTab(closeLeaf(layout, id), id, state.records[id].title));
+    if (state?.records[id]) change(layout => addTab(closeLeaf(layout, id), id, state.records[id].title), true);
   }
   const layout = state?.layout ?? emptyLayout();
   const tab = layout.tabs.find(t => t.id === layout.activeTabId);
@@ -201,8 +211,8 @@ export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string
     focus: id => { if (current.current?.layout.activeLeafId !== id) change(l => ({ ...l, activeLeafId: id })); },
     split: (id, direction) => { void launch(undefined, id, direction); },
     close: id => { void close(id); }, restart: id => { void restart(id); }, rename: (id, title) => { void rename(id, title); },
-    maximize: id => change(l => ({ ...l, expandedLeafId: l.expandedLeafId === id ? null : id, activeLeafId: id })),
-    move: (id, target, direction, before) => change(l => insertSplit(l, target, id, direction, before)),
+    maximize: id => change(l => ({ ...l, expandedLeafId: l.expandedLeafId === id ? null : id, activeLeafId: id }), true),
+    move: (id, target, direction, before) => change(l => insertSplit(l, target, id, direction, before), true),
     resize: (path, ratio) => change(l => ({ ...l, tabs: l.tabs.map(t => t.id === l.activeTabId ? { ...t, root: resizeNode(t.root, path, ratio) } : t) })),
   };
   function command(id: TerminalCommand) {
@@ -215,7 +225,7 @@ export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string
     if (id === "search") setSearchRequest(value => ({ id: active, serial: (value?.serial ?? 0) + 1 }));
     if (id === "next-pane" || id === "previous-pane") {
       const ids = leafIds(tab.root), next = ids[(ids.indexOf(active) + (id === "next-pane" ? 1 : ids.length - 1)) % ids.length];
-      change(l => ({ ...l, activeLeafId: next, expandedLeafId: l.expandedLeafId ? next : null }));
+      change(l => ({ ...l, activeLeafId: next, expandedLeafId: l.expandedLeafId ? next : null }), !!layout.expandedLeafId);
     }
     if (id === "next-tab" || id === "previous-tab") selectTab(layout.tabs[(layout.tabs.indexOf(tab) + (id === "next-tab" ? 1 : layout.tabs.length - 1)) % layout.tabs.length].id);
   }
