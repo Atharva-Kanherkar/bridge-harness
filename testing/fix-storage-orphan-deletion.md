@@ -7,6 +7,7 @@
 - Successful deletion removes the inventory row, updates usage, and records reclaimed bytes and an audit event.
 - Reconciliation drops missing external checkouts from inventory without deleting any external files; repeated reconciliation is idempotent.
 - Repository counts sum to the total inventory count, while retention budgets count only Bridge-owned checkouts.
+- The native reclaim command accepts the boolean force parameter declared by the protocol and sent by the frontend. The existing command-signature contract test must pass.
 - Storage explains retention targets, explicit deletion, external counts and unmeasured sizes accurately.
 
 ## Unit Tests
