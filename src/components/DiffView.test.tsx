@@ -62,30 +62,25 @@ describe("PatchView", () => {
   });
 
   it("bands a hunk header across the gutter as well as the body", async () => {
-    // C19/C20. The tint rides over an opaque `bg-code` on the pinned gutter:
-    // banding only the body split the divider in two at the line numbers, and
-    // making the gutter transparent would let a long header scroll through
-    // the sticky column.
     await act(async () => { root.render(<PatchView patch={PATCH} path="src/a.ts" />); });
     const hunk = [...container.querySelectorAll("div.group\\/hunk")]
       .find(node => node.textContent?.includes("@@"))!;
     const gutter = hunk.querySelector("span.sticky")!;
-    // Opaque and banded. Asserted as one pre-composed class precisely because
-    // `bg-code` + `bg-info/10` does not survive tailwind-merge.
-    expect(gutter.className).toContain("u-diff-band");
+    expect(hunk.className).toContain("u-diff-band");
+    expect(gutter.className).toContain("bg-inherit");
     expect(gutter.className).not.toMatch(/bg-(code|transparent)/);
-    expect(hunk.querySelector("span.flex-1")!.className).toContain("u-diff-band");
   });
 
-  it("owns the code surface the band and gutter are composed against", async () => {
-    // `u-diff-band` is `color-mix(--color-info 10%, --color-code)` and the
-    // gutter is `bg-code`, so both are only correct on a `--code` surface. A
-    // caller that dropped the patch onto `bg-card` (`#ffffff`/`#0f0f0f`
-    // against `--code`'s `#f3f3f1`/`#0a0a0a`) painted them as visibly
-    // mismatched rectangles, so the root owns the background rather than
-    // trusting every call site to pass the right one.
+  it("clips add and del tints inside a rounded card", async () => {
     await act(async () => { root.render(<PatchView patch={PATCH} path="src/a.ts" />); });
-    expect(container.firstElementChild!.className).toContain("bg-code");
+    const frame = container.querySelector(".stx .rounded-lg")!;
+    expect(frame.className).toContain("bg-card");
+    expect(frame.className).toContain("overflow-hidden");
+    expect(container.firstElementChild!.className).toContain("bg-card");
+    const added = [...container.querySelectorAll("div.group\\/hunk")]
+      .find(node => node.textContent?.includes("const a = 2;"))!;
+    expect(added.className).toContain("bg-success");
+    expect(added.parentElement).toBe(frame);
   });
 
   it("does not draw a grey gutter border beside a coloured run edge", async () => {
@@ -95,6 +90,29 @@ describe("PatchView", () => {
     const added = [...container.querySelectorAll("div.group\\/hunk")]
       .find(node => node.textContent?.includes("const a = 2;"))!;
     expect(added.querySelector("span.sticky")!.className).not.toContain("border-r");
+  });
+
+  it("shows one line number per row", () => {
+    const patch = ["@@ -1,3 +1,3 @@", " keep", "-const a = 1;", "+const a = 2;"].join("\n");
+    act(() => { root.render(<PatchView patch={patch} path="a.ts" />); });
+    const numbers = (marker: string) => {
+      const row = [...container.querySelectorAll("div.group\\/hunk")].find(node => node.textContent?.includes(marker))!;
+      return [...row.querySelectorAll("span.sticky span")].filter(node => node.className.includes("tabular-nums"));
+    };
+    expect(numbers("keep")).toHaveLength(1);
+    expect(numbers("keep")[0].textContent).toBe("1");
+    expect(numbers("const a = 1;")).toHaveLength(1);
+    expect(numbers("const a = 1;")[0].textContent).toBe("2");
+    expect(numbers("const a = 2;")).toHaveLength(1);
+    expect(numbers("const a = 2;")[0].textContent).toBe("2");
+  });
+
+  it("wraps long lines instead of overflowing the pane", () => {
+    act(() => { root.render(<PatchView patch={PATCH} path="a.ts" />); });
+    const body = container.querySelector("span.flex-1")!;
+    expect(body.className).toContain("whitespace-pre-wrap");
+    expect(body.className).toContain("break-words");
+    expect(container.querySelector(".w-max")).toBeNull();
   });
 
   it("upgrades bodies to .stx-* coloured spans once the grammar loads", async () => {

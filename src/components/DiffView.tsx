@@ -40,31 +40,25 @@ function DiffLine({ row, numbered, onQuoteHunk }: { row: DiffRow; numbered: bool
   // tinting only the body left the line numbers sitting in an untinted notch
   // that broke the band in half.
   const band = row.kind === "hunk";
-  // The gutter is pinned so the numbers and the +/− marker survive a
-  // horizontal scroll through a long line, which means it has to be opaque in
-  // every row kind: a translucent sticky column lets a long hunk header
-  // scroll through underneath it. `u-diff-band` is the band pre-composed
-  // against `--color-code` for exactly that reason.
-  return <div className="group/hunk flex">
+  // The gutter stays a fixed column while the body wraps, so it has to be
+  // opaque in every row kind: a translucent column lets a hunk header show
+  // through. `bg-inherit` takes the row's pre-composed tint so the sticky
+  // column cannot go transparent.
+  const line = row.newLine ?? row.oldLine;
+  return <div className={cn("group/hunk flex", style.tint || "bg-card")}>
     <span className={cn(
-      "sticky left-0 z-10 flex shrink-0 select-none",
-      // Not `bg-code` *and* the tint: tailwind-merge keeps only the last
-      // `bg-*`, so layering them silently produced a translucent gutter.
-      band ? style.tint : "bg-code",
-      // The coloured run edge replaces this border on add/del rows — drawing
-      // both put 2px of colour next to 1px of grey.
+      "sticky left-0 z-10 flex shrink-0 select-none items-start bg-inherit",
       numbered && !band && !style.edge && "border-r border-border/60",
     )}>
-      {numbered && <>
-        <span className="w-9 px-1.5 text-right text-[11px] tabular-nums text-muted-foreground/70">{row.oldLine ?? ""}</span>
-        <span className="w-9 px-1.5 text-right text-[11px] tabular-nums text-muted-foreground/70">{row.newLine ?? ""}</span>
-      </>}
+      {numbered && (
+        <span className="w-9 px-1.5 text-right text-[11px] tabular-nums text-muted-foreground/70">{line ?? ""}</span>
+      )}
       <span className={cn("relative w-3.5 pl-1 text-left", style.markerClass)}>
         {style.edge && !band && <span className={cn("absolute inset-y-0 right-0 w-[2px]", style.edge)} aria-hidden="true" />}
         {style.marker}
       </span>
     </span>
-    <span className={cn("flex-1 whitespace-pre pl-1.5 pr-3", style.tint)}>
+    <span className="min-w-0 flex-1 whitespace-pre-wrap break-words pl-1.5 pr-3">
       <span dangerouslySetInnerHTML={{ __html: row.html }} />
       {range && <button
         type="button"
@@ -105,7 +99,7 @@ export function splitHunks(rows: DiffRow[]): DiffRow[][] {
 /**
  * A unified diff rendered in the file's own language: additions and deletions
  * keep their colour, but the code inside them is syntax-highlighted like the
- * rest of the app's code, with old/new line numbers pinned to the left.
+ * rest of the app's code, with a line number pinned to the left.
  *
  * `foldAfterHunks` shows that many hunks and hides the rest behind a fold bar.
  * That is what lets an edit render inline by default without a 200-line patch
@@ -145,25 +139,16 @@ export function PatchView({ patch, path = "", className, foldAfterHunks, onQuote
   const shown = fold === null ? rows : hunks.slice(0, fold).flat();
   const hiddenHunks = fold === null ? 0 : hunks.length - fold;
   if (!rows.length) return null;
-  // A column, so a caller's `max-h-*` bounds the rows and leaves the fold bar
-  // pinned below them rather than scrolling away with the code.
-  //
-  // `bg-code` is not decoration: the pinned gutter, the fold bar and
-  // `u-diff-band` are all *pre-composed* against `--color-code`, so a patch
-  // dropped onto any other surface paints them as mismatched rectangles. A
-  // transcript caller passing `bg-card` did exactly that, and the gap between
-  // the two tokens is visible in both themes, not a rounding difference.
-  // Owning the background here means a caller cannot get it wrong by omission.
-  return <div className={cn("stx flex flex-col overflow-hidden bg-code font-mono text-[12px] leading-[1.6]", className)}>
-    <div className="min-h-0 flex-1 overflow-auto py-2">
-      <div className="w-max min-w-full">
+  return <div className={cn("stx flex flex-col overflow-hidden bg-card font-mono text-[12px] leading-[1.6]", className)}>
+    <div className="min-h-0 flex-1 overflow-auto p-2">
+      <div className="min-w-0 overflow-hidden rounded-lg border border-border bg-card">
         {shown.map((row, index) => <DiffLine key={index} row={row} numbered={numbered} onQuoteHunk={onQuoteHunk} />)}
       </div>
     </div>
     {hiddenHunks > 0 && <button
       type="button"
       onClick={() => setUnfoldedFor(patch)}
-      className="flex w-full items-center gap-2 bg-code px-3 py-1 text-left text-[11px] text-muted-foreground transition-colors hover:text-muted-foreground"
+      className="flex w-full items-center gap-2 bg-card px-3 py-1 text-left text-[11px] text-muted-foreground transition-colors hover:text-muted-foreground"
     >
       <ChevronDown className="h-3 w-3 shrink-0" aria-hidden="true" />
       {hiddenHunks} more hunk{hiddenHunks === 1 ? "" : "s"} — expand
