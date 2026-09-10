@@ -100,5 +100,57 @@ menu's full visual appearance for a complete appearance audit.
 The native menu is the default macOS surface. The legacy meter remains
 available internally through `BRIDGE_LEGACY_METER=1` until these parity gates
 pass; its old shared presentation dependency has not been retired prematurely.
-Claude, Cursor, OpenCode and further providers remain the explicit follow-on
-roadmap. Hooks and user plugins remain a separate project.
+Claude, Cursor, and OpenCode were added in the provider expansion below.
+Further providers, hooks, and user plugins remain separate follow-on work.
+
+
+## Provider expansion · 2026-09-11
+
+Implemented on `codex/menu-bar-providers` in `e15d4c4`, with backend-owned
+OpenCode credentials and executable Swift runtime linkage corrected in
+`86496c4`. The main conversation and usage-screen presentations are unchanged.
+See [provider sources and boundaries](menu-bar-providers.md).
+
+Verified automatically:
+
+- Full core suite: 2,291 passed, 11 intentionally ignored. Two live managed
+  agent integration tests remain ignored. Existing device usage imports and
+  pricing continue to supply all four provider snapshots.
+- Protocol: 161 tests and two documentation tests passed, including grouped
+  Rust/Swift fixtures, old-preference migration, session redaction, artifact
+  consistency, and rejection of a pre-1.9 daemon.
+- Frontend: the full 2,047-test suite passed; after two provider-control tests
+  were added, all nine focused settings/API tests and TypeScript checks passed.
+- Final app and daemon suites passed after the linkage fix. They cover grouped
+  snapshots, provider preferences across daemon restarts, invalid credential
+  rejection without disclosure, and the first-party OpenCode login boundary.
+- Native Swift: all four provider selections, fallback when disabling a
+  provider, account amounts, missing/zero/stale data, reset countdowns, and
+  template-icon checks passed. Both arm64 and x86_64 compile/type-check with
+  a macOS 12 deployment target. This is not a macOS 12 runtime test.
+- Release-script checks: 16 Node and 12 Python tests passed. Claude sidecar:
+  50 passed, one authenticated-runtime test skipped.
+- Production frontend and the release-mode packaged preview built successfully.
+
+The first sandboxed Rust run could not bind test daemon sockets. The subsequent
+unrestricted run passed the core/client suites and exposed a missing Swift
+runtime search path in an executable test target. The app build now supplies
+`/usr/lib/swift` to all its link targets; the final app/daemon rerun passed.
+This is a build configuration change, not an environment-variable workaround.
+Bun still fails before starting its scripts with `CouldntReadCurrentDirectory`;
+validation uses the equivalent npm, Swift, and Cargo stages.
+
+### Preview installation remains outstanding
+
+The implementation worktree and completed preview bundle disappeared immediately
+before signing/installing the update. Both implementation commits were already
+saved in Git. Sources were restored into `/private/tmp/bridge-menu-bar-providers`.
+The build caches are also unavailable and less than 1 GB of disk space remains.
+The installed `Bridge Menu Bar Preview.app` is still the earlier Codex-only
+version; the expanded provider UI has not been verified interactively. Live
+Claude/Cursor account reads and the OpenCode sign-in round trip remain unverified.
+
+Once disk space is available, rebuild the isolated preview, sign it through the
+existing Developer ID workflow, and verify the native switcher, provider status,
+settings persistence, and OpenCode connection. The normal release signing,
+notarization, and macOS 12 runtime gates from the original milestone still apply.
