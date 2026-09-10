@@ -401,6 +401,34 @@
       "resultSchema": "archive-chat-result.json"
     },
     {
+      "command": "get_worker_settings",
+      "domain": "config",
+      "method": "config/get_worker_settings",
+      "paramsSchema": "get-worker-settings-params.json",
+      "resultSchema": "worker-settings.json"
+    },
+    {
+      "command": "save_worker_settings",
+      "domain": "config",
+      "method": "config/save_worker_settings",
+      "paramsSchema": "save-worker-settings-params.json",
+      "resultSchema": "worker-settings.json"
+    },
+    {
+      "command": "list_archived_chats",
+      "domain": "sessions",
+      "method": "sessions/list_archived_chats",
+      "paramsSchema": "list-archived-chats-params.json",
+      "resultSchema": "archived-chats-result.json"
+    },
+    {
+      "command": "unarchive_chat",
+      "domain": "sessions",
+      "method": "sessions/unarchive_chat",
+      "paramsSchema": "unarchive-chat-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
       "command": "save_memory_record",
       "domain": "memory",
       "method": "memory/save_memory_record",

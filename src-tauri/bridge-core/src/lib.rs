@@ -116,6 +116,8 @@ pub mod worker_guard;
 pub mod worker_lifecycle;
 pub mod worker_pool;
 pub mod worker_retry;
+pub mod worker_settings;
+pub mod dependency_seed;
 pub mod worker_sandbox;
 pub mod work;
 pub mod work_actions;

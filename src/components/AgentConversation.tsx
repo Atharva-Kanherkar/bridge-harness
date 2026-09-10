@@ -15,6 +15,8 @@ import { formatElapsed, harnessLabel, modelLabel } from "../utils";
 import { cn } from "@/lib/utils";
 import { MOTION_DURATION, useMotionStagger, useMotionTransition } from "../motion";
 import { workerPanelModel, type WorkerPanelModel } from "./workerPanel";
+import { WorkerDiagnostics } from "./WorkerControls";
+import type { BridgeEvent } from "../types";
 import type { WorkerTone } from "./workerStatus";
 import { bridgeApi } from "../api";
 import { quoteSelection } from "../sideChat";
@@ -547,7 +549,7 @@ function StallNotice({ onStop }: { onStop?: () => void }) {
 
 /* ── Conversation ───────────────────────────────────────────────────────── */
 
-export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onStopWorker, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, entryWindow }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; entryWindow?: SessionEntryWindowSummary }) {
+export const AgentConversation = memo(function AgentConversation({ session, events = [], forestEntries, activeLeafId, repositoryDivergence, completion, continuationFidelity, workers, now, onResolve, onAnswerQuestion = async () => undefined, onOpenSession, onWaiveCompletion, onRefreshBase, onRetryWorker, onStopWorker, onRetryCompaction, pendingAdoptions = [], onResolveAdoption, preview, readOnly = false, working, pendingMessages = [], pendingAttachments = [], highlightEntryId, onRemember, workspaceFiles, onOpenFile, projectName, modelSwitch, onInterrupt, stopping, onAskAside, entryWindow }: { session?: Session; projectName?: string; events?: AgentEvent[]; forestEntries?: SessionEntry[]; activeLeafId?: string | null; repositoryDivergence?: string; completion?: CompletionSummary | null; continuationFidelity?: ContinuationFidelity; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion?: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onWaiveCompletion?: (attemptId: string, checkIds: string[], reason: string) => Promise<void>; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; pendingAdoptions?: WorkerRepositoryBinding[]; onResolveAdoption?: (childSessionId: string, decision: "adopt" | "discard") => Promise<void>; preview?: boolean; readOnly?: boolean; working?: boolean; pendingMessages?: string[]; pendingAttachments?: string[]; highlightEntryId?: string | null; onRemember?: (text: string) => void; workspaceFiles?: readonly string[]; onOpenFile?: (path: string, line?: number) => void; modelSwitch?: { harness: string; label: string } | null; onInterrupt?: () => void; stopping?: boolean; onAskAside?: (quoted: string) => void; entryWindow?: SessionEntryWindowSummary }) {
   const paintFrames = useRef<{ first?: number; second?: number; ids: string[] }>({ ids: [] });
   useLayoutEffect(() => {
     const pending = paintFrames.current;
@@ -608,7 +610,8 @@ export const AgentConversation = memo(function AgentConversation({ session, even
     hasPendingWork: !!working || pendingMessages.length > 0,
     streaming,
   });
-  if (!session && !preview) return <Empty title="No chat yet" copy="Start a chat from the sidebar, or open a workspace agent."/>;
+  if (!session && !preview && !readOnly) return <Empty title="No chat yet" copy="Start a chat from the sidebar, or open a workspace agent."/>;
+  if (readOnly && !visibleItems.length) return <Empty title={events.length ? "No displayable transcript content" : "No recorded messages"} copy="This history segment has no renderable conversation events." />;
   // Selecting a chat commits `session` a commit before its forest snapshot
   // follows. `forestEntries === undefined` is still loading (show the
   // skeleton); `[]` loaded empty (a new chat, show the greeting). Live turns
@@ -652,17 +655,17 @@ export const AgentConversation = memo(function AgentConversation({ session, even
   // follows, so the render in between shows the previous chat's history under
   // the new chat's id. `ScrollFollow` must not place against that: it would
   // measure the wrong transcript and count the chat as opened.
-  const historySessionId = forestEntries?.[0]?.sessionId;
+  const historySessionId = forestEntries?.[0]?.sessionId ?? (readOnly ? events[0]?.sessionId : undefined);
   const transcriptIsForThisSession = !session || !historySessionId || historySessionId === session.id;
   const populated = transcriptIsForThisSession && (visibleItems.length > 0 || optimisticBubbles.length > 0);
   const olderHidden = entryWindow ? Math.max(0, entryWindow.total - entryWindow.returned) : 0;
-  return <FileLinkContext.Provider value={fileLinks}><ScrollFollow sessionKey={session?.id ?? "preview"} populated={populated} signature={scrollSignature} className="absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth px-4 py-5 pb-16 sm:px-8 sm:py-6">
+  return <FileLinkContext.Provider value={fileLinks}><ScrollFollow sessionKey={session?.id ?? historySessionId ?? "preview"} populated={populated} signature={scrollSignature} className="absolute inset-0 overflow-y-auto overscroll-y-none scroll-smooth px-4 py-5 pb-16 sm:px-8 sm:py-6">
     <div data-conversation-content className="mx-auto flex w-full min-w-0 max-w-conversation flex-col gap-5">
       {olderHidden > 0 && <div role="status" className={`${NOTICE} border-l-info`}>
         Showing the most recent {entryWindow!.returned.toLocaleString()} of {entryWindow!.total.toLocaleString()} events in this chat. {olderHidden.toLocaleString()} earlier {olderHidden === 1 ? "event is" : "events are"} kept in history but not rendered here.
       </div>}
-      {pendingAdoptions.map(binding => <AdoptionCard key={binding.sessionId} binding={binding} onResolve={onResolveAdoption}/>)}
-      {completion && <VerificationCard summary={completion} onWaive={onWaiveCompletion}/>}
+      {pendingAdoptions.map(binding => <AdoptionCard key={binding.sessionId} binding={binding} onResolve={readOnly ? undefined : onResolveAdoption}/>)}
+      {completion && <VerificationCard summary={completion} onWaive={readOnly ? undefined : onWaiveCompletion}/>}
       {repositoryDivergence === "diverged" && <div role="alert" className={`${NOTICE} border-l-warning`}>This branch&apos;s context predates the current file state.</div>}
       {continuationFidelity === "projected_at_boundary" && <div role="status" className={`${NOTICE} border-l-info`}>Continuation restored from a phase-boundary projection; provider reasoning state was not transferred.</div>}
       {continuationFidelity === "projected_mid_turn" && <div role="alert" className={`${NOTICE} border-l-warning`}>Continuation fidelity degraded: context was projected mid-turn and provider reasoning state was lost.</div>}
@@ -688,7 +691,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
               entryId={entry.item.entryId}
               className={highlightEntryId && entry.item.entryId === highlightEntryId ? "rounded-xl bg-accent/60 ring-1 ring-ring/70" : undefined}
             >
-              <ItemView item={entry.item} workers={workers} now={now} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onRefreshBase={onRefreshBase} onRetryWorker={onRetryWorker} onStopWorker={onStopWorker} onRetryCompaction={onRetryCompaction} onRemember={onRemember} errorContext={errorContext}/>
+              <ItemView item={entry.item} workers={workers} now={now} readOnly={readOnly} onResolve={onResolve} onAnswerQuestion={onAnswerQuestion} onOpenSession={onOpenSession} onRefreshBase={readOnly ? undefined : onRefreshBase} onRetryWorker={readOnly ? undefined : onRetryWorker} onStopWorker={readOnly ? undefined : onStopWorker} onRetryCompaction={readOnly ? undefined : onRetryCompaction} onRemember={readOnly ? undefined : onRemember} errorContext={errorContext}/>
             </TranscriptRow>)}
         {optimisticBubbles.map(bubble => <TranscriptRow key={bubble.key}><div className={BUBBLE}>
           {bubble.text ? <MentionText text={bubble.text}/> : null}
@@ -707,7 +710,7 @@ export const AgentConversation = memo(function AgentConversation({ session, even
           so late-growing rows (an image decoding, a code block highlighting)
           would stop re-pinning the reader at the bottom. The chip itself is
           position:fixed, so its DOM position is invisible. */}
-      {onAskAside && <AskAsideChip onAsk={onAskAside}/>}
+      {!readOnly && onAskAside && <AskAsideChip onAsk={onAskAside}/>}
   </ScrollFollow></FileLinkContext.Provider>;
 });
 
@@ -1110,16 +1113,20 @@ const MessageRow = memo(function MessageRow({ item, onRemember }: { item: Conver
   </div>;
 }, (previous, next) => previous.onRemember === next.onRemember && sameItem(previous.item, next.item));
 
-function ItemView({ item, workers, now, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onStopWorker, onRetryCompaction, onRemember, errorContext }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
+function ItemView({ item, workers, now, readOnly, onResolve, onAnswerQuestion, onOpenSession, onRefreshBase, onRetryWorker, onStopWorker, onRetryCompaction, onRemember, errorContext }: { item: ConversationItem; workers?: WorkerPanelSource; now?: number; readOnly?: boolean; onResolve: ResolvePermission; onAnswerQuestion: ResolveQuestion; onOpenSession?: (sessionId: string) => void; onRefreshBase?: () => Promise<void>; onRetryWorker?: (childSessionId: string) => Promise<void>; onStopWorker?: (childSessionId: string) => Promise<void>; onRetryCompaction?: () => Promise<void>; onRemember?: (text: string) => void; errorContext?: { provider?: string; snapshot: UsageSnapshot | null } }) {
+  if (readOnly) { onResolve = () => undefined; onAnswerQuestion = () => undefined; }
   if (item.type === "message") return <MessageRow item={item} onRemember={onRemember}/>;
   if (item.data.staleBase === true) return <StaleBaseCard item={item} onRefresh={onRefreshBase}/>;
   if (item.type === "reasoning") return <Reasoning item={item}/>;
   if (item.type === "plan") return <PlanCard item={item}/>;
-  if (item.type === "approval") return item.data.approvalType === "prompt_mutation"
+  const interaction = item.type === "approval" ? (item.data.approvalType === "prompt_mutation"
     ? <PromptMutationApprovalCard item={item} onResolve={onResolve}/>
-    : <ApprovalCard item={item} onResolve={onResolve}/>;
-  if (item.type === "permission") return <PermissionCard item={item} onResolve={onResolve}/>;
-  if (item.type === "question") return <QuestionCard item={item} onResolve={onAnswerQuestion}/>;
+    : <ApprovalCard item={item} onResolve={onResolve}/>)
+    : item.type === "permission" ? <PermissionCard item={item} onResolve={onResolve}/>
+    : item.type === "question" ? <QuestionCard item={item} onResolve={onAnswerQuestion}/> : null;
+  if (interaction) return readOnly
+    ? <fieldset disabled className="m-0 min-w-0 border-0 p-0" aria-label="Historical interaction, read-only">{interaction}</fieldset>
+    : interaction;
   if (item.type === "delegation") return <DelegationRow item={item} workers={workers} now={now} onOpenSession={onOpenSession} onRetryWorker={onRetryWorker} onStopWorker={onStopWorker}/>;
   if (item.type === "checkpoint" || item.type === "compaction" || item.type === "context-compacted" || item.type === "branch-summary") return <ForestCard item={item} onRetryCompaction={onRetryCompaction}/>;
   if (item.type === "model-change") return <ModelChangedRow item={item}/>;
@@ -1627,6 +1634,7 @@ function DelegationRow({ item, workers, now, onOpenSession, onRetryWorker, onSto
   if (panel && childSessionId) {
     return <WorkerPanel
       model={panel}
+      reasons={workers?.reasons ?? []}
       objective={item.text}
       modelLabel={model}
       effort={effort}
@@ -1652,6 +1660,7 @@ function DelegationRow({ item, workers, now, onOpenSession, onRetryWorker, onSto
 /// who the worker is, what the host knows about it, and what it just did — and
 /// a panel is useless with any of them missing.
 export interface WorkerPanelSource {
+  reasons?: BridgeEvent[];
   sessions: Session[];
   runtimes: WorkerRuntimeRecord[];
   /** The *global* live stream, not this session's slice: the worker's frames
@@ -1711,7 +1720,8 @@ function useLiveClock(active: boolean, override?: number): number {
 /// the ask, clamped, and the summary band is the outcome, clamped and expandable
 /// on request. A finished card used to open with a dozen lines of unbroken prose
 /// and then repeat its first sentence, truncated, three bands lower.
-function WorkerPanel({ model, objective, modelLabel: requestedModel, effort, now, onOpenSession, onStopWorker }: {
+function WorkerPanel({ model, objective, modelLabel: requestedModel, effort, now, onOpenSession, onStopWorker, reasons }: {
+  reasons: BridgeEvent[];
   model: WorkerPanelModel;
   objective?: string;
   modelLabel?: string;
@@ -1725,7 +1735,7 @@ function WorkerPanel({ model, objective, modelLabel: requestedModel, effort, now
   // says. Reading only `reported` left ended-but-unreported workers pulsing
   // forever under a terminal label, each one re-rendering every second with a
   // clock that never stopped climbing.
-  const live = !model.reported && !model.endedAt;
+  const live = !model.reported && !model.endedAt && ["working", "waiting", "warm"].includes(model.status.tone);
   const clock = useLiveClock(live, now);
   // A finished worker reports how long it took, not how long ago it started.
   const elapsedAt = !live && model.endedAt ? Date.parse(model.endedAt) : clock;
@@ -1798,6 +1808,7 @@ function WorkerPanel({ model, objective, modelLabel: requestedModel, effort, now
         thing — "Expand" put the worker in an overlay, "Open session" made it
         the selected conversation — and the pair read as a choice the reader had
         to understand before they could look at their worker. */}
+    <div className="px-3.5 pb-2"><WorkerDiagnostics reasons={reasons} sessionId={model.session.id} /></div>
     {onOpenSession && <footer className="flex items-center justify-end border-t border-border px-3.5 py-2">
       <button type="button" onClick={() => onOpenSession(model.session.id)} className="inline-flex min-h-7 items-center gap-1.5 rounded-full border border-border px-2.5 py-1 text-[11px] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><CornerDownRight size={11} aria-hidden="true"/> Open session</button>
     </footer>}

@@ -16,6 +16,8 @@ export type Section =
   | "harnesses"
   | "work"
   | "import"
+  | "archives"
+  | "workers"
   | "storage";
 
 export type RailGroup = "General" | "Agents" | "Runtimes" | "Data";
@@ -31,14 +33,16 @@ export const SECTION_LABELS: Record<Section, string> = {
   work: "Work briefing",
   import: "Import",
   storage: "Storage",
+  archives: "Archived chats",
+  workers: "Workers",
 };
 
 /** Rail order. The list is the contract: General, Agents, Runtimes, Data. */
 export const SECTION_ORDER: { group: RailGroup; sections: Section[] }[] = [
   { group: "General", sections: ["appearance", "permissions", "composer"] },
-  { group: "Agents", sections: ["agents", "models", "prompts"] },
+  { group: "Agents", sections: ["agents", "models", "workers", "prompts"] },
   { group: "Runtimes", sections: ["harnesses"] },
-  { group: "Data", sections: ["work", "import", "storage"] },
+  { group: "Data", sections: ["work", "import", "storage", "archives"] },
 ];
 
 export const ALL_SECTIONS: Section[] = SECTION_ORDER.flatMap(group => group.sections);

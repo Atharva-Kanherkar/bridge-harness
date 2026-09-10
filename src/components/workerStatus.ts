@@ -7,6 +7,7 @@ export type WorkerStatus = { tone: WorkerTone; label: string; detail?: string };
 // Trust a typed result only after it is reported. Reused warm workers retain
 // their prior result while pending, so lifecycle state remains authoritative.
 export function workerStatus(session: Session, runtime?: WorkerRuntimeRecord): WorkerStatus {
+  if (!runtime && session.parentSessionId) return { tone: "attention", label: "STATUS UNAVAILABLE", detail: "Worker runtime has not been loaded." };
   const reported = runtime?.resultStatus === "reported";
   const lastResult = reported ? (runtime?.lastResult as { status?: string; summary?: string } | null | undefined) : undefined;
   const resultStatus = typeof lastResult?.status === "string" ? lastResult.status : undefined;

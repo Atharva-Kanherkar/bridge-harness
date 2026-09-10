@@ -5,6 +5,8 @@ import type { QueuedWorkerRequest } from "../protocol/generated/protocol";
 import { cn } from "@/lib/utils";
 import { workerStatus, type WorkerTone } from "./workerStatus";
 import type { TerminalActivity } from "./TerminalPane";
+import { workerClock } from "./WorkerControls";
+import { formatElapsed } from "../utils";
 
 // The background-tasks pane: one list answering "what is Bridge doing right
 // now, and what did it just finish?". The expensive failure mode it removes
@@ -23,17 +25,6 @@ const TONE_DOT: Record<WorkerTone, string> = {
   stalled: "bg-destructive",
   idle: "bg-muted-foreground/25",
 };
-
-function elapsedLabel(iso?: string | null): string | undefined {
-  if (!iso) return undefined;
-  const started = new Date(iso).getTime();
-  if (Number.isNaN(started)) return undefined;
-  const seconds = Math.max(0, Math.floor((Date.now() - started) / 1000));
-  if (seconds < 60) return `${seconds}s`;
-  const minutes = Math.floor(seconds / 60);
-  if (minutes < 60) return `${minutes}m`;
-  return `${Math.floor(minutes / 60)}h ${minutes % 60}m`;
-}
 
 function queueReason(request: unknown): string | undefined {
   if (typeof request !== "object" || request === null) return undefined;
@@ -83,7 +74,7 @@ export function TasksPane({ sessions, runtimes = [], queue = [], terminalActivit
       {empty && <PaneState icon={ListTree} title="No background tasks">Nothing is running in the background for this session.</PaneState>}
 
       {workerRows.map(({ runtime, session, status, broken }) => {
-        const elapsed = elapsedLabel(runtime.lastActivityAt ?? session.startedAt);
+        const elapsed = formatElapsed(session.startedAt, workerClock(session, runtime, Date.now()));
         const retries = Number(runtime.retryCount) || 0;
         return <div
           key={runtime.sessionId}

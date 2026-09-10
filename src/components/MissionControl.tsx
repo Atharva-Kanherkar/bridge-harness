@@ -6,6 +6,7 @@ import { formatElapsed, harnessLabel } from "../utils";
 import { WorkerDetail } from "./WorkerDetail";
 import { isBroken, isRunning, isWaiting, workerStatus, type WorkerTone } from "./workerStatus";
 import { workerFeedLines } from "./workerPanel";
+import { WorkerDiagnostics, WorkerStopControl, workerClock } from "./WorkerControls";
 
 // A tile is bigger than a chat-embedded panel, so it affords one more line.
 const TILE_FEED_LINES = 4;
@@ -64,7 +65,7 @@ function agentStatus(session: Session, runtime?: WorkerRuntimeRecord): { tone: W
   if (session.parentSessionId) return workerStatus(session, runtime);
   switch (session.status) {
     case "failed": return { tone: "failed", label: "FAILED" };
-    case "cancelled": return { tone: "failed", label: "CANCELLED" };
+    case "cancelled": return { tone: "idle", label: "CANCELLED" };
     case "working": return { tone: "working", label: "WORKING" };
     case "waiting": return { tone: "waiting", label: "NEEDS YOU" };
     case "ready": return { tone: "warm", label: "READY" };
@@ -96,19 +97,16 @@ type Agent = {
   activity?: string;
 };
 
-function AgentTile({ agent, active, now, onFocus }: { agent: Agent; active: boolean; now: number; onFocus: () => void }) {
+function AgentTile({ agent, active, now, onFocus, onStop, reasons }: { agent: Agent; active: boolean; now: number; onFocus: () => void; onStop?: (id: string) => Promise<void>; reasons: BridgeEvent[] }) {
   const { session, runtime, tone, label, detail, lines, activity } = agent;
   const isWorker = !!session.parentSessionId;
   const needsYou = isWaiting(tone);
   const broken = isBroken(tone);
   const stream = lines.length ? lines : detail ? [{ id: -1, text: detail }] : activity ? [{ id: -2, text: activity }] : [];
   return (
-    <button
-      type="button"
-      onClick={onFocus}
-      aria-label={`Focus ${session.title || session.label}`}
+    <div
       className={cn(
-        "group relative flex h-56 min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card text-left transition-all",
+        "group relative flex min-h-56 min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card text-left transition-all",
         "hover:bg-accent hover:border-input",
         active && "ring-1 ring-foreground/30",
       )}
@@ -119,7 +117,7 @@ function AgentTile({ agent, active, now, onFocus }: { agent: Agent; active: bool
 
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-3.5 py-2.5">
         <span className="flex w-4 shrink-0 justify-center">{isWorker ? <CornerDownRight size={13} className="text-muted-foreground" aria-hidden="true" /> : <Bot size={14} className="text-muted-foreground" strokeWidth={1.7} aria-hidden="true" />}</span>
-        <span className="min-w-0 flex-1 truncate text-[13px] font-semibold text-foreground">{session.title || session.label}</span>
+        <button type="button" onClick={onFocus} aria-label={`Focus ${session.title || session.label}`} className="min-w-0 flex-1 truncate text-left text-[13px] font-semibold text-foreground hover:underline">{session.title || session.label}</button>
         <span className="flex shrink-0 items-center gap-1.5">
           <TileIcon tone={tone} />
           <span className={cn("text-[11px] font-medium", toneText[tone])}>{label}</span>
@@ -130,14 +128,15 @@ function AgentTile({ agent, active, now, onFocus }: { agent: Agent; active: bool
         <span className="truncate">{runtime?.taskFamily ?? (session.kind === "orchestrator" ? "orchestrator" : harnessLabel(session.harness))}</span>
         {runtime?.retryCount ? <span className="inline-flex items-center gap-0.5"><RefreshCw size={8} aria-hidden="true" />retry {runtime.retryCount}</span> : null}
         <GitBranch size={9} aria-hidden="true" className="ml-auto shrink-0" />
-        <span className="shrink-0">{formatElapsed(session.startedAt, now)}</span>
+        <span className="shrink-0">{formatElapsed(session.startedAt, workerClock(session, runtime, now))}</span>
         <span className="shrink-0 text-muted-foreground">{relativeUpdate(runtime?.lastActivityAt ?? runtime?.updatedAt, now)}</span>
       </div>
+      <p className="truncate px-3.5 pt-1 text-[11px] text-muted-foreground">{harnessLabel(session.harness)} · {session.model ?? "Model not reported"}</p>
 
       {needsYou && (
         <div className="mx-3.5 mt-2 flex shrink-0 items-center gap-1.5 rounded-r-md border-l-2 border-l-warning bg-accent px-2 py-1 text-[11px] font-medium text-foreground">
           <AlertTriangle size={11} className="shrink-0 text-warning" aria-hidden="true" />
-          <span className="truncate">{runtime?.waitingReason ? `Waiting: ${runtime.waitingReason.replaceAll("_", " ")} — click to open` : "Needs your approval — click to open"}</span>
+          <span className="truncate">{runtime?.waitingReason ? `Waiting: ${runtime.waitingReason.replaceAll("_", " ")} - inspect activity` : tone === "waiting" ? "Needs your approval" : detail ?? "Needs attention"}</span>
         </div>
       )}
 
@@ -145,7 +144,7 @@ function AgentTile({ agent, active, now, onFocus }: { agent: Agent; active: bool
         <p className="mx-3.5 mt-2 shrink-0 truncate font-mono text-[11px] font-medium text-foreground/85">{runtime.progressSummary}</p>
       )}
 
-      <div className="relative mt-2 min-h-0 flex-1 overflow-hidden px-3.5 pb-3">
+      <div className="relative mt-2 min-h-16 flex-1 overflow-hidden px-3.5 pb-3">
         {stream.length ? (
           <div className="flex flex-col gap-1">
             {stream.map((line, index) => (
@@ -164,7 +163,8 @@ function AgentTile({ agent, active, now, onFocus }: { agent: Agent; active: bool
           <p className="font-mono text-[11px] text-muted-foreground">No recent activity.</p>
         )}
       </div>
-    </button>
+      {isWorker && <div className="space-y-2 border-t border-border px-3.5 py-2"><WorkerDiagnostics reasons={reasons} sessionId={session.id} /><div className="flex justify-between gap-2"><button type="button" onClick={onFocus} className="text-xs text-muted-foreground hover:text-foreground">Inspect activity</button><WorkerStopControl session={session} runtime={runtime} onStop={onStop} /></div></div>}
+    </div>
   );
 }
 
@@ -179,6 +179,7 @@ export function MissionControl({
   onToggleFullscreen,
   onFocusSession,
   onSteer,
+  onStopWorker,
 }: {
   sessions: Session[];
   runtimes: WorkerRuntimeRecord[];
@@ -191,6 +192,7 @@ export function MissionControl({
   onFocusSession: (sessionId: string) => void;
   /** Send guidance into one worker, from the tile you noticed it on. */
   onSteer?: (sessionId: string, text: string) => Promise<void>;
+  onStopWorker?: (sessionId: string) => Promise<void>;
 }) {
   const [detailSessionId, setDetailSessionId] = useState<string>();
   const [liveNow, setLiveNow] = useState(Date.now);
@@ -207,10 +209,11 @@ export function MissionControl({
       if (session.harness === "shell") continue;
       const runtime = runtimes.find(item => item.sessionId === session.id);
       const isActive = session.id === activeSessionId;
-      // Runtimes and reasons are scoped to the loaded forest. A worker we have no
-      // runtime for belongs to a forest we did not load, so its status cannot be
-      // trusted (a failed one would read as DONE); leave it out rather than lie.
-      if (session.parentSessionId && !runtime && !isActive) continue;
+      // A missing runtime is visible as unavailable, never guessed as success.
+      // But unloaded historical forests must not turn every ended worker into
+      // a new attention tile. Ended is a liveness fact, not a success claim.
+      if (session.parentSessionId && !runtime && !isActive
+        && (session.endedAt || ["completed", "cancelled", "stopped"].includes(session.status))) continue;
       const status = agentStatus(session, runtime);
       // Only live agents belong on the grid. Idle chats and finished sessions are
       // dropped (keeping the active one so returning to the grid never blanks),
@@ -254,6 +257,8 @@ export function MissionControl({
           onClose={closeDetail}
           onFocusSession={onFocusSession}
           onSteer={detailSession.parentSessionId ? onSteer : undefined}
+          onStopWorker={onStopWorker}
+          reasons={reasons}
         />
       </div>
     );
@@ -285,6 +290,8 @@ export function MissionControl({
                 agent={agent}
                 active={agent.session.id === activeSessionId}
                 now={effectiveNow}
+                reasons={reasons}
+                onStop={onStopWorker}
                 onFocus={() => {
                   if (agent.session.parentSessionId) setDetailSessionId(agent.session.id);
                   else onFocusSession(agent.session.id);

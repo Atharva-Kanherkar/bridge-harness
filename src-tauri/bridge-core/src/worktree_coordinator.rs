@@ -18,7 +18,7 @@ pub struct PullRequestCheckout {
 
 impl WorktreeCoordinator {
     pub fn prepare_isolated_worker(
-        db: &Connection,
+        db: &std::sync::Mutex<Connection>,
         namespace_root: &Path,
         workspace_id: &str,
         task_worktree: &Path,
@@ -26,7 +26,7 @@ impl WorktreeCoordinator {
         session_id: &str,
         owned_paths: &[String],
     ) -> Result<(PathBuf, String), BridgeError> {
-        let active_writers = store::worker_leases(db, workspace_id)?
+        let active_writers = store::worker_leases(&db.lock().unwrap(), workspace_id)?
             .into_iter()
             .filter(|lease| lease.session_id != session_id && lease.lease_status == "active")
             .filter(|lease| lease.write_mode != "read_only")
@@ -41,13 +41,26 @@ impl WorktreeCoordinator {
         // paths that reach creation anyway.
         let repo_root = task_worktree.to_string_lossy().to_string();
         if let Some(reason) =
-            worktree_registry::over_capacity(db, &repo_root, &WorktreeRetention::default())?
+            worktree_registry::over_capacity(&db.lock().unwrap(), &repo_root, &WorktreeRetention::default())?
         {
             return Err(BridgeError::Invalid(format!(
                 "cannot create an isolated worker worktree: {reason}"
             )));
         }
         let branch = format!("{}-worker-{}", task_branch, git::slug(session_id));
+        let intended = git::worker_worktree_path(namespace_root, task_worktree, session_id)?;
+        if intended.exists() {
+            return Err(BridgeError::Invalid("worker checkout already exists".into()));
+        }
+        if let Some(parent) = intended.parent() { std::fs::create_dir_all(parent)?; }
+        let canonical_path = worktree_registry::canonical_key(&intended);
+        // Claim the path before Git starts: a concurrent reconciliation can see
+        // the directory mid-creation and must not adopt it as expendable output.
+        let reserved = db.lock().unwrap().execute(
+            "UPDATE worker_runtime SET worktree_path=?2,worktree_branch=?3 WHERE session_id=?1 AND result_status='pending' AND lifecycle_state IN ('starting','working','resuming')",
+            params![session_id, canonical_path, branch],
+        )?;
+        if reserved != 1 { return Err(BridgeError::Invalid("worker is no longer awaiting a checkout".into())); }
         let worktree = git::create_child_worktree(
             task_worktree,
             namespace_root,
@@ -56,12 +69,13 @@ impl WorktreeCoordinator {
             owned_paths,
             &active_writers,
         )?;
-        db.execute(
+        let connection = db.lock().unwrap();
+        connection.execute(
             "UPDATE worker_runtime SET worktree_path=?2,worktree_branch=?3,updated_at=?4 WHERE session_id=?1",
-            rusqlite::params![session_id, worktree.path.to_string_lossy(), worktree.branch, chrono::Utc::now().to_rfc3339()],
+            rusqlite::params![session_id, canonical_path, worktree.branch, chrono::Utc::now().to_rfc3339()],
         )?;
         worktree_registry::register(
-            db,
+            &connection,
             &NewWorktree {
                 kind: worktree_registry::KIND_WORKER.to_owned(),
                 repo_root,
@@ -72,6 +86,15 @@ impl WorktreeCoordinator {
                 base_commit: Some(worktree.base_commit.clone()),
             },
         )?;
+        drop(connection);
+        let seed = crate::dependency_seed::seed(task_worktree, &worktree.path);
+        let db = db.lock().unwrap();
+        store::event(&db, "storage", "worktree.dependencies", session_id, seed)?;
+        let pending: bool = db.query_row(
+            "SELECT result_status='pending' AND lifecycle_state IN ('starting','working','resuming') FROM worker_runtime WHERE session_id=?1",
+            params![session_id], |row| row.get(0),
+        )?;
+        if !pending { return Err(BridgeError::Invalid("worker was stopped while its checkout was being prepared".into())); }
         Ok((worktree.path, worktree.branch))
     }
 
@@ -260,6 +283,36 @@ mod tests {
 
     fn database() -> Mutex<Connection> {
         Mutex::new(crate::store::open(Path::new(":memory:")).unwrap())
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn a_slow_worker_checkout_releases_the_database_but_reserves_its_path() {
+        use std::os::unix::fs::PermissionsExt;
+        let (scratch, clone) = fixture();
+        let db = database();
+        db.lock().unwrap().execute_batch(
+            "INSERT INTO workspaces(id,title,status,created_at) VALUES('w','Work','idle','now');
+             INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source) VALUES('child','w','codex','Child','starting','reported');
+             INSERT INTO worker_runtime(session_id,parent_session_id,lifecycle_state,task_family,compatibility_key,result_status,retry_count,updated_at)
+             VALUES('child','child','starting','implementation','key','pending',0,'now');"
+        ).unwrap();
+        let entered = scratch.path().join("entered");
+        let release = scratch.path().join("release");
+        let hook = clone.join(".git/hooks/post-checkout");
+        std::fs::write(&hook, format!("#!/bin/sh\ntouch '{}'\nwhile ! test -f '{}'; do sleep 0.02; done\n", entered.display(), release.display())).unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let namespace = scratch.path().join("workers");
+        std::thread::scope(|scope| {
+            let handle = scope.spawn(|| WorktreeCoordinator::prepare_isolated_worker(&db, &namespace, "w", &clone, "main", "child", &["src/**".into()]));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+            while !entered.exists() && std::time::Instant::now() < deadline { std::thread::sleep(std::time::Duration::from_millis(10)); }
+            let observed = db.try_lock().ok().and_then(|db| db.query_row("SELECT worktree_path FROM worker_runtime WHERE session_id='child'", [], |row| row.get::<_, Option<String>>(0)).ok().flatten());
+            std::fs::write(&release, "continue").unwrap();
+            let checkout = handle.join().unwrap().unwrap();
+            assert!(entered.exists(), "the slow Git fixture must run");
+            assert_eq!(observed, Some(worktree_registry::canonical_key(&checkout.0)), "the DB is available and liveness protects the new path while Git is blocked");
+        });
     }
 
     #[test]

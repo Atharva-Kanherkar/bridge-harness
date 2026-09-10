@@ -16,7 +16,7 @@ use crate::model::*;
 use crate::runtime::BridgeCore;
 use crate::{
     adapters, agent, agent_config, binary, claude_adapter, compaction_controller, completion,
-    context::ContextProjector, git, handoff, model_profiles, orchestrator, policy, restoration,
+    context::ContextProjector, git, handoff, model_profiles, orchestrator, restoration,
     session_forest, session_supervisor, store, BridgeError,
 };
 use rusqlite::{params, Connection, OptionalExtension};
@@ -1407,7 +1407,7 @@ pub fn session_forest_snapshot_with_repository_state(
         |row| row.get(0),
     )?;
     let workspace_id = workspace_id.unwrap_or_default();
-    let config = policy::PolicyConfig::default();
+    let config = crate::worker_settings::policy(db, &workspace_id)?;
     // Bounded on purpose. The untrimmed read of a long chat reached 129 MB of
     // payload, which is both slow to parse twice (here and in the renderer)
     // and past the daemon's frame ceiling, so it failed the open outright.

@@ -30,10 +30,11 @@ build directory: that is the 3.4 GB of the 3.9 GB measured. The other two are
 *download* caches — bun documents `--cache-dir` as "store & load cached data",
 npm's `cache` likewise, and neither offers a supported way to put the installed
 tree anywhere but `<cwd>/node_modules`. So a second worker's install is fast,
-but its `node_modules` still lives in its own checkout. Sharing that needs a
-copy-on-write clone taken when the worktree is cut, which raises a question this
-does not answer — a branch whose lockfile differs from the checkout it was
-cloned from — so it is left for a follow-up rather than guessed at.
+but its `node_modules` still lives in its own checkout. Worker creation now seeds
+an independent copy-on-write tree only when tracked dependency manifests and
+lockfiles match the source. A mismatch or unsupported clone leaves the normal
+install workflow in place, never a partial tree or shared writable symlink.
+See [the audit](worker-storage-audit.md) for measurement and platform limits.
 
 Two costs are paid knowingly. Concurrent builds of one repository serialize on
 cargo's lock rather than building in parallel, which is the right trade against
@@ -228,6 +229,10 @@ why nothing may touch it — no disabled button with a tooltip, because "at risk
 without "uncommitted changes" tells a person nothing they can act on.
 
 ## Archiving a chat
+
+Settings -> Archived chats lists and reads archived conversations. Unarchiving
+restores visibility only: no checkout is recreated and no model starts. A later
+explicit resume is a separate operation.
 
 `sessions/archive_chat` files one conversation away and reclaims the checkout
 *that chat owns*. It is deliberately not `archive_workspace`, which deletes every

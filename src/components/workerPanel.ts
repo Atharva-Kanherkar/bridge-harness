@@ -143,7 +143,7 @@ export function workerPanelModel(
     waitingReason: runtime?.waitingReason ?? undefined,
     waitingSince: runtime?.waitingSince ?? undefined,
     startedAt: session.startedAt ?? undefined,
-    endedAt: session.endedAt ?? undefined,
+    endedAt: session.endedAt ?? (runtime?.resultStatus === "reported" ? runtime.updatedAt : undefined),
     taskFamily: runtime?.taskFamily,
     feed: workerFeedLines(events, childSessionId, feedLines),
     reported: runtime?.resultStatus === "reported",

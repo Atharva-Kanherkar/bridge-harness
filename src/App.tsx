@@ -617,8 +617,8 @@ function AppContent() {
   // its slice of the *global* live stream — the parent's slice would show none
   // of the child's frames.
   const workerPanelSource = useMemo(
-    () => ({ sessions: state.sessions, runtimes: forest?.workerRuntimes ?? [], events: agentEvents }),
-    [agentEvents, forest?.workerRuntimes, state.sessions],
+    () => ({ sessions: state.sessions, runtimes: forest?.workerRuntimes ?? [], events: agentEvents, reasons: forest?.reasons ?? [] }),
+    [agentEvents, forest?.workerRuntimes, forest?.reasons, state.sessions],
   );
   const expandedWorker = useMemo(
     () => state.sessions.find(candidate => candidate.id === expandedWorkerId),
@@ -2253,6 +2253,7 @@ function AppContent() {
         onToggleFullscreen={toggleLayoutFullscreen}
         onFocusSession={openSession}
         onSteer={steerWorker}
+        onStopWorker={stopWorker}
       /> : session ? <>
         <SessionToolbar
           title={session.title || session.label}
@@ -2311,6 +2312,8 @@ function AppContent() {
               onClose={() => setExpandedWorkerId(undefined)}
               onFocusSession={openSession}
               onSteer={steerWorker}
+              onStopWorker={stopWorker}
+              reasons={forest?.reasons ?? []}
             />
           </div>}
           {/* A user-made delegation floats over the chat it was asked from;

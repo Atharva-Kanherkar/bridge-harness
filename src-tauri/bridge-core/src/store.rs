@@ -2881,11 +2881,11 @@ pub fn state(db: &Connection) -> Result<BridgeState, BridgeError> {
         },
     )?;
     let workspaces = query(db, "SELECT id,project_id,city,title,branch,path,status,dirty_files,additions,deletions,created_at FROM workspaces ORDER BY created_at", |r| Ok(Workspace { id:r.get(0)?, project_id:r.get(1)?, city:r.get(2)?, title:r.get(3)?, branch:r.get(4)?, path:r.get(5)?, status:status(&r.get::<_,String>(6)?), dirty_files:r.get(7)?, additions:r.get(8)?, deletions:r.get(9)?, created_at:r.get(10)? }))?;
-    let sessions = query(db, "SELECT s.id,s.workspace_id,s.harness,s.label,s.status,s.started_at,s.ended_at,s.context_percent,s.usage_percent,s.metric_source,s.provider_session_id,s.active_turn_id,s.model,s.requested_tier,s.effort,s.parent_session_id,s.depth,COALESCE(h.restoration_mode,'fresh'),s.continuation_fidelity,s.title,s.kind,s.cwd FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id
-         WHERE s.archived_at IS NULL
-           AND (s.parent_session_id IS NULL
-                OR NOT EXISTS(SELECT 1 FROM sessions p
-                               WHERE p.id=s.parent_session_id AND p.archived_at IS NOT NULL))
+    let sessions = query(db, "WITH RECURSIVE archived(id) AS (
+             SELECT id FROM sessions WHERE archived_at IS NOT NULL
+             UNION SELECT s.id FROM sessions s JOIN archived a ON s.parent_session_id=a.id
+         ) SELECT s.id,s.workspace_id,s.harness,s.label,s.status,s.started_at,s.ended_at,s.context_percent,s.usage_percent,s.metric_source,s.provider_session_id,s.active_turn_id,s.model,s.requested_tier,s.effort,s.parent_session_id,s.depth,COALESCE(h.restoration_mode,'fresh'),s.continuation_fidelity,s.title,s.kind,s.cwd FROM sessions s LEFT JOIN session_heads h ON h.session_id=s.id
+         WHERE NOT EXISTS(SELECT 1 FROM archived a WHERE a.id=s.id)
          ORDER BY s.rowid", |r| Ok(Session { id:r.get(0)?, workspace_id:r.get(1)?, harness:harness(&r.get::<_,String>(2)?), label:r.get(3)?, status:status(&r.get::<_,String>(4)?), started_at:r.get(5)?, ended_at:r.get(6)?, context_percent:r.get(7)?, usage_percent:r.get(8)?, metric_source:r.get(9)?, provider_session_id:r.get(10)?, active_turn_id:r.get(11)?, model:r.get(12)?, requested_tier:capability_tier(r.get::<_,Option<String>>(13)?), effort:r.get(14)?, parent_session_id:r.get(15)?, depth:r.get(16)?, restoration_mode:restoration_mode(&r.get::<_,String>(17)?), continuation_fidelity:continuation_fidelity(&r.get::<_,String>(18)?), title:r.get(19)?, kind:r.get(20)?, cwd:r.get(21)? }))?;
     let events = query(
         db,

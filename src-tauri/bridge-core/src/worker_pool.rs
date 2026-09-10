@@ -236,7 +236,7 @@ impl WorkerPool {
     ) -> Result<Option<QueuedWorkerRequest>, BridgeError> {
         Self::maintain_queue(db, Utc::now())?;
         let active = policy::load_workers(db, workspace_id, "active")?;
-        if active.len() >= policy::PolicyConfig::default().max_concurrent_workers {
+        if active.len() >= crate::worker_settings::policy(db, workspace_id)?.max_concurrent_workers {
             return Ok(None);
         }
         let Some(request) = store::queued_worker_requests(db, workspace_id)?

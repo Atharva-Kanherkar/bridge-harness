@@ -64,6 +64,10 @@ export type BridgeMethod =
   | "sessions/refresh_account_usage"
   | "sessions/stop_session"
   | "sessions/archive_chat"
+  | "config/get_worker_settings"
+  | "config/save_worker_settings"
+  | "sessions/list_archived_chats"
+  | "sessions/unarchive_chat"
   | "memory/save_memory_record"
   | "memory/list_memory_records"
   | "memory/delete_memory_record"
@@ -246,6 +250,10 @@ export const BRIDGE_METHODS = [
   { method: "sessions/refresh_account_usage", domain: "sessions", command: "refresh_account_usage" },
   { method: "sessions/stop_session", domain: "sessions", command: "stop_session" },
   { method: "sessions/archive_chat", domain: "sessions", command: "archive_chat" },
+  { method: "config/get_worker_settings", domain: "config", command: "get_worker_settings" },
+  { method: "config/save_worker_settings", domain: "config", command: "save_worker_settings" },
+  { method: "sessions/list_archived_chats", domain: "sessions", command: "list_archived_chats" },
+  { method: "sessions/unarchive_chat", domain: "sessions", command: "unarchive_chat" },
   { method: "memory/save_memory_record", domain: "memory", command: "save_memory_record" },
   { method: "memory/list_memory_records", domain: "memory", command: "list_memory_records" },
   { method: "memory/delete_memory_record", domain: "memory", command: "delete_memory_record" },
@@ -527,6 +535,10 @@ export interface BridgeMethodParams {
   "worktrees/reclaim_worktree": ReclaimWorktreeParams;
   "worktrees/sweep_worktrees": undefined;
   "sessions/archive_chat": ArchiveChatParams;
+  "config/get_worker_settings": GetWorkerSettingsParams;
+  "config/save_worker_settings": SaveWorkerSettingsParams;
+  "sessions/list_archived_chats": ListArchivedChatsParams;
+  "sessions/unarchive_chat": UnarchiveChatParams;
   "usage/summary": SummaryParams;
   "usage/list_price_overrides": undefined;
   "usage/set_price_override": SetPriceOverrideParams;
@@ -672,6 +684,10 @@ export interface BridgeMethodResults {
   "sessions/refresh_account_usage": UnitResult;
   "sessions/stop_session": BridgeState;
   "sessions/archive_chat": ArchiveChatResult;
+  "config/get_worker_settings": WorkerSettings;
+  "config/save_worker_settings": WorkerSettings;
+  "sessions/list_archived_chats": ArchivedChatsResult;
+  "sessions/unarchive_chat": UnitResult;
   "memory/save_memory_record": MemoryRecord;
   "memory/list_memory_records": ListMemoryRecordsResult;
   "memory/delete_memory_record": MemoryRecord;
@@ -830,6 +846,14 @@ export interface AgentDefinition {
 export type AgentShortcutDisposition = "launched" | "queued" | "awaitingApproval";
 
 export type ApprovalDecision = "accept" | "acceptForSession" | "decline" | "cancel";
+
+export interface ArchivedChat {
+  archivedAt: string;
+  harness: string;
+  id: string;
+  title: string;
+  workspaceTitle?: string | null;
+}
 
 export type AuthState = "signed_in" | "signed_out" | "unknown";
 
@@ -2129,6 +2153,16 @@ export interface WorkerRuntimeRecord {
   worktreePath?: string | null;
 }
 
+export interface WorkerSettings {
+  automaticRetry: boolean;
+  defaultHarness?: string | null;
+  maxConcurrentWorkers: number;
+  maxWorkersPerTurn: number;
+  providerFailover: boolean;
+  stallTimeoutSeconds: number;
+  warmRetentionMinutes: number;
+}
+
 export interface Workspace {
   additions: JsSafeI64;
   branch?: string | null;
@@ -2991,6 +3025,30 @@ export interface ArchiveChatResult {
   archived: boolean;
   bytesFreed: number;
   worktreeDetail?: string | null;
+}
+
+export interface GetWorkerSettingsParams {
+  workspaceId: string;
+}
+
+export interface SaveWorkerSettingsParams {
+  settings: WorkerSettings;
+  workspaceId: string;
+}
+
+export interface ListArchivedChatsParams {
+  offset?: number;
+  query?: string;
+  rootSessionId?: string | null;
+}
+
+export interface ArchivedChatsResult {
+  chats: ArchivedChat[];
+  hasMore: boolean;
+}
+
+export interface UnarchiveChatParams {
+  sessionId: string;
 }
 
 export interface SummaryParams {
