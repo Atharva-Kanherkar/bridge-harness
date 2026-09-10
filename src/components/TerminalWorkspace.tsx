@@ -33,6 +33,7 @@ type PaneActions = {
   resize: (path: string, ratio: number) => void;
   onRecord: (record: TerminalRecord) => void;
   searchRequest: { id: string; serial: number } | null;
+  searchHandled: () => void;
 };
 
 function IconButton({ title, onClick, children }: { title: string; onClick: () => void; children: ReactNode }) {
@@ -74,7 +75,7 @@ function Pane({ id, actions }: { id: string; actions: PaneActions }) {
       <IconButton title={expanded ? "Restore panes" : `Maximize pane (${terminalChord("maximize")})`} onClick={() => actions.maximize(id)}>{expanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}</IconButton>
       <IconButton title={`Close ${record.title}`} onClick={() => actions.close(id)}><X size={13} /></IconButton>
     </div>
-    <TerminalSurface record={record} focused={focused} onRecord={actions.onRecord} searchRequest={actions.searchRequest?.id === id ? actions.searchRequest.serial : 0} />
+    <TerminalSurface record={record} focused={focused} onRecord={actions.onRecord} onSearchHandled={actions.searchHandled} searchRequest={actions.searchRequest?.id === id ? actions.searchRequest.serial : 0} />
     {record.status !== "running" && <div className="flex shrink-0 items-center gap-2 border-t border-border bg-background px-2 py-1.5 text-[11px] text-muted-foreground"><span className="flex-1">Process ended{record.exitCode != null ? ` · exit ${record.exitCode}` : ""}. History restored.</span><button type="button" onClick={() => actions.restart(id)} className="inline-flex items-center gap-1 rounded px-2 py-1 text-foreground hover:bg-accent"><RotateCcw size={11} />Restart</button></div>}
     <div className="flex h-6 shrink-0 items-center gap-2 border-t border-border bg-background px-2 font-mono text-[10px] text-muted-foreground"><span title={record.cwd} className="min-w-0 flex-1 truncate">{record.cwd}</span><span className="max-w-28 truncate">{actions.branch}</span>{record.historyTruncated && <span title="Older history was trimmed to the storage budget">History trimmed</span>}</div>
     {drop && <div aria-hidden="true" className={cn("pointer-events-none absolute z-10 rounded border-2 border-ring bg-selection/40", drop === "left" && "inset-y-0 left-0 w-1/2", drop === "right" && "inset-y-0 right-0 w-1/2", drop === "top" && "inset-x-0 top-0 h-1/2", drop === "bottom" && "inset-x-0 bottom-0 h-1/2")} />}
@@ -113,6 +114,7 @@ function minimumSize(node: PaneNode): { width: number; height: number } {
 export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string; branch: string }) {
   const [state, setState] = useState<WorkspaceState | null>(null);
   const [error, setError] = useState<string>();
+  const [retrySave, setRetrySave] = useState(false);
   const [busy, setBusy] = useState(false);
   const [agentMenu, setAgentMenu] = useState(false);
   const [shortcuts, setShortcuts] = useState(false);
@@ -120,7 +122,7 @@ export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string
   const current = useRef(state); current.current = state;
   const alive = useRef(true);
   const dirty = useRef(false);
-  const errorHandler = useCallback((value: unknown) => { if (alive.current) setError(String(value)); }, []);
+  const errorHandler = useCallback((value: unknown) => { if (alive.current) { setError(String(value)); setRetrySave(false); } }, []);
   const load = useCallback(async () => {
     try {
       await writes.get(workspaceId)?.catch(() => {});
@@ -134,7 +136,7 @@ export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string
   useEffect(() => {
     if (!state || !dirty.current) return;
     const layout = state.layout;
-    const timer = setTimeout(() => { dirty.current = false; void saveLayout(workspaceId, layout).catch(errorHandler); }, 200);
+    const timer = setTimeout(() => { dirty.current = false; void saveLayout(workspaceId, layout).catch(value => { errorHandler(value); if (alive.current) setRetrySave(true); }); }, 200);
     return () => clearTimeout(timer);
   }, [state?.layout, workspaceId, errorHandler]);
   useEffect(() => () => {
@@ -195,6 +197,7 @@ export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string
   const tab = layout.tabs.find(t => t.id === layout.activeTabId);
   const actions: PaneActions = {
     workspaceId, branch, layout, records: state?.records ?? {}, searchRequest, onRecord,
+    searchHandled: () => setSearchRequest(null),
     focus: id => { if (current.current?.layout.activeLeafId !== id) change(l => ({ ...l, activeLeafId: id })); },
     split: (id, direction) => { void launch(undefined, id, direction); },
     close: id => { void close(id); }, restart: id => { void restart(id); }, rename: (id, title) => { void rename(id, title); },
@@ -235,7 +238,7 @@ export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string
         <IconButton title="Terminal shortcuts" onClick={() => setShortcuts(v => !v)}><Keyboard size={15} /></IconButton>
       </div>
     </div>
-    {error && <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2 text-xs text-destructive"><span className="flex-1">{error}</span><button type="button" className="underline" onClick={() => { if (state) void saveLayout(workspaceId, state.layout).then(() => setError(undefined)).catch(errorHandler); else void load(); }}>Retry</button><button type="button" aria-label="Dismiss terminal error" onClick={() => setError(undefined)}><X size={13} /></button></div>}
+    {error && <div role="alert" className="flex shrink-0 items-center gap-2 border-b border-border px-4 py-2 text-xs text-destructive"><span className="flex-1">{error}</span>{(!state || retrySave) && <button type="button" className="underline" onClick={() => { if (state) void saveLayout(workspaceId, state.layout).then(() => setError(undefined)).catch(value => { errorHandler(value); if (alive.current) setRetrySave(true); }); else void load(); }}>Retry</button>}<button type="button" aria-label="Dismiss terminal error" onClick={() => setError(undefined)}><X size={13} /></button></div>}
     {shortcuts && <div className="grid shrink-0 grid-cols-2 gap-x-5 gap-y-1 border-b border-border bg-muted/30 px-4 py-3 text-[11px] sm:grid-cols-3">{TERMINAL_SHORTCUTS.map(s => <div key={s.id} className="flex justify-between gap-3"><span className="text-muted-foreground">{s.label}</span><kbd className="font-mono">{terminalChord(s.id)}</kbd></div>)}</div>}
     {layout.tabs.length > 0 && <div role="tablist" aria-label="Terminal tabs" className="flex shrink-0 gap-1 overflow-x-auto border-b border-border px-3 pt-2">
       {layout.tabs.map(t => <button type="button" role="tab" aria-selected={t.id === layout.activeTabId} key={t.id} draggable onDragStart={event => { event.dataTransfer.setData(TAB_DRAG, t.id); event.dataTransfer.effectAllowed = "move"; }}

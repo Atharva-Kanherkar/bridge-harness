@@ -12,18 +12,19 @@ import { attachWebgl } from "../terminal/webgl";
 import { TerminalReplay } from "../terminal/replay";
 import type { TerminalRecord } from "../terminal/types";
 
-export function TerminalSurface({ record, focused, onRecord, searchRequest = 0 }: {
+export function TerminalSurface({ record, focused, onRecord, onSearchHandled, searchRequest = 0 }: {
   record: TerminalRecord;
   focused: boolean;
   onRecord: (record: TerminalRecord) => void;
+  onSearchHandled: () => void;
   searchRequest?: number;
 }) {
   const host = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal>();
   const searchRef = useRef<SearchAddon>();
   const retry = useRef<() => void>(() => {});
-  const latest = useRef({ onRecord, focused });
-  latest.current = { onRecord, focused };
+  const latest = useRef({ onRecord, focused, onSearchHandled });
+  latest.current = { onRecord, focused, onSearchHandled };
   const [error, setError] = useState<string>();
   const [restoring, setRestoring] = useState(true);
   const [searchOpen, setSearchOpen] = useState(false);
@@ -144,7 +145,9 @@ export function TerminalSurface({ record, focused, onRecord, searchRequest = 0 }
   }, [workspaceId, terminalId, generation]);
 
   useEffect(() => { if (focused && !searchOpen) termRef.current?.focus(); }, [focused, searchOpen]);
-  useEffect(() => { if (searchRequest) setSearchOpen(true); }, [searchRequest]);
+  useEffect(() => {
+    if (searchRequest) { setSearchOpen(true); latest.current.onSearchHandled(); }
+  }, [searchRequest]);
   function find(previous = false) {
     const options = { decorations: terminalSearchDecorations() };
     if (previous) searchRef.current?.findPrevious(query, options); else searchRef.current?.findNext(query, options);

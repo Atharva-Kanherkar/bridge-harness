@@ -369,6 +369,16 @@ mod tests {
                 session_id: "s".into(),
                 terminal_id: "t1".into(),
             },
+            CoreEvent::TerminalFrame(bridge_protocol::messages::TerminalFrame {
+                workspace_id: "w".into(),
+                terminal_id: "t1".into(),
+                generation: "g1".into(),
+                sequence: 1,
+                data: "$ ls".into(),
+                rows: None,
+                cols: None,
+                status: None,
+            }),
             CoreEvent::SessionStartup {
                 session_id: "s".into(),
                 phase: crate::adapters::StartupPhase::Spawning,
