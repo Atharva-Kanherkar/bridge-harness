@@ -48,6 +48,7 @@ pub enum CoreEvent {
     /// Transient terminal bytes; worthless once stale, never replayed. The
     /// terminal id addresses one shell of the workspace's several.
     SessionOutput { session_id: String, terminal_id: String, data: String },
+    TerminalFrame(bridge_protocol::messages::TerminalFrame),
     /// One shell ended — exit, kill, or explicit close. Clients re-list the
     /// workspace's terminals rather than trusting a rebuilt roster.
     TerminalExited { session_id: String, terminal_id: String },
@@ -96,6 +97,7 @@ impl CoreEvent {
             CoreEvent::LearningJobChanged(_) => NotificationName::LearningJobChanged,
             CoreEvent::MemoryChanged { .. } => NotificationName::MemoryChanged,
             CoreEvent::SessionOutput { .. } => NotificationName::SessionOutput,
+            CoreEvent::TerminalFrame(_) => NotificationName::TerminalFrame,
             CoreEvent::TerminalExited { .. } => NotificationName::TerminalExited,
             CoreEvent::AccountUsage { .. } => NotificationName::AccountUsage,
             CoreEvent::ManagedAgentChanged { .. } => NotificationName::ManagedAgentChanged,
@@ -116,6 +118,7 @@ impl CoreEvent {
             CoreEvent::MemoryChanged { scope_key } => serde_json::json!({
                 "scopeKey": scope_key,
             }),
+            CoreEvent::TerminalFrame(frame) => serde_json::to_value(frame).expect("terminal frame serializes"),
             CoreEvent::SessionOutput { session_id, terminal_id, data } => serde_json::json!({
                 "sessionId": session_id,
                 "terminalId": terminal_id,
@@ -284,6 +287,7 @@ impl EventBus {
                 }
                 CoreEvent::Agent(_)
                 | CoreEvent::SessionOutput { .. }
+                | CoreEvent::TerminalFrame(_)
                 | CoreEvent::TerminalExited { .. }
                 | CoreEvent::AccountUsage { .. }
                 | CoreEvent::SessionStartup { .. } => {}
@@ -365,6 +369,16 @@ mod tests {
                 session_id: "s".into(),
                 terminal_id: "t1".into(),
             },
+            CoreEvent::TerminalFrame(bridge_protocol::messages::TerminalFrame {
+                workspace_id: "w".into(),
+                terminal_id: "t1".into(),
+                generation: "g1".into(),
+                sequence: 1,
+                data: "$ ls".into(),
+                rows: None,
+                cols: None,
+                status: None,
+            }),
             CoreEvent::SessionStartup {
                 session_id: "s".into(),
                 phase: crate::adapters::StartupPhase::Spawning,

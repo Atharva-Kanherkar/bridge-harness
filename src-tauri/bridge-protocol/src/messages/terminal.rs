@@ -6,6 +6,93 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+/// Persistent terminal identity. A new process always gets a new generation.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalRecord {
+    pub workspace_id: String,
+    pub terminal_id: String,
+    pub generation: String,
+    pub title: String,
+    pub cwd: String,
+    pub agent_id: Option<String>,
+    pub status: String,
+    pub rows: u16,
+    pub cols: u16,
+    pub created_at: String,
+    #[serde(default)]
+    pub exit_code: Option<u32>,
+    #[serde(default)]
+    pub history_truncated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateTerminalParams {
+    pub workspace_id: String,
+    pub terminal_id: String,
+    pub agent_id: Option<String>,
+    pub cwd: Option<String>,
+    #[serde(default)]
+    pub restart: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetTerminalSnapshotParams {
+    pub workspace_id: String,
+    pub terminal_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetTerminalWorkspaceParams {
+    pub workspace_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalSnapshot {
+    pub record: TerminalRecord,
+    pub sequence: u64,
+    pub ansi: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalWorkspace {
+    pub terminals: Vec<TerminalRecord>,
+    pub layout: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SaveTerminalWorkspaceParams {
+    pub workspace_id: String,
+    pub layout: serde_json::Value,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RenameTerminalParams {
+    pub workspace_id: String,
+    pub terminal_id: String,
+    pub title: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TerminalFrame {
+    pub workspace_id: String,
+    pub terminal_id: String,
+    pub generation: String,
+    pub sequence: u64,
+    pub data: String,
+    pub rows: Option<u16>,
+    pub cols: Option<u16>,
+    pub status: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OpenTerminalParams {
@@ -62,39 +149,61 @@ mod tests {
 
     #[test]
     fn terminal_params_round_trip() {
-        let open = OpenTerminalParams { workspace_id: "w-1".into(), terminal_id: "t1".into() };
+        let open = OpenTerminalParams {
+            workspace_id: "w-1".into(),
+            terminal_id: "t1".into(),
+        };
         assert_eq!(
             serde_json::to_value(&open).unwrap(),
             json!({"workspaceId": "w-1", "terminalId": "t1"})
         );
         assert_eq!(round_trip(&open), open);
 
-        let write = WriteTerminalParams { workspace_id: "w-1".into(), terminal_id: "t1".into(), data: "ls -la\n".into() };
+        let write = WriteTerminalParams {
+            workspace_id: "w-1".into(),
+            terminal_id: "t1".into(),
+            data: "ls -la\n".into(),
+        };
         assert_eq!(
             serde_json::to_value(&write).unwrap(),
             json!({"workspaceId": "w-1", "terminalId": "t1", "data": "ls -la\n"})
         );
         assert_eq!(round_trip(&write), write);
 
-        let resize = ResizeTerminalParams { workspace_id: "w-1".into(), terminal_id: "t1".into(), rows: 48, cols: 160 };
+        let resize = ResizeTerminalParams {
+            workspace_id: "w-1".into(),
+            terminal_id: "t1".into(),
+            rows: 48,
+            cols: 160,
+        };
         assert_eq!(
             serde_json::to_value(&resize).unwrap(),
             json!({"workspaceId": "w-1", "terminalId": "t1", "rows": 48, "cols": 160})
         );
         assert_eq!(round_trip(&resize), resize);
 
-        let close = CloseTerminalParams { workspace_id: "w-1".into(), terminal_id: "t1".into() };
+        let close = CloseTerminalParams {
+            workspace_id: "w-1".into(),
+            terminal_id: "t1".into(),
+        };
         assert_eq!(
             serde_json::to_value(&close).unwrap(),
             json!({"workspaceId": "w-1", "terminalId": "t1"})
         );
         assert_eq!(round_trip(&close), close);
 
-        let list = ListTerminalsParams { workspace_id: "w-1".into() };
-        assert_eq!(serde_json::to_value(&list).unwrap(), json!({"workspaceId": "w-1"}));
+        let list = ListTerminalsParams {
+            workspace_id: "w-1".into(),
+        };
+        assert_eq!(
+            serde_json::to_value(&list).unwrap(),
+            json!({"workspaceId": "w-1"})
+        );
         assert_eq!(round_trip(&list), list);
 
-        let listed = ListTerminalsResult { terminal_ids: vec!["t1".into(), "t2".into()] };
+        let listed = ListTerminalsResult {
+            terminal_ids: vec!["t1".into(), "t2".into()],
+        };
         assert_eq!(
             serde_json::to_value(&listed).unwrap(),
             json!({"terminalIds": ["t1", "t2"]})
@@ -109,12 +218,12 @@ mod tests {
             serde_json::from_value::<OpenTerminalParams>(json!({"workspaceId": "w"})).is_err(),
             "a shell needs an identity"
         );
-        assert!(serde_json::from_value::<WriteTerminalParams>(json!({"workspaceId": "w"})).is_err());
         assert!(
-            serde_json::from_value::<WriteTerminalParams>(
-                json!({"workspaceId": "w", "data": "x"})
-            )
-            .is_err(),
+            serde_json::from_value::<WriteTerminalParams>(json!({"workspaceId": "w"})).is_err()
+        );
+        assert!(
+            serde_json::from_value::<WriteTerminalParams>(json!({"workspaceId": "w", "data": "x"}))
+                .is_err(),
             "writes address one shell"
         );
         assert!(

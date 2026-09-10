@@ -191,9 +191,9 @@ describe("BridgeSidebar action rows", () => {
     expect(onOpenSettings).toHaveBeenCalledOnce();
   });
 
-  it("does not render Mission Control or Work board rows (#457, #458)", () => {
+  it("renders Mission Control and keeps the Work board hidden", () => {
     mount();
-    expect(container.querySelector('button[aria-label="Mission Control"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="Mission Control"]')).not.toBeNull();
     expect(container.querySelector('button[aria-label="Work board"]')).toBeNull();
   });
 

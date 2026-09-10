@@ -252,6 +252,11 @@ typed_methods![
     (ResizeTerminal, ResizeTerminalParams, UnitResult),
     (CloseTerminal, CloseTerminalParams, UnitResult),
     (ListTerminals, ListTerminalsParams, ListTerminalsResult),
+    (CreateTerminal, CreateTerminalParams, TerminalRecord),
+    (GetTerminalSnapshot, GetTerminalSnapshotParams, TerminalSnapshot),
+    (GetTerminalWorkspace, GetTerminalWorkspaceParams, TerminalWorkspace),
+    (SaveTerminalWorkspace, SaveTerminalWorkspaceParams, UnitResult),
+    (RenameTerminal, RenameTerminalParams, TerminalRecord),
     // slash commands
     (ListSlashCommands, ListSlashCommandsParams, SlashCommandsResult),
     (ResolveSlashCommand, ResolveSlashCommandParams, SlashCommandResolveResult),

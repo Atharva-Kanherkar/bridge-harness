@@ -980,15 +980,11 @@ html[data-native-fullscreen] .u-traffic-inset {
 }
 
 /* ── Diff rows ───────────────────────────────────────────────────────────────
-   A hunk header bands across the row, gutter included. The pinned gutter has
-   to stay *opaque* — a translucent tint lets a long header scroll through
-   underneath the sticky column, which is the one thing pinning it prevents —
-   so the band is pre-composed against `--color-code` here instead of layered
-   as a `bg-info/10` alpha utility. It cannot be expressed as one: tailwind-
-   merge drops `bg-code` the moment a second `bg-*` utility joins it, which is
-   how the transparent version slipped through in the first place. */
+   A hunk header bands across the row, gutter included. The pinned gutter stays
+   opaque via `bg-inherit` from the row. The band is pre-composed against
+   `--color-card` so it matches the rounded patch surface. */
 .u-diff-band {
-  background: color-mix(in srgb, var(--color-info) 10%, var(--color-code));
+  background: color-mix(in srgb, var(--color-info) 10%, var(--color-card));
 }
 
 /* ── Syntax highlighting ────────────────────────────────────────────────── */

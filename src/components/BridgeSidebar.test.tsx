@@ -460,9 +460,9 @@ describe("BridgeSidebar action rows", () => {
     expect(html).not.toContain("Needs you");
   });
 
-  it("hides Mission Control and Work board from the nav for now (#457, #458)", () => {
+  it("offers Mission Control while keeping the Work board hidden", () => {
     const html = render();
-    expect(html).not.toContain("Mission Control");
+    expect(html).toContain("Mission Control");
     expect(html).not.toContain("Work board");
   });
 

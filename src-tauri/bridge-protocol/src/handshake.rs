@@ -53,7 +53,8 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// **1.7 adds worker prompt proposal grants and attributed prompt revisions.**
 /// A new client must not pair with an older daemon that silently discards
 /// `workerPromptProposalRoles` when saving the permission policy.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 7 };
+/// **1.8 adds persistent terminal workspaces, snapshots and sequenced frames.**
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 8 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -188,6 +189,13 @@ mod tests {
             );
             assert!(data["clientProtocolVersion"].is_object());
         }
+    }
+
+    #[test]
+    fn persistent_terminal_clients_reject_daemons_without_snapshot_recovery() {
+        let before_terminal_history = ProtocolVersion { major: 1, minor: 7 };
+        assert!(!before_terminal_history.accepts(PROTOCOL_VERSION));
+        assert!(PROTOCOL_VERSION.accepts(before_terminal_history));
     }
 
     #[test]

@@ -32,7 +32,7 @@ export function AccessControl({ policy, disabled, onChange }: {
   disabled?: boolean;
   onChange: (mode: AccessMode) => void;
 }) {
-  const menu = useMenuPanel<HTMLButtonElement>({ width: 300, height: 140 });
+  const menu = useMenuPanel<HTMLButtonElement>({ width: 220, height: 88 });
   const mode = accessModeOf(policy);
   const current = mode ? LABELS[mode] : { label: "Access", detail: "" };
   const Icon = mode === "full" ? ShieldCheck : Shield;
@@ -59,7 +59,7 @@ export function AccessControl({ policy, disabled, onChange }: {
         checked={option === mode}
         label={LABELS[option].label}
         leading={option === "full" ? <ShieldCheck size={13} aria-hidden="true" /> : <Shield size={13} aria-hidden="true" />}
-        trailing={option === mode ? <Check size={13} aria-hidden="true" /> : <span className="max-w-44 truncate text-[11px] text-muted-foreground">{LABELS[option].detail}</span>}
+        trailing={option === mode ? <Check size={13} aria-hidden="true" /> : undefined}
         onClick={() => { if (option !== mode) onChange(option); menu.close(); }}
       />)}
     </MenuPanel>

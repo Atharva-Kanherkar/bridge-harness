@@ -66,6 +66,13 @@ describe("ComposerContextStrip", () => {
     expect(container.querySelector('[aria-label="Chat context"]')).toBeTruthy();
   });
 
+  it("uses the same type size on every context chip", () => {
+    mount();
+    const buttons = [...container.querySelector('[aria-label="Chat context"]')!.querySelectorAll("button")];
+    expect(buttons).toHaveLength(4);
+    expect(buttons.every(button => button.className.includes("text-[12px]"))).toBe(true);
+  });
+
   it("explains host availability without offering an unsupported switch", () => {
     mount();
     const host = container.querySelector<HTMLButtonElement>('[aria-label="Agent host: This Mac"]')!;

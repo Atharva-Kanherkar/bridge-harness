@@ -135,6 +135,31 @@ describe("GitHubPane", () => {
     expect(host!.textContent).toContain("Default branch");
   });
 
+  it("keeps header actions in one even toolbar", async () => {
+    mockReads();
+    vi.spyOn(bridgeApi, "githubIssues").mockResolvedValue({ issues: [] });
+    vi.spyOn(bridgeApi, "githubRepository").mockResolvedValue({
+      nameWithOwner: "bridge/harness", description: "Repository overview", visibility: "PRIVATE",
+      defaultBranch: "main", primaryLanguage: "Rust", url: "https://example.test", openIssues: 1, openPullRequests: 2, labels: [],
+    });
+    await mount();
+    const toolbar = host!.querySelector('[role="toolbar"][aria-label="GitHub repository actions"]')!;
+    expect([...toolbar.children].map(node => node.getAttribute("aria-label"))).toEqual([
+      "Pull requests",
+      "Issues",
+      "Repository",
+      "Open bridge/harness on GitHub",
+      "Refresh GitHub",
+    ]);
+    expect([...toolbar.children].every(node => node.className.includes("size-7"))).toBe(true);
+    const copy = host!.querySelector('button[aria-label="Copy bridge/harness"]')!;
+    expect(copy.className).toMatch(/\bmin-w-0\b/);
+    expect(copy.className).toMatch(/\bshrink\b/);
+    expect(copy.className).not.toMatch(/\bshrink-0\b/);
+    expect(host!.querySelector("header")!.className).toContain("p-1.5");
+    expect(host!.querySelector("header")!.className).not.toContain("u-glass");
+  });
+
   it("confirms label changes before calling the typed action", async () => {
     mockReads();
     vi.spyOn(bridgeApi, "githubRepository").mockResolvedValue({ nameWithOwner: "bridge/harness", description: "", visibility: "PRIVATE", defaultBranch: "main", primaryLanguage: "Rust", url: "https://example.test", openIssues: 1, openPullRequests: 1, labels: [

@@ -144,12 +144,13 @@ describe("briefing runs are hidden from every surface", () => {
     expect(rawUses).toHaveLength(0);
   });
 
-  it("hands Mission Control the filtered list", () => {
+  it("hands Mission Control the workspace list for independent terminals", () => {
     // The surface the earlier miss actually affected: a briefing run is not idle or
     // done, so it would have appeared on the grid — and focusing it then failed,
     // because session resolution did apply the predicate.
     const missionControl = APP.slice(APP.indexOf("<MissionControl"));
-    expect(missionControl.slice(0, 400)).toContain("sessions={visibleSessions}");
+    expect(missionControl.slice(0, 400)).toContain("workspaces={state.workspaces}");
+    expect(missionControl.slice(0, 400)).not.toContain("sessions=");
   });
 
   it("builds the rail's list from the filtered one too", () => {
