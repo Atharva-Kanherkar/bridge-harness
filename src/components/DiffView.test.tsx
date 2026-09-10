@@ -109,6 +109,20 @@ describe("PatchView", () => {
     expect(numbers("const a = 2;")[0].textContent).toBe("2");
   });
 
+  it("gives the line number and the plus minus marker the same gutter padding", () => {
+    act(() => { root.render(<PatchView patch={PATCH} path="a.ts" />); });
+    const added = [...container.querySelectorAll("div.group\\/hunk")]
+      .find(node => node.textContent?.includes("const a = 2;"))!;
+    const gutter = added.querySelector("span.sticky")!;
+    expect(gutter.className).toContain("gap-1.5");
+    expect(gutter.className).toContain("px-1.5");
+    const number = gutter.querySelector(".tabular-nums")!;
+    expect(number.className).not.toMatch(/\bpx-/);
+    const marker = [...gutter.querySelectorAll(":scope > span")].find(node => node.textContent === "+")!;
+    expect(marker.className).toContain("text-center");
+    expect(marker.className).not.toMatch(/\bpl-/);
+  });
+
   it("wraps long lines instead of overflowing the pane", () => {
     act(() => { root.render(<PatchView patch={PATCH} path="a.ts" />); });
     const body = container.querySelector("span.flex-1")!;

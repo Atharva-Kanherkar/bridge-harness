@@ -47,18 +47,18 @@ function DiffLine({ row, numbered, onQuoteHunk }: { row: DiffRow; numbered: bool
   const line = row.newLine ?? row.oldLine;
   return <div className={cn("group/hunk flex", band && "pt-px", style.tint || "bg-card")}>
     <span className={cn(
-      "sticky left-0 z-10 flex shrink-0 select-none items-start bg-inherit",
+      "relative sticky left-0 z-10 flex shrink-0 select-none items-start gap-1.5 bg-inherit px-1.5",
       numbered && !band && !style.edge && "border-r border-border/60",
     )}>
       {numbered && (
-        <span className="w-9 px-1.5 text-right text-[11px] tabular-nums text-muted-foreground/70">{line ?? ""}</span>
+        <span className="w-6 text-right text-[11px] tabular-nums text-muted-foreground/70">{line ?? ""}</span>
       )}
-      <span className={cn("relative w-3.5 pl-1 text-left", style.markerClass)}>
-        {style.edge && !band && <span className={cn("absolute inset-y-0 right-0 w-[2px]", style.edge)} aria-hidden="true" />}
+      <span className={cn("w-3 text-center", style.markerClass)}>
         {style.marker}
       </span>
+      {style.edge && !band && <span className={cn("absolute inset-y-0 right-0 w-[2px]", style.edge)} aria-hidden="true" />}
     </span>
-    <span className="min-w-0 flex-1 whitespace-pre-wrap break-words pl-1.5 pr-3">
+    <span className="min-w-0 flex-1 whitespace-pre-wrap break-words pr-3">
       <span dangerouslySetInnerHTML={{ __html: row.html }} />
       {range && <button
         type="button"
