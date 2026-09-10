@@ -51,7 +51,7 @@ use crate::{BridgeCore, BridgeError};
 fn briefing_instructions() -> String {
     format!(
         "You are Bridge's background briefing worker. Your only job is to read the \
-         connector tools available to you and report what needs the user's attention. \
+         connector tools available to you and summarise the user's integration activity from the past 24 hours. Never report local Bridge sessions, checks, approvals, worker queues, or workspace health. \
          You have read access only: no shell, no filesystem, no writes of any kind, and \
          any tool call outside that authority will be denied — do not retry a denied call.\n\n\
          When you have read enough, end your final message with exactly one fenced block:\n\n\
@@ -74,11 +74,23 @@ fn briefing_instructions() -> String {
 }
 
 /// The task turn. Deliberately connector-agnostic.
-const BRIEFING_TASK: &str = "Review what currently needs the user's attention across the \
-tools available to you — use whichever you actually have, and skip gracefully anything \
-you cannot reach. Prioritise direct questions and mentions waiting on them, review \
-requests, and threads that have stalled on their reply. Rank by how much the user's \
-absence is blocking someone. Then emit the brief block.";
+fn briefing_task(now: chrono::DateTime<Utc>) -> String {
+    let since = now - chrono::Duration::hours(24);
+    format!(
+        "Summarise activity across the user's connected tools in the past 24 hours, \
+         from {} through {} (UTC). Use these exact bounds in searches where supported. \
+         Include messages, mentions, reviews, issues, and other relevant updates. \
+         Only include items whose source-created or source-updated time is in this window; \
+         reading an old item now does not make it recent. Exclude local Bridge runtime \
+         state, checks, approvals, worker queues, and workspace drift. \
+         Fetch each cited item individually as structured JSON, with its source timestamp \
+         and permalink. Search results containing multiple items are discovery only: \
+         never cite a collection as one item. Use the individual read's tool_use id as \
+         evidence. Omit items without a source timestamp. Skip unreachable tools and \
+         return an empty list when no recent activity can be verified. Then emit the brief block.",
+        since.to_rfc3339(), now.to_rfc3339(),
+    )
+}
 
 fn repair_prompt(rejection: &BriefRejection) -> String {
     format!(
@@ -547,7 +559,7 @@ fn run(core: &Arc<BridgeCore>, claimed: ClaimedRun) -> Result<(), BridgeError> {
         }
         turns += 1;
         runtime
-            .send_turn(BRIEFING_TASK)
+            .send_turn(&briefing_task(Utc::now()))
             .map_err(|error| BridgeError::Invalid(format!("the briefing turn could not be sent: {error}")))?;
         read_turn(&mut observer, &mut guard)
     })();
@@ -938,9 +950,20 @@ mod tests {
         let instructions = briefing_instructions();
         for named in ["Slack", "Gmail", "GitHub", "Linear", "Notion", "slack", "gmail"] {
             assert!(
-                !BRIEFING_TASK.contains(named) && !instructions.contains(named),
+                !briefing_task(Utc::now()).contains(named) && !instructions.contains(named),
                 "{named} must not be named; the harness decides what it can read"
             );
         }
     }
+    #[test]
+    fn integration_briefing_has_exact_utc_bounds_and_requires_individual_source_dates() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-09-10T12:00:00Z").unwrap().with_timezone(&Utc);
+        let prompt = briefing_task(now);
+        assert!(prompt.contains("2026-09-09T12:00:00+00:00"));
+        assert!(prompt.contains("2026-09-10T12:00:00+00:00"));
+        assert!(prompt.contains("Search results containing multiple items are discovery only"));
+        assert!(prompt.contains("Omit items without a source timestamp"));
+        assert!(prompt.contains("Exclude local Bridge"));
+    }
+
 }

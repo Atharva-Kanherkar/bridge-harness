@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Show only connected integration activity from the past 24 hours on Work, using source timestamps rather than cache refresh times.
+- Remove local checks, approvals, workspace drift, and task-tracker controls from the board. Open it from Settings → Work briefing → Open Work.
+- Recognize native GitHub evidence fields and Slack workspace links; keep the browser preview empty instead of showing fabricated work.
+
 ## [0.5.5] - 2026-09-08
 
 - Adopt the Span app icon: a mint deck over two off-white supports on a dark tile.

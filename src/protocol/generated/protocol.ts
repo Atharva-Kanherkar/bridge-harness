@@ -2086,6 +2086,7 @@ export interface WorkTask {
   pinned: boolean;
   rank: number;
   snoozedUntil?: string | null;
+  sourceActivityAt?: string | null;
   sourceKind: string;
   state: WorkTaskState;
   title: string;

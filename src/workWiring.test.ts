@@ -56,7 +56,7 @@ describe("opening Work starts nothing", () => {
     const query = SERVER_STATE.slice(SERVER_STATE.indexOf("const workBoard"));
     expect(query.match(/bridgeApi\.\w+/g)).toEqual(["bridgeApi.workBoard"]);
     expect(query).toContain("queryKey: queryKeys.workBoard");
-    expect(query).toContain("enabled: false");
+    expect(query).toContain('enabled: query => !!followedRunId || query.state.data?.suggestions.state === "running"');
     expect(query).not.toMatch(/createSession|startTurn|setSelectedSessionId|openSession/);
   });
 
@@ -161,4 +161,10 @@ describe("briefing runs are hidden from every surface", () => {
     const resolved = APP.slice(APP.indexOf("const session = state.sessions.find"));
     expect(resolved.slice(0, 160)).toContain("!isHiddenSession(s)");
   });
+});
+
+it("opens Work from settings without restoring the sidebar row", () => {
+  expect(APP).toContain("<SettingsScreen onOpenWorkBoard={openWorkBoard}");
+  const settings = readFileSync(join(__dirname, "components", "SettingsScreen.tsx"), "utf8");
+  expect(settings).toContain("onOpenBoard={onOpenWorkBoard}");
 });

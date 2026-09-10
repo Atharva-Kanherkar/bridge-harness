@@ -849,6 +849,14 @@
             "null"
           ]
         },
+        "sourceActivityAt": {
+          "default": null,
+          "description": "Activity time reported by the source item, never the cache observation time.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "sourceKind": {
           "type": "string"
         },

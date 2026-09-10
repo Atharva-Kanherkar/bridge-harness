@@ -55,7 +55,7 @@ export const STATIC_SETTINGS_ROWS: SearchableRow[] = [
   { section: "harnesses", label: "Installed", description: "Runtimes Bridge can start right now" },
   { section: "harnesses", label: "Available", description: "Runtimes Bridge can install for you" },
 
-  { section: "work", label: "Suggested work", description: "A background briefing turn on the harness you pick" },
+  { section: "work", label: "Integration briefing", description: "Slack, GitHub, and other integration activity from the past 24 hours" },
   { section: "work", label: "What it reads", description: "Which connected tools the briefing may read" },
   { section: "work", label: "Cadence", description: "How often the briefing runs" },
   { section: "work", label: "Refresh on focus", description: "Also refresh when Bridge regains focus" },

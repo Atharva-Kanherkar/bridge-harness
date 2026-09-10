@@ -222,6 +222,7 @@ Useful design references:
 - [`docs/delegation-policy.md`](docs/delegation-policy.md) — routing, budgets, write isolation, approvals, and worker lifecycle
 - [`docs/compaction-and-resume.md`](docs/compaction-and-resume.md) — checkpoint ownership and restoration modes
 - [`docs/adaptive-learning.md`](docs/adaptive-learning.md) — role profiles, learning runs, and trigger safety
+- [`docs/work-brief.md`](docs/work-brief.md) — connected integration activity from the past 24 hours, setup, and source timestamps
 
 ## Data and safety boundaries
 

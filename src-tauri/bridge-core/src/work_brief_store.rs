@@ -219,8 +219,8 @@ pub(crate) fn record_ledger_in(
         transaction.execute(
             "INSERT INTO work_evidence(
                  run_id,evidence_ref,tool_call_id,connector_instance_id,canonical_resource_id,
-                 source_kind,target,tool_definition_digest,result_digest,succeeded,observed_at)
-             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10)
+                 source_kind,target,tool_definition_digest,result_digest,succeeded,observed_at,source_activity_at)
+             VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,1,?10,?11)
              ON CONFLICT(run_id,evidence_ref) DO NOTHING",
             params![
                 ledger.run_id(),
@@ -233,6 +233,7 @@ pub(crate) fn record_ledger_in(
                 entry.tool_definition_digest,
                 entry.result_digest,
                 entry.observed_at,
+                entry.source_activity_at,
             ],
         )?;
     }
@@ -333,7 +334,7 @@ pub fn read_coverage(db: &Connection, run_id: &str) -> Result<Vec<wire::WorkSour
 pub fn read_evidence(db: &Connection, run_id: &str) -> Result<Vec<EvidenceEntry>, BridgeError> {
     let mut statement = db.prepare(
         "SELECT evidence_ref,tool_call_id,connector_instance_id,canonical_resource_id,
-                source_kind,target,tool_definition_digest,result_digest,observed_at
+                source_kind,target,tool_definition_digest,result_digest,observed_at,source_activity_at
            FROM work_evidence WHERE run_id=?1 AND succeeded=1 ORDER BY evidence_ref",
     )?;
     let rows = statement.query_map(params![run_id], |row| {
@@ -353,6 +354,7 @@ pub fn read_evidence(db: &Connection, run_id: &str) -> Result<Vec<EvidenceEntry>
                 .and_then(|value| serde_json::from_str(&value).ok())
                 .unwrap_or(EvidenceTarget::None),
             observed_at: row.get(8)?,
+            source_activity_at: row.get(9)?,
         })
     })?;
     let mut evidence = Vec::new();

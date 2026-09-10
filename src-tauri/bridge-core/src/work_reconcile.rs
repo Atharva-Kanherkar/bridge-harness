@@ -244,13 +244,14 @@ fn upsert_task(
         "INSERT INTO work_tasks(
              id,fingerprint,connector_instance_id,canonical_resource_id,source_kind,
              title,why,rank,confidence_bps,evidence_digest,evidence_target,evidence_observed_at,
-             ephemeral,first_run_id,last_run_id,created_at,updated_at)
-         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?14,?15,?15)
+             ephemeral,first_run_id,last_run_id,created_at,updated_at,source_activity_at)
+         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?14,?15,?15,?16)
          ON CONFLICT(id) DO UPDATE SET
              title=excluded.title,why=excluded.why,rank=excluded.rank,
              confidence_bps=excluded.confidence_bps,evidence_digest=excluded.evidence_digest,
              evidence_target=excluded.evidence_target,
              evidence_observed_at=excluded.evidence_observed_at,
+             source_activity_at=excluded.source_activity_at,
              last_run_id=excluded.last_run_id,updated_at=excluded.updated_at",
         params![
             id,
@@ -268,6 +269,7 @@ fn upsert_task(
             i64::from(ephemeral),
             run_id,
             now,
+            entry.source_activity_at,
         ],
     )?;
     Ok(())
@@ -865,4 +867,22 @@ mod tests {
         assert_eq!(commit(&mut db, "run-1", &fabricated, &ledger, T0), 0);
         assert!(board_tasks(&db).unwrap().is_empty());
     }
+    #[test]
+    fn integration_activity_survives_commit_and_rereading_does_not_renew_it() {
+        let mut db = db();
+        let source_time = chrono::Utc::now() - chrono::Duration::hours(1);
+        let ts = format!("{}.000000", source_time.timestamp());
+        start(&db, "dated-run");
+        let (ledger, reference) = ledger("dated-run", &ts, T0);
+        commit(&mut db, "dated-run", &brief(&reference, "Recent message"), &ledger, T0);
+        let board = crate::work::board(&db).unwrap();
+        assert_eq!(board.tasks.len(), 1);
+        assert_eq!(board.tasks[0].evidence_observed_at.as_deref(), Some(T0));
+        assert_eq!(board.tasks[0].source_activity_at, ledger.entries()[0].source_activity_at);
+        let stored = crate::work_brief_store::read_evidence(&db, "dated-run").unwrap();
+        assert_eq!(stored[0].source_activity_at, ledger.entries()[0].source_activity_at);
+        db.execute("UPDATE work_tasks SET source_activity_at='2020-01-01T00:00:00Z',pinned=1,updated_at=?1,evidence_observed_at=?1", [chrono::Utc::now().to_rfc3339()]).unwrap();
+        assert!(crate::work::board(&db).unwrap().tasks.is_empty());
+    }
+
 }
