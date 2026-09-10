@@ -3,8 +3,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { AgentEvent, Session, SessionForestSnapshot, Workspace } from "../types";
-import { MissionControl } from "./MissionControl";
-import { MISSION_LAYOUT_KEY } from "./missionControl/layout";
+import { isActiveSession, MissionControl } from "./MissionControl";
+import { minimumSize, MISSION_LAYOUT_KEY } from "./missionControl/layout";
 import { leafIds, type PaneNode } from "../terminal/layout";
 
 vi.mock("../api", () => ({
@@ -56,24 +56,44 @@ const render = async (props: Partial<Parameters<typeof MissionControl>[0]>) => {
   await act(async () => root.render(<MissionControl sessions={[]} workspaces={workspaces} events={noEvents} onFocusSession={vi.fn()} {...props} />));
 };
 
-it("shows only active sessions until Show all is toggled", async () => {
-  const sessions = [session("a", "working"), session("b", "completed"), session("c", "waiting")];
+it("shows only active sessions even with hundreds of idle chats", async () => {
+  const sessions = [session("a", "working"), session("c", "waiting"), ...Array.from({ length: 501 }, (_, i) => session(`idle-${i}`, "completed"))];
   await render({ sessions });
   expect(tiles().sort()).toEqual(["a", "c"]);
   expect(host.textContent).toContain("2 live");
-  const toggle = host.querySelector<HTMLButtonElement>("button[aria-pressed]")!;
-  await act(async () => toggle.click());
-  expect(tiles().sort()).toEqual(["a", "b", "c"]);
-  expect(toggle.getAttribute("aria-pressed")).toBe("true");
+  expect(host.textContent).not.toContain("Show all");
+  expect(vi.mocked(bridgeApi.sessionForest).mock.calls.map(([id]) => id).sort()).toEqual(["a", "c"]);
 });
 
-it("explains the empty state and offers Show all", async () => {
+it("explains the empty state without offering idle chats", async () => {
   await render({ sessions: [session("b", "completed")] });
   expect(tiles()).toEqual([]);
-  expect(host.textContent).toContain("Active chats appear here automatically");
-  const button = [...host.querySelectorAll("button")].find(el => el.textContent === "Show all chats")!;
-  await act(async () => button.click());
-  expect(tiles()).toEqual(["b"]);
+  expect(host.textContent).toContain("Chats and agents appear here automatically");
+  expect(host.textContent).not.toContain("Show all");
+  expect(bridgeApi.sessionForest).not.toHaveBeenCalled();
+});
+
+it("recognizes active turns and lifecycle transitions across harnesses", () => {
+  for (const status of ["working", "waiting", "starting", "resuming", "checkpointing"] as const) {
+    expect(isActiveSession(session("a", status))).toBe(true);
+  }
+  expect(isActiveSession(session("a", "completed", { activeTurnId: "turn" }))).toBe(true);
+  expect(isActiveSession(session("a", "completed"))).toBe(false);
+  expect(isActiveSession(session("w", "completed", { parentSessionId: "a" }))).toBe(false);
+});
+
+it("removes completed workers despite a cached working runtime", async () => {
+  vi.mocked(bridgeApi.sessionForest).mockImplementation(async id => ({ ...forest(id), workerRuntimes: [{ sessionId: "w", lifecycleState: "working", resultStatus: "pending" }] } as SessionForestSnapshot));
+  await render({ sessions: [session("w", "working", { parentSessionId: "a" })] });
+  expect(tiles()).toEqual(["w"]);
+  await render({ sessions: [session("w", "completed", { parentSessionId: "a" })] });
+  expect(tiles()).toEqual([]);
+});
+
+it("preserves minimum transcript dimensions in nested and resized splits", () => {
+  const leaf = (leafId: string): PaneNode => ({ type: "leaf", leafId });
+  expect(minimumSize(leaf("a"))).toEqual({ width: 420, height: 360 });
+  expect(minimumSize({ type: "split", direction: "horizontal", ratio: 0.1, first: leaf("a"), second: { type: "split", direction: "vertical", ratio: 0.9, first: leaf("b"), second: leaf("c") } })).toEqual({ width: 846, height: 726 });
 });
 
 it("renders the real conversation and a composer per tile", async () => {
@@ -149,4 +169,26 @@ it("offers Stop only for workers and routes it to onStopWorker", async () => {
   expect(host.querySelector("[data-session-id='a'] button[aria-label='Stop worker']")).toBeNull();
   await act(async () => host.querySelector<HTMLButtonElement>("[data-session-id='w'] button[aria-label='Stop worker']")!.click());
   expect(stop).toHaveBeenCalledWith("w");
+});
+
+it("clears maximization when work finishes and does not restore it on a later turn", async () => {
+  await render({ sessions: [session("a", "working"), session("b", "working")] });
+  await act(async () => host.querySelector<HTMLButtonElement>("[data-session-id='a'] button[aria-label='Maximize tile']")!.click());
+  await render({ sessions: [session("a", "completed"), session("b", "working")] });
+  expect(tiles()).toEqual(["b"]);
+  await render({ sessions: [session("a", "working"), session("b", "working")] });
+  expect(tiles().sort()).toEqual(["a", "b"]);
+});
+
+it("does not transfer a draft when another active chat replaces the only tile", async () => {
+  await render({ sessions: [session("a", "working")] });
+  const textarea = host.querySelector<HTMLTextAreaElement>("textarea")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "for a only");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await render({ sessions: [session("a", "completed"), session("b", "working")] });
+  expect(tiles()).toEqual(["b"]);
+  expect(host.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("");
+  expect(bridgeApi.sessionForest).toHaveBeenCalledWith("b");
 });

@@ -10,6 +10,15 @@ const ASPECT = 1.6;
 
 type LeafBox = { leafId: string; width: number; height: number };
 
+// Keep transcripts and composers usable, even in deeply nested saved splits.
+export function minimumSize(node: PaneNode): { width: number; height: number } {
+  if (node.type === "leaf") return { width: 420, height: 360 };
+  const first = minimumSize(node.first), second = minimumSize(node.second);
+  return node.direction === "horizontal"
+    ? { width: first.width + second.width + 6, height: Math.max(first.height, second.height) }
+    : { width: Math.max(first.width, second.width), height: first.height + second.height + 6 };
+}
+
 export function leafBoxes(node: PaneNode, width = ASPECT, height = 1): LeafBox[] {
   if (node.type === "leaf") return [{ leafId: node.leafId, width, height }];
   return node.direction === "horizontal"

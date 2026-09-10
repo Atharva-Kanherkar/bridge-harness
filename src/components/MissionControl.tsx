@@ -8,8 +8,8 @@ import { formatElapsed, harnessLabel } from "../utils";
 import { leafIds, resizeNode, type PaneNode, type SplitDirection } from "../terminal/layout";
 import { AgentConversation } from "./AgentConversation";
 import { ComposerPill } from "./ComposerPill";
-import { isRunning, workerStatus, type WorkerTone } from "./workerStatus";
-import { dropEdge, moveLeaf, readLayout, reconcileLeaves, writeLayout, type DropEdge } from "./missionControl/layout";
+import { workerStatus, type WorkerTone } from "./workerStatus";
+import { dropEdge, minimumSize, moveLeaf, readLayout, reconcileLeaves, writeLayout, type DropEdge } from "./missionControl/layout";
 
 export type MissionControlProps = {
   sessions: Session[];
@@ -36,9 +36,9 @@ const TONE_INK: Record<WorkerTone, { text: string; dot: string }> = {
   idle: { text: "text-muted-foreground", dot: "bg-muted-foreground/50" },
 };
 
-export function isActiveSession(session: Session, runtime?: WorkerRuntimeRecord): boolean {
-  if (ACTIVE_STATUSES.has(session.status)) return true;
-  return !!session.parentSessionId && !!runtime && isRunning(workerStatus(session, runtime).tone);
+export function isActiveSession(session: Session): boolean {
+  // Session updates are live; forest runtime snapshots can outlive a worker's turn.
+  return ACTIVE_STATUSES.has(session.status) || session.activeTurnId != null;
 }
 
 type TileActions = {
@@ -131,7 +131,7 @@ function Tile({ id, actions }: { id: string; actions: TileActions }) {
       <span title={status.detail ?? status.label} className={cn("h-1.5 w-1.5 shrink-0 rounded-full", ink.dot)} />
       <span className="min-w-0 flex-1 truncate text-xs font-medium" title={title}>{title}</span>
       <span className={cn("shrink-0 font-mono text-[10px] uppercase tracking-wide", ink.text)}>{status.label}</span>
-      <span className="hidden shrink-0 text-[10px] text-muted-foreground sm:inline">{harnessLabel(session.harness)}{workspace ? ` · ${workspace.title}` : ""}</span>
+      <span className="hidden max-w-28 truncate text-[10px] text-muted-foreground sm:inline" title={`${harnessLabel(session.harness)}${workspace ? ` · ${workspace.title}` : ""}`}>{harnessLabel(session.harness)}{workspace ? ` · ${workspace.title}` : ""}</span>
       <span className="shrink-0 font-mono text-[10px] text-muted-foreground" title="Elapsed">{formatElapsed(session.startedAt, actions.now)}</span>
       <IconButton title="Focus chat" onClick={() => actions.onFocusSession(id)}><ArrowUpRight size={13} /></IconButton>
       <IconButton title={expanded ? "Restore grid" : "Maximize tile"} onClick={() => actions.toggleExpanded(id)}>{expanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}</IconButton>
@@ -168,14 +168,16 @@ function Tile({ id, actions }: { id: string; actions: TileActions }) {
 
 function SplitTree({ node, path = "", actions }: { node: PaneNode; path?: string; actions: TileActions }) {
   const container = useRef<HTMLDivElement>(null);
-  if (node.type === "leaf") return <Tile id={node.leafId} actions={actions} />;
+  if (node.type === "leaf") return <Tile key={node.leafId} id={node.leafId} actions={actions} />;
   const horizontal = node.direction === "horizontal";
+  const firstSize = minimumSize(node.first);
+  const secondSize = minimumSize(node.second);
   const position = (x: number, y: number) => {
     const rect = container.current?.getBoundingClientRect();
     if (rect) actions.resize(path, horizontal ? (x - rect.left) / rect.width : (y - rect.top) / rect.height);
   };
   // the ratio is runtime state, so the track template is the one inline value.
-  return <div ref={container} className="grid h-full min-h-0 min-w-0" style={horizontal ? { gridTemplateColumns: `minmax(0, ${node.ratio}fr) 6px minmax(0, ${1 - node.ratio}fr)` } : { gridTemplateRows: `minmax(0, ${node.ratio}fr) 6px minmax(0, ${1 - node.ratio}fr)` }}>
+  return <div ref={container} className="grid h-full min-h-0 min-w-0" style={horizontal ? { gridTemplateColumns: `minmax(${firstSize.width}px, ${node.ratio}fr) 6px minmax(${secondSize.width}px, ${1 - node.ratio}fr)` } : { gridTemplateRows: `minmax(${firstSize.height}px, ${node.ratio}fr) 6px minmax(${secondSize.height}px, ${1 - node.ratio}fr)` }}>
     <SplitTree node={node.first} path={`${path}0`} actions={actions} />
     <div role="separator" tabIndex={0} aria-label="Resize chat split" aria-orientation={horizontal ? "vertical" : "horizontal"} aria-valuemin={10} aria-valuemax={90} aria-valuenow={Math.round(node.ratio * 100)}
       onPointerDown={event => { event.preventDefault(); event.currentTarget.setPointerCapture(event.pointerId); }}
@@ -190,7 +192,6 @@ function SplitTree({ node, path = "", actions }: { node: PaneNode; path?: string
 }
 
 export function MissionControl({ sessions, workspaces, events, activeSessionId, onFocusSession, onStopWorker }: MissionControlProps) {
-  const [showAll, setShowAll] = useState(false);
   const [forests, setForests] = useState<Record<string, SessionForestSnapshot>>({});
   const [stored, setStored] = useState(() => readLayout());
   const [now, setNow] = useState(() => Date.now());
@@ -204,12 +205,13 @@ export function MissionControl({ sessions, workspaces, events, activeSessionId, 
   }, [forests]);
   const sessionMap = useMemo(() => new Map(sessions.map(session => [session.id, session])), [sessions]);
   const workspaceMap = useMemo(() => new Map(workspaces.map(workspace => [workspace.id, workspace])), [workspaces]);
-  const live = useMemo(() => sessions.filter(session => isActiveSession(session, runtimes.get(session.id))), [sessions, runtimes]);
-  const visible = showAll ? sessions : live;
-  const ids = useMemo(() => visible.map(session => session.id), [visible]);
+  const live = useMemo(() => sessions.filter(isActiveSession), [sessions]);
+  const ids = useMemo(() => live.map(session => session.id), [live]);
   const idsKey = ids.join(" ");
   const root = useMemo(() => reconcileLeaves(stored.root, ids), [stored.root, idsKey]); // eslint-disable-line react-hooks/exhaustive-deps
   const expandedLeafId = stored.expandedLeafId && root && leafIds(root).includes(stored.expandedLeafId) ? stored.expandedLeafId : null;
+  const size = root ? minimumSize(expandedLeafId ? { type: "leaf", leafId: expandedLeafId } : root) : undefined;
+  useEffect(() => { setStored(prev => prev.root === root && prev.expandedLeafId === expandedLeafId ? prev : { version: 1, root, expandedLeafId }); }, [root, expandedLeafId]);
   useEffect(() => { writeLayout({ version: 1, root, expandedLeafId }); }, [root, expandedLeafId]);
 
   const actions: TileActions = {
@@ -219,20 +221,17 @@ export function MissionControl({ sessions, workspaces, events, activeSessionId, 
     resize: (path, ratio) => { if (root) setStored(prev => ({ ...prev, root: resizeNode(root, path, ratio) })); },
   };
 
-  return <main aria-label="Mission Control" className="flex min-h-0 flex-1 flex-col bg-background">
+  return <main aria-label="Mission Control" className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
     <header className="flex h-11 shrink-0 items-center gap-3 border-b border-border px-4">
       <LayoutGrid size={14} className="text-muted-foreground" aria-hidden="true" />
       <h1 className="font-display text-sm font-medium">Mission Control</h1>
       <span aria-label={`${live.length} live`} className="rounded-full border border-border px-2 py-0.5 font-mono text-[10px] text-muted-foreground">{live.length} live</span>
-      <div className="flex-1" />
-      <button type="button" aria-pressed={showAll} onClick={() => setShowAll(value => !value)} className={cn("rounded-md border px-2.5 py-1 text-xs transition-colors", showAll ? "border-foreground/30 bg-accent text-foreground" : "border-border text-muted-foreground hover:bg-accent hover:text-foreground")}>Show all</button>
     </header>
-    {root ? <div className="min-h-0 flex-1 p-2">{expandedLeafId ? <Tile id={expandedLeafId} actions={actions} /> : <SplitTree node={root} actions={actions} />}</div>
+    {root ? <div className="min-h-0 min-w-0 flex-1 overflow-auto p-2"><div className="h-full" style={{ minWidth: size?.width, minHeight: size?.height }}>{expandedLeafId ? <Tile key={expandedLeafId} id={expandedLeafId} actions={actions} /> : <SplitTree node={root} actions={actions} />}</div></div>
       : <div role="status" className="flex flex-1 flex-col items-center justify-center gap-3 px-8 text-center">
         <LayoutGrid size={30} strokeWidth={1.2} className="text-muted-foreground" aria-hidden="true" />
         <h2 className="font-display text-xl">No active chats</h2>
-        <p className="max-w-sm text-sm leading-relaxed text-muted-foreground">Active chats appear here automatically as live tiles you can type into. {sessions.length > 0 ? `${sessions.length} idle or finished ${sessions.length === 1 ? "chat is" : "chats are"} hidden.` : "Start a chat from the sidebar to see it here."}</p>
-        {sessions.length > 0 && !showAll && <button type="button" onClick={() => setShowAll(true)} className="mt-1 rounded-md border border-border-card bg-card px-4 py-2 text-xs font-medium shadow-control hover:bg-accent">Show all chats</button>}
+        <p className="max-w-sm text-sm leading-relaxed text-muted-foreground">Chats and agents appear here automatically while working or waiting for your input. Start a chat from the sidebar to see it here.</p>
       </div>}
   </main>;
 }
