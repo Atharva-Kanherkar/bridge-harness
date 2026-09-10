@@ -7,6 +7,7 @@ pub mod agent_batch;
 pub mod daemon_host;
 pub mod menu;
 pub mod meter_tray;
+mod menu_bar;
 pub mod window_chrome;
 mod diagnostics;
 
@@ -823,6 +824,30 @@ async fn scan_history(
 #[tauri::command]
 async fn get_meter_snapshot() -> bridge_core::meter::MeterRegistry {
     api::meter_snapshot()
+}
+
+#[tauri::command]
+async fn get_usage_overview(state: State<'_, Arc<BridgeCore>>) -> Result<wire::UsageOverviewSnapshot, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Usage overview", move || api::get_usage_overview(&core)).await
+}
+
+#[tauri::command]
+async fn refresh_usage_overview(state: State<'_, Arc<BridgeCore>>) -> Result<wire::UsageOverviewSnapshot, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Refresh usage overview", move || api::refresh_usage_overview(&core)).await
+}
+
+#[tauri::command]
+async fn get_menu_bar_settings(state: State<'_, Arc<BridgeCore>>) -> Result<wire::MenuBarSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Menu Bar settings", move || api::get_menu_bar_settings(&core)).await
+}
+
+#[tauri::command]
+async fn save_menu_bar_settings(settings: wire::MenuBarSettings, state: State<'_, Arc<BridgeCore>>) -> Result<wire::MenuBarSettings, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Save Menu Bar settings", move || api::save_menu_bar_settings(&core, &settings)).await
 }
 
 #[tauri::command]
@@ -2042,7 +2067,7 @@ fn select_host(
         let _ = panel_handle.run_on_main_thread(move || {
             if hide {
                 meter_tray::hide_panel(&handle);
-            } else {
+            } else if !menu_bar::show() {
                 meter_tray::toggle_panel(&handle, None);
             }
         });
@@ -2323,6 +2348,10 @@ pub fn run() -> i32 {
             scan_history,
             insights,
             get_meter_snapshot,
+            get_usage_overview,
+            refresh_usage_overview,
+            get_menu_bar_settings,
+            save_menu_bar_settings,
             refresh_meter,
             register_verifier_manifest,
             verifier_candidates,
@@ -2445,8 +2474,14 @@ pub fn run() -> i32 {
             // The menu-bar meter is best-effort: neither the panel nor the
             // tray may fail startup. The panel is built hidden and up front so
             // the first click shows a rendered window rather than booting one.
-            let _ = meter_tray::build_panel(app);
-            let _ = meter_tray::build(app);
+            let native_menu = if result.is_ok() {
+                diagnostics::native_boundary(|| menu_bar::install(app, setup_slot.clone())).and_then(|r| r)
+            } else { Ok(false) };
+            if !matches!(native_menu, Ok(true)) {
+                if let Err(error) = native_menu { diagnostics::record(&format!("Native Menu Bar unavailable: {error}")); }
+                let _ = meter_tray::build_panel(app);
+                let _ = meter_tray::build(app);
+            }
             if let Err(error) = result {
                 let message = format!("Bridge could not start: {error}");
                 diagnostics::record(&message);
@@ -2532,6 +2567,7 @@ pub fn run() -> i32 {
             }
         }
         if matches!(event, tauri::RunEvent::Exit) {
+            menu_bar::shutdown();
             if let Some(HostMode::Daemon(runtime)) = exit_host.get() {
                 runtime.shutdown();
             }

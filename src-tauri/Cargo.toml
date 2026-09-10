@@ -1,5 +1,5 @@
 [workspace]
-members = ["bridge-client", "bridge-core", "bridge-protocol", "bridged"]
+members = ["bridge-client", "bridge-core", "bridge-protocol", "bridged", "bridge-menu-bar"]
 
 # Single version for every crate in the workspace: bridge-core reports
 # CARGO_PKG_VERSION in the health endpoint and provider handshakes, so it must
@@ -64,6 +64,7 @@ incremental = false
 # Use typed public AppKit APIs for the material behind the webview. Native
 # titlebar controls remain under AppKit's control.
 [target.'cfg(target_os = "macos")'.dependencies]
+bridge-menu-bar = { path = "bridge-menu-bar" }
 dispatch2 = "0.3"
 objc2 = { version = "0.6", features = ["exception"] }
 objc2-app-kit = { version = "0.3", features = ["NSWindow", "NSButton", "NSView", "NSResponder", "NSColor", "NSVisualEffectView", "NSUserInterfaceItemIdentification", "objc2-quartz-core"] }

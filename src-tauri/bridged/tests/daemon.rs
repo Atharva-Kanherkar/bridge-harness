@@ -159,6 +159,41 @@ fn browser_frame_polling_uses_the_typed_daemon_contract() {
 }
 
 #[test]
+fn menu_settings_persist_and_unknown_usage_stays_unknown_over_the_socket() {
+    let fixture = tempfile::tempdir().unwrap();
+    let running = RunningDaemon::start(fixture.path());
+    let mut client = Client::connect(&running.socket_path);
+    assert!(client.handshake(&running.token).get("error").is_none());
+    let (initial, _) = client.call(1, "menu_bar/get_menu_bar_settings", None);
+    let mut settings = initial["result"].clone();
+    assert_eq!(settings["schemaVersion"], 1);
+    settings["displayMode"] = json!("used");
+    settings["enabled"] = json!(false);
+    let (saved, _) = client.call(2, "menu_bar/save_menu_bar_settings", Some(json!({"settings": settings})));
+    assert_eq!(saved["result"], settings);
+
+    let mut invalid = settings.clone();
+    invalid["refreshSeconds"] = json!(1);
+    let (rejected, _) = client.call(3, "menu_bar/save_menu_bar_settings", Some(json!({"settings": invalid})));
+    assert!(rejected.get("error").is_some());
+    let (usage, _) = client.call(4, "usage/get_usage_overview", None);
+    assert_eq!(usage["result"]["schemaVersion"], 1);
+    assert_eq!(usage["result"]["windows"][0]["usedPercent"]["status"], "unavailable");
+    assert!(usage["result"]["windows"][0]["usedPercent"]["value"].is_null());
+    assert!(usage["result"]["today"]["costMicrousd"]["value"].is_null());
+    drop(client);
+    running.stop();
+
+    let restarted = RunningDaemon::start(fixture.path());
+    let mut client = Client::connect(&restarted.socket_path);
+    assert!(client.handshake(&restarted.token).get("error").is_none());
+    let (loaded, _) = client.call(5, "menu_bar/get_menu_bar_settings", None);
+    assert_eq!(loaded["result"], settings);
+    drop(client);
+    restarted.stop();
+}
+
+#[test]
 fn a_session_is_created_driven_and_observed_end_to_end_over_the_socket() {
     let fixture = tempfile::tempdir().unwrap();
     let running = RunningDaemon::start(fixture.path());

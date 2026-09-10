@@ -772,6 +772,34 @@
       "resultSchema": "unit-result.json"
     },
     {
+      "command": "get_usage_overview",
+      "domain": "usage",
+      "method": "usage/get_usage_overview",
+      "paramsSchema": null,
+      "resultSchema": "usage-overview-snapshot.json"
+    },
+    {
+      "command": "refresh_usage_overview",
+      "domain": "usage",
+      "method": "usage/refresh_usage_overview",
+      "paramsSchema": null,
+      "resultSchema": "usage-overview-snapshot.json"
+    },
+    {
+      "command": "get_menu_bar_settings",
+      "domain": "menu_bar",
+      "method": "menu_bar/get_menu_bar_settings",
+      "paramsSchema": null,
+      "resultSchema": "menu-bar-settings.json"
+    },
+    {
+      "command": "save_menu_bar_settings",
+      "domain": "menu_bar",
+      "method": "menu_bar/save_menu_bar_settings",
+      "paramsSchema": "save-menu-bar-settings-params.json",
+      "resultSchema": "menu-bar-settings.json"
+    },
+    {
       "command": "get_router_preferences",
       "domain": "routing",
       "method": "routing/get_router_preferences",
@@ -1292,7 +1320,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 7
+    "minor": 8
   },
   "reserved": {
     "cancel": "$/cancel",

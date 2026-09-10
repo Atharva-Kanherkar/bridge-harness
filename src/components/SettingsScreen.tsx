@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { LoaderCircle as CircleNotch } from "lucide-react";
 import { bridgeApi } from "../api";
+import { MenuBarSettingsPage } from "../features/menu-bar/MenuBarSettingsPage";
 import { profileDraftsFromSetup } from "../modelProfiles";
 import type { AdapterDescriptor, AgentDefinition, AgentRole, BridgeEvent, ConfigState, HarnessConfig, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PermissionPolicy, ReasoningEffort } from "../types";
 import { useManagedAgents } from "./ManagedAgentsPanel";
@@ -34,6 +35,14 @@ export function adapterSupportsAgentRole(adapter: AdapterDescriptor, role: strin
 
 export function SettingsScreen({ adapters, autoApprovals = [], initialSection = "agents", onModelSetupChange, onSuggestionSettingsChange, onOpenWorkBoard, onError }: { adapters: AdapterDescriptor[]; autoApprovals?: BridgeEvent[]; initialSection?: Section; onOpenWorkBoard?: () => void; onModelSetupChange: (setup: ModelSetupState) => void; onSuggestionSettingsChange: (snapshot: SuggestionSettingsSnapshot) => void; onError: (message: string) => void }) {
   const [section, setSection] = useState<Section>(initialSection);
+  useEffect(() => {
+    let active = true;
+    let off: (() => void) | undefined;
+    void bridgeApi.onMenuBarSettings(() => { if (active) setSection("menuBar"); }).then(fn => {
+      if (active) off = fn; else fn();
+    });
+    return () => { active = false; off?.(); };
+  }, []);
   const [query, setQuery] = useState("");
   const [config, setConfig] = useState<ConfigState>();
   const [modelSetup, setModelSetup] = useState<ModelSetupState>();
@@ -235,6 +244,7 @@ export function SettingsScreen({ adapters, autoApprovals = [], initialSection = 
       {busy && !config ? <div className="grid h-full place-items-center"><CircleNotch className="animate-spin text-muted-foreground" size={18} strokeWidth={1.7} /></div> : null}
 
       {section === "appearance" && <AppearancePage />}
+      {section === "menuBar" && <MenuBarSettingsPage />}
 
       {section === "permissions" && config && <PermissionsSection
         policy={config.permissionPolicy}

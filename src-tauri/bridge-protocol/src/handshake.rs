@@ -53,7 +53,9 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// **1.7 adds worker prompt proposal grants and attributed prompt revisions.**
 /// A new client must not pair with an older daemon that silently discards
 /// `workerPromptProposalRoles` when saving the permission policy.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 7 };
+/// **1.8 adds the versioned usage overview and Menu Bar preferences.** A
+/// desktop that needs these methods must reject a daemon that predates them.
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 8 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -152,6 +154,13 @@ pub fn negotiate(request: &HandshakeRequest) -> Result<HandshakeResponse, RpcErr
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn menu_bar_client_rejects_daemon_without_usage_overview() {
+        let older = ProtocolVersion { major: 1, minor: 7 };
+        assert!(!older.accepts(PROTOCOL_VERSION));
+        assert!(PROTOCOL_VERSION.accepts(older));
+    }
 
     fn request(major: u32, minor: u32) -> HandshakeRequest {
         HandshakeRequest {

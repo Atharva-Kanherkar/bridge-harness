@@ -3735,6 +3735,22 @@ pub fn meter_snapshot() -> meter::MeterRegistry {
     meter::registry_snapshot()
 }
 
+pub fn get_usage_overview(core: &Arc<BridgeCore>) -> Result<wire::UsageOverviewSnapshot, BridgeError> {
+    crate::usage_overview::snapshot(core)
+}
+
+pub fn refresh_usage_overview(core: &Arc<BridgeCore>) -> Result<wire::UsageOverviewSnapshot, BridgeError> {
+    crate::usage_overview::refresh(core)
+}
+
+pub fn get_menu_bar_settings(core: &Arc<BridgeCore>) -> Result<wire::MenuBarSettings, BridgeError> {
+    crate::menu_bar::load(&core.db.lock().unwrap())
+}
+
+pub fn save_menu_bar_settings(core: &Arc<BridgeCore>, settings: &wire::MenuBarSettings) -> Result<wire::MenuBarSettings, BridgeError> {
+    crate::menu_bar::save(&core.db.lock().unwrap(), settings)
+}
+
 /// Trigger the shared account-usage refresh (Claude `/usage` probe plus Codex,
 /// from a live session when there is one and from its rollouts when there is
 /// not); results arrive on the `account-usage` channel.

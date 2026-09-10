@@ -46,6 +46,7 @@ import { WindowHistoryChevrons, WindowPanelButton } from "./components/WindowNav
 import { MissionControl } from "./components/MissionControl";
 import { AccessControl, type AccessMode } from "./components/AccessControl";
 import type { Section as SettingsSection } from "./components/SettingsScreen";
+import { overviewUsage } from "./usageOverview";
 import { SteerComposer, WorkerDetail } from "./components/WorkerDetail";
 import { ComposerPill } from "./components/ComposerPill";
 import { activeTurnAction, queuedFollowUps } from "./sessionInput";
@@ -246,16 +247,15 @@ function AppContent() {
   const fallbackNoticeShownRef = useRef(false);
   const [usageByProvider, setUsageByProvider] = useState<Partial<Record<UsageProvider, UsageSnapshot>>>({});
   const [usageSamples, setUsageSamples] = useState<Partial<Record<UsageProvider, UsageRateSample[]>>>({});
-  // Menu-bar meter popover (CodexBar companion): opened from the Usage screen
-  // or the native tray's left-click; live windows come from the same
-  // account-usage channel as the usage ring.
+  // The menu has its own native presentation. The main window consumes the
+  // same backend quota contract and retains its existing usage presentation.
   const [meterRefreshing, setMeterRefreshing] = useState(false);
   // These handlers must be initialized before the startup effects subscribe.
   // The first render returns the loading shell, so handlers declared below
   // that return leave the tray listener with an uninitialized closure forever.
   const refreshMeter = useCallback(() => {
     setMeterRefreshing(true);
-    bridgeApi.refreshMeter()
+    Promise.all([bridgeApi.refreshMeter(), bridgeApi.refreshUsageOverview()])
       .catch(value => setError(errorMessage(value)))
       .finally(() => setMeterRefreshing(false));
   }, []);
@@ -338,6 +338,9 @@ function AppContent() {
       offAgent = fn;
     });
     void bridgeApi.onAccountUsage(payload => {
+      // Codex quota comes from the versioned shared overview. A legacy
+      // rollout tick must not overwrite it with an inferred fresh zero.
+      if (payload.provider === "codex") return;
       const snapshot = extractUsageSnapshot({ rateLimits: payload.rateLimits });
       // An unreadable frame means the provider has no current limits — its
       // last window reset with nothing running, say. Dropping the snapshot is
@@ -679,6 +682,40 @@ function AppContent() {
   // an opinion: sending someone hunting through Agents for the switch they just
   // clicked "click to change" on is the wrong end of the promise.
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("agents");
+  useEffect(() => {
+    let active = true;
+    let off: (() => void) | undefined;
+    void bridgeApi.onMenuBarSettings(() => {
+      if (active) { setSettingsSection("menuBar"); setView("settings"); }
+    }).then(fn => { if (active) off = fn; else fn(); });
+    return () => { active = false; off?.(); };
+  }, []);
+  useEffect(() => {
+    let active = true;
+    let off: (() => void) | undefined;
+    let latest = -Infinity;
+    const accept = (value: Awaited<ReturnType<typeof bridgeApi.getUsageOverview>>) => {
+      if (!active || !value || value.generatedAt < latest) return;
+      latest = value.generatedAt;
+      const snapshot = overviewUsage(value);
+      setUsageByProvider(current => {
+        const next = { ...current };
+        if (snapshot) next.codex = snapshot; else delete next.codex;
+        return next;
+      });
+      if (snapshot) {
+        const usedPercent = clampPercent(Math.max(...snapshot.windows.map(window => window.usedPercent)));
+        setUsageSamples(current => {
+          const samples = current.codex ?? [];
+          if (samples.at(-1)?.capturedAt === snapshot.capturedAt) return current;
+          return { ...current, codex: [...samples, { usedPercent, capturedAt: snapshot.capturedAt }].slice(-24) };
+        });
+      }
+    };
+    void bridgeApi.onUsageOverview(accept).then(fn => { if (active) off = fn; else fn(); });
+    void bridgeApi.getUsageOverview().then(accept).catch(() => undefined);
+    return () => { active = false; off?.(); };
+  }, []);
   const autoApprovals = useMemo(
     () => state.events.filter(event => event.kind === "approval.auto_allowed"),
     [state.events],
@@ -949,7 +986,13 @@ function AppContent() {
   // Poll real subscription usage for every provider, independent of the chat on screen.
   useEffect(() => {
     if (!("__TAURI_INTERNALS__" in window)) return;
-    return startSerialPoll(() => bridgeApi.refreshAccountUsage().catch(() => undefined), 30_000);
+    return startSerialPoll(() => Promise.all([
+      bridgeApi.refreshAccountUsage().catch(() => undefined),
+      // Preserve the main window's usage updates on every platform, including
+      // when the native menu or its provider is disabled. Hidden windows leave
+      // collection cadence to the menu's own saved preferences.
+      document.visibilityState === "hidden" ? Promise.resolve() : bridgeApi.refreshUsageOverview().catch(() => undefined),
+    ]).then(() => undefined), 30_000);
   }, [adaptersReady]);
 
   // Drop an optimistic message once its real user turn arrives from the

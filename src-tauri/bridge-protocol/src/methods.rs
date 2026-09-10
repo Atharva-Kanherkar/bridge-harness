@@ -168,6 +168,10 @@ methods![
     // menu-bar meter (CodexBar port)
     (GetMeterSnapshot, "meter", "get_meter_snapshot"),
     (RefreshMeter, "meter", "refresh_meter"),
+    (GetUsageOverview, "usage", "get_usage_overview"),
+    (RefreshUsageOverview, "usage", "refresh_usage_overview"),
+    (GetMenuBarSettings, "menu_bar", "get_menu_bar_settings"),
+    (SaveMenuBarSettings, "menu_bar", "save_menu_bar_settings"),
     // routing
     (GetRouterPreferences, "routing", "get_router_preferences"),
     (UpdateRouterPreferences, "routing", "update_router_preferences"),

@@ -34,6 +34,7 @@ mod learning;
 mod marketplace;
 mod memory;
 mod meter;
+mod usage_overview;
 mod models;
 mod projects;
 mod routing;
@@ -62,6 +63,7 @@ pub use learning::*;
 pub use marketplace::*;
 pub use memory::*;
 pub use meter::*;
+pub use usage_overview::*;
 pub use models::*;
 pub use projects::*;
 pub use routing::*;
@@ -289,6 +291,10 @@ typed_methods![
     (UsageInsights, InsightsParams, UsageInsightsResult),
     (GetMeterSnapshot, _, MeterRegistry),
     (RefreshMeter, _, UnitResult),
+    (GetUsageOverview, _, UsageOverviewSnapshot),
+    (RefreshUsageOverview, _, UsageOverviewSnapshot),
+    (GetMenuBarSettings, _, MenuBarSettings),
+    (SaveMenuBarSettings, SaveMenuBarSettingsParams, MenuBarSettings),
     // routing
     (GetRouterPreferences, GetRouterPreferencesParams, RouterPreferences),
     (UpdateRouterPreferences, UpdateRouterPreferencesParams, RouterPreferences),

@@ -129,6 +129,7 @@ pub struct BridgeCore {
     /// being started fresh per request: process-start latency on every
     /// keystroke pause would make the feature unusable.
     pub suggestion_engine: SuggestionEngine,
+    pub usage_overview: crate::usage_overview::UsageOverviewService,
 }
 
 /// An exclusive per-session lifecycle claim; released on drop.
@@ -325,6 +326,7 @@ impl BridgeCore {
             workspace_operations: Mutex::new(HashMap::new()),
             external_import_discoveries: Mutex::new(HashMap::new()),
             suggestion_engine: SuggestionEngine::new(),
+            usage_overview: crate::usage_overview::UsageOverviewService::default(),
         }
     }
 
@@ -443,6 +445,7 @@ impl BridgeCore {
             workspace_operations: Mutex::new(HashMap::new()),
             external_import_discoveries: Mutex::new(HashMap::new()),
             suggestion_engine: SuggestionEngine::new(),
+            usage_overview: crate::usage_overview::UsageOverviewService::default(),
         })
     }
 }

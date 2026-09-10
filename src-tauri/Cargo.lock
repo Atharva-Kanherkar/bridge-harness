@@ -417,6 +417,7 @@ dependencies = [
  "ed25519-dalek",
  "flate2",
  "futures",
+ "iana-time-zone",
  "libc",
  "portable-pty",
  "regex",
@@ -441,6 +442,7 @@ version = "0.5.5"
 dependencies = [
  "bridge-client",
  "bridge-core",
+ "bridge-menu-bar",
  "bridge-protocol",
  "bridged",
  "chrono",
@@ -461,6 +463,13 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tempfile",
  "uuid",
+]
+
+[[package]]
+name = "bridge-menu-bar"
+version = "0.5.5"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]

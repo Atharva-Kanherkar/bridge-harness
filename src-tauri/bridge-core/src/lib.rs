@@ -62,6 +62,8 @@ pub mod memory_ledger;
 pub mod memory_packet;
 pub mod meter;
 pub mod meter_sources;
+pub mod menu_bar;
+pub mod usage_overview;
 pub mod model;
 pub mod model_catalog;
 pub mod model_profiles;
