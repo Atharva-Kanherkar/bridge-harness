@@ -2997,6 +2997,7 @@ export interface WorktreeUsage {
 }
 
 export interface ReclaimWorktreeParams {
+  force?: boolean;
   worktreeId: string;
 }
 

@@ -744,12 +744,12 @@ pub fn usage(
                 reclaimable_bytes: 0,
                 over_budget: false,
             });
+        rollup.size_bytes += bytes;
+        if reclaimable(&record) {
+            rollup.reclaimable_bytes += bytes;
+        }
         if counts_against_cap {
             rollup.count += 1;
-            rollup.size_bytes += bytes;
-            if reclaimable(&record) {
-                rollup.reclaimable_bytes += bytes;
-            }
         }
     }
     let mut repositories = repositories.into_values().collect::<Vec<_>>();
@@ -1261,13 +1261,20 @@ struct Assessed {
 
 /// Whether a disposition authorizes removal under this policy. The single place
 /// that answers it, so the plan and the re-check at deletion time cannot drift.
-fn is_removable(disposition: &Disposition, retention: &WorktreeRetention) -> bool {
+/// `force` overrides only a caller's judgment about their *own* checkout:
+/// uncommitted changes (`AtRisk`) or a checkout git cannot vouch for
+/// (`Unverifiable`). It never overrides `Retained` — that disposition already
+/// covers everything Bridge did not create, everything outside its namespace,
+/// a live session, and a worker's output still awaiting an adopt-or-discard
+/// decision, and none of those are this caller's alone to decide.
+fn is_removable(disposition: &Disposition, retention: &WorktreeRetention, force: bool) -> bool {
     match disposition {
         Disposition::Reclaimable => true,
         Disposition::PushedUnmerged => {
             retention.pushed_unmerged == PushedUnmergedPolicy::Delete
         }
-        _ => false,
+        Disposition::AtRisk(_) | Disposition::Unverifiable(_) => force,
+        Disposition::Retained(_) => false,
     }
 }
 
@@ -1349,7 +1356,7 @@ pub fn sweep(
         // useful checkout goes first.
         items.sort_by_key(|item| std::cmp::Reverse(item.record.idle_seconds()));
 
-        let removable = |item: &Assessed| is_removable(&item.disposition, retention);
+        let removable = |item: &Assessed| is_removable(&item.disposition, retention, false);
 
         // The running plan's view of what would remain. Only used to decide
         // what to attempt; the outcome is measured afterwards.
@@ -1390,7 +1397,7 @@ pub fn sweep(
         let mut removed: Vec<usize> = Vec::new();
         for index in &planned {
             let item = &items[*index];
-            match remove_recorded_worktree(db, namespace_root, &item.record, item.bytes, retention) {
+            match remove_recorded_worktree(db, namespace_root, &item.record, item.bytes, retention, false) {
                 Ok(true) => {
                     outcome.removed += 1;
                     outcome.removed_bytes += item.bytes;
@@ -1439,6 +1446,7 @@ fn remove_recorded_worktree(
     record: &WorktreeRecord,
     bytes: u64,
     retention: &WorktreeRetention,
+    force: bool,
 ) -> Result<bool, BridgeError> {
     let path = record.as_path();
     if !path.is_dir() {
@@ -1465,7 +1473,7 @@ fn remove_recorded_worktree(
         (fresh, facts)
     };
     let disposition = classify_with(&fresh, &facts);
-    if !is_removable(&disposition, retention) {
+    if !is_removable(&disposition, retention, force) {
         let reason = disposition
             .reason()
             .map(str::to_owned)
@@ -1478,7 +1486,12 @@ fn remove_recorded_worktree(
 
     let repo = PathBuf::from(&record.repo_root);
     let head = git::head_commit(path).unwrap_or_else(|| "unknown".to_owned());
-    if let Err(error) = git::safe_remove_worker_worktree(&repo, path, false) {
+    let removal = if force {
+        git::force_remove_worker_worktree(&repo, path, false)
+    } else {
+        git::safe_remove_worker_worktree(&repo, path, false)
+    };
+    if let Err(error) = removal {
         let db = db.lock().unwrap();
         set_retained_reason(&db, &record.id, &error.to_string())?;
         let _ = store::event(
@@ -1589,11 +1602,19 @@ pub struct ArchiveChatResult {
 /// Reclaim on a row that says so has been told what they are discarding. The
 /// sweep has nobody to tell. Nothing unique to this disk is removed on either
 /// path.
+///
+/// `force` extends that same idea one step further, to a row a person can
+/// *see* but the sweep would never touch: uncommitted changes or a checkout
+/// git cannot vouch for. It still cannot make Bridge remove a checkout it did
+/// not create, one outside its namespace, or one a live session still owns —
+/// those two checks above run before disposition is even considered, and
+/// `is_removable` refuses `Retained` regardless of `force`.
 pub fn reclaim(
     db: &Mutex<Connection>,
     namespace_root: &Path,
     worktree_id: &str,
     retention: &WorktreeRetention,
+    force: bool,
 ) -> Result<WorktreeReclaimResult, BridgeError> {
     let record = {
         let db = db.lock().unwrap();
@@ -1627,7 +1648,7 @@ pub fn reclaim(
     };
     let facts = { classification_facts(&db.lock().unwrap(), &record)? };
     let disposition = classify_with(&record, &facts);
-    if !is_removable(&disposition, &explicit) {
+    if !is_removable(&disposition, &explicit, force) {
         let detail = disposition
             .reason()
             .map(str::to_owned)
@@ -1651,7 +1672,7 @@ pub fn reclaim(
     };
     // `remove_recorded_worktree` re-decides for itself, so a race between the
     // classification above and this call still cannot destroy work.
-    let reclaimed = remove_recorded_worktree(db, namespace_root, &record, bytes, &explicit)?;
+    let reclaimed = remove_recorded_worktree(db, namespace_root, &record, bytes, &explicit, force)?;
     let detail = if reclaimed {
         None
     } else {
@@ -2609,6 +2630,7 @@ mod tests {
             &planned,
             0,
             &WorktreeRetention::default(),
+            false,
         )
         .unwrap();
         assert!(!removed, "a stale plan does not authorize a deletion");
@@ -2747,6 +2769,7 @@ mod tests {
             &fixture.namespace,
             &id,
             &WorktreeRetention::default(),
+            false,
         )
         .unwrap();
         assert!(!outcome.reclaimed);
@@ -2769,6 +2792,7 @@ mod tests {
             &fixture.namespace,
             &id,
             &WorktreeRetention::default(),
+            false,
         )
         .unwrap();
         assert!(!outcome.reclaimed);
@@ -2804,6 +2828,7 @@ mod tests {
             &fixture.namespace,
             &id,
             &WorktreeRetention::default(),
+            false,
         )
         .unwrap();
         assert!(outcome.reclaimed, "{outcome:?}");
@@ -2819,6 +2844,7 @@ mod tests {
             &fixture.namespace,
             "no-such-id",
             &WorktreeRetention::default(),
+            false,
         )
         .unwrap_err();
         assert!(matches!(error, BridgeError::Invalid(_)), "{error:?}");
@@ -2871,11 +2897,7 @@ mod tests {
         let path = worker_worktree(&fixture, "child", "bridge/task-worker-child");
         age(&fixture, &path, 30);
         sweep(&fixture.db, &fixture.namespace, &WorktreeRetention::default()).unwrap();
-        let usage = usage(
-            &fixture.db.lock().unwrap(),
-            &WorktreeRetention::default(),
-        )
-        .unwrap();
+        let usage = usage(&fixture.db.lock().unwrap(), &WorktreeRetention::default()).unwrap();
         assert_eq!(usage.total_count, 1);
         assert_eq!(usage.reclaimable_count, 1);
         assert!(usage.total_bytes > 0, "the sweep measured it");

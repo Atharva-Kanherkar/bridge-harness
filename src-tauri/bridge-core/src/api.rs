@@ -3873,6 +3873,7 @@ pub fn archive_chat(
             &core.worktrees,
             &record.id,
             &worktree_registry::WorktreeRetention::default(),
+            false,
         )?),
         None => None,
     };
@@ -3913,15 +3914,24 @@ pub fn archive_chat(
 
 /// Reclaim one checkout because a person asked. A refusal comes back in the
 /// result, with its reason, rather than as an error.
+///
+/// `force` is the one place a client can widen what "asked" covers: it lets a
+/// person remove a checkout the sweep would never touch on its own —
+/// uncommitted changes, or one git cannot vouch for — because they can see it
+/// and have decided for themselves. It changes nothing about what Bridge
+/// still refuses unconditionally: a checkout it did not create, one outside
+/// its namespace, or one a live session owns.
 pub fn reclaim_worktree(
     core: &Arc<BridgeCore>,
     worktree_id: &str,
+    force: bool,
 ) -> Result<worktree_registry::WorktreeReclaimResult, BridgeError> {
     let outcome = worktree_registry::reclaim(
         &core.db,
         &core.worktrees,
         worktree_id,
         &worktree_registry::WorktreeRetention::default(),
+        force,
     )?;
     if outcome.reclaimed {
         core.events.publish(CoreEvent::StateChanged);

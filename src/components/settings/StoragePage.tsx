@@ -16,7 +16,7 @@ import { useCallback, useEffect, useState } from "react";
 import { cn } from "@/lib/utils";
 import { bridgeApi as api } from "../../api";
 import type { WorktreeInventoryEntry, WorktreeUsage } from "../../types";
-import { GhostButton, Select, SettingsGroup, SettingsPage, StatusPill, type PillTone } from "./kit";
+import { GhostButton, Select, SettingsGroup, SettingsPage, StatusPill, TextButton, type PillTone } from "./kit";
 import { harnessChartDot, harnessChartText } from "../harnessMarks";
 import { Search, RefreshCw, HardDrive, ShieldCheck } from "lucide-react";
 
@@ -38,10 +38,17 @@ function RepoBreakdown({ repositories, totalBytes, onSelect }: {
   const [hover, setHover] = useState<number | null>(null);
   const sorted = [...repositories].sort((a, b) => b.sizeBytes - a.sizeBytes);
   if (sorted.length === 0 || totalBytes <= 0) return null;
+  // Raising tiny slivers to a visible minimum can push the total past 100%;
+  // rescale everything back down so the bar's widths still sum to 100% and
+  // large segments keep their true proportion instead of getting squeezed by
+  // flex-shrink.
+  const raw = sorted.map(repo => Math.max((repo.sizeBytes / totalBytes) * 100, repo.sizeBytes > 0 ? 0.5 : 0));
+  const rawTotal = raw.reduce((sum, value) => sum + value, 0);
+  const scale = rawTotal > 100 ? 100 / rawTotal : 1;
   return <div className="border-t border-border/60 px-4 py-3">
     <div className="relative flex h-2.5 w-full overflow-hidden rounded-full bg-muted">
       {sorted.map((repo, index) => {
-        const width = Math.max((repo.sizeBytes / totalBytes) * 100, repo.sizeBytes > 0 ? 0.5 : 0);
+        const width = raw[index] * scale;
         return <button
           key={repo.repoRoot}
           type="button"
@@ -103,6 +110,11 @@ function age(seconds: number): string {
 /** Only two dispositions can be acted on; the rest exist to be explained. */
 const RECLAIMABLE = new Set(["reclaimable", "pushed_unmerged"]);
 
+/** Dispositions a person may override for a checkout they can see and chose
+ *  themselves — never `retained`, which already means something else has a
+ *  stake in it. Mirrors `is_removable`'s `force` branch in worktree_registry.rs. */
+const FORCIBLE = new Set(["at_risk", "unverifiable"]);
+
 const DISPOSITION_TONE: Record<string, PillTone> = {
   reclaimable: "success",
   pushed_unmerged: "info",
@@ -135,7 +147,7 @@ export function StoragePage({ onError }: { onError?: (message: string) => void }
   const [filter, setFilter] = useState("all");
   const [repository, setRepository] = useState("");
   const [sort, setSort] = useState("size");
-  const [confirming, setConfirming] = useState<WorktreeInventoryEntry | "sweep" | null>(null);
+  const [confirming, setConfirming] = useState<{ entry: WorktreeInventoryEntry; force: boolean } | "sweep" | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true); setError(undefined);
@@ -151,14 +163,14 @@ export function StoragePage({ onError }: { onError?: (message: string) => void }
 
   useEffect(() => { void load(); }, [load]);
 
-  const reclaim = async (entry: WorktreeInventoryEntry) => {
+  const reclaim = async (entry: WorktreeInventoryEntry, force: boolean) => {
     setConfirming(null); setError(undefined);
     setBusy(entry.id);
     setNote(null);
     try {
-      const result = await api.reclaimWorktree(entry.id);
+      const result = await api.reclaimWorktree(entry.id, force);
       setNote(result.reclaimed
-        ? `Reclaimed ${bytes(result.bytesFreed)} from ${repoName(entry.path)}.`
+        ? `${force ? "Deleted" : "Reclaimed"} ${bytes(result.bytesFreed)} from ${repoName(entry.path)}.`
         : result.detail ?? "Nothing was reclaimed.");
       await load();
     } catch (error) {
@@ -234,9 +246,20 @@ export function StoragePage({ onError }: { onError?: (message: string) => void }
     <p className="flex gap-2 text-xs leading-relaxed text-muted-foreground"><ShieldCheck size={15} className="shrink-0" />External checkouts are never removed. Dirty files, local-only commits, live sessions and unadopted worker output remain protected.</p>
     {note && <p role="status" className="px-1 text-xs text-muted-foreground">{note}</p>}
     {confirming && <section aria-label="Confirm cleanup" className="rounded-xl border border-border bg-card p-4">
-      <h3 className="text-sm font-semibold">{confirming === "sweep" ? "Run safe cleanup?" : `Reclaim ${confirming.branch ?? repoName(confirming.path)}?`}</h3>
-      <p className="mt-2 break-words text-xs leading-relaxed text-muted-foreground">{confirming === "sweep" ? "Reassess checkouts and remove only those allowed by retention limits. Protected work stays." : `${confirming.path}. This removes the checkout and its ignored build files, not chat history. Safety is checked again before removal.`}</p>
-      <div className="mt-3 flex gap-2"><GhostButton onClick={() => setConfirming(null)}>Cancel</GhostButton><GhostButton disabled={busy !== null} onClick={() => confirming === "sweep" ? void sweep() : void reclaim(confirming)}>Confirm cleanup</GhostButton></div>
+      <h3 className="text-sm font-semibold">{confirming === "sweep" ? "Run safe cleanup?" : confirming.force ? `Delete ${confirming.entry.branch ?? repoName(confirming.entry.path)}?` : `Reclaim ${confirming.entry.branch ?? repoName(confirming.entry.path)}?`}</h3>
+      <p className="mt-2 break-words text-xs leading-relaxed text-muted-foreground">
+        {confirming === "sweep"
+          ? "Reassess checkouts and remove only those allowed by retention limits. Protected work stays."
+          : confirming.force
+            ? `${confirming.entry.path}. Bridge could not prove this checkout is safe to remove (${confirming.entry.retainedReason ?? "uncommitted or unproven work"}). Deleting it anyway discards anything not saved elsewhere.`
+            : `${confirming.entry.path}. This removes the checkout and its ignored build files, not chat history. Safety is checked again before removal.`}
+      </p>
+      <div className="mt-3 flex gap-2">
+        <GhostButton onClick={() => setConfirming(null)}>Cancel</GhostButton>
+        {confirming !== "sweep" && confirming.force
+          ? <TextButton tone="destructive" disabled={busy !== null} onClick={() => void reclaim(confirming.entry, true)}>Delete anyway</TextButton>
+          : <GhostButton disabled={busy !== null} onClick={() => confirming === "sweep" ? void sweep() : void reclaim(confirming.entry, false)}>Confirm cleanup</GhostButton>}
+      </div>
     </section>}
     <div className="flex flex-wrap gap-2">
       <label className="flex min-w-48 flex-1 items-center gap-2 rounded-lg border border-border bg-card px-3"><Search size={14} className="text-muted-foreground" /><input type="search" aria-label="Search worktrees" placeholder="Branch, path, or reason" value={query} onChange={event => setQuery(event.target.value)} className="h-9 min-w-0 flex-1 bg-transparent text-xs outline-none" /></label>
@@ -252,6 +275,11 @@ export function StoragePage({ onError }: { onError?: (message: string) => void }
           const external = entry.state === "external";
           const disposition = entry.disposition ?? (external ? "retained" : "");
           const actionable = !external && RECLAIMABLE.has(disposition);
+          // Bridge cannot prove these safe, but a person looking at the row
+          // can decide for themselves — never offered for a live session, an
+          // unadopted worker output, or a checkout Bridge did not create,
+          // since those stay "retained" and are never forcible.
+          const forcible = !external && !actionable && FORCIBLE.has(disposition);
           return <li key={entry.id} className="flex flex-col gap-1 px-4 py-3">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <span className="flex min-w-0 items-center gap-2">
@@ -277,12 +305,20 @@ export function StoragePage({ onError }: { onError?: (message: string) => void }
                   : entry.retainedReason ?? entry.path}
               </span>
               {actionable && <GhostButton
-                onClick={() => setConfirming(entry)}
+                onClick={() => setConfirming({ entry, force: false })}
                 disabled={busy !== null}
                 ariaLabel={`Reclaim ${entry.branch ?? entry.path}`}
               >
                 {busy === entry.id ? "Reclaiming…" : "Reclaim"}
               </GhostButton>}
+              {forcible && <TextButton
+                tone="destructive"
+                onClick={() => setConfirming({ entry, force: true })}
+                disabled={busy !== null}
+                ariaLabel={`Delete ${entry.branch ?? entry.path}`}
+              >
+                {busy === entry.id ? "Deleting…" : "Delete"}
+              </TextButton>}
             </div>
           </li>;
         })}

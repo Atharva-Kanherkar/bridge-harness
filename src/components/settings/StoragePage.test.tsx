@@ -32,7 +32,7 @@ it("shows what the worktrees cost against the cap", async () => {
   await render();
   const text = host.textContent ?? "";
   expect(text).toContain("2.6 GiB");
-  expect(text).toContain("across 3 checkouts");
+  expect(text).toContain("across 4 checkouts");
   expect(text).toContain("10.0 GiB per repository");
 });
 
@@ -65,6 +65,27 @@ it("reports what a reclaim freed and drops the row", async () => {
   await act(async () => { button("Confirm cleanup")?.click(); });
   expect(host.textContent).toContain("Reclaimed 2.5 GiB");
   expect(host.textContent).not.toContain("bridge/demo-session2");
+});
+
+it("offers Delete for a checkout Bridge could not prove safe, and never for one it flatly retains", async () => {
+  await render();
+  const rows = [...host.querySelectorAll("li")];
+  const atRisk = rows.find(row => row.textContent?.includes("bridge/worker-scratch"));
+  const retained = rows.find(row => row.textContent?.includes("bridge/worker-1w"));
+
+  expect(atRisk?.textContent).toContain("Delete");
+  expect(retained?.textContent).not.toContain("Delete");
+});
+
+it("deletes a checkout only after the destructive confirmation, and drops the row", async () => {
+  await render();
+  await act(async () => {
+    button("Delete")?.click();
+  });
+  expect(host.textContent).toContain("Bridge could not prove this checkout is safe to remove");
+  await act(async () => { button("Delete anyway")?.click(); });
+  expect(host.textContent).toContain("Deleted");
+  expect(host.textContent).not.toContain("bridge/worker-scratch");
 });
 
 it("says plainly when a sweep could reclaim nothing", async () => {
