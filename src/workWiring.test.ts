@@ -135,7 +135,7 @@ describe("briefing runs are hidden from every surface", () => {
   it("filters state.sessions once, and nothing downstream reads the raw list", () => {
     // Found in review: the previous version of this test string-matched
     // `!isHiddenSession(s)` anywhere in the file and never checked which props got the
-    // filtered list — so Mission Control was handed `state.sessions` while the comment
+    // filtered list — so Agent Fleet was handed `state.sessions` while the comment
     // above claimed otherwise. Checking the props is the assertion that has teeth.
     expect(APP).toContain("const visibleSessions = useMemo(() => state.sessions.filter(s => !isHiddenSession(s))");
     // Every session-list prop must come from the filtered list. `state.sessions` may
@@ -144,7 +144,7 @@ describe("briefing runs are hidden from every surface", () => {
     expect(rawUses).toHaveLength(0);
   });
 
-  it("hands Mission Control the workspace list for independent terminals", () => {
+  it("hands Agent Fleet the workspace list for independent terminals", () => {
     // The surface the earlier miss actually affected: a briefing run is not idle or
     // done, so it would have appeared on the grid — and focusing it then failed,
     // because session resolution did apply the predicate.

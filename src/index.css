@@ -771,7 +771,7 @@ html[data-native-fullscreen] .u-traffic-inset {
   margin-top: 1em;
 }
 
-/* The live accent bar on a working Mission Control tile. */
+/* The live accent bar on a working Agent Fleet tile. */
 @keyframes mission-pulse {
   0%, 100% { opacity: 0.45; }
   50% { opacity: 1; }

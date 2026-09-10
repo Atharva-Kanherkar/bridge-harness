@@ -92,7 +92,7 @@ describe("shell flags", () => {
     expect(source).toContain("WindowHistoryChevrons");
     expect(source).toContain("WindowPanelButton");
     expect(source).toContain("sidebarHidden={sidebarCollapsed}");
-    expect(source).not.toContain('paradigm === "grid" ? "Focus" : "Mission Control"');
+    expect(source).not.toContain('paradigm === "grid" ? "Focus" : "Agent Fleet"');
     expect(source).toContain("showWindowNav");
     expect(source).toContain("flex h-[100dvh] flex-row");
   });
@@ -898,10 +898,10 @@ describe("the dock in the session view", () => {
   // shell — rail, title bar, session chrome, or the keymap/menu table —
   // may offer a way into them. Sidebar-only tests would miss a later
   // title-bar, menu, or chord entry point.
-  it("exposes Mission Control while keeping the Work board out of navigation", async () => {
+  it("exposes Agent Fleet while keeping the Work board out of navigation", async () => {
     await mountApp();
 
-    expect(container.querySelector('button[aria-label="Mission Control"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Agent Fleet"]')).not.toBeNull();
     const hiddenNav = /^Work board$/;
     const namedControls = (root: ParentNode) =>
       [...root.querySelectorAll<HTMLElement>("button, [role='menuitem'], [role='link'], a")]
@@ -917,6 +917,6 @@ describe("the dock in the session view", () => {
     // The sheet and the native menu both read this table; a new chord or
     // menu item for either screen has to land here first.
     expect(SHORTCUTS.some(shortcut => /mission|work-board|workboard/i.test(shortcut.id))).toBe(false);
-    expect(SHORTCUTS.some(shortcut => /Mission Control|Work board/i.test(shortcut.label))).toBe(false);
+    expect(SHORTCUTS.some(shortcut => /Agent Fleet|Work board/i.test(shortcut.label))).toBe(false);
   });
 });

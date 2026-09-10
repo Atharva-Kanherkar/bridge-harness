@@ -17,7 +17,7 @@ describe("recordPlace", () => {
     });
   });
 
-  it("records Mission Control separately from a focused workspace session", () => {
+  it("records Agent Fleet separately from a focused workspace session", () => {
     const focused = workspace("a", "single");
     expect(recordPlace([focused], 0, workspace("a", "grid"))).toEqual({
       stack: [focused, workspace("a", "grid")],

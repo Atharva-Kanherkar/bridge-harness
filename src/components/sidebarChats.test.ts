@@ -286,7 +286,7 @@ describe("hidden sessions", () => {
 
   it("keeps a briefing session out of every surface that filters through here", () => {
     // The contract named `a_briefing_session_is_hidden_from_every_surface`, and this is
-    // it: the rail, Mission Control and default selection all read the list this
+    // it: the rail, Agent Fleet and default selection all read the list this
     // predicate produces, so one assertion covers all three. Review caught that the
     // name existed in the contract and nowhere else.
     const briefing = chat("briefing-1", BRIEFING_SESSION_KIND);

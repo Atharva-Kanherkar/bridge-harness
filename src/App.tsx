@@ -174,7 +174,7 @@ function AppContent() {
   const [workBriefingError, setWorkBriefingError] = useState<string>();
   const [navOpen, setNavOpen] = useState(false);
   // Two ways to look at the workspace: the classic single-session view, or the
-  // Mission Control grid where every live agent is its own window at once.
+  // Agent Fleet grid where every live agent is its own window at once.
   const [paradigm, setParadigm] = useState<"single" | "grid">("single");
   const [dockSectionWidth, setDockSectionWidth] = useState(1280);
   // Fullscreen only squares the native frame. The sidebar and canvas keep the
@@ -433,13 +433,13 @@ function AppContent() {
 
   const adapters = health?.adapters ?? [];
   const adaptersReady = adapters.some(adapter => adapter.available);
-  // Everything a human may meet. Filtered once, here, because the rail, Mission Control
+  // Everything a human may meet. Filtered once, here, because the rail, Agent Fleet
   // and default selection disagreeing about what exists is how a briefing run ends up
   // on a grid nobody can focus.
   const visibleSessions = useMemo(() => state.sessions.filter(s => !isHiddenSession(s)), [state.sessions]);
   const topSessions = useMemo(() => visibleSessions.filter(s => s.harness !== "shell" && !s.parentSessionId), [visibleSessions]);
   // Resolve across every session, not just top-level ones: a worker can be
-  // opened directly (from Mission Control or a blocked-approval link) so its own
+  // opened directly (from Agent Fleet or a blocked-approval link) so its own
   // conversation — and the approval card that lives on it — is reachable.
   const session = state.sessions.find(s => s.id === selectedSessionId && s.harness !== "shell" && !isHiddenSession(s));
   // Selection changes before the history effect runs. Never paint the prior
@@ -994,7 +994,7 @@ function AppContent() {
   }, [adaptersReady, asideSession?.id, asideSession?.harness]);
 
   // Always land on the Agent tab: focusing a session (especially a blocked
-  // worker from Mission Control) must reveal its conversation and approval card,
+  // worker from Agent Fleet) must reveal its conversation and approval card,
   // not whatever tab — Changes/Terminal — happened to be open before.
   function openSession(id: string) {
     setView("workspace");
@@ -2136,7 +2136,7 @@ function AppContent() {
   const startupError = error ?? (healthError ? errorMessage(healthError) : modelSetupError ? errorMessage(modelSetupError) : undefined);
   if (!health || !modelSetup) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{startupError ? <><X size={14} className="text-destructive" aria-hidden="true" />{startupError}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
   if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard adapters={health.adapters} onComplete={acceptModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
-  const chromeTitle = view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session?.title || session?.label || "New Chat";
+  const chromeTitle = view === "mission-control" ? "Agent Fleet" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "settings" ? "Settings" : paradigm === "grid" ? "Agent Fleet" : session?.title || session?.label || "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -2258,7 +2258,7 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : view === "mission-control" || paradigm === "grid" ? <Suspense fallback={<PanelLoading label="Opening Mission Control…"/>}><MissionControl
+      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : view === "mission-control" || paradigm === "grid" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><MissionControl
         workspaces={state.workspaces}
         initialWorkspaceId={workspace?.id ?? welcomeWorkspaceId}
         onOpenProjects={() => setView("projects")}

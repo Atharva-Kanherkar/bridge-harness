@@ -460,9 +460,9 @@ describe("BridgeSidebar action rows", () => {
     expect(html).not.toContain("Needs you");
   });
 
-  it("offers Mission Control while keeping the Work board hidden", () => {
+  it("offers Agent Fleet while keeping the Work board hidden", () => {
     const html = render();
-    expect(html).toContain("Mission Control");
+    expect(html).toContain("Agent Fleet");
     expect(html).not.toContain("Work board");
   });
 

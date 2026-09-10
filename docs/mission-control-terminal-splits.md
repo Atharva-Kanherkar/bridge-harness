@@ -1,6 +1,6 @@
-# Mission Control terminal workspaces
+# Agent Fleet terminal workspaces
 
-Mission Control now opens terminals running shells and installed agent CLIs in a selected workspace. Each workspace saves its own tabs, nested splits, pane titles, ratios, focus, and maximized pane. It uses Bridge's existing Graphite & Paper tokens and Tailwind v4.
+Agent Fleet now opens terminals running shells and installed agent CLIs in a selected workspace. Each workspace saves its own tabs, nested splits, pane titles, ratios, focus, and maximized pane. It uses Bridge's existing Graphite & Paper tokens and Tailwind v4.
 
 Use **New Terminal** for a login shell or **New Agent** for Codex, Claude Code, OpenCode, Cursor, or Grok. Agent actions resolve an interactive executable; having a conversation SDK installed alone does not make its CLI available. A missing executable produces an installation error. Bridge preserves the CLI's normal trust, authentication, and permission prompts.
 
@@ -26,7 +26,7 @@ Rendering uses Orca's pinned xterm/addon versions, with the same Unicode 11 tabl
 
 ## Process and history lifecycle
 
-The Rust host owns PTYs independently of mounted React panes. Switching tabs, moving panes, or leaving Mission Control does not close a process. Reattaching to a live terminal retains its ID and generation. Only creating a terminal or explicitly restarting an ended terminal launches a process. Explicit Restart begins a new generation with fresh history; merely reopening the app does not restart an agent.
+The Rust host owns PTYs independently of mounted React panes. Switching tabs, moving panes, or leaving Agent Fleet does not close a process. Reattaching to a live terminal retains its ID and generation. Only creating a terminal or explicitly restarting an ended terminal launches a process. Explicit Restart begins a new generation with fresh history; merely reopening the app does not restart an agent.
 
 Bridge's existing launcher stops a **desktop-owned daemon** when the app exits. The embedded host also stops with the app. Their layouts and scrollback return as ended panes with a Restart action. When Bridge attaches to a **separately running daemon** that survives desktop exit, its live terminals can be reattached. Daemon failure or machine restart restores history, not process memory. This change does not alter the launcher's existing shutdown or build-identity protection.
 

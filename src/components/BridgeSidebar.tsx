@@ -591,7 +591,7 @@ export function BridgeSidebar({
            * type (and wired in App) so the screens and their data plumbing are
            * untouched. */}
           <ActionRow icon={FolderGit2} label="Projects" chord="open-projects" onClick={onOpenProjects} active={projectsActive} />
-          <ActionRow icon={TerminalSquare} label="Mission Control" onClick={onOpenMissionControl} active={missionControlActive} />
+          <ActionRow icon={TerminalSquare} label="Agent Fleet" onClick={onOpenMissionControl} active={missionControlActive} />
           <ActionRow icon={Pin} label="Memory" onClick={onOpenMemory} active={memoryActive} />
           {onOpenUsage && <ActionRow icon={ChartNoAxesColumn} label="Usage" onClick={onOpenUsage} active={usageActive} />}
         </nav>

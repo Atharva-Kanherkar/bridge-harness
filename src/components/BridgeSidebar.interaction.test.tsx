@@ -191,9 +191,9 @@ describe("BridgeSidebar action rows", () => {
     expect(onOpenSettings).toHaveBeenCalledOnce();
   });
 
-  it("renders Mission Control and keeps the Work board hidden", () => {
+  it("renders Agent Fleet and keeps the Work board hidden", () => {
     mount();
-    expect(container.querySelector('button[aria-label="Mission Control"]')).not.toBeNull();
+    expect(container.querySelector('button[aria-label="Agent Fleet"]')).not.toBeNull();
     expect(container.querySelector('button[aria-label="Work board"]')).toBeNull();
   });
 

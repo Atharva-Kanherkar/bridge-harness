@@ -87,7 +87,7 @@ function feedLabel(event: AgentEvent): string | null {
 
 /** Full activity view for one worker: durable backfill merged with the live
  * stream, the runtime's lifecycle facts, and the final result envelope once
- * it exists. Rendered as an overlay inside Mission Control. */
+ * it exists. Rendered as an overlay inside Agent Fleet. */
 export function WorkerDetail({
   session,
   runtime,
@@ -202,7 +202,7 @@ export function WorkerDetail({
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background animate-page-mount" role="dialog" aria-modal="true" aria-label={`Worker ${session.title || session.label}`}>
       <div className="flex shrink-0 flex-wrap items-center gap-x-2.5 gap-y-1 border-b border-border px-4 py-3 sm:px-6">
-        <button ref={closeRef} type="button" onClick={onClose} className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label="Back to Mission Control"><X size={14}/></button>
+        <button ref={closeRef} type="button" onClick={onClose} className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label="Back to Agent Fleet"><X size={14}/></button>
         <h1 className="m-0 min-w-0 truncate font-display text-sm font-semibold tracking-tight text-foreground">{session.title || session.label}</h1>
         <span className={cn("shrink-0 text-[11px] font-semibold tracking-[0.07em]", toneText[status.tone])}>{status.label}</span>
         <span className="flex-1" />
