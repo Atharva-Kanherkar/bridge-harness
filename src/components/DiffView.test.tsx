@@ -67,6 +67,7 @@ describe("PatchView", () => {
       .find(node => node.textContent?.includes("@@"))!;
     const gutter = hunk.querySelector("span.sticky")!;
     expect(hunk.className).toContain("u-diff-band");
+    expect(hunk.className).toContain("pt-px");
     expect(gutter.className).toContain("bg-inherit");
     expect(gutter.className).not.toMatch(/bg-(code|transparent)/);
   });

@@ -45,7 +45,7 @@ function DiffLine({ row, numbered, onQuoteHunk }: { row: DiffRow; numbered: bool
   // through. `bg-inherit` takes the row's pre-composed tint so the sticky
   // column cannot go transparent.
   const line = row.newLine ?? row.oldLine;
-  return <div className={cn("group/hunk flex", style.tint || "bg-card")}>
+  return <div className={cn("group/hunk flex", band && "pt-px", style.tint || "bg-card")}>
     <span className={cn(
       "sticky left-0 z-10 flex shrink-0 select-none items-start bg-inherit",
       numbered && !band && !style.edge && "border-r border-border/60",
