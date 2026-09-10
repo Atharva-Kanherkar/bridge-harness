@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef, useState, type DragEvent, type ReactNode } from "react";
-import { ArrowDownToLine, Bot, ChevronDown, Columns2, Keyboard, Maximize2, Minimize2, Plus, RotateCcw, Rows2, Search, TerminalSquare, X } from "lucide-react";
+import { ArrowDownToLine, Bot, ChevronDown, Columns2, GripVertical, Keyboard, Maximize2, Minimize2, Plus, RotateCcw, Rows2, Search, TerminalSquare, X } from "lucide-react";
 import { bridgeApi } from "../api";
 import { cn } from "../lib/utils";
-import { addTab, closeLeaf, emptyLayout, insertSplit, leafIds, resizeNode, restoreLayout, type PaneNode, type SplitDirection, type TerminalLayout } from "../terminal/layout";
+import { addTab, appendToLastLeaf, autoSplitDirection, closeLeaf, emptyLayout, insertSplit, leafIds, resizeNode, restoreLayout, type PaneNode, type SplitDirection, type TerminalLayout } from "../terminal/layout";
 import type { TerminalRecord } from "../terminal/types";
 import { TERMINAL_SHORTCUTS, terminalChord, terminalCommand, type TerminalCommand } from "../terminal/shortcuts";
 import { TerminalSurface } from "./TerminalSurface";
@@ -10,6 +10,13 @@ import { TerminalSurface } from "./TerminalSurface";
 const PANE_DRAG = "application/x-bridge-terminal-pane";
 const TAB_DRAG = "application/x-bridge-terminal-tab";
 const AGENTS = [{ id: "codex", label: "Codex" }, { id: "claude", label: "Claude Code" }, { id: "opencode", label: "OpenCode" }, { id: "cursor", label: "Cursor" }, { id: "grok", label: "Grok" }];
+/** Records created for an agent carry the raw agent id as their title. */
+const displayTitle = (record: TerminalRecord) => (record.agentId && record.title === record.agentId ? AGENTS.find(a => a.id === record.agentId)?.label : undefined) ?? record.title;
+function measuredDirection(element: HTMLElement | undefined): SplitDirection | undefined {
+  const rect = element?.getBoundingClientRect();
+  if (!rect?.width || !rect.height) return;
+  return rect.width > rect.height ? "horizontal" : "vertical";
+}
 const writes = new Map<string, Promise<void>>();
 function saveLayout(workspace: string, layout: TerminalLayout) {
   const next = (writes.get(workspace) ?? Promise.resolve()).catch(() => {}).then(() => bridgeApi.saveTerminalLayout(workspace, layout));
@@ -34,6 +41,7 @@ type PaneActions = {
   onRecord: (record: TerminalRecord) => void;
   searchRequest: { id: string; serial: number } | null;
   searchHandled: () => void;
+  elements: Map<string, HTMLElement>;
 };
 
 function IconButton({ title, onClick, children }: { title: string; onClick: () => void; children: ReactNode }) {
@@ -43,7 +51,7 @@ function IconButton({ title, onClick, children }: { title: string; onClick: () =
 function Pane({ id, actions }: { id: string; actions: PaneActions }) {
   const record = actions.records[id];
   const [renaming, setRenaming] = useState(false);
-  const [title, setTitle] = useState("");
+  const [draft, setDraft] = useState("");
   const [drop, setDrop] = useState<"left" | "right" | "top" | "bottom">();
   if (!record) return null;
   const focused = actions.layout.activeLeafId === id;
@@ -54,7 +62,8 @@ function Pane({ id, actions }: { id: string; actions: PaneActions }) {
     const nearX = Math.min(x, 1 - x), nearY = Math.min(y, 1 - y);
     return nearX < nearY ? (x < .5 ? "left" : "right") : (y < .5 ? "top" : "bottom");
   }
-  return <section aria-label={`Pane ${record.title}`} onPointerDownCapture={() => actions.focus(id)} onFocusCapture={() => actions.focus(id)}
+  const title = displayTitle(record);
+  return <section aria-label={`Pane ${title}`} data-leaf-id={id} ref={element => { if (element) actions.elements.set(id, element); else actions.elements.delete(id); }} onPointerDownCapture={() => actions.focus(id)} onFocusCapture={() => actions.focus(id)}
     onDragOver={event => { if (event.dataTransfer.types.includes(PANE_DRAG)) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setDrop(dropSide(event)); } }}
     onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDrop(undefined); }}
     onDrop={event => {
@@ -66,14 +75,15 @@ function Pane({ id, actions }: { id: string; actions: PaneActions }) {
         actions.move(payload.id, id, edge === "left" || edge === "right" ? "horizontal" : "vertical", edge === "left" || edge === "top");
       } catch { /* Ignore external drags. */ }
     }} className={cn("relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden rounded-md border bg-code", focused ? "border-ring/65" : "border-border")}>
-    <div draggable={!renaming} onDragStart={event => { event.dataTransfer.setData(PANE_DRAG, JSON.stringify({ workspaceId: actions.workspaceId, id })); event.dataTransfer.effectAllowed = "move"; }} className={cn("flex h-9 shrink-0 items-center gap-1.5 border-b border-border px-2", focused ? "bg-accent" : "bg-background")}>
+    <div draggable={!renaming} title="Drag to move pane" onDragStart={event => { event.dataTransfer.setData(PANE_DRAG, JSON.stringify({ workspaceId: actions.workspaceId, id })); event.dataTransfer.effectAllowed = "move"; }} className={cn("flex h-9 shrink-0 cursor-grab items-center gap-1.5 border-b border-border px-1.5 active:cursor-grabbing", focused ? "bg-accent" : "bg-background")}>
+      <GripVertical size={12} className="shrink-0 text-muted-foreground/70" aria-hidden="true" />
       {record.agentId ? <Bot size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" /> : <TerminalSquare size={13} className="shrink-0 text-muted-foreground" aria-hidden="true" />}
-      {renaming ? <input autoFocus aria-label="Terminal title" maxLength={120} className="min-w-0 flex-1 rounded bg-background px-1 text-xs outline-none ring-1 ring-ring" value={title} onChange={event => setTitle(event.target.value)} onBlur={() => { if (title.trim()) actions.rename(id, title.trim()); setRenaming(false); }} onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur(); if (event.key === "Escape") { setRenaming(false); } event.stopPropagation(); }} /> : <button type="button" title="Rename terminal · drag to move pane" aria-label={`Rename ${record.title}`} className="min-w-0 flex-1 cursor-grab truncate text-left text-xs font-medium" onClick={() => { setTitle(record.title); setRenaming(true); }}>{record.title}</button>}
+      {renaming ? <input autoFocus aria-label="Terminal title" maxLength={120} className="min-w-0 flex-1 rounded bg-background px-1 text-xs outline-none ring-1 ring-ring" value={draft} onChange={event => setDraft(event.target.value)} onBlur={() => { if (draft.trim()) actions.rename(id, draft.trim()); setRenaming(false); }} onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur(); if (event.key === "Escape") { setRenaming(false); } event.stopPropagation(); }} /> : <button type="button" title="Rename terminal" aria-label={`Rename ${title}`} className="min-w-0 flex-1 cursor-grab truncate text-left text-xs font-medium" onClick={() => { setDraft(title); setRenaming(true); }}>{title}</button>}
       <span title={record.status === "running" ? "Process running" : "Process ended"} className={cn("h-1.5 w-1.5 shrink-0 rounded-full", record.status === "running" ? "bg-success" : "bg-muted-foreground")} />
       <IconButton title={`Split right (${terminalChord("split-right")})`} onClick={() => actions.split(id, "horizontal")}><Columns2 size={13} /></IconButton>
       <IconButton title={`Split down (${terminalChord("split-down")})`} onClick={() => actions.split(id, "vertical")}><Rows2 size={13} /></IconButton>
       <IconButton title={expanded ? "Restore panes" : `Maximize pane (${terminalChord("maximize")})`} onClick={() => actions.maximize(id)}>{expanded ? <Minimize2 size={13} /> : <Maximize2 size={13} />}</IconButton>
-      <IconButton title={`Close ${record.title}`} onClick={() => actions.close(id)}><X size={13} /></IconButton>
+      <IconButton title={`Close ${title}`} onClick={() => actions.close(id)}><X size={13} /></IconButton>
     </div>
     <TerminalSurface record={record} focused={focused} onRecord={actions.onRecord} onSearchHandled={actions.searchHandled} searchRequest={actions.searchRequest?.id === id ? actions.searchRequest.serial : 0} />
     {record.status !== "running" && <div className="flex shrink-0 items-center gap-2 border-t border-border bg-background px-2 py-1.5 text-[11px] text-muted-foreground"><span className="flex-1">Process ended{record.exitCode != null ? ` · exit ${record.exitCode}` : ""}. History restored.</span><button type="button" onClick={() => actions.restart(id)} className="inline-flex items-center gap-1 rounded px-2 py-1 text-foreground hover:bg-accent"><RotateCcw size={11} />Restart</button></div>}
@@ -127,6 +137,8 @@ export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string
   const [shortcuts, setShortcuts] = useState(false);
   const [searchRequest, setSearchRequest] = useState<{ id: string; serial: number } | null>(null);
   const current = useRef(state); current.current = state;
+  const elements = useRef(new Map<string, HTMLElement>());
+  const [backgroundDrop, setBackgroundDrop] = useState(false);
   const alive = useRef(true);
   const dirty = useRef(false);
   const errorHandler = useCallback((value: unknown) => { if (alive.current) { setError(String(value)); setRetrySave(false); } }, []);
@@ -154,19 +166,27 @@ export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string
     dirty.current = true;
     setState(s => s ? { ...s, layout: update(s.layout) } : s);
   };
-  async function launch(agentId?: string, target?: string, direction?: SplitDirection) {
+  /** New terminals split the focused pane of the active tab; a tab is only
+   * opened on request or when the layout is empty. Shells inherit the focused
+   * pane's cwd, agent CLIs start at the checkout root. */
+  async function launch(agentId?: string, placement: { target?: string; direction?: SplitDirection; newTab?: boolean } = {}) {
     if (busy) return;
     setBusy(true); setAgentMenu(false); setError(undefined);
     try {
-      const source = target ? await bridgeApi.terminalSnapshot(workspaceId, target) : undefined;
+      const focused = current.current?.layout.activeLeafId ?? undefined;
+      const target = placement.newTab ? undefined : placement.target ?? focused;
+      const source = target && !agentId ? await bridgeApi.terminalSnapshot(workspaceId, target) : undefined;
       const record = await bridgeApi.createTerminal({ workspaceId, terminalId: crypto.randomUUID(), agentId, cwd: source?.record.cwd, restart: false });
       if (!alive.current) return;
       releaseTerminalFocus();
       dirty.current = true;
       setState(s => {
         const previous = s ?? { layout: emptyLayout(), records: {} };
-        const exists = target && previous.layout.tabs.some(t => leafIds(t.root).includes(target));
-        return { records: { ...previous.records, [record.terminalId]: record }, layout: exists && direction ? insertSplit(previous.layout, target, record.terminalId, direction) : addTab(previous.layout, record.terminalId, record.title) };
+        const records = { ...previous.records, [record.terminalId]: record };
+        const tab = target ? previous.layout.tabs.find(t => leafIds(t.root).includes(target)) : undefined;
+        if (!tab || !target) return { records, layout: addTab(previous.layout, record.terminalId, displayTitle(record)) };
+        const direction = placement.direction ?? measuredDirection(elements.current.get(target)) ?? autoSplitDirection(tab.root, target);
+        return { records, layout: insertSplit(previous.layout, target, record.terminalId, direction) };
       });
     } catch (value) { errorHandler(value); }
     finally { if (alive.current) setBusy(false); }
@@ -201,15 +221,30 @@ export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string
     change(layout => { const tab = layout.tabs.find(t => t.id === id); return tab ? { ...layout, activeTabId: id, activeLeafId: leafIds(tab.root)[0], expandedLeafId: null } : layout; }, true);
   }
   function detachToTab(id: string) {
-    if (state?.records[id]) change(layout => addTab(closeLeaf(layout, id), id, state.records[id].title), true);
+    if (state?.records[id]) change(layout => addTab(closeLeaf(layout, id), id, displayTitle(state.records[id])), true);
+  }
+  /** Drops that land beside the panes, not on one. */
+  const onBackground = (event: DragEvent) => event.dataTransfer.types.includes(PANE_DRAG) && !(event.target as Element).closest("[data-leaf-id]");
+  function dropOnBackground(event: DragEvent) {
+    setBackgroundDrop(false);
+    if (!onBackground(event)) return;
+    try {
+      const payload = JSON.parse(event.dataTransfer.getData(PANE_DRAG));
+      const record = state?.records[payload.id];
+      if (payload.workspaceId !== workspaceId || !record) return;
+      event.preventDefault();
+      change(l => appendToLastLeaf(l, payload.id, displayTitle(record)), true);
+    } catch { /* External drag. */ }
   }
   const layout = state?.layout ?? emptyLayout();
   const tab = layout.tabs.find(t => t.id === layout.activeTabId);
+  // Persisted tab titles may still carry a raw agent id; label from the live record.
+  const tabLabel = (t: TerminalLayout["tabs"][number]) => { const first = state?.records[leafIds(t.root)[0]]; return first && t.title === first.title ? displayTitle(first) : t.title; };
   const actions: PaneActions = {
-    workspaceId, branch, layout, records: state?.records ?? {}, searchRequest, onRecord,
+    workspaceId, branch, layout, records: state?.records ?? {}, searchRequest, onRecord, elements: elements.current,
     searchHandled: () => setSearchRequest(null),
     focus: id => { if (current.current?.layout.activeLeafId !== id) change(l => ({ ...l, activeLeafId: id })); },
-    split: (id, direction) => { void launch(undefined, id, direction); },
+    split: (id, direction) => { void launch(undefined, { target: id, direction }); },
     close: id => { void close(id); }, restart: id => { void restart(id); }, rename: (id, title) => { void rename(id, title); },
     maximize: id => change(l => ({ ...l, expandedLeafId: l.expandedLeafId === id ? null : id, activeLeafId: id }), true),
     move: (id, target, direction, before) => change(l => insertSplit(l, target, id, direction, before), true),
@@ -217,7 +252,7 @@ export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string
   };
   function command(id: TerminalCommand) {
     const active = layout.activeLeafId;
-    if (id === "new-tab") { void launch(); return; }
+    if (id === "new-tab") { void launch(undefined, { newTab: true }); return; }
     if (!active || !tab) return;
     if (id === "split-right" || id === "split-down") actions.split(active, id === "split-right" ? "horizontal" : "vertical");
     if (id === "close-pane") actions.close(active);
@@ -233,12 +268,14 @@ export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string
   const minimum = root ? minimumSize(root) : undefined;
   return <div data-terminal-workspace className="flex min-h-0 flex-1 flex-col" onKeyDownCapture={event => { const id = terminalCommand(event.nativeEvent); if (id) { event.preventDefault(); event.stopPropagation(); command(id); } }}>
     <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border px-4 py-2">
-      <button type="button" disabled={busy || !state} title={terminalChord("new-tab")} className="inline-flex items-center gap-1.5 rounded-md border border-border-card bg-card px-2.5 py-1.5 text-xs font-medium shadow-control hover:bg-accent disabled:opacity-50" onClick={() => { void launch(); }}><Plus size={13} />New Terminal</button>
+      <button type="button" disabled={busy || !state} title="Open a shell beside the focused pane" className="inline-flex items-center gap-1.5 rounded-md border border-border-card bg-card px-2.5 py-1.5 text-xs font-medium shadow-control hover:bg-accent disabled:opacity-50" onClick={() => { void launch(); }}><Plus size={13} />New Terminal</button>
       <div className="relative">
         <button type="button" disabled={busy || !state} aria-expanded={agentMenu} className="inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 text-xs font-medium hover:bg-accent disabled:opacity-50" onClick={() => setAgentMenu(v => !v)}><Bot size={13} />New Agent<ChevronDown size={11} /></button>
         {agentMenu && <div className="u-glass-popover absolute left-0 top-full z-30 mt-1 w-48 rounded-lg border border-border p-1 shadow-lg" onKeyDown={event => { if (event.key === "Escape") setAgentMenu(false); }}>
           <p className="px-2 py-1.5 text-[10px] text-muted-foreground">Run an installed agent CLI</p>
           {AGENTS.map(agent => <button key={agent.id} type="button" className="flex w-full items-center rounded px-2 py-1.5 text-left text-xs hover:bg-accent" onClick={() => { void launch(agent.id); }}>{agent.label}</button>)}
+          <div className="my-1 border-t border-border" />
+          <button type="button" title={terminalChord("new-tab")} className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground" onClick={() => { void launch(undefined, { newTab: true }); }}>New tab<kbd className="font-mono text-[10px]">{terminalChord("new-tab")}</kbd></button>
         </div>}
       </div>
       {busy && <span role="status" className="text-xs text-muted-foreground">Opening terminal…</span>}
@@ -257,9 +294,13 @@ export function TerminalWorkspace({ workspaceId, branch }: { workspaceId: string
           event.preventDefault(); const from = event.dataTransfer.getData(TAB_DRAG);
           if (from && from !== t.id) change(l => { const tabs = l.tabs.filter(tab => tab.id !== from), moving = l.tabs.find(tab => tab.id === from); if (moving) tabs.splice(tabs.findIndex(tab => tab.id === t.id), 0, moving); return { ...l, tabs }; });
           else try { const payload = JSON.parse(event.dataTransfer.getData(PANE_DRAG)); if (payload.workspaceId === workspaceId && state?.records[payload.id]) actions.move(payload.id, leafIds(t.root)[0], "horizontal", false); } catch { /* External drag. */ }
-        }} onClick={() => selectTab(t.id)} className={cn("flex max-w-56 shrink-0 items-center gap-2 rounded-t-md border border-b-0 px-3 py-2 text-xs", t.id === layout.activeTabId ? "border-border bg-code text-foreground" : "border-transparent text-muted-foreground hover:bg-accent")}><TerminalSquare size={12} /><span className="truncate">{t.title}</span>{leafIds(t.root).length > 1 && <span className="text-[10px] text-muted-foreground">{leafIds(t.root).length}</span>}</button>)}
+        }} onClick={() => selectTab(t.id)} className={cn("flex max-w-56 shrink-0 items-center gap-2 rounded-t-md border border-b-0 px-3 py-2 text-xs", t.id === layout.activeTabId ? "border-border bg-code text-foreground" : "border-transparent text-muted-foreground hover:bg-accent")}><TerminalSquare size={12} /><span className="truncate">{tabLabel(t)}</span>{leafIds(t.root).length > 1 && <span className="text-[10px] text-muted-foreground">{leafIds(t.root).length}</span>}</button>)}
     </div>}
-    <div className="min-h-0 flex-1 overflow-auto p-2">
+    <div data-terminal-panel className={cn("relative min-h-0 flex-1 overflow-auto p-2", backgroundDrop && "bg-selection/20")}
+      onDragOver={event => { if (onBackground(event)) { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setBackgroundDrop(true); } else setBackgroundDrop(false); }}
+      onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setBackgroundDrop(false); }}
+      onDrop={dropOnBackground}>
+      {backgroundDrop && <div aria-hidden="true" className="pointer-events-none absolute inset-2 z-10 grid place-items-center rounded-md border-2 border-dashed border-ring text-xs text-muted-foreground">Drop to add beside the last pane</div>}
       {!state ? <div role="status" className="grid h-full place-items-center text-xs text-muted-foreground">{error ? "Terminal workspace could not be opened." : "Restoring workspace…"}</div> : root ? <div role="tabpanel" className="h-full w-full" style={minimum ? { minWidth: minimum.width, minHeight: minimum.height } : undefined}><SplitTree node={root} actions={actions} /></div> : <div className="flex h-full min-h-60 flex-col items-center justify-center gap-3 px-8 text-center"><TerminalSquare size={30} strokeWidth={1.2} className="text-muted-foreground" /><h2 className="font-display text-xl">A terminal for every stream of work</h2><p className="max-w-sm text-sm leading-relaxed text-muted-foreground">Open a shell or an agent CLI, then split your workspace as you go. Your layout and terminal history are saved here.</p><button type="button" disabled={busy} onClick={() => { void launch(); }} className="mt-2 rounded-md border border-border-card bg-card px-4 py-2 text-xs font-medium shadow-control hover:bg-accent">Open a terminal</button></div>}
     </div>
   </div>;

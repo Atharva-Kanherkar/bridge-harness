@@ -14,7 +14,7 @@ export default function Blog() {
     <div className="min-h-screen bg-background text-foreground">
       <SiteHeader />
       <main className="mx-auto max-w-3xl px-6 pb-24 pt-16">
-        <h1 className="font-display text-4xl font-semibold tracking-tight sm:text-5xl">Blog</h1>
+        <h1 className="font-display text-5xl font-semibold tracking-[-0.03em] sm:text-6xl">Blog</h1>
         <p className="mt-4 text-[15px] leading-7 text-muted-foreground">
           How Bridge is built: the invariants it refuses to break, and the decisions behind them.
         </p>
@@ -25,7 +25,7 @@ export default function Blog() {
               <time dateTime={post.iso} className="text-[13px] text-faint">
                 {post.date}
               </time>
-              <h2 className="mt-2 font-display text-2xl font-semibold tracking-tight">
+              <h2 className="mt-2 font-display text-[1.75rem] font-semibold tracking-[-0.03em]">
                 <Link href={`/blog/${post.slug}`} className="hover:text-foreground/80">
                   {post.title}
                 </Link>

@@ -32,7 +32,7 @@ export default async function BlogPost({ params }: PageProps<"/blog/[slug]">) {
         <time dateTime={post.iso} className="mt-8 block text-[13px] text-faint">
           {post.date}
         </time>
-        <h1 className="mt-2 font-display text-3xl font-semibold leading-tight tracking-tight sm:text-4xl">{post.title}</h1>
+        <h1 className="mt-2 font-display text-4xl leading-tight tracking-[-0.01em] sm:text-5xl">{post.title}</h1>
         <p className="mt-4 text-[15px] leading-7 text-muted-foreground">{post.summary}</p>
         <PostBody blocks={post.blocks} />
       </main>

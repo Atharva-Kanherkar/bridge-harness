@@ -1,49 +1,66 @@
+import SectionHeader from "./SectionHeader";
 
 const harnesses = [
   {
     name: "Codex",
+    ring: "border-harness-codex/40 bg-harness-codex/10",
     dot: "bg-harness-codex",
-    text: "Connects through the Codex app-server JSON-RPC protocol.",
+    via: "app-server JSON-RPC",
+    text: "Connects through the Codex app-server protocol.",
   },
   {
     name: "Claude Code",
+    ring: "border-harness-claude/40 bg-harness-claude/10",
     dot: "bg-harness-claude",
+    via: "Agent SDK sidecar",
     text: "Runs through the Claude Agent SDK in a Node sidecar, not a headless CLI prompt.",
   },
   {
     name: "OpenCode",
+    ring: "border-harness-opencode/40 bg-harness-opencode/10",
     dot: "bg-harness-opencode",
-    text: "Talks to the OpenCode headless server API.",
+    via: "headless server API",
+    text: "Talks to the OpenCode headless server.",
   },
 ];
 
 export default function HarnessSection() {
   return (
     <section className="border-t border-border">
-      <div className="mx-auto max-w-6xl px-6 py-20">
-        <div>
-          <h2 className="max-w-2xl font-display text-3xl font-semibold tracking-tight sm:text-4xl">Bring your own harness</h2>
-          <p className="mt-4 max-w-2xl text-[15px] leading-7 text-muted-foreground">
-            An adapter translates the native process and event protocol of each provider into one event model, so messages,
-            reasoning, plans, tool calls, approvals, and file changes render the same way whoever produced them.
-          </p>
-        </div>
-        <div className="mt-10 grid gap-4 sm:grid-cols-3">
-          {harnesses.map((harness) => (
-            <div key={harness.name} className="rounded-lg border border-border-card bg-card p-5">
-              <div className="flex items-center gap-2">
-                <span className={`inline-block size-2 shrink-0 rounded-full ${harness.dot}`} />
-                <h3 className="text-[15px] font-medium">{harness.name}</h3>
+      <div className="mx-auto max-w-6xl px-6 py-24">
+        <div className="grid gap-12 lg:grid-cols-[1fr_1.4fr] lg:items-start">
+          <SectionHeader
+            eyebrow="Harnesses"
+            title={
+              <>
+                Bring your <em className="not-italic text-muted-foreground">own</em> harness.
+              </>
+            }
+            text="One adapter per provider turns its native process and event protocol into a single event model, so messages, reasoning, tool calls, approvals, and diffs look the same whoever produced them."
+          />
+          <div className="grid gap-3">
+            {harnesses.map((harness, i) => (
+              <div
+                key={harness.name}
+                style={{ "--i": i } as React.CSSProperties}
+                className="reveal group flex items-center gap-5 rounded-xl border border-border-card bg-card p-5 transition-colors hover:border-faint-2"
+              >
+                <span className={`grid size-12 shrink-0 place-items-center rounded-full border ${harness.ring}`}>
+                  <span className={`size-3 rounded-full ${harness.dot}`} aria-hidden="true" />
+                </span>
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-baseline gap-x-3">
+                    <h3 className="font-display text-[1.25rem] font-semibold leading-none tracking-[-0.02em] text-foreground">{harness.name}</h3>
+                    <span className="font-mono text-[11px] text-faint">{harness.via}</span>
+                  </div>
+                  <p className="mt-1.5 text-[13.5px] leading-6 text-muted-foreground">{harness.text}</p>
+                </div>
               </div>
-              <p className="mt-2 text-[13.5px] leading-6 text-muted-foreground">{harness.text}</p>
-            </div>
-          ))}
-        </div>
-        <div>
-          <p className="mt-6 max-w-2xl text-[13.5px] leading-6 text-faint">
-            Each adapter reports its availability and capabilities before a session starts. A missing CLI shows that adapter as
-            unavailable instead of blocking startup.
-          </p>
+            ))}
+            <p className="mt-2 text-[13px] leading-6 text-faint">
+              Each adapter reports availability before a session starts. A missing CLI shows as unavailable instead of blocking startup.
+            </p>
+          </div>
         </div>
       </div>
     </section>

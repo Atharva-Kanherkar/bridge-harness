@@ -7,7 +7,7 @@ export default function PostBody({ blocks }: { blocks: PostBlock[] }) {
         switch (block.kind) {
           case "heading":
             return (
-              <h2 key={i} className="mt-6 font-display text-xl font-semibold tracking-tight text-foreground">
+              <h2 key={i} className="mt-6 font-display text-2xl font-semibold tracking-[-0.03em] text-foreground">
                 {block.text}
               </h2>
             );

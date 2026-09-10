@@ -30,7 +30,7 @@ export default function LoopTabs() {
   }
 
   return (
-    <div className="mt-12 grid gap-8 lg:grid-cols-[220px_1fr]">
+    <div className="mt-12 grid min-w-0 gap-8 lg:grid-cols-[220px_minmax(0,1fr)]">
       <div
         role="tablist"
         aria-orientation="vertical"
@@ -67,13 +67,13 @@ export default function LoopTabs() {
         id={`loop-panel-${step.id}`}
         role="tabpanel"
         aria-labelledby={`loop-tab-${step.id}`}
-        className="grid gap-6 animate-fade-up motion-reduce:animate-none md:grid-cols-2"
+        className="grid min-w-0 gap-6 animate-fade-up motion-reduce:animate-none md:grid-cols-2"
       >
         <div>
           <h3 className="text-lg font-medium leading-7">{step.title}</h3>
           <p className="mt-3 text-[14px] leading-6 text-muted-foreground">{step.text}</p>
         </div>
-        <div className="flex flex-col gap-3">
+        <div className="flex min-w-0 flex-col gap-3">
           {step.entries.map((entry, i) => (
             <MockEntry key={i} entry={entry} />
           ))}

@@ -43,6 +43,7 @@ import { DOCK_PANES, DOCK_SHEET_THRESHOLD, useDockLayout } from "./dockLayout";
 import { SessionRecallSearch } from "./components/SessionRecallSearch";
 import { AppTitleBar } from "./components/AppTitleBar";
 import { WindowHistoryChevrons, WindowPanelButton } from "./components/WindowNavButtons";
+const AgentFleet = lazy(() => import("./components/AgentFleet").then(module => ({ default: module.AgentFleet })));
 const MissionControl = lazy(() => import("./components/MissionControl").then(module => ({ default: module.MissionControl })));
 import { AccessControl, type AccessMode } from "./components/AccessControl";
 import type { Section as SettingsSection } from "./components/SettingsScreen";
@@ -2136,7 +2137,7 @@ function AppContent() {
   const startupError = error ?? (healthError ? errorMessage(healthError) : modelSetupError ? errorMessage(modelSetupError) : undefined);
   if (!health || !modelSetup) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{startupError ? <><X size={14} className="text-destructive" aria-hidden="true" />{startupError}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
   if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard adapters={health.adapters} onComplete={acceptModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
-  const chromeTitle = view === "mission-control" ? "Agent Fleet" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "settings" ? "Settings" : paradigm === "grid" ? "Agent Fleet" : session?.title || session?.label || "New Chat";
+  const chromeTitle = view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session?.title || session?.label || "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
@@ -2177,7 +2178,8 @@ function AppContent() {
       memoryActive={view === "memory"}
       marketplaceActive={view === "marketplace"}
       usageActive={view === "usage"}
-      missionControlActive={view === "mission-control"}
+      agentFleetActive={view === "agent-fleet"}
+      missionControlActive={view === "mission-control" || (view === "workspace" && paradigm === "grid")}
       workActive={view === "work"}
       settingsActive={view === "settings"}
       accountName={localAccountName(health.database, workspace?.path)}
@@ -2186,6 +2188,7 @@ function AppContent() {
       onNewChatInProject={workspaceId => void startChatInWorkspace(workspaceId)}
       onOpenProjects={() => setView("projects")}
       onOpenMarketplace={() => setView("marketplace")}
+      onOpenAgentFleet={() => { setView("agent-fleet"); setParadigm("single"); }}
       onOpenMissionControl={() => { setView("mission-control"); setParadigm("single"); }}
       onOpenWorkBoard={openWorkBoard}
       onOpenMemory={() => setView("memory")}
@@ -2258,10 +2261,17 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : view === "mission-control" || paradigm === "grid" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><MissionControl
+      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
         workspaces={state.workspaces}
         initialWorkspaceId={workspace?.id ?? welcomeWorkspaceId}
         onOpenProjects={() => setView("projects")}
+      /></Suspense> : view === "mission-control" || paradigm === "grid" ? <Suspense fallback={<PanelLoading label="Opening Mission Control…"/>}><MissionControl
+        sessions={visibleSessions}
+        workspaces={state.workspaces}
+        events={agentEvents}
+        activeSessionId={session?.id}
+        onFocusSession={openSession}
+        onStopWorker={stopWorker}
       /></Suspense> : session ? <>
         <SessionToolbar
           title={session.title || session.label}

@@ -148,7 +148,8 @@ describe("briefing runs are hidden from every surface", () => {
     // The surface the earlier miss actually affected: a briefing run is not idle or
     // done, so it would have appeared on the grid — and focusing it then failed,
     // because session resolution did apply the predicate.
-    const missionControl = APP.slice(APP.indexOf("<MissionControl"));
+    const start = APP.indexOf("<AgentFleet");
+    const missionControl = APP.slice(start, APP.indexOf("</Suspense>", start));
     expect(missionControl.slice(0, 400)).toContain("workspaces={state.workspaces}");
     expect(missionControl.slice(0, 400)).not.toContain("sessions=");
   });

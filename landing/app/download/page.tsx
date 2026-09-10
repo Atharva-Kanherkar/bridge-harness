@@ -26,7 +26,7 @@ export default function Download() {
     <div className="min-h-screen bg-background text-foreground">
       <SiteHeader />
       <main className="mx-auto max-w-3xl px-6 pb-24 pt-16">
-        <h1 className="font-display text-4xl font-semibold tracking-tight sm:text-5xl">Get Bridge</h1>
+        <h1 className="font-display text-5xl font-semibold tracking-[-0.03em] sm:text-6xl">Get Bridge</h1>
         <p className="mt-4 text-[15px] leading-7 text-muted-foreground">
           Version {latestVersion} for macOS 12 or later on Apple Silicon. Early-stage software under active development.
         </p>
@@ -43,7 +43,7 @@ export default function Download() {
           </a>
         </div>
 
-        <h2 className="mt-16 font-display text-xl font-semibold tracking-tight">Requirements</h2>
+        <h2 className="mt-16 font-display text-2xl font-semibold tracking-[-0.03em]">Requirements</h2>
         <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-6 gap-y-2 text-[14px]">
           {requirements.map(([term, value]) => (
             <div key={term} className="contents">
@@ -53,7 +53,7 @@ export default function Download() {
           ))}
         </dl>
 
-        <h2 className="mt-12 font-display text-xl font-semibold tracking-tight">Install</h2>
+        <h2 className="mt-12 font-display text-2xl font-semibold tracking-[-0.03em]">Install</h2>
         <ol className="mt-4 flex flex-col gap-2">
           {steps.map((step, i) => (
             <li key={step} className="flex gap-3 text-[14px] leading-6 text-muted-foreground">
@@ -63,7 +63,7 @@ export default function Download() {
           ))}
         </ol>
 
-        <h2 className="mt-12 font-display text-xl font-semibold tracking-tight">Verify the download</h2>
+        <h2 className="mt-12 font-display text-2xl font-semibold tracking-[-0.03em]">Verify the download</h2>
         <p className="mt-4 text-[14px] leading-6 text-muted-foreground">
           Every release ships a checksum beside the disk image. From the folder holding both files:
         </p>

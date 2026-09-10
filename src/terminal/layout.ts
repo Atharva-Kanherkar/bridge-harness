@@ -86,3 +86,26 @@ export function restoreLayout(value: unknown, terminals: { terminalId: string; t
   const ids = active ? leafIds(active.root) : [];
   return { version: 1, tabs, activeTabId: active?.id ?? null, activeLeafId: ids.includes(raw.activeLeafId ?? "") ? raw.activeLeafId! : ids[0] ?? null, expandedLeafId: ids.includes(raw.expandedLeafId ?? "") ? raw.expandedLeafId! : null };
 }
+
+/** Depth of a leaf below `node`, or null when absent. */
+export function leafDepth(node: PaneNode, leafId: string, depth = 0): number | null {
+  if (node.type === "leaf") return node.leafId === leafId ? depth : null;
+  return leafDepth(node.first, leafId, depth + 1) ?? leafDepth(node.second, leafId, depth + 1);
+}
+
+/** Fallback for when a pane cannot be measured: alternate by depth so the
+ * grid stays balanced. Even depth (including the root) splits horizontally. */
+export function autoSplitDirection(root: PaneNode, leafId: string): SplitDirection {
+  return (leafDepth(root, leafId) ?? 0) % 2 === 0 ? "horizontal" : "vertical";
+}
+
+export const lastLeafId = (node: PaneNode): string => leafIds(node).at(-1)!;
+
+/** Append `leafId` as a split of the last leaf in the active tab; becomes its
+ * own tab when there is nothing to attach to. Moves an existing leaf. */
+export function appendToLastLeaf(layout: TerminalLayout, leafId: string, title: string, direction: SplitDirection = "horizontal"): TerminalLayout {
+  const active = layout.tabs.find(tab => tab.id === layout.activeTabId) ?? layout.tabs.at(-1);
+  if (!active) return addTab(layout, leafId, title);
+  const target = leafIds(active.root).filter(id => id !== leafId).at(-1);
+  return target ? insertSplit(layout, target, leafId, direction) : layout;
+}
