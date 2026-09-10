@@ -13,10 +13,71 @@
 // pretending to be current.
 
 import { useCallback, useEffect, useState } from "react";
+import { cn } from "@/lib/utils";
 import { bridgeApi as api } from "../../api";
 import type { WorktreeInventoryEntry, WorktreeUsage } from "../../types";
 import { GhostButton, Select, SettingsGroup, SettingsPage, StatusPill, type PillTone } from "./kit";
+import { harnessChartDot, harnessChartText } from "../harnessMarks";
 import { Search, RefreshCw, HardDrive, ShieldCheck } from "lucide-react";
+
+// Repositories have no harness of their own, so the breakdown chart borrows
+// the same validated four-hue chart palette the usage board series wear,
+// cycling by rank rather than by identity — the one categorical palette this
+// codebase has signed off on, reused rather than a second one invented here.
+const PALETTE = ["codex", "cursor", "claude", "opencode"] as const;
+const swatch = (index: number) => PALETTE[index % PALETTE.length];
+
+/** A segmented meter bar across repositories, each wearing a palette hue,
+ *  with a hover tooltip — the same reveal-once-on-mount motion as the meter's
+ *  own bars, applied per segment instead of per window. */
+function RepoBreakdown({ repositories, totalBytes, onSelect }: {
+  repositories: WorktreeUsage["repositories"];
+  totalBytes: number;
+  onSelect: (repoRoot: string) => void;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+  const sorted = [...repositories].sort((a, b) => b.sizeBytes - a.sizeBytes);
+  if (sorted.length === 0 || totalBytes <= 0) return null;
+  return <div className="border-t border-border/60 px-4 py-3">
+    <div className="relative flex h-2.5 w-full overflow-hidden rounded-full bg-muted">
+      {sorted.map((repo, index) => {
+        const width = Math.max((repo.sizeBytes / totalBytes) * 100, repo.sizeBytes > 0 ? 0.5 : 0);
+        return <button
+          key={repo.repoRoot}
+          type="button"
+          aria-label={`${repoName(repo.repoRoot)}: ${bytes(repo.sizeBytes)}`}
+          onMouseEnter={() => setHover(index)}
+          onMouseLeave={() => setHover(current => (current === index ? null : current))}
+          onFocus={() => setHover(index)}
+          onBlur={() => setHover(current => (current === index ? null : current))}
+          onClick={() => onSelect(repo.repoRoot)}
+          className={cn("h-full origin-left cursor-pointer outline-none motion-safe:animate-[meter-fill_600ms_ease-out] first:rounded-l-full last:rounded-r-full", harnessChartDot(swatch(index)), hover === index && "brightness-110")}
+          style={{ width: `${width}%` }}
+        />;
+      })}
+    </div>
+    {hover !== null && sorted[hover] && <div role="tooltip" className="u-glass-popover mt-2 inline-flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-caption">
+      <span className={cn("size-2 shrink-0 rounded-[3px]", harnessChartDot(swatch(hover)))} />
+      <span className="font-medium text-foreground">{repoName(sorted[hover].repoRoot)}</span>
+      <span className="tabular-nums text-muted-foreground">{sorted[hover].count} · {bytes(sorted[hover].sizeBytes)}{sorted[hover].overBudget ? " · Over limit" : ""}</span>
+    </div>}
+    <ul className="mt-3 flex flex-wrap gap-x-4 gap-y-1.5">
+      {sorted.map((repo, index) => <li key={repo.repoRoot}>
+        <button
+          type="button"
+          onClick={() => onSelect(repo.repoRoot)}
+          onMouseEnter={() => setHover(index)}
+          onMouseLeave={() => setHover(current => (current === index ? null : current))}
+          className={cn("flex items-center gap-1.5 rounded-md px-1 py-0.5 text-xs outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring", hover === index && "bg-accent")}
+        >
+          <span className={cn("size-2 shrink-0 rounded-[3px]", harnessChartDot(swatch(index)))} />
+          <span className={cn("truncate font-mono", harnessChartText(swatch(index)))} title={repo.repoRoot}>{repoName(repo.repoRoot)}</span>
+          <span className="shrink-0 tabular-nums text-muted-foreground">{repo.count} · {bytes(repo.sizeBytes)}{repo.overBudget ? " · Over limit" : ""}</span>
+        </button>
+      </li>)}
+    </ul>
+  </div>;
+}
 
 function bytes(value: number | null | undefined): string {
   if (value === null || value === undefined) return "—";
@@ -167,14 +228,7 @@ export function StoragePage({ onError }: { onError?: (message: string) => void }
         </span>}
         {overBudget && <StatusPill tone="warning">Over the limit</StatusPill>}
       </div>
-      {usage.repositories.length > 0 && <ul className="border-t border-border/60">
-        {usage.repositories.map(repo => <li key={repo.repoRoot} className="flex items-center justify-between gap-4 px-4 py-2 text-xs">
-          <span className="truncate font-mono text-muted-foreground" title={repo.repoRoot}>{repoName(repo.repoRoot)}</span>
-          <span className="shrink-0 tabular-nums text-muted-foreground">
-            {repo.count} · {bytes(repo.sizeBytes)}{repo.overBudget ? " · Over limit" : ""}
-          </span>
-        </li>)}
-      </ul>}
+      <RepoBreakdown repositories={usage.repositories} totalBytes={usage.totalBytes} onSelect={repo => setRepository(current => (current === repo ? "" : repo))} />
     </SettingsGroup>}
 
     <p className="flex gap-2 text-xs leading-relaxed text-muted-foreground"><ShieldCheck size={15} className="shrink-0" />External checkouts are never removed. Dirty files, local-only commits, live sessions and unadopted worker output remain protected.</p>
