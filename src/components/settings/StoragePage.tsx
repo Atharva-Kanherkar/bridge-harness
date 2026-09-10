@@ -1,11 +1,9 @@
 // Storage: what Bridge's worktrees cost, and the only place a person can act on
 // one.
 //
-// The page is built around a single honest distinction — a checkout Bridge can
-// prove is expendable, and one it cannot. So a row either offers Reclaim or
-// says, in words, why nothing may touch it. There is no disabled button with a
-// tooltip: the reason *is* the control's replacement, because "at risk" without
-// "uncommitted changes" tells a person nothing they can act on.
+// Reclaim follows the safety assessment. Explicit Delete lets a person
+// discard uncertain contents after confirmation; live use and pending worker
+// output remain protected by the backend.
 //
 // Sizes are the last measurement, not a live figure. Measuring means walking a
 // directory that can hold a few hundred thousand files, which is the sweep's
@@ -205,6 +203,8 @@ export function StoragePage({ onError }: { onError?: (message: string) => void }
   // Comparing the two labelled two 6 GiB repositories as over a 10 GiB limit
   // when neither was, and said nothing about a repository over the *count* cap.
   // The backend already decides this per repository.
+  const externalCount = entries.filter(entry => entry.state === "external").length;
+  const unmeasuredCount = entries.filter(entry => entry.sizeBytes === null).length;
   const overBudget = usage?.repositories.some(repo => repo.overBudget) ?? false;
   const visible = entries.filter(entry => {
     if (repository && entry.repoRoot !== repository) return false;
@@ -225,13 +225,17 @@ export function StoragePage({ onError }: { onError?: (message: string) => void }
     {loading && <p role="status" className="text-xs text-muted-foreground">Loading storage inventory...</p>}
     {usage && <SettingsGroup
       label="Worktrees"
-      note={`Bridge keeps at most ${usage.maxPerRepo} worktrees and ${bytes(usage.maxTotalBytes)} per repository. Over either limit it reclaims the least recently used checkouts it can prove are expendable, and reports the rest rather than forcing them.`}
+      note={`Automatic cleanup targets at most ${usage.maxPerRepo} Bridge-owned worktrees and ${bytes(usage.maxTotalBytes)} per repository. Over either limit it reclaims the least recently used checkouts it can prove are expendable, and reports the rest rather than forcing them.`}
     >
       <div className="flex flex-wrap items-baseline gap-x-6 gap-y-2 px-4 py-3">
         <HardDrive size={20} className="self-center text-muted-foreground" /><span className="text-3xl font-semibold tabular-nums text-foreground">{bytes(usage.totalBytes)}</span>
         <span className="text-xs text-muted-foreground">
           across {usage.totalCount} checkout{usage.totalCount === 1 ? "" : "s"}
+          {externalCount > 0 && `, including ${externalCount} external`}
         </span>
+        {unmeasuredCount > 0 && <span className="text-xs text-muted-foreground">
+          {unmeasuredCount} checkout{unmeasuredCount === 1 ? "" : "s"} not yet measured; total includes measured sizes only
+        </span>}
         {usage.reclaimableBytes > 0 && <span className="text-xs text-success">
           {bytes(usage.reclaimableBytes)} reclaimable
         </span>}
@@ -243,7 +247,7 @@ export function StoragePage({ onError }: { onError?: (message: string) => void }
       <RepoBreakdown repositories={usage.repositories} totalBytes={usage.totalBytes} onSelect={repo => setRepository(current => (current === repo ? "" : repo))} />
     </SettingsGroup>}
 
-    <p className="flex gap-2 text-xs leading-relaxed text-muted-foreground"><ShieldCheck size={15} className="shrink-0" />External checkouts are never removed. Dirty files, local-only commits, live sessions and unadopted worker output remain protected.</p>
+    <p className="flex gap-2 text-xs leading-relaxed text-muted-foreground"><ShieldCheck size={15} className="shrink-0" />External checkouts are never removed or counted against retention limits. Sweep protects dirty files and local-only commits. Confirmed Delete can discard dirty or unreadable checkouts. Live sessions and unadopted worker output remain protected.</p>
     {note && <p role="status" className="px-1 text-xs text-muted-foreground">{note}</p>}
     {confirming && <section aria-label="Confirm cleanup" className="rounded-xl border border-border bg-card p-4">
       <h3 className="text-sm font-semibold">{confirming === "sweep" ? "Run safe cleanup?" : confirming.force ? `Delete ${confirming.entry.branch ?? repoName(confirming.entry.path)}?` : `Reclaim ${confirming.entry.branch ?? repoName(confirming.entry.path)}?`}</h3>
