@@ -27,3 +27,7 @@
 - Open Work, configure a briefing model and connected tools, and refresh. Confirm only activity within the past 24 hours appears with its source link.
 - Check a recent Slack message and GitHub update; verify old items do not reappear after refresh or pinning.
 - Disconnect a source and confirm errors do not fabricate activity or imply a complete successful read.
+
+## Codex review regressions
+- After the asynchronous briefing receipt, keep reading the board while its stored state is `running`; publish terminal results and stop polling without reopening Work. Recover from transient read failures, and do not read an unopened idle board.
+- Duplicate reads for the same resource preserve already-earned source dates and links when later results omit them. Later supplied dates/links still update, and both call references continue to resolve to the shared evidence.
