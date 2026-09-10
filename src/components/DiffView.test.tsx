@@ -74,9 +74,10 @@ describe("PatchView", () => {
 
   it("clips add and del tints inside a rounded card", async () => {
     await act(async () => { root.render(<PatchView patch={PATCH} path="src/a.ts" />); });
-    const frame = container.querySelector(".stx .rounded-lg")!;
+    const frame = container.querySelector(".stx .rounded-sm")!;
     expect(frame.className).toContain("bg-card");
     expect(frame.className).toContain("overflow-hidden");
+    expect(container.querySelector(".stx .p-1")).not.toBeNull();
     expect(container.firstElementChild!.className).toContain("bg-card");
     const added = [...container.querySelectorAll("div.group\\/hunk")]
       .find(node => node.textContent?.includes("const a = 2;"))!;
