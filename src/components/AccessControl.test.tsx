@@ -33,6 +33,8 @@ describe("AccessControl", () => {
     const items = [...document.querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
     expect(items.map(item => item.textContent)).toEqual(expect.arrayContaining([expect.stringContaining("Full access"), expect.stringContaining("User approval")]));
     const ask = items.find(item => item.textContent?.includes("User approval"))!;
+    expect(items.every(item => !item.textContent?.includes("Bridge asks you before"))).toBe(true);
+    expect(items.every(item => !item.textContent?.includes("Agents act without asking"))).toBe(true);
     act(() => { ask.click(); });
     expect(onChange).toHaveBeenCalledWith("ask");
   });
