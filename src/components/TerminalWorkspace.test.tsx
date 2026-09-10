@@ -80,3 +80,61 @@ it("flushes the complete split tree when navigating away", async () => {
   expect(saved[0]).toBe("w");
   expect(leafIds((saved[1] as ReturnType<typeof emptyLayout>).tabs[0].root)).toHaveLength(2);
 });
+const focusedTerminal = () => host.querySelector('[data-terminal][data-focused="true"]')?.getAttribute("data-terminal");
+const dragEvent = (type: string, id: string) => {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  const payload = JSON.stringify({ workspaceId: "w", id });
+  Object.defineProperty(event, "dataTransfer", { value: { types: ["application/x-bridge-terminal-pane"], getData: () => payload, dropEffect: "none" } });
+  return event;
+};
+it("splits a new agent into the focused pane of the current tab", async () => {
+  await mount(); await click("New Agent"); await click("Claude Code");
+  expect(host.querySelectorAll('[role="tab"]')).toHaveLength(1);
+  expect(host.querySelectorAll("[data-terminal]")).toHaveLength(2);
+  expect(focusedTerminal()).toBe(api.createTerminal.mock.calls[0][0].terminalId);
+  expect(api.createTerminal.mock.calls[0][0].cwd).toBeUndefined();
+});
+it("splits a new shell into the focused pane and alternates direction when unmeasurable", async () => {
+  await mount(); await click("New Terminal");
+  expect(host.querySelectorAll('[role="tab"]')).toHaveLength(1);
+  expect(host.querySelectorAll("[data-terminal]")).toHaveLength(2);
+  expect(api.createTerminal.mock.calls[0][0].cwd).toBe("/tmp/observed");
+  expect(host.querySelector('[role="separator"]')?.getAttribute("aria-orientation")).toBe("vertical");
+  await click("New Terminal");
+  expect([...host.querySelectorAll('[role="separator"]')].map(s => s.getAttribute("aria-orientation"))).toEqual(["vertical", "horizontal"]);
+});
+it("opens a separate tab from the New tab menu item", async () => {
+  await mount(); await click("New Agent"); await click("New tab");
+  expect(host.querySelectorAll('[role="tab"]')).toHaveLength(2);
+  expect(host.querySelectorAll("[data-terminal]")).toHaveLength(1);
+});
+it("creates the first tab when the layout is empty", async () => {
+  api.terminalWorkspace.mockResolvedValue({ terminals: [], layout: null });
+  await mount(); expect(host.querySelectorAll('[role="tab"]')).toHaveLength(0);
+  await click("New Terminal");
+  expect(host.querySelectorAll('[role="tab"]')).toHaveLength(1);
+  expect(host.querySelectorAll("[data-terminal]")).toHaveLength(1);
+});
+it("appends a pane dropped on the empty panel background beside the last leaf", async () => {
+  await mount(); await click("Split right");
+  const created = api.createTerminal.mock.calls[0][0].terminalId;
+  const panel = host.querySelector<HTMLElement>("[data-terminal-panel]")!;
+  await act(async () => { panel.dispatchEvent(dragEvent("dragover", "a")); });
+  expect(panel.textContent).toContain("Drop to add beside the last pane");
+  await act(async () => { panel.dispatchEvent(dragEvent("drop", "a")); });
+  expect([...host.querySelectorAll("[data-terminal]")].map(e => e.getAttribute("data-terminal"))).toEqual([created, "a"]);
+  expect(host.querySelectorAll('[role="tab"]')).toHaveLength(1);
+  expect(api.createTerminal).toHaveBeenCalledTimes(1);
+});
+it("ignores drops that land on a pane rather than the background", async () => {
+  await mount(); await click("Split right");
+  const before = [...host.querySelectorAll("[data-terminal]")].map(e => e.getAttribute("data-terminal"));
+  await act(async () => { host.querySelector("[data-terminal]")!.dispatchEvent(dragEvent("drop", "a")); });
+  expect([...host.querySelectorAll("[data-terminal]")].map(e => e.getAttribute("data-terminal"))).toEqual(before);
+});
+it("labels agent tabs and panes with the display name instead of the raw id", async () => {
+  api.terminalWorkspace.mockResolvedValue({ terminals: [record("x", { agentId: "claude", title: "claude" })], layout: null });
+  await mount();
+  expect(host.querySelector('[role="tab"]')?.textContent).toBe("Claude Code");
+  expect(host.querySelector('[aria-label="Pane Claude Code"]')).not.toBeNull();
+});

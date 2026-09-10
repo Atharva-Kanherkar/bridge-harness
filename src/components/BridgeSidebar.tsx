@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {  Archive,
- BarChart3, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, Home, Pin, Plus, RotateCw, Search, Settings2, SquarePen, Store, type LucideIcon } from "lucide-react";
+ BarChart3, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, Home, Pin, Plus, RotateCw, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
 import type { Session, SessionStatus, Workspace } from "../types";
@@ -261,6 +261,7 @@ export type BridgeSidebarProps = {
   memoryActive?: boolean;
   marketplaceActive: boolean;
   usageActive?: boolean;
+  agentFleetActive: boolean;
   missionControlActive: boolean;
   workActive?: boolean;
   settingsActive: boolean;
@@ -275,6 +276,7 @@ export type BridgeSidebarProps = {
   onNewChatInProject?: (workspaceId: string) => void;
   onOpenProjects: () => void;
   onOpenMarketplace: () => void;
+  onOpenAgentFleet: () => void;
   onOpenMissionControl: () => void;
   onOpenWorkBoard: () => void;
   /** Account memory. Not workspace-gated: a plain chat reaches it identically. */
@@ -306,6 +308,7 @@ export function BridgeSidebar({
   memoryActive = false,
   marketplaceActive,
   usageActive = false,
+  agentFleetActive,
   missionControlActive,
   settingsActive,
   accountName,
@@ -316,6 +319,7 @@ export function BridgeSidebar({
   onNewChatInProject,
   onOpenProjects,
   onOpenMarketplace,
+  onOpenAgentFleet,
   onOpenMissionControl,
   onOpenMemory,
   onOpenUsage,
@@ -591,7 +595,8 @@ export function BridgeSidebar({
            * type (and wired in App) so the screens and their data plumbing are
            * untouched. */}
           <ActionRow icon={FolderGit2} label="Projects" chord="open-projects" onClick={onOpenProjects} active={projectsActive} />
-          <ActionRow icon={TerminalSquare} label="Agent Fleet" onClick={onOpenMissionControl} active={missionControlActive} />
+          <ActionRow icon={TerminalSquare} label="Agent Fleet" onClick={onOpenAgentFleet} active={agentFleetActive} />
+          <ActionRow icon={LayoutGrid} label="Mission Control" onClick={onOpenMissionControl} active={missionControlActive} />
           <ActionRow icon={Pin} label="Memory" onClick={onOpenMemory} active={memoryActive} />
           {onOpenUsage && <ActionRow icon={ChartNoAxesColumn} label="Usage" onClick={onOpenUsage} active={usageActive} />}
         </nav>
