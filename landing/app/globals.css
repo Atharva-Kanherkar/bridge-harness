@@ -231,10 +231,19 @@
   background-size: 22px 22px;
 }
 
-/* The same lattice, lit. A radial mask at the pointer reveals only the dots near it. */
-@utility bg-dots-lit {
-  background-image: radial-gradient(circle, color-mix(in srgb, var(--color-foreground) 90%, transparent) 1px, transparent 1.5px);
-  background-size: 22px 22px;
+/* The lattice as a stencil. Two mask layers intersect: the dot grid, and a soft circle at
+ * the pointer — so a gradient laid underneath shows through only the dots near the cursor. */
+@utility dot-spot {
+  -webkit-mask-image: radial-gradient(circle, black 1px, transparent 1.5px),
+    radial-gradient(260px 260px at var(--mx) var(--my), black 0%, transparent 70%);
+  -webkit-mask-size: 22px 22px, 100% 100%;
+  -webkit-mask-repeat: repeat, no-repeat;
+  -webkit-mask-composite: source-in;
+  mask-image: radial-gradient(circle, black 1px, transparent 1.5px),
+    radial-gradient(260px 260px at var(--mx) var(--my), black 0%, transparent 70%);
+  mask-size: 22px 22px, 100% 100%;
+  mask-repeat: repeat, no-repeat;
+  mask-composite: intersect;
 }
 
 @utility bg-grid {

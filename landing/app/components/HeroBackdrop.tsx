@@ -3,9 +3,9 @@
 import { useEffect, useRef } from "react";
 
 /*
- * A dot lattice that lights up around the pointer: one dim layer everywhere, one bright
- * layer revealed through a radial mask that follows the cursor. Both layers share the same
- * 22px grid, so the lit dots sit exactly on the dim ones rather than beside them.
+ * A dot lattice that lights up around the pointer. The dim layer is drawn everywhere; the
+ * lit one is the CTA gradient stencilled through the same 22px grid and a circle at the
+ * cursor, so the dots near the pointer take the button's colour and the rest stay quiet.
  *
  * The pointer position rides CSS custom properties written on one rAF, so moving the mouse
  * never re-renders React. Reduced motion leaves the lattice unlit.
@@ -52,9 +52,15 @@ export default function HeroBackdrop() {
       className="pointer-events-none absolute inset-0 overflow-hidden [--glow:0] [--mx:50%] [--my:34%]"
     >
       <div className="absolute inset-0 bg-dots [mask-image:radial-gradient(85%_75%_at_50%_35%,black_45%,transparent_85%)]" />
+
+      {/* The bloom the buttons wear, following the cursor. */}
       <div
-        className="absolute inset-0 bg-dots-lit opacity-[var(--glow)] transition-opacity duration-700 [mask-image:radial-gradient(240px_240px_at_var(--mx)_var(--my),black,transparent_70%)]"
+        className="absolute size-[460px] -translate-x-1/2 -translate-y-1/2 rounded-full bg-linear-to-r from-teal-400 via-blue-500 to-purple-500 opacity-[calc(var(--glow)*0.10)] blur-3xl transition-opacity duration-700"
+        style={{ left: "var(--mx)", top: "var(--my)" }}
       />
+
+      {/* The same gradient, showing through only the dots near the pointer. */}
+      <div className="dot-spot absolute inset-0 bg-linear-to-r from-teal-400 via-blue-500 to-purple-500 opacity-[var(--glow)] transition-opacity duration-700" />
       <div className="absolute inset-x-0 bottom-0 h-32 bg-linear-to-t from-background to-transparent" />
     </div>
   );
