@@ -15,7 +15,7 @@ import { type ComposerAttachment, imageFilesFromClipboard, isPasteTooLarge, medi
 import { openExternalUrl } from "./externalLinks";
 import { appendAgentEventBatch } from "./agentEvents";
 import { createDisplayScheduler } from "./displayScheduler";
-import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
+import type { AgentDefinition, AgentEvent, ApprovalDecision, BridgeState, CapabilitySuggestion, Harness, ModelSetupState, PermissionPolicy, Project, Session, SessionForestSnapshot, SessionStatus, SkillProvider, WorkerRepositoryBinding, Workspace } from "./types";
 import { AgentConversation } from "./components/AgentConversation";
 import { BridgeSidebar } from "./components/BridgeSidebar";
 import { HealthWarnings } from "./components/HealthWarnings";
@@ -236,6 +236,11 @@ function AppContent() {
   // user's clipboard work.
   const [loginProvider, setLoginProvider] = useState<UsageProvider | null>(null);
   const [agentOnboardingComplete, setAgentOnboardingComplete] = useState(readAgentOnboardingComplete);
+  const finishAgentOnboarding = useCallback((setup?: ModelSetupState) => {
+    writeAgentOnboardingComplete();
+    setAgentOnboardingComplete(true);
+    if (setup) acceptModelSetup(setup);
+  }, [acceptModelSetup]);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   /** A model switch in flight, so the conversation can narrate it honestly. */
   const [modelSwitch, setModelSwitch] = useState<{ sessionId: string; harness: string; label: string } | null>(null);
@@ -2167,8 +2172,8 @@ function AppContent() {
   if (shouldShowAgentOnboarding(modelSetup, agentOnboardingComplete, hasExistingBridgeData)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard
     adapters={health.adapters}
     onHealthChange={invalidateHealth}
-    onComplete={setup => { writeAgentOnboardingComplete(); setAgentOnboardingComplete(true); acceptModelSetup(setup); }}
-    onSkip={() => { writeAgentOnboardingComplete(); setAgentOnboardingComplete(true); }}
+    onComplete={finishAgentOnboarding}
+    onSkip={finishAgentOnboarding}
     onError={setError}
   />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
   const chromeTitle = view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session?.title || session?.label || "New Chat";
