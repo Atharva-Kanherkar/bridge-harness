@@ -25,7 +25,7 @@ export const metadata: Metadata = {
     template: "%s · Bridge",
   },
   description:
-    "Bridge is a native macOS control room for supervised coding-agent work. It runs Codex, Claude Code, and OpenCode as one team, with a policy engine on every gate and a Git worktree for every worker.",
+    "Bridge is a native desktop control room for supervised coding-agent work. It runs Codex, Claude Code, and OpenCode as one team, with a policy engine on every gate and a Git worktree for every worker.",
   applicationName: "Bridge",
 };
 

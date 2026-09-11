@@ -27,7 +27,7 @@ export default function SiteFooter() {
         <div>
           <span className="font-pixel text-[24px] uppercase leading-none tracking-[0.04em] text-foreground">Bridge</span>
           <p className="mt-2 max-w-xs text-[13px] leading-6 text-muted-foreground">
-            A native macOS control room for supervised coding-agent work.
+            A native desktop control room for supervised coding-agent work.
           </p>
         </div>
         {columns.map((column) => (

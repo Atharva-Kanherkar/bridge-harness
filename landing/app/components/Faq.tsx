@@ -4,7 +4,7 @@ import SectionHeader from "./SectionHeader";
 const questions = [
   {
     q: "What is Bridge?",
-    a: "A native macOS control room for supervised coding-agent work. It connects local Git repositories to structured Codex, Claude Code, and OpenCode sessions, isolates concurrent tasks in worktrees, and keeps durable local history so agent activity stays inspectable and recoverable.",
+    a: "A native desktop control room for supervised coding-agent work. It connects local Git repositories to structured Codex, Claude Code, and OpenCode sessions, isolates concurrent tasks in worktrees, and keeps durable local history so agent activity stays inspectable and recoverable.",
   },
   {
     q: "How is this different from running an agent in a terminal?",
@@ -19,8 +19,8 @@ const questions = [
     a: "You bring your own provider access. Bridge never collects, proxies, migrates, or deletes a vendor credential. Claude models additionally need Node 18 or newer on your PATH, because Claude runs through the Agent SDK in a Node sidecar.",
   },
   {
-    q: "Is it macOS only?",
-    a: "For now, yes. Bridge is packaged for macOS 12 or later on Apple Silicon and is under active development.",
+    q: "Which platforms can I download?",
+    a: "The download page has macOS (Apple Silicon) and Linux (x86_64) options. Each button opens the latest stable package when available, or the release page if that platform has not been published yet. Check the release notes for requirements and known limitations.",
   },
   {
     q: "Is it open source?",

@@ -53,19 +53,19 @@ export function decodePng(bytes) {
 
 export function verifyVisibleMark(bytes, label) {
   const { width, height, channels, pixels } = decodePng(bytes);
-  let mint = 0, supports = 0, dark = 0;
+  let foreground = 0, chromatic = 0, dark = 0;
   for (let i = 0; i < pixels.length; i += channels) {
     if (channels === 4 && pixels[i + 3] < 128) continue;
     const [r, g, b] = pixels.subarray(i, i + 3);
-    // Span has a mint deck and two off-white supports. Count their antialiased
-    // edges too so the smallest ICNS representations retain a meaningful gate.
-    if (r < 150 && g > 170 && b > 90 && g > r + 40 && g > b + 25) mint++;
-    if (Math.min(r, g, b) > 150 && Math.max(r, g, b) - Math.min(r, g, b) < 30) supports++;
+    // The Doto B is achromatic. Count antialiased dots at small sizes and
+    // reject the retired mint artwork as well as empty exports.
+    if (Math.max(r, g, b) - Math.min(r, g, b) > 40) chromatic++;
+    if (Math.min(r, g, b) > 150 && Math.max(r, g, b) - Math.min(r, g, b) < 30) foreground++;
     if (Math.max(r, g, b) < 80) dark++;
   }
   const count = width * height;
-  if (mint / count < 0.035 || supports / count < 0.035 || dark / count < 0.2)
-    throw new Error(`${label}: Bridge's visible Span mark (mint deck, off-white supports) and dark background are missing (mint=${mint}, supports=${supports}, dark=${dark})`);
+  if (foreground / count < 0.035 || chromatic / count > 0.01 || dark / count < 0.2)
+    throw new Error(`${label}: Bridge's visible Doto mark and dark background are missing or colored (foreground=${foreground}, chromatic=${chromatic}, dark=${dark})`);
   return { width, height };
 }
 

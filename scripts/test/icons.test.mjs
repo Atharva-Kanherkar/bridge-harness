@@ -37,23 +37,18 @@ test("committed icons contain the Bridge mark at every macOS scale", () => {
 });
 
 test("black tile regression and invisible transparent mark fail the release gate", () => {
-  assert.throws(() => verifyVisibleMark(solidPng(32, [17, 20, 17, 255]), "black"), /visible Span mark/);
-  assert.throws(() => verifyVisibleMark(solidPng(32, [68, 227, 164, 0]), "transparent"), /visible Span mark/);
+  assert.throws(() => verifyVisibleMark(solidPng(32, [17, 20, 17, 255]), "black"), /visible Doto mark/);
+  assert.throws(() => verifyVisibleMark(solidPng(32, [68, 227, 164, 0]), "transparent"), /visible Doto mark/);
   assert.throws(() => verifyVisibleMark(solidPng(32, [68, 227, 164, 255]), "solid"), /dark background/);
 });
 
-test("the Span gate rejects exports missing the deck or either support", () => {
-  const fixture = (missing) => solidPng(32, (x, y) => {
-    if (missing !== "deck" && x >= 6 && x < 26 && y >= 9 && y < 13) return [68, 227, 164, 255];
-    if (y >= 13 && y < 23 && (
-      (missing !== "left" && x >= 8 && x < 11) ||
-      (missing !== "right" && x >= 21 && x < 24)
-    )) return [242, 241, 236, 255];
-    return [17, 20, 17, 255];
+test("the Doto gate accepts white dots and rejects the retired colored artwork", () => {
+  const fixture = (color) => solidPng(32, (x, y) => {
+    const dot = x >= 8 && x < 24 && y >= 6 && y < 26 && x % 4 < 2 && y % 4 < 2;
+    return dot ? color : [0, 0, 0, 255];
   });
-  assert.doesNotThrow(() => verifyVisibleMark(fixture(), "Span"));
-  for (const missing of ["deck", "left", "right"])
-    assert.throws(() => verifyVisibleMark(fixture(missing), missing), /visible Span mark/);
+  assert.doesNotThrow(() => verifyVisibleMark(fixture([255, 255, 255, 255]), "Doto"));
+  assert.throws(() => verifyVisibleMark(fixture([68, 227, 164, 255]), "old mark"), /visible Doto mark/);
 });
 
 test("the macOS ICNS gate checks embedded pixels, not just file existence", () => {
@@ -75,7 +70,7 @@ test("the macOS ICNS gate checks embedded pixels, not just file existence", () =
   assert.ok(replaced);
   const corrupt = Buffer.concat([Buffer.alloc(8), ...parts]);
   corrupt.write("icns", 0); corrupt.writeUInt32BE(corrupt.length, 4);
-  assert.throws(() => verifyIcns(corrupt), /visible Span mark/);
+  assert.throws(() => verifyIcns(corrupt), /visible Doto mark/);
 });
 
 test("ICNS output is canonical even when Tauri changes entry order", () => {

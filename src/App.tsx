@@ -1,3 +1,6 @@
+import { Dialog, DialogContent, DialogTitle, DialogDescription } from "./components/ui/dialog";
+import { needsProviderSignIn, providerSignInForEvent } from "./providerLogin";
+import { ManagedAgentsPanel } from "./components/ManagedAgentsPanel";
 import { ForestCache } from "./forestCache";
 import { useSessionStops } from "./sessionStop";
 import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -59,7 +62,7 @@ import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
 import { MemoryDialog, rememberAction } from "./components/MemoryDialog";
 import { MemoryUsedChip } from "./components/MemoryUsedChip";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
-import { UsageWidget } from "./components/UsageWidget";
+import { UsageWidget, ProviderLoginPane } from "./components/UsageWidget";
 import type { MeterRegistry } from "./types";
 import { formatElapsed, harnessLabel, slashCommandsForHarness, slashOwnershipBadge } from "./utils";
 import { scheduleSuggestion } from "./suggestionTypeahead";
@@ -165,6 +168,8 @@ function AppContent() {
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string>();
   const [view, setView] = useState<AppView>("workspace");
+  const loginSessionRef = useRef<{ id: string; harness: string } | undefined>();
+  loginSessionRef.current = state.sessions.find(item => item.id === selectedSessionId);
   const [navPlaces, setNavPlaces] = useState<{ stack: AppPlace[]; index: number }>({
     stack: [{ view: "workspace", sessionId: null, paradigm: "single" }],
     index: 0,
@@ -231,6 +236,7 @@ function AppContent() {
   // Image attachments pasted into the composer, waiting to ride the next send.
   // Cleared on success, restored on failure — a refused send must not eat the
   // user's clipboard work.
+  const [loginProvider, setLoginProvider] = useState<UsageProvider | null>(null);
   const [attachments, setAttachments] = useState<ComposerAttachment[]>([]);
   /** A model switch in flight, so the conversation can narrate it honestly. */
   const [modelSwitch, setModelSwitch] = useState<{ sessionId: string; harness: string; label: string } | null>(null);
@@ -336,7 +342,14 @@ function AppContent() {
       timeout: (callback, ms) => window.setTimeout(callback, ms),
       cancelTimeout: id => window.clearTimeout(id),
     });
-    void bridgeApi.onAgentEvent(display.push).then(fn => {
+    void bridgeApi.onAgentEvent(event => {
+      display.push(event);
+      const target = loginSessionRef.current;
+      if (active && target?.id === event.sessionId) {
+        const provider = providerSignInForEvent(target.harness, event);
+        if (provider) setLoginProvider(current => current ?? provider);
+      }
+    }).then(fn => {
       if (!active) { fn(); return; }
       offAgent = fn;
     });
@@ -1719,6 +1732,9 @@ function AppContent() {
     const files = imageFilesFromClipboard(items);
     if (files.length === 0) return;
     event.preventDefault();
+    attachComposerFiles(files);
+  };
+  const attachComposerFiles = (files: Array<{ type: string; size?: number }>) => {
     if (files.some(isPasteTooLarge)) {
       setError("That image is too large to paste (over 8 MB). Save it to the repo and reference it with @ instead.");
       return;
@@ -1872,7 +1888,15 @@ function AppContent() {
         await reload();
       }
     }
-    catch (e) { setComposer(retryText); setAttachments(sentAttachments); setPending(current => current.filter(item => item.key !== key)); setError(errorMessage(e)); }
+    catch (e) {
+      setComposer(retryText);
+      setAttachments(sentAttachments);
+      setPending(current => current.filter(item => item.key !== key));
+      const message = errorMessage(e);
+      const provider = needsProviderSignIn(target.harness, message);
+      if (provider) setLoginProvider(provider);
+      setError(message);
+    }
   }
   // Rethrow without also raising the global corner alert: the approval/question
   // card renders the failure itself.
@@ -2600,6 +2624,7 @@ function AppContent() {
                     onSubmit={() => void sendPrompt()}
                     onKeyDown={onComposerKeyDown}
                     onPaste={handleComposerPaste}
+                    onAttachFiles={attachComposerFiles}
                     attachments={attachments}
                     onRemoveAttachment={id => setAttachments(current => current.filter(attachment => attachment.id !== id))}
                     autocomplete={agentShortcutOpen ? {
@@ -2776,6 +2801,13 @@ function AppContent() {
       onDismissHint={() => setGithubJumpHint(undefined)}
     />
 
+    <Dialog open={loginProvider !== null} onOpenChange={open => { if (!open) setLoginProvider(null); }}>
+      <DialogContent>
+        <DialogTitle>Sign in to continue</DialogTitle>
+        <DialogDescription>Your conversation is kept. Complete sign-in, then retry your message.</DialogDescription>
+        {loginProvider && <ProviderLoginPane provider={loginProvider} label={harnessLabel(loginProvider)} onClose={() => { setLoginProvider(null); void invalidateHealth(); }} />}
+      </DialogContent>
+    </Dialog>
     <OrchestratorCreateDialog
       open={modal === "orchestrator"}
       workspaceTitle={state.workspaces.find(item => item.id === pendingWorkspaceId)?.title ?? "workspace"}
@@ -2868,6 +2900,9 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
     const files = imageFilesFromClipboard(items);
     if (files.length === 0) return;
     event.preventDefault();
+    attachFiles(files);
+  };
+  const attachFiles = (files: Array<{ type: string; size?: number }>) => {
     if (files.some(isPasteTooLarge)) {
       setComposerError("That image is too large to paste (over 8 MB). Save it to the repo and reference it with @ instead.");
       return;
@@ -2883,6 +2918,11 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
   };
   return <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 py-8 sm:px-10 animate-page-enter">
     <div className="mx-auto my-auto w-full max-w-3xl py-8">
+    {!adapters.some(adapter => adapter.available && adapter.id !== "bridge") && <div className="mb-6 rounded-xl border border-border bg-card p-4">
+      <h2 className="text-sm font-medium">Connect your first agent</h2>
+      <p className="mt-1 mb-3 text-[13px] text-muted-foreground">Install an agent and sign in here. Bridge handles the setup commands.</p>
+      <ManagedAgentsPanel />
+    </div>}
     <p className="mb-3 text-[12px] font-medium text-muted-foreground">Your workspace, ready.</p>
     <h1 className="mb-3 max-w-2xl font-display text-[28px] font-medium leading-tight tracking-[-0.025em] text-foreground sm:text-[34px]">
       {greeting.parts.length > 1
@@ -2899,6 +2939,7 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
       onSubmit={submit}
       onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) { e.preventDefault(); submit(); } }}
       onPaste={handlePaste}
+      onAttachFiles={attachFiles}
       attachments={attachments}
       onRemoveAttachment={id => setAttachments(current => current.filter(attachment => attachment.id !== id))}
       placeholder={canStartChat ? "Ask Bridge, or paste a repo to open it…" : "Paste a repo to open it, or install a model adapter to chat…"}

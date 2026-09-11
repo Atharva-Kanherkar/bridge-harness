@@ -41,6 +41,20 @@ const textarea = () => container.querySelector<HTMLTextAreaElement>("textarea")!
 const stop = () => container.querySelector<HTMLButtonElement>('button[aria-label="Stop"]');
 
 describe("ComposerPill", () => {
+  it("uploads selected images without changing the draft", () => {
+    const onAttachFiles = vi.fn();
+    const onChange = vi.fn();
+    render({ value: "describe these", onAttachFiles, onChange });
+    const file = new File(["png"], "test.png", { type: "image/png" });
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, "files", { value: [file] });
+    act(() => input.dispatchEvent(new Event("change", { bubbles: true })));
+    expect(onAttachFiles).toHaveBeenCalledWith([file]);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(textarea().value).toBe("describe these");
+    expect(input.value).toBe("");
+  });
+
   it("runs the named + action and leaves a non-empty draft alone", () => {
     const onPlusClick = vi.fn();
     const onChange = vi.fn();
