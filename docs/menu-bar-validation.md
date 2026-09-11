@@ -348,3 +348,34 @@ Live verification also identified follow-up work: Claude's manual CLI probe
 timed out on the installed CLI's startup presentation, and Cursor has no local
 token history. These were not reported as passing account reads. Follow-up
 collector changes must be verified and installed before claiming those details.
+
+### Final provider follow-up
+
+`3509451` recognizes the installed Claude CLI's standalone `$` screen-reader
+prompt; `132549f` adds Cursor's dashboard account history without inserting it
+into the device ledger. The final production build, native Swift checks and
+11 focused React tests pass. Ten Claude tests, eight Cursor tests and eight
+usage-overview tests pass, including cross-midnight unknown/stale semantics.
+All 19 daemon integration tests pass after the final provider changes.
+Independent source review found no remaining material issue.
+
+The signed preview was rebuilt and installed with executable SHA-256
+`0b76bd2cade6b9f985914b54e606aa0ba4d8d89bfdc163c3e76fd17f85c5de07`.
+Staged strict/deep signing verification and byte matching passed before the
+atomic replacement; the preceding app remains backed up. Used mode, Overview
+and the pasted icon/space/used layout survived relaunch.
+No new Bridge crash report was present after installed-app verification.
+
+A manual Refresh in this installed app recovered Claude successfully. The
+native Overview showed live 5-hour and Weekly percentages; the detail tab
+identified `Source: Claude CLI` and retained local daily token/model/cost
+history. CLI-only account identity, plan and reset metadata remain absent.
+OpenCode still needs a user-completed Zen workspace sign-in.
+
+Cursor's authenticated live test was rejected by automatic approval review
+because the standalone probe would read a stored session credential and send
+it to Cursor's dashboard API without explicit credential-use approval. The
+user was asked for that approval. Cursor collection is disabled in the final
+preview while the answer is pending, so neither startup nor manual refresh
+performs that unapproved request. The feature is committed and covered by
+fake-response tests; it is not claimed as live-verified.
