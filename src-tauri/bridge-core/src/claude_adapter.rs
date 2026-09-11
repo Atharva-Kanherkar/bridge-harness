@@ -516,6 +516,12 @@ fn sidecar_entry() -> Result<PathBuf, BridgeError> {
     }
     let mut candidates: Vec<PathBuf> = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
+        #[cfg(target_os = "linux")]
+        if let Some(path) = crate::binary::linux_resource_path(
+            &exe, "sidecar/claude-agent/index.mjs",
+        ) {
+            candidates.push(path);
+        }
         if let Some(dir) = exe.parent() {
             candidates.push(dir.join("sidecar/claude-agent/index.mjs"));
             candidates.push(dir.join("../Resources/sidecar/claude-agent/index.mjs"));

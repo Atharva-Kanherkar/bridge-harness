@@ -33,6 +33,12 @@ fn script_path() -> Result<PathBuf, BridgeError> {
         candidates.push(PathBuf::from(path));
     }
     if let Ok(exe) = std::env::current_exe() {
+        #[cfg(target_os = "linux")]
+        if let Some(path) = crate::binary::linux_resource_path(
+            &exe, "sidecar/terminal-state/index.mjs",
+        ) {
+            candidates.push(path);
+        }
         if let Some(dir) = exe.parent() {
             candidates.push(dir.join("../Resources/sidecar/terminal-state/index.mjs"));
             candidates.push(dir.join("sidecar/terminal-state/index.mjs"));

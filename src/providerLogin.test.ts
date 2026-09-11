@@ -11,6 +11,11 @@ describe("provider login recovery", () => {
     for (const provider of ["codex", "claude", "cursor", "opencode"])
       expect(needsProviderSignIn(provider, "Your access token has expired")).toBe(provider);
   });
+  it("recovers HTTP authentication and revoked refresh-token errors", () => {
+    expect(needsProviderSignIn("opencode", "HTTP 401 Unauthorized")).toBe("opencode");
+    expect(needsProviderSignIn("codex", "Your refresh token was already used. Please log out and sign in again.")).toBe("codex");
+    expect(needsProviderSignIn("codex", "The refresh token has been revoked")).toBe("codex");
+  });
   it("does not turn policy, network, quota, or unknown-provider errors into login", () => {
     for (const message of ["403 forbidden", "429 rate limit", "connection refused", "write scope rejected"])
       expect(needsProviderSignIn("codex", message)).toBeNull();

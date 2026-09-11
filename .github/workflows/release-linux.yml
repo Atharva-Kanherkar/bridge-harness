@@ -59,6 +59,8 @@ jobs:
         run: |
           set -euo pipefail
           sudo dpkg -i release-linux/*.deb
+          printf '%s\n' '{"op":"list","workspaceId":"smoke"}' | node /usr/lib/bridge-deck/sidecar/terminal-state/index.mjs "$RUNNER_TEMP/bridge-terminal-smoke" > "$RUNNER_TEMP/bridge-terminal-smoke.json"
+          node -e 'const fs = require("node:fs"); const reply = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); if (!Array.isArray(reply.result) || reply.result.length !== 0) process.exit(1)' "$RUNNER_TEMP/bridge-terminal-smoke.json"
           export XDG_DATA_HOME="$RUNNER_TEMP/bridge-smoke-data"
           export XDG_CONFIG_HOME="$RUNNER_TEMP/bridge-smoke-config"
           export XDG_CACHE_HOME="$RUNNER_TEMP/bridge-smoke-cache"
@@ -103,6 +105,10 @@ jobs:
           chown -R builder:builder /tmp/bridge-arch
           su builder -c 'cd /tmp/bridge-arch && makepkg --nodeps --noconfirm'
           pacman -Qip ./*.pkg.tar.zst
+          pacman -U --noconfirm ./*.pkg.tar.zst
+          ldd /usr/bin/bridge-deck > /tmp/bridge-arch-libraries.log
+          cat /tmp/bridge-arch-libraries.log
+          ! grep -q 'not found' /tmp/bridge-arch-libraries.log
           sha256sum ./*.pkg.tar.zst > SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:

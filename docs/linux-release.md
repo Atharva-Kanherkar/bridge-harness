@@ -17,6 +17,10 @@ bun run tauri build --config src-tauri/tauri.linux.conf.json --ci
 
 The Arch recipe is a CI packaging template. CI adds the exact local artifact name and checksums; it is not a published AUR package.
 
+## Known blocker: read-only workers
+
+Linux and Arch are **experimental candidates**. OS-enforced read-only research and verification workers currently require macOS Seatbelt. Linux rejects these launches rather than running them without isolation. A Linux sandbox implementation and native isolation tests are required before promoting these candidates to stable. Ordinary chat and write-capable workers do not use this boundary.
+
 ## Before calling a Linux release stable
 
 Install the candidate on Ubuntu and current Arch, under both X11 and Wayland. Verify first-run setup, provider login/browser handoff, workspace creation, text and image turns, approval handling, terminal rendering, restart/history, and uninstall. Build success alone does not establish these behaviors. Record the tested distribution and session type in release notes.
