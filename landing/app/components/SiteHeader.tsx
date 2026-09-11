@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import GradientButton from "./GradientButton";
+import ActionButton from "./ActionButton";
 import { useEffect, useState } from "react";
 import { blogPath, changelogPath, docsPath, downloadPath } from "../content/site";
 
@@ -33,7 +33,7 @@ export default function SiteHeader() {
           <Link href={blogPath} className="hidden hover:text-foreground sm:inline">
             Blog
           </Link>
-          <GradientButton href={downloadPath} label="Download" size="sm" />
+          <ActionButton href={downloadPath} label="Download" size="sm" />
         </nav>
       </div>
     </header>

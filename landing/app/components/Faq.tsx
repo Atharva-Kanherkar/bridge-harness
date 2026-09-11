@@ -49,7 +49,7 @@ export default function Faq() {
     <section className="border-t border-border">
       <div className="mx-auto max-w-6xl px-6 py-24">
         <div className="grid gap-12 lg:grid-cols-[1fr_1.6fr]">
-          <SectionHeader eyebrow="FAQ" title="Questions, answered." />
+          <SectionHeader title="FAQ" />
           <div className="reveal">
           {questions.map((item) => (
             <details key={item.q} className="group border-b border-border">

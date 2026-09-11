@@ -1,8 +1,8 @@
-import { Agents, Automations, BrowserBridge, Checkpoints, Cli, SessionStorage, SwitchHarness, Usage } from "./features/panels";
+import { Agents, Automations, Checkpoints, SessionStorage, SwitchHarness, Usage } from "./features/panels";
 import SectionHeader from "./SectionHeader";
 
 /*
- * Eight features, each one the mechanism running beside copy that sticks while it scrolls
+ * Six features, each one the mechanism running beside copy that sticks while it scrolls
  * past. The text column is `position: sticky` inside its own row, so the next feature pushes
  * the last one out the way a page naturally would; the panels animate on a scroll timeline,
  * so the visual plays as it arrives rather than sitting there as a picture.
@@ -39,22 +39,10 @@ const features = [
     panel: <Automations />,
   },
   {
-    id: "browser",
-    name: "Supervise a browser tab",
-    text: "When a worker needs a logged-in page, you approve one tab for a fixed window. Bridge never copies your profile or exports cookies, and the lease ends when the tab closes or navigation leaves the domain you granted.",
-    panel: <BrowserBridge />,
-  },
-  {
     id: "cost",
     name: "Spend less by delegating",
     text: "Narrow work goes to a cheap tier and only the hard parts reach an expensive one. Tokens, cost, and cache savings break out per harness and per model, so the routing pays for itself visibly.",
     panel: <Usage />,
-  },
-  {
-    id: "cli",
-    name: "The same agent in CI",
-    text: "A daemon owns the data directory and speaks JSON-RPC over a socket. bridge exec --json attaches for a single call or one streamed turn, so a pipeline reads exactly the events the app does.",
-    panel: <Cli />,
   },
 ];
 

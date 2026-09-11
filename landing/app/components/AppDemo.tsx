@@ -207,7 +207,7 @@ export default function AppDemo() {
           {/* The slider the labels ride on. */}
           <span
             aria-hidden="true"
-            className="absolute inset-y-1 rounded-full bg-linear-to-r from-teal-400/20 via-blue-500/20 to-purple-500/20 ring-1 ring-inset ring-foreground/15 transition-[transform,width] duration-[400ms] ease-[cubic-bezier(0.68,-0.55,0.265,1.55)] motion-reduce:transition-none"
+            className="absolute inset-y-1 rounded-full bg-foreground/12 ring-1 ring-inset ring-foreground/20 transition-[transform,width] duration-[400ms] ease-[cubic-bezier(0.68,-0.55,0.265,1.55)] motion-reduce:transition-none"
             style={slider ? { width: slider.width, transform: `translateX(${slider.left}px)`, left: 0 } : { opacity: 0 }}
           />
 

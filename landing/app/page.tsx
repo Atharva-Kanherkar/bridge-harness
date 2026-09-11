@@ -1,10 +1,9 @@
-import CallToAction from "./components/CallToAction";
 import FeatureScroll from "./components/FeatureScroll";
 import Faq from "./components/Faq";
 import HarnessGrid from "./components/HarnessGrid";
 import HeroBackdrop from "./components/HeroBackdrop";
 import AppDemo from "./components/AppDemo";
-import GradientButton from "./components/GradientButton";
+import ActionButton from "./components/ActionButton";
 import { downloadPath } from "./content/site";
 import SiteFooter from "./components/SiteFooter";
 import SiteHeader from "./components/SiteHeader";
@@ -32,7 +31,7 @@ export default function Home() {
             </p>
 
             <div style={{ "--i": 2 } as React.CSSProperties} className="enter mt-8 flex justify-center">
-              <GradientButton href={downloadPath} label="Get Bridge" />
+              <ActionButton href={downloadPath} label="Get Bridge" />
             </div>
           </div>
 
@@ -45,7 +44,6 @@ export default function Home() {
       <HarnessGrid />
       <FeatureScroll />
       <Faq />
-      <CallToAction />
       <SiteFooter />
     </div>
   );
