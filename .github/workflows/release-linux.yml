@@ -61,13 +61,13 @@ jobs:
         run: |
           set -euo pipefail
           sudo apt-get install -y ./release-linux/*.deb
-          printf '%s\n' '{"op":"list","workspaceId":"smoke"}' | node /usr/lib/bridge-deck/sidecar/terminal-state/index.mjs "$RUNNER_TEMP/bridge-terminal-smoke" > "$RUNNER_TEMP/bridge-terminal-smoke.json"
+          printf '%s\n' '{"op":"list","workspaceId":"smoke"}' | /usr/bin/node /usr/lib/Bridge/sidecar/terminal-state/index.mjs "$RUNNER_TEMP/bridge-terminal-smoke" > "$RUNNER_TEMP/bridge-terminal-smoke.json"
           node -e 'const fs = require("node:fs"); const reply = JSON.parse(fs.readFileSync(process.argv[1], "utf8")); if (!Array.isArray(reply.result) || reply.result.length !== 0) process.exit(1)' "$RUNNER_TEMP/bridge-terminal-smoke.json"
           export XDG_DATA_HOME="$RUNNER_TEMP/bridge-smoke-data"
           export XDG_CONFIG_HOME="$RUNNER_TEMP/bridge-smoke-config"
           export XDG_CACHE_HOME="$RUNNER_TEMP/bridge-smoke-cache"
           set +e
-          timeout 15s dbus-run-session -- xvfb-run -a /usr/bin/bridge-deck > "$RUNNER_TEMP/bridge-smoke.log" 2>&1
+          env PATH=/usr/bin:/bin timeout 15s dbus-run-session -- xvfb-run -a /usr/bin/bridge-deck > "$RUNNER_TEMP/bridge-smoke.log" 2>&1
           status=$?
           set -e
           cat "$RUNNER_TEMP/bridge-smoke.log"

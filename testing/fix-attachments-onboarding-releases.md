@@ -33,7 +33,7 @@ This contract records the requested scope during final review; initial implement
 - Download PR workflow artifacts; do not use a release tag until reviewed.
 
 ## Linux portability follow-up
-- Installed Debian and extracted AppImage runtimes resolve both sidecars from `usr/lib/bridge-deck`, independent of build-machine paths.
+- Installed Debian and extracted AppImage runtimes resolve both sidecars from `usr/lib/Bridge`, independent of build-machine paths.
 - The Rust CI job installs the Node sidecar dependencies its terminal tests exercise.
 - Linux read-only workers remain fail-closed; a verified Linux isolation implementation is a stable-release blocker. No unconfined fallback is permitted.
 
