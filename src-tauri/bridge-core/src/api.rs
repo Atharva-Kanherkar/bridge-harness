@@ -2647,6 +2647,9 @@ pub fn start_provider_login(
     }
     let mut command = provider_login_command(core, provider)?;
     command.env("TERM", "xterm-256color");
+    if let Some(path) = binary::hydrated_command_path() {
+        command.env("PATH", path);
+    }
     if let Some(home) = std::env::var_os("HOME") {
         command.cwd(home);
     }
