@@ -1,4 +1,4 @@
-import Link from "next/link";
+import GradientButton from "./GradientButton";
 import { downloadPath, nodeRequirement, platformLabel, repoUrl } from "../content/site";
 
 export default function CallToAction() {
@@ -21,12 +21,7 @@ export default function CallToAction() {
             Early-stage software for {platformLabel}. {nodeRequirement}
           </p>
           <div className="mt-9 flex flex-col items-center justify-center gap-3 sm:flex-row">
-            <Link
-              href={downloadPath}
-              className="rounded-full bg-foreground px-6 py-3 text-sm font-medium text-background transition-colors hover:bg-foreground/90"
-            >
-              Download for Mac
-            </Link>
+            <GradientButton href={downloadPath} label="Download for Mac" />
             <a
               href={repoUrl}
               className="rounded-full border border-border-card px-6 py-3 text-sm font-medium transition-colors hover:border-faint-2 hover:bg-muted"

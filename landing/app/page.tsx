@@ -5,7 +5,8 @@ import Faq from "./components/Faq";
 import HarnessSection from "./components/HarnessSection";
 import HeroBackdrop from "./components/HeroBackdrop";
 import AppDemo from "./components/AppDemo";
-import GetBridgeButton from "./components/GetBridgeButton";
+import GradientButton from "./components/GradientButton";
+import { downloadPath } from "./content/site";
 import HowItWorks from "./components/HowItWorks";
 import LoopSection from "./components/LoopSection";
 import Principles from "./components/Principles";
@@ -31,7 +32,7 @@ export default function Home() {
             </h1>
 
             <div style={{ "--i": 2 } as React.CSSProperties} className="enter mt-8 flex justify-center">
-              <GetBridgeButton />
+              <GradientButton href={downloadPath} label="Get Bridge" />
             </div>
           </div>
 
