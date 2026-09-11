@@ -1,14 +1,11 @@
 import CallToAction from "./components/CallToAction";
-import CapabilityBoard from "./components/CapabilityBoard";
 import FeatureScroll from "./components/FeatureScroll";
-import Comparison from "./components/Comparison";
 import Faq from "./components/Faq";
 import HarnessGrid from "./components/HarnessGrid";
 import HeroBackdrop from "./components/HeroBackdrop";
 import AppDemo from "./components/AppDemo";
 import GradientButton from "./components/GradientButton";
 import { downloadPath } from "./content/site";
-import Principles from "./components/Principles";
 import SiteFooter from "./components/SiteFooter";
 import SiteHeader from "./components/SiteHeader";
 
@@ -47,9 +44,6 @@ export default function Home() {
 
       <HarnessGrid />
       <FeatureScroll />
-      <CapabilityBoard />
-      <Principles />
-      <Comparison />
       <Faq />
       <CallToAction />
       <SiteFooter />

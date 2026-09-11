@@ -282,3 +282,171 @@ export function Usage() {
     </div>
   );
 }
+
+/** Compaction: a run of events folds into a checkpoint, and a later session resumes from it. */
+export function Checkpoints() {
+  const { ref, play } = useInView<HTMLDivElement>();
+  const before = ["Read worktree_coordinator.rs", "Edited worktree_coordinator.rs", "Ran cargo test -p bridge-core", "Read session_forest.rs", "Edited session_forest.rs"];
+
+  return (
+    <div ref={ref} data-play={play} className={`${frame} p-4`} aria-hidden="true">
+      <div className="flex flex-col gap-1.5">
+        {before.map((line, i) => (
+          <div
+            key={line}
+            style={{ "--i": i, "--ill": "light" } as React.CSSProperties}
+            className="stage flex items-center gap-2 rounded-md px-2 py-1.5 text-[12px] text-muted-foreground [animation-direction:reverse]"
+          >
+            <span className="size-1 rounded-full bg-faint-2" />
+            <span className="truncate font-mono text-[11.5px]">{line}</span>
+          </div>
+        ))}
+      </div>
+
+      <div
+        style={{ "--i": 5 } as React.CSSProperties}
+        className="stage mt-3 overflow-hidden rounded-lg border border-l-2 border-border border-l-info bg-card"
+      >
+        <div className="flex items-baseline gap-2 px-4 pt-3">
+          <b className="text-[13px] font-semibold text-foreground">Context compacted</b>
+          <small className="text-[11px] text-info">completed</small>
+        </div>
+        <p className="px-4 pb-3 pt-1 text-[12.5px] text-muted-foreground">
+          Claude summarised its context, 184k tokens down to 23k. The original events stay exactly where they were.
+        </p>
+      </div>
+
+      <div style={{ "--i": 7 } as React.CSSProperties} className="stage mt-3 flex items-center gap-2 rounded-lg border border-border bg-code px-3 py-2.5">
+        <span className="size-1.5 rounded-full bg-success" />
+        <span className="font-mono text-[11.5px] text-foreground">Resumed from checkpoint</span>
+        <span className="ml-auto font-mono text-[11px] text-faint">verified boundary · turn 14</span>
+      </div>
+    </div>
+  );
+}
+
+/** Automations: scheduled runs landing one at a time, the first already firing. */
+export function Automations() {
+  const { ref, play } = useInView<HTMLDivElement>();
+  const rows = [
+    { name: "Triage new issues", when: "Weekdays at 09:07", cron: "7 9 * * 1-5", state: "running" },
+    { name: "Update dependency PRs", when: "Daily at 03:15", cron: "15 3 * * *", state: "active" },
+    { name: "Sweep stale worktrees", when: "Sundays at 02:00", cron: "0 2 * * 0", state: "active" },
+    { name: "Weekly changelog draft", when: "Fridays at 17:30", cron: "30 17 * * 5", state: "paused" },
+  ];
+
+  return (
+    <div ref={ref} data-play={play} className={`${frame} p-4`} aria-hidden="true">
+      <div className="flex items-baseline gap-2 px-1 pb-3">
+        <h4 className="font-display text-[18px] font-semibold tracking-[-0.02em] text-foreground">Automations</h4>
+        <span className="text-[11.5px] text-muted-foreground">4 scheduled</span>
+      </div>
+
+      <div className="flex flex-col gap-2">
+        {rows.map((row, i) => (
+          <div
+            key={row.name}
+            style={{ "--i": i } as React.CSSProperties}
+            className="stage flex items-center gap-3 rounded-lg border border-border-card bg-card px-3.5 py-2.5"
+          >
+            <span
+              className={`size-1.5 shrink-0 rounded-full ${
+                row.state === "running" ? "bg-success" : row.state === "paused" ? "bg-faint-2" : "bg-info"
+              }`}
+            />
+            <span className="min-w-0 flex-1">
+              <span className="block truncate text-[13px] font-medium text-foreground">{row.name}</span>
+              <span className="block font-mono text-[10.5px] text-faint">{row.cron}</span>
+            </span>
+            <span className="shrink-0 text-[11.5px] text-muted-foreground">{row.when}</span>
+          </div>
+        ))}
+      </div>
+
+      <p style={{ "--i": 5 } as React.CSSProperties} className="stage mt-3 px-1 text-[11.5px] text-faint">
+        Each run opens its own worktree and reports like any other task.
+      </p>
+    </div>
+  );
+}
+
+/** The browser lease: a request that becomes a scoped, expiring grant. */
+export function BrowserBridge() {
+  const { ref, play } = useInView<HTMLDivElement>();
+
+  return (
+    <div ref={ref} data-play={play} className={`${frame} p-4`} aria-hidden="true">
+      <div style={{ "--i": 0 } as React.CSSProperties} className="stage overflow-hidden rounded-lg border border-l-2 border-border border-l-warning bg-card">
+        <div className="flex items-baseline gap-2 px-4 pt-3">
+          <b className="text-[13px] font-semibold text-foreground">Open one tab in your browser?</b>
+          <small className="text-[11px] text-warning">waiting for you</small>
+        </div>
+        <p className="px-4 pt-1 text-[12.5px] text-muted-foreground">
+          The worker wants a logged-in page. Bridge never copies your profile or exports cookies.
+        </p>
+        <div className="flex gap-2 px-4 pb-3 pt-3">
+          <span className="inline-flex h-7 items-center rounded-md border border-border px-2.5 text-[12px] text-muted-foreground">Decline</span>
+          <span style={{ "--i": 2 } as React.CSSProperties} className="stage inline-flex h-7 items-center rounded-md bg-primary px-2.5 text-[12px] text-primary-foreground">
+            Approve for 30 min
+          </span>
+        </div>
+      </div>
+
+      <div style={{ "--i": 4 } as React.CSSProperties} className="stage mt-3 rounded-lg border border-border-card bg-code p-3.5">
+        <div className="flex items-center gap-2">
+          <span className="size-1.5 rounded-full bg-success" />
+          <span className="font-mono text-[11.5px] text-foreground">lease active</span>
+          <span className="ml-auto font-mono text-[11px] tabular-nums text-muted-foreground">29:41 left</span>
+        </div>
+        <dl className="mt-3 grid grid-cols-2 gap-2 font-mono text-[11px]">
+          {[["domain", "app.example.com"], ["permission", "read only"], ["tab", "1 approved"], ["ends when", "tab closes"]].map(([k, v]) => (
+            <div key={k} className="rounded-md border border-border px-2 py-1.5">
+              <dt className="text-faint">{k}</dt>
+              <dd className="mt-0.5 text-foreground">{v}</dd>
+            </div>
+          ))}
+        </dl>
+      </div>
+    </div>
+  );
+}
+
+/** The one-shot CLI, streaming JSONL the way CI consumes it. */
+export function Cli() {
+  const { ref, play } = useInView<HTMLDivElement>();
+  const lines = [
+    { text: '{"type":"session.started","harness":"codex"}', tone: "text-muted-foreground" },
+    { text: '{"type":"message.delta","text":"Reading worktree_coordinator.rs"}', tone: "text-muted-foreground" },
+    { text: '{"type":"tool.completed","name":"shell","exitCode":0}', tone: "text-muted-foreground" },
+    { text: '{"type":"file.changed","path":"src/policy.rs","added":18,"removed":4}', tone: "text-foreground" },
+    { text: '{"type":"turn.completed","status":"verified"}', tone: "text-success" },
+  ];
+
+  return (
+    <div ref={ref} data-play={play} className={`${frame} p-4`} aria-hidden="true">
+      <div className="flex items-center gap-1.5 pb-3">
+        <span className="size-2.5 rounded-full bg-[#ff5f57]" />
+        <span className="size-2.5 rounded-full bg-[#febc2e]" />
+        <span className="size-2.5 rounded-full bg-[#28c840]" />
+        <span className="ml-2 font-mono text-[11px] text-faint">ci · ubuntu-latest</span>
+      </div>
+
+      <div className="overflow-hidden rounded-lg border border-border bg-code p-3.5 font-mono text-[11.5px] leading-relaxed">
+        <div style={{ "--i": 0 } as React.CSSProperties} className="stage text-foreground">
+          <span className="text-success">$</span> bridge exec --json &quot;fix the failing policy test&quot;
+        </div>
+        <div className="mt-2 flex flex-col gap-1">
+          {lines.map((line, i) => (
+            <div key={line.text} style={{ "--i": i + 1 } as React.CSSProperties} className={`stage truncate ${line.tone}`}>
+              {line.text}
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <p style={{ "--i": 7 } as React.CSSProperties} className="stage mt-3 px-1 text-[11.5px] text-faint">
+        One daemon owns the data directory. The CLI attaches for a single call or one streamed turn.
+      </p>
+    </div>
+  );
+}
