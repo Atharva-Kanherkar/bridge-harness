@@ -1,5 +1,6 @@
 import { Check, ChevronDown, Circle, CircleCheck, FileText, Pencil, SquareTerminal } from "lucide-react";
-import { harnessDot, harnessLabel, type Entry, type Tone } from "../../content/appScenes";
+import HarnessMark from "./HarnessMark";
+import { harnessLabel, type Entry, type Tone } from "../../content/appScenes";
 
 const edge: Record<Tone, string> = {
   success: "border-l-success",
@@ -91,7 +92,7 @@ export default function TranscriptEntry({ entry }: { entry: Entry }) {
     case "worker":
       return (
         <div className="flex min-w-0 items-center gap-3 rounded-lg border border-border-card bg-card px-3.5 py-2.5">
-          <span className={`size-2.5 shrink-0 rounded-full ${harnessDot[entry.harness]}`} aria-hidden="true" />
+          <HarnessMark harness={entry.harness} size={15} />
           <span className="min-w-0 flex-1">
             <span className="flex flex-wrap items-baseline gap-x-2">
               <b className="text-ui font-medium text-foreground">{entry.label}</b>

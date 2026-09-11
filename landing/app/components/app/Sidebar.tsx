@@ -1,5 +1,6 @@
 import { ChartNoAxesColumn, ChevronDown, ChevronRight, FolderGit2, LayoutGrid, Pin, Search, Settings2, SquarePen, Store, TerminalSquare } from "lucide-react";
-import { directChats, harnessDot, repos, type SidebarSession, type Tone } from "../../content/appScenes";
+import HarnessMark from "./HarnessMark";
+import { directChats, repos, type SidebarSession, type Tone } from "../../content/appScenes";
 
 const dot: Record<Tone, string> = {
   success: "bg-success",
@@ -35,7 +36,7 @@ function Row({ session }: { session: SidebarSession }) {
             <span className="shrink-0 tabular-nums text-faint">{session.time}</span>
           </span>
         </span>
-        <span className={`size-2 shrink-0 rounded-full ${harnessDot[session.harness]}`} aria-hidden="true" />
+        <HarnessMark harness={session.harness} size={13} />
       </span>
     </span>
   );
@@ -44,7 +45,7 @@ function Row({ session }: { session: SidebarSession }) {
 /** The real rail: 248px, the same nav order, and the repository tree filled the way a
  * working week actually looks — several checkouts, workers under their orchestrators,
  * four harnesses at once. */
-export default function Sidebar({ activeNav }: { activeNav: "chats" | "mission" | "usage" }) {
+export default function Sidebar({ activeNav }: { activeNav: "chats" | "mission" }) {
   return (
     <aside className="flex min-h-0 flex-col border-r border-sidebar-border bg-sidebar max-md:hidden">
       <div className="flex h-11 shrink-0 items-center gap-1.5 pl-3.5 pr-1.5">
@@ -71,7 +72,7 @@ export default function Sidebar({ activeNav }: { activeNav: "chats" | "mission" 
           <NavRow icon={TerminalSquare} label="Agent Fleet" />
           <NavRow icon={LayoutGrid} label="Mission Control" active={activeNav === "mission"} />
           <NavRow icon={Pin} label="Memory" />
-          <NavRow icon={ChartNoAxesColumn} label="Usage" active={activeNav === "usage"} />
+          <NavRow icon={ChartNoAxesColumn} label="Usage" />
         </nav>
 
         <div className="min-h-0 flex-1 overflow-hidden">

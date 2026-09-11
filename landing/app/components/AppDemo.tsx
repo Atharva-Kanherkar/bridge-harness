@@ -6,7 +6,6 @@ import ChangesDock from "./app/ChangesDock";
 import MissionGrid from "./app/MissionGrid";
 import Sidebar from "./app/Sidebar";
 import TranscriptEntry from "./app/Transcript";
-import UsagePanel from "./app/UsagePanel";
 import { scenes, type Entry, type Scene } from "../content/appScenes";
 
 const TYPE_MS = 1200;
@@ -17,7 +16,6 @@ const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : us
 /** Steps a scene needs before it hands over: the prompt, then one per entry. */
 function stepCount(scene: Scene) {
   if (scene.view === "mission") return (scene.tiles?.length ?? 0) + 3;
-  if (scene.view === "usage") return 4;
   return (scene.entries?.length ?? 0) + (scene.prompt ? 1 : 0);
 }
 
@@ -176,7 +174,7 @@ export default function AppDemo() {
       <div
         role="tablist"
         aria-label="What Bridge does"
-        className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-3 [scrollbar-width:none] sm:mx-0 sm:grid sm:grid-cols-3 sm:overflow-visible sm:px-0 lg:grid-cols-6 [&::-webkit-scrollbar]:hidden"
+        className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-3 [scrollbar-width:none] sm:mx-0 sm:grid sm:grid-cols-3 sm:overflow-visible sm:px-0 [&::-webkit-scrollbar]:hidden"
       >
         {scenes.map((item, i) => {
           const selected = i === active;
@@ -226,14 +224,8 @@ export default function AppDemo() {
             dock ? "grid-cols-[248px_minmax(0,1fr)_320px] max-lg:grid-cols-[248px_minmax(0,1fr)]" : "grid-cols-[248px_minmax(0,1fr)]"
           } max-md:grid-cols-1`}
         >
-          <Sidebar activeNav={scene.view === "mission" ? "mission" : scene.view === "usage" ? "usage" : "chats"} />
-          {scene.view === "mission" ? (
-            <MissionGrid tiles={scene.tiles ?? []} step={step} />
-          ) : scene.view === "usage" ? (
-            <UsagePanel step={step} />
-          ) : (
-            <ChatView scene={scene} typed={typed} step={step} />
-          )}
+          <Sidebar activeNav={scene.view === "mission" ? "mission" : "chats"} />
+          {scene.view === "mission" ? <MissionGrid tiles={scene.tiles ?? []} step={step} /> : <ChatView scene={scene} typed={typed} step={step} />}
           {dock && <ChangesDock dock={scene.dock!} progress={Math.max(0.34, step / ((scene.entries?.length ?? 1) + 1))} />}
         </div>
       </div>

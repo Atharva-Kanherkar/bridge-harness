@@ -1,27 +1,11 @@
+import HarnessMark from "./app/HarnessMark";
 import SectionHeader from "./SectionHeader";
 
 const harnesses = [
-  {
-    name: "Codex",
-    ring: "border-harness-codex/40 bg-harness-codex/10",
-    dot: "bg-harness-codex",
-    via: "app-server JSON-RPC",
-    text: "Connects through the Codex app-server protocol.",
-  },
-  {
-    name: "Claude Code",
-    ring: "border-harness-claude/40 bg-harness-claude/10",
-    dot: "bg-harness-claude",
-    via: "Agent SDK sidecar",
-    text: "Runs through the Claude Agent SDK in a Node sidecar, not a headless CLI prompt.",
-  },
-  {
-    name: "OpenCode",
-    ring: "border-harness-opencode/40 bg-harness-opencode/10",
-    dot: "bg-harness-opencode",
-    via: "headless server API",
-    text: "Talks to the OpenCode headless server.",
-  },
+  { id: "codex", name: "Codex", ring: "border-border-card bg-muted", via: "app-server JSON-RPC", text: "Connects through the Codex app-server protocol." },
+  { id: "claude", name: "Claude Code", ring: "border-harness-claude/40 bg-harness-claude/10", via: "Agent SDK sidecar", text: "Runs through the Claude Agent SDK in a Node sidecar, not a headless CLI prompt." },
+  { id: "opencode", name: "OpenCode", ring: "border-harness-opencode/40 bg-harness-opencode/10", via: "headless server API", text: "Talks to the OpenCode headless server." },
+  { id: "cursor", name: "Cursor", ring: "border-border-card bg-muted", via: "agent CLI", text: "Drives the Cursor agent CLI as one more worker in the fleet." },
 ];
 
 export default function HarnessSection() {
@@ -46,7 +30,7 @@ export default function HarnessSection() {
                 className="reveal group flex items-center gap-5 rounded-xl border border-border-card bg-card p-5 transition-colors hover:border-faint-2"
               >
                 <span className={`grid size-12 shrink-0 place-items-center rounded-full border ${harness.ring}`}>
-                  <span className={`size-3 rounded-full ${harness.dot}`} aria-hidden="true" />
+                  <HarnessMark harness={harness.id} size={20} />
                 </span>
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-baseline gap-x-3">

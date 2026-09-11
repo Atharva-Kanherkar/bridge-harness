@@ -19,14 +19,6 @@ export const harnessLabel: Record<HarnessId, string> = {
   cursor: "Cursor",
 };
 
-/** Mirrors `--harness-*` in the app's `src/index.css`; Cursor has no token there, so it
- * borrows the neutral info ink rather than inventing a brand colour. */
-export const harnessDot: Record<HarnessId, string> = {
-  claude: "bg-harness-claude",
-  codex: "bg-harness-codex",
-  opencode: "bg-harness-opencode",
-  cursor: "bg-info",
-};
 
 export type SidebarSession = {
   title: string;
@@ -123,7 +115,7 @@ export type Scene = {
   title: string;
   text: string;
   /** Which body the frame renders. The chrome around it never changes. */
-  view: "chat" | "mission" | "usage";
+  view: "chat" | "mission";
   toolbar?: { title: string; subtitle: string };
   prompt?: string;
   entries?: Entry[];
@@ -255,78 +247,6 @@ export const scenes: Scene[] = [
     },
   },
   {
-    id: "fleet",
-    label: "Orchestrate a fleet",
-    title: "One orchestrator, many workers",
-    text: "The orchestrator plans and routes. Workers on Codex, Claude Code, Cursor, and OpenCode take bounded slices and hand back typed results with checkpoints.",
-    view: "chat",
-    toolbar: { title: "Worktree lifecycle inventory", subtitle: "bridge-harness · feat/worktree-lifecycle" },
-    prompt: "Reclaimed branches still show as active. Trace it, fix it, and have a second harness verify.",
-    entries: [
-      { kind: "assistant", text: "Delegating implementation and verification to two different harnesses so neither closes its own task." },
-      { kind: "worker", harness: "claude", label: "Implementation · strong", status: "working", tone: "success", text: "Isolated worktree, write scope src-tauri/bridge-core/**" },
-      { kind: "worker", harness: "codex", label: "Verification · strong", status: "queued", tone: "warning", text: "Read-only, starts when the implementer lands" },
-      {
-        kind: "notice",
-        edge: "success",
-        title: "Worker result",
-        status: "typed",
-        text: "Reordered reclaim after the forest append and added a regression test.",
-        caption: "2 changed files · cargo test -p bridge-core worktree::",
-      },
-      { kind: "rail", label: "Checkpoint", status: "Saved", text: "Reclaim ordering and its regression test" },
-    ],
-    dock: {
-      origin: "feat/worktree-lifecycle · uncommitted vs HEAD (8d0babe)",
-      added: 38,
-      removed: 12,
-      files: [
-        { dir: "src-tauri/bridge-core/src/", name: "worktree_coordinator.rs", added: 12, removed: 9, risk: "High", lang: "rust" },
-        { dir: "src-tauri/bridge-core/tests/", name: "worktree_reclaim.rs", added: 26, removed: 3, risk: "Low", lang: "rust" },
-      ],
-    },
-  },
-  {
-    id: "policy",
-    label: "Policy owns the gates",
-    title: "Nothing widens without you",
-    text: "Write scope, capability tier, isolation, budgets, approvals. When a worker proposes paths you never granted, Bridge stops and asks for a one-time authorization.",
-    view: "chat",
-    toolbar: { title: "Streaming chart regression", subtitle: "rimo-frontend · rimo/chart-regression" },
-    prompt: "Let the worker touch the sidebar too, and push to main once tests pass.",
-    entries: [
-      { kind: "assistant", text: "Two requests, two gates. Widening the write scope needs a new grant, and merging to main is approval-only at this tier." },
-      {
-        kind: "notice",
-        edge: "warning",
-        title: "These paths weren't pre-approved by you.",
-        status: "waiting for you",
-        text: "The worker proposed them itself, so Bridge needs a one-time authorization.",
-        caption: "Write scope",
-        code: "src/components/**\nsrc/index.css",
-        actions: ["Decline", "Allow once"],
-      },
-      {
-        kind: "notice",
-        edge: "warning",
-        title: "Merge to main needs your approval",
-        status: "approval-only",
-        text: "At this capability tier a merge is never automatic, however green the checks are.",
-        actions: ["Not now", "Approve merge"],
-      },
-      { kind: "rail", label: "Recorded", status: "Saved", text: "Both decisions are durable either way" },
-    ],
-    dock: {
-      origin: "rimo/chart-regression · uncommitted vs HEAD (a1b2c3d)",
-      added: 64,
-      removed: 18,
-      files: [
-        { dir: "src/components/", name: "StreamingChart.tsx", added: 48, removed: 12, risk: "Medium", lang: "frontend" },
-        { dir: "src/", name: "series.ts", added: 16, removed: 6, risk: "Low", lang: "frontend" },
-      ],
-    },
-  },
-  {
     id: "verify",
     label: "Verify across harnesses",
     title: "No worker closes its own task",
@@ -367,38 +287,5 @@ export const scenes: Scene[] = [
       ],
     },
   },
-  {
-    id: "usage",
-    label: "Track usage",
-    title: "Tokens and cost, per harness",
-    text: "Imported from your local Claude, Codex, and OpenCode history. Cost at API rates, cache savings, and a per-model breakdown, with budgets enforced as gates.",
-    view: "usage",
-  },
 ];
 
-export type UsageRow = { model: string; harness: HarnessId; cost: string; share: number; tokens: string };
-
-export const usage = {
-  total: "$7.33",
-  caption: "605 requests · API estimate · Partly unpriced",
-  harnesses: [
-    { harness: "claude" as HarnessId, label: "Claude", cost: "$4.17", share: 57, tokens: "3.19M" },
-    { harness: "codex" as HarnessId, label: "Codex", cost: "$2.60", share: 35.5, tokens: "3.58M" },
-    { harness: "opencode" as HarnessId, label: "OpenCode", cost: "$0.56", share: 7.6, tokens: "708K" },
-  ],
-  stats: [
-    { label: "Processed tokens", value: "7.48M" },
-    { label: "Cached input", value: "6.04M" },
-    { label: "Uncached input", value: "776K" },
-    { label: "Output", value: "280K" },
-    { label: "Reasoning", value: "112K" },
-    { label: "Cache savings", value: "$12.19" },
-  ],
-  rows: [
-    { model: "claude-fable-5-1", harness: "claude" as HarnessId, cost: "$4.17", share: 57, tokens: "3.19M" },
-    { model: "gpt-5.6-luna", harness: "codex" as HarnessId, cost: "$2.60", share: 35.5, tokens: "3.31M" },
-    { model: "opencode/big-pickle", harness: "opencode" as HarnessId, cost: "$0.56", share: 7.6, tokens: "708K" },
-  ],
-  /** Deterministic so server and client markup agree. */
-  chart: [18, 34, 22, 46, 30, 58, 41, 67, 38, 72, 49, 61, 44, 78, 52, 66, 35, 59, 47, 74],
-};

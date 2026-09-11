@@ -33,6 +33,11 @@
   --selection: #242424;
   --selection-foreground: #e4e4e4;
   --sidebar-border: #161616;
+  --cursor-facet-darkest: #4a4a4a;
+  --cursor-facet-mid: #6f6f6f;
+  --cursor-facet-light: #8f8f8f;
+  --cursor-facet-lighter: #cfcfcf;
+  --cursor-facet-lightest: #ededed;
 }
 
 @theme inline {

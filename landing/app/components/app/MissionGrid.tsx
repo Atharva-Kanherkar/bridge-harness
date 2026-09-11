@@ -1,5 +1,6 @@
 import { ArrowUp, GripVertical, LayoutGrid, Maximize2, SquareArrowOutUpRight } from "lucide-react";
 import TranscriptEntry from "./Transcript";
+import HarnessMark from "./HarnessMark";
 import { harnessLabel, type Tile, type Tone } from "../../content/appScenes";
 
 const dot: Record<Tone, string> = {
@@ -49,7 +50,8 @@ export default function MissionGrid({ tiles, step }: { tiles: Tile[]; step: numb
               <span className={`size-1.5 shrink-0 rounded-full ${dot[tile.tone]} ${tile.tone === "success" ? "motion-safe:animate-pulse" : ""}`} aria-hidden="true" />
               <span className="min-w-0 flex-1 truncate text-xs font-medium text-foreground">{tile.title}</span>
               <span className={`shrink-0 text-[10px] uppercase tracking-[0.06em] ${ink[tile.tone]}`}>{tile.status}</span>
-              <span className="hidden shrink-0 truncate text-[11px] text-muted-foreground lg:inline">
+              <span className="hidden shrink-0 items-center gap-1 text-[11px] text-muted-foreground lg:inline-flex">
+                <HarnessMark harness={tile.harness} size={12} />
                 {harnessLabel[tile.harness]} · {tile.repo}
               </span>
               <span className="shrink-0 text-[11px] tabular-nums text-faint">{tile.elapsed}</span>
