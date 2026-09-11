@@ -19,7 +19,7 @@ function stepCount(scene: Scene) {
   return (scene.entries?.length ?? 0) + (scene.prompt ? 1 : 0);
 }
 
-function usePlayback(scene: Scene, onDone: () => void) {
+function usePlayback(scene: Scene, replay: number, onDone: () => void) {
   const [typed, setTyped] = useState("");
   const [step, setStep] = useState(stepCount(scene));
   const [playing, setPlaying] = useState(false);
@@ -33,7 +33,7 @@ function usePlayback(scene: Scene, onDone: () => void) {
     setTyped("");
     setStep(0);
     setPlaying(true);
-  }, [scene.id]);
+  }, [scene.id, replay]);
 
   useEffect(() => {
     if (!playing) return;
@@ -146,7 +146,7 @@ export default function AppDemo() {
     else setActive(index => (index + 1) % scenes.length);
   }, []);
 
-  const { typed, step } = usePlayback(scene, onDone);
+  const { typed, step } = usePlayback(scene, replay, onDone);
 
   function select(index: number) {
     const next = (index + scenes.length) % scenes.length;
@@ -171,38 +171,35 @@ export default function AppDemo() {
       onFocusCapture={() => { held.current = true; }}
       onBlurCapture={() => { held.current = false; }}
     >
-      <div
-        role="tablist"
-        aria-label="What Bridge does"
-        className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-4 [scrollbar-width:none] sm:mx-0 sm:grid sm:grid-cols-2 sm:overflow-visible sm:px-0 lg:grid-cols-4 [&::-webkit-scrollbar]:hidden"
-      >
-        {scenes.map((item, i) => {
-          const selected = i === active;
-          return (
-            <button
-              key={item.id}
-              ref={el => { tabRefs.current[i] = el; }}
-              type="button"
-              role="tab"
-              id={`scene-tab-${item.id}`}
-              aria-selected={selected}
-              aria-controls="scene-panel"
-              tabIndex={selected ? 0 : -1}
-              onClick={() => setActive(i)}
-              onKeyDown={event => onKeyDown(event, i)}
-              className={`group relative flex w-[190px] shrink-0 items-center overflow-hidden rounded-lg border px-3.5 py-2.5 text-left transition-colors duration-300 sm:w-auto ${
-                selected ? "border-border-card bg-card" : "border-transparent hover:bg-card/60"
-              }`}
-            >
-              <span className={`truncate text-[13px] font-medium leading-5 transition-colors ${selected ? "text-foreground" : "text-muted-foreground group-hover:text-foreground"}`}>
+      <div className="-mx-4 mb-5 flex justify-center overflow-x-auto px-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div
+          role="tablist"
+          aria-label="What Bridge does"
+          className="inline-flex w-max shrink-0 items-center gap-0.5 rounded-xl border border-border-card bg-card/60 p-1 backdrop-blur"
+        >
+          {scenes.map((item, i) => {
+            const selected = i === active;
+            return (
+              <button
+                key={item.id}
+                ref={el => { tabRefs.current[i] = el; }}
+                type="button"
+                role="tab"
+                id={`scene-tab-${item.id}`}
+                aria-selected={selected}
+                aria-controls="scene-panel"
+                tabIndex={selected ? 0 : -1}
+                onClick={() => setActive(i)}
+                onKeyDown={event => onKeyDown(event, i)}
+                className={`whitespace-nowrap rounded-lg px-3 py-1.5 text-[13px] transition-colors duration-200 ${
+                  selected ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
                 {item.label}
-              </span>
-              <span aria-hidden="true" className="absolute inset-x-0 bottom-0 h-px bg-border">
-                {selected && <span key={`${item.id}:${replay}`} className="block h-full w-full origin-left bg-foreground" />}
-              </span>
-            </button>
-          );
-        })}
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       <div
