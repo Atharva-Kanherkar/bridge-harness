@@ -49,6 +49,36 @@ menu regression exercises multiple updates while the breakdown is open and
 checks that reopening uses the latest provider and visibility preferences.
 The fixture, quota semantics and template-icon checks run alongside it.
 
+## Native card sizing, appearance, and accessibility
+
+The follow-up comparison at the same CodexBar revision identified a viewport
+bug: Bridge resized the SwiftUI document after a tracked update but left the
+enclosing menu row at the height measured when it opened. A short loading card
+could therefore retain a short viewport after its full usage arrived.
+
+`CostHistoryMenuScrollView.swift` and
+`StatusItemController+MenuPresentation.swift` make the measured viewport an
+explicit intrinsic/fitting size, then update the frame, invalidate sizing and
+tile the scroll view. Bridge adapts that boundary in `MenuCardScrollView.swift`,
+remeasuring every snapshot because usage can change at the same width. It caps
+the viewport on the current screen, preserves and clamps distance from the top
+for both coordinate orientations, and resets to the top for a new provider.
+The scroll view keeps a transparent background and an overlay vertical scroller
+only when needed. The hosted item stays attached while tracking.
+
+`StatusItemController+MenuAppearance.swift` preserves the exact effective
+appearance object, including accessibility attributes. Bridge pins that object
+across the root and model submenus. Following `MenuCardMenuItem`, its hosted row
+has a blank fallback title and suppresses AppKit's parallel selection highlight.
+
+`MenuBarLayoutRenderedTitle` and `applyMenuBarLayoutContent` use a common
+rendered payload for visible text and VoiceOver. Bridge's `MenuStatus` similarly
+supplies the title, tooltip, provider/window/value description, and explicit
+stale/unavailable wording. Local cost freshness remains metric-specific:
+`usage_overview.rs` and CodexBar's `MenuCardView+Costs.swift` both separate local
+token-cost snapshots from account quota errors. An expired account session
+does not make freshly computed local usage stale.
+
 ## Compatibility and scope
 
 This CodexBar checkout targets Swift 6.2 and macOS 14. Bridge retains its macOS 12

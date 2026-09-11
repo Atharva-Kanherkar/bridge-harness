@@ -54,6 +54,7 @@ final class ModelBreakdownMenu: NSObject, NSMenuDelegate {
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        MenuAppearance.pin(menu)
         if menu === self.menu { tracking = true }
     }
 
@@ -67,7 +68,8 @@ final class MenuController: NSObject, NSMenuDelegate {
     let item: NSStatusItem
     let menu = NSMenu()
     let callback: @convention(c) (Int32) -> Void
-    let card = NSMenuItem()
+    // A detached custom view must never reveal NSMenuItem's default title.
+    let card = MenuCardItem(title: "", action: nil, keyEquivalent: "")
     let refresh = NSMenuItem(title: "Refresh usage", action: #selector(refreshUsage), keyEquivalent: "r")
     lazy var breakdown = ModelBreakdownMenu(state: state)
     var tracking = false
@@ -85,7 +87,7 @@ final class MenuController: NSObject, NSMenuDelegate {
         item.button?.image = Self.templateIcon()
         item.button?.imagePosition = .imageLeading
         item.button?.toolTip = "Bridge usage"
-        item.button?.setAccessibilityLabel("Bridge usage menu")
+        item.button?.setAccessibilityTitle("Bridge usage menu")
         menu.delegate = self
         menu.autoenablesItems = false
         menu.addItem(card)
@@ -131,20 +133,12 @@ final class MenuController: NSObject, NSMenuDelegate {
 
     func rebuildCard() {
         let view = NSHostingView(rootView: MenuCard(state: state))
-        let height = view.fittingSize.height
-        view.frame = NSRect(x: 0, y: 0, width: 350, height: height)
-        // The menu stays inside even a small display; every row remains
-        // reachable when data grows or the user enables all detail sections.
-        let scroll = NSScrollView(frame: NSRect(x: 0, y: 0, width: 350,
-            height: min(height, max(180, (item.button?.window?.screen?.visibleFrame.height ?? 800) - 210))))
-        scroll.drawsBackground = false
-        scroll.hasVerticalScroller = true
-        scroll.autohidesScrollers = true
-        scroll.documentView = view
-        scroll.contentView.scroll(to: NSPoint(x: 0, y: view.isFlipped ? 0 : max(0, height - scroll.contentView.bounds.height)))
-        scroll.reflectScrolledClipView(scroll.contentView)
-        card.view = scroll
+        card.view = MenuCardScrollView(document: view, width: 350, maximumHeight: cardMaximumHeight)
         breakdown.update()
+    }
+
+    var cardMaximumHeight: CGFloat {
+        MenuCardScrollView.maximumHeight(on: card.view?.window?.screen ?? item.button?.window?.screen ?? NSScreen.main)
     }
 
     func update(_ presentation: Presentation) {
@@ -153,39 +147,23 @@ final class MenuController: NSObject, NSMenuDelegate {
         item.isVisible = presentation.settings.enabled || tracking
         refresh.isEnabled = !presentation.settings.enabledProviders.isEmpty && !presentation.refreshing
         refresh.title = presentation.refreshing ? "Refreshing usage…" : "Refresh usage"
-        let settings = presentation.settings
-        let usage = presentation.selectedUsage
-        var title = ""
-        if !settings.enabledProviders.isEmpty {
-            if settings.displayMode == "cost" {
-                title = usage.map { moneyLabel($0.today.costMicrousd) } ?? "—"
-                if title == "Unavailable" { title = "—" }
-            } else if settings.displayMode != "icon" {
-                let now = Int64(Date().timeIntervalSince1970)
-                let window = usage?.menuWindow(settings.quotaWindow, now: now)
-                let fresh = presentation.error == nil && usage?.observedAt.map { now - $0 < 600 && now >= $0 } == true
-                    && (window?.resetsAt.map { $0 > now } ?? true)
-                let quota = fresh ? window?.usedPercent.current : nil
-                title = quota.map { String(format: "%.0f%%", settings.displayMode == "used" ? $0 : max(0, 100 - $0)) } ?? "—"
-            }
-        }
-        item.button?.title = title.isEmpty ? "" : " \(title)"
+        let status = MenuStatus(presentation, now: Int64(Date().timeIntervalSince1970))
+        item.button?.title = status.title.isEmpty ? "" : " \(status.title)"
         item.button?.font = NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-        let windowLabel = usage?.menuWindow(settings.quotaWindow, now: Int64(Date().timeIntervalSince1970))?.label ?? "Quota"
-        let metricLabel = settings.displayMode == "cost" ? "Today" : windowLabel
-        item.button?.toolTip = title.isEmpty ? "Bridge usage" : "Bridge · \(providerName(settings.activeProvider ?? "")) · \(metricLabel) · \(title) \(settings.displayMode)"
+        item.button?.toolTip = status.accessibilityTitle
+        item.button?.setAccessibilityTitle(status.accessibilityTitle)
         // Avoid structural changes during menu tracking; data updates in place.
         if !tracking { rebuildCard() }
-        else if let scroll = card.view as? NSScrollView, let view = scroll.documentView as? NSHostingView<MenuCard> {
+        else if let scroll = card.view as? MenuCardScrollView {
             if providerChanged {
                 breakdown.update()
             }
-            view.layoutSubtreeIfNeeded()
-            view.setFrameSize(NSSize(width: 350, height: view.fittingSize.height))
+            scroll.updateSize(maximumHeight: cardMaximumHeight, resetScroll: providerChanged)
         }
     }
 
     func menuWillOpen(_ menu: NSMenu) {
+        MenuAppearance.pin(menu)
         guard menu === self.menu else { return }
         rebuildCard()
         tracking = true

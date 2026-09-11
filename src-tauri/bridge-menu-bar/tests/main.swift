@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import SwiftUI
 
 func check(_ condition: @autoclosure () -> Bool, _ message: String) {
     if !condition() { fatalError(message) }
@@ -46,6 +47,119 @@ check(switched.selectedUsage?.provider == "claude", "Claude can be the only enab
 switched.settings.claudeEnabled = false
 switched.settings.opencodeEnabled = true
 check(switched.selectedUsage?.provider == "opencode", "OpenCode can be the only enabled provider")
+
+// The spoken status must describe the same provider/value as the visible text,
+// including real zero, missing quota, stale observations and estimated prices.
+var statusPresentation = fixture
+statusPresentation.usage!.providers[0].observedAt = 100
+statusPresentation.usage!.providers[0].windows[0].resetsAt = 3_700
+statusPresentation.settings.quotaWindow = "session"
+var status = MenuStatus(statusPresentation, now: 100)
+check(status.title == "100%" && status.accessibilityTitle.contains("Codex, Session, 100% remaining"),
+      "Zero used must be announced as all quota remaining")
+statusPresentation.settings.displayMode = "used"
+status = MenuStatus(statusPresentation, now: 100)
+check(status.title == "0%" && status.accessibilityTitle.contains("0% used"), "Used mode must speak the visible percentage")
+status = MenuStatus(statusPresentation, now: 700)
+check(status.title == "—" && status.accessibilityTitle.contains("stale"), "Old quota must not be spoken as current")
+statusPresentation.usage!.providers[0].windows[0].usedPercent = .unavailable
+status = MenuStatus(statusPresentation, now: 100)
+check(status.title == "—" && status.accessibilityTitle.contains("unavailable"), "Missing quota must not be spoken as zero or stale")
+statusPresentation.settings.displayMode = "cost"
+status = MenuStatus(statusPresentation, now: 100)
+check(status.title == "≈$1.20" && status.accessibilityTitle.contains("estimated cost $1.20"), "VoiceOver must explain estimated prices")
+statusPresentation.usage!.providers[0].error = "Account session expired"
+statusPresentation.usage!.providers[0].observedAt = nil
+status = MenuStatus(statusPresentation, now: 100)
+check(status.title == "≈$1.20" && !status.accessibilityTitle.contains("stale"), "An account auth failure must not taint freshly computed local cost")
+statusPresentation.usage!.providers[0].today.costMicrousd.status = "stale"
+status = MenuStatus(statusPresentation, now: 100)
+check(status.title == "≈$1.20 · stale" && status.accessibilityTitle.contains("estimated cost $1.20 · stale"), "Metric-level stale cost must retain both qualifiers")
+statusPresentation.usage!.providers[0].today.costMicrousd = .unavailable
+status = MenuStatus(statusPresentation, now: 100)
+check(status.title == "—" && status.accessibilityTitle.contains("cost unavailable"), "Unknown prices must not be spoken as free")
+statusPresentation.settings.cursorEnabled = true
+statusPresentation.settings.selectedProvider = "cursor"
+statusPresentation.settings.displayMode = "icon"
+check(MenuStatus(statusPresentation, now: 100).accessibilityTitle == "Bridge usage menu, Cursor", "Icon-only status must still identify the selected provider")
+statusPresentation.settings.codexEnabled = false
+statusPresentation.settings.cursorEnabled = false
+check(MenuStatus(statusPresentation, now: 100).accessibilityTitle.contains("no providers enabled"), "Disabled providers must not leave old accessibility text")
+
+// A short loading card must expand with its data while the same menu row stays
+// attached. Clamp real scroll origins when content shrinks or the screen changes.
+final class MeasuredMenuDocument: NSView {
+    var measuredHeight: CGFloat = 80
+    var usesFlippedCoordinates = true
+    override var isFlipped: Bool { usesFlippedCoordinates }
+    override var fittingSize: NSSize { NSSize(width: 350, height: measuredHeight) }
+}
+let document = MeasuredMenuDocument(frame: .zero)
+let scroll = MenuCardScrollView(document: document, width: 350, maximumHeight: 300)
+check(scroll.frame.height == 80 && scroll.intrinsicContentSize.height == 80 && !scroll.hasVerticalScroller,
+      "Short content must not reserve a scroll gutter or oversized native row")
+document.measuredHeight = 720
+scroll.updateSize(maximumHeight: 300)
+check(scroll.frame.height == 300 && scroll.fittingSize.height == 300 && document.frame.height == 720 && scroll.hasVerticalScroller,
+      "A loaded card must expand both the document and the bounded menu viewport")
+scroll.contentView.scroll(to: NSPoint(x: 0, y: 150))
+document.measuredHeight = 900
+scroll.updateSize(maximumHeight: 300)
+check(scroll.contentView.bounds.minY == 150, "Same-provider updates must preserve the reader's offset")
+document.measuredHeight = 350
+scroll.updateSize(maximumHeight: 300)
+check(scroll.contentView.bounds.minY == 50, "Shrinking content must clamp a previous deep scroll position")
+document.measuredHeight = 100
+scroll.updateSize(maximumHeight: 300)
+check(scroll.frame.height == 100 && scroll.contentView.bounds.minY == 0 && !scroll.hasVerticalScroller,
+      "A tall-to-short update must shrink the native row and clear scrolling")
+document.measuredHeight = 720
+scroll.updateSize(maximumHeight: 160)
+scroll.contentView.scroll(to: NSPoint(x: 0, y: 200))
+scroll.updateSize(maximumHeight: 120, resetScroll: true)
+check(scroll.frame.height == 120 && scroll.contentView.bounds.minY == 0, "A new provider must start at the top within the current screen cap")
+let unflipped = MeasuredMenuDocument(frame: .zero)
+unflipped.usesFlippedCoordinates = false
+unflipped.measuredHeight = 720
+let unflippedScroll = MenuCardScrollView(document: unflipped, width: 350, maximumHeight: 300)
+check(unflippedScroll.contentView.bounds.minY == 420, "Unflipped documents must also start at the visual top")
+unflippedScroll.contentView.scroll(to: NSPoint(x: 0, y: 270))
+unflipped.measuredHeight = 900
+unflippedScroll.updateSize(maximumHeight: 300)
+check(unflippedScroll.contentView.bounds.minY == 450, "Unflipped documents must preserve distance from the visual top")
+
+// Exercise the production SwiftUI document too: a same-width observed update
+// must be measured in this delivery, not after closing and reopening the menu.
+let hostedState = MenuState()
+let hostedDocument = NSHostingView(rootView: MenuCard(state: hostedState))
+let hostedScroll = MenuCardScrollView(document: hostedDocument, width: 350, maximumHeight: 1_000)
+let loadingHeight = hostedScroll.frame.height
+hostedState.presentation = fixture
+hostedScroll.updateSize(maximumHeight: 1_000)
+check(hostedScroll.frame.height > loadingHeight + 100, "Loading-to-data must resize the real hosted SwiftUI card immediately")
+hostedState.presentation = Presentation(settings: .initial, usage: nil, refreshing: true, error: nil)
+hostedScroll.updateSize(maximumHeight: 1_000)
+check(hostedScroll.frame.height < loadingHeight + 50, "Removing provider data must shrink the real hosted SwiftUI card immediately")
+var trackedCardMeasured = false
+MenuRunLoop.schedule {
+    hostedState.presentation = fixture
+    hostedScroll.updateSize(maximumHeight: 1_000)
+    trackedCardMeasured = hostedScroll.frame.height > loadingHeight + 100
+}
+CFRunLoopRunInMode(CFRunLoopMode(RunLoop.Mode.eventTracking.rawValue as CFString), 0.1, true)
+check(trackedCardMeasured, "The same snapshot delivery must resize real SwiftUI content in menu tracking mode")
+
+let appearanceRoot = NSMenu()
+let appearanceChild = NSMenu()
+let appearanceItem = NSMenuItem(title: "Details", action: nil, keyEquivalent: "")
+appearanceItem.submenu = appearanceChild
+appearanceRoot.addItem(appearanceItem)
+for name in [NSAppearance.Name.aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua] {
+    let appearance = NSAppearance(named: name)!
+    MenuAppearance.pin(appearanceRoot, to: appearance)
+    check(appearanceRoot.appearance === appearance && appearanceChild.appearance === appearance,
+          "Root and child menus must preserve the exact appearance, including accessibility attributes")
+}
 
 // A provider snapshot arriving while the breakdown is open must preserve the
 // tracked menu and its model children. Exercise native menu objects without
@@ -133,4 +247,4 @@ for y in 0..<representation.pixelsHigh {
 }
 check(clear > 0 && ink > 0, "Icon must contain an alpha mask and visible ink")
 check(representation.colorAt(x: 0, y: 0)!.alphaComponent == 0, "Icon background must be transparent")
-print("Menu Bar Swift checks passed: wire fixture, semantics, countdowns, submenu tracking deferral, tracking-loop delivery, template flag, alpha mask, monochrome pixels")
+print("Menu Bar Swift checks passed: wire fixture, semantics, countdowns, dynamic status accessibility, viewport resizing and scroll clamping, appearance propagation, submenu tracking deferral, tracking-loop delivery, template flag, alpha mask, monochrome pixels")
