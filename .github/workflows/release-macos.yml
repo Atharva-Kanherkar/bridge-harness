@@ -122,7 +122,7 @@ jobs:
           pub_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           node -e '
             const fs = require("fs");
-            const [, , version, pubDate, sig, tarName, arch] = process.argv;
+            const [, version, pubDate, sig, tarName, arch] = process.argv;
             const manifest = {
               version,
               notes: "See CHANGELOG.md for changes.",
