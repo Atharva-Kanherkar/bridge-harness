@@ -2,12 +2,11 @@ import CallToAction from "./components/CallToAction";
 import Capabilities from "./components/Capabilities";
 import Comparison from "./components/Comparison";
 import Faq from "./components/Faq";
-import HarnessSection from "./components/HarnessSection";
+import HarnessGrid from "./components/HarnessGrid";
 import HeroBackdrop from "./components/HeroBackdrop";
 import AppDemo from "./components/AppDemo";
 import GradientButton from "./components/GradientButton";
 import { downloadPath } from "./content/site";
-import HowItWorks from "./components/HowItWorks";
 import LoopSection from "./components/LoopSection";
 import Principles from "./components/Principles";
 import SiteFooter from "./components/SiteFooter";
@@ -46,8 +45,7 @@ export default function Home() {
         </div>
       </main>
 
-      <HowItWorks />
-      <HarnessSection />
+      <HarnessGrid />
       <LoopSection />
       <Capabilities />
       <Principles />
