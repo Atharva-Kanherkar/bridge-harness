@@ -31,13 +31,13 @@ import { ChatModelControl, modelDisplayName } from "./components/ChatModelContro
 import { carryEffort, supportedEffortLevelsOf } from "./components/effort/effortLevels";
 export { ChatModelControl };
 import { SessionDock, type DockPaneDescriptor } from "./components/SessionDock";
+import { SimpleBrowser } from "./components/SimpleBrowser";
 import { AsideChat } from "./components/AsideChat";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { GitHubPane } from "./components/GitHubPane";
 import { GithubToasts, type CiToast } from "./components/GithubToasts";
 import { ciToastKey, jumpFallbackHint } from "./githubSurface";
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
-import type { BrowserSupervision } from "./components/BrowserSurface";
 import type { TerminalActivity } from "./components/TerminalPane";
 import { TasksPane } from "./components/TasksPane";
 import { workerStatus } from "./components/workerStatus";
@@ -53,7 +53,6 @@ import type { Section as SettingsSection } from "./components/SettingsScreen";
 import { SteerComposer, WorkerDetail } from "./components/WorkerDetail";
 import { ComposerPill } from "./components/ComposerPill";
 import { activeTurnAction, queuedFollowUps } from "./sessionInput";
-import { BrowserSurface } from "./components/BrowserSurface";
 import { PatchView } from "./components/DiffView";
 import { OrchestratorCreateDialog } from "./components/OrchestratorCreateDialog";
 import { RouterSettingsDialog } from "./components/RouterSettingsDialog";
@@ -218,7 +217,6 @@ function AppContent() {
   const [configuredAgents, setConfiguredAgents] = useState<AgentDefinition[]>([]);
   const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
   const [busy, setBusy] = useState(false);
-  const [browserSupervision, setBrowserSupervision] = useState<BrowserSupervision>();
   const [terminalActivity, setTerminalActivity] = useState<TerminalActivity>();
   const [acknowledgedTasks, setAcknowledgedTasks] = useState<Set<string>>(() => new Set());
   const [recallOpen, setRecallOpen] = useState(false);
@@ -507,7 +505,7 @@ function AppContent() {
     { id: "changes", label: "Changes", icon: FileCode2, available: hasRepo && !!workspace, unavailableReason: "Changes needs a repository. This chat has no worktree to diff.", badge: workspace?.dirtyFiles || undefined },
     { id: "code", label: "Code", icon: Code2, available: hasRepo && !!workspace, unavailableReason: "Code needs a repository. This chat has no worktree to read files from." },
     { id: "terminal", label: "Terminal", icon: TerminalSquare, available: hasRepo && !!workspace, unavailableReason: "The terminal needs a repository. This chat has no worktree to run a shell in.", badge: terminalActivity && terminalActivity.running > 1 ? terminalActivity.running : undefined, alert: terminalActivity?.attention || undefined },
-    { id: "browser", label: "Browser", icon: Monitor, available: true, alert: browserSupervision?.attention || undefined },
+    { id: "browser", label: "Browser", icon: Monitor, available: true },
     { id: "transcript", label: "Transcript", icon: Braces, available: true },
     { id: "tasks", label: "Tasks", icon: Activity, available: true, badge: dockTaskBadge.running || undefined, alert: dockTaskBadge.attention || undefined },
     { id: "github", label: "GitHub", icon: GitPullRequest, available: hasRepo && !!workspace, unavailableReason: "GitHub needs a repository. This chat has no worktree with a remote." },
@@ -2636,11 +2634,7 @@ function AppContent() {
                 onStopWorker={id => void stopWorker(id)}
                 onOpenTerminal={() => dispatchDock({ type: "open-pane", pane: "terminal" })}
               />;
-              if (pane === "browser") return <BrowserSurface
-                visible={dock.open && dock.pane === "browser" && !fullscreen}
-                onError={setError}
-                onSupervisionChange={setBrowserSupervision}
-              />;
+              if (pane === "browser") return <SimpleBrowser />;
               if (pane === "transcript") return <TranscriptPane
                 key={session.id}
                 sessionId={session.id}
