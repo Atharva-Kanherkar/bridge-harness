@@ -2585,7 +2585,6 @@ function AppContent() {
                     onStop={session ? requestStop : undefined}
                     inputRef={composerRef}
                     onPlusClick={() => void attachFile()}
-                    plusIcon="paperclip"
                     leading={usageRing}
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"
                       ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
