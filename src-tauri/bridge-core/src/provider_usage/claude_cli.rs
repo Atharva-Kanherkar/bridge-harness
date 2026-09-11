@@ -319,7 +319,7 @@ fn strip_ansi(text: &str) -> String {
 fn ready_for_command(text: &str) -> bool {
     strip_ansi(text).lines().any(|line| {
         let line = line.trim();
-        line == "❯" || line == ">"
+        line == "❯" || line == ">" || line == "$"
     })
 }
 
@@ -490,6 +490,9 @@ mod tests {
             parse("Current session 81% remaining"),
             Err(ParseError::Malformed)
         ));
+        assert!(ready_for_command("Claude Code\n$\n"));
+        assert!(!ready_for_command("$you: /usage"));
+        assert!(!ready_for_command("$ Try asking about this repository"));
     }
 
     #[test]
@@ -585,7 +588,10 @@ mod tests {
         let cap_binary = directory.path().join("claude-cap");
         std::fs::write(
             &cap_binary,
-            format!("#!/bin/sh\nprintf '%s' '{}'\n", "x".repeat(2048)),
+            format!(
+                "#!/bin/sh\nprintf '%s' '{}'\nwhile :; do :; done\n",
+                "x".repeat(2048)
+            ),
         )
         .unwrap();
         for binary in [&timeout_binary, &cap_binary] {
@@ -609,14 +615,14 @@ mod tests {
         let cap_error = capture_with_registry(
             &cap_binary,
             directory.path(),
-            Duration::from_secs(2),
+            Duration::from_secs(5),
             1024,
             &registry,
             Some(&pid_send),
         )
         .unwrap_err();
         assert!(cap_error.contains("too much output"), "{cap_error}");
-        assert!(started.elapsed() < Duration::from_secs(3));
+        assert!(started.elapsed() < Duration::from_secs(6));
         drop(pid_send);
         for pid in pid_receive {
             assert_eq!(unsafe { libc::kill(pid as i32, 0) }, -1);
