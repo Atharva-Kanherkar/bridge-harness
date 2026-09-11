@@ -4,7 +4,7 @@ import HarnessGrid from "./components/HarnessGrid";
 import HeroBackdrop from "./components/HeroBackdrop";
 import AppDemo from "./components/AppDemo";
 import ActionButton from "./components/ActionButton";
-import { downloadPath } from "./content/site";
+import { downloadPath, repoUrl } from "./content/site";
 import SiteFooter from "./components/SiteFooter";
 import SiteHeader from "./components/SiteHeader";
 
@@ -43,6 +43,14 @@ export default function Home() {
 
       <HarnessGrid />
       <FeatureScroll />
+      {/* Two ways in, no pitch attached. */}
+      <section className="border-t border-border">
+        <div className="mx-auto flex max-w-6xl flex-col items-center justify-center gap-4 px-6 py-20 sm:flex-row">
+          <ActionButton href={downloadPath} label="Download" />
+          <ActionButton href={repoUrl} label="GitHub" external />
+        </div>
+      </section>
+
       <Faq />
       <SiteFooter />
     </div>
