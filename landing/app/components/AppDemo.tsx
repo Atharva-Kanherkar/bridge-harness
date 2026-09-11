@@ -147,7 +147,25 @@ export default function AppDemo() {
   const [replay, setReplay] = useState(0);
   const held = useRef(false);
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const listRef = useRef<HTMLDivElement>(null);
+  const [slider, setSlider] = useState<{ left: number; width: number } | null>(null);
   const scene = scenes[active];
+
+  // The indicator is measured rather than fractioned, so it fits each label instead of
+  // forcing four columns to the width of the longest one.
+  useIsomorphicLayoutEffect(() => {
+    const measure = () => {
+      const tab = tabRefs.current[active];
+      const list = listRef.current;
+      if (!tab || !list) return;
+      const a = tab.getBoundingClientRect();
+      const b = list.getBoundingClientRect();
+      setSlider({ left: a.left - b.left, width: a.width });
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    return () => window.removeEventListener("resize", measure);
+  }, [active]);
 
   const onDone = useCallback(() => {
     if (held.current) setReplay(value => value + 1);
@@ -181,10 +199,18 @@ export default function AppDemo() {
     >
       <div className="-mx-4 mb-5 flex justify-center overflow-x-auto px-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <div
+          ref={listRef}
           role="tablist"
           aria-label="What Bridge does"
-          className="inline-flex w-max shrink-0 items-center gap-0.5 rounded-full border border-border/80 bg-card/40 p-1 backdrop-blur-md"
+          className="relative flex h-10 w-max shrink-0 items-center rounded-full border border-foreground/15 bg-foreground/10 p-1 shadow-[0_8px_32px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.18)] backdrop-blur-xl motion-safe:animate-[entry-in_600ms_ease-out]"
         >
+          {/* The slider the labels ride on. */}
+          <span
+            aria-hidden="true"
+            className="absolute inset-y-1 rounded-full bg-foreground shadow-[0_3px_12px_rgba(0,0,0,0.25)] transition-[transform,width] duration-[400ms] ease-[cubic-bezier(0.68,-0.55,0.265,1.55)] motion-reduce:transition-none"
+            style={slider ? { width: slider.width, transform: `translateX(${slider.left}px)`, left: 0 } : { opacity: 0 }}
+          />
+
           {scenes.map((item, i) => {
             const selected = i === active;
             const Icon = sceneIcon[item.id];
@@ -200,24 +226,17 @@ export default function AppDemo() {
                 tabIndex={selected ? 0 : -1}
                 onClick={() => setActive(i)}
                 onKeyDown={event => onKeyDown(event, i)}
-                className="relative whitespace-nowrap rounded-full px-3.5 py-1.5"
+                style={{ animationDelay: `${100 + i * 90}ms` }}
+                className={`group relative z-10 flex h-full items-center gap-1.5 whitespace-nowrap rounded-full px-4 text-[12.5px] font-semibold transition-colors duration-300 motion-safe:animate-[rise_500ms_ease-out_backwards] ${
+                  selected ? "text-[#5b6ee0]" : "text-foreground/75 hover:text-foreground"
+                }`}
               >
-                {/* The active chip carries the button's gradient at a whisper, so the accent
-                    is one language across the page rather than two. */}
                 <span
                   aria-hidden="true"
-                  className={`absolute inset-0 rounded-full bg-linear-to-r from-teal-400/15 via-blue-500/15 to-purple-500/15 ring-1 ring-inset ring-foreground/10 transition-opacity duration-300 ${
-                    selected ? "opacity-100" : "opacity-0"
-                  }`}
+                  className={`absolute inset-0 rounded-full bg-foreground/10 opacity-0 transition-opacity duration-300 ${selected ? "" : "group-hover:opacity-100"}`}
                 />
-                <span
-                  className={`relative flex items-center gap-1.5 text-[12.5px] tracking-[-0.005em] transition-colors duration-300 ${
-                    selected ? "font-medium text-foreground" : "text-muted-foreground hover:text-foreground"
-                  }`}
-                >
-                  {Icon && <Icon size={13} className={selected ? "text-foreground/80" : "text-faint"} aria-hidden="true" />}
-                  {item.label}
-                </span>
+                {Icon && <Icon size={13} className="relative" aria-hidden="true" />}
+                <span className="relative">{item.label}</span>
               </button>
             );
           })}
