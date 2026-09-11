@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@source "../landing/app/components/app";
+@source "../launch-video/src";
 
 @custom-variant dark (&:is(.dark *));
 
