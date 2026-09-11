@@ -252,6 +252,11 @@ typed_methods![
     (ResizeTerminal, ResizeTerminalParams, UnitResult),
     (CloseTerminal, CloseTerminalParams, UnitResult),
     (ListTerminals, ListTerminalsParams, ListTerminalsResult),
+    (CreateTerminal, CreateTerminalParams, TerminalRecord),
+    (GetTerminalSnapshot, GetTerminalSnapshotParams, TerminalSnapshot),
+    (GetTerminalWorkspace, GetTerminalWorkspaceParams, TerminalWorkspace),
+    (SaveTerminalWorkspace, SaveTerminalWorkspaceParams, UnitResult),
+    (RenameTerminal, RenameTerminalParams, TerminalRecord),
     // slash commands
     (ListSlashCommands, ListSlashCommandsParams, SlashCommandsResult),
     (ResolveSlashCommand, ResolveSlashCommandParams, SlashCommandResolveResult),
@@ -274,6 +279,10 @@ typed_methods![
     (ReclaimWorktree, ReclaimWorktreeParams, WorktreeReclaimResult),
     (SweepWorktrees, _, WorktreeSweepResult),
     (ArchiveChat, ArchiveChatParams, ArchiveChatResult),
+    (GetWorkerSettings, GetWorkerSettingsParams, WorkerSettings),
+    (SaveWorkerSettings, SaveWorkerSettingsParams, WorkerSettings),
+    (ListArchivedChats, ListArchivedChatsParams, ArchivedChatsResult),
+    (UnarchiveChat, UnarchiveChatParams, UnitResult),
     // token and cost usage
     (UsageSummary, SummaryParams, UsageSummaryResult),
     (ListUsagePriceOverrides, _, ListUsagePriceOverridesResult),
@@ -282,6 +291,7 @@ typed_methods![
     (RefreshUsageRates, _, UsagePricingStatus),
     (ListHistorySources, _, ListHistorySourcesResult),
     (ScanHistory, ScanHistoryParams, ScanHistoryResult),
+    (UsageInsights, InsightsParams, UsageInsightsResult),
     (GetMeterSnapshot, _, MeterRegistry),
     (RefreshMeter, _, UnitResult),
     // routing

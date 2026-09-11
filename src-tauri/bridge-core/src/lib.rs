@@ -61,6 +61,7 @@ pub mod memory_extraction_live;
 pub mod memory_ledger;
 pub mod memory_packet;
 pub mod meter;
+pub mod meter_sources;
 pub mod model;
 pub mod model_catalog;
 pub mod model_profiles;
@@ -102,10 +103,12 @@ pub mod slash;
 pub mod store;
 pub mod usage_import;
 pub mod suggestion_engine;
+pub mod terminal_workspace;
 pub mod switch_summary;
 pub mod verification_pipeline;
 pub mod usage;
 pub mod usage_pricing;
+pub mod usage_insights;
 pub mod usage_summary;
 pub mod usage_history;
 pub mod verified_catalog;
@@ -114,6 +117,8 @@ pub mod worker_guard;
 pub mod worker_lifecycle;
 pub mod worker_pool;
 pub mod worker_retry;
+pub mod worker_settings;
+pub mod dependency_seed;
 pub mod worker_sandbox;
 pub mod work;
 pub mod work_actions;
@@ -217,3 +222,5 @@ mod tests {
         }
     }
 }
+
+mod runtime_budget;

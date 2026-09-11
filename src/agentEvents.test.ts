@@ -4,6 +4,7 @@ import {
   MAX_MERGED_EVENT_TEXT,
   MAX_PENDING_AGENT_EVENTS,
   MAX_TOTAL_EVENT_TEXT,
+  MAX_TOTAL_EVENT_BYTES,
   queueAgentEvent,
 } from "./agentEvents";
 import type { AgentEvent } from "./types";
@@ -148,4 +149,14 @@ describe("appendAgentEventBatch", () => {
     expect(result[1].kind).toBe("turn.completed");
     expect(result[2].text).toBe("Part 2");
   });
+});
+
+it("bounds nested provider payloads even when visible text is tiny", () => {
+  let events: AgentEvent[] = [];
+  for (let i = 1; i <= 30; i++) {
+    events = appendAgentEventBatch(events, [{ ...event(i, "tool.completed", "done"), data: { output: "x".repeat(200_000) } }]);
+  }
+  expect(JSON.stringify(events).length * 2).toBeLessThan(MAX_TOTAL_EVENT_BYTES + 100);
+  expect(events.at(-1)?.id).toBe(30);
+  expect(events.length).toBeLessThan(30);
 });

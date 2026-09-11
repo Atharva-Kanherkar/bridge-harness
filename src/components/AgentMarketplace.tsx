@@ -2,9 +2,13 @@ import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AlertCircle, LoaderCircle, RefreshCw } from "lucide-react";
 import { bridgeApi } from "../api";
+import { HarnessMark } from "./harnessMarks";
 import type { ManagedAgentStatus } from "../protocol/generated/protocol";
 
 /** Agents tab: a card per agent, one button each — Install or Uninstall. */
+
+/** Agent ids `harnessMarks` draws a real figure for; anything else keeps its initials. */
+const KNOWN_MARKS = new Set(["claude", "codex", "opencode", "cursor", "grok", "bridge"]);
 
 const BLURB: Record<string, string> = {
   claude: "Anthropic's coding agent",
@@ -106,8 +110,12 @@ function AgentCard({ agent, busy, error, onInstall, onUninstall }: {
   const installed = agent.removable;
 
   return <article className="flex items-center gap-3.5 px-4 py-4" data-testid={`agent-card-${agent.agentId}`}>
+    {/* The vendor's own mark where Bridge has one; initials only for an agent it
+        has never met. */}
     <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[13px] border border-border bg-accent font-display text-[13px] font-semibold text-foreground">
-      {agent.label.slice(0, 2).toUpperCase()}
+      {KNOWN_MARKS.has(agent.agentId)
+        ? <HarnessMark harness={agent.agentId} size={20} />
+        : agent.label.slice(0, 2).toUpperCase()}
     </div>
 
     <div className="min-w-0 flex-1">

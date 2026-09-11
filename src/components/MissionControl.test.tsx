@@ -1,184 +1,321 @@
-import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it } from "vitest";
-import type { AgentEvent, BridgeEvent, Session, WorkerRuntimeRecord } from "../types";
-import { MissionControl } from "./MissionControl";
-import { asWireKind } from "../transcript/wire";
+// @vitest-environment jsdom
+import { act } from "react";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { AgentEvent, Session, SessionForestSnapshot, Workspace } from "../types";
+import { isActiveSession, MissionControl } from "./MissionControl";
+import { minimumSize, MISSION_LAYOUT_KEY, parseLayout } from "./missionControl/layout";
+import { SIDEBAR_CHAT_DRAG, TILE_DRAG } from "./missionControl/drag";
+import { leafIds, type PaneNode } from "../terminal/layout";
 
-const NOW = Date.parse("2026-07-29T10:05:00Z");
+vi.mock("../api", () => ({
+  bridgeApi: {
+    sessionForest: vi.fn(),
+    submitInput: vi.fn(),
+    resolveApproval: vi.fn(),
+    resolveQuestion: vi.fn(),
+    interruptTurn: vi.fn(),
+  },
+}));
+vi.mock("./AgentConversation", () => ({
+  AgentConversation: ({ session, onResolve }: { session?: Session; onResolve: (eventId: number, decision: string) => unknown }) =>
+    <div data-conversation={session?.id}><button type="button" data-approve={session?.id} onClick={() => { void onResolve(7, "accept"); }}>approve</button></div>,
+}));
 
-const session = (id: string, overrides: Partial<Session> = {}): Session => ({
-  id,
-  workspaceId: "workspace-1",
-  harness: "codex",
-  label: id,
-  status: "working",
-  startedAt: "2026-07-29T10:00:00Z",
-  endedAt: null,
-  contextPercent: null,
-  usagePercent: null,
-  metricSource: "reported",
-  restorationMode: "fresh",
-  continuationFidelity: "native",
-  kind: "worker",
-  ...overrides,
+import { bridgeApi } from "../api";
+
+const forest = (sessionId: string): SessionForestSnapshot => ({
+  sessionId, entries: [], leaves: [], workerLeases: [], workerRuntimes: [], workerQueue: [], usage: [], reasons: [],
+  head: { sessionId, activeEntryId: null, nativeProviderSessionId: null, restorationMode: "fresh", resumeEligibility: "fresh", latestCheckpointEntryId: null, updatedAt: "2026-01-01T00:00:00Z" },
+  policyLimits: { maxWorkersPerTurn: 3, maxStrongWorkersPerTurn: 1, maxCapabilityUnitsPerTurn: 24 },
+  repositoryDivergence: { status: "unknown", selectedState: null, currentState: { status: "unavailable" } }, completion: null,
+  entryWindow: { returned: 0, total: 0, trimmedPayloads: 0 },
+} as unknown as SessionForestSnapshot);
+
+const session = (id: string, status: Session["status"], extra: Partial<Session> = {}): Session => ({
+  id, label: `Chat ${id}`, status, harness: "claude", kind: "chat", metricSource: "provider", continuationFidelity: "full", restorationMode: "fresh", startedAt: "2026-01-01T00:00:00Z", ...extra,
+} as Session);
+const workspaces = [{ id: "ws", title: "Bridge", branch: "main" }] as Workspace[];
+const noEvents: AgentEvent[] = [];
+
+let host: HTMLDivElement;
+let root: Root;
+beforeEach(() => {
+  const store = new Map<string, string>();
+  vi.stubGlobal("localStorage", { getItem: (key: string) => store.get(key) ?? null, setItem: (key: string, value: string) => store.set(key, value), removeItem: (key: string) => store.delete(key) });
+  (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  vi.mocked(bridgeApi.sessionForest).mockReset().mockImplementation(id => Promise.resolve(forest(id)));
+  vi.mocked(bridgeApi.submitInput).mockReset().mockResolvedValue({ disposition: "startedNewTurn", interceptions: [] });
+  vi.mocked(bridgeApi.resolveApproval).mockReset().mockResolvedValue({} as never);
+  vi.mocked(bridgeApi.interruptTurn).mockReset().mockResolvedValue(undefined);
+  host = document.createElement("div"); document.body.append(host); root = createRoot(host);
+});
+afterEach(() => { act(() => root.unmount()); host.remove(); vi.unstubAllGlobals(); });
+
+const tiles = () => [...host.querySelectorAll<HTMLElement>("[data-session-id]")].map(el => el.dataset.sessionId);
+const render = async (props: Partial<Parameters<typeof MissionControl>[0]>) => {
+  await act(async () => root.render(<MissionControl sessions={[]} workspaces={workspaces} events={noEvents} onFocusSession={vi.fn()} {...props} />));
+};
+
+function transfer(type: string, id: string) {
+  const data = new Map([[type, id]]);
+  return { types: [type], getData: (key: string) => data.get(key) ?? "", setData: (key: string, value: string) => data.set(key, value), effectAllowed: "none", dropEffect: "none" };
+}
+
+async function dragEvent(target: Element, type: string, dataTransfer: ReturnType<typeof transfer>, x = 0, y = 0) {
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y });
+  Object.defineProperty(event, "dataTransfer", { value: dataTransfer });
+  await act(async () => { target.dispatchEvent(event); });
+  return event;
+}
+
+const savedLayout = () => parseLayout(localStorage.getItem(MISSION_LAYOUT_KEY));
+
+it("shows only active sessions even with hundreds of idle chats", async () => {
+  const sessions = [session("a", "working"), session("c", "waiting"), ...Array.from({ length: 501 }, (_, i) => session(`idle-${i}`, "completed"))];
+  await render({ sessions });
+  expect(tiles().sort()).toEqual(["a", "c"]);
+  expect(host.textContent).toContain("2 live");
+  expect(host.textContent).not.toContain("Show all");
+  expect(vi.mocked(bridgeApi.sessionForest).mock.calls.map(([id]) => id).sort()).toEqual(["a", "c"]);
 });
 
-const runtime = (sessionId: string, overrides: Partial<WorkerRuntimeRecord> = {}): WorkerRuntimeRecord => ({
-  sessionId,
-  parentSessionId: "orchestrator-1",
-  lifecycleState: "working",
-  taskFamily: "implementation",
-  compatibilityKey: "implementation",
-  resultStatus: "pending",
-  retryCount: 0,
-  warmUntil: null,
-  worktreePath: null,
-  worktreeBranch: null,
-  lastResult: null,
-  lastActivityAt: "2026-07-29T10:04:55Z",
-  waitingSince: null,
-  waitingReason: null,
-  progressSummary: null,
-  updatedAt: "2026-07-29T10:04:55Z",
-  ...overrides,
+it("explains the empty state without offering idle chats", async () => {
+  await render({ sessions: [session("b", "completed")] });
+  expect(tiles()).toEqual([]);
+  expect(host.textContent).toContain("Chats and agents appear here automatically");
+  expect(host.textContent).not.toContain("Show all");
+  expect(bridgeApi.sessionForest).not.toHaveBeenCalled();
 });
 
-const event = (id: number, sessionId: string, text: string): AgentEvent => ({
-  id,
-  sessionId,
-  sequence: id,
-  protocolVersion: 1,
-  kind: asWireKind("reasoning"),
-  itemId: null,
-  role: "assistant",
-  status: null,
-  title: null,
-  text,
-  data: {},
-  providerMeta: {},
-  createdAt: "2026-07-29T10:04:55Z",
+it("recognizes active turns and lifecycle transitions across harnesses", () => {
+  for (const status of ["working", "waiting", "starting", "resuming", "checkpointing"] as const) {
+    expect(isActiveSession(session("a", status))).toBe(true);
+  }
+  expect(isActiveSession(session("a", "completed", { activeTurnId: "turn" }))).toBe(true);
+  expect(isActiveSession(session("a", "completed"))).toBe(false);
+  expect(isActiveSession(session("w", "completed", { parentSessionId: "a" }))).toBe(false);
 });
 
-describe("MissionControl", () => {
-  it("renders one window per live agent with its status and live stream", () => {
-    const sessions = [
-      session("orchestrator-1", { kind: "orchestrator", label: "Orchestrator", parentSessionId: null }),
-      session("worker-a", { label: "Implementation worker", parentSessionId: "orchestrator-1" }),
-    ];
-    const html = renderToStaticMarkup(
-      <MissionControl
-        sessions={sessions}
-        runtimes={[runtime("worker-a")]}
-        reasons={[]}
-        events={[event(1, "worker-a", "editing MissionControl.tsx")]}
-        activeSessionId="orchestrator-1"
-        now={NOW}
-        onFocusSession={() => undefined}
-      />,
-    );
-    expect(html).toContain("Mission Control");
-    expect(html).toContain("Orchestrator");
-    expect(html).toContain("Implementation worker");
-    expect(html).toContain("WORKING");
-    expect(html).toContain("editing MissionControl.tsx");
-  });
+it("removes completed workers despite a cached working runtime", async () => {
+  vi.mocked(bridgeApi.sessionForest).mockImplementation(async id => ({ ...forest(id), workerRuntimes: [{ sessionId: "w", lifecycleState: "working", resultStatus: "pending" }] } as SessionForestSnapshot));
+  await render({ sessions: [session("w", "working", { parentSessionId: "a" })] });
+  expect(tiles()).toEqual(["w"]);
+  await render({ sessions: [session("w", "completed", { parentSessionId: "a" })] });
+  expect(tiles()).toEqual([]);
+});
 
-  it("surfaces a blocked worker as needing approval", () => {
-    const sessions = [session("worker-b", { label: "Blocked worker", status: "waiting", parentSessionId: "orchestrator-1" })];
-    const html = renderToStaticMarkup(
-      <MissionControl
-        sessions={sessions}
-        runtimes={[runtime("worker-b", { lifecycleState: "waiting" })]}
-        reasons={[]}
-        events={[]}
-        now={NOW}
-        onFocusSession={() => undefined}
-      />,
-    );
-    expect(html).toContain("Needs your approval");
-    expect(html).toContain("NEEDS YOU");
-  });
+it("preserves minimum transcript dimensions in nested and resized splits", () => {
+  const leaf = (leafId: string): PaneNode => ({ type: "leaf", leafId });
+  expect(minimumSize(leaf("a"))).toEqual({ width: 420, height: 360 });
+  expect(minimumSize({ type: "split", direction: "horizontal", ratio: 0.1, first: leaf("a"), second: { type: "split", direction: "vertical", ratio: 0.9, first: leaf("b"), second: leaf("c") } })).toEqual({ width: 846, height: 726 });
+});
 
-  it("falls back to a reason when there are no streamed events", () => {
-    const reasons: BridgeEvent[] = [{ id: 7, entityId: "worker-c", body: "waiting on write-scope approval", kind: "reason", source: "core", createdAt: "2026-07-29T10:04:00Z" }];
-    const html = renderToStaticMarkup(
-      <MissionControl
-        sessions={[session("worker-c", { label: "Reason worker" })]}
-        runtimes={[runtime("worker-c")]}
-        reasons={reasons}
-        events={[]}
-        now={NOW}
-        onFocusSession={() => undefined}
-      />,
-    );
-    expect(html).toContain("waiting on write-scope approval");
-  });
+it("renders the real conversation and a composer per tile", async () => {
+  await render({ sessions: [session("a", "working")] });
+  expect(host.querySelector("[data-conversation='a']")).not.toBeNull();
+  expect(host.querySelector("[data-session-id='a'] textarea")).not.toBeNull();
+  expect(bridgeApi.sessionForest).toHaveBeenCalledWith("a");
+});
 
-  it("keeps a ready top-level session live instead of marking it DONE", () => {
-    const html = renderToStaticMarkup(
-      <MissionControl
-        sessions={[session("orchestrator-1", { kind: "orchestrator", label: "Ready orchestrator", status: "ready", parentSessionId: null })]}
-        runtimes={[]}
-        reasons={[]}
-        events={[]}
-        now={NOW}
-        onFocusSession={() => undefined}
-      />,
-    );
-    expect(html).toContain("Ready orchestrator");
-    expect(html).toContain("READY");
-    expect(html).not.toContain("DONE");
+it("submits through the tile's own session id and clears the draft", async () => {
+  await render({ sessions: [session("a", "working"), session("b", "waiting")] });
+  const textarea = host.querySelector<HTMLTextAreaElement>("[data-session-id='b'] textarea")!;
+  await act(async () => {
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
+    setter.call(textarea, "ship it"); textarea.dispatchEvent(new Event("input", { bubbles: true }));
   });
+  expect(textarea.value).toBe("ship it");
+  await act(async () => { textarea.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true })); });
+  expect(bridgeApi.submitInput).toHaveBeenCalledWith("b", "ship it");
+  expect(textarea.value).toBe("");
+});
 
-  it("hides a worker whose runtime was not loaded so its status is never guessed", () => {
-    const html = renderToStaticMarkup(
-      <MissionControl
-        sessions={[session("worker-elsewhere", { label: "Foreign worker", status: "working", parentSessionId: "other-orchestrator" })]}
-        runtimes={[]}
-        reasons={[]}
-        events={[]}
-        now={NOW}
-        onFocusSession={() => undefined}
-      />,
-    );
-    expect(html).toContain("No agents running yet");
-    expect(html).not.toContain("Foreign worker");
-  });
+it("resolves approvals against the tile's session, not the selected one", async () => {
+  await render({ sessions: [session("a", "working"), session("b", "waiting")], activeSessionId: "a" });
+  await act(async () => host.querySelector<HTMLButtonElement>("[data-approve='b']")!.click());
+  expect(bridgeApi.resolveApproval).toHaveBeenCalledWith("b", 7, "accept", undefined);
+  expect(host.querySelector("[data-session-id='a']")?.className).toContain("ring-1");
+  expect(host.querySelector("[data-session-id='b']")?.className).not.toContain("ring-1");
+});
 
-  it("drops finished sessions so completed history does not grow the grid", () => {
-    const html = renderToStaticMarkup(
-      <MissionControl
-        sessions={[session("worker-done", { label: "Finished worker", status: "completed" })]}
-        runtimes={[runtime("worker-done", { lifecycleState: "completed" })]}
-        reasons={[]}
-        events={[]}
-        now={NOW}
-        onFocusSession={() => undefined}
-      />,
-    );
-    expect(html).toContain("No agents running yet");
-    expect(html).not.toContain("Finished worker");
-  });
+it("auto-inserts a new active session and drops one that stopped", async () => {
+  await render({ sessions: [session("a", "working")] });
+  expect(tiles()).toEqual(["a"]);
+  await render({ sessions: [session("a", "working"), session("b", "working")] });
+  expect(tiles().sort()).toEqual(["a", "b"]);
+  expect(host.querySelector("[role='separator']")).not.toBeNull();
+  await render({ sessions: [session("a", "completed"), session("b", "working")] });
+  expect(tiles()).toEqual(["b"]);
+  expect(host.querySelector("[role='separator']")).toBeNull();
+});
 
-  it("shows an empty state when no agents are live", () => {
-    const html = renderToStaticMarkup(
-      <MissionControl sessions={[]} runtimes={[]} reasons={[]} events={[]} now={NOW} onFocusSession={() => undefined} />,
-    );
-    expect(html).toContain("No agents running yet");
-  });
+it("persists the layout and restores it, dropping stale leaves", async () => {
+  await render({ sessions: [session("a", "working"), session("b", "working")] });
+  const saved = JSON.parse(localStorage.getItem(MISSION_LAYOUT_KEY)!) as { version: number; root: PaneNode };
+  expect(saved.version).toBe(1);
+  expect(leafIds(saved.root).sort()).toEqual(["a", "b"]);
+  act(() => root.unmount());
+  // a stale leaf nested beside a live one collapses away; the surviving split keeps its direction and ratio.
+  const before: PaneNode = { type: "split", direction: "vertical", ratio: 0.3, first: { type: "leaf", leafId: "b" }, second: { type: "split", direction: "horizontal", ratio: 0.5, first: { type: "leaf", leafId: "a" }, second: { type: "leaf", leafId: "gone" } } };
+  localStorage.setItem(MISSION_LAYOUT_KEY, JSON.stringify({ version: 1, root: before, expandedLeafId: null }));
+  root = createRoot(host);
+  await render({ sessions: [session("a", "working"), session("b", "working")] });
+  const restored = JSON.parse(localStorage.getItem(MISSION_LAYOUT_KEY)!) as { root: PaneNode };
+  expect(leafIds(restored.root)).toEqual(["b", "a"]);
+  expect(host.querySelector("[role='separator']")?.getAttribute("aria-orientation")).toBe("horizontal");
+  expect(host.querySelector("[role='separator']")?.getAttribute("aria-valuenow")).toBe("30");
+});
 
-  it("hides idle sessions that the user is not currently focused on", () => {
-    const html = renderToStaticMarkup(
-      <MissionControl
-        sessions={[session("idle-chat", { label: "Idle chat", status: "idle", kind: "direct", parentSessionId: null })]}
-        runtimes={[]}
-        reasons={[]}
-        events={[]}
-        now={NOW}
-        onFocusSession={() => undefined}
-      />,
-    );
-    expect(html).toContain("No agents running yet");
-    expect(html).not.toContain("Idle chat");
+it("focuses a session from the tile header and maximizes a tile", async () => {
+  const focus = vi.fn();
+  await render({ sessions: [session("a", "working"), session("b", "working")], onFocusSession: focus });
+  await act(async () => host.querySelector<HTMLButtonElement>("[data-session-id='b'] button[aria-label='Focus chat']")!.click());
+  expect(focus).toHaveBeenCalledWith("b");
+  await act(async () => host.querySelector<HTMLButtonElement>("[data-session-id='b'] button[aria-label='Maximize tile']")!.click());
+  expect(tiles()).toEqual(["b"]);
+  await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Restore grid']")!.click());
+  expect(tiles().sort()).toEqual(["a", "b"]);
+});
+
+it("offers Stop only for workers and routes it to onStopWorker", async () => {
+  const stop = vi.fn().mockResolvedValue(undefined);
+  await render({ sessions: [session("a", "working"), session("w", "working", { parentSessionId: "a" })], onStopWorker: stop });
+  expect(host.querySelector("[data-session-id='a'] button[aria-label='Stop worker']")).toBeNull();
+  await act(async () => host.querySelector<HTMLButtonElement>("[data-session-id='w'] button[aria-label='Stop worker']")!.click());
+  expect(stop).toHaveBeenCalledWith("w");
+});
+
+it("clears maximization when work finishes and does not restore it on a later turn", async () => {
+  await render({ sessions: [session("a", "working"), session("b", "working")] });
+  await act(async () => host.querySelector<HTMLButtonElement>("[data-session-id='a'] button[aria-label='Maximize tile']")!.click());
+  await render({ sessions: [session("a", "completed"), session("b", "working")] });
+  expect(tiles()).toEqual(["b"]);
+  await render({ sessions: [session("a", "working"), session("b", "working")] });
+  expect(tiles().sort()).toEqual(["a", "b"]);
+});
+
+it("does not transfer a draft when another active chat replaces the only tile", async () => {
+  await render({ sessions: [session("a", "working")] });
+  const textarea = host.querySelector<HTMLTextAreaElement>("textarea")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "for a only");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
   });
+  await render({ sessions: [session("a", "completed"), session("b", "working")] });
+  expect(tiles()).toEqual(["b"]);
+  expect(host.querySelector<HTMLTextAreaElement>("textarea")!.value).toBe("");
+  expect(bridgeApi.sessionForest).toHaveBeenCalledWith("b");
+});
+
+it("accepts an idle sidebar chat into an empty grid and persists it until removed", async () => {
+  const sessions = [session("idle", "completed"), session("other", "completed")];
+  await render({ sessions });
+  const data = transfer(SIDEBAR_CHAT_DRAG, "idle");
+  const canvas = host.querySelector("main")!;
+  expect((await dragEvent(canvas, "dragover", data)).defaultPrevented).toBe(true);
+  expect(data.dropEffect).toBe("copy");
+  await dragEvent(canvas, "drop", data);
+  expect(tiles()).toEqual(["idle"]);
+  expect(savedLayout().pinnedSessionIds).toEqual(["idle"]);
+  expect(host.textContent).toContain("0 live");
+  expect(host.textContent).toContain("1 pinned");
+  expect(bridgeApi.submitInput).not.toHaveBeenCalled();
+  act(() => root.unmount()); root = createRoot(host);
+  await render({ sessions });
+  expect(tiles()).toEqual(["idle"]);
+  await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Remove from Mission Control']")!.click());
+  expect(tiles()).toEqual([]);
+  expect(savedLayout().pinnedSessionIds).toEqual([]);
+});
+
+it.each([
+  ["left", 1, 180, "horizontal", ["idle", "a"]],
+  ["right", 419, 180, "horizontal", ["a", "idle"]],
+  ["top", 210, 1, "vertical", ["idle", "a"]],
+  ["bottom", 210, 359, "vertical", ["a", "idle"]],
+] as const)("inserts an idle sidebar chat at the %s edge without a duplicate from bubbling", async (edge, x, y, direction, order) => {
+  await render({ sessions: [session("a", "working"), session("idle", "completed")] });
+  const tile = host.querySelector("[data-session-id='a']")!;
+  vi.spyOn(tile, "getBoundingClientRect").mockReturnValue({ left: 0, top: 0, width: 420, height: 360 } as DOMRect);
+  const data = transfer(SIDEBAR_CHAT_DRAG, "idle");
+  await dragEvent(tile, "dragover", data, x, y);
+  expect(tile.querySelector(`[data-drop-edge='${edge}']`)).not.toBeNull();
+  await dragEvent(tile, "drop", data, x, y);
+  const saved = savedLayout();
+  expect(leafIds(saved.root!)).toEqual(order);
+  expect(saved.root).toMatchObject({ type: "split", direction });
+  expect(saved.pinnedSessionIds).toEqual(["idle"]);
+});
+
+it("rearranges existing tiles while preserving their drafts", async () => {
+  await render({ sessions: [session("a", "working"), session("b", "working")] });
+  const textarea = host.querySelector<HTMLTextAreaElement>("[data-session-id='a'] textarea")!;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!.call(textarea, "keep this draft");
+    textarea.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  const data = transfer(TILE_DRAG, "");
+  await dragEvent(host.querySelector("[data-session-id='a'] header")!, "dragstart", data);
+  expect(data.getData(TILE_DRAG)).toBe("a");
+  expect(data.effectAllowed).toBe("move");
+  await dragEvent(host.querySelector("[data-session-id='b']")!, "drop", data);
+  expect(leafIds(savedLayout().root!)).toEqual(["b", "a"]);
+  expect(savedLayout().pinnedSessionIds).toEqual([]);
+  expect(host.querySelector<HTMLTextAreaElement>("[data-session-id='a'] textarea")!.value).toBe("keep this draft");
+  expect(host.querySelector<HTMLTextAreaElement>("[data-session-id='b'] textarea")!.value).toBe("");
+});
+
+it("pins an already visible chat once and keeps it after its turn finishes", async () => {
+  await render({ sessions: [session("a", "working")] });
+  const data = transfer(SIDEBAR_CHAT_DRAG, "a");
+  await dragEvent(host.querySelector("[data-session-id='a']")!, "drop", data);
+  await dragEvent(host.querySelector("[data-session-id='a']")!, "drop", data);
+  expect(tiles()).toEqual(["a"]);
+  expect(savedLayout().pinnedSessionIds).toEqual(["a"]);
+  await render({ sessions: [session("a", "completed")] });
+  expect(tiles()).toEqual(["a"]);
+  await render({ sessions: [] });
+  expect(tiles()).toEqual([]);
+  expect(savedLayout().pinnedSessionIds).toEqual([]);
+});
+
+it("ignores unknown chat ids and unrelated drags", async () => {
+  await render({ sessions: [session("idle", "completed")] });
+  const canvas = host.querySelector("main")!;
+  await dragEvent(canvas, "drop", transfer(SIDEBAR_CHAT_DRAG, "missing"));
+  await dragEvent(canvas, "drop", transfer("text/plain", "idle"));
+  await dragEvent(canvas, "drop", transfer(TILE_DRAG, "idle"));
+  expect(tiles()).toEqual([]);
+  expect(savedLayout().pinnedSessionIds).toEqual([]);
+});
+
+it("treats old saved layouts as unpinned and validates stored pins", () => {
+  const root = { type: "leaf", leafId: "a" };
+  expect(parseLayout(JSON.stringify({ version: 1, root })).pinnedSessionIds).toEqual([]);
+  expect(parseLayout(JSON.stringify({ version: 1, root, pinnedSessionIds: ["a", "a", "missing", 7] })).pinnedSessionIds).toEqual(["a"]);
+});
+
+it("pins from the tile header and keeps the chat visible after completion and reopening", async () => {
+  await render({ sessions: [session("a", "working")] });
+  await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Pin chat in Mission Control']")!.click());
+  expect(savedLayout().pinnedSessionIds).toEqual(["a"]);
+  await render({ sessions: [session("a", "completed")] });
+  expect(tiles()).toEqual(["a"]);
+  act(() => root.unmount()); root = createRoot(host);
+  await render({ sessions: [session("a", "completed")] });
+  expect(tiles()).toEqual(["a"]);
+  await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Remove from Mission Control']")!.click());
+  expect(tiles()).toEqual([]);
+});
+
+it("unpins an active chat without stopping it and removes it when work finishes", async () => {
+  await render({ sessions: [session("a", "working")] });
+  await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Pin chat in Mission Control']")!.click());
+  await act(async () => host.querySelector<HTMLButtonElement>("button[aria-label='Unpin chat (stays while active)']")!.click());
+  expect(tiles()).toEqual(["a"]);
+  expect(savedLayout().pinnedSessionIds).toEqual([]);
+  expect(bridgeApi.interruptTurn).not.toHaveBeenCalled();
+  await render({ sessions: [session("a", "completed")] });
+  expect(tiles()).toEqual([]);
 });

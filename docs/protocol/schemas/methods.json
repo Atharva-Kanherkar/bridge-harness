@@ -401,6 +401,34 @@
       "resultSchema": "archive-chat-result.json"
     },
     {
+      "command": "get_worker_settings",
+      "domain": "config",
+      "method": "config/get_worker_settings",
+      "paramsSchema": "get-worker-settings-params.json",
+      "resultSchema": "worker-settings.json"
+    },
+    {
+      "command": "save_worker_settings",
+      "domain": "config",
+      "method": "config/save_worker_settings",
+      "paramsSchema": "save-worker-settings-params.json",
+      "resultSchema": "worker-settings.json"
+    },
+    {
+      "command": "list_archived_chats",
+      "domain": "sessions",
+      "method": "sessions/list_archived_chats",
+      "paramsSchema": "list-archived-chats-params.json",
+      "resultSchema": "archived-chats-result.json"
+    },
+    {
+      "command": "unarchive_chat",
+      "domain": "sessions",
+      "method": "sessions/unarchive_chat",
+      "paramsSchema": "unarchive-chat-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
       "command": "save_memory_record",
       "domain": "memory",
       "method": "memory/save_memory_record",
@@ -562,6 +590,41 @@
       "resultSchema": "list-terminals-result.json"
     },
     {
+      "command": "create_terminal",
+      "domain": "terminal",
+      "method": "terminal/create_terminal",
+      "paramsSchema": "create-terminal-params.json",
+      "resultSchema": "terminal-record.json"
+    },
+    {
+      "command": "get_terminal_snapshot",
+      "domain": "terminal",
+      "method": "terminal/get_terminal_snapshot",
+      "paramsSchema": "get-terminal-snapshot-params.json",
+      "resultSchema": "terminal-snapshot.json"
+    },
+    {
+      "command": "get_terminal_workspace",
+      "domain": "terminal",
+      "method": "terminal/get_terminal_workspace",
+      "paramsSchema": "get-terminal-workspace-params.json",
+      "resultSchema": "terminal-workspace.json"
+    },
+    {
+      "command": "save_terminal_workspace",
+      "domain": "terminal",
+      "method": "terminal/save_terminal_workspace",
+      "paramsSchema": "save-terminal-workspace-params.json",
+      "resultSchema": "unit-result.json"
+    },
+    {
+      "command": "rename_terminal",
+      "domain": "terminal",
+      "method": "terminal/rename_terminal",
+      "paramsSchema": "rename-terminal-params.json",
+      "resultSchema": "terminal-record.json"
+    },
+    {
       "command": "list_slash_commands",
       "domain": "slash",
       "method": "slash/list_slash_commands",
@@ -721,6 +784,13 @@
       "method": "usage/scan_history",
       "paramsSchema": "scan-history-params.json",
       "resultSchema": "scan-history-result.json"
+    },
+    {
+      "command": "insights",
+      "domain": "usage",
+      "method": "usage/insights",
+      "paramsSchema": "insights-params.json",
+      "resultSchema": "usage-insights-result.json"
     },
     {
       "command": "get_meter_snapshot",
@@ -1257,7 +1327,7 @@
   ],
   "protocolVersion": {
     "major": 1,
-    "minor": 7
+    "minor": 8
   },
   "reserved": {
     "cancel": "$/cancel",

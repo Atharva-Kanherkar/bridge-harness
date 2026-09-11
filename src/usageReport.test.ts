@@ -173,8 +173,10 @@ describe("preferences", () => {
   it("round-trips through storage and falls back on garbage", () => {
     const storage = new MemoryStorage();
     expect(readUsagePreferences(storage)).toEqual(DEFAULT_USAGE_PREFERENCES);
+    // Local history is always included now; a stored `false` from the retired
+    // toggle reads back as true.
     writeUsagePreferences({ metric: "tokens", windowDays: 7, includeImported: false }, storage);
-    expect(readUsagePreferences(storage)).toEqual({ metric: "tokens", windowDays: 7, includeImported: false });
+    expect(readUsagePreferences(storage)).toEqual({ metric: "tokens", windowDays: 7, includeImported: true });
     storage.setItem(USAGE_PREFERENCES_KEY, "{\"metric\":\"limits\",\"windowDays\":3}");
     expect(readUsagePreferences(storage)).toEqual(DEFAULT_USAGE_PREFERENCES);
     storage.setItem(USAGE_PREFERENCES_KEY, "not json");

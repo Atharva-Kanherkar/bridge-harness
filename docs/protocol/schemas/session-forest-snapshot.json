@@ -406,6 +406,26 @@
       ],
       "type": "object"
     },
+    "SessionEntryWindowSummary": {
+      "description": "Mirrors `bridge_core::model::SessionEntryWindowSummary`.",
+      "properties": {
+        "returned": {
+          "$ref": "#/definitions/JsSafeI64"
+        },
+        "total": {
+          "$ref": "#/definitions/JsSafeI64"
+        },
+        "trimmedPayloads": {
+          "$ref": "#/definitions/JsSafeI64"
+        }
+      },
+      "required": [
+        "returned",
+        "total",
+        "trimmedPayloads"
+      ],
+      "type": "object"
+    },
     "SessionHead": {
       "description": "Mirrors `bridge_core::model::SessionHead`.",
       "properties": {
@@ -858,6 +878,9 @@
       },
       "type": "array"
     },
+    "entryWindow": {
+      "$ref": "#/definitions/SessionEntryWindowSummary"
+    },
     "head": {
       "anyOf": [
         {
@@ -916,6 +939,7 @@
   },
   "required": [
     "entries",
+    "entryWindow",
     "leaves",
     "policyLimits",
     "reasons",

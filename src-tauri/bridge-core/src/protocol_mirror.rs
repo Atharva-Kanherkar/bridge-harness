@@ -1254,6 +1254,11 @@ fn the_session_forest_snapshot_mirrors_core() {
             markdown_committed: true,
             waiver_reason: Some("flake".into()),
         }),
+        entry_window: model::SessionEntryWindowSummary {
+            returned: 1,
+            total: 7_344,
+            trimmed_payloads: 1,
+        },
     });
 }
 

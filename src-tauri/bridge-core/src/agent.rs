@@ -33,9 +33,36 @@ pub struct NormalizedEvent {
 #[derive(Debug, Default)]
 pub struct OpenCodeStreamState {
     message_roles: HashMap<String, String>,
+    /// Deltas name a field, not a part type: reasoning also streams as `text`.
+    parts: HashMap<String, OpenCodePartState>,
+    /// Busy/retry are status notifications and can repeat within one turn.
+    turn_active: Option<bool>,
     /// `(modelID, providerID)` per assistant message, so a `step-finish` part
     /// can name the model that produced its tokens.
     message_models: HashMap<String, (Option<String>, Option<String>)>,
+}
+
+#[derive(Debug)]
+struct OpenCodePartState {
+    message_id: String,
+    kind: String,
+    completed: bool,
+}
+
+fn opencode_part_finished(part: &Value) -> bool {
+    part.pointer("/time/end").is_some_and(|end| !end.is_null())
+        || part.pointer("/state/status").and_then(Value::as_str) == Some("completed")
+        || part.get("completed").and_then(Value::as_bool) == Some(true)
+}
+
+fn complete_opencode_turn(properties: &Value, state: &mut OpenCodeStreamState) -> Vec<NormalizedEvent> {
+    if state.turn_active == Some(false) {
+        return vec![];
+    }
+    state.turn_active = Some(false);
+    let mut event = with_data("turn.completed", properties, properties.clone());
+    event.status = Some("completed".into());
+    vec![event]
 }
 
 pub fn normalize_opencode_message_with_state(
@@ -62,6 +89,15 @@ pub fn normalize_opencode_message_with_state(
                 .unwrap_or("unknown");
             match status {
                 "busy" | "retry" => {
+                    if state.turn_active == Some(true) {
+                        return vec![];
+                    }
+                    if state.turn_active == Some(false) {
+                        state.message_roles.clear();
+                        state.message_models.clear();
+                        state.parts.clear();
+                    }
+                    state.turn_active = Some(true);
                     let mut event = with_data("turn.started", &properties, properties.clone());
                     event.status = Some(
                         if status == "retry" {
@@ -71,22 +107,13 @@ pub fn normalize_opencode_message_with_state(
                         }
                         .into(),
                     );
-                    event.data["turnId"] = message.get("id").cloned().unwrap_or(Value::Null);
                     vec![event]
                 }
-                "idle" => {
-                    let mut event = with_data("turn.completed", &properties, properties.clone());
-                    event.status = Some("completed".into());
-                    vec![event]
-                }
+                "idle" => complete_opencode_turn(&properties, state),
                 _ => vec![],
             }
         }
-        "session.idle" => {
-            let mut event = with_data("turn.completed", &properties, properties.clone());
-            event.status = Some("completed".into());
-            vec![event]
-        }
+        "session.idle" => complete_opencode_turn(&properties, state),
         "message.updated" => {
             let info = properties.get("info").cloned().unwrap_or_else(|| json!({}));
             let message_id = info.get("id").and_then(Value::as_str).unwrap_or_default();
@@ -117,7 +144,22 @@ pub fn normalize_opencode_message_with_state(
                 .get("field")
                 .and_then(Value::as_str)
                 .unwrap_or("text");
-            let is_reasoning_field = field.contains("reasoning");
+            let part = properties.get("partID").and_then(Value::as_str)
+                .and_then(|id| state.parts.get(id))
+                .filter(|part| part.message_id == message_id);
+            if part.is_some_and(|part| part.completed) {
+                return vec![];
+            }
+            let is_reasoning_field = match part {
+                Some(part) => part.kind == "reasoning",
+                None => field.contains("reasoning"),
+            };
+            // Tool input/output fields are not assistant prose.
+            if part.is_some_and(|part| !matches!(part.kind.as_str(), "reasoning" | "text"))
+                || (field != "text" && !field.contains("reasoning"))
+            {
+                return vec![];
+            }
             let role = state.message_roles.get(message_id).map(String::as_str);
             if let Some(role) = role {
                 if role != "assistant" {
@@ -140,13 +182,34 @@ pub fn normalize_opencode_message_with_state(
                 .and_then(Value::as_str)
                 .map(str::to_owned);
             event.role = Some("assistant".into());
+            event.status = Some("streaming".into());
             event.text = properties
                 .get("delta")
                 .and_then(Value::as_str)
                 .map(str::to_owned);
             vec![event]
         }
-        "message.part.updated" => normalize_opencode_part(&properties, state),
+        "message.part.updated" => {
+            if let Some(part) = properties.get("part") {
+                if let (Some(id), Some(message_id), Some(kind)) = (
+                    part.get("id").and_then(Value::as_str),
+                    part.get("messageID").and_then(Value::as_str),
+                    part.get("type").and_then(Value::as_str),
+                ) {
+                    let held = state.parts.get(id);
+                    // Snapshots can be repeated, but an older start must not
+                    // reopen a thought whose completion already arrived.
+                    if held.is_some_and(|held| held.completed) && !opencode_part_finished(part) {
+                        return vec![];
+                    }
+                    state.parts.insert(id.into(), OpenCodePartState {
+                        message_id: message_id.into(), kind: kind.into(),
+                        completed: opencode_part_finished(part),
+                    });
+                }
+            }
+            normalize_opencode_part(&properties, state)
+        }
         "session.diff" => vec![with_data("diff.updated", &properties, properties.clone())],
         // OpenCode summarized its own session. The event carries only the
         // session id, so the record names the harness and nothing else.
@@ -244,6 +307,7 @@ pub fn normalize_opencode_message_with_state(
             vec![event]
         }
         "session.error" => {
+            state.turn_active = Some(false);
             let mut event = with_data("error", &properties, properties.clone());
             event.status = Some("failed".into());
             event.title = Some("OpenCode error".into());
@@ -253,7 +317,9 @@ pub fn normalize_opencode_message_with_state(
                 .and_then(Value::as_str)
                 .map(str::to_owned)
                 .or_else(|| properties.get("error").map(Value::to_string));
-            vec![event]
+            let mut ended = NormalizedEvent::new("turn.completed");
+            ended.status = Some("failed".into());
+            vec![event, ended]
         }
         _ => {
             let mut event = with_data("provider.unknown", &properties, properties.clone());
@@ -265,7 +331,7 @@ pub fn normalize_opencode_message_with_state(
 
 fn normalize_opencode_part(
     properties: &Value,
-    state: &OpenCodeStreamState,
+    state: &mut OpenCodeStreamState,
 ) -> Vec<NormalizedEvent> {
     let part = properties.get("part").cloned().unwrap_or_else(|| json!({}));
     let part_type = part
@@ -283,7 +349,7 @@ fn normalize_opencode_part(
     };
     let item_id = part.get("id").and_then(Value::as_str).map(str::to_owned);
     match part_type {
-        "text" if is_assistant && part.pointer("/time/end").is_some() => {
+        "text" if is_assistant && opencode_part_finished(&part) => {
             let mut event = with_data("message.completed", &part, part.clone());
             event.item_id = item_id;
             event.role = Some("assistant".into());
@@ -292,14 +358,13 @@ fn normalize_opencode_part(
             vec![event]
         }
         "reasoning" if is_assistant => {
-            let status = part.pointer("/state/status").and_then(Value::as_str);
-            let finished = part.pointer("/time/end").is_some()
-                || status == Some("completed")
-                || part.get("completed").and_then(Value::as_bool) == Some(true);
+            let finished = opencode_part_finished(&part);
             let kind = if finished {
                 "reasoning.completed"
             } else {
-                "reasoning.delta"
+                // A part update is cumulative. The shared reducer replaces
+                // started snapshots and appends only actual delta events.
+                "reasoning.started"
             };
             let mut event = with_data(kind, &part, part.clone());
             event.item_id = item_id;
@@ -353,8 +418,14 @@ fn normalize_opencode_part(
         }
         "patch" => vec![with_data("diff.updated", &part, part.clone())],
         "step-start" => {
+            // A tool loop has several model steps within ONE submitted turn.
+            // Retain this fallback for streams that omit the initial busy,
+            // but never replace Bridge's turn id with a model-step part id.
+            if state.turn_active == Some(true) {
+                return vec![];
+            }
+            state.turn_active = Some(true);
             let mut event = with_data("turn.started", &part, part.clone());
-            event.data["turnId"] = part.get("id").cloned().unwrap_or(Value::Null);
             event.status = Some("working".into());
             vec![event]
         }
@@ -2779,6 +2850,107 @@ mod tests {
     }
 
     #[test]
+    fn opencode_captured_wire_matches_frontend_replay() {
+        let fixture: Value = serde_json::from_str(include_str!("../../../src/transcript/fixtures/opencode-wire.json")).unwrap();
+        let mut state = OpenCodeStreamState::default();
+        let actual: Vec<_> = fixture["wire"].as_array().unwrap().iter()
+            .flat_map(|raw| normalize_opencode_message_with_state(raw, &mut state))
+            .filter(|event| matches!(event.kind.as_str(), "turn.started" | "turn.completed" | "reasoning.started" | "reasoning.delta" | "reasoning.completed" | "message.delta" | "message.completed"))
+            .map(|event| json!({"kind":event.kind,"itemId":event.item_id,"status":event.status,"role":event.role,"text":event.text})).collect();
+        assert_eq!(json!(actual), fixture["expected"]);
+    }
+
+    #[test]
+    fn opencode_status_and_model_steps_do_not_restart_a_turn() {
+        let mut state = OpenCodeStreamState::default();
+        let busy = json!({"id":"event-not-turn", "type":"session.status", "properties":{"sessionID":"ses_1","status":{"type":"busy"}}});
+        let first = normalize_opencode_message_with_state(&busy, &mut state);
+        assert_eq!(first[0].kind, "turn.started");
+        assert!(first[0].data.get("turnId").is_none());
+        for status in ["busy", "retry", "busy"] {
+            assert!(normalize_opencode_message_with_state(&json!({"type":"session.status", "properties":{"sessionID":"ses_1","status":{"type":status}}}), &mut state).is_empty());
+            assert!(normalize_opencode_message_with_state(&json!({"type":"message.part.updated", "properties":{"sessionID":"ses_1","part":{"id":"step-not-turn","messageID":"msg_1","type":"step-start"}}}), &mut state).is_empty());
+        }
+        let idle = json!({"type":"session.status", "properties":{"sessionID":"ses_1","status":{"type":"idle"}}});
+        assert_eq!(normalize_opencode_message_with_state(&idle, &mut state)[0].kind, "turn.completed");
+        assert!(normalize_opencode_message_with_state(&json!({"type":"session.idle","properties":{"sessionID":"ses_1"}}), &mut state).is_empty());
+        assert!(normalize_opencode_message_with_state(&idle, &mut state).is_empty());
+        assert_eq!(normalize_opencode_message_with_state(&busy, &mut state)[0].kind, "turn.started");
+        assert_eq!(normalize_opencode_message_with_state(&json!({"type":"session.error","properties":{"sessionID":"ses_1","error":{"message":"aborted"}}}), &mut state)[0].kind, "error");
+        // An idle following an error must not finalize the failed turn twice.
+        assert!(normalize_opencode_message_with_state(&idle, &mut state).is_empty());
+        assert_eq!(normalize_opencode_message_with_state(&busy, &mut state)[0].kind, "turn.started");
+    }
+
+    #[test]
+    fn opencode_reasoning_snapshots_replace_and_do_not_reopen() {
+        let mut state = OpenCodeStreamState::default();
+        let snapshot = |text: &str, end: Value| json!({"type":"message.part.updated", "properties":{
+            "sessionID":"ses_1", "part":{"id":"r", "messageID":"m", "type":"reasoning", "text":text, "time":{"start":1,"end":end}}
+        }});
+        let start = normalize_opencode_message_with_state(&snapshot("First", Value::Null), &mut state);
+        assert_eq!(start[0].kind, "reasoning.started");
+        let middle = normalize_opencode_message_with_state(&snapshot("First second", Value::Null), &mut state);
+        assert_eq!(middle[0].kind, "reasoning.started");
+        assert_eq!(middle[0].text.as_deref(), Some("First second"));
+        let end = normalize_opencode_message_with_state(&snapshot("First second", json!(2)), &mut state);
+        assert_eq!(end[0].kind, "reasoning.completed");
+        assert!(normalize_opencode_message_with_state(&snapshot("First", Value::Null), &mut state).is_empty());
+        // A repeated terminal is an idempotent full replacement, never a delta.
+        assert_eq!(normalize_opencode_message_with_state(&snapshot("First second", json!(2)), &mut state)[0], end[0]);
+    }
+
+    #[test]
+    fn opencode_part_routing_is_scoped_to_message_and_rejects_non_prose() {
+        let mut state = OpenCodeStreamState::default();
+        for (id, role) in [("a", "assistant"), ("u", "user")] {
+            normalize_opencode_message_with_state(&json!({"type":"message.updated","properties":{"info":{"id":id,"role":role}}}), &mut state);
+        }
+        for (message, id, kind) in [("a", "r", "reasoning"), ("a", "t", "text"), ("a", "tool", "tool"), ("u", "ur", "reasoning")] {
+            normalize_opencode_message_with_state(&json!({"type":"message.part.updated","properties":{"part":{"messageID":message,"id":id,"type":kind,"text":""}}}), &mut state);
+        }
+        let delta = |message: &str, id: &str, field: &str| json!({"type":"message.part.delta","properties":{"messageID":message,"partID":id,"field":field,"delta":"chunk"}});
+        assert_eq!(normalize_opencode_message_with_state(&delta("a", "r", "text"), &mut state)[0].kind, "reasoning.delta");
+        assert_eq!(normalize_opencode_message_with_state(&delta("a", "t", "text"), &mut state)[0].kind, "message.delta");
+        assert!(normalize_opencode_message_with_state(&delta("a", "tool", "text"), &mut state).is_empty());
+        assert!(normalize_opencode_message_with_state(&delta("a", "t", "metadata"), &mut state).is_empty());
+        assert!(normalize_opencode_message_with_state(&delta("u", "ur", "text"), &mut state).is_empty());
+        assert!(normalize_opencode_message_with_state(&delta("unknown", "r", "text"), &mut state).is_empty());
+    }
+
+    /// OpenCode's processor uses field="text" for BOTH reasoning and prose.
+    /// The part-start snapshot is the discriminator, not the delta field.
+    #[test]
+    fn opencode_text_field_preserves_reasoning_part_identity() {
+        let mut state = OpenCodeStreamState::default();
+        normalize_opencode_message_with_state(&json!({"type":"message.updated", "properties":{
+            "sessionID":"ses_1", "info":{"id":"msg_1", "role":"assistant"}
+        }}), &mut state);
+        normalize_opencode_message_with_state(&json!({"type":"message.part.updated", "properties":{
+            "sessionID":"ses_1", "part":{"id":"prt_r", "messageID":"msg_1", "type":"reasoning", "text":"", "time":{"start":1}}
+        }}), &mut state);
+        let delta = normalize_opencode_message_with_state(&json!({"type":"message.part.delta", "properties":{
+            "sessionID":"ses_1", "messageID":"msg_1", "partID":"prt_r", "field":"text", "delta":"Checking the facts."
+        }}), &mut state);
+        assert_eq!(delta[0].kind, "reasoning.delta");
+        assert_eq!(delta[0].item_id.as_deref(), Some("prt_r"));
+        assert_eq!(delta[0].status.as_deref(), Some("streaming"));
+        let completed = normalize_opencode_message_with_state(&json!({"type":"message.part.updated", "properties":{
+            "sessionID":"ses_1", "part":{"id":"prt_r", "messageID":"msg_1", "type":"reasoning", "text":"Checking the facts.", "time":{"start":1,"end":2}}
+        }}), &mut state);
+        assert_eq!(completed[0].kind, "reasoning.completed");
+        assert_eq!(completed[0].item_id, delta[0].item_id);
+        let answer = normalize_opencode_message_with_state(&json!({"type":"message.part.delta", "properties":{
+            "sessionID":"ses_1", "messageID":"msg_1", "partID":"prt_text", "field":"text", "delta":"Here is the answer."
+        }}), &mut state);
+        assert_eq!(answer[0].kind, "message.delta");
+        // A delayed delta cannot reopen a completed thought.
+        assert!(normalize_opencode_message_with_state(&json!({"type":"message.part.delta", "properties":{
+            "sessionID":"ses_1", "messageID":"msg_1", "partID":"prt_r", "field":"text", "delta":"late"
+        }}), &mut state).is_empty());
+    }
+
+    #[test]
     fn normalizes_opencode_reasoning_deltas_before_message_updated() {
         let mut state = OpenCodeStreamState::default();
         let delta = normalize_opencode_message_with_state(
@@ -2825,7 +2997,7 @@ mod tests {
             &mut state,
         );
         assert_eq!(part_streaming.len(), 1);
-        assert_eq!(part_streaming[0].kind, "reasoning.delta");
+        assert_eq!(part_streaming[0].kind, "reasoning.started");
         assert_eq!(part_streaming[0].status.as_deref(), Some("inProgress"));
         assert_eq!(part_streaming[0].text.as_deref(), Some("Ongoing reasoning..."));
     }

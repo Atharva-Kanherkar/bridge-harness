@@ -1,4 +1,6 @@
-import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ForestCache } from "./forestCache";
+import { useSessionStops } from "./sessionStop";
+import { type ClipboardEvent, lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { open } from "@tauri-apps/plugin-dialog";
 import { appendFileMention, applyFileMention as insertFileMention, fileMentionQuery } from "./fileMentions";
@@ -43,8 +45,9 @@ import { DOCK_PANES, DOCK_SHEET_THRESHOLD, useDockLayout } from "./dockLayout";
 import { SessionRecallSearch } from "./components/SessionRecallSearch";
 import { AppTitleBar } from "./components/AppTitleBar";
 import { WindowHistoryChevrons, WindowPanelButton } from "./components/WindowNavButtons";
-import { MissionControl } from "./components/MissionControl";
-import { BypassBadge } from "./components/BypassBadge";
+const AgentFleet = lazy(() => import("./components/AgentFleet").then(module => ({ default: module.AgentFleet })));
+const MissionControl = lazy(() => import("./components/MissionControl").then(module => ({ default: module.MissionControl })));
+import { AccessControl, type AccessMode } from "./components/AccessControl";
 import type { Section as SettingsSection } from "./components/SettingsScreen";
 import { SteerComposer, WorkerDetail } from "./components/WorkerDetail";
 import { ComposerPill } from "./components/ComposerPill";
@@ -57,9 +60,8 @@ import { MemoryDialog, rememberAction } from "./components/MemoryDialog";
 import { MemoryUsedChip } from "./components/MemoryUsedChip";
 import { ModelSetupWizard } from "./components/ModelSetupWizard";
 import { UsageWidget } from "./components/UsageWidget";
-import { MeterPopover } from "./components/meter/MeterPopover";
 import type { MeterRegistry } from "./types";
-import { formatElapsed, harnessLabel, slashOwnershipBadge } from "./utils";
+import { formatElapsed, harnessLabel, slashCommandsForHarness, slashOwnershipBadge } from "./utils";
 import { scheduleSuggestion } from "./suggestionTypeahead";
 import { projectSessionConversation, reduceConversation, undeliveredPending } from "./conversation";
 import { resolveProfileOption, shouldRequireModelSetup } from "./modelProfiles";
@@ -157,7 +159,7 @@ function AppContent() {
   const closeModal = useUiStore(state => state.closeModal);
   const {
     health, healthError, modelSetup, modelSetupError, workBoard,
-    workBoardQueryError, refetchWorkBoard, acceptModelSetup, invalidateHealth,
+    workBoardQueryError, refetchWorkBoard, followWorkBriefing, acceptModelSetup, invalidateHealth,
   } = useBridgeServerState();
   const [state, setState] = useState<BridgeState>(emptyState);
   const [agentEvents, setAgentEvents] = useState<AgentEvent[]>([]);
@@ -175,7 +177,7 @@ function AppContent() {
   const [workBriefingError, setWorkBriefingError] = useState<string>();
   const [navOpen, setNavOpen] = useState(false);
   // Two ways to look at the workspace: the classic single-session view, or the
-  // Mission Control grid where every live agent is its own window at once.
+  // Agent Fleet grid where every live agent is its own window at once.
   const [paradigm, setParadigm] = useState<"single" | "grid">("single");
   const [dockSectionWidth, setDockSectionWidth] = useState(1280);
   // Fullscreen only squares the native frame. The sidebar and canvas keep the
@@ -199,6 +201,7 @@ function AppContent() {
   const worktreeBySessionRef = useRef(new Map<string, boolean>());
   const [composer, setComposer] = useState("");
   const [slashCommands, setSlashCommands] = useState<import("./types").SlashCommand[]>([]);
+  const [asideSlashCommands, setAsideSlashCommands] = useState<import("./types").SlashCommand[]>([]);
   const [slashIndex, setSlashIndex] = useState(0);
   const [slashDismissed, setSlashDismissed] = useState(false);
   const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
@@ -212,7 +215,6 @@ function AppContent() {
   const [configuredAgents, setConfiguredAgents] = useState<AgentDefinition[]>([]);
   const [skillSuggestions, setSkillSuggestions] = useState<CapabilitySuggestion[]>([]);
   const [busy, setBusy] = useState(false);
-  const [stopping, setStopping] = useState(false);
   const [browserSupervision, setBrowserSupervision] = useState<BrowserSupervision>();
   const [terminalActivity, setTerminalActivity] = useState<TerminalActivity>();
   const [acknowledgedTasks, setAcknowledgedTasks] = useState<Set<string>>(() => new Set());
@@ -220,7 +222,7 @@ function AppContent() {
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
   const [highlightEntryId, setHighlightEntryId] = useState<string | null>(null);
   const [error, setError] = useState<string>();
-  const [forest, setForest] = useState<SessionForestSnapshot>();
+  const [loadedForest, setForest] = useState<SessionForestSnapshot>();
   // Completion blocks while a child's changes live only in its own worktree, so
   // the user must be able to see and resolve that here — otherwise the session
   // waits forever with no visible cause.
@@ -250,13 +252,23 @@ function AppContent() {
   // Menu-bar meter popover (CodexBar companion): opened from the Usage screen
   // or the native tray's left-click; live windows come from the same
   // account-usage channel as the usage ring.
-  const [meterOpen, setMeterOpen] = useState(false);
-  const [meterRegistry, setMeterRegistry] = useState<MeterRegistry | null>(null);
   const [meterRefreshing, setMeterRefreshing] = useState(false);
-  // Mirrored for the global Escape handler, which must close the topmost
-  // layer without resubscribing on every popover toggle.
-  const meterOpenRef = useRef(false);
-  meterOpenRef.current = meterOpen;
+  // These handlers must be initialized before the startup effects subscribe.
+  // The first render returns the loading shell, so handlers declared below
+  // that return leave the tray listener with an uninitialized closure forever.
+  const refreshMeter = useCallback(() => {
+    setMeterRefreshing(true);
+    bridgeApi.refreshMeter()
+      .catch(value => setError(errorMessage(value)))
+      .finally(() => setMeterRefreshing(false));
+  }, []);
+  // The meter lives in the menu bar, in its own window. Opening it from the
+  // Usage screen opens that same panel rather than a second, in-app copy —
+  // one meter, one surface, wherever you ask for it from.
+  const openMeter = useCallback(() => {
+    void bridgeApi.openMeterPanel().catch(value => setError(errorMessage(value)));
+    refreshMeter();
+  }, [refreshMeter]);
   const startedRef = useRef<Set<string>>(new Set());
   // The first message of a just-created chat, tagged with its target session id so
   // the delivery effect can only ever hand it to that chat — never to a session that
@@ -266,7 +278,7 @@ function AppContent() {
   // One entry per session, so switching back to a chat that already loaded its
   // forest shows it immediately instead of flashing to empty while the poll
   // refetches. Never read across sessions.
-  const forestCacheRef = useRef(new Map<string, SessionForestSnapshot>());
+  const forestCacheRef = useRef(new ForestCache());
   const browserSessionRef = useRef<string>();
   const workQueryError = workBoardQueryError ? errorMessage(workBoardQueryError) : undefined;
   const workError = workBoard === undefined ? workQueryError : undefined;
@@ -330,7 +342,19 @@ function AppContent() {
     });
     void bridgeApi.onAccountUsage(payload => {
       const snapshot = extractUsageSnapshot({ rateLimits: payload.rateLimits });
-      if (!snapshot) return;
+      // An unreadable frame means the provider has no current limits — its
+      // last window reset with nothing running, say. Dropping the snapshot is
+      // what stops the old percentage sitting in the ring after it expired;
+      // the samples series is history and is deliberately left alone.
+      if (!snapshot) {
+        setUsageByProvider(current => {
+          if (!(payload.provider in current)) return current;
+          const next = { ...current };
+          delete next[payload.provider];
+          return next;
+        });
+        return;
+      }
       setUsageByProvider(current => ({ ...current, [payload.provider]: snapshot }));
       if (snapshot.windows.length) {
         const usedPercent = clampPercent(Math.max(...snapshot.windows.map(window => window.usedPercent)));
@@ -345,17 +369,18 @@ function AppContent() {
     // route through the same handlers as the in-app controls so the registry
     // loads and the spinner spins on every path.
     let offMeter: (() => void) | undefined;
+    // The tray opens the panel itself, natively — the app is not involved in
+    // showing the meter, which is what stops a menu-bar click raising the
+    // window. All the app does is service the refresh the tray asks for.
     void bridgeApi.onMeterTray(action => {
-      if (!active) return;
-      if (action === "open-popover") openMeter();
-      else refreshMeter();
+      if (active && action === "refresh") refreshMeter();
     }).then(fn => { if (!active) { fn(); return; } offMeter = fn; });
     return () => {
       active = false;
       offState?.(); offAgent?.(); offUsage?.(); offAdapters?.(); offProviderLogin?.(); offMeter?.();
       display.dispose();
     };
-  }, [invalidateHealth, reload]);
+  }, [invalidateHealth, openMeter, refreshMeter, reload]);
   useThemePreference();
   useEffect(() => { setNavOpen(false); setRecallOpen(false); setHighlightEntryId(null); }, [view, selectedSessionId]);
   // Navigating away from an unstarted draft discards it silently — nothing was
@@ -411,15 +436,18 @@ function AppContent() {
 
   const adapters = health?.adapters ?? [];
   const adaptersReady = adapters.some(adapter => adapter.available);
-  // Everything a human may meet. Filtered once, here, because the rail, Mission Control
+  // Everything a human may meet. Filtered once, here, because the rail, Agent Fleet
   // and default selection disagreeing about what exists is how a briefing run ends up
   // on a grid nobody can focus.
   const visibleSessions = useMemo(() => state.sessions.filter(s => !isHiddenSession(s)), [state.sessions]);
   const topSessions = useMemo(() => visibleSessions.filter(s => s.harness !== "shell" && !s.parentSessionId), [visibleSessions]);
   // Resolve across every session, not just top-level ones: a worker can be
-  // opened directly (from Mission Control or a blocked-approval link) so its own
+  // opened directly (from Agent Fleet or a blocked-approval link) so its own
   // conversation — and the approval card that lives on it — is reachable.
   const session = state.sessions.find(s => s.id === selectedSessionId && s.harness !== "shell" && !isHiddenSession(s));
+  // Selection changes before the history effect runs. Never paint the prior
+  // chat under the new header, even for that first render.
+  const forest = loadedForest?.sessionId === session?.id ? loadedForest : undefined;
   const workspace = session?.workspaceId ? state.workspaces.find(w => w.id === session.workspaceId) : undefined;
   // The new-thread hero names the project when it can, dotted-underlined.
   const projectName = (workspace?.projectId ? state.projects.find(p => p.id === workspace.projectId)?.name : undefined) ?? workspace?.title ?? undefined;
@@ -650,8 +678,8 @@ function AppContent() {
   // its slice of the *global* live stream — the parent's slice would show none
   // of the child's frames.
   const workerPanelSource = useMemo(
-    () => ({ sessions: state.sessions, runtimes: forest?.workerRuntimes ?? [], events: agentEvents }),
-    [agentEvents, forest?.workerRuntimes, state.sessions],
+    () => ({ sessions: state.sessions, runtimes: forest?.workerRuntimes ?? [], events: agentEvents, reasons: forest?.reasons ?? [] }),
+    [agentEvents, forest?.workerRuntimes, forest?.reasons, state.sessions],
   );
   const expandedWorker = useMemo(
     () => state.sessions.find(candidate => candidate.id === expandedWorkerId),
@@ -736,7 +764,7 @@ function AppContent() {
   const slashMatches = useMemo(() => {
     if (slashQuery == null) return [];
     const query = slashQuery.toLowerCase();
-    return slashCommands
+    return slashCommandsForHarness(slashCommands, session?.harness)
       .filter(command => !query || command.name.toLowerCase().includes(query) || command.description.toLowerCase().includes(query))
       .sort((a, b) => {
         const aName = a.name.toLowerCase();
@@ -744,9 +772,6 @@ function AppContent() {
         const aPrefix = query ? Number(aName.startsWith(query)) : 0;
         const bPrefix = query ? Number(bName.startsWith(query)) : 0;
         if (aPrefix !== bPrefix) return bPrefix - aPrefix;
-        const aHarness = Number(a.harness === session?.harness);
-        const bHarness = Number(b.harness === session?.harness);
-        if (aHarness !== bHarness) return bHarness - aHarness;
         return aName.localeCompare(bName);
       });
   }, [slashQuery, slashCommands, session?.harness]);
@@ -911,37 +936,15 @@ function AppContent() {
     active?.scrollIntoView({ block: "nearest" });
   }, [mentionOpen, mentionIndex]);
 
-  // Stop is honoured from the moment the user's bubble appears, not from the
-  // moment the backend confirms a turn. Pressed before `activeTurnId` exists,
-  // the request is held and fired the instant the turn is acknowledged; pressed
-  // during a live turn it interrupts at once.
-  const stopRequestedRef = useRef(false);
-  // The runtime can be interrupted as soon as Bridge has delivered the turn
-  // (the session reads `working`), with or without a provider turn id.
-  const turnDelivered = !!session?.activeTurnId || session?.status === "working";
+  const pendingStopIds = useMemo(() => new Set(pending.map(item => item.sessionId)), [pending]);
+  const sessionStops = useSessionStops(state.sessions, pendingStopIds,
+    id => bridgeApi.interruptTurn(id),
+    (id, error) => setError(`Could not stop chat ${id}: ${errorMessage(error)}`),
+  );
+  const stopping = sessionStops.has(session?.id);
   const requestStop = useCallback(() => {
-    if (!session) return;
-    setStopping(true);
-    if (session.activeTurnId || session.status === "working") {
-      stopRequestedRef.current = false;
-      void bridgeApi.interruptTurn(session.id).catch(() => undefined);
-    } else {
-      stopRequestedRef.current = true;
-    }
-  }, [session]);
-  useEffect(() => {
-    if (turnDelivered) {
-      if (stopRequestedRef.current && session) {
-        stopRequestedRef.current = false;
-        void bridgeApi.interruptTurn(session.id).catch(() => undefined);
-      }
-      return;
-    }
-    if (pendingForSession.length === 0) {
-      stopRequestedRef.current = false;
-      setStopping(false);
-    }
-  }, [session, turnDelivered, pendingForSession.length]);
+    if (session) sessionStops.request(session);
+  }, [session, sessionStops]);
 
   useEffect(() => {
     const sessionId = session?.id;
@@ -952,14 +955,15 @@ function AppContent() {
     // durable card (including a pending approval) must never vanish and pop
     // back just because the poll for the freshly-selected session hasn't
     // resolved yet.
-    setForest(forestCacheRef.current.get(sessionId));
+    const cached = forestCacheRef.current.get(sessionId);
+    setForest(cached);
     let active = true;
     let pollsSinceFullFetch = 0;
     const refresh = async () => {
-      // The digest is tens of bytes; the snapshot is the entire history. Only
-      // fetch the snapshot when the digest moves, with a periodic forced
-      // fetch as the safety net for state the store cannot see (repository
-      // divergence above all).
+      // Read the digest before the snapshot. If state changes between the two,
+      // the snapshot is newer than its key and the next poll safely refetches.
+      // Reading the key afterwards can acknowledge state the snapshot never
+      // saw, leaving the UI stale until the periodic forced fetch.
       const digest = await bridgeApi.sessionForestDigest(sessionId).catch(() => undefined);
       const force = pollsSinceFullFetch >= 9 || digest === undefined;
       if (!active) return;
@@ -1024,17 +1028,33 @@ function AppContent() {
   // Load available slash commands + skills from signed-in providers. Guarded
   // against staleness: switching sessions while a slower scan is still in
   // flight must not let its response land after a newer session's, which
-  // would leave the menu showing the wrong session's commands.
+  // would leave the menu showing the wrong session's commands. Also refetches
+  // on a harness switch within the same session — the server scopes the
+  // catalog to session.harness, so a stale response would otherwise filter
+  // down to nothing but Bridge builtins until the user navigates away and back.
   useEffect(() => {
     let active = true;
     void bridgeApi.listSlashCommands(session?.id)
       .then(commands => { if (active) setSlashCommands(commands); })
       .catch(() => undefined);
     return () => { active = false; };
-  }, [adaptersReady, session?.id]);
+  }, [adaptersReady, session?.id, session?.harness]);
+
+  // An aside can open on a different harness than the chat it floats over
+  // (`$claude …` from a Codex session, say), so it needs its own server-scoped
+  // catalog rather than reusing the parent's — the parent's is scoped to the
+  // parent's harness and would filter down to nothing for the aside.
+  useEffect(() => {
+    if (!asideSession) { setAsideSlashCommands([]); return; }
+    let active = true;
+    void bridgeApi.listSlashCommands(asideSession.id)
+      .then(commands => { if (active) setAsideSlashCommands(commands); })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, [adaptersReady, asideSession?.id, asideSession?.harness]);
 
   // Always land on the Agent tab: focusing a session (especially a blocked
-  // worker from Mission Control) must reveal its conversation and approval card,
+  // worker from Agent Fleet) must reveal its conversation and approval card,
   // not whatever tab — Changes/Terminal — happened to be open before.
   function openSession(id: string) {
     setView("workspace");
@@ -1149,6 +1169,7 @@ function AppContent() {
   const runWorkBriefing = useCallback(async (trigger: "manual" | "focus"): Promise<void> => {
     try {
       const receipt = await bridgeApi.runWorkBriefing(trigger);
+      if (receipt.outcome !== "refused" && receipt.runId) followWorkBriefing(receipt.runId);
       if (receipt.outcome === "refused" && trigger === "manual") {
         setWorkBriefingError(receipt.detail ?? receipt.code ?? "the briefing was refused");
       } else if (trigger === "manual") {
@@ -1158,7 +1179,7 @@ function AppContent() {
       if (trigger === "manual") setWorkBriefingError(errorMessage(error));
     }
     void refetchWorkBoard();
-  }, [refetchWorkBoard]);
+  }, [refetchWorkBoard, followWorkBriefing]);
 
   // The opt-in focus trigger. Gated on the stored settings the board carries, so
   // a user who never opted in gets no background model run from switching apps.
@@ -1347,8 +1368,9 @@ function AppContent() {
     setError(undefined);
     setAsideLifecycle({ sourceSessionId: carryFromSessionId, phase: "creating" });
     try {
-      const title = text.length > 64 ? `${text.slice(0, 63).trimEnd()}…` : text;
-      const result = await bridgeApi.createAsideChat(carryFromSessionId, adapter.id as Harness, model, title);
+      // Let the shared naming pipeline choose a concise title after the turn.
+      // Passing the prompt here would mark it as a user-chosen, permanent name.
+      const result = await bridgeApi.createAsideChat(carryFromSessionId, adapter.id as Harness, model, null);
       setAsideLifecycle({
         sourceSessionId: result.sourceSessionId,
         sessionId: result.sessionId,
@@ -2120,6 +2142,7 @@ function AppContent() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented || (event.target instanceof HTMLElement && event.target.closest("[data-terminal-workspace]"))) return;
       const match = matchShortcut(event, isTypingTarget(event.target));
       if (match) {
         event.preventDefault();
@@ -2127,9 +2150,8 @@ function AppContent() {
         return;
       }
       if (event.key === "Escape") {
-        // Topmost layer first: the meter popover, then an expanded dock, then
-        // fullscreen. The meter is a dialog over everything, so it wins.
-        if (meterOpenRef.current) { setMeterOpen(false); return; }
+        // Topmost layer first. The meter is no longer one of these layers: it
+        // is a separate menu-bar window with its own dismissal.
         // An expanded dock is the nearer layer: the first Escape restores it,
         // the next one leaves fullscreen.
         if (dockRef.current.open && dockRef.current.expanded) dispatchDock({ type: "toggle-expanded" });
@@ -2175,26 +2197,27 @@ function AppContent() {
   const startupError = error ?? (healthError ? errorMessage(healthError) : modelSetupError ? errorMessage(modelSetupError) : undefined);
   if (!health || !modelSetup) return <div className="relative grid h-[100dvh] place-items-center overflow-hidden bg-background text-muted-foreground"><div className="relative z-10 flex max-w-md items-center gap-2 px-6 text-center text-xs">{startupError ? <><X size={14} className="text-destructive" aria-hidden="true" />{startupError}</> : <><LoaderCircle className="animate-spin" size={14} aria-hidden="true" />Loading Bridge…</>}</div></div>;
   if (shouldRequireModelSetup(modelSetup, health.adapters)) return <div className="relative h-[100dvh] overflow-hidden bg-background"><ModelSetupWizard adapters={health.adapters} onComplete={acceptModelSetup} onError={setError} />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Model setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
-  const chromeTitle = view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "settings" ? "Settings" : paradigm === "grid" ? "Activity" : session?.title || session?.label || "New Chat";
+  const chromeTitle = view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session?.title || session?.label || "New Chat";
   // A session view mounts SessionToolbar as its one chrome row instead of
   // AppTitleBar; every other view (including the pre-session Welcome screen)
   // keeps the title bar.
   const isSessionChrome = view === "workspace" && paradigm !== "grid" && !!session;
-  const bypassBadge = <BypassBadge bypassing={!!permissionPolicy?.autoApproveProviderPermissions} onOpenSettings={() => { setSettingsSection("permissions"); setView("settings"); }} />;
+  // Access lives in the composer, chosen where the work happens: "Full access"
+  // grants every provider permission, "User approval" asks first. The saved
+  // policy publishes StateChanged, and `reload` re-reads it for every window.
+  const changeAccessMode = async (mode: AccessMode) => {
+    try {
+      const config = await bridgeApi.savePermissionPolicy({ ...(permissionPolicy ?? {}), autoApproveProviderPermissions: mode === "full" });
+      setPermissionPolicy(config.permissionPolicy);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : String(error));
+    }
+  };
+  const accessControl = <AccessControl policy={permissionPolicy} onChange={mode => void changeAccessMode(mode)} />;
   const usageProps = { usage: usageByProvider, adapters: health?.adapters, samples: usageSamples, history: usageHistory, cacheDiagnostics, contextPercent: latestContext ?? undefined, contextSource: latestContextSource, focusedSessionId: session?.id ?? null, onOpenPromptStudio: () => { setSettingsSection("prompts"); setView("settings"); } };
   const usageWidget = <UsageWidget {...usageProps} />;
   const usageRing = <UsageWidget compact {...usageProps} />;
-  const openMeter = () => {
-    setMeterOpen(true);
-    bridgeApi.getMeterSnapshot().then(setMeterRegistry).catch(() => undefined);
-  };
-  const refreshMeter = () => {
-    setMeterRefreshing(true);
-    bridgeApi.refreshMeter()
-      .catch(value => setError(errorMessage(value)))
-      .finally(() => setMeterRefreshing(false));
-  };
-  const titleBarActions = <>{usageWidget}{bypassBadge}</>;
+  const titleBarActions = <>{usageWidget}</>;
   // With the rail hidden there is no sidebar header to hold them, so the panel
   // toggle and the history chevrons move onto whichever chrome row is mounted.
   // They are the only pointer route back to the sidebar; the keymap keeps ⌘B.
@@ -2215,7 +2238,8 @@ function AppContent() {
       memoryActive={view === "memory"}
       marketplaceActive={view === "marketplace"}
       usageActive={view === "usage"}
-      missionControlActive={view === "workspace" && paradigm === "grid"}
+      agentFleetActive={view === "agent-fleet"}
+      missionControlActive={view === "mission-control" || (view === "workspace" && paradigm === "grid")}
       workActive={view === "work"}
       settingsActive={view === "settings"}
       accountName={localAccountName(health.database, workspace?.path)}
@@ -2224,7 +2248,8 @@ function AppContent() {
       onNewChatInProject={workspaceId => void startChatInWorkspace(workspaceId)}
       onOpenProjects={() => setView("projects")}
       onOpenMarketplace={() => setView("marketplace")}
-      onOpenMissionControl={() => { setView("workspace"); setParadigm("grid"); }}
+      onOpenAgentFleet={() => { setView("agent-fleet"); setParadigm("single"); }}
+      onOpenMissionControl={() => { setView("mission-control"); setParadigm("single"); }}
       onOpenWorkBoard={openWorkBoard}
       onOpenMemory={() => setView("memory")}
       onOpenUsage={() => setView("usage")}
@@ -2276,6 +2301,7 @@ function AppContent() {
         onOpenEvidence={task => void openWorkTaskEvidence(task)}
         onOpenTask={openWorkTask}
         onRunBriefing={() => void runWorkBriefing("manual")}
+        onOpenSettings={() => { setSettingsSection("work"); setView("settings"); }}
       /></Suspense> : view === "projects" ? <ProjectsScreen
         workspaces={state.workspaces}
         chats={topSessions}
@@ -2295,17 +2321,18 @@ function AppContent() {
           else setView("workspace");
         }}
         onError={setError}
-      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : paradigm === "grid" ? <MissionControl
+      /> : view === "marketplace" ? <Suspense fallback={<PanelLoading label="Opening marketplace…"/>}><MarketplaceScreen /></Suspense> : view === "usage" ? <Suspense fallback={<PanelLoading label="Opening usage…"/>}><UsageScreen onError={setError} onOpenMeter={openMeter} /></Suspense> : view === "settings" ? <Suspense fallback={<PanelLoading label="Opening settings…"/>}><SettingsScreen onOpenWorkBoard={openWorkBoard} adapters={adapters} autoApprovals={autoApprovals} initialSection={settingsSection} onModelSetupChange={acceptModelSetup} onSuggestionSettingsChange={setSuggestionSettings} onError={setError} /></Suspense> : view === "agent-fleet" ? <Suspense fallback={<PanelLoading label="Opening Agent Fleet…"/>}><AgentFleet
+        workspaces={state.workspaces}
+        initialWorkspaceId={workspace?.id ?? welcomeWorkspaceId}
+        onOpenProjects={() => setView("projects")}
+      /></Suspense> : view === "mission-control" || paradigm === "grid" ? <Suspense fallback={<PanelLoading label="Opening Mission Control…"/>}><MissionControl
         sessions={visibleSessions}
-        runtimes={forest?.workerRuntimes ?? []}
-        reasons={forest?.reasons ?? []}
+        workspaces={state.workspaces}
         events={agentEvents}
         activeSessionId={session?.id}
-        fullscreen={fullscreen}
-        onToggleFullscreen={toggleLayoutFullscreen}
         onFocusSession={openSession}
-        onSteer={steerWorker}
-      /> : session ? <>
+        onStopWorker={stopWorker}
+      /></Suspense> : session ? <>
         <SessionToolbar
           title={session.title || session.label}
           projectName={workspace?.title}
@@ -2363,6 +2390,8 @@ function AppContent() {
               onClose={() => setExpandedWorkerId(undefined)}
               onFocusSession={openSession}
               onSteer={steerWorker}
+              onStopWorker={stopWorker}
+              reasons={forest?.reasons ?? []}
             />
           </div>}
           {/* A user-made delegation floats over the chat it was asked from;
@@ -2374,7 +2403,7 @@ function AppContent() {
             pendingMessages={asidePending}
             working={!!asideSession.activeTurnId || asideSession.status === "working"}
             workspaceFiles={hasRepo ? workspaceFiles : []}
-            slashCommands={slashCommands}
+            slashCommands={asideSlashCommands}
             modelSwitch={modelSwitch?.sessionId === asideSession.id ? modelSwitch : null}
             lifecycle={asideLifecycle}
             initialDraft={asideLifecycle?.recoveryDraft}
@@ -2443,6 +2472,7 @@ function AppContent() {
                   workers={workerPanelSource}
                   events={sessionEvents}
                   forestEntries={forest?.entries}
+                  entryWindow={forest?.entryWindow}
                   activeLeafId={forest?.head?.activeEntryId}
                   repositoryDivergence={forest?.repositoryDivergence.status}
                   completion={forest?.completion}
@@ -2594,6 +2624,7 @@ function AppContent() {
                     modelControl={session.kind === "direct" || session.kind === "orchestrator"
                       ? <ChatModelControl adapters={adapters} harness={session.harness} model={session.model ?? null} disabled={busy || turnActive} disabledReason={turnActive ? "Wait for the current response before switching models" : undefined} onChange={(harness, model) => void changeChatModel(harness, model)} compact roleLabel={session.kind === "orchestrator" ? "Orchestrator" : "Chat"} effort={session.effort} onEffortChange={effort => void changeChatEffort(effort)} onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); await invalidateHealth(); }} />
                       : <span className="inline-flex items-center gap-1 h-8 px-2.5 text-foreground/75 text-[13px] rounded-full">{harnessLabel(session.harness)}</span>}
+                    accessControl={accessControl}
                     footer={<ComposerContextStrip
                       workspaces={state.workspaces}
                       workspace={workspace ?? null}
@@ -2672,6 +2703,7 @@ function AppContent() {
           </SessionDock>
         </section>
       </> : <Welcome
+        accessControl={accessControl}
         adapters={adapters}
         harness={(newChatDraft ?? resolveDraftHarnessModel()).harness}
         model={(newChatDraft ?? resolveDraftHarnessModel()).model}
@@ -2763,9 +2795,6 @@ function AppContent() {
     />
     <RouterSettingsDialog open={modal === "router"} workspaceId={workspace?.id} adapters={adapters} databasePath={health.database} onModelSetupChange={acceptModelSetup} onClose={closeModal} onError={setError} />
     <ShortcutsSheet open={shortcutsOpen} onClose={() => setShortcutsOpen(false)} />
-    {meterOpen && <div role="presentation" className="fixed inset-0 z-50 grid place-items-center bg-background/60 p-4" onPointerDown={event => { if (event.target === event.currentTarget) setMeterOpen(false); }}>
-      <MeterPopover usage={usageByProvider} registry={meterRegistry} refreshing={meterRefreshing} onRefresh={refreshMeter} onClose={() => setMeterOpen(false)} />
-    </div>}
   </div>;
 }
 
@@ -2793,7 +2822,7 @@ function EnvPanel({ workspace, project, session, sessions, forest, onChanges, on
   </aside>;
 }
 
-function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, onNewWorkspace, workspaces, workspace, projectName, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree }: {
+function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectModel, busy, canStartChat, onStartChat, onNewWorkspace, workspaces, workspace, projectName, worktree, branches, currentBranch, branchBusy, branchError, onSelectWorkspace, onRequestBranches, onSelectBranch, onToggleWorktree, accessControl }: {
   adapters: import("./types").AdapterDescriptor[];
   harness: Harness;
   model: string | null;
@@ -2818,6 +2847,8 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
   onRequestBranches: () => void;
   onSelectBranch: (branch: string) => void;
   onToggleWorktree: (draft?: string) => void;
+  /** The composer's access-mode control, owned by App so both composers agree. */
+  accessControl?: ReactNode;
 }) {
   // Names the owning project in the hero when one is selected, dotted-underlined.
   // Falls back to the workspace title only when it has no distinct project.
@@ -2885,6 +2916,7 @@ function Welcome({ adapters, harness, model, effort, onSelectEffort, onSelectMod
       // The unstarted draft is a real chat-in-waiting: let the model be chosen
       // before the first message, the same picker the session composer uses.
       modelControl={<ChatModelControl adapters={adapters} harness={harness} model={model} disabled={busy || !canStartChat} onChange={onSelectModel} effort={effort} onEffortChange={onSelectEffort} compact roleLabel="Chat" onRefresh={async () => { await bridgeApi.refreshModelCatalogs(); }} />}
+      accessControl={accessControl}
       footer={workspaces.length > 0 ? <ComposerContextStrip
         workspaces={workspaces}
         workspace={workspace}

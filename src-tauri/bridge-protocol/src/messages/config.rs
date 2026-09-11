@@ -3,6 +3,33 @@
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct WorkerSettings {
+    pub default_harness: Option<String>,
+    pub max_concurrent_workers: usize,
+    pub max_workers_per_turn: usize,
+    pub stall_timeout_seconds: u64,
+    pub warm_retention_minutes: i64,
+    pub automatic_retry: bool,
+    pub provider_failover: bool,
+}
+
+impl Default for WorkerSettings {
+    fn default() -> Self {
+        Self { default_harness: None, max_concurrent_workers: 2, max_workers_per_turn: 3,
+            stall_timeout_seconds: 600, warm_retention_minutes: 5, automatic_retry: true, provider_failover: true }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GetWorkerSettingsParams { pub workspace_id: String }
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SaveWorkerSettingsParams { pub workspace_id: String, pub settings: WorkerSettings }
 use serde_json::Value;
 
 use super::common::Effort;

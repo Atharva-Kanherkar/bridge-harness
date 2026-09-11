@@ -6,7 +6,7 @@
   "build": {
     "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "npm run generate:icons && npm run build && npm run prepare:browser-host && npm run prepare:daemon && npm run prepare:claude-sidecar",
+    "beforeBuildCommand": "npm run generate:icons && npm run build && npm run prepare:browser-host && npm run prepare:daemon && npm run prepare:claude-sidecar && npm run prepare:terminal-state",
     "frontendDist": "../dist"
   },
   "app": {
@@ -24,6 +24,7 @@
       "titleBarStyle": "Overlay",
       "hiddenTitle": true,
       "acceptFirstMouse": true,
+      "dragDropEnabled": false,
       "zoomHotkeysEnabled": true
     }],
     "security": { "csp": null }
@@ -44,7 +45,8 @@
     "resources": {
       "../browser-extension/": "browser-extension/",
       "../browser-skills/": "browser-skills/",
-      "resources/sidecar/claude-agent/": "sidecar/claude-agent/"
+      "resources/sidecar/claude-agent/": "sidecar/claude-agent/",
+      "resources/sidecar/terminal-state/": "sidecar/terminal-state/"
     },
     "macOS": {
       "minimumSystemVersion": "12.0",

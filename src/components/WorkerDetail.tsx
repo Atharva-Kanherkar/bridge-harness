@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowRight, Bot, CircleDot, Hammer, LoaderCircle, Maximize2, Minimize2, Navigation, RefreshCw, User, X } from "lucide-react";
 import { bridgeApi } from "../api";
-import type { AgentEvent, Session, WorkerRuntimeRecord } from "../types";
+import type { AgentEvent, BridgeEvent, Session, WorkerRuntimeRecord } from "../types";
+import { WorkerDiagnostics, WorkerStopControl, workerClock } from "./WorkerControls";
 import { readWireKind } from "../transcript/wire";
 import { cn } from "@/lib/utils";
 import { formatElapsed } from "../utils";
@@ -86,7 +87,7 @@ function feedLabel(event: AgentEvent): string | null {
 
 /** Full activity view for one worker: durable backfill merged with the live
  * stream, the runtime's lifecycle facts, and the final result envelope once
- * it exists. Rendered as an overlay inside Mission Control. */
+ * it exists. Rendered as an overlay inside Agent Fleet. */
 export function WorkerDetail({
   session,
   runtime,
@@ -98,6 +99,8 @@ export function WorkerDetail({
   onFocusSession,
   onSteer,
   initialEvents,
+  reasons = [],
+  onStopWorker,
 }: {
   session: Session;
   runtime?: WorkerRuntimeRecord;
@@ -113,6 +116,8 @@ export function WorkerDetail({
   onSteer?: (sessionId: string, text: string) => Promise<void>;
   /** Test seam: pre-loaded durable events, skipping the backfill fetch. */
   initialEvents?: AgentEvent[];
+  reasons?: BridgeEvent[];
+  onStopWorker?: (id: string) => Promise<void>;
 }) {
   const [liveNow, setLiveNow] = useState(Date.now);
   useEffect(() => {
@@ -120,7 +125,7 @@ export function WorkerDetail({
     const timer = window.setInterval(() => setLiveNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, [now]);
-  const clock = now ?? liveNow;
+  const clock = workerClock(session, runtime, now ?? liveNow);
   const seed = initialEvents ?? cachedFeed(session.id);
   const [backfill, setBackfill] = useState<AgentEvent[]>(() => (seed ?? []).map(projectFeedEvent));
   const [loading, setLoading] = useState(seed === undefined);
@@ -197,16 +202,19 @@ export function WorkerDetail({
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-background animate-page-mount" role="dialog" aria-modal="true" aria-label={`Worker ${session.title || session.label}`}>
       <div className="flex shrink-0 flex-wrap items-center gap-x-2.5 gap-y-1 border-b border-border px-4 py-3 sm:px-6">
-        <button ref={closeRef} type="button" onClick={onClose} className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label="Back to Mission Control"><X size={14}/></button>
+        <button ref={closeRef} type="button" onClick={onClose} className="inline-flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground" aria-label="Back to Agent Fleet"><X size={14}/></button>
         <h1 className="m-0 min-w-0 truncate font-display text-sm font-semibold tracking-tight text-foreground">{session.title || session.label}</h1>
         <span className={cn("shrink-0 text-[11px] font-semibold tracking-[0.07em]", toneText[status.tone])}>{status.label}</span>
         <span className="flex-1" />
         <span className="hidden font-mono text-[11px] text-muted-foreground sm:inline">{runtime?.taskFamily}</span>
         {runtime?.retryCount ? <span className="inline-flex items-center gap-0.5 font-mono text-[11px] text-muted-foreground"><RefreshCw size={8} aria-hidden="true"/>retry {runtime.retryCount}</span> : null}
         <span className="font-mono text-[11px] text-muted-foreground">{formatElapsed(session.startedAt, clock)}</span>
+        <WorkerStopControl session={session} runtime={runtime} onStop={onStopWorker} />
         {onToggleFullscreen && <Button type="button" variant="ghost" size="sm" className="text-muted-foreground" onClick={onToggleFullscreen} aria-label={fullscreen ? "Exit fullscreen" : "Fullscreen"}>{fullscreen ? <Minimize2 size={13}/> : <Maximize2 size={13}/>}</Button>}
         <Button type="button" variant="secondary" size="sm" onClick={() => onFocusSession(session.id)}>Open session <ArrowRight size={12}/></Button>
       </div>
+
+      <div className="space-y-2 border-b border-border px-4 py-2 sm:px-6"><p className="text-xs text-muted-foreground">{session.harness} · {session.model ?? "Model not reported"}</p><WorkerDiagnostics reasons={reasons} sessionId={session.id} /></div>
 
       {(runtime?.progressSummary || runtime?.waitingReason) && (
         <div className="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-1 border-b border-border bg-card px-4 py-2 text-[11px] sm:px-6">

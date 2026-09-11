@@ -130,6 +130,27 @@ export function paceLabel(pace: MeterPace): string {
   return `${head} · ${tail}`;
 }
 
+/** The pace in plain words for the meter card — no signed deltas, no jargon:
+ * "on pace · lasts to reset", "ahead of pace · runs out in 2d 3h",
+ * "under pace · lasts to reset". */
+export function pacePhrase(pace: MeterPace): string {
+  const head =
+    pace.stage === "on_track"
+      ? "on pace"
+      : pace.deltaPercent >= 0
+        ? "ahead of pace"
+        : "under pace";
+  const tail =
+    pace.actualUsedPercent >= 100
+      ? "limit reached"
+      : pace.willLastToReset
+        ? "lasts to reset"
+        : pace.etaSeconds != null
+          ? `runs out in ${compactDuration(pace.etaSeconds)}`
+          : undefined;
+  return tail ? `${head} · ${tail}` : head;
+}
+
 /** Signed compact delta for menu-bar tokens: `+11%` ahead, `-8%` behind. */
 export function paceTokenDelta(pace: MeterPace): string {
   const rounded = Math.round(pace.deltaPercent);

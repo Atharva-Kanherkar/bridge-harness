@@ -92,7 +92,7 @@ describe("shell flags", () => {
     expect(source).toContain("WindowHistoryChevrons");
     expect(source).toContain("WindowPanelButton");
     expect(source).toContain("sidebarHidden={sidebarCollapsed}");
-    expect(source).not.toContain('paradigm === "grid" ? "Focus" : "Mission Control"');
+    expect(source).not.toContain('paradigm === "grid" ? "Focus" : "Agent Fleet"');
     expect(source).toContain("showWindowNav");
     expect(source).toContain("flex h-[100dvh] flex-row");
   });
@@ -223,6 +223,33 @@ describe("the dock in the session view", () => {
     // And it is never fed the workspace's own title, on any render.
     expect(welcomeCalls.some(args => args[1] === "Build session supervisor")).toBe(false);
   });
+
+  it("services a tray refresh without raising the app or opening an in-app meter", async () => {
+    let trayAction: ((action: "refresh") => void) | undefined;
+    const onTray = vi.spyOn(bridgeApi, "onMeterTray").mockImplementation(async handler => {
+      trayAction = handler;
+      return () => undefined;
+    });
+    const reveal = vi.spyOn(bridgeApi, "revealMainWindow").mockResolvedValue();
+    const refresh = vi.spyOn(bridgeApi, "refreshMeter").mockResolvedValue();
+    await mountApp();
+
+    await act(async () => { trayAction?.("refresh"); });
+    await settle(2);
+
+    expect(refresh).toHaveBeenCalledTimes(1);
+    // The tray must not pull the main window forward — that is what made a
+    // menu-bar click feel like it opened "in the app", and the reveal it
+    // attempted was the ungranted `window.show` IPC behind the error banner.
+    expect(reveal).not.toHaveBeenCalled();
+    // The meter is a separate menu-bar window now. Nothing renders it over
+    // the app, so no dialog may appear here at all.
+    expect(container.querySelector('[role="dialog"][aria-label="Usage meter"]')).toBeNull();
+    onTray.mockRestore();
+    reveal.mockRestore();
+    refresh.mockRestore();
+  });
+
 
   it("cancels new orchestrator setup without creating a session", async () => {
     await mountApp();
@@ -645,7 +672,9 @@ describe("the dock in the session view", () => {
     const promote = [...aside.querySelectorAll("button")].find(button => button.textContent?.includes("Open as chat"))!;
     await click(promote);
     expect(document.body.querySelector('div[role="dialog"][aria-label^="Aside"]')).toBeNull();
-    expect(container.querySelector("h1")!.textContent).toContain("is the plan sound?");
+    // The browser mock has no native title resolver. Keep its placeholder rather
+    // than treating the full first message as an explicitly chosen chat name.
+    expect(container.querySelector("h1")!.textContent).toBe("New aside");
   });
 
   // Contract: testing/fix-side-chat-model.md. A side chat begins on a resolved
@@ -672,7 +701,8 @@ describe("the dock in the session view", () => {
     await type("$codex sanity check");
     const aside = document.body.querySelector<HTMLElement>('div[role="dialog"][aria-label="Aside with Codex"]');
     expect(aside).not.toBeNull();
-    expect(createSpy).toHaveBeenCalledWith(expect.any(String), "codex", "gpt-5.6-terra", expect.anything());
+    // The prompt is conversation content, not a permanent user-chosen title.
+    expect(createSpy).toHaveBeenCalledWith(expect.any(String), "codex", "gpt-5.6-terra", null);
   });
 
   // Contract: testing/fix-side-chat-model.md. The header picker switches the
@@ -871,10 +901,11 @@ describe("the dock in the session view", () => {
   // shell — rail, title bar, session chrome, or the keymap/menu table —
   // may offer a way into them. Sidebar-only tests would miss a later
   // title-bar, menu, or chord entry point.
-  it("exposes no Mission Control or Work board navigation control in the shell", async () => {
+  it("exposes Agent Fleet while keeping the Work board out of navigation", async () => {
     await mountApp();
 
-    const hiddenNav = /^(Mission Control|Work board)$/;
+    expect(container.querySelector('button[aria-label="Agent Fleet"]')).not.toBeNull();
+    const hiddenNav = /^Work board$/;
     const namedControls = (root: ParentNode) =>
       [...root.querySelectorAll<HTMLElement>("button, [role='menuitem'], [role='link'], a")]
         .filter(node => hiddenNav.test((node.getAttribute("aria-label") ?? node.textContent ?? "").trim()));
@@ -889,6 +920,6 @@ describe("the dock in the session view", () => {
     // The sheet and the native menu both read this table; a new chord or
     // menu item for either screen has to land here first.
     expect(SHORTCUTS.some(shortcut => /mission|work-board|workboard/i.test(shortcut.id))).toBe(false);
-    expect(SHORTCUTS.some(shortcut => /Mission Control|Work board/i.test(shortcut.label))).toBe(false);
+    expect(SHORTCUTS.some(shortcut => /Agent Fleet|Work board/i.test(shortcut.label))).toBe(false);
   });
 });

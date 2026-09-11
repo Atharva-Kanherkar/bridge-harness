@@ -40,7 +40,11 @@ pub struct BridgeCore {
     pub db: Mutex<rusqlite::Connection>,
     pub telemetry_db: Mutex<rusqlite::Connection>,
     pub runtimes: Mutex<HashMap<String, RuntimeSession>>,
+    pub(crate) terminal_state: Mutex<Option<crate::terminal_workspace::StateSidecar>>,
     pub adapters: Mutex<HashMap<String, Box<dyn adapters::AdapterRuntime>>>,
+    /// Input delivery holds a shared lease; idle reclamation takes an exclusive
+    /// lease so it cannot retire a runtime between lookup and submission.
+    pub input_activity: std::sync::RwLock<()>,
     pub reader_launches: Mutex<HashMap<String, Arc<Mutex<bool>>>>,
     /// A model switch's outgoing runtimes, detached and summarising in the
     /// background after the switch committed. Keyed by the shared session id;
@@ -286,7 +290,9 @@ impl BridgeCore {
                 store::open_telemetry(std::path::Path::new(":memory:")).unwrap(),
             ),
             runtimes: Mutex::new(HashMap::new()),
+            terminal_state: Mutex::new(None),
             adapters: Mutex::new(HashMap::new()),
+            input_activity: std::sync::RwLock::new(()),
             reader_launches: Mutex::new(HashMap::new()),
             detached_summaries: Mutex::new(HashMap::new()),
             adapter_registry: Arc::new(adapters::AdapterRegistry::empty()),
@@ -409,7 +415,9 @@ impl BridgeCore {
             db: Mutex::new(connection),
             telemetry_db: Mutex::new(telemetry_connection),
             runtimes: Mutex::new(HashMap::new()),
+            terminal_state: Mutex::new(None),
             adapters: Mutex::new(HashMap::new()),
+            input_activity: std::sync::RwLock::new(()),
             reader_launches: Mutex::new(HashMap::new()),
             detached_summaries: Mutex::new(HashMap::new()),
             adapter_registry,

@@ -97,6 +97,13 @@
     --color-harness-claude: var(--harness-claude);
     --color-harness-codex: var(--harness-codex);
     --color-harness-opencode: var(--harness-opencode);
+    /* Chart series, one per harness. Validated as a categorical palette in
+       both appearances (lightness band, chroma floor, CVD and normal-vision
+       separation, contrast) — worn only by marks, never by text. */
+    --color-chart-codex: var(--chart-codex);
+    --color-chart-cursor: var(--chart-cursor);
+    --color-chart-claude: var(--chart-claude);
+    --color-chart-opencode: var(--chart-opencode);
     --radius-sm: calc(var(--radius) * 0.6);
     --radius-md: calc(var(--radius) * 0.8);
     --radius-lg: var(--radius);
@@ -151,7 +158,9 @@
     /* Meaning — status, diffs, approvals */
     --success: #2f7d4f;
     --success-foreground: #fafaf9;
-    --warning: #8f5e05;
+    /* Warning is a quiet warm grey, not a yellow: attention comes from the
+       icon and the words, never from a tint that fights the paper. */
+    --warning: #6f6862;
     --warning-foreground: #fafaf9;
     --info: #3d6fa5;
     --info-foreground: #fafaf9;
@@ -162,6 +171,12 @@
     --harness-claude: #b8542f;
     --harness-codex: #0f8f6f;
     --harness-opencode: #6a5acd;
+
+    /* Chart series on paper. */
+    --chart-codex: #0f8f6f;
+    --chart-cursor: #2f6cb3;
+    --chart-claude: #b8542f;
+    --chart-opencode: #7a58c9;
 
     /* Cursor draws its own five facets rather than taking a Bridge hue. Paper
        runs the ladder inverted so the mark keeps its shape against light. */
@@ -284,8 +299,8 @@
 
     --success: #5db872;
     --success-foreground: #14210f;
-    --warning: #d4a957;
-    --warning-foreground: #211a0c;
+    --warning: #a8a29b;
+    --warning-foreground: #1b1a18;
     --info: #6a9bcc;
     --info-foreground: #0d1520;
     --destructive: #e5695e;
@@ -295,6 +310,12 @@
     --harness-claude: #d97757;
     --harness-codex: #4bc39c;
     --harness-opencode: #9b8cf0;
+
+    /* Chart series on graphite — their own steps, not a flipped light set. */
+    --chart-codex: #2fa07b;
+    --chart-cursor: #5688cf;
+    --chart-claude: #c8684a;
+    --chart-opencode: #9378e6;
 
     /* Cursor's own greys, as the vendor draws them. */
     --cursor-facet-darkest: #4a4a4a;
@@ -750,7 +771,7 @@ html[data-native-fullscreen] .u-traffic-inset {
   margin-top: 1em;
 }
 
-/* The live accent bar on a working Mission Control tile. */
+/* The live accent bar on a working Agent Fleet tile. */
 @keyframes mission-pulse {
   0%, 100% { opacity: 0.45; }
   50% { opacity: 1; }
@@ -959,15 +980,11 @@ html[data-native-fullscreen] .u-traffic-inset {
 }
 
 /* ── Diff rows ───────────────────────────────────────────────────────────────
-   A hunk header bands across the row, gutter included. The pinned gutter has
-   to stay *opaque* — a translucent tint lets a long header scroll through
-   underneath the sticky column, which is the one thing pinning it prevents —
-   so the band is pre-composed against `--color-code` here instead of layered
-   as a `bg-info/10` alpha utility. It cannot be expressed as one: tailwind-
-   merge drops `bg-code` the moment a second `bg-*` utility joins it, which is
-   how the transparent version slipped through in the first place. */
+   A hunk header bands across the row, gutter included. The pinned gutter stays
+   opaque via `bg-inherit` from the row. The band is pre-composed against
+   `--color-card` so it matches the rounded patch surface. */
 .u-diff-band {
-  background: color-mix(in srgb, var(--color-info) 10%, var(--color-code));
+  background: color-mix(in srgb, var(--color-info) 10%, var(--color-card));
 }
 
 /* ── Syntax highlighting ────────────────────────────────────────────────── */
@@ -1268,4 +1285,23 @@ html[data-native-fullscreen] .u-traffic-inset {
     -webkit-backdrop-filter: none;
     backdrop-filter: none;
   }
+}
+
+/* Charts and the meter: marks grow in from their baseline once, then sit
+   still. Motion is the reveal, never a loop. */
+@keyframes meter-fill {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+@keyframes chart-rise {
+  from { transform: scaleY(0); }
+  to { transform: scaleY(1); }
+}
+@keyframes insight-rise {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes insight-shimmer {
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
 }

@@ -258,14 +258,14 @@ export function RightRailPreview() {
                 <span className="size-3 rounded-full bg-success" />
               </div>
               <p className="min-w-0 flex-1 truncate text-[12.5px] font-medium text-foreground">
-                {surface === "automations" ? "Automations" : surface === "mission-control" ? "Mission Control" : surface === "settings" ? "Settings" : surface === "projects" ? "Projects" : surface === "memory" ? "Memory" : repo.name}
+                {surface === "automations" ? "Automations" : surface === "mission-control" ? "Agent Fleet" : surface === "settings" ? "Settings" : surface === "projects" ? "Projects" : surface === "memory" ? "Memory" : repo.name}
               </p>
             </div>
 
             {surface === "automations" ? <AutomationsCanvas /> : surface === "settings" ? (
               <Placeholder title="Settings" body="Account and app customization live behind the user row." />
             ) : surface === "mission-control" ? (
-              <Placeholder title="Mission Control" body="See every active agent and workspace at a glance." />
+              <Placeholder title="Agent Fleet" body="See every active agent and workspace at a glance." />
             ) : surface === "projects" ? (
               <Placeholder title="Projects" body="Projects stays near the primary navigation." />
             ) : surface === "memory" ? (
@@ -322,7 +322,7 @@ export function RightRailPreview() {
                 <ActionRow icon={SquarePen} label="New Chat" collapsed={collapsed} onClick={openNewChat} active={surface === "new-chat"} />
                 <ActionRow icon={Search} label="Search" collapsed={collapsed} onClick={() => setSearchOpen(open => !open)} />
                 <ActionRow icon={Bot} label="Automations" collapsed={collapsed} onClick={() => setSurface("automations")} active={surface === "automations"} />
-                <ActionRow icon={LayoutGrid} label="Mission Control" collapsed={collapsed} onClick={() => setSurface("mission-control")} active={surface === "mission-control"} />
+                <ActionRow icon={LayoutGrid} label="Agent Fleet" collapsed={collapsed} onClick={() => setSurface("mission-control")} active={surface === "mission-control"} />
                 <ActionRow icon={FolderGit2} label="Projects" collapsed={collapsed} onClick={() => setSurface("projects")} active={surface === "projects"} />
                 <ActionRow icon={Pin} label="Memory" collapsed={collapsed} onClick={() => setSurface("memory")} active={surface === "memory"} />
               </div>

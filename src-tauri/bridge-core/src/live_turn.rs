@@ -21,8 +21,9 @@ use crate::{
     worker_guard, worker_lifecycle, worker_pool, worker_retry, worker_sandbox, workspace_files,
     worktree_coordinator, worktree_registry,
     BridgeError, WORKER_APPROVAL_TIMEOUT_SECONDS,
-    WORKER_STALL_TIMEOUT_SECONDS,
 };
+#[cfg(test)]
+use crate::WORKER_STALL_TIMEOUT_SECONDS;
 use bridge_protocol::messages as wire;
 use chrono::Utc;
 use rusqlite::{params, Connection};
@@ -4916,6 +4917,7 @@ pub fn launch_worker_outcome(
         &routed.decision.id,
         "reserved",
     );
+    let _ = store::event(&state.db.lock().unwrap(), "router", "worker.route.selected", &reservation.session_id, &routed.decision.explanation);
     let completion_input = serde_json::to_string(directive)
         .map_err(|error| BridgeError::Invalid(format!("Could not serialize worker completion input: {error}")))
         .and_then(|serialized| state.db.lock().unwrap().execute(
@@ -5010,7 +5012,7 @@ pub fn launch_worker_outcome(
         .unwrap_or_else(|| reservation.path.clone());
     if requires_child_worktree {
         match worktree_coordinator::WorktreeCoordinator::prepare_isolated_worker(
-            &state.db.lock().unwrap(),
+            &state.db,
             &state.worktrees.join("workers"),
             &reservation.workspace_id,
             Path::new(&reservation.path),
@@ -7662,6 +7664,9 @@ fn fail_over_exhausted_worker(
                 reason: "the worker has no parent to report a reroute to".into(),
             };
         };
+        if !crate::worker_settings::for_session(&db, child_session_id).provider_failover {
+            return FailoverOutcome::NoRoute { reason: "Automatic provider failover is disabled in Workers settings".into() };
+        }
         // One automatic attempt per objective, whatever spends it. A failover
         // is Bridge choosing to pay for the work again, which is exactly what
         // that budget counts — checked before anything else, because an
@@ -8006,13 +8011,13 @@ fn settle_worker_after_result(
         let class = classify_worker_failure(&db, child_session_id, result);
         // Stored where it is decided. Every surface then reads one verdict
         // instead of four re-derivations of it.
-        if matches!(
-            result.status,
-            delegation::WorkerResultStatus::Failed
-                | delegation::WorkerResultStatus::ProtocolInvalid
-        ) {
+        if matches!(result.status, delegation::WorkerResultStatus::Failed | delegation::WorkerResultStatus::ProtocolInvalid) {
             persist_failure_class(&db, child_session_id, &class);
-            worker_retry::decide_with_class(class, retry_count, hot, spent)
+            if crate::worker_settings::for_session(&db, child_session_id).automatic_retry {
+                worker_retry::decide_with_class(class, retry_count, hot, spent)
+            } else {
+                worker_retry::RetryDecision::Decline { reason: "Automatic retries are disabled in Workers settings".into() }
+            }
         } else {
             worker_retry::decide(result, retry_count, hot, spent)
         }
@@ -8196,10 +8201,11 @@ fn settle_worker_after_result(
             match attributes.map(|(role, tier, mode)| {
                 worker_pool::retention_action_for_attributes(&role, &tier, &mode, Utc::now())
             }) {
-                Some(worker_pool::RetentionAction::KeepWarmUntil(until)) => (
-                    worker_lifecycle::WorkerLifecycleState::Warm,
-                    Some(until.to_rfc3339()),
-                ),
+                Some(worker_pool::RetentionAction::KeepWarmUntil(_)) => {
+                    let minutes = crate::worker_settings::for_session(&state.db.lock().unwrap(), child_session_id).warm_retention_minutes;
+                    if minutes == 0 { (worker_lifecycle::WorkerLifecycleState::Completed, None) }
+                    else { (worker_lifecycle::WorkerLifecycleState::Warm, Some((Utc::now() + chrono::Duration::minutes(minutes)).to_rfc3339())) }
+                },
                 _ => (worker_lifecycle::WorkerLifecycleState::Completed, None),
             }
         }
@@ -9004,9 +9010,10 @@ fn synthetic_failure_result(
 ///      generic "ended without reporting".
 fn notify_parent_on_worker_stalled(core: &Arc<BridgeCore>, child_session_id: &str) {
     let state = core.clone();
+    let stall_timeout = crate::worker_settings::for_session(&state.db.lock().unwrap(), child_session_id).stall_timeout_seconds;
     // (1) Confirm the worker is still silent — closes the snapshot→act race.
     match worker_silence_secs(&state, child_session_id) {
-        Some(silent) if silent >= WORKER_STALL_TIMEOUT_SECONDS => {}
+        Some(silent) if silent >= stall_timeout => {}
         _ => return,
     }
     let Some(label) = unreported_worker_meta(core, child_session_id) else {
@@ -9033,7 +9040,7 @@ fn notify_parent_on_worker_stalled(core: &Arc<BridgeCore>, child_session_id: &st
         schema_version: delegation::SCHEMA_VERSION,
         status: delegation::WorkerResultStatus::Failed,
         summary: format!(
-            "{label} stopped responding (no output for {WORKER_STALL_TIMEOUT_SECONDS}s) and was stopped"
+            "{label} stopped responding (no output for {stall_timeout}s) and was stopped"
         ),
         files_changed: vec![],
         tests: vec![],
@@ -9058,7 +9065,7 @@ fn notify_parent_on_worker_stalled(core: &Arc<BridgeCore>, child_session_id: &st
         "supervisor",
         WORKER_STALLED_OBSERVED,
         child_session_id,
-        &format!("no output for {WORKER_STALL_TIMEOUT_SECONDS}s"),
+        &format!("no output for {stall_timeout}s"),
     );
     // (3) Claim the result before the process can die and race us.
     report_synthetic_worker_failure(core, child_session_id, &result);
@@ -9594,7 +9601,7 @@ fn maintain_worker_pool(core: &Arc<BridgeCore>) {
         ).ok();
         if status.as_deref() == Some("reported")
             || (status.is_some() && worker_silence_secs(&state, &id)
-                .is_some_and(|silent| silent >= WORKER_STALL_TIMEOUT_SECONDS)) {
+                .is_some_and(|silent| silent >= crate::worker_settings::for_session(&state.db.lock().unwrap(), &id).stall_timeout_seconds)) {
             forward_turn_result(core, &id);
         }
     }
@@ -9613,7 +9620,7 @@ fn maintain_worker_pool(core: &Arc<BridgeCore>) {
         let activity = state.worker_activity.lock().unwrap();
         activity
             .iter()
-            .filter(|(_, seen)| seen.elapsed().as_secs() >= WORKER_STALL_TIMEOUT_SECONDS)
+            .filter(|(_, seen)| seen.elapsed().as_secs() >= 60)
             .map(|(session_id, _)| session_id.clone())
             .collect()
     };
@@ -9647,9 +9654,13 @@ fn maintain_worker_pool(core: &Arc<BridgeCore>) {
 }
 
 pub fn start_worker_maintenance(core: Arc<BridgeCore>) {
-    thread::spawn(move || loop {
-        thread::sleep(Duration::from_secs(1));
-        maintain_worker_pool(&core);
+    thread::spawn(move || {
+        let mut idle = crate::runtime_budget::IdleRuntimes::default();
+        loop {
+            thread::sleep(Duration::from_secs(1));
+            idle.maintain(&core);
+            maintain_worker_pool(&core);
+        }
     });
 }
 
@@ -10941,6 +10952,7 @@ fn submit_input_internal(
     force_new_turn: bool,
     attachments: Vec<wire::TurnImage>,
 ) -> Result<wire::SubmitInputResult, BridgeError> {
+    let _input_lease = core.input_activity.read().unwrap();
     let state = core;
     // An image-only send is legitimate: the images are the message. Text alone
     // still may not be empty.
@@ -11620,6 +11632,50 @@ fn announce_worker_cancellation(core: &Arc<BridgeCore>, child_session_id: &str, 
         &parent,
         summary,
     );
+}
+
+/// Composer Stop is a cancellation boundary, not an unbounded graceful abort.
+/// Close the reader gate and settle this chat before disposing its process.
+/// Its persisted provider session remains available for the next user send.
+pub fn cancel_visible_turn(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    let is_worker = core.db.lock().unwrap().query_row(
+        "SELECT parent_session_id IS NOT NULL FROM sessions WHERE id=?1",
+        [session_id], |row| row.get::<_, bool>(0),
+    )?;
+    if is_worker { return stop_worker_session(core, session_id, StopCause::User); }
+    let _lifecycle = core.claim_session_lifecycle(session_id, "cancel turn")?;
+    // The DB lock serializes this boundary with normalization/publication.
+    // Once released, no buffered frame can reopen the stopped turn.
+    let runtime = {
+        let db = core.db.lock().unwrap();
+        let transaction = db.unchecked_transaction()?;
+        void_orphaned_questions(&transaction, session_id, "turn_cancelled");
+        transaction.execute("UPDATE queued_session_input SET state='abandoned' WHERE session_id=?1 AND state='queued'", [session_id])?;
+        transaction.execute("UPDATE sessions SET status='stopped',active_turn_id=NULL,ended_at=?2 WHERE id=?1", params![session_id, Utc::now().to_rfc3339()])?;
+        transaction.execute("UPDATE workspaces SET status=CASE WHEN EXISTS(SELECT 1 FROM sessions WHERE workspace_id=workspaces.id AND status IN ('working','waiting','checkpointing')) THEN 'working' ELSE 'stopped' END WHERE id=(SELECT workspace_id FROM sessions WHERE id=?1)", [session_id])?;
+        session_supervisor::SessionSupervisor::clear_adapter_process(&transaction, session_id)?;
+        let mut event = agent::NormalizedEvent::new("turn.completed");
+        event.status = Some("cancelled".into());
+        event.title = Some("Stopped".into());
+        event.data = serde_json::json!({"reason":"user_stopped"});
+        let stored = store::session_event_in_transaction(&transaction, session_id, &event, &serde_json::Value::Null)?;
+        transaction.commit()?;
+        core.deactivate_reader_launch(session_id);
+        // The reader gate suppresses shutdown frames. Do not leave a marker
+        // that could swallow a genuine error during the next cold resume.
+        core.user_stop_requested.lock().unwrap().remove(session_id);
+        let runtime = { core.adapters.lock().unwrap().remove(session_id) };
+        core.events.publish(CoreEvent::Agent(stored));
+        runtime
+    };
+    core.events.publish(CoreEvent::StateChanged);
+    core.browser_bridge.revoke_session(session_id);
+    if let Some(mut runtime) = runtime {
+        // Calling interrupt first could wait ten seconds on an HTTP abort or
+        // a blocked pipe. Process-group shutdown is the bounded hard guarantee.
+        runtime.stop(adapters::ShutdownReason::UserStopped);
+    }
+    Ok(())
 }
 
 pub fn stop_session(
@@ -12938,6 +12994,27 @@ mod submit_input_tests {
             )
             .unwrap();
         (fixture, Arc::new(core), managed_root)
+    }
+
+    #[test]
+    fn composer_stop_settles_only_its_chat_without_waiting_for_provider_abort() {
+        let (_dir, core, _guard) = core_with_chat("working");
+        let handles = attach_handles(&core, false);
+        core.db.lock().unwrap().execute(
+            "INSERT INTO sessions(id,harness,label,status,metric_source,kind) VALUES('other','codex','Other','working','reported','direct')", []
+        ).unwrap();
+        core.db.lock().unwrap().execute("UPDATE sessions SET active_turn_id='live',provider_session_id='saved-provider' WHERE id='chat'", []).unwrap();
+        let gate = Arc::new(Mutex::new(true));
+        core.reader_launches.lock().unwrap().insert("chat".into(), gate.clone());
+        cancel_visible_turn(&core, "chat").unwrap();
+        assert!(!*gate.lock().unwrap());
+        assert!(!core.user_stop_requested.lock().unwrap().contains("chat"));
+        assert!(!core.adapters.lock().unwrap().contains_key("chat"));
+        assert_eq!(handles.interrupts.load(Ordering::SeqCst), 0, "Stop cannot wait on a provider abort request");
+        let db = core.db.lock().unwrap();
+        let stopped: (String, Option<String>, String) = db.query_row("SELECT status,active_turn_id,provider_session_id FROM sessions WHERE id='chat'", [], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?))).unwrap();
+        assert_eq!(stopped, ("stopped".into(), None, "saved-provider".into()));
+        assert_eq!(db.query_row("SELECT status FROM sessions WHERE id='other'", [], |r| r.get::<_,String>(0)).unwrap(), "working");
     }
 
     fn attach(core: &Arc<BridgeCore>, steering: bool) -> Arc<Mutex<Vec<String>>> {
@@ -16429,6 +16506,44 @@ mod retry_settlement_tests {
                 |row| row.get(0),
             )
             .ok()
+    }
+
+    #[test]
+    fn worker_settings_disable_real_retry_and_failover() {
+        let (_fixture, core, sent, _guard) = core_with_working_worker();
+        let settings = bridge_protocol::messages::WorkerSettings {
+            automatic_retry: false, provider_failover: false, warm_retention_minutes: 0,
+            ..Default::default()
+        };
+        crate::worker_settings::save(&core.db.lock().unwrap(), "w", &settings).unwrap();
+        assert!(matches!(fail_over_exhausted_worker(&core, "child", "quota"), FailoverOutcome::NoRoute { .. }));
+        settle_worker_after_result(&core, "child", &failed("connection reset" )).unwrap();
+        assert!(sent.lock().unwrap().iter().all(|message| message == "STOPPED"));
+        assert!(declined_reason(&core).unwrap().contains("disabled"));
+    }
+
+    #[test]
+    fn a_longer_stall_setting_keeps_a_quiet_worker_alive() {
+        let (_fixture, core, sent, _guard) = core_with_working_worker();
+        let settings = bridge_protocol::messages::WorkerSettings { stall_timeout_seconds: 1200, ..Default::default() };
+        crate::worker_settings::save(&core.db.lock().unwrap(), "w", &settings).unwrap();
+        core.worker_activity.lock().unwrap().insert("child".into(), std::time::Instant::now() - Duration::from_secs(700));
+        notify_parent_on_worker_stalled(&core, "child");
+        assert!(sent.lock().unwrap().is_empty());
+        assert!(core.adapters.lock().unwrap().contains_key("child"));
+    }
+
+    #[test]
+    fn zero_warm_retention_completes_instead_of_parking_a_worker() {
+        let (_fixture, core, _sent, _guard) = core_with_working_worker();
+        let settings = bridge_protocol::messages::WorkerSettings { warm_retention_minutes: 0, ..Default::default() };
+        crate::worker_settings::save(&core.db.lock().unwrap(), "w", &settings).unwrap();
+        let mut result = failed("Finished");
+        result.status = delegation::WorkerResultStatus::Completed;
+        settle_worker_after_result(&core, "child", &result).unwrap();
+        let runtime = store::worker_runtime(&core.db.lock().unwrap(), "child").unwrap().unwrap();
+        assert_eq!(runtime.lifecycle_state, "completed");
+        assert!(runtime.warm_until.is_none());
     }
 
     #[test]

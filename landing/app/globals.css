@@ -1,0 +1,424 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  --sidebar: #000000;
+  --background: #000000;
+  --card: #0f0f0f;
+  --popover: #161616;
+  --foreground: #e4e4e4;
+  --body: #c9c9c9;
+  --muted-foreground: #8b8b8b;
+  --faint: #6b6b6b;
+  --faint-2: #4a4a4a;
+  --border: #1e1e1e;
+  --border-card: #242424;
+  --input: #242424;
+  --muted: #1c1c1c;
+  --secondary: #161616;
+  --primary: #e4e4e4;
+  --primary-foreground: #000000;
+  --ring: #6a9bcc;
+  --success: #5db872;
+  --warning: #d4a957;
+  --info: #6a9bcc;
+  --destructive: #e5695e;
+  --harness-claude: #d97757;
+  --harness-codex: #4bc39c;
+  --harness-opencode: #9b8cf0;
+  --code: #0a0a0a;
+  --code-foreground: #ececea;
+  --accent: color-mix(in srgb, #e4e4e4 6%, transparent);
+  --accent-foreground: #e4e4e4;
+  --selection: #242424;
+  --selection-foreground: #e4e4e4;
+  --sidebar-border: #161616;
+  --cursor-facet-darkest: #4a4a4a;
+  --cursor-facet-mid: #6f6f6f;
+  --cursor-facet-light: #8f8f8f;
+  --cursor-facet-lighter: #cfcfcf;
+  --cursor-facet-lightest: #ededed;
+}
+
+@theme inline {
+  --color-sidebar: var(--sidebar);
+  --color-background: var(--background);
+  --color-card: var(--card);
+  --color-popover: var(--popover);
+  --color-foreground: var(--foreground);
+  --color-body: var(--body);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-faint: var(--faint);
+  --color-faint-2: var(--faint-2);
+  --color-border: var(--border);
+  --color-border-card: var(--border-card);
+  --color-input: var(--input);
+  --color-muted: var(--muted);
+  --color-secondary: var(--secondary);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --color-destructive: var(--destructive);
+  --color-harness-claude: var(--harness-claude);
+  --color-harness-codex: var(--harness-codex);
+  --color-harness-opencode: var(--harness-opencode);
+  --color-code: var(--code);
+  --color-code-foreground: var(--code-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-selection: var(--selection);
+  --color-selection-foreground: var(--selection-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --text-ui: 0.8125rem;
+  --text-ui--line-height: 1.5;
+  --text-caption: 0.75rem;
+  --text-caption--line-height: 1.5;
+  --text-message: 0.9375rem;
+  --text-message--line-height: 1.7;
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-pixel: var(--font-doto), ui-monospace, monospace;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --font-display: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --font-heading: var(--font-inter), ui-sans-serif, system-ui, -apple-system, sans-serif;
+  --animate-fade-up: fade-up 360ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  --animate-entry-in: entry-in 420ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  --animate-caret: caret 1s step-end infinite;
+
+  @keyframes fade-up {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes entry-in {
+    from {
+      opacity: 0;
+      transform: translateY(10px) scale(0.985);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0) scale(1);
+    }
+  }
+
+  @keyframes caret {
+    0%,
+    50% {
+      opacity: 1;
+    }
+    50.01%,
+    100% {
+      opacity: 0;
+    }
+  }
+}
+
+/* Load-time entrance for above-the-fold content. Staggered with --i. */
+@utility enter {
+  animation: rise 800ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  animation-delay: calc(var(--i, 0) * 110ms);
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
+
+/* Scroll-driven reveal. Content is fully visible where scroll timelines are unsupported. */
+@utility reveal {
+  @supports (animation-timeline: view()) {
+    @media (prefers-reduced-motion: no-preference) {
+      animation: rise linear both;
+      animation-timeline: view();
+      animation-range: entry 5% entry 45%;
+    }
+  }
+}
+
+/* Hero backdrop: hairline paths that trace themselves once on load. `--len` is the path
+ * length, `--i` staggers the branches. */
+@utility bg-dots {
+  background-image: radial-gradient(circle, color-mix(in srgb, var(--color-foreground) 22%, transparent) 1px, transparent 1.5px);
+  background-size: 22px 22px;
+}
+
+/* The lattice as a stencil. Two mask layers intersect: the dot grid, and a soft circle at
+ * the pointer — so a gradient laid underneath shows through only the dots near the cursor. */
+@utility dot-spot {
+  -webkit-mask-image: radial-gradient(circle, black 1px, transparent 1.5px),
+    radial-gradient(260px 260px at var(--mx) var(--my), black 0%, transparent 70%);
+  -webkit-mask-size: 22px 22px, 100% 100%;
+  -webkit-mask-repeat: repeat, no-repeat;
+  -webkit-mask-composite: source-in;
+  mask-image: radial-gradient(circle, black 1px, transparent 1.5px),
+    radial-gradient(260px 260px at var(--mx) var(--my), black 0%, transparent 70%);
+  mask-size: 22px 22px, 100% 100%;
+  mask-repeat: repeat, no-repeat;
+  mask-composite: intersect;
+}
+
+@utility bg-grid {
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--color-foreground) 5%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--color-foreground) 5%, transparent) 1px, transparent 1px);
+  background-size: 56px 56px;
+}
+
+@utility mask-fade-b {
+  mask-image: linear-gradient(to bottom, black 40%, transparent 100%);
+}
+
+@utility mask-fade-x {
+  mask-image: linear-gradient(to right, transparent, black 12%, black 88%, transparent);
+}
+
+@utility eyebrow {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--color-faint);
+}
+
+/* Keyframes the components reference by name. They live outside `@theme` on purpose:
+ * Tailwind only emits a themed keyframe when a utility references it, so a keyframe used
+ * from hand-written CSS has to be declared here or it never reaches the stylesheet. */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes draw {
+  from {
+    opacity: 1;
+    stroke-dashoffset: var(--draw, 400);
+  }
+  to {
+    opacity: 1;
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes pop {
+  from {
+    opacity: 0;
+    transform: scale(0.6);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes grow-x {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+@keyframes light {
+  from {
+    opacity: 0.25;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes ticker {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(-50%);
+  }
+}
+@keyframes breathe {
+  0%,
+  100% {
+    opacity: 0.55;
+    transform: translate(-50%, 0) scale(1);
+  }
+  50% {
+    opacity: 0.85;
+    transform: translate(-50%, 0) scale(1.06);
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html {
+    @apply font-sans;
+    background: var(--color-background);
+  }
+  body {
+    @apply font-sans antialiased;
+    accent-color: var(--color-primary);
+    background: var(--color-background);
+    color: var(--color-foreground);
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+  code,
+  kbd,
+  samp,
+  pre {
+    font-family: var(--font-mono);
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--color-ring) 26%, transparent);
+  }
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
+}
+
+@layer components {
+  .doc-prose {
+    color: var(--color-body);
+    font-size: 0.9375rem;
+    line-height: 1.75;
+  }
+  .doc-prose > * + * {
+    margin-top: 1rem;
+  }
+  .doc-prose h1 {
+    color: var(--color-foreground);
+    font-family: var(--font-heading);
+    font-size: 2rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.15;
+  }
+  .doc-prose h2 {
+    color: var(--color-foreground);
+    font-family: var(--font-heading);
+    font-size: 1.35rem;
+    font-weight: 600;
+    letter-spacing: -0.015em;
+    margin-top: 2.5rem;
+  }
+  .doc-prose h3,
+  .doc-prose h4 {
+    color: var(--color-foreground);
+    font-size: 1.0625rem;
+    font-weight: 600;
+    margin-top: 2rem;
+  }
+  .doc-prose a {
+    color: var(--color-foreground);
+    text-decoration: underline;
+    text-underline-offset: 4px;
+  }
+  .doc-prose a:hover {
+    text-decoration: none;
+  }
+  .doc-prose strong {
+    color: var(--color-foreground);
+    font-weight: 600;
+  }
+  .doc-prose ul,
+  .doc-prose ol {
+    padding-left: 1.25rem;
+  }
+  .doc-prose ul {
+    list-style: disc;
+  }
+  .doc-prose ol {
+    list-style: decimal;
+  }
+  .doc-prose li::marker {
+    color: var(--color-faint-2);
+  }
+  .doc-prose li + li {
+    margin-top: 0.375rem;
+  }
+  .doc-prose code {
+    background: var(--color-code);
+    border: 1px solid var(--color-border);
+    border-radius: 0.25rem;
+    font-size: 0.8125rem;
+    padding: 0.1rem 0.3rem;
+  }
+  .doc-prose pre {
+    background: var(--color-code);
+    border: 1px solid var(--color-border);
+    border-radius: 0.5rem;
+    overflow-x: auto;
+    padding: 0.875rem 1rem;
+  }
+  .doc-prose pre code {
+    background: none;
+    border: 0;
+    color: var(--color-code-foreground);
+    font-size: 0.78125rem;
+    line-height: 1.6;
+    padding: 0;
+  }
+  .doc-prose blockquote {
+    border-left: 2px solid var(--color-border);
+    color: var(--color-muted-foreground);
+    padding-left: 1rem;
+  }
+  .doc-prose hr {
+    border-color: var(--color-border);
+    margin: 2.5rem 0;
+  }
+  .doc-prose table {
+    border-collapse: collapse;
+    display: block;
+    font-size: 0.8125rem;
+    overflow-x: auto;
+    width: 100%;
+  }
+  .doc-prose th,
+  .doc-prose td {
+    border-top: 1px solid var(--color-border);
+    padding: 0.5rem 0.75rem;
+    text-align: left;
+    vertical-align: top;
+  }
+  .doc-prose th {
+    color: var(--color-muted-foreground);
+    font-weight: 500;
+  }
+  .doc-prose img {
+    border-radius: 0.5rem;
+  }
+}
+
+@layer components {
+  /* Staged panel parts. A descendant selector is the point: one observer on the panel drives
+   * every part inside it, so this is a deliberate exception to utilities-first styling, the
+   * same one `.doc-prose` takes. Without JavaScript no `data-play` is written and the parts
+   * render plainly. */
+  [data-play] .stage {
+    opacity: 0;
+  }
+
+  [data-play="true"] .stage {
+    animation: var(--ill, rise) 640ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+    animation-delay: calc(var(--i, 0) * 110ms);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    [data-play] .stage {
+      animation: none;
+      opacity: 1;
+    }
+  }
+}

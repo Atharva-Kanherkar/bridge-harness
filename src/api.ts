@@ -1,3 +1,5 @@
+import { mockTerminalWorkspace, mockCreateTerminal, mockSnapshot, mockSaveLayout, mockRenameTerminal, mockCloseTerminal } from "./terminal/mock";
+import type { TerminalRecord, TerminalSnapshot, TerminalWorkspace, CreateTerminalParams, TerminalFrame } from "./terminal/types";
 import { recordStreamReceipt } from "./streamTiming";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
@@ -8,11 +10,11 @@ import { asWireKind, readWireKind } from "./transcript/wire";
 import type { AgentDefinition, ArchiveChatResult, AgentEvent, ApprovalDecision, AutomationAction, AutomationActionResult, AutomationCatalog, AutomationProvider, BaseBranchDivergence, BridgeState, BrowserActionRequest, BrowserBridgeSnapshot, BrowserFrame, BrowserRouteDecision, BrowserRouteRequest, BrowserSkill, CapabilitySuggestion, CompletionCheckRun, CompletionSummary, ConfigState, CompiledPromptPreviewResult, ExternalLearningTriggerKind, PermissionPolicy, Harness, HarnessConfig, Health, LearningRun, LearningSchedule, LearningState, ListMemoryRecordsResult, LocalLearningTriggerKind, MarketplaceAction, MarketplaceActionResult, MarketplaceAppAuthState, MarketplaceCatalog, MarketplaceProvider, MemoryCapabilities, MemoryChangedPayload, MemoryExtractionSettings, MemoryInjectionSettings, MemoryPacketAudit, MemoryRecord, ModelProfileDraft, ModelSetupState, OpenCodeCatalog, PromptProviderLayerStatus, PromptRevisionView, PromptSectionMutationResult, PromptSectionStatePayload, PromptStackView, PromptTargetChoice, RemoteBrowserConfig, RouterPreferences, SanitizedTurn, SearchSessionEntriesResult, SessionEntry, SessionStartupPayload, TerminalExit, SessionForestSnapshot, SkillAction, SkillActionResult, SkillCatalog, SkillPreview, SkillProvider, SlashCommand, SlashCommandResolve, TerminalChunk, VerifierCandidate, VerifierManifest, WorkerRepositoryBinding, WorktreeInventoryEntry, WorktreeReclaimResult, WorktreeSweepResult, WorktreeUsage } from "./types";
 import type { AutomationSaveResult, SaveAutomationParams } from "./types";
 import type { ScanHistoryParams, ScanHistoryResult, SetPriceOverrideParams, SummaryParams, UsageBucket, UsageHistorySource, UsagePriceOverride, UsagePricingStatus, UsageSummaryResult } from "./types";
-import type { MeterRegistry } from "./types";
+import type { MeterRegistry, InsightsParams, UsageInsightsResult } from "./types";
 import type { MemoryRecallStats, MemoryConsolidationEntry } from "./types";
 import { deriveRecallStats, PACKET_BUDGET_CHARS, type PacketInjection } from "./memoryStats";
 import { BRIDGE_METHODS, type BridgeMethod, type BridgeMethodParams, type BridgeMethodResults, type BridgeNotification, type ContextBreakdownResult } from "./protocol/generated/protocol";
-import type { TurnImage } from "./protocol/generated/protocol";
+import type { TurnImage, ArchivedChatsResult, WorkerSettings } from "./protocol/generated/protocol";
 import type {
   CommitExternalImportParams,
   DiscoverExternalImportParams,
@@ -482,7 +484,8 @@ const mockForests: Record<string, SessionForestSnapshot> = {
         { checkId: "scrutiny", kind: "scrutiny", required: true, status: "running", executor: "bridge.worker", command: null, verifierFamily: "claude", detail: null, outputDigest: null, artifactRefs: [] },
         { checkId: "user-journey", kind: "user_testing", required: true, status: "pending", executor: "bridge.worker", command: null, verifierFamily: "codex", detail: null, outputDigest: null, artifactRefs: [] }
       ]
-    }
+    },
+    entryWindow: { returned: demoEntries.length, total: demoEntries.length, trimmedPayloads: 0 }
   }
 };
 const mockPendingAdoption: WorkerRepositoryBinding = {
@@ -522,6 +525,14 @@ let mockWorktrees: WorktreeInventoryEntry[] = [
     disposition: "retained", retainedReason: "outside Bridge's worktree namespace",
     assessedAt: now, sizeBytes: 33_554_432, sizeMeasuredAt: now,
     createdAt: now, lastUsedAt: now, idleSeconds: 5 * 24 * 3_600,
+  },
+  {
+    id: "wt-4", kind: "worker", repoRoot: "/tmp/bridge/scratch",
+    path: "/tmp/bridge/worker-scratch", branch: "bridge/worker-scratch",
+    ownerSessionId: "session-scratch", ownerWorkspaceId: "demo-1", state: "idle",
+    disposition: "at_risk", retainedReason: "uncommitted changes",
+    assessedAt: now, sizeBytes: 20_971_520, sizeMeasuredAt: now,
+    createdAt: now, lastUsedAt: now, idleSeconds: 2 * 3_600,
   },
 ];
 // Usage roll-up for the browser host: three harnesses over the last week, with
@@ -596,14 +607,66 @@ const mockMeterRegistry: MeterRegistry = {
   nominalIntervalSeconds: 300,
   attribution: "Meter math ported from steipete/CodexBar (MIT)",
 };
+// Browser-mode stand-in for the Insights tab: the shape a real run returns,
+// with figures that exercise every chart. Never shown inside Tauri.
+let mockInsights: UsageInsightsResult | null = null;
+function mockUsageInsights(params: InsightsParams): UsageInsightsResult {
+  // Like the daemon: without `refresh` this only reads, and a fresh install
+  // has nothing to read.
+  if (!params.refresh) return mockInsights ? structuredClone(mockInsights) : { status: "empty", windowDays: params.windowDays };
+  const days = Array.from({ length: Math.min(params.windowDays, 30) }, (_, index) => {
+    const at = new Date(Date.now() - (Math.min(params.windowDays, 30) - 1 - index) * 86_400_000);
+    const wave = 0.5 + 0.5 * Math.abs(Math.sin(index * 1.3));
+    return { day: at.toISOString().slice(0, 10), processedTokens: Math.round(2_400_000 * wave), prompts: Math.round(14 * wave) };
+  });
+  const hours = Array.from({ length: 24 }, (_, hour) => ({ hour, prompts: hour < 8 ? 0 : Math.round(12 * Math.exp(-((hour - 15) ** 2) / 18)) }));
+  mockInsights = {
+    status: "ready",
+    windowDays: params.windowDays,
+    generatedAt: new Date().toISOString(),
+    harness: "claude",
+    model: "sonnet",
+    report: {
+      headline: "Afternoons on Claude, mornings on Codex",
+      summary: "Most of your prompting lands between two and six in the afternoon, and Claude carries two thirds of the tokens. Codex handles the shorter morning asks. Cached input covers most of what Claude reads, which is keeping the estimated cost flat while the token count climbs.",
+      highlights: [
+        { title: "Cache is doing the work", detail: "Roughly two thirds of Claude's input tokens were read from cache, so longer sessions cost little more than short ones.", tone: "good" },
+        { title: "Two PRs waiting on checks", detail: "Two open pull requests have failing checks and neither has moved in the window.", tone: "watch" },
+        { title: "Refactors dominate", detail: "Four in ten prompts ask for a refactor or a cleanup rather than a new feature.", tone: "neutral" },
+      ],
+      themes: [
+        { label: "Refactors and cleanup", share: 0.4, example: "Tidy the meter code and remove the footer text" },
+        { label: "UI polish", share: 0.25, example: "Make the usage chart read better in dark mode" },
+        { label: "Bug fixes", share: 0.2, example: "The tray shows the wrong percentage" },
+        { label: "Reviews", share: 0.15, example: "Review these seven pull requests for readiness" },
+      ],
+      recommendations: [
+        "Route review-only asks to Codex: they are short and your Codex weekly window is barely used.",
+        "Start long Claude sessions from the same project so cached context keeps carrying over.",
+        "Clear the two failing PRs before opening new ones; they are the oldest open work you have.",
+      ],
+      harnesses: [
+        { harness: "claude", processedTokens: 41_200_000, costMicrousd: 38_400_000, records: 412, sessions: 38, prompts: 214 },
+        { harness: "codex", processedTokens: 18_900_000, costMicrousd: 12_100_000, records: 260, sessions: 27, prompts: 122 },
+        { harness: "opencode", processedTokens: 3_100_000, costMicrousd: 1_400_000, records: 40, sessions: 6, prompts: 18 },
+      ],
+      hours,
+      days,
+      github: { repositories: 3, openPrs: 7, draftPrs: 2, failingChecks: 2, awaitingReview: 3 },
+      promptsAnalysed: 60,
+    },
+  };
+  return structuredClone(mockInsights);
+}
 const mockWorktreeUsage: WorktreeUsage = {
-  totalCount: 3, totalBytes: 2_759_852_032,
+  totalCount: 4, totalBytes: 2_780_823_552,
   reclaimableCount: 1, reclaimableBytes: 2_684_354_560, retainedCount: 1,
   maxTotalBytes: 10 * 1024 * 1024 * 1024, maxPerRepo: 12,
   workerIdleTtlSeconds: 86_400, orchestratorIdleTtlSeconds: 604_800, githubIdleTtlSeconds: 604_800,
   repositories: [
     { repoRoot: "/tmp/bridge/demo", count: 1, sizeBytes: 2_684_354_560, reclaimableBytes: 2_684_354_560, overBudget: false },
     { repoRoot: "/tmp/bridge/session-supervisor", count: 1, sizeBytes: 41_943_040, reclaimableBytes: 0, overBudget: false },
+    { repoRoot: "/tmp/bridge/scratch", count: 1, sizeBytes: 20_971_520, reclaimableBytes: 0, overBudget: false },
   ],
 };
 
@@ -612,7 +675,7 @@ function mockForest(sessionId: string): SessionForestSnapshot {
   if (existing) return structuredClone(existing);
   const session = mockState.sessions.find(item => item.id === sessionId);
   const entry = forestEntry(`${sessionId}-root`, sessionId, 1, "branch.summary", { summary: "Session started" }, null);
-  const created: SessionForestSnapshot = { sessionId, entries: [entry], head: { sessionId, activeEntryId: entry.id, nativeProviderSessionId: session?.providerSessionId ?? null, restorationMode: session?.restorationMode ?? "fresh", resumeEligibility: session?.providerSessionId ? "native" : "fresh", latestCheckpointEntryId: null, updatedAt: now }, leaves: [entry], workerLeases: [], workerRuntimes: [], workerQueue: [], usage: [], reasons: [], policyLimits: { maxWorkersPerTurn: 3, maxStrongWorkersPerTurn: 1,maxCapabilityUnitsPerTurn: 24 }, repositoryDivergence: { status:"unknown", selectedState:null, currentState:{status:"unavailable"} }, completion: null };
+  const created: SessionForestSnapshot = { sessionId, entries: [entry], head: { sessionId, activeEntryId: entry.id, nativeProviderSessionId: session?.providerSessionId ?? null, restorationMode: session?.restorationMode ?? "fresh", resumeEligibility: session?.providerSessionId ? "native" : "fresh", latestCheckpointEntryId: null, updatedAt: now }, leaves: [entry], workerLeases: [], workerRuntimes: [], workerQueue: [], usage: [], reasons: [], policyLimits: { maxWorkersPerTurn: 3, maxStrongWorkersPerTurn: 1,maxCapabilityUnitsPerTurn: 24 }, repositoryDivergence: { status:"unknown", selectedState:null, currentState:{status:"unavailable"} }, completion: null, entryWindow: { returned: 1, total: 1, trimmedPayloads: 0 } };
   mockForests[sessionId] = created;
   return structuredClone(created);
 }
@@ -718,12 +781,7 @@ function saveMockProfiles(profiles: ModelProfileDraft[]): ModelSetupState {
   return structuredClone(mockModelSetup);
 }
 
-// A board covering every fact kind and every freshness, so the browser fallback
-// renders the screen's real range instead of one token row.
-//
-// Built per call rather than once: the timestamps are relative to *now*, and a module
-// literal would freeze them at import, so a long-lived `bun run dev` preview would age
-// "10s ago" into hours while `freshness` stayed the value it was written with.
+// Legacy task-action fixtures are separate from the empty browser activity feed.
 const workBoardObserved = (secondsAgo: number): string =>
   new Date(Date.now() - secondsAgo * 1000).toISOString();
 
@@ -822,93 +880,15 @@ const mockBriefingOptions: WorkBriefingOptions = {
 
 function browserWorkBoard(): WorkBoard {
   return {
-    facts: [
-      {
-        kind: "failed_completion_check",
-        dedupeKey: "check:a-1:cargo-test",
-        severity: "blocking",
-        title: "cargo-test failed on Kyoto",
-        detail: "A required check failed on an attempt nobody has verified or waived.",
-        target: { kind: "completionAttempt", sessionId: "session-1", attemptId: "a-1" },
-        actionableAt: workBoardObserved(3_600),
-        observedAt: workBoardObserved(10),
-        freshness: "live",
-        action: { kind: "reviewCompletionCheck", sessionId: "session-1", attemptId: "a-1", checkId: "cargo-test" },
-      },
-      {
-        kind: "actionable_approval",
-        dedupeKey: "approval:session-2:4",
-        severity: "blocking",
-        title: "Approve command — waiting 41 minutes, past its deadline",
-        detail: "Lisbon asked to run a command and nobody answered.",
-        target: { kind: "session", sessionId: "session-2" },
-        actionableAt: workBoardObserved(2_460),
-        observedAt: workBoardObserved(10),
-        freshness: "live",
-        action: { kind: "answerApproval", sessionId: "session-2", approvalSequence: 4 },
-      },
-      {
-        kind: "blocked_worker_queue_item",
-        dedupeKey: "queue:q-1",
-        severity: "blocking",
-        title: "3 queued workers are parked behind Lisbon",
-        detail: "They are waiting on the approval above, not on each other.",
-        target: { kind: "workerQueueItem", queueId: "q-1", workspaceId: "workspace-2" },
-        actionableAt: workBoardObserved(1_800),
-        observedAt: workBoardObserved(10),
-        freshness: "live",
-        action: { kind: "answerApproval", sessionId: "session-2", approvalSequence: null },
-      },
-      {
-        kind: "workspace_behind_base",
-        dedupeKey: "workspace-base:workspace-1",
-        severity: "attention",
-        title: "Kyoto has drifted behind its base branch",
-        detail: "This workspace is 41 commit(s) behind and 2 ahead of origin/main, measured against a freshly fetched ref.",
-        target: { kind: "workspace", workspaceId: "workspace-1", sessionId: "session-1" },
-        actionableAt: workBoardObserved(7_200),
-        observedAt: workBoardObserved(120),
-        freshness: "live",
-        action: { kind: "refreshWorkspaceBase", sessionId: "session-1", workspaceId: "workspace-1" },
-      },
-      {
-        kind: "workspace_behind_base",
-        dedupeKey: "workspace-base:workspace-2",
-        severity: "attention",
-        title: "Lisbon has drifted behind its base branch",
-        detail: "This workspace is 63 commit(s) behind and 0 ahead of origin/main.",
-        target: { kind: "workspace", workspaceId: "workspace-2", sessionId: "session-2" },
-        actionableAt: workBoardObserved(9_000),
-        observedAt: workBoardObserved(1_440),
-        freshness: "stale",
-        action: { kind: "refreshBaseObservation", sessionId: "session-2", workspaceId: "workspace-2" },
-      },
-      {
-        kind: "workspace_behind_base",
-        dedupeKey: "workspace-base:workspace-3",
-        severity: "attention",
-        title: "Oslo could not be measured against its base branch",
-        detail: "No upstream or default branch ref is available to compare against.",
-        target: { kind: "workspace", workspaceId: "workspace-3", sessionId: "session-3" },
-        actionableAt: workBoardObserved(10_800),
-        observedAt: workBoardObserved(300),
-        freshness: "unknown",
-        action: { kind: "refreshBaseObservation", sessionId: "session-3", workspaceId: "workspace-3" },
-      },
-    ],
-    tasks: structuredClone(mockWorkTasks),
+    facts: [],
+    tasks: [],
     latestRun: null,
     generatedAt: new Date().toISOString(),
     sources: [],
-    settings: {
-      briefing: null,
-      enabledConnectorInstances: [],
-      refreshOnFocus: false,
-      refreshIntervalMinutes: null,
-      cooldownMinutes: 15,
-      limits: { maxWallSeconds: 600, maxTurns: 12, maxToolCalls: 24, maxOutputTokens: null, costCeilingMicrousd: null },
-    },
-    suggestions: { state: "not_configured", detail: null },
+    settings: structuredClone(mockWorkSettings.settings),
+    suggestions: mockWorkSettings.settings.briefing
+      ? { state: "ready", detail: null }
+      : { state: "not_configured", detail: null },
   };
 }
 
@@ -1151,6 +1131,10 @@ export const bridgeApi = {
   // Token and cost usage. One summary per window; the screen never polls.
   usageSummary: (params: SummaryParams): Promise<UsageSummaryResult> =>
     isTauri() ? call("usage/summary", params) : Promise.resolve(mockUsageSummary(params)),
+  // The Insights tab. Blocking while a harness turn runs; the stored report
+  // comes back at once when `refresh` is false.
+  usageInsights: (params: InsightsParams): Promise<UsageInsightsResult> =>
+    isTauri() ? call("usage/insights", params) : new Promise(resolve => setTimeout(() => resolve(mockUsageInsights(params)), params.refresh ? 900 : 0)),
   listUsagePriceOverrides: (): Promise<UsagePriceOverride[]> =>
     isTauri() ? call("usage/list_price_overrides") : Promise.resolve(structuredClone(mockPriceOverrides)),
   setUsagePriceOverride: (params: SetPriceOverrideParams): Promise<UsagePriceOverride[]> => {
@@ -1191,16 +1175,41 @@ export const bridgeApi = {
   // in `src/meter.ts`, ported from the same CodexBar sources as the Rust core.
   getMeterSnapshot: (): Promise<MeterRegistry> =>
     isTauri() ? call("meter/get_meter_snapshot") : Promise.resolve(structuredClone(mockMeterRegistry)),
+  // Raising the main window is the shell's job, not the webview's. Going
+  // through `@tauri-apps/api/window` made this an ACL-gated IPC call that the
+  // capability file never granted, so every caller got `window.show not
+  // allowed` at the click. It also could not work from the meter panel, whose
+  // `getCurrentWindow()` is the panel, not `main`. The shell owns the handle
+  // and shows it natively, which needs no permission and targets the right
+  // window — same channel pattern as `notifyLayoutFullscreen`.
+  revealMainWindow: async (): Promise<void> => {
+    if (!isTauri()) return;
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit("bridge-reveal-main");
+  },
   refreshMeter: (): Promise<void> => {
     if (isTauri()) return call("meter/refresh_meter").then(() => undefined);
     return Promise.resolve();
   },
+  // Opening and closing the meter is window work, so the shell does it. Same
+  // channel pattern as `revealMainWindow`: the panel is positioned against the
+  // status item's rect, which only the tray handler knows.
+  openMeterPanel: async (): Promise<void> => {
+    if (!isTauri()) return;
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit("bridge-meter-panel", "toggle");
+  },
+  hideMeterPanel: async (): Promise<void> => {
+    if (!isTauri()) return;
+    const { emit } = await import("@tauri-apps/api/event");
+    await emit("bridge-meter-panel", "hide");
+  },
   // The desktop shell owns this channel (native tray menu/left-click), not the
   // protocol — same exemption as MENU_COMMAND_EVENT in api.boundary.test.ts.
-  onMeterTray: (handler: (action: "open-popover" | "refresh") => void): Promise<UnlistenFn> => {
+  onMeterTray: (handler: (action: "refresh") => void): Promise<UnlistenFn> => {
     if (!isTauri()) return Promise.resolve(() => undefined);
     return listen<string>("bridge-meter-tray", event => {
-      if (event.payload === "open-popover" || event.payload === "refresh") handler(event.payload);
+      if (event.payload === "refresh") handler(event.payload);
     });
   },
   // The composer's inline typeahead. Off by default; `configured: false` is a
@@ -1466,7 +1475,7 @@ export const bridgeApi = {
     if (!mockWorkSettings.configured || !mockWorkSettings.settings.briefing) {
       return { outcome: "refused", runId: null, code: "not_configured", detail: "Work has never been configured" };
     }
-    return { outcome: "started", runId: "run-mock-1", code: null, detail: null };
+    return { outcome: "refused", runId: null, code: "desktop_required", detail: "Reading connected integrations requires the desktop app." };
   },
   cancelWorkBriefing: async (): Promise<WorkBriefReceipt> => {
     if (isTauri()) return call("work/cancel_briefing");
@@ -1511,6 +1520,22 @@ export const bridgeApi = {
     emitState();
     return { archived: true, bytesFreed: 0, worktreeDetail: owned?.retainedReason ?? null };
   },
+  listArchivedChats: async (query = "", offset = 0, rootSessionId: string | null = null): Promise<ArchivedChatsResult> => {
+    if (isTauri()) return call("sessions/list_archived_chats", { query, offset, rootSessionId });
+    return { chats: [], hasMore: false };
+  },
+  workerSettings: async (workspaceId: string): Promise<WorkerSettings> => {
+    if (isTauri()) return call("config/get_worker_settings", { workspaceId });
+    return { defaultHarness: null, maxConcurrentWorkers: 2, maxWorkersPerTurn: 3, stallTimeoutSeconds: 600, warmRetentionMinutes: 5, automaticRetry: true, providerFailover: true };
+  },
+  saveWorkerSettings: async (workspaceId: string, settings: WorkerSettings): Promise<WorkerSettings> => {
+    if (isTauri()) return call("config/save_worker_settings", { workspaceId, settings });
+    return structuredClone(settings);
+  },
+  unarchiveChat: async (sessionId: string): Promise<void> => {
+    if (isTauri()) { await call("sessions/unarchive_chat", { sessionId }); return; }
+    throw new Error("Unarchiving a chat needs the desktop app");
+  },
   // What the worktrees cost. Read-only on purpose: reclaiming is the
   // retention sweep's decision, taken against a fresh safety classification,
   // not something a client can ask for out of band.
@@ -1524,15 +1549,18 @@ export const bridgeApi = {
   },
   // A refusal is a result, not a thrown error: the caller renders "no, and
   // here is why" next to the row it asked about.
-  reclaimWorktree: async (worktreeId: string): Promise<WorktreeReclaimResult> => {
-    if (isTauri()) return call("worktrees/reclaim_worktree", { worktreeId });
+  reclaimWorktree: async (worktreeId: string, force = false): Promise<WorktreeReclaimResult> => {
+    if (isTauri()) return call("worktrees/reclaim_worktree", { worktreeId, force });
     const entry = mockWorktrees.find(item => item.id === worktreeId);
     if (!entry) throw new Error(`no worktree ${worktreeId} is recorded`);
-    if (entry.disposition !== "reclaimable" && entry.disposition !== "pushed_unmerged") {
+    // Mirrors is_removable: force overrides only at_risk/unverifiable, never
+    // retained (external, live session, unadopted output).
+    const forcible = force && (entry.disposition === "at_risk" || entry.disposition === "unverifiable");
+    if (entry.disposition !== "reclaimable" && entry.disposition !== "pushed_unmerged" && !forcible) {
       return { reclaimed: false, bytesFreed: 0, disposition: entry.disposition ?? "retained", detail: entry.retainedReason };
     }
     mockWorktrees = mockWorktrees.filter(item => item.id !== worktreeId);
-    return { reclaimed: true, bytesFreed: entry.sizeBytes ?? 0, disposition: entry.disposition, detail: null };
+    return { reclaimed: true, bytesFreed: entry.sizeBytes ?? 0, disposition: entry.disposition ?? "reclaimable", detail: null };
   },
   sweepWorktrees: async (): Promise<WorktreeSweepResult> => {
     if (isTauri()) return call("worktrees/sweep_worktrees");
@@ -1941,7 +1969,15 @@ export const bridgeApi = {
       interceptions: [],
     };
   },
-  interruptTurn: (sessionId: string): Promise<void> => isTauri() ? unit(call("sessions/interrupt_turn", { sessionId })) : Promise.resolve(),
+  interruptTurn: async (sessionId: string): Promise<void> => {
+    if (isTauri()) return unit(call("sessions/interrupt_turn", { sessionId }));
+    const session = mockState.sessions.find(item => item.id === sessionId);
+    if (!session) throw new Error("Session not found");
+    session.status = "stopped";
+    session.activeTurnId = null;
+    appendAgent(sessionId, "turn.completed", { status: "cancelled", title: "Stopped", data: { reason: "user_stopped" } });
+    emitState();
+  },
   // The user's half of the retry decision. Bridge stopped taking this turn on
   // its own for a cause it cannot show has changed.
   retryWorkerTask: (childSessionId: string): Promise<void> => isTauri() ? unit(call("sessions/retry_worker_task", { childSessionId })) : Promise.resolve(),
@@ -1962,10 +1998,17 @@ export const bridgeApi = {
   },
   startProviderLogin: (provider: string): Promise<{ workspaceId: string; terminalId: string }> =>
     isTauri() ? call("auth/start_provider_login", { provider }) : Promise.resolve({ workspaceId: "provider-login", terminalId: provider }),
+  createTerminal: async (params: CreateTerminalParams): Promise<TerminalRecord> => isTauri() ? call("terminal/create_terminal", { ...params, restart: params.restart ?? false }) : mockCreateTerminal(params),
+  terminalSnapshot: async (workspaceId: string, terminalId: string): Promise<TerminalSnapshot> => isTauri() ? call("terminal/get_terminal_snapshot", { workspaceId, terminalId }) : mockSnapshot(workspaceId, terminalId),
+  terminalWorkspace: async (workspaceId: string): Promise<TerminalWorkspace> => isTauri() ? call("terminal/get_terminal_workspace", { workspaceId }) : mockTerminalWorkspace(workspaceId),
+  saveTerminalLayout: async (workspaceId: string, layout: unknown): Promise<void> => isTauri() ? unit(call("terminal/save_terminal_workspace", { workspaceId, layout })) : mockSaveLayout(workspaceId, layout),
+  renameTerminal: async (workspaceId: string, terminalId: string, title: string): Promise<TerminalRecord> => isTauri() ? call("terminal/rename_terminal", { workspaceId, terminalId, title }) : mockRenameTerminal(workspaceId, terminalId, title),
+  onTerminalFrame: async (handler: (frame: TerminalFrame) => void): Promise<UnlistenFn> => isTauri() ? subscribe<TerminalFrame>("terminal-frame", handler) : () => undefined,
+  onTerminalLagged: async (handler: () => void): Promise<UnlistenFn> => isTauri() ? subscribe("stream-lagged", handler) : () => undefined,
   openTerminal: (workspaceId: string, terminalId: string): Promise<void> => isTauri() ? unit(call("terminal/open_terminal", { workspaceId, terminalId })) : Promise.resolve(),
   writeTerminal: (workspaceId: string, terminalId: string, data: string): Promise<void> => isTauri() ? unit(call("terminal/write_terminal", { workspaceId, terminalId, data })) : Promise.resolve(),
   resizeTerminal: (workspaceId: string, terminalId: string, rows: number, cols: number): Promise<void> => isTauri() ? unit(call("terminal/resize_terminal", { workspaceId, terminalId, rows, cols })) : Promise.resolve(),
-  closeTerminal: (workspaceId: string, terminalId: string): Promise<void> => isTauri() ? unit(call("terminal/close_terminal", { workspaceId, terminalId })) : Promise.resolve(),
+  closeTerminal: (workspaceId: string, terminalId: string): Promise<void> => isTauri() ? unit(call("terminal/close_terminal", { workspaceId, terminalId })) : Promise.resolve(mockCloseTerminal(workspaceId, terminalId)),
   listTerminals: async (workspaceId: string): Promise<string[]> => {
     if (isTauri()) return ((await call("terminal/list_terminals", { workspaceId })) as { terminalIds: string[] }).terminalIds;
     return [];

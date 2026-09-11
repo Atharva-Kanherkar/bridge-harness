@@ -236,7 +236,7 @@ impl WorkerPool {
     ) -> Result<Option<QueuedWorkerRequest>, BridgeError> {
         Self::maintain_queue(db, Utc::now())?;
         let active = policy::load_workers(db, workspace_id, "active")?;
-        if active.len() >= policy::PolicyConfig::default().max_concurrent_workers {
+        if active.len() >= crate::worker_settings::policy(db, workspace_id)?.max_concurrent_workers {
             return Ok(None);
         }
         let Some(request) = store::queued_worker_requests(db, workspace_id)?
@@ -668,7 +668,7 @@ mod tests {
         assert_eq!(released.queue_status, "queued");
         assert_eq!(released.expires_at, "2026-07-14T01:10:00+00:00");
         assert_eq!(released.blocked_at, None);
-        let events = store::workspace_reason_events(&db, "w").unwrap();
+        let events = store::workspace_reason_events(&db, "w", store::SNAPSHOT_REASON_WINDOW).unwrap();
         assert!(events
             .iter()
             .any(|event| event.kind == "queue.blocked_on_human"));

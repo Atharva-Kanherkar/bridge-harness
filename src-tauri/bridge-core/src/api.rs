@@ -1612,7 +1612,7 @@ pub fn retry_worker_task(
 }
 
 pub fn interrupt_turn(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
-    core.interrupt_turn(session_id)
+    live_turn::cancel_visible_turn(core, session_id)
 }
 
 /// Refresh subscription usage for every provider, independent of which session
@@ -2474,13 +2474,13 @@ fn terminal_runtime_id(workspace_id: &str, terminal_id: &str) -> String {
 
 /// One counter across every shell ever spawned: equality is all the reader
 /// threads need, and a global sidesteps per-key bookkeeping.
-static TERMINAL_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+pub(crate) static TERMINAL_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// The login shell for new terminals: zsh where it exists (the macOS default
 /// this app was built around), else the user's `$SHELL`, else bash. Linux
 /// servers and CI runners frequently ship neither zsh nor a spawnable `$SHELL`
 /// value, so a hardcoded zsh would make terminals unopenable there.
-fn login_shell() -> String {
+pub(crate) fn login_shell() -> String {
     for candidate in ["/bin/zsh", "/usr/bin/zsh", "/usr/local/bin/zsh"] {
         if Path::new(candidate).exists() {
             return candidate.to_owned();
@@ -2495,107 +2495,18 @@ fn login_shell() -> String {
     "/bin/bash".to_owned()
 }
 
-pub fn open_terminal(
-    core: &Arc<BridgeCore>,
-    workspace_id: &str,
-    terminal_id: &str,
-) -> Result<(), BridgeError> {
-    let runtime_id = terminal_runtime_id(workspace_id, terminal_id);
-    core.workspace_path(workspace_id)?;
-    let workspace_operation = core.workspace_operation(workspace_id);
-    let _workspace_operation = workspace_operation.lock().unwrap();
-    // Exclusive across the whole check → spawn → insert window: two
-    // concurrent opens would otherwise both pass the check, and the second
-    // insert would overwrite the first entry and orphan its PTY child.
-    let _lifecycle = core.claim_session_lifecycle(&runtime_id, "terminal open")?;
-    if core.runtimes.lock().unwrap().contains_key(&runtime_id) {
-        return Ok(());
-    }
-    let db = core.db.lock().unwrap();
-    let path: String = db.query_row(
-        "SELECT path FROM workspaces WHERE id=?1",
-        params![workspace_id],
-        |r| r.get(0),
-    )?;
-    drop(db);
-    let pair = native_pty_system()
-        .openpty(PtySize {
-            rows: 32,
-            cols: 120,
-            pixel_width: 0,
-            pixel_height: 0,
-        })
-        .map_err(|e| BridgeError::Pty(e.to_string()))?;
-    let mut command = CommandBuilder::new(login_shell());
-    command.args(["-l"]);
-    command.cwd(&path);
-    command.env("TERM", "xterm-256color");
-    command.env("BRIDGE_WORKSPACE_ID", workspace_id);
-    let child = pair
-        .slave
-        .spawn_command(command)
-        .map_err(|e| BridgeError::Pty(e.to_string()))?;
-    drop(pair.slave);
-    let mut reader = pair
-        .master
-        .try_clone_reader()
-        .map_err(|e| BridgeError::Pty(e.to_string()))?;
-    let writer = pair
-        .master
-        .take_writer()
-        .map_err(|e| BridgeError::Pty(e.to_string()))?;
-    let epoch = TERMINAL_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    core.runtimes.lock().unwrap().insert(
-        runtime_id.clone(),
-        RuntimeSession {
-            writer,
-            master: pair.master,
-            child,
-            epoch,
-        },
-    );
-    let core_reader = Arc::clone(core);
-    let workspace_reader = workspace_id.to_owned();
-    let terminal_reader = terminal_id.to_owned();
-    let runtime_reader = runtime_id;
-    thread::spawn(move || {
-        let mut buf = [0u8; 8192];
-        loop {
-            match reader.read(&mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => {
-                    let data = String::from_utf8_lossy(&buf[..n]).into_owned();
-                    core_reader.events.publish(CoreEvent::SessionOutput {
-                        session_id: workspace_reader.clone(),
-                        terminal_id: terminal_reader.clone(),
-                        data,
-                    });
-                }
-            }
-        }
-        {
-            let mut sessions = core_reader.runtimes.lock().unwrap();
-            match sessions.get(&runtime_reader) {
-                Some(entry) if entry.epoch == epoch => {
-                    sessions.remove(&runtime_reader);
-                }
-                Some(_) => {
-                    // A newer shell took this key while we drained. It is
-                    // alive and it is not ours: removing it would orphan its
-                    // PTY, and announcing an exit would mark it dead.
-                    return;
-                }
-                None => {}
-            }
-        }
-        // The exit outlives the bytes: whoever is not looking still learns
-        // that this shell is gone.
-        core_reader.events.publish(CoreEvent::TerminalExited {
-            session_id: workspace_reader,
-            terminal_id: terminal_reader,
-        });
-    });
-    Ok(())
+// Both desktop transports expose this shared API seam; the terminal module
+// owns the implementation and its PTY/checkpoint lifecycle.
+pub use crate::terminal_workspace::{
+    create as create_terminal, rename as rename_terminal,
+    save_layout as save_terminal_workspace, snapshot as get_terminal_snapshot,
+    workspace as get_terminal_workspace,
+};
+
+pub fn open_terminal(core: &Arc<BridgeCore>, workspace_id: &str, terminal_id: &str) -> Result<(), BridgeError> {
+    crate::terminal_workspace::create(core, &wire::CreateTerminalParams {
+        workspace_id: workspace_id.into(), terminal_id: terminal_id.into(), agent_id: None, cwd: None, restart: true,
+    }).map(|_| ())
 }
 
 pub fn close_terminal(
@@ -2607,14 +2518,14 @@ pub fn close_terminal(
     // The same claim open takes, so a close racing an open of the same key
     // settles into a definite order instead of interleaving.
     let _lifecycle = core.claim_session_lifecycle(&runtime_id, "terminal close")?;
-    let mut sessions = core.runtimes.lock().unwrap();
-    let Some(mut runtime) = sessions.remove(&runtime_id) else {
-        return Ok(());
-    };
-    drop(sessions);
-    // Killing the child ends the reader loop, which publishes the exit; the
-    // entry is already gone, so the loop's cleanup remove is a no-op.
-    let _ = runtime.child.kill();
+    // Persist the close before ending the process, including an already-ended
+    // pane. Provider login terminals deliberately have no history record.
+    if workspace_id != PROVIDER_LOGIN_WORKSPACE_ID {
+        crate::terminal_workspace::closed(core, workspace_id, terminal_id)?;
+    }
+    let runtime = core.runtimes.lock().unwrap().remove(&runtime_id);
+    if let Some(mut runtime) = runtime { let _ = runtime.child.kill(); }
+
     Ok(())
 }
 
@@ -2646,30 +2557,8 @@ pub fn write_terminal(
     Ok(())
 }
 
-pub fn resize_terminal(
-    core: &Arc<BridgeCore>,
-    workspace_id: &str,
-    terminal_id: &str,
-    rows: u16,
-    cols: u16,
-) -> Result<(), BridgeError> {
-    if let Some(runtime) = core
-        .runtimes
-        .lock()
-        .unwrap()
-        .get_mut(&terminal_runtime_id(workspace_id, terminal_id))
-    {
-        runtime
-            .master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| BridgeError::Pty(e.to_string()))?
-    }
-    Ok(())
+pub fn resize_terminal(core: &Arc<BridgeCore>, workspace_id: &str, terminal_id: &str, rows: u16, cols: u16) -> Result<(), BridgeError> {
+    crate::terminal_workspace::resized(core, workspace_id, terminal_id, rows, cols)
 }
 
 // --- provider sign-in ---------------------------------------------------------
@@ -2862,27 +2751,46 @@ fn available_adapter_ids(core: &BridgeCore) -> HashSet<String> {
         .collect()
 }
 
-/// Enumerate slash commands + skills from every signed-in provider, so the UI
-/// can offer a labeled `/` menu.
+/// Enumerate slash commands + skills scoped to this session's active harness
+/// (plus Bridge-local builtins, which work on every harness), so the UI's `/`
+/// menu never dangles suggestions the session can't actually run.
 pub fn list_slash_commands(
     core: &Arc<BridgeCore>,
     session_id: Option<&str>,
 ) -> Result<Vec<slash::SlashCommand>, BridgeError> {
-    let project = session_id
+    let (project, session_harness): (Option<PathBuf>, Option<String>) = session_id
         .map(|session_id| {
             core.db.lock().unwrap().query_row(
-                "SELECT cwd FROM sessions WHERE id=?1",
+                "SELECT cwd, harness FROM sessions WHERE id=?1",
                 params![session_id],
-                |row| row.get::<_, Option<String>>(0),
+                |row| {
+                    Ok((
+                        row.get::<_, Option<String>>(0)?.map(PathBuf::from),
+                        row.get::<_, Option<String>>(1)?,
+                    ))
+                },
             )
         })
         .transpose()?
-        .flatten()
-        .map(PathBuf::from);
-    Ok(slash::list_commands_for_project(
-        &available_adapter_ids(core),
-        project.as_deref(),
-    ))
+        .unwrap_or((None, None));
+    let catalog = slash::list_commands_for_project(&available_adapter_ids(core), project.as_deref());
+    Ok(filter_catalog_for_session_harness(catalog, session_harness.as_deref()))
+}
+
+/// Keep only commands the session's active harness (or Bridge itself) can
+/// actually run. `None` (session-less callers, e.g. onboarding) skips the
+/// filter and returns every discovered command.
+fn filter_catalog_for_session_harness(
+    catalog: Vec<slash::SlashCommand>,
+    session_harness: Option<&str>,
+) -> Vec<slash::SlashCommand> {
+    match session_harness {
+        Some(harness) => catalog
+            .into_iter()
+            .filter(|command| command.harness == "bridge" || command.harness == harness)
+            .collect(),
+        None => catalog,
+    }
 }
 
 /// Resolve a composer `/command` against the catalog so the UI can auto-switch
@@ -3627,6 +3535,17 @@ pub fn usage_summary(
     usage_summary::summarize(&core.db.lock().unwrap(), request)
 }
 
+/// The Insights tab: the stored report, or a fresh one from a headless harness
+/// turn over Bridge's own usage, prompt, and GitHub records. Blocking — the
+/// run is bounded by `usage_insights::MAX_WALL_SECONDS`, inside the daemon
+/// client's call timeout.
+pub fn usage_insights(
+    core: &Arc<BridgeCore>,
+    params: &wire::InsightsParams,
+) -> Result<wire::UsageInsightsResult, BridgeError> {
+    crate::usage_insights::insights(core, params)
+}
+
 pub fn list_usage_price_overrides(
     core: &Arc<BridgeCore>,
 ) -> Result<Vec<usage_pricing::PriceOverride>, BridgeError> {
@@ -3705,8 +3624,9 @@ pub fn meter_snapshot() -> meter::MeterRegistry {
     meter::registry_snapshot()
 }
 
-/// Trigger the shared account-usage refresh (Claude `/usage` probe plus one
-/// live Codex session); results arrive on the `account-usage` channel.
+/// Trigger the shared account-usage refresh (Claude `/usage` probe plus Codex,
+/// from a live session when there is one and from its rollouts when there is
+/// not); results arrive on the `account-usage` channel.
 ///
 /// Coalesced: calls within 10 seconds of an accepted one return `Ok` without
 /// spawning another probe pair. Neither the tray menu nor the popover button
@@ -3723,6 +3643,14 @@ pub fn refresh_meter(core: &Arc<BridgeCore>) -> Result<(), BridgeError> {
 }
 
 // --- worktree inventory --------------------------------------------------------
+
+pub fn get_worker_settings(core: &Arc<BridgeCore>, workspace_id: &str) -> Result<wire::WorkerSettings, BridgeError> {
+    crate::worker_settings::load(&core.db.lock().unwrap(), workspace_id)
+}
+
+pub fn save_worker_settings(core: &Arc<BridgeCore>, workspace_id: &str, settings: &wire::WorkerSettings) -> Result<wire::WorkerSettings, BridgeError> {
+    crate::worker_settings::save(&core.db.lock().unwrap(), workspace_id, settings)
+}
 
 /// Every worktree Bridge knows about, with the last assessment of what may be
 /// done with it. A read: the sweep owns reclaiming.
@@ -3756,6 +3684,50 @@ pub fn worktree_usage(
 /// reclaim. A checkout that cannot be proven expendable is *kept* rather than
 /// blocking the archive, and the reason comes back with the result — putting a
 /// conversation away should not require first resolving its uncommitted work.
+pub fn list_archived_chats(core: &Arc<BridgeCore>, request: &wire::ListArchivedChatsParams) -> Result<wire::ArchivedChatsResult, BridgeError> {
+    let db = core.db.lock().unwrap();
+    let mut statement = db.prepare(
+        "WITH RECURSIVE family(root_id,id) AS (
+             SELECT id,id FROM sessions WHERE archived_at IS NOT NULL AND (?3 IS NULL OR id=?3)
+             UNION
+             SELECT f.root_id,s.id FROM sessions s JOIN family f ON s.parent_session_id=f.id
+         )
+         SELECT s.id,COALESCE(NULLIF(s.title,''),s.label),s.harness,w.title,COALESCE(s.archived_at,r.archived_at)
+         FROM sessions s LEFT JOIN workspaces w ON w.id=s.workspace_id
+         LEFT JOIN sessions r ON r.id=?3
+         WHERE (?3 IS NULL AND s.archived_at IS NOT NULL
+             AND NOT EXISTS(SELECT 1 FROM family f WHERE f.id=s.id AND f.root_id<>s.id)
+             AND EXISTS(SELECT 1 FROM family f JOIN sessions child ON child.id=f.id
+                 WHERE f.root_id=s.id AND instr(lower(COALESCE(child.title,'')||' '||child.label||' '||COALESCE(w.title,'')),lower(?1))>0))
+            OR (?3 IS NOT NULL
+                AND EXISTS(SELECT 1 FROM family f WHERE f.root_id=?3 AND f.id=s.id AND f.id<>f.root_id)
+                AND instr(lower(COALESCE(s.title,'')||' '||s.label||' '||COALESCE(w.title,'')),lower(?1))>0)
+         ORDER BY COALESCE(s.archived_at,r.archived_at) DESC,s.id LIMIT 51 OFFSET ?2",
+    )?;
+    let mut chats = statement.query_map(params![request.query.trim(), request.offset, request.root_session_id], |row| {
+        Ok(wire::ArchivedChat { id: row.get(0)?, title: row.get(1)?, harness: row.get(2)?, workspace_title: row.get(3)?, archived_at: row.get(4)? })
+    })?.collect::<Result<Vec<_>, _>>()?;
+    let has_more = chats.len() > 50;
+    chats.truncate(50);
+    Ok(wire::ArchivedChatsResult { chats, has_more })
+}
+
+/// Visibility only: never restore a checkout or start a provider here.
+pub fn unarchive_chat(core: &Arc<BridgeCore>, session_id: &str) -> Result<(), BridgeError> {
+    {
+        let mut db = core.db.lock().unwrap();
+        let tx = db.transaction()?;
+        let archived: Option<String> = tx.query_row("SELECT archived_at FROM sessions WHERE id=?1", params![session_id], |row| row.get(0))?;
+        if archived.is_some() {
+            tx.execute("UPDATE sessions SET archived_at=NULL WHERE id=?1", params![session_id])?;
+            store::event(&tx, "user", "session.unarchived", session_id, "Chat returned to history; no checkout restored or model started")?;
+        }
+        tx.commit()?;
+    }
+    core.events.publish(CoreEvent::StateChanged);
+    Ok(())
+}
+
 pub fn archive_chat(
     core: &Arc<BridgeCore>,
     session_id: &str,
@@ -3790,6 +3762,7 @@ pub fn archive_chat(
             &core.worktrees,
             &record.id,
             &worktree_registry::WorktreeRetention::default(),
+            false,
         )?),
         None => None,
     };
@@ -3830,15 +3803,24 @@ pub fn archive_chat(
 
 /// Reclaim one checkout because a person asked. A refusal comes back in the
 /// result, with its reason, rather than as an error.
+///
+/// `force` is the one place a client can widen what "asked" covers: it lets a
+/// person remove a checkout the sweep would never touch on its own —
+/// uncommitted changes, or one git cannot vouch for — because they can see it
+/// and have decided for themselves. It changes nothing about what Bridge
+/// still refuses unconditionally: a checkout it did not create, one outside
+/// its namespace, or one a live session owns.
 pub fn reclaim_worktree(
     core: &Arc<BridgeCore>,
     worktree_id: &str,
+    force: bool,
 ) -> Result<worktree_registry::WorktreeReclaimResult, BridgeError> {
     let outcome = worktree_registry::reclaim(
         &core.db,
         &core.worktrees,
         worktree_id,
         &worktree_registry::WorktreeRetention::default(),
+        force,
     )?;
     if outcome.reclaimed {
         core.events.publish(CoreEvent::StateChanged);
@@ -4708,6 +4690,36 @@ mod tests {
     use std::path::Path;
     use std::process::Command;
 
+    fn command(name: &str, harness: &str) -> crate::slash::SlashCommand {
+        crate::slash::SlashCommand {
+            name: name.into(),
+            description: String::new(),
+            harness: harness.into(),
+            kind: "builtin".into(),
+        }
+    }
+
+    #[test]
+    fn slash_catalog_filter_hides_other_harnesses_but_keeps_bridge_builtins() {
+        let catalog = vec![
+            command("recall", "bridge"),
+            command("review", "claude"),
+            command("review", "codex"),
+            command("plan", "opencode"),
+        ];
+
+        let claude_only = super::filter_catalog_for_session_harness(catalog.clone(), Some("claude"));
+        assert_eq!(
+            claude_only.iter().map(|c| (c.name.as_str(), c.harness.as_str())).collect::<Vec<_>>(),
+            vec![("recall", "bridge"), ("review", "claude")]
+        );
+
+        // A session-less caller (no session_id resolved yet) gets the full,
+        // unfiltered catalog rather than an empty menu.
+        let unfiltered = super::filter_catalog_for_session_harness(catalog, None);
+        assert_eq!(unfiltered.len(), 4);
+    }
+
     fn git_cmd(cwd: &Path, args: &[&str]) -> String {
         let output = Command::new("git").args(args).current_dir(cwd).output().unwrap();
         assert!(
@@ -4842,6 +4854,59 @@ mod tests {
         assert!(archived.is_some(), "marked archived");
         assert_eq!(stored, 1, "and still there");
         assert_eq!(session_count(&fixture.core), 1);
+    }
+
+    #[test]
+    fn archive_list_and_unarchive_restore_only_visibility() {
+        let fixture = chat_fixture();
+        super::archive_chat(&fixture.core, "chat").unwrap();
+        let request = super::wire::ListArchivedChatsParams { query: "chat".into(), offset: 0, root_session_id: None };
+        let archived = super::list_archived_chats(&fixture.core, &request).unwrap();
+        assert_eq!(archived.chats.len(), 1);
+        assert_eq!(archived.chats[0].id, "chat");
+        assert!(!archived.has_more);
+        super::unarchive_chat(&fixture.core, "chat").unwrap();
+        super::unarchive_chat(&fixture.core, "chat").unwrap();
+        assert_eq!(session_count(&fixture.core), 2);
+        assert!(!fixture.chat_worktree.exists());
+        let db = fixture.core.db.lock().unwrap();
+        let (pid, turn, ended): (Option<i64>, Option<String>, Option<String>) = db.query_row(
+            "SELECT adapter_pid,active_turn_id,ended_at FROM sessions WHERE id='chat'", [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).unwrap();
+        assert_eq!((pid, turn), (None, None));
+        assert!(ended.is_some());
+        drop(db);
+        assert!(super::list_archived_chats(&fixture.core, &request).unwrap().chats.is_empty());
+        assert!(super::unarchive_chat(&fixture.core, "missing").is_err());
+    }
+
+    #[test]
+    fn archived_roots_expose_and_search_their_descendants_without_restoring_them() {
+        let fixture = chat_fixture();
+        {
+            let db = fixture.core.db.lock().unwrap();
+            for (id, parent, title) in [("worker", "chat", "Worker trace"), ("aside", "chat", "Aside notes"), ("deep", "worker", "Nested investigation"), ("kept", "chat", "Separate archive")] {
+                db.execute("INSERT INTO sessions(id,workspace_id,harness,label,status,metric_source,parent_session_id,kind) VALUES(?1,'w','codex',?3,'idle','reported',?2,'chat')", params![id, parent, title]).unwrap();
+            }
+            crate::session_forest::SessionForest::new(&db).append("deep", crate::session_forest::EntryKind::AssistantMessage, serde_json::json!({"text":"The descendant history is preserved"})).unwrap();
+        }
+        super::archive_chat(&fixture.core, "kept").unwrap();
+        super::archive_chat(&fixture.core, "chat").unwrap();
+        assert_eq!(session_count(&fixture.core), 1, "every descendant is hidden from normal state");
+        let roots = super::list_archived_chats(&fixture.core, &super::wire::ListArchivedChatsParams { query: "Nested investigation".into(), offset: 0, root_session_id: None }).unwrap();
+        assert_eq!(roots.chats.iter().map(|chat| chat.id.as_str()).collect::<Vec<_>>(), ["chat"]);
+        let family = super::list_archived_chats(&fixture.core, &super::wire::ListArchivedChatsParams { query: String::new(), offset: 0, root_session_id: Some("chat".into()) }).unwrap();
+        let ids = family.chats.iter().map(|chat| chat.id.as_str()).collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(ids, ["worker", "aside", "deep", "kept"].into_iter().collect());
+        let replay = crate::store::session_events_after(&fixture.core.db.lock().unwrap(), "deep", 0, 200).unwrap();
+        assert_eq!(replay[0].text.as_deref(), Some("The descendant history is preserved"));
+        assert!(!fixture.chat_worktree.exists());
+        super::unarchive_chat(&fixture.core, "chat").unwrap();
+        assert_eq!(session_count(&fixture.core), 5, "the independent child archive remains hidden");
+        let roots = super::list_archived_chats(&fixture.core, &super::wire::ListArchivedChatsParams { query: String::new(), offset: 0, root_session_id: None }).unwrap();
+        assert_eq!(roots.chats[0].id, "kept");
+        assert!(!fixture.chat_worktree.exists());
     }
 
     /// Putting a conversation away should not require first resolving its

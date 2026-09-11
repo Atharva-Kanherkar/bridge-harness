@@ -1,0 +1,13 @@
+# The landing builds from the repository root because it renders `docs/` at build
+# time. Everything the build does not read is excluded so uploads stay small.
+node_modules
+landing/node_modules
+target
+src-tauri/target
+.worktrees
+sidecar/*/node_modules
+runtimes
+testing
+dist
+landing/.next
+*.dmg

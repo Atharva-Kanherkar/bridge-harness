@@ -153,11 +153,14 @@ function CopyButton({ value, label, className, children }: {
     )}
   >
     {copied
-      ? <Check size={11.5} className="text-success" aria-hidden="true" />
-      : <Copy size={11.5} aria-hidden="true" />}
+      ? <Check size={13} strokeWidth={1.7} className="text-success" aria-hidden="true" />
+      : <Copy size={13} strokeWidth={1.7} aria-hidden="true" />}
     {children}
   </button>;
 }
+
+const HEADER_ICON =
+  "inline-flex size-7 shrink-0 items-center justify-center rounded-md p-0 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground";
 
 /** Open something on github.com. Always an anchor, never a button dressed as
  * one, so the webview's own "copy link" still works. */
@@ -173,8 +176,8 @@ function OpenOnGithub({ url, what, className }: { url: string; what: string; cla
     data-system-browser
     aria-label={`Open ${what} on GitHub`}
     title="Open on GitHub"
-    className={cn("grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground", className)}
-  ><SquareArrowOutUpRight size={12} aria-hidden="true" /></a>;
+    className={cn(HEADER_ICON, className)}
+  ><SquareArrowOutUpRight size={13} strokeWidth={1.7} aria-hidden="true" /></a>;
 }
 
 /** Centered empty/availability state — the pane never renders blank. */
@@ -587,13 +590,17 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
   }
 
   return <section className="relative flex h-full w-full flex-col" aria-label="GitHub repository">
-    <header className="u-glass flex shrink-0 flex-col gap-1.5 border-b border-border px-3 py-1.5">
-      <div className="flex min-h-8 items-center gap-2">
-        <FolderGit2 size={14} className="shrink-0 text-muted-foreground" aria-hidden="true" />
-        {repoLabel && <CopyButton value={repoLabel} label={`Copy ${repoLabel}`} className="min-w-0 px-1">
-          <span className="min-w-0 truncate font-mono text-[11px]">{repoLabel}</span>
-        </CopyButton>}
-        <nav className="u-segmented ml-auto flex shrink-0 p-0.5" aria-label="GitHub sections">
+    <header className="flex shrink-0 flex-col gap-1.5 border-b border-border bg-background p-1.5">
+      <div className="flex h-8 items-center gap-1.5">
+        <div className="flex min-w-0 flex-1 items-center gap-1.5">
+          <span className="inline-flex size-7 shrink-0 items-center justify-center text-muted-foreground">
+            <FolderGit2 size={13} strokeWidth={1.7} aria-hidden="true" />
+          </span>
+          {repoLabel && <CopyButton value={repoLabel} label={`Copy ${repoLabel}`} className="h-7 min-w-0 shrink px-1.5">
+            <span className="min-w-0 truncate font-mono text-[11px]">{repoLabel}</span>
+          </CopyButton>}
+        </div>
+        <div className="u-segmented flex shrink-0 items-center p-0.5" role="toolbar" aria-label="GitHub repository actions">
           {([
             ["pulls", "Pull requests", GitPullRequest],
             ["issues", "Issues", ListTodo],
@@ -606,19 +613,19 @@ export function GitHubPane({ workspaceId, workspaceBranch, sessionId, intent, on
             data-active={surfaceTab === id}
             title={label}
             onClick={() => { setSurfaceTab(id); setSelected(undefined); setSelectedIssue(undefined); setQuery(""); }}
-            className="u-segmented-item grid size-7 place-items-center rounded-md text-muted-foreground"
-          ><Icon size={12} aria-hidden="true" /></button>)}
-        </nav>
-        {repositoryUrl && <OpenOnGithub url={repositoryUrl} what={repoLabel ?? "the repository"} />}
-        <button
-          type="button"
-          onClick={() => { void loadSurface(true); if (selected !== undefined) void openDetail(selected, true); if (selectedIssue !== undefined) void openIssue(selectedIssue, true); }}
-          aria-label="Refresh GitHub"
-          title="Refresh"
-          className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
-          <RefreshCw size={12.5} className={cn(refreshing && "animate-spin")} aria-hidden="true" />
-        </button>
+            className={cn("u-segmented-item", HEADER_ICON)}
+          ><Icon size={13} strokeWidth={1.7} aria-hidden="true" /></button>)}
+          {repositoryUrl && <OpenOnGithub url={repositoryUrl} what={repoLabel ?? "the repository"} />}
+          <button
+            type="button"
+            onClick={() => { void loadSurface(true); if (selected !== undefined) void openDetail(selected, true); if (selectedIssue !== undefined) void openIssue(selectedIssue, true); }}
+            aria-label="Refresh GitHub"
+            title="Refresh"
+            className={HEADER_ICON}
+          >
+            <RefreshCw size={13} strokeWidth={1.7} className={cn(refreshing && "animate-spin")} aria-hidden="true" />
+          </button>
+        </div>
       </div>
       {showsFilters && <div className="flex items-center gap-1.5 pb-0.5">
         <ListSearch value={query} onChange={setQuery} placeholder={surfaceTab === "pulls" ? "Filter pull requests" : "Filter issues"} />

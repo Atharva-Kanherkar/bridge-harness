@@ -647,11 +647,37 @@ async fn archive_chat(
 }
 
 #[tauri::command]
+async fn list_archived_chats(
+    query: String,
+    offset: u32,
+    root_session_id: Option<String>,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::ArchivedChatsResult, BridgeError> {
+    api::list_archived_chats(state.inner(), &bridge_protocol::messages::ListArchivedChatsParams { query, offset, root_session_id })
+}
+
+#[tauri::command]
+async fn unarchive_chat(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
+    api::unarchive_chat(state.inner(), &session_id)
+}
+
+#[tauri::command]
+async fn get_worker_settings(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::WorkerSettings, BridgeError> {
+    api::get_worker_settings(state.inner(), &workspace_id)
+}
+
+#[tauri::command]
+async fn save_worker_settings(workspace_id: String, settings: bridge_protocol::messages::WorkerSettings, state: State<'_, Arc<BridgeCore>>) -> Result<bridge_protocol::messages::WorkerSettings, BridgeError> {
+    api::save_worker_settings(state.inner(), &workspace_id, &settings)
+}
+
+#[tauri::command]
 async fn reclaim_worktree(
     worktree_id: String,
+    force: bool,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<bridge_core::worktree_registry::WorktreeReclaimResult, BridgeError> {
-    api::reclaim_worktree(state.inner(), &worktree_id)
+    api::reclaim_worktree(state.inner(), &worktree_id, force)
 }
 
 #[tauri::command]
@@ -702,6 +728,23 @@ async fn summary(
         until_time,
     };
     tauri::async_runtime::spawn_blocking(move || api::usage_summary(&core, &request))
+        .await
+        .map_err(|error| BridgeError::Invalid(error.to_string()))?
+}
+
+#[tauri::command]
+async fn insights(
+    window_days: i64,
+    refresh: bool,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<bridge_protocol::messages::UsageInsightsResult, BridgeError> {
+    let core = state.inner().clone();
+    let params = bridge_protocol::messages::InsightsParams {
+        window_days,
+        refresh,
+    };
+    // Runs a harness turn: minutes of blocking work, so off the async runtime.
+    tauri::async_runtime::spawn_blocking(move || api::usage_insights(&core, &params))
         .await
         .map_err(|error| BridgeError::Invalid(error.to_string()))?
 }
@@ -1394,6 +1437,36 @@ async fn start_provider_login(
 }
 
 #[tauri::command]
+async fn create_terminal(workspace_id: String, terminal_id: String, agent_id: Option<String>, cwd: Option<String>, restart: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::TerminalRecord, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Create terminal", move || api::create_terminal(&core, &wire::CreateTerminalParams { workspace_id, terminal_id, agent_id, cwd, restart })).await
+}
+
+#[tauri::command]
+async fn get_terminal_snapshot(workspace_id: String, terminal_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::TerminalSnapshot, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Terminal snapshot", move || api::get_terminal_snapshot(&core, &workspace_id, &terminal_id)).await
+}
+
+#[tauri::command]
+async fn get_terminal_workspace(workspace_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::TerminalWorkspace, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Terminal workspace", move || api::get_terminal_workspace(&core, &workspace_id)).await
+}
+
+#[tauri::command]
+async fn save_terminal_workspace(workspace_id: String, layout: serde_json::Value, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
+    let core = state.inner().clone();
+    blocking("Save terminal workspace", move || api::save_terminal_workspace(&core, &workspace_id, layout)).await
+}
+
+#[tauri::command]
+async fn rename_terminal(workspace_id: String, terminal_id: String, title: String, state: State<'_, Arc<BridgeCore>>) -> Result<wire::TerminalRecord, BridgeError> {
+    let core = state.inner().clone();
+    blocking("Rename terminal", move || api::rename_terminal(&core, &workspace_id, &terminal_id, &title)).await
+}
+
+#[tauri::command]
 async fn open_terminal(
     workspace_id: String,
     terminal_id: String,
@@ -1802,7 +1875,8 @@ async fn retry_worker_task(
 
 #[tauri::command]
 async fn interrupt_turn(session_id: String, state: State<'_, Arc<BridgeCore>>) -> Result<(), BridgeError> {
-    api::interrupt_turn(state.inner(), &session_id)
+    let core = state.inner().clone();
+    blocking("Interrupt turn", move || api::interrupt_turn(&core, &session_id)).await
 }
 
 /// Refresh subscription usage for every provider, independent of which session
@@ -1857,7 +1931,8 @@ async fn resize_terminal(
     cols: u16,
     state: State<'_, Arc<BridgeCore>>,
 ) -> Result<(), BridgeError> {
-    api::resize_terminal(state.inner(), &workspace_id, &terminal_id, rows, cols)
+    let core = state.inner().clone();
+    blocking("Terminal resize", move || api::resize_terminal(&core, &workspace_id, &terminal_id, rows, cols)).await
 }
 
 #[tauri::command]
@@ -1990,6 +2065,34 @@ fn select_host(
         window_chrome::apply_wallpaper_tint(&window);
         window_chrome::sync_fullscreen_chrome(&window);
     }
+    // Opening and closing the meter panel from a webview. Positioning is the
+    // tray's job, so a request from the app opens it at the default anchor.
+    let panel_handle = app.handle().clone();
+    let _ = app.listen("bridge-meter-panel", move |event| {
+        let hide = event.payload().contains("hide");
+        let handle = panel_handle.clone();
+        let _ = panel_handle.run_on_main_thread(move || {
+            if hide {
+                meter_tray::hide_panel(&handle);
+            } else {
+                meter_tray::toggle_panel(&handle, None);
+            }
+        });
+    });
+    // Raising the main window natively. The webview cannot do this itself: the
+    // window APIs are ACL-gated, and from the meter panel `getCurrentWindow()`
+    // is the panel rather than `main`. Rust holds the real handle.
+    let reveal_handle = app.handle().clone();
+    let _ = app.listen("bridge-reveal-main", move |_event| {
+        let handle = reveal_handle.clone();
+        let _ = reveal_handle.run_on_main_thread(move || {
+            if let Some(window) = handle.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        });
+    });
     let handle = app.handle().clone();
     let _ = app.listen("bridge-layout-fullscreen", move |event| {
         let fullscreen = window_chrome::parse_layout_fullscreen_payload(event.payload());
@@ -2129,6 +2232,7 @@ fn setup_embedded(
                     for event in receiver.reconciliation_events() {
                         batcher.emit(event.kind().as_str(), event.payload());
                     }
+                    batcher.emit(bridge_protocol::notifications::NotificationName::StreamLagged.as_str(), serde_json::Value::Null);
                     continue;
                 }
                 Err(bridge_core::events::ReceiveError::Closed) => break,
@@ -2235,6 +2339,10 @@ pub fn run() -> i32 {
             list_worktrees,
             worktree_usage,
             archive_chat,
+            list_archived_chats,
+            unarchive_chat,
+            get_worker_settings,
+            save_worker_settings,
             reclaim_worktree,
             sweep_worktrees,
             adopt_worker_worktree,
@@ -2246,6 +2354,7 @@ pub fn run() -> i32 {
             refresh_rates,
             list_history_sources,
             scan_history,
+            insights,
             get_meter_snapshot,
             refresh_meter,
             register_verifier_manifest,
@@ -2306,6 +2415,11 @@ pub fn run() -> i32 {
             start_session,
             start_chat,
             open_terminal,
+            create_terminal,
+            get_terminal_snapshot,
+            get_terminal_workspace,
+            save_terminal_workspace,
+            rename_terminal,
             write_terminal,
             resize_terminal,
             close_terminal,
@@ -2366,8 +2480,10 @@ pub fn run() -> i32 {
             // show it once Ready arrives, outside the setup callback.
             let result = diagnostics::native_boundary(|| select_host(app, &setup_slot))
                 .and_then(|result| result.map_err(|error| error.to_string()));
-            // The menu-bar meter tray is best-effort: a tray failure must never
-            // fail startup (CodexBar port, v1 companion surface).
+            // The menu-bar meter is best-effort: neither the panel nor the
+            // tray may fail startup. The panel is built hidden and up front so
+            // the first click shows a rendered window rather than booting one.
+            let _ = meter_tray::build_panel(app);
             let _ = meter_tray::build(app);
             if let Err(error) = result {
                 let message = format!("Bridge could not start: {error}");
@@ -2384,6 +2500,27 @@ pub fn run() -> i32 {
             }
             if matches!(event, tauri::WindowEvent::Destroyed) {
                 window_chrome::release_window_material(window.label());
+            }
+            // Menu-bar dismissal. A dropdown should not outlive your attention:
+            // the panel goes away when it loses focus, and when you go back to
+            // the app. It is shown unfocused (see `meter_tray`), so the second
+            // rule is the one that usually fires — clicking into Bridge is the
+            // common way of being done with the meter.
+            if let tauri::WindowEvent::Focused(focused) = event {
+                let app = window.app_handle();
+                match (window.label(), focused) {
+                    (meter_tray::PANEL_LABEL, false) => meter_tray::hide_panel(app),
+                    ("main", true) => meter_tray::hide_panel(app),
+                    _ => {}
+                }
+            }
+            // Closing the panel is dismissal, not teardown: it is created once
+            // at startup, so let it hide and stay available for the next click.
+            if window.label() == meter_tray::PANEL_LABEL {
+                if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
+                    let _ = window.hide();
+                }
             }
         })
         .invoke_handler(move |invoke| {
@@ -2798,6 +2935,7 @@ mod tests {
 
     #[derive(Debug, Clone, PartialEq, Eq)]
     enum ParameterShape {
+        Json,
         String,
         Boolean,
         Integer(String),
@@ -2830,6 +2968,7 @@ mod tests {
 
         let leaf = kind.rsplit("::").next().unwrap_or(kind);
         match leaf {
+            "Value" if kind == "serde_json::Value" => ParameterShape::Json,
             "String" => match (method, field) {
                 (bridge_protocol::MethodName::ResolveApproval, "decision") => {
                     ParameterShape::Reference("ApprovalDecision".into())
@@ -2881,6 +3020,10 @@ mod tests {
     }
 
     fn schema_parameter_shape(schema: &serde_json::Value) -> ParameterShape {
+        // JSON Schema's `true` accepts any JSON value, matching serde_json::Value.
+        if schema == &serde_json::Value::Bool(true) {
+            return ParameterShape::Json;
+        }
         if let Some(reference) = schema.get("$ref").and_then(serde_json::Value::as_str) {
             return ParameterShape::Reference(reference.rsplit('/').next().unwrap().into());
         }

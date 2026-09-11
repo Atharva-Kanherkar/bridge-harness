@@ -29,6 +29,12 @@ const CLAUDE_PATH = "m4.7144 15.9555 4.7174-2.6471.079-.2307-.079-.1275h-.2307l-
 /** OpenCode's frame. The inner block is the same ink at 45%. */
 const OPENCODE_FRAME_PATH = "M2.4 0h19.2v24H2.4zM7.2 4.8v14.4h9.6V4.8z";
 
+/** xAI's mark, worn by Grok Build. Drawn on a 1024 grid, scaled into the 24 box. */
+const GROK_PATHS = [
+  "M395.479 633.828L735.91 381.105C752.599 368.715 776.454 373.548 784.406 392.792C826.26 494.285 807.561 616.253 724.288 699.996C641.016 783.739 525.151 802.104 419.247 760.277L303.556 814.143C469.49 928.202 670.987 899.995 796.901 773.282C896.776 672.843 927.708 535.937 898.785 412.476L899.047 412.739C857.105 231.37 909.358 158.874 1016.4 10.6326C1018.93 7.11771 1021.47 3.60279 1024 0L883.144 141.651V141.212L395.392 633.916",
+  "M325.226 695.251C206.128 580.84 226.662 403.776 328.285 301.668C403.431 226.097 526.549 195.254 634.026 240.596L749.454 186.994C728.657 171.88 702.007 155.623 671.424 144.2C533.19 86.9942 367.693 115.465 255.323 228.382C147.234 337.081 113.244 504.215 171.613 646.833C215.216 753.423 143.739 828.818 71.7385 904.916C46.2237 931.893 20.6216 958.87 0 987.429L325.139 695.339",
+];
+
 /** A gapped ring: a spinner, which needs no brand knowledge to be right. */
 const UNKNOWN_PATH = "M12 3.4A8.6 8.6 0 1 1 3.4 12";
 
@@ -58,6 +64,7 @@ const TINTS: Record<string, string> = {
   // the second in its own greys. Neither takes a Bridge hue.
   codex: "text-foreground",
   cursor: "text-foreground",
+  grok: "text-foreground",
 };
 
 /** The same tints as backgrounds: the effort control's fill and its marks. */
@@ -66,6 +73,7 @@ const FILLS: Record<string, string> = {
   opencode: "bg-harness-opencode",
   codex: "bg-foreground",
   cursor: "bg-foreground",
+  grok: "bg-foreground",
 };
 
 /** The fill class for a harness id — muted ink for one Bridge does not know. */
@@ -76,6 +84,43 @@ export function harnessFillClass(harness?: string | null): string {
 /** The tint class for a harness id — muted ink for one Bridge does not know. */
 export function harnessTintClass(harness?: string | null): string {
   return (harness && TINTS[harness]) || "text-muted-foreground";
+}
+
+// Chart series colours. Distinct from the mark tints above: Codex and Cursor
+// draw their marks in ink, but a chart needs every series to carry a hue, and
+// the four together are validated as one categorical palette (see index.css).
+// Colour follows the harness, never its rank in a legend.
+const CHART: Record<string, { stroke: string; fill: string; wash: string; dot: string; text: string }> = {
+  codex: { stroke: "stroke-chart-codex", fill: "fill-chart-codex", wash: "fill-chart-codex/15", dot: "bg-chart-codex", text: "text-chart-codex" },
+  cursor: { stroke: "stroke-chart-cursor", fill: "fill-chart-cursor", wash: "fill-chart-cursor/15", dot: "bg-chart-cursor", text: "text-chart-cursor" },
+  claude: { stroke: "stroke-chart-claude", fill: "fill-chart-claude", wash: "fill-chart-claude/15", dot: "bg-chart-claude", text: "text-chart-claude" },
+  opencode: { stroke: "stroke-chart-opencode", fill: "fill-chart-opencode", wash: "fill-chart-opencode/15", dot: "bg-chart-opencode", text: "text-chart-opencode" },
+};
+const CHART_FALLBACK = { stroke: "stroke-muted-foreground", fill: "fill-muted-foreground", wash: "fill-muted-foreground/15", dot: "bg-muted-foreground", text: "text-muted-foreground" };
+
+/** SVG stroke class for a harness's line or arc. */
+export function harnessChartStroke(harness?: string | null): string {
+  return ((harness && CHART[harness]) || CHART_FALLBACK).stroke;
+}
+
+/** SVG fill class for a harness's bar. */
+export function harnessChartFill(harness?: string | null): string {
+  return ((harness && CHART[harness]) || CHART_FALLBACK).fill;
+}
+
+/** SVG fill class for a harness's area wash: the hue at low opacity. */
+export function harnessChartWash(harness?: string | null): string {
+  return ((harness && CHART[harness]) || CHART_FALLBACK).wash;
+}
+
+/** Background class for a harness's legend swatch or meter bar. */
+export function harnessChartDot(harness?: string | null): string {
+  return ((harness && CHART[harness]) || CHART_FALLBACK).dot;
+}
+
+/** `currentColor` carrier for SVG marks that inherit their colour. */
+export function harnessChartText(harness?: string | null): string {
+  return ((harness && CHART[harness]) || CHART_FALLBACK).text;
 }
 
 function figure(harness?: string | null) {
@@ -89,6 +134,8 @@ function figure(harness?: string | null) {
         <path d={OPENCODE_FRAME_PATH} fill="currentColor" fillRule="evenodd" />
         <rect x="7.2" y="9.6" width="9.6" height="9.6" className="fill-current opacity-45" />
       </>;
+    case "grok":
+      return <g transform="scale(0.0234375)">{GROK_PATHS.map(d => <path key={d.slice(0, 24)} d={d} fill="currentColor" />)}</g>;
     case "bridge":
       return <path d={BRIDGE_PATH} stroke="currentColor" strokeWidth={1.7} strokeLinecap="round" strokeLinejoin="round" fill="none" />;
     case "cursor":

@@ -29,6 +29,16 @@ fn window_creation_errors_are_handled_by_the_setup_hook() {
 }
 
 #[test]
+fn main_window_delivers_html_drag_and_drop_to_the_frontend() {
+    let config: tauri::utils::config::Config = serde_json::from_value(tauri_conf()).unwrap();
+    let main = config.app.windows.first().expect("main window config");
+    assert!(
+        !main.drag_drop_enabled,
+        "Tauri's native handler consumes drag/drop before WKWebView can deliver it to Mission Control and Agent Fleet"
+    );
+}
+
+#[test]
 fn bundle_targets_include_app_and_dmg() {
     let parsed = tauri_conf();
     let targets = parsed["bundle"]["targets"]

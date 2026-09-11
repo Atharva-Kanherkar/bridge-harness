@@ -92,7 +92,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Mutex, RwLock,
+        Arc, Mutex, RwLock,
     },
     thread,
     time::Duration,
@@ -781,7 +781,7 @@ pub struct CursorRuntime {
     /// session — blocks until every sender is gone, and a sender held for the
     /// runtime's whole lifetime would park it forever on a provider that died
     /// on its own. Shared with the pump so provider death clears it too.
-    events: Arc<Mutex<Option<mpsc::Sender<String>>>>,
+    events: Arc<Mutex<Option<Arc<crate::frame_queue::FrameSender>>>>,
     /// The compiled instruction stack, delivered as the preamble of the first
     /// turn. ACP has no system-prompt channel, so the first prompt is the one
     /// place the delegation protocol, memory packet, and restoration context
@@ -866,9 +866,6 @@ impl AdapterRuntime for CursorRuntime {
         let turn_id = format!("turn-{}", uuid::Uuid::new_v4());
         let mut started = NormalizedEvent::new("turn.started");
         started.data = json!({"turnId": turn_id});
-        events
-            .send(encode_event(&started))
-            .map_err(|_| self.closed())?;
         let text = crate::adapters::folded_message(
             self.pending_instructions.lock().unwrap().take(),
             context,
@@ -878,10 +875,13 @@ impl AdapterRuntime for CursorRuntime {
         thread::Builder::new()
             .name("cursor-turn".into())
             .spawn(move || {
+                // Backpressure must not park send_turn while its caller holds
+                // the adapter map: the reader may need that map to drain.
+                if events.send_durable(encode_event(&started)).is_err() { return; }
                 if let Err(error) = session.prompt(&text) {
                     let reason = redact(&error.to_string(), configured_key().as_deref());
                     let event = crate::acp_events::runtime_failed_event(error.code(), &reason);
-                    drop(events.send(encode_event(&event)));
+                    drop(events.send_durable(encode_event(&event)));
                 }
             })
             .map_err(|error| BridgeError::Invalid(error.to_string()))?;
@@ -989,7 +989,7 @@ impl Drop for CursorRuntime {
 /// has to know that this harness produces typed events rather than parsing
 /// them.
 struct CursorEventReader {
-    lines: mpsc::Receiver<String>,
+    lines: crate::frame_queue::FrameReceiver,
     pending: Vec<u8>,
     consumed: usize,
 }
@@ -1063,6 +1063,17 @@ fn decode_event(value: &Value) -> Option<NormalizedEvent> {
     })
 }
 
+fn send_cursor_event(sender: &crate::frame_queue::FrameSender, event: &NormalizedEvent) -> Result<(), crate::frame_queue::Disconnected> {
+    // Prose is lossless at this boundary: a slow reader backpressures its
+    // producer instead of relying on a later assembled message to repair it.
+    // Thinking has an authoritative completion supplied by AcpThoughtRun.
+    if event.kind == "reasoning.delta" {
+        sender.send_transient(encode_event(event)).map(|_| ())
+    } else {
+        sender.send_durable(encode_event(event))
+    }
+}
+
 /// Move the session's events onto the reader until the session is done.
 ///
 /// The offered options of every permission are recorded on the way past. This
@@ -1071,8 +1082,8 @@ fn decode_event(value: &Value) -> Option<NormalizedEvent> {
 /// ids the agent actually offered.
 fn pump_events(
     session: Arc<AcpSession>,
-    events: mpsc::Sender<String>,
-    runtime_sender: Arc<Mutex<Option<mpsc::Sender<String>>>>,
+    events: Arc<crate::frame_queue::FrameSender>,
+    runtime_sender: Arc<Mutex<Option<Arc<crate::frame_queue::FrameSender>>>>,
     approvals: Arc<Mutex<BTreeMap<u64, Vec<OfferedOption>>>>,
     pumping: Arc<AtomicBool>,
 ) {
@@ -1081,7 +1092,7 @@ fn pump_events(
         let idle = drained.is_empty();
         for event in &drained {
             record_approval(&approvals, event);
-            if events.send(encode_event(event)).is_err() {
+            if send_cursor_event(&events, event).is_err() {
                 break 'pump;
             }
         }
@@ -1092,7 +1103,7 @@ fn pump_events(
                 // closed cannot miss it.
                 for event in session.drain() {
                     record_approval(&approvals, &event);
-                    if events.send(encode_event(&event)).is_err() {
+                    if send_cursor_event(&events, &event).is_err() {
                         break 'pump;
                     }
                 }
@@ -1179,7 +1190,8 @@ fn launch(
     if let Some(on_progress) = on_progress {
         on_progress(StartupPhase::SessionOpen);
     }
-    let (sender, receiver) = mpsc::channel();
+    let (sender, receiver, _) = crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget::default());
+    let sender = Arc::new(sender);
     let approvals = Arc::new(Mutex::new(BTreeMap::new()));
     let pumping = Arc::new(AtomicBool::new(true));
     let runtime_sender = Arc::new(Mutex::new(Some(sender.clone())));
@@ -2371,18 +2383,77 @@ mod tests {
     }
 
     #[test]
+    fn stalled_cursor_reader_preserves_every_acp_message_chunk() {
+        use std::sync::mpsc;
+        let chunk = |index: usize| crate::acp_events::session_update_event(
+            &serde_json::from_value(json!({
+                "sessionUpdate": "agent_message_chunk",
+                "content": { "type": "text", "text": format!("chunk-{index};") }
+            })).unwrap(),
+        );
+        let (sender, receiver, metrics) = crate::frame_queue::bounded_frame_queue(
+            crate::frame_queue::QueueBudget { max_items: 4, max_bytes: 4096 },
+        );
+        for index in 0..4 { send_cursor_event(&sender, &chunk(index)).unwrap(); }
+        let (done_tx, done_rx) = mpsc::channel();
+        let producer = thread::spawn(move || {
+            for index in 4..1000 { send_cursor_event(&sender, &chunk(index)).unwrap(); }
+            done_tx.send(()).unwrap();
+        });
+        // A stalled consumer must backpressure prose, never evict it. No
+        // fabricated message.completed can conceal a lost chunk in this test.
+        assert!(matches!(done_rx.recv_timeout(Duration::from_millis(100)), Err(mpsc::RecvTimeoutError::Timeout)));
+        assert!(metrics.snapshot().bytes <= 4096);
+        let mut received = Vec::new();
+        while let Ok(line) = receiver.recv() {
+            let event = decode_event(&serde_json::from_str(&line).unwrap()).unwrap();
+            assert_eq!(event.kind, "message.delta");
+            received.push(event.text.unwrap());
+        }
+        producer.join().unwrap();
+        assert_eq!(received, (0..1000).map(|index| format!("chunk-{index};")).collect::<Vec<_>>());
+        assert_eq!(metrics.snapshot().dropped_transient, 0);
+    }
+
+    #[test]
+    fn stalled_cursor_reader_sheds_only_recoverable_thinking() {
+        let (sender, receiver, metrics) = crate::frame_queue::bounded_frame_queue(
+            crate::frame_queue::QueueBudget { max_items: 4, max_bytes: 2048 },
+        );
+        let mut run = crate::acp_events::AcpThoughtRun::default();
+        for _ in 0..100 {
+            let mut delta = crate::acp_events::session_update_event(
+                &serde_json::from_value(json!({
+                    "sessionUpdate": "agent_thought_chunk",
+                    "content": { "type": "text", "text": "thinking;" }
+                })).unwrap(),
+            );
+            assert!(run.absorb(&mut delta).is_none());
+            send_cursor_event(&sender, &delta).unwrap();
+        }
+        let terminal = run.close().unwrap();
+        send_cursor_event(&sender, &terminal).unwrap();
+        drop(sender);
+        let mut last = None;
+        while let Ok(line) = receiver.recv() { last = decode_event(&serde_json::from_str(&line).unwrap()); }
+        assert_eq!(last, Some(terminal));
+        assert!(metrics.snapshot().dropped_transient > 0);
+    }
+
+    #[test]
     fn the_reader_yields_one_line_per_event_and_then_end_of_file() {
-        let (sender, receiver) = mpsc::channel();
+        let (sender, receiver, _) = crate::frame_queue::bounded_frame_queue(crate::frame_queue::QueueBudget::default());
+        let sender = Arc::new(sender);
         let mut reader = CursorEventReader {
             lines: receiver,
             pending: Vec::new(),
             consumed: 0,
         };
         sender
-            .send(encode_event(&NormalizedEvent::new("turn.started")))
+            .send_durable(encode_event(&NormalizedEvent::new("turn.started")))
             .unwrap();
         sender
-            .send(encode_event(&NormalizedEvent::new("turn.completed")))
+            .send_durable(encode_event(&NormalizedEvent::new("turn.completed")))
             .unwrap();
         drop(sender);
 

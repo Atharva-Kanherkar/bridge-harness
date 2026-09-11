@@ -101,6 +101,10 @@ methods![
     (RefreshAccountUsage, "sessions", "refresh_account_usage"),
     (StopSession, "sessions", "stop_session"),
     (ArchiveChat, "sessions", "archive_chat"),
+    (GetWorkerSettings, "config", "get_worker_settings"),
+    (SaveWorkerSettings, "config", "save_worker_settings"),
+    (ListArchivedChats, "sessions", "list_archived_chats"),
+    (UnarchiveChat, "sessions", "unarchive_chat"),
     // memory — explicit named-scope pins; not recall, not the router
     (SaveMemoryRecord, "memory", "save_memory_record"),
     (ListMemoryRecords, "memory", "list_memory_records"),
@@ -131,6 +135,11 @@ methods![
     (ResizeTerminal, "terminal", "resize_terminal"),
     (CloseTerminal, "terminal", "close_terminal"),
     (ListTerminals, "terminal", "list_terminals"),
+    (CreateTerminal, "terminal", "create_terminal"),
+    (GetTerminalSnapshot, "terminal", "get_terminal_snapshot"),
+    (GetTerminalWorkspace, "terminal", "get_terminal_workspace"),
+    (SaveTerminalWorkspace, "terminal", "save_terminal_workspace"),
+    (RenameTerminal, "terminal", "rename_terminal"),
     // slash commands
     (ListSlashCommands, "slash", "list_slash_commands"),
     (ResolveSlashCommand, "slash", "resolve_slash_command"),
@@ -160,6 +169,7 @@ methods![
     (RefreshUsageRates, "usage", "refresh_rates"),
     (ListHistorySources, "usage", "list_history_sources"),
     (ScanHistory, "usage", "scan_history"),
+    (UsageInsights, "usage", "insights"),
     // menu-bar meter (CodexBar port)
     (GetMeterSnapshot, "meter", "get_meter_snapshot"),
     (RefreshMeter, "meter", "refresh_meter"),

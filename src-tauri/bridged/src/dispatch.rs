@@ -377,6 +377,26 @@ pub fn dispatch(
             reply(api::start_provider_login(core, &p.provider))
         }
 
+        MethodName::CreateTerminal => {
+            let p: wire::CreateTerminalParams = decode(method, params)?;
+            reply(api::create_terminal(core, &p))
+        }
+        MethodName::GetTerminalSnapshot => {
+            let p: wire::GetTerminalSnapshotParams = decode(method, params)?;
+            reply(api::get_terminal_snapshot(core, &p.workspace_id, &p.terminal_id))
+        }
+        MethodName::GetTerminalWorkspace => {
+            let p: wire::GetTerminalWorkspaceParams = decode(method, params)?;
+            reply(api::get_terminal_workspace(core, &p.workspace_id))
+        }
+        MethodName::SaveTerminalWorkspace => {
+            let p: wire::SaveTerminalWorkspaceParams = decode(method, params)?;
+            reply(api::save_terminal_workspace(core, &p.workspace_id, p.layout))
+        }
+        MethodName::RenameTerminal => {
+            let p: wire::RenameTerminalParams = decode(method, params)?;
+            reply(api::rename_terminal(core, &p.workspace_id, &p.terminal_id, &p.title))
+        }
         MethodName::OpenTerminal => {
             let p: wire::OpenTerminalParams = decode(method, params)?;
             reply(api::open_terminal(core, &p.workspace_id, &p.terminal_id))
@@ -459,17 +479,37 @@ pub fn dispatch(
         MethodName::WorktreeUsageReport => reply(api::worktree_usage(core)),
         MethodName::ReclaimWorktree => {
             let p: wire::ReclaimWorktreeParams = decode(method, params)?;
-            reply(api::reclaim_worktree(core, &p.worktree_id))
+            reply(api::reclaim_worktree(core, &p.worktree_id, p.force))
         }
         MethodName::SweepWorktrees => reply(api::sweep_worktrees(core)),
         MethodName::ArchiveChat => {
             let p: wire::ArchiveChatParams = decode(method, params)?;
             reply(api::archive_chat(core, &p.session_id))
         }
+        MethodName::ListArchivedChats => {
+            let p: wire::ListArchivedChatsParams = decode(method, params)?;
+            reply(api::list_archived_chats(core, &p))
+        }
+        MethodName::GetWorkerSettings => {
+            let p: wire::GetWorkerSettingsParams = decode(method, params)?;
+            reply(api::get_worker_settings(core, &p.workspace_id))
+        }
+        MethodName::SaveWorkerSettings => {
+            let p: wire::SaveWorkerSettingsParams = decode(method, params)?;
+            reply(api::save_worker_settings(core, &p.workspace_id, &p.settings))
+        }
+        MethodName::UnarchiveChat => {
+            let p: wire::UnarchiveChatParams = decode(method, params)?;
+            reply(api::unarchive_chat(core, &p.session_id))
+        }
         MethodName::UsageSummary => {
             let p: wire::SummaryParams = decode(method, params)?;
             let request = into_core(method, &p)?;
             reply(api::usage_summary(core, &request))
+        }
+        MethodName::UsageInsights => {
+            let p: wire::InsightsParams = decode(method, params)?;
+            reply(api::usage_insights(core, &p))
         }
         MethodName::ListUsagePriceOverrides => reply(api::list_usage_price_overrides(core)),
         MethodName::SetUsagePriceOverride => {

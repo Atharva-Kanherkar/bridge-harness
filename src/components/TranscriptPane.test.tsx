@@ -75,6 +75,18 @@ describe("TranscriptPane stream", () => {
     expect(container.textContent).toContain("message.completed");
   });
 
+  it("insets stream rows evenly from both edges", async () => {
+    const loader = vi.fn<TranscriptLoader>().mockResolvedValue([event(1, 1, "message.completed", { status: "completed" })]);
+    await mount(<TranscriptPane sessionId="s" events={[]} loadOlder={loader} />);
+    const row = container.querySelector("button[aria-expanded]")!;
+    expect(row.className).toMatch(/(?:^|\s)px-2(?:\s|$)/);
+    expect(row.className).not.toContain("px-2.5");
+    const sequence = row.querySelector("span")!;
+    expect(sequence.className).toContain("tabular-nums");
+    expect(sequence.className).not.toContain("text-right");
+    expect(container.firstElementChild!.querySelector(".border-b")!.className).toMatch(/(?:^|\s)px-2(?:\s|$)/);
+  });
+
   it("pages backward until sequence one is loaded", async () => {
     const first = Array.from({ length: TRANSCRIPT_PAGE_SIZE }, (_, index) => event(500 + index, 500 + index, "message.delta"));
     const loader = vi.fn<TranscriptLoader>().mockResolvedValue(first);

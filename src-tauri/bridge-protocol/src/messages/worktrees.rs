@@ -69,6 +69,11 @@ pub struct WorktreeUsage {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ReclaimWorktreeParams {
     pub worktree_id: String,
+    /// Remove it even if the sweep would refuse: uncommitted changes, or a
+    /// checkout git cannot vouch for. Never overrides a checkout Bridge did
+    /// not create, one outside its namespace, or one a live session owns.
+    #[serde(default)]
+    pub force: bool,
 }
 
 /// What an explicit reclaim did, or why it did not. Mirrors
@@ -104,6 +109,12 @@ pub struct ArchiveChatParams {
     pub session_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct UnarchiveChatParams {
+    pub session_id: String,
+}
+
 /// What archiving a chat did. Mirrors
 /// `bridge_core::worktree_registry::ArchiveChatResult`.
 ///
@@ -116,4 +127,33 @@ pub struct ArchiveChatResult {
     pub archived: bool,
     pub bytes_freed: i64,
     pub worktree_detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListArchivedChatsParams {
+    #[serde(default)]
+    pub query: String,
+    #[serde(default)]
+    pub offset: u32,
+    /// When set, list descendants within this archived root instead of roots.
+    #[serde(default)]
+    pub root_session_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchivedChat {
+    pub id: String,
+    pub title: String,
+    pub harness: String,
+    pub workspace_title: Option<String>,
+    pub archived_at: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct ArchivedChatsResult {
+    pub chats: Vec<ArchivedChat>,
+    pub has_more: bool,
 }

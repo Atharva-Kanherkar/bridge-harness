@@ -233,6 +233,9 @@ describe("AgentConversation", () => {
     const html = renderToStaticMarkup(<AgentConversation session={session} onResolve={() => undefined} events={[]} forestEntries={undefined} />);
     expect(html).toContain('aria-label="Loading conversation"');
     expect(html).toContain("Loading conversation");
+    expect(html).toContain("Opening conversation");
+    expect(html).not.toContain("animate-pulse");
+    expect(html).not.toContain('style="');
     expect(html).not.toContain("What should we");
   });
 
@@ -256,6 +259,9 @@ describe("AgentConversation", () => {
     expect(html).toContain("abcdef123456");
     expect(html).toContain("Browser unavailable");
     expect(html).toContain("Skipped");
+    expect(html).toContain("border-x-2");
+    expect(html).toContain("border-x-warning");
+    expect(html).not.toContain("border-l-2");
   });
 
   it.each([

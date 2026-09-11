@@ -781,6 +781,23 @@ pub struct SessionForestSnapshot {
     pub policy_limits: PolicyLimits,
     pub repository_divergence: RepositoryDivergence,
     pub completion: Option<crate::completion::CompletionSummary>,
+    pub entry_window: SessionEntryWindowSummary,
+}
+
+/// How much of a session's history the snapshot actually carries.
+///
+/// A snapshot is a bounded frame, not the whole ledger, so the UI has to be
+/// able to say "showing the latest 1500 of 7344" rather than silently
+/// presenting a truncated conversation as the complete one.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionEntryWindowSummary {
+    /// Entries in this snapshot.
+    pub returned: i64,
+    /// Entries the active branch has in total.
+    pub total: i64,
+    /// Entries whose payload had oversized strings shortened for display.
+    pub trimmed_payloads: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

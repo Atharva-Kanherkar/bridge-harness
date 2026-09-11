@@ -29,6 +29,9 @@ const HOSTS: { id: "local" | "cloud" | "ssh"; label: string; icon: LucideIcon; d
   { id: "ssh", label: "SSH", icon: Terminal, disabled: true },
 ];
 
+const CHIP =
+  "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[12px] tracking-[-0.01em] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground";
+
 function ContextHelp({ text, onNewChat }: { text: string; onNewChat?: () => void }) {
   return <>
     <p className="px-3 py-2 text-caption text-muted-foreground">{text}</p>
@@ -72,11 +75,7 @@ export function ComposerContextStrip({
         aria-expanded={repoMenu.open}
         title={workspace?.title ?? "No project"}
         onClick={repoMenu.toggle}
-        className={cn(
-          "inline-flex h-7 min-w-0 max-w-[16rem] flex-1 items-center gap-1.5 rounded-md px-2 text-[12px] tracking-[-0.01em] text-muted-foreground transition-colors",
-          "hover:bg-accent hover:text-foreground",
-          repoMenu.open && "bg-accent text-foreground",
-        )}
+        className={cn(CHIP, "min-w-0 max-w-[16rem] flex-1", repoMenu.open && "bg-accent text-foreground")}
       >
         <FolderGit2 size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
         <span className="min-w-0 truncate">{workspace?.title ?? "No project"}</span>
@@ -108,12 +107,7 @@ export function ComposerContextStrip({
           if (!locked && branchAvailable && !branchBusy) onRequestBranches();
           branchMenu.toggle();
         }}
-        className={cn(
-          "inline-flex h-7 min-w-0 max-w-[16rem] flex-1 items-center gap-1.5 rounded-md px-2 text-[12px] tracking-[-0.01em] text-muted-foreground transition-colors",
-          "hover:bg-accent hover:text-foreground",
-          branchMenu.open && "bg-accent text-foreground",
-          branchBusy && "opacity-70",
-        )}
+        className={cn(CHIP, "min-w-0 max-w-[16rem] flex-1", branchMenu.open && "bg-accent text-foreground", branchBusy && "opacity-70")}
       >
         <GitBranch size={13} strokeWidth={1.7} className="shrink-0" aria-hidden="true" />
         <span className="min-w-0 truncate">{displayedBranch}</span>
@@ -156,10 +150,7 @@ export function ComposerContextStrip({
         aria-expanded={worktreeMenu.open}
         title={worktree ? "Isolated worktree" : "Work on branch"}
         onClick={worktreeMenu.toggle}
-        className={cn(
-          "inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
-          worktreeMenu.open && "bg-accent text-foreground",
-        )}
+        className={cn(CHIP, "shrink-0", worktreeMenu.open && "bg-accent text-foreground")}
       >
         <GitFork size={13} strokeWidth={1.7} aria-hidden="true" />
         <span className="hidden @xl/composer-context:inline">{worktree ? "Isolated worktree" : "Work on branch"}</span>
@@ -192,10 +183,7 @@ export function ComposerContextStrip({
         aria-expanded={hostMenu.open}
         title="This Mac"
         onClick={hostMenu.toggle}
-        className={cn(
-          "ml-auto inline-flex h-7 shrink-0 items-center gap-1.5 rounded-md px-2 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground",
-          hostMenu.open && "bg-accent text-foreground",
-        )}
+        className={cn(CHIP, "ml-auto shrink-0", hostMenu.open && "bg-accent text-foreground")}
       >
         <Laptop size={13} strokeWidth={1.7} aria-hidden="true" />
         <span className="hidden @xl/composer-context:inline">This Mac</span>

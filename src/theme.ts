@@ -183,6 +183,26 @@ export function watchSystemTheme(onChange: (prefersDark: boolean) => void): () =
 /** Broadcast so every mounted consumer stays in sync with a single source. */
 const THEME_EVENT = "bridge:theme";
 
+/** Appearance keys, so a second webview can tell a theme write from any other
+ *  `storage` event. localStorage changes broadcast to every other same-origin
+ *  document, which is the only channel the meter panel and the main window
+ *  share — `THEME_EVENT` is dispatched on `window` and never leaves its own. */
+export const THEME_STORAGE_KEYS = [THEME_STORAGE_KEY, SKIN_STORAGE_KEY, EFFORT_SELECTOR_STORAGE_KEY];
+
+/** Re-apply appearance in this document when another one changes it. Returns
+ *  an unsubscribe. The main window does not need this — it owns the writes and
+ *  hears them through `THEME_EVENT` — but any other webview does. */
+export function followThemeAcrossWindows(): () => void {
+  const onStorage = (event: StorageEvent) => {
+    if (event.key != null && !THEME_STORAGE_KEYS.includes(event.key)) return;
+    applyTheme(readThemePreference());
+    applySkin(readThemeSkin());
+    window.dispatchEvent(new Event(THEME_EVENT));
+  };
+  window.addEventListener("storage", onStorage);
+  return () => window.removeEventListener("storage", onStorage);
+}
+
 /**
  * Reads the stored preference, keeps the document in sync with it, and follows
  * macOS appearance while the preference is "system".

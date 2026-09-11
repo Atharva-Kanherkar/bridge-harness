@@ -16,6 +16,13 @@ const REPLACEABLE_SNAPSHOTS = new Set(["tool.progress"]);
 // are the live, transient frames only.
 export const MAX_MERGED_EVENT_TEXT = 256_000;
 export const MAX_TOTAL_EVENT_TEXT = 2_000_000;
+export const MAX_TOTAL_EVENT_BYTES = 8 * 1024 * 1024;
+const eventSizes = new WeakMap<AgentEvent, number>();
+function retainedSize(event: AgentEvent): number {
+  let size = eventSizes.get(event);
+  if (size === undefined) { size = JSON.stringify(event).length * 2; eventSizes.set(event, size); }
+  return size;
+}
 export const MAX_PENDING_AGENT_EVENTS = 256;
 
 function mergeKey(event: AgentEvent): string | undefined {
@@ -99,9 +106,11 @@ export function appendAgentEventBatch(current: AgentEvent[], incoming: AgentEven
   }
   const bounded = next.length > limit ? next.slice(-limit) : next;
   let total = 0;
+  let bytes = 0;
   for (let index = bounded.length - 1; index >= 0; index -= 1) {
     total += bounded[index].text?.length ?? 0;
-    if (total > MAX_TOTAL_EVENT_TEXT) return bounded.slice(index + 1);
+    bytes += retainedSize(bounded[index]);
+    if (total > MAX_TOTAL_EVENT_TEXT || bytes > MAX_TOTAL_EVENT_BYTES) return bounded.slice(index + 1);
   }
   return bounded;
 }

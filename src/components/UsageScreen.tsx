@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Gauge, LoaderCircle, RefreshCw, RotateCcw } from "lucide-react";
+import { ChevronDown, Gauge, LoaderCircle, RefreshCw, RotateCcw } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { bridgeApi } from "../api";
 import { harnessLabel } from "../utils";
@@ -7,6 +7,8 @@ import type { UsageHistorySource, UsagePriceOverride, UsageSummaryResult } from 
 import { HarnessMark } from "./harnessMarks";
 import { SCREEN_CONTENT, ScreenHeading } from "./ui/screen";
 import { UsageChart, seriesDotClass } from "./UsageChart";
+import { UsageInsights } from "./UsageInsights";
+import { UsageHeatmap } from "./UsageHeatmap";
 import {
   buildChartSeries, buildUsageReport, costSourceLabel, enumeratePeriods, formatCount, formatDayShort, formatPercent, formatPeriodLabel, formatTokens, formatUsd, formatWindowLabel,
   makeUsageWindow, microToUsdPerMtok, readUsagePreferences, summaryParams, USAGE_WINDOW_OPTIONS, usdPerMtokToMicro, writeUsagePreferences,
@@ -29,6 +31,7 @@ const NUM = "text-right tabular-nums";
 const MAX_SCAN_PASSES = 25;
 
 type Breakdown = "model" | "time";
+type UsageTab = "usage" | "insights";
 
 function windowLabel(days: UsageWindowDays): string {
   return days === 1 ? "24h" : `${days}d`;
@@ -76,6 +79,8 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
   const [sources, setSources] = useState<UsageHistorySource[]>([]);
   const [overrides, setOverrides] = useState<UsagePriceOverride[]>([]);
   const [breakdown, setBreakdown] = useState<Breakdown>("model");
+  const [tab, setTab] = useState<UsageTab>("usage");
+  const [activityOpen, setActivityOpen] = useState(false);
   const [scanning, setScanning] = useState(preferences.includeImported);
   const [scanFailed, setScanFailed] = useState(false);
   const [refreshingRates, setRefreshingRates] = useState(false);
@@ -224,32 +229,29 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
     : [];
   const historyIncomplete = preferences.includeImported && (scanning || scanFailed || incompleteSources.some(source => source.capability === "supported"));
   const partialTotal = loading || historyIncomplete;
+  const partialLabel = scanning ? "Loading history" : loading ? "Updating usage" : "History incomplete";
 
   return <div className="h-full min-h-0 overflow-y-auto">
     <div className={SCREEN_CONTENT}>
       <ScreenHeading
         title="Usage"
-        description="Tokens processed across harnesses and what they would cost at API rates. Not money spent: subscription plans bill separately."
-        action={<span className="inline-flex shrink-0 items-center gap-1">
+        description={tab === "usage" ? "Tokens processed across harnesses and what they would cost at API rates. Not money spent: subscription plans bill separately." : "What your usage says about how you work, written by your harness from Bridge's own records."}
+        action={<span className="inline-flex shrink-0 items-center gap-2">
+          <Segmented<UsageTab> label="View" value={tab} options={[{ value: "usage", label: "Usage" }, { value: "insights", label: "Insights" }]} onChange={setTab} />
           {onOpenMeter && <button type="button" onClick={onOpenMeter} aria-label="Open usage meter" title="Usage meter" className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"><Gauge size={14} aria-hidden="true" /></button>}
           <button type="button" onClick={() => setRefreshTick(tick => tick + 1)} disabled={loading || scanning} aria-label="Refresh usage" aria-busy={loading || scanning} className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40"><RefreshCw size={14} className={loading || scanning ? "animate-spin" : ""} /></button>
         </span>}
       />
 
-      <div className="mb-5 flex flex-wrap items-center gap-3">
+      {tab === "insights" ? <UsageInsights windowDays={preferences.windowDays} onError={onError} /> : <>
+      <div className="mb-5 flex flex-wrap items-start gap-3">
         <Segmented<UsageMetric> label="Metric" value={metric} options={[{ value: "cost", label: "Cost" }, { value: "tokens", label: "Tokens" }]} onChange={value => update({ metric: value })} />
         <Segmented<UsageWindowDays> label="Window" value={preferences.windowDays} options={USAGE_WINDOW_OPTIONS.map(days => ({ value: days, label: windowLabel(days) }))} onChange={value => update({ windowDays: value })} />
-        <button type="button" aria-pressed={preferences.includeImported} onClick={() => update({ includeImported: !preferences.includeImported })} className={cn("inline-flex h-8 items-center gap-2 rounded-lg border border-border px-3 text-caption transition-colors hover:bg-accent", preferences.includeImported ? "text-foreground" : "text-muted-foreground")}>
-          <span className={cn("size-2 rounded-full", preferences.includeImported ? "bg-foreground" : "bg-border")} aria-hidden="true" />Include history
-        </button>
-        <span className="ml-auto text-caption tabular-nums text-muted-foreground">{formatWindowLabel(window_)}</span>
+        <span className="ml-auto pt-2 text-caption tabular-nums text-muted-foreground">{formatWindowLabel(window_)}</span>
       </div>
 
-      <p className="mb-3 text-caption text-muted-foreground">{preferences.includeImported ? "Bridge sessions + imported local history on this device" : "Bridge sessions only. Local history is excluded."}</p>
-      {partialTotal && <p role="status" className="mb-3 text-caption text-warning">{scanning ? "Loading history. The displayed total is incomplete." : loading ? "Updating usage. The displayed total is incomplete." : "History is incomplete. The displayed number is a partial total."}</p>}
-
       {report && (incompleteSources.length > 0 || summary!.duplicatesDropped > 0 || report.totals.unpricedRecords > 0) && <ul className="mb-5 space-y-1 text-caption text-muted-foreground" aria-label="Coverage notes">
-        {incompleteSources.map(source => <li key={source.id}>{harnessLabel(source.agent)} history is <span className={coverageTone(source.coverageState)}>{source.coverageState}</span>{source.coverageReason ? `: ${source.coverageReason}` : "."}</li>)}
+        {incompleteSources.map(source => <li key={source.id}>{harnessLabel(source.agent)} history is still loading.</li>)}
         {summary!.duplicatesDropped > 0 && <li>{formatCount(summary!.duplicatesDropped)} live records were counted once against their imported transcripts.</li>}
         {report.totals.unpricedRecords > 0 && <li>{formatCount(report.totals.unpricedRecords)} records have no known rate or complete pricing inputs; their cost is unknown, not free. Their tokens are included.</li>}
       </ul>}
@@ -257,13 +259,13 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
       {loading && !summary ? <div role="status" className="grid h-56 place-items-center text-caption text-muted-foreground"><LoaderCircle size={16} className="animate-spin" aria-hidden="true" /><span className="sr-only">Loading usage</span></div> : report && <>
         <section className="grid gap-4 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]" aria-label="Summary">
           <div className={CARD}>
-            {partialTotal && <p className="mb-1 text-caption text-warning">Partial total</p>}
+            {partialTotal && <span role="status" className="mb-2 inline-flex items-center gap-1.5 rounded-full border border-border bg-muted/40 px-2 py-1 text-[11px] text-muted-foreground"><span className="size-1.5 rounded-full bg-muted-foreground/50" aria-hidden="true" />Partial total · {partialLabel}</span>}
             <div className="font-display text-4xl font-semibold tabular-nums tracking-tight text-foreground">{metric === "cost" ? formatUsd(report.totals.costMicrousd) : formatTokens(report.totals.processedTokens)}</div>
             <p className="mt-1 text-caption text-muted-foreground">{formatCount(report.totals.records)} requests{metric === "cost" ? ` · API estimate · ${costSourceLabel(report.costSource)}` : " · processed tokens"}</p>
             <ul className="mt-4 space-y-2.5" aria-label="By harness">
               {report.harnesses.length === 0 && <li className="text-caption text-muted-foreground">No activity in this window.</li>}
-              {report.harnesses.map((entry, index) => <li key={entry.harness} className="flex items-start justify-between gap-3">
-                <span className="inline-flex min-w-0 items-center gap-2 text-ui text-foreground"><span className={cn("size-2 shrink-0 rounded-[3px]", seriesDotClass(series.findIndex(item => item.harness === entry.harness) === -1 ? index : series.findIndex(item => item.harness === entry.harness)))} aria-hidden="true" /><HarnessMark harness={entry.harness} size={13} /><span className="truncate">{harnessLabel(entry.harness)}</span></span>
+              {report.harnesses.map(entry => <li key={entry.harness} className="flex items-start justify-between gap-3">
+                <span className="inline-flex min-w-0 items-center gap-2 text-ui text-foreground"><span className={cn("size-2 shrink-0 rounded-[3px]", seriesDotClass(entry.harness))} aria-hidden="true" /><HarnessMark harness={entry.harness} size={13} /><span className="truncate">{harnessLabel(entry.harness)}</span></span>
                 <span className="text-right">
                   <span className="block text-ui tabular-nums text-foreground">{metric === "cost" ? formatUsd(entry.costMicrousd) : formatTokens(entry.processedTokens)}</span>
                   <span className="block text-[11px] tabular-nums text-muted-foreground">{metric === "cost" ? `${formatPercent(entry.costShare)} of cost · ${formatTokens(entry.processedTokens)} tokens` : `${formatPercent(entry.tokenShare)} of tokens · ${formatUsd(entry.costMicrousd)}`}</span>
@@ -275,6 +277,17 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
             <h2 className="mb-3 text-ui font-medium text-foreground">{window_.resolution === "hour" ? "Hourly" : "Daily"} {metric === "cost" ? "cost" : "processed tokens"}</h2>
             <UsageChart series={series} periods={periods} resolution={window_.resolution} timeZone={window_.timeZone} metric={metric} />
           </div>
+        </section>
+
+        <section className={cn(CARD, "mt-4 py-3")} aria-label="Activity">
+          <button type="button" aria-expanded={activityOpen} aria-controls="usage-activity" onClick={() => setActivityOpen(open => !open)} className="flex w-full items-center gap-2 text-left">
+            <h2 className="text-ui font-medium text-foreground">Activity</h2>
+            <span className="text-caption text-muted-foreground">{window_.resolution === "hour" ? "by hour" : "by day"}, coloured by harness</span>
+            <ChevronDown size={14} className={cn("ml-auto text-muted-foreground transition-transform", activityOpen && "rotate-180")} aria-hidden="true" />
+          </button>
+          {activityOpen && <div id="usage-activity" className="mt-3">
+            <UsageHeatmap periods={report.periods} resolution={window_.resolution} timeZone={window_.timeZone} metric={metric} />
+          </div>}
         </section>
 
         <section className="mt-4 grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6" aria-label="Totals">
@@ -342,8 +355,14 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
             {sources.map(source => <li key={source.id} className="flex flex-wrap items-start justify-between gap-x-4 gap-y-1 py-2.5">
               <div className="min-w-0">
                 <div className="inline-flex items-center gap-2 text-ui text-foreground"><HarnessMark harness={source.agent} size={13} />{harnessLabel(source.agent)}<span className={cn("text-caption", coverageTone(source.coverageState))}>{coverageLabel(source.coverageState)}</span></div>
-                <div className="font-mono text-[11px] text-muted-foreground">{source.location}</div>
-                {(source.coverageReason || source.lastError) && <div className="text-caption text-muted-foreground">{source.lastError ?? source.coverageReason}</div>}
+                <p className="text-caption text-muted-foreground">{source.capability === "supported" ? "Local usage history" : "History is not available for this harness"}</p>
+                {(source.location || source.coverageReason || source.lastError) && <details className="mt-1 text-[11px] text-muted-foreground">
+                  <summary className="w-fit cursor-pointer select-none hover:text-foreground">Technical details</summary>
+                  <div className="mt-1 space-y-1 border-l border-border pl-2">
+                    {source.location && <div className="break-all font-mono">{source.location}</div>}
+                    {(source.coverageReason || source.lastError) && <div>{source.lastError ?? source.coverageReason}</div>}
+                  </div>
+                </details>}
               </div>
               {source.capability === "supported" && <div className="text-right text-[11px] tabular-nums text-muted-foreground">
                 <div>{formatCount(source.recordsImported)} imported · {formatCount(source.recordsSkipped)} skipped</div>
@@ -354,6 +373,7 @@ export function UsageScreen({ onError, onOpenMeter }: { onError: (message: strin
         </section>
 
         <PriceSection report={report} summary={summary!} overrides={overrides} refreshing={refreshingRates} onRefreshRates={() => void refreshRates()} onChange={changeOverrides} />
+      </>}
       </>}
     </div>
   </div>;
@@ -406,10 +426,10 @@ function PriceSection({ report, summary, overrides, refreshing, onRefreshRates, 
         <h2 className="text-ui font-medium text-foreground">Model prices</h2>
         <p className="text-caption text-muted-foreground">USD per million tokens. Overrides apply to all past and future usage; blank cache rates use the automatic rate.</p>
       </div>
-      <div className="flex items-center gap-3 text-caption tabular-nums text-muted-foreground">
-        <span>Rates {summary.pricing.source} · snapshot {summary.pricing.snapshotDate} · {formatCount(summary.pricing.knownModels)} models · {formatCount(summary.pricing.overrides)} overrides</span>
-        <button type="button" onClick={onRefreshRates} disabled={refreshing} className="inline-flex h-8 items-center gap-2 rounded-lg border border-border px-3 text-caption text-foreground transition-colors hover:bg-accent disabled:opacity-40">
-          {refreshing ? <LoaderCircle size={13} className="animate-spin" aria-hidden="true" /> : <RefreshCw size={13} aria-hidden="true" />}Refresh rates
+      <div className="flex items-center gap-1 text-caption tabular-nums text-muted-foreground">
+        <span>Snapshot {summary.pricing.snapshotDate} · {formatCount(summary.pricing.knownModels)} models{summary.pricing.overrides > 0 ? ` · ${formatCount(summary.pricing.overrides)} overrides` : ""}</span>
+        <button type="button" onClick={onRefreshRates} disabled={refreshing} aria-label="Refresh rates" aria-busy={refreshing} title={`Refresh rates from ${summary.pricing.source}`} className="inline-flex h-8 w-8 items-center justify-center rounded-lg text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40">
+          <RefreshCw size={13} className={refreshing ? "animate-spin" : ""} aria-hidden="true" />
         </button>
       </div>
     </div>

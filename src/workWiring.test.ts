@@ -56,7 +56,7 @@ describe("opening Work starts nothing", () => {
     const query = SERVER_STATE.slice(SERVER_STATE.indexOf("const workBoard"));
     expect(query.match(/bridgeApi\.\w+/g)).toEqual(["bridgeApi.workBoard"]);
     expect(query).toContain("queryKey: queryKeys.workBoard");
-    expect(query).toContain("enabled: false");
+    expect(query).toContain('enabled: query => !!followedRunId || query.state.data?.suggestions.state === "running"');
     expect(query).not.toMatch(/createSession|startTurn|setSelectedSessionId|openSession/);
   });
 
@@ -135,7 +135,7 @@ describe("briefing runs are hidden from every surface", () => {
   it("filters state.sessions once, and nothing downstream reads the raw list", () => {
     // Found in review: the previous version of this test string-matched
     // `!isHiddenSession(s)` anywhere in the file and never checked which props got the
-    // filtered list — so Mission Control was handed `state.sessions` while the comment
+    // filtered list — so Agent Fleet was handed `state.sessions` while the comment
     // above claimed otherwise. Checking the props is the assertion that has teeth.
     expect(APP).toContain("const visibleSessions = useMemo(() => state.sessions.filter(s => !isHiddenSession(s))");
     // Every session-list prop must come from the filtered list. `state.sessions` may
@@ -144,12 +144,14 @@ describe("briefing runs are hidden from every surface", () => {
     expect(rawUses).toHaveLength(0);
   });
 
-  it("hands Mission Control the filtered list", () => {
+  it("hands Agent Fleet the workspace list for independent terminals", () => {
     // The surface the earlier miss actually affected: a briefing run is not idle or
     // done, so it would have appeared on the grid — and focusing it then failed,
     // because session resolution did apply the predicate.
-    const missionControl = APP.slice(APP.indexOf("<MissionControl"));
-    expect(missionControl.slice(0, 400)).toContain("sessions={visibleSessions}");
+    const start = APP.indexOf("<AgentFleet");
+    const missionControl = APP.slice(start, APP.indexOf("</Suspense>", start));
+    expect(missionControl.slice(0, 400)).toContain("workspaces={state.workspaces}");
+    expect(missionControl.slice(0, 400)).not.toContain("sessions=");
   });
 
   it("builds the rail's list from the filtered one too", () => {
@@ -161,4 +163,10 @@ describe("briefing runs are hidden from every surface", () => {
     const resolved = APP.slice(APP.indexOf("const session = state.sessions.find"));
     expect(resolved.slice(0, 160)).toContain("!isHiddenSession(s)");
   });
+});
+
+it("opens Work from settings without restoring the sidebar row", () => {
+  expect(APP).toContain("<SettingsScreen onOpenWorkBoard={openWorkBoard}");
+  const settings = readFileSync(join(__dirname, "components", "SettingsScreen.tsx"), "utf8");
+  expect(settings).toContain("onOpenBoard={onOpenWorkBoard}");
 });
