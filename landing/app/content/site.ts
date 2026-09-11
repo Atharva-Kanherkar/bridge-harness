@@ -5,10 +5,9 @@ export const issuesUrl = `${repoUrl}/issues`;
 export const docsPath = "/docs";
 export const blogPath = "/blog";
 export const downloadPath = "/download";
+export const macDownloadPath = `${downloadPath}/macos`;
+export const linuxDownloadPath = `${downloadPath}/linux`;
 export const changelogPath = "/changelog";
-export const latestVersion = "0.5.5";
-export const dmgName = `Bridge_${latestVersion}_aarch64.dmg`;
-export const platformLabel = "macOS 12 or later · Apple Silicon";
 export const nodeRequirement = "Claude models need Node 18 or newer on your PATH.";
 export const signingIdentity = "Developer ID Application: Yashaswi Kumar (3VN4X827YF)";
 
