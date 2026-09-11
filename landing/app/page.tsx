@@ -1,5 +1,6 @@
 import CallToAction from "./components/CallToAction";
 import CapabilityBoard from "./components/CapabilityBoard";
+import FeatureScroll from "./components/FeatureScroll";
 import Comparison from "./components/Comparison";
 import Faq from "./components/Faq";
 import HarnessGrid from "./components/HarnessGrid";
@@ -45,6 +46,7 @@ export default function Home() {
       </main>
 
       <HarnessGrid />
+      <FeatureScroll />
       <CapabilityBoard />
       <Principles />
       <Comparison />
