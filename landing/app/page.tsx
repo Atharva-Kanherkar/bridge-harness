@@ -1,4 +1,3 @@
-import Link from "next/link";
 import CallToAction from "./components/CallToAction";
 import Capabilities from "./components/Capabilities";
 import Comparison from "./components/Comparison";
@@ -6,12 +5,12 @@ import Faq from "./components/Faq";
 import HarnessSection from "./components/HarnessSection";
 import HeroBackdrop from "./components/HeroBackdrop";
 import AppDemo from "./components/AppDemo";
+import GetBridgeButton from "./components/GetBridgeButton";
 import HowItWorks from "./components/HowItWorks";
 import LoopSection from "./components/LoopSection";
 import Principles from "./components/Principles";
 import SiteFooter from "./components/SiteFooter";
 import SiteHeader from "./components/SiteHeader";
-import { downloadPath } from "./content/site";
 
 export default function Home() {
   return (
@@ -31,16 +30,8 @@ export default function Home() {
               <br className="hidden sm:inline" /> from one window.
             </h1>
 
-            <div style={{ "--i": 2 } as React.CSSProperties} className="enter mt-6 flex flex-col items-center justify-center gap-3 sm:flex-row">
-              <Link
-                href={downloadPath}
-                className="group inline-flex h-10 w-[220px] items-center justify-between rounded-md bg-foreground pl-4 pr-3 text-[14px] font-medium text-background transition-colors hover:bg-foreground/90"
-              >
-                Get Bridge
-                <span aria-hidden="true" className="transition-transform group-hover:translate-x-0.5">
-                  →
-                </span>
-              </Link>
+            <div style={{ "--i": 2 } as React.CSSProperties} className="enter mt-8 flex justify-center">
+              <GetBridgeButton />
             </div>
           </div>
 
