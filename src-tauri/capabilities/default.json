@@ -12,6 +12,8 @@
     "core:window:allow-set-focus",
     "core:webview:allow-set-webview-zoom",
     "dialog:allow-open",
+    "updater:default",
+    "process:allow-restart",
     {
       "identifier": "shell:allow-open",
       "allow": [

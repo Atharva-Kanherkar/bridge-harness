@@ -29,8 +29,17 @@
     }],
     "security": { "csp": null }
   },
+  "plugins": {
+    "updater": {
+      "pubkey": "RWT4/NpOZ0FS0jYSgOK3Tzp5hECYrogjQl7/R0U7FZ2jAtKFVR1ma3eg",
+      "endpoints": [
+        "https://github.com/Atharva-Kanherkar/bridge-harness/releases/latest/download/latest.json"
+      ]
+    }
+  },
   "bundle": {
     "active": true,
+    "createUpdaterArtifacts": true,
     "targets": ["app", "dmg"],
     "category": "DeveloperTool",
     "license": "MIT",

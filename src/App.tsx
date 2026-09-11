@@ -35,6 +35,8 @@ import { AsideChat } from "./components/AsideChat";
 import { ChangesPanel } from "./components/ChangesPanel";
 import { GitHubPane } from "./components/GitHubPane";
 import { GithubToasts, type CiToast } from "./components/GithubToasts";
+import { UpdateToast } from "./components/UpdateToast";
+import { checkForUpdate, installUpdateAndRestart, type UpdateInfo } from "./updater";
 import { ciToastKey, jumpFallbackHint } from "./githubSurface";
 import { TranscriptPane, TRANSCRIPT_PAGE_SIZE } from "./components/TranscriptPane";
 import type { BrowserSupervision } from "./components/BrowserSurface";
@@ -596,6 +598,14 @@ function AppContent() {
       setGithubToasts(current => current.some(item => item.key === key) ? current : [...current.slice(-3), { key, payload }]);
     }).then(unlisten => { if (active) off = unlisten; else unlisten(); });
     return () => { active = false; off?.(); };
+  }, []);
+
+  // ── App update notification ────────────────────────────────────────────────
+  const [availableUpdate, setAvailableUpdate] = useState<UpdateInfo>();
+  useEffect(() => {
+    let active = true;
+    void checkForUpdate().then(update => { if (active && update) setAvailableUpdate(update); });
+    return () => { active = false; };
   }, []);
 
   // The fallback hint is a pointer, not a state — it fades on its own.
@@ -2732,6 +2742,13 @@ function AppContent() {
       onDismiss={key => setGithubToasts(current => current.filter(toast => toast.key !== key))}
       onDismissHint={() => setGithubJumpHint(undefined)}
     />
+    {availableUpdate && (
+      <UpdateToast
+        update={availableUpdate}
+        onInstall={installUpdateAndRestart}
+        onDismiss={() => setAvailableUpdate(undefined)}
+      />
+    )}
 
     <Dialog open={loginProvider !== null} onOpenChange={open => { if (!open) setLoginProvider(null); }}>
       <DialogContent>
