@@ -31,3 +31,8 @@ This contract records the requested scope during final review; initial implement
 - Paste and upload two images with text, then an image alone. Check transcript after restart.
 - Trigger expired login, confirm the draft remains, complete login, and retry.
 - Download PR workflow artifacts; do not use a release tag until reviewed.
+
+## Linux portability follow-up
+- Installed Debian and extracted AppImage runtimes resolve both sidecars from `usr/lib/bridge-deck`, independent of build-machine paths.
+- The Rust CI job installs the Node sidecar dependencies its terminal tests exercise.
+- Linux read-only workers remain fail-closed; a verified Linux isolation implementation is a stable-release blocker. No unconfined fallback is permitted.
