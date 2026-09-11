@@ -1,5 +1,5 @@
 import CallToAction from "./components/CallToAction";
-import Capabilities from "./components/Capabilities";
+import CapabilityBoard from "./components/CapabilityBoard";
 import Comparison from "./components/Comparison";
 import Faq from "./components/Faq";
 import HarnessGrid from "./components/HarnessGrid";
@@ -7,7 +7,6 @@ import HeroBackdrop from "./components/HeroBackdrop";
 import AppDemo from "./components/AppDemo";
 import GradientButton from "./components/GradientButton";
 import { downloadPath } from "./content/site";
-import LoopSection from "./components/LoopSection";
 import Principles from "./components/Principles";
 import SiteFooter from "./components/SiteFooter";
 import SiteHeader from "./components/SiteHeader";
@@ -46,8 +45,7 @@ export default function Home() {
       </main>
 
       <HarnessGrid />
-      <LoopSection />
-      <Capabilities />
+      <CapabilityBoard />
       <Principles />
       <Comparison />
       <Faq />

@@ -1,3 +1,4 @@
+import CornerTicks from "./CornerTicks";
 import HarnessMark from "./app/HarnessMark";
 import SectionHeader from "./SectionHeader";
 
@@ -12,15 +13,6 @@ const harnesses = [
   { id: "opencode", name: "OpenCode" },
   { id: "grok", name: "Grok" },
 ];
-
-/** The corner ticks a technical drawing wears. */
-function Tick({ className }: { className: string }) {
-  return (
-    <span aria-hidden="true" className={`absolute text-[13px] leading-none text-faint-2 ${className}`}>
-      +
-    </span>
-  );
-}
 
 export default function HarnessGrid() {
   return (
@@ -37,10 +29,7 @@ export default function HarnessGrid() {
         />
 
         <div className="reveal relative mt-14">
-          <Tick className="-left-1.5 -top-1.5" />
-          <Tick className="-right-1.5 -top-1.5" />
-          <Tick className="-bottom-1.5 -left-1.5" />
-          <Tick className="-bottom-1.5 -right-1.5" />
+          <CornerTicks />
 
           <div className="grid gap-px overflow-hidden rounded-xl border border-border-card bg-border sm:grid-cols-3 lg:grid-cols-5">
             {harnesses.map(harness => (
