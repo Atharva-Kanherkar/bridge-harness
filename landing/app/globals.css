@@ -250,6 +250,35 @@
     440px 360px;
 }
 
+/* Hero backdrop: hairline paths that trace themselves once on load. `--len` is the path
+ * length, `--i` staggers the branches. */
+@utility trace {
+  animation: draw 2600ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(var(--i, 0) * 260ms);
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
+}
+
+@utility node-pop {
+  animation: pop 520ms cubic-bezier(0.22, 1, 0.36, 1) both;
+  animation-delay: calc(600ms + var(--i, 0) * 130ms);
+  @media (prefers-reduced-motion: reduce) {
+    animation: none;
+  }
+}
+
+@utility bg-gutter {
+  background-image: repeating-linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--color-foreground) 6%, transparent) 0,
+    color-mix(in srgb, var(--color-foreground) 6%, transparent) 1px,
+    transparent 1px,
+    transparent 28px
+  );
+}
+
 @utility bg-grid {
   background-image:
     linear-gradient(to right, color-mix(in srgb, var(--color-foreground) 5%, transparent) 1px, transparent 1px),
