@@ -3,7 +3,10 @@ import { isExternalUrl } from "./externalLinks";
 // Vendor login commands write terminal control sequences because they believe
 // they own a full terminal. The onboarding surface does not: remove the common
 // CSI/OSC forms before showing troubleshooting text or searching for a URL.
-const ANSI_SEQUENCE = /\u001B(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007]*(?:\u0007|\u001B\\)?)/g;
+// The OSC body must stop at its own terminator: BEL, or the two-byte ST
+// (`ESC \`). A class that only excludes BEL swallows the ST and every
+// character after it, which would eat the vendor's sign-in URL.
+const ANSI_SEQUENCE = /\u001B(?:\[[0-?]*[ -/]*[@-~]|\][^\u0007\u001B]*(?:\u0007|\u001B\\)?)/g;
 const HTTP_URL = /https?:\/\/[^\s<>"'\u001b]+/gi;
 
 export function plainProviderLoginOutput(output: string): string {

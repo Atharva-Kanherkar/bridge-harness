@@ -12,6 +12,12 @@ describe("provider login presentation", () => {
     expect(providerLoginUrl("Open file:///tmp/token or javascript:alert(1)")).toBeNull();
   });
 
+  it("stops OSC stripping at an ST terminator instead of eating the handoff", () => {
+    const output = "\u001b]0;login\u001b\\Open https://auth.openai.com/oauth?code=abc-123\r\n";
+    expect(plainProviderLoginOutput(output)).toBe("Open https://auth.openai.com/oauth?code=abc-123");
+    expect(providerLoginUrl(output)).toBe("https://auth.openai.com/oauth?code=abc-123");
+  });
+
   it("removes control noise but preserves the vendor's readable instructions", () => {
     expect(plainProviderLoginOutput("\u001b]0;login\u0007Enter code:\tABCD\r\n"))
       .toBe("Enter code:\tABCD");

@@ -86,6 +86,7 @@ export type BridgeMethod =
   | "approvals/resolve_approval"
   | "approvals/resolve_question"
   | "auth/start_provider_login"
+  | "auth/cancel_provider_login"
   | "terminal/open_terminal"
   | "terminal/write_terminal"
   | "terminal/resize_terminal"
@@ -277,6 +278,7 @@ export const BRIDGE_METHODS = [
   { method: "approvals/resolve_approval", domain: "approvals", command: "resolve_approval" },
   { method: "approvals/resolve_question", domain: "approvals", command: "resolve_question" },
   { method: "auth/start_provider_login", domain: "auth", command: "start_provider_login" },
+  { method: "auth/cancel_provider_login", domain: "auth", command: "cancel_provider_login" },
   { method: "terminal/open_terminal", domain: "terminal", command: "open_terminal" },
   { method: "terminal/write_terminal", domain: "terminal", command: "write_terminal" },
   { method: "terminal/resize_terminal", domain: "terminal", command: "resize_terminal" },
@@ -525,6 +527,7 @@ export interface BridgeMethodParams {
   "approvals/resolve_approval": ResolveApprovalParams;
   "approvals/resolve_question": ResolveQuestionParams;
   "auth/start_provider_login": StartProviderLoginParams;
+  "auth/cancel_provider_login": CancelProviderLoginParams;
   "terminal/open_terminal": OpenTerminalParams;
   "terminal/write_terminal": WriteTerminalParams;
   "terminal/resize_terminal": ResizeTerminalParams;
@@ -723,6 +726,7 @@ export interface BridgeMethodResults {
   "approvals/resolve_approval": InteractionResolutionResult;
   "approvals/resolve_question": InteractionResolutionResult;
   "auth/start_provider_login": StartProviderLoginResult;
+  "auth/cancel_provider_login": UnitResult;
   "terminal/open_terminal": UnitResult;
   "terminal/write_terminal": UnitResult;
   "terminal/resize_terminal": UnitResult;
@@ -2901,6 +2905,10 @@ export interface StartProviderLoginParams {
 export interface StartProviderLoginResult {
   terminalId: string;
   workspaceId: string;
+}
+
+export interface CancelProviderLoginParams {
+  provider: string;
 }
 
 export interface OpenTerminalParams {

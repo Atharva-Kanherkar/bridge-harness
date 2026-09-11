@@ -2173,7 +2173,7 @@ function AppContent() {
     adapters={health.adapters}
     onHealthChange={invalidateHealth}
     onComplete={finishAgentOnboarding}
-    onSkip={finishAgentOnboarding}
+    onSkip={() => finishAgentOnboarding()}
     onError={setError}
   />{error && <Alert variant="error" className="fixed bottom-5 right-5 z-[60] max-w-md"><AlertTitle>Setup failed</AlertTitle><AlertDescription>{error}</AlertDescription></Alert>}</div>;
   const chromeTitle = view === "agent-fleet" ? "Agent Fleet" : view === "mission-control" ? "Mission Control" : view === "work" ? "Work" : view === "projects" ? "Projects" : view === "memory" ? "Memory" : view === "marketplace" ? "Marketplace" : view === "usage" ? "Usage" : view === "settings" ? "Settings" : paradigm === "grid" ? "Mission Control" : session?.title || session?.label || "New Chat";

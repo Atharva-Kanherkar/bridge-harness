@@ -376,6 +376,10 @@ pub fn dispatch(
             let p: wire::StartProviderLoginParams = decode(method, params)?;
             reply(api::start_provider_login(core, &p.provider))
         }
+        MethodName::CancelProviderLogin => {
+            let p: wire::CancelProviderLoginParams = decode(method, params)?;
+            reply(api::cancel_provider_login(core, &p.provider))
+        }
 
         MethodName::CreateTerminal => {
             let p: wire::CreateTerminalParams = decode(method, params)?;

@@ -246,6 +246,7 @@ typed_methods![
     (ResolveQuestion, ResolveQuestionParams, InteractionResolutionResult),
     // auth — provider sign-in
     (StartProviderLogin, StartProviderLoginParams, StartProviderLoginResult),
+    (CancelProviderLogin, CancelProviderLoginParams, UnitResult),
     // terminal
     (OpenTerminal, OpenTerminalParams, UnitResult),
     (WriteTerminal, WriteTerminalParams, UnitResult),

@@ -1437,6 +1437,18 @@ async fn start_provider_login(
 }
 
 #[tauri::command]
+async fn cancel_provider_login(
+    provider: String,
+    state: State<'_, Arc<BridgeCore>>,
+) -> Result<(), BridgeError> {
+    let core = state.inner().clone();
+    blocking("Provider login cancel", move || {
+        api::cancel_provider_login(&core, &provider)
+    })
+    .await
+}
+
+#[tauri::command]
 async fn create_terminal(workspace_id: String, terminal_id: String, agent_id: Option<String>, cwd: Option<String>, restart: bool, state: State<'_, Arc<BridgeCore>>) -> Result<wire::TerminalRecord, BridgeError> {
     let core = state.inner().clone();
     blocking("Create terminal", move || api::create_terminal(&core, &wire::CreateTerminalParams { workspace_id, terminal_id, agent_id, cwd, restart })).await
@@ -2455,6 +2467,7 @@ pub fn run() -> i32 {
             resolve_approval,
             resolve_question,
             start_provider_login,
+            cancel_provider_login,
             stop_session,
             refresh_workspace,
             list_workspace_branches,

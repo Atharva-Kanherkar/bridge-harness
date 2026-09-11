@@ -432,6 +432,14 @@ export function ProviderLoginPane({ provider, label, onClose }: { provider: Usag
     void bridgeApi.writeTerminal("provider-login", provider, `${entry}\r`);
     setEntry("");
   };
+  // Cancel abandons the sign-in, so the vendor process has to go with it.
+  // `start_provider_login` reattaches to a live runtime without replaying the
+  // URL and prompts this pane already dropped, so leaving it running would
+  // hand the next attempt an empty terminal.
+  const cancel = () => {
+    void bridgeApi.cancelProviderLogin(provider).catch(() => undefined);
+    onClose();
+  };
   const cleanOutput = plainProviderLoginOutput(output);
   const loginUrl = providerLoginUrl(output);
   return <section className="u-glass-soft mt-3 overflow-hidden rounded-xl border border-border-card" aria-label={`${label} sign-in`}>
@@ -443,7 +451,7 @@ export function ProviderLoginPane({ provider, label, onClose }: { provider: Usag
         <h3 className="text-[13px] font-medium text-foreground">Connect {label}</h3>
         <p className="mt-0.5 text-[11px] text-muted-foreground">{label} handles authentication; Bridge does not store your credentials.</p>
       </div>
-      <button type="button" onClick={onClose} className="min-h-7 rounded-lg px-2.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Cancel</button>
+      <button type="button" onClick={cancel} className="min-h-7 rounded-lg px-2.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Cancel</button>
     </header>
     <div className="grid gap-3 px-4 py-4">
       {error ? <div role="alert" className="rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-[12px] text-destructive">{error}</div> : <div className="flex items-start gap-3">

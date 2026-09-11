@@ -92,6 +92,20 @@ describe("adaptive setup journeys", () => {
     expect(recommendations).not.toHaveBeenCalled();
   });
 
+  // Regression: "Skip for now" passed React's click event straight through as
+  // the optional model-setup argument, which was then cached as setup state and
+  // crashed the next new-chat flow on `setup.profiles.map`.
+  it("skips without handing the click event back as model setup", async () => {
+    const skipped = vi.fn();
+    await act(async () => {
+      root.render(<ModelSetupWizard adapters={[]} onComplete={() => undefined} onSkip={skipped} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    await act(async () => button("Skip for now").click());
+    expect(skipped).toHaveBeenCalledTimes(1);
+    expect(skipped.mock.calls[0]).toHaveLength(0);
+  });
+
   it("marks an existing signed-in Codex as detected without asking for sign-in", async () => {
     const codex = adapters[0];
     await act(async () => {

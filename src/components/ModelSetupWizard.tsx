@@ -165,7 +165,7 @@ export function ModelSetupWizard({ adapters, onComplete, onSkip = () => undefine
             </div>}
           </div>
           <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-border-card bg-muted/20 px-6 py-4 sm:px-8">
-            <button type="button" onClick={onSkip} className="min-h-9 rounded-lg px-3 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Skip for now</button>
+            <button type="button" onClick={() => onSkip()} className="min-h-9 rounded-lg px-3 text-[12px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Skip for now</button>
             <button type="button" onClick={advance} className="inline-flex min-h-9 items-center gap-2 rounded-lg bg-primary px-4 text-[12px] font-medium text-primary-foreground transition-colors hover:bg-primary/90">{readyAdapters.length > 0 ? "Continue" : "Continue without an agent"}<ArrowRight size={14} /></button>
           </footer>
         </> : <>
