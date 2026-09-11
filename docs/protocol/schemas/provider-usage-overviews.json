@@ -26,6 +26,22 @@
       ],
       "type": "object"
     },
+    "UsageDailyOverview": {
+      "properties": {
+        "day": {
+          "description": "Local calendar day in the same time zone as today/month aggregation.",
+          "type": "string"
+        },
+        "usage": {
+          "$ref": "#/definitions/UsagePeriodOverview"
+        }
+      },
+      "required": [
+        "day",
+        "usage"
+      ],
+      "type": "object"
+    },
     "UsageMetric": {
       "properties": {
         "source": {
@@ -120,6 +136,13 @@
         "coverage": {
           "description": "The ledger currently covers this device, not an entire billing account.",
           "type": "string"
+        },
+        "daily": {
+          "description": "Up to 30 local days with recorded usage. Missing days are not measured zero.",
+          "items": {
+            "$ref": "#/definitions/UsageDailyOverview"
+          },
+          "type": "array"
         },
         "error": {
           "type": [

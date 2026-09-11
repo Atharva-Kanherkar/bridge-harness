@@ -13,7 +13,12 @@
     "cursorEnabled": false,
     "opencodeEnabled": false,
     "selectedProvider": "codex",
-    "opencodeWorkspace": null
+    "opencodeWorkspace": null,
+    "quotaDisplayMode": "used",
+    "openToOverview": true,
+    "iconStyle": "bridge",
+    "statusLayout": [],
+    "showHistory": true
   },
   "usage": {
     "schemaVersion": 1,

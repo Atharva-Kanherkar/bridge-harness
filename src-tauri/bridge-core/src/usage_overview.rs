@@ -7,8 +7,8 @@ use crate::{
     BridgeCore, BridgeError,
 };
 use bridge_protocol::messages::{
-    UsageMetric, UsageMetricSource as Source, UsageMetricStatus as Status, UsageModelOverview,
-    UsageOverviewSnapshot, UsagePeriodOverview, UsageQuotaWindow,
+    UsageDailyOverview, UsageMetric, UsageMetricSource as Source, UsageMetricStatus as Status,
+    UsageModelOverview, UsageOverviewSnapshot, UsagePeriodOverview, UsageQuotaWindow,
 };
 use chrono::{Duration, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
@@ -90,6 +90,7 @@ pub fn snapshot(core: &BridgeCore) -> Result<UsageOverviewSnapshot, BridgeError>
         account_metrics: vec![],
         today: period(&today_rows),
         month: period(&rows),
+        daily: daily(&rows),
         coverage: if partial {
             "Recorded on this Mac · history import is incomplete"
         } else {
@@ -159,6 +160,10 @@ fn number(value: &Value, camel: &str, snake: &str) -> Option<f64> {
         .and_then(Value::as_f64)
 }
 
+fn valid_percent(value: &Value) -> Option<f64> {
+    number(value, "usedPercent", "used_percent").filter(|value| value.is_finite() && *value >= 0.0)
+}
+
 fn windows(quota: Option<&AccountQuota>, failed: bool, now: i64) -> Vec<UsageQuotaWindow> {
     let primary = quota
         .and_then(|q| q.limits.get("primary"))
@@ -178,47 +183,126 @@ fn windows(quota: Option<&AccountQuota>, failed: bool, now: i64) -> Vec<UsageQuo
     } else {
         (primary, secondary)
     };
-    [
-        (session, "session", "Session"),
-        (weekly, "weekly", "Weekly"),
-    ]
-    .into_iter()
-    .map(|(raw, id, label)| {
-        // Do not label a second known weekly window as a session (or vice
-        // versa), even if a provider response contains duplicate durations.
-        let raw = raw.filter(|r| match minutes(Some(r)) {
-            Some(10080.0) => id == "weekly",
-            Some(300.0) => id == "session",
-            _ => true,
-        });
-        let reset = raw
-            .and_then(|r| number(r, "resetsAt", "resets_at"))
-            .map(|v| v as i64);
-        let duration = raw
-            .and_then(|r| number(r, "windowDurationMins", "window_minutes"))
-            .map(|v| v as i64);
-        let mut used = raw
-            .and_then(|r| number(r, "usedPercent", "used_percent"))
-            .map(|v| UsageMetric::known(v, Source::Reported))
-            .unwrap_or_else(UsageMetric::unavailable);
-        // Passing a reset proves the observation expired, not that usage is
-        // now zero. A successful re-read is the only way to report fresh zero.
-        if used.value.is_some()
-            && (failed
-                || quota.is_some_and(|q| now - q.observed_at >= 600 || now < q.observed_at)
-                || reset.is_some_and(|r| r <= now))
-        {
-            used.status = Status::Stale;
+    let mut result: Vec<_> = [(session, "session", "5-hour"), (weekly, "weekly", "Weekly")]
+        .into_iter()
+        .filter_map(|(raw, id, label)| {
+            // Do not label a second known weekly window as a session (or vice
+            // versa), even if a provider response contains duplicate durations.
+            let raw = raw.filter(|r| match minutes(Some(r)) {
+                Some(10080.0) => id == "weekly",
+                Some(300.0) => id == "session",
+                _ => true,
+            })?;
+            let reset = number(raw, "resetsAt", "resets_at").map(|v| v as i64);
+            let duration = number(raw, "windowDurationMins", "window_minutes").map(|v| v as i64);
+            let mut used = number(raw, "usedPercent", "used_percent")
+                .map(|v| UsageMetric::known(v, Source::Reported))
+                .unwrap_or_else(UsageMetric::unavailable);
+            // Passing a reset proves the observation expired, not that usage is
+            // now zero. A successful re-read is the only way to report fresh zero.
+            if used.value.is_some()
+                && (failed
+                    || quota.is_some_and(|q| now - q.observed_at >= 600 || now < q.observed_at)
+                    || reset.is_some_and(|r| r <= now))
+            {
+                used.status = Status::Stale;
+            }
+            Some(UsageQuotaWindow {
+                id: id.into(),
+                label: label.into(),
+                used_percent: used,
+                resets_at: reset,
+                window_minutes: duration,
+            })
+        })
+        .collect();
+    if let Some(quota) = quota {
+        for (pool_index, (pool_id, pool)) in quota.rate_limits_by_limit_id.iter().enumerate() {
+            if pool_id.eq_ignore_ascii_case("codex") || pool == &quota.limits || !pool.is_object() {
+                continue;
+            }
+            let title = pool
+                .get("limitName")
+                .or_else(|| pool.get("limit_name"))
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or(pool_id);
+            for slot in ["primary", "secondary"] {
+                let Some(raw) = pool.get(slot).filter(|value| value.is_object()) else {
+                    continue;
+                };
+                if valid_percent(raw).is_none() {
+                    continue;
+                }
+                let label = named_window_label(title, raw);
+                result.push(quota_window(
+                    raw,
+                    format!("codex-{pool_index}-{}-{slot}", bounded_id(pool_id)),
+                    label,
+                    failed,
+                    quota,
+                    now,
+                ));
+            }
         }
-        UsageQuotaWindow {
-            id: id.into(),
-            label: label.into(),
-            used_percent: used,
-            resets_at: reset,
-            window_minutes: duration,
+    }
+    result
+}
+
+fn bounded_id(value: &str) -> String {
+    let mut result = String::new();
+    let mut separator = false;
+    for character in value.chars().take(128) {
+        if character.is_ascii_alphanumeric() {
+            result.push(character.to_ascii_lowercase());
+            separator = false;
+        } else if !separator && !result.is_empty() {
+            result.push('-');
+            separator = true;
         }
-    })
-    .collect()
+    }
+    result.trim_end_matches('-').to_owned()
+}
+
+fn named_window_label(title: &str, raw: &Value) -> String {
+    let normalized = title.to_ascii_lowercase();
+    let duration = number(raw, "windowDurationMins", "window_minutes").map(|value| value as i64);
+    let cadence = match duration {
+        Some(300) if !normalized.contains("5-hour") && !normalized.contains("5 hour") => " 5-hour",
+        Some(10080) if !normalized.contains("weekly") => " Weekly",
+        Some(_) | None => "",
+    };
+    format!("{title}{cadence}")
+}
+
+fn quota_window(
+    raw: &Value,
+    id: String,
+    label: String,
+    failed: bool,
+    quota: &AccountQuota,
+    now: i64,
+) -> UsageQuotaWindow {
+    let reset = number(raw, "resetsAt", "resets_at").map(|value| value as i64);
+    let duration = number(raw, "windowDurationMins", "window_minutes").map(|value| value as i64);
+    let mut used = valid_percent(raw)
+        .map(|value| UsageMetric::known(value, Source::Reported))
+        .unwrap_or_else(UsageMetric::unavailable);
+    if used.value.is_some()
+        && (failed
+            || now - quota.observed_at >= 600
+            || now < quota.observed_at
+            || reset.is_some_and(|value| value <= now))
+    {
+        used.status = Status::Stale;
+    }
+    UsageQuotaWindow {
+        id,
+        label,
+        used_percent: used,
+        resets_at: reset,
+        window_minutes: duration,
+    }
 }
 
 fn period(rows: &[&UsageBucket]) -> UsagePeriodOverview {
@@ -269,6 +353,20 @@ fn period(rows: &[&UsageBucket]) -> UsagePeriodOverview {
     }
 }
 
+fn daily(rows: &[&UsageBucket]) -> Vec<UsageDailyOverview> {
+    let mut by_day: BTreeMap<&str, Vec<&UsageBucket>> = BTreeMap::new();
+    for row in rows {
+        by_day.entry(&row.day).or_default().push(*row);
+    }
+    by_day
+        .into_iter()
+        .map(|(day, rows)| UsageDailyOverview {
+            day: day.into(),
+            usage: period(&rows),
+        })
+        .collect()
+}
+
 fn cost(rows: &[&UsageBucket]) -> UsageMetric {
     if rows
         .iter()
@@ -300,11 +398,13 @@ mod tests {
             plan: None,
             observed_at: 100,
             limits: json!({"primary":{"usedPercent":58,"resetsAt":100000,"windowDurationMins":10080},"secondary":null}),
+            rate_limits_by_limit_id: BTreeMap::new(),
         };
         let value = windows(Some(&quota), false, 101);
-        assert_eq!(value[0].used_percent.status, Status::Unavailable);
-        assert_eq!(value[1].used_percent.value, Some(58.0));
-        assert_eq!(value[1].window_minutes, Some(10080));
+        assert_eq!(value.len(), 1);
+        assert_eq!(value[0].label, "Weekly");
+        assert_eq!(value[0].used_percent.value, Some(58.0));
+        assert_eq!(value[0].window_minutes, Some(10080));
         quota.limits["secondary"] =
             json!({"usedPercent":0,"resetsAt":200,"windowDurationMins":300});
         let reversed = windows(Some(&quota), false, 101);
@@ -315,6 +415,62 @@ mod tests {
             windows(Some(&quota), false, 101)[0].used_percent.value,
             Some(0.0)
         );
+        quota.limits["secondary"] = Value::Null;
+        assert!(windows(Some(&quota), false, 101).is_empty());
+    }
+    #[test]
+    fn named_codex_pools_keep_only_reported_windows_and_titles() {
+        let quota = AccountQuota {
+            account: None,
+            plan: None,
+            observed_at: 100,
+            limits: json!({}),
+            rate_limits_by_limit_id: BTreeMap::from([
+                ("codex".into(), json!({"primary":{"usedPercent":99}})),
+                (
+                    "spark".into(),
+                    json!({
+                        "limitName":"Codex Spark",
+                        "primary":{"usedPercent":4,"windowDurationMins":300},
+                        "secondary":{"usedPercent":8,"windowDurationMins":10080}
+                    }),
+                ),
+                ("metadata-only".into(), json!({"limitName":"Metadata only"})),
+            ]),
+        };
+        let value = windows(Some(&quota), false, 101);
+        assert_eq!(value.len(), 2);
+        assert_eq!(value[0].label, "Codex Spark 5-hour");
+        assert_eq!(value[1].label, "Codex Spark Weekly");
+        assert_eq!(value[0].used_percent.value, Some(4.0));
+        assert_eq!(value[1].used_percent.value, Some(8.0));
+    }
+    #[test]
+    fn named_codex_pools_drop_duplicate_and_malformed_windows_without_cadence_fiction() {
+        let selected = json!({"primary":{"usedPercent":2,"windowDurationMins":300}});
+        let quota = AccountQuota {
+            account: None,
+            plan: None,
+            observed_at: 100,
+            limits: selected.clone(),
+            rate_limits_by_limit_id: BTreeMap::from([
+                ("CODEX".into(), json!({"primary":{"usedPercent":99}})),
+                ("duplicate".into(), selected),
+                (
+                    "malformed".into(),
+                    json!({"primary":{},"secondary":{"usedPercent":-1}}),
+                ),
+                (
+                    "unknown".into(),
+                    json!({"limitName":"Model quota","secondary":{"usedPercent":4}}),
+                ),
+            ]),
+        };
+        let value = windows(Some(&quota), false, 101);
+        assert_eq!(value.len(), 2);
+        assert_eq!(value[0].label, "5-hour");
+        assert_eq!(value[1].label, "Model quota");
+        assert!(value[1].id.len() < 180);
     }
     #[test]
     fn expired_and_failed_reads_keep_stale_values_without_inventing_zero() {
@@ -323,6 +479,7 @@ mod tests {
             plan: None,
             observed_at: 100,
             limits: json!({"primary":{"usedPercent":42,"resetsAt":101}, "secondary":{"usedPercent":0,"resetsAt":200}}),
+            rate_limits_by_limit_id: BTreeMap::new(),
         };
         let value = windows(Some(&q), false, 102);
         assert_eq!(value[0].used_percent.value, Some(42.0));
@@ -333,7 +490,7 @@ mod tests {
             windows(Some(&q), true, 102)[1].used_percent.status,
             Status::Stale
         );
-        assert_eq!(windows(None, false, 102)[0].used_percent.value, None);
+        assert!(windows(None, false, 102).is_empty());
     }
     #[test]
     fn pricing_and_token_totals_preserve_missing_data_and_avoid_reasoning_double_count() {
@@ -368,6 +525,37 @@ mod tests {
             Some(Source::Estimated)
         );
         assert_eq!(period(&[]).tokens.value, None);
+    }
+    #[test]
+    fn daily_series_contains_only_days_with_recorded_rows() {
+        let row = |day: &str, tokens: i64| UsageBucket {
+            day: day.into(),
+            hour_start: None,
+            harness: "codex".into(),
+            model: "model".into(),
+            totals: usage_summary::UsageBucketTotals {
+                uncached_input_tokens: tokens,
+                output_tokens: 0,
+                cache_read_tokens: 0,
+                cache_write_tokens: 0,
+                reasoning_tokens: 0,
+            },
+            cost_microusd: 0,
+            cache_savings_microusd: 0,
+            cost_source: CostSource::ProviderReported,
+            records: 1,
+            unpriced_records: 0,
+            sessions: 1,
+        };
+        let first = row("2026-09-01", 10);
+        let third = row("2026-09-03", 30);
+        let value = daily(&[&third, &first]);
+        assert_eq!(
+            value.iter().map(|day| day.day.as_str()).collect::<Vec<_>>(),
+            ["2026-09-01", "2026-09-03"]
+        );
+        assert_eq!(value[0].usage.tokens.value, Some(10.0));
+        assert_eq!(value[1].usage.tokens.value, Some(30.0));
     }
 }
 
@@ -446,6 +634,7 @@ pub fn provider_snapshots(
             account_metrics: quota.metrics,
             today: period(&todays),
             month: period(&rows),
+            daily: daily(&rows),
             coverage: if provider == MenuBarProvider::Cursor {
                 "Recorded by Bridge on this Mac · Cursor history is not imported"
             } else if partial {

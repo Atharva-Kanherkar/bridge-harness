@@ -78,6 +78,14 @@ pub struct UsagePeriodOverview {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+pub struct UsageDailyOverview {
+    /// Local calendar day in the same time zone as today/month aggregation.
+    pub day: String,
+    pub usage: UsagePeriodOverview,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct UsageOverviewSnapshot {
     pub schema_version: u32,
     pub generated_at: i64,
@@ -92,6 +100,9 @@ pub struct UsageOverviewSnapshot {
     pub account_metrics: Vec<UsageAccountMetric>,
     pub today: UsagePeriodOverview,
     pub month: UsagePeriodOverview,
+    /// Up to 30 local days with recorded usage. Missing days are not measured zero.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub daily: Vec<UsageDailyOverview>,
     /// The ledger currently covers this device, not an entire billing account.
     pub coverage: String,
     pub error: Option<String>,
@@ -153,6 +164,42 @@ pub enum MenuBarQuotaWindow {
     Weekly,
 }
 
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum MenuBarQuotaDisplayMode {
+    #[default]
+    Used,
+    Remaining,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum MenuBarIconStyle {
+    #[default]
+    Bridge,
+    Meter,
+}
+
+/// Presentation tokens only. No expressions, credentials, scripts or network access.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum MenuBarLayoutToken {
+    Icon,
+    Provider,
+    Used,
+    Remaining,
+    WeeklyUsed,
+    WeeklyRemaining,
+    FiveHourUsed,
+    FiveHourRemaining,
+    Reset,
+    TodayCost,
+    Dot,
+    Space,
+}
+
+fn default_true() -> bool { true }
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct MenuBarSettings {
@@ -170,10 +217,22 @@ pub struct MenuBarSettings {
     #[serde(default)]
     pub opencode_workspace: Option<String>,
     pub display_mode: MenuBarDisplayMode,
+    /// Quota bar fill is independent of the status item's text layout.
+    #[serde(default)]
+    pub quota_display_mode: MenuBarQuotaDisplayMode,
+    #[serde(default = "default_true")]
+    pub open_to_overview: bool,
+    #[serde(default)]
+    pub icon_style: MenuBarIconStyle,
+    /// Empty uses display_mode. Custom layouts contain at most two lines.
+    #[serde(default)]
+    pub status_layout: Vec<Vec<MenuBarLayoutToken>>,
     pub quota_window: MenuBarQuotaWindow,
     pub show_account: bool,
     pub show_tokens: bool,
     pub show_cost: bool,
+    #[serde(default = "default_true")]
+    pub show_history: bool,
     /// Zero means manual; otherwise 60, 300, 900, or 1800 seconds.
     pub refresh_seconds: u64,
 }
@@ -189,11 +248,16 @@ impl Default for MenuBarSettings {
             opencode_enabled: false,
             selected_provider: MenuBarProvider::Codex,
             opencode_workspace: None,
-            display_mode: MenuBarDisplayMode::Remaining,
+            display_mode: MenuBarDisplayMode::Used,
+            quota_display_mode: MenuBarQuotaDisplayMode::Used,
+            open_to_overview: true,
+            icon_style: MenuBarIconStyle::Bridge,
+            status_layout: vec![],
             quota_window: MenuBarQuotaWindow::Auto,
             show_account: true,
             show_tokens: true,
             show_cost: true,
+            show_history: true,
             refresh_seconds: 300,
         }
     }
@@ -232,6 +296,9 @@ mod tests {
             assert!(!settings.provider_enabled(provider));
         }
         assert!(settings.opencode_workspace.is_none());
+        assert_eq!(settings.quota_display_mode, MenuBarQuotaDisplayMode::Used);
+        assert!(settings.open_to_overview && settings.show_history);
+        assert!(settings.status_layout.is_empty());
     }
 
     #[test]

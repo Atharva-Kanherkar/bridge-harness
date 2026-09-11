@@ -57,7 +57,9 @@ pub const HANDSHAKE_METHOD: &str = "protocol/handshake";
 /// desktop that needs these methods must reject a daemon that predates them.
 /// **1.9 adds grouped provider usage and provider selection preferences.**
 /// Reject older daemons that cannot preserve these fields.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 9 };
+/// **1.10 adds independent quota bars, Overview, and status layout preferences.**
+/// A stale daemon must not reject or discard the saved menu customization.
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 1, minor: 10 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -160,6 +162,13 @@ mod tests {
     #[test]
     fn menu_bar_client_rejects_daemon_without_usage_overview() {
         let older = ProtocolVersion { major: 1, minor: 8 };
+        assert!(!older.accepts(PROTOCOL_VERSION));
+        assert!(PROTOCOL_VERSION.accepts(older));
+    }
+
+    #[test]
+    fn menu_layout_client_rejects_daemon_without_customization() {
+        let older = ProtocolVersion { major: 1, minor: 9 };
         assert!(!older.accepts(PROTOCOL_VERSION));
         assert!(PROTOCOL_VERSION.accepts(older));
     }

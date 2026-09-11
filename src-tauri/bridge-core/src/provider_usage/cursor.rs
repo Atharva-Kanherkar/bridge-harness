@@ -127,11 +127,13 @@ fn parse(value: &Value, now: i64) -> Result<AccountUsage, String> {
     let overall = &personal["overall"];
     let pool = &value["teamUsage"]["pooled"];
     let cents = |v: &Value| number(v).map(|v| v * 10_000.0);
-    let lanes = number(&plan["autoPercentUsed"])
-        .zip(number(&plan["apiPercentUsed"]))
+    let auto = number(&plan["autoPercentUsed"]);
+    let third_party = number(&plan["apiPercentUsed"]);
+    let lanes = auto
+        .zip(third_party)
         .map(|(a, b)| (a + b) / 2.0)
-        .or_else(|| number(&plan["autoPercentUsed"]))
-        .or_else(|| number(&plan["apiPercentUsed"]));
+        .or(auto)
+        .or(third_party);
     let percent = number(&plan["totalPercentUsed"])
         .or(lanes)
         .or_else(|| ratio(number(&plan["used"]), number(&plan["limit"])))
@@ -143,15 +145,28 @@ fn parse(value: &Value, now: i64) -> Result<AccountUsage, String> {
     };
     let end = timestamp(&value["billingCycleEnd"]);
     if personal.is_object() {
-        result
-            .windows
-            .push(window("monthly", "Billing cycle", percent, end, None));
         if plan.is_object() {
+            result
+                .windows
+                .push(window("total", "Total", percent, end, None));
+            if auto.is_some() {
+                result
+                    .windows
+                    .push(window("cursor", "Cursor", auto, end, None));
+            }
+            if third_party.is_some() {
+                result
+                    .windows
+                    .push(window("third-party", "Third Party", third_party, end, None));
+            }
             result.metrics.extend([
                 amount("plan-spend", "Plan usage", cents(&plan["used"])),
                 amount("plan-limit", "Plan allowance", cents(&plan["limit"])),
             ]);
         } else if overall.is_object() {
+            result
+                .windows
+                .push(window("total", "Total", percent, end, None));
             result.metrics.extend([
                 amount("personal-spend", "Personal usage", cents(&overall["used"])),
                 amount(
@@ -199,6 +214,7 @@ mod tests {
         let row = parse(&json!({"individualUsage":{"plan":{"used":100,"limit":2000,"totalPercentUsed":0.36},"onDemand":{"used":0}},"teamUsage":{"pooled":{"used":500,"limit":1000}}}), 10).unwrap();
         assert_eq!(row.windows[0].used_percent.value, Some(0.36));
         assert_eq!(row.metrics[0].value.value, Some(1_000_000.0));
+        assert_eq!(row.windows[0].label, "Total");
         assert_eq!(row.windows[1].label, "Team pool · shared");
         assert_eq!(row.windows[1].used_percent.value, Some(50.0));
         assert_eq!(
@@ -220,6 +236,31 @@ mod tests {
                 .value,
             None
         );
+    }
+    #[test]
+    fn preserves_cursor_subquota_percent_points_without_scaling() {
+        let row = parse(
+            &json!({
+                "individualUsage":{"plan":{
+                    "used":86,"limit":2000,
+                    "totalPercentUsed":0.441025641025641,
+                    "autoPercentUsed":0.36,
+                    "apiPercentUsed":0.7111111111111111
+                }}
+            }),
+            10,
+        )
+        .unwrap();
+        assert_eq!(
+            row.windows
+                .iter()
+                .map(|w| w.label.as_str())
+                .collect::<Vec<_>>(),
+            ["Total", "Cursor", "Third Party"]
+        );
+        assert_eq!(row.windows[0].used_percent.value, Some(0.441025641025641));
+        assert_eq!(row.windows[1].used_percent.value, Some(0.36));
+        assert_eq!(row.windows[2].used_percent.value, Some(0.7111111111111111));
     }
     #[test]
     fn auth_reads_text_and_blob_without_mutating_database() {

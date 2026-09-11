@@ -23,6 +23,20 @@ pub fn load(db: &Connection) -> Result<MenuBarSettings, BridgeError> {
 }
 
 fn validate(settings: &MenuBarSettings) -> Result<(), BridgeError> {
+    if settings.status_layout.len() > 2
+        || settings.status_layout.iter().any(|line| line.len() > 12)
+        || settings
+            .status_layout
+            .iter()
+            .flatten()
+            .filter(|token| matches!(token, bridge_protocol::messages::MenuBarLayoutToken::Icon))
+            .count()
+            > 1
+    {
+        return Err(BridgeError::Invalid(
+            "Menu layout supports two lines, twelve items per line, and one icon".into(),
+        ));
+    }
     if settings.schema_version != 1 || ![0, 60, 300, 900, 1800].contains(&settings.refresh_seconds)
     {
         return Err(BridgeError::Invalid(
@@ -80,5 +94,24 @@ mod tests {
         assert!(save(&db, &settings).is_err());
         assert!(!load(&db).unwrap().enabled);
         assert_eq!(load(&db).unwrap().refresh_seconds, 300);
+    }
+
+    #[test]
+    fn persists_layout_and_rejects_overflow_without_overwriting() {
+        use bridge_protocol::messages::{MenuBarLayoutToken as Token, MenuBarQuotaDisplayMode};
+        let temp = tempfile::tempdir().unwrap();
+        let db = crate::store::open(&temp.path().join("layout.db")).unwrap();
+        let mut settings = load(&db).unwrap();
+        settings.status_layout = vec![vec![Token::Icon, Token::Used], vec![Token::WeeklyUsed]];
+        settings.quota_display_mode = MenuBarQuotaDisplayMode::Remaining;
+        assert_eq!(save(&db, &settings).unwrap(), settings);
+        let saved = settings.clone();
+        settings.status_layout.push(vec![Token::Space]);
+        assert!(save(&db, &settings).is_err());
+        settings.status_layout = vec![vec![Token::Space; 13]];
+        assert!(save(&db, &settings).is_err());
+        settings.status_layout = vec![vec![Token::Icon], vec![Token::Icon]];
+        assert!(save(&db, &settings).is_err());
+        assert_eq!(load(&db).unwrap(), saved);
     }
 }

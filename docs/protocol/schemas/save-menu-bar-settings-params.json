@@ -12,12 +12,44 @@
       ],
       "type": "string"
     },
+    "MenuBarIconStyle": {
+      "enum": [
+        "bridge",
+        "meter"
+      ],
+      "type": "string"
+    },
+    "MenuBarLayoutToken": {
+      "description": "Presentation tokens only. No expressions, credentials, scripts or network access.",
+      "enum": [
+        "icon",
+        "provider",
+        "used",
+        "remaining",
+        "weeklyUsed",
+        "weeklyRemaining",
+        "fiveHourUsed",
+        "fiveHourRemaining",
+        "reset",
+        "todayCost",
+        "dot",
+        "space"
+      ],
+      "type": "string"
+    },
     "MenuBarProvider": {
       "enum": [
         "codex",
         "claude",
         "cursor",
         "opencode"
+      ],
+      "type": "string"
+    },
+    "MenuBarQuotaDisplayMode": {
+      "enum": [
+        "used",
+        "remaining"
       ],
       "type": "string"
     },
@@ -49,6 +81,18 @@
         "enabled": {
           "type": "boolean"
         },
+        "iconStyle": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/MenuBarIconStyle"
+            }
+          ],
+          "default": "bridge"
+        },
+        "openToOverview": {
+          "default": true,
+          "type": "boolean"
+        },
         "opencodeEnabled": {
           "default": false,
           "type": "boolean"
@@ -59,6 +103,15 @@
             "string",
             "null"
           ]
+        },
+        "quotaDisplayMode": {
+          "allOf": [
+            {
+              "$ref": "#/definitions/MenuBarQuotaDisplayMode"
+            }
+          ],
+          "default": "used",
+          "description": "Quota bar fill is independent of the status item's text layout."
         },
         "quotaWindow": {
           "$ref": "#/definitions/MenuBarQuotaWindow"
@@ -88,8 +141,23 @@
         "showCost": {
           "type": "boolean"
         },
+        "showHistory": {
+          "default": true,
+          "type": "boolean"
+        },
         "showTokens": {
           "type": "boolean"
+        },
+        "statusLayout": {
+          "default": [],
+          "description": "Empty uses display_mode. Custom layouts contain at most two lines.",
+          "items": {
+            "items": {
+              "$ref": "#/definitions/MenuBarLayoutToken"
+            },
+            "type": "array"
+          },
+          "type": "array"
         }
       },
       "required": [

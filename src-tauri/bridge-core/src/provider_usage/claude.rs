@@ -85,7 +85,7 @@ fn parse(value: &Value, now: i64) -> Result<AccountUsage, String> {
         ..Default::default()
     };
     for (key, id, label, minutes) in [
-        ("five_hour", "session", "Session", 300),
+        ("five_hour", "session", "5-hour", 300),
         ("seven_day", "weekly", "Weekly", 10080),
         ("seven_day_opus", "weekly-opus", "Weekly · Opus", 10080),
         (
