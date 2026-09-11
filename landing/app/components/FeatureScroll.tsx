@@ -11,39 +11,39 @@ import SectionHeader from "./SectionHeader";
  */
 const features = [
   {
-    id: "mission-control",
-    name: "Mission Control",
-    text: "Every active chat at once, each tile the real conversation with its own transcript, approvals, and composer. Watch four agents work, steer any of them without leaving the grid.",
-    image: "/screens/mission-control.webp",
-    alt: "Bridge Mission Control with four live agent conversations side by side, each with its own composer.",
+    id: "switch-harness",
+    name: "Switch harness mid-chat",
+    text: "Change model or provider inside one conversation — Codex to Claude Code to Cursor — without starting over. The provider session restarts; your history stays where it is. Nobody else lets you do this.",
+    image: "/screens/switch-harness.webp",
+    alt: "The Bridge model picker open in a chat, listing Codex and Claude Code models together with the note that switching restarts the provider session while history stays.",
   },
   {
-    id: "agent-fleet",
-    name: "Agent Fleet",
-    text: "Open Codex, Claude Code, OpenCode, or Grok as terminals in the same screen. New agents split into the grid beside the others, and the layout and scrollback survive a restart.",
-    image: "/screens/agent-fleet.webp",
-    alt: "Bridge Agent Fleet with a shell split into a grid alongside Claude Code, Codex, and OpenCode terminals.",
+    id: "memory",
+    name: "Memory that carries",
+    text: "Bridge remembers how you work — your conventions, your constraints, the decisions you already made — and carries them into every new conversation, on any harness. Each pin shows how confident it is and how often it was recalled.",
+    image: "/screens/memory.webp",
+    alt: "The Bridge memory screen listing pinned preferences, facts, decisions, and constraints with confidence and recall counts.",
   },
   {
-    id: "diffs",
-    name: "Review every diff",
-    text: "Changes land in the pane beside the conversation that produced them: the hunks inline, per-file risk, and what the worker ran to prove it. Adopt the result into your workspace or discard it.",
-    image: "/screens/diffs.webp",
-    alt: "A Bridge session showing an inline diff in the transcript beside the changes dock listing four changed files with risk labels.",
+    id: "forest",
+    name: "An append-only session forest",
+    text: "Every message, plan, tool call, and delegation lands in a local ledger that is never rewritten. Filter it, fork it, rewind it — the record of what an agent actually did survives the restart.",
+    image: "/screens/forest.webp",
+    alt: "The Bridge transcript pane showing a filtered event stream of message, plan, tool, and delegation events beside a conversation.",
   },
   {
-    id: "github",
-    name: "GitHub, built in",
-    text: "Pull requests, review state, and check runs for the repository you are in, without a browser tab. Filter to what is ready, failing, or waiting on you.",
-    image: "/screens/github.webp",
-    alt: "The Bridge GitHub pane listing open pull requests with review-required, conflicts, and approved states.",
+    id: "agents",
+    name: "Bring or build your own agents",
+    text: "Install the coding agents you want, add plugins and skills, and define your own roles for the orchestrator to route to. The harness id space is open, so a new provider is an adapter, not a rewrite.",
+    image: "/screens/agents.webp",
+    alt: "The Bridge marketplace listing Claude Code, Codex, Cursor, and OpenCode with install and uninstall actions.",
   },
   {
-    id: "verify",
-    name: "Nothing merges without proof",
-    text: "A completion gate collects deterministic checks and scrutiny from a different harness family, records the evidence against a revision, and still waits for you to adopt.",
-    image: "/screens/verify.webp",
-    alt: "A Bridge verification record showing two checks passed, Claude scrutiny running, and Codex user testing pending, above Adopt and Discard actions.",
+    id: "cost",
+    name: "Spend less by delegating",
+    text: "Narrow work goes to a cheap tier; only the hard parts reach an expensive one. Tokens, cost, and cache savings are broken out per harness and per model, so the routing pays for itself visibly.",
+    image: "/screens/cost.webp",
+    alt: "The Bridge usage screen showing cost per harness, a daily cost chart, token totals, cache savings, and a per-model breakdown.",
   },
 ];
 
@@ -52,7 +52,6 @@ export default function FeatureScroll() {
     <section className="overflow-hidden border-t border-border py-24">
       <div className="mx-auto max-w-6xl px-6">
         <SectionHeader
-          eyebrow="Inside Bridge"
           title={
             <>
               The work, <em className="not-italic text-muted-foreground">in one place.</em>
@@ -78,10 +77,6 @@ export default function FeatureScroll() {
 
             <div className="lg:py-12">
               <div className="relative overflow-hidden rounded-xl border border-border-card bg-background shadow-[0_0_0_1px_#000,0_30px_90px_-30px_rgba(0,0,0,0.9)] lg:rounded-r-none lg:border-r-0">
-                <span
-                  aria-hidden="true"
-                  className="pointer-events-none absolute inset-0 z-10 bg-linear-to-br from-teal-400/10 via-transparent to-purple-500/10"
-                />
                 <Image src={feature.image} alt={feature.alt} width={1600} height={1000} unoptimized className="h-auto w-full" />
               </div>
             </div>
