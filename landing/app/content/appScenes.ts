@@ -128,6 +128,54 @@ const codeDiff = `  self.registry.mark_reclaimed(&branch)?;
 
 export const scenes: Scene[] = [
   {
+    id: "worktrees",
+    label: "Isolated worktrees",
+    view: "chat",
+    toolbar: { title: "Worktree lifecycle inventory", subtitle: "bridge-harness · feat/worktree-lifecycle" },
+    prompt: "Run the usage rollup refactor in parallel with the lifecycle fix.",
+    entries: [
+      { kind: "assistant", text: "Their write scopes overlap, so each worker gets its own worktree rather than sharing yours." },
+      {
+        kind: "notice",
+        edge: "info",
+        title: "Worktree created",
+        status: "isolated",
+        text: "A branch and a checkout of its own, cut from the task worktree.",
+        caption: "Worktree",
+        code: ".worktrees/worker-2f9a  ·  feat/usage-rollups  ·  main @ 8d0babe",
+      },
+      {
+        kind: "activity",
+        summary: "Ran 1 command, read 1 file, edited 1 file",
+        steps: "3 steps · 2s",
+        rows: [
+          { label: "Read", path: "worktree_coordinator.rs" },
+          { label: "Edited", path: "worktree_coordinator.rs", stat: "+12 −9" },
+          { label: "Ran", path: "cargo test -p bridge-core worktree::", stat: "exit 0" },
+        ],
+        diff: codeDiff,
+      },
+      {
+        kind: "notice",
+        edge: "success",
+        title: "Worker changes are ready to review",
+        status: "2 files",
+        text: "Adopt merges this worker's changes into your workspace. Discard deletes them.",
+        actions: ["Discard", "Adopt changes"],
+      },
+    ],
+    dock: {
+      origin: "feat/worktree-lifecycle · uncommitted vs HEAD (8d0babe)",
+      added: 303,
+      removed: 23,
+      files: [
+        { dir: "src-tauri/bridge-core/src/", name: "worktree_coordinator.rs", added: 18, removed: 4, risk: "High", lang: "rust" },
+        { dir: "src/components/", name: "ChangesPanel.tsx", added: 42, removed: 6, risk: "Medium", lang: "frontend" },
+        { dir: "src/", name: "utils.ts", added: 3, removed: 1, risk: "Low", lang: "frontend" },
+      ],
+    },
+  },
+  {
     id: "mission",
     label: "Mission Control",
     view: "mission",
@@ -191,54 +239,6 @@ export const scenes: Scene[] = [
         ],
       },
     ],
-  },
-  {
-    id: "worktrees",
-    label: "Isolated worktrees",
-    view: "chat",
-    toolbar: { title: "Worktree lifecycle inventory", subtitle: "bridge-harness · feat/worktree-lifecycle" },
-    prompt: "Run the usage rollup refactor in parallel with the lifecycle fix.",
-    entries: [
-      { kind: "assistant", text: "Their write scopes overlap, so each worker gets its own worktree rather than sharing yours." },
-      {
-        kind: "notice",
-        edge: "info",
-        title: "Worktree created",
-        status: "isolated",
-        text: "A branch and a checkout of its own, cut from the task worktree.",
-        caption: "Worktree",
-        code: ".worktrees/worker-2f9a  ·  feat/usage-rollups  ·  main @ 8d0babe",
-      },
-      {
-        kind: "activity",
-        summary: "Ran 1 command, read 1 file, edited 1 file",
-        steps: "3 steps · 2s",
-        rows: [
-          { label: "Read", path: "worktree_coordinator.rs" },
-          { label: "Edited", path: "worktree_coordinator.rs", stat: "+12 −9" },
-          { label: "Ran", path: "cargo test -p bridge-core worktree::", stat: "exit 0" },
-        ],
-        diff: codeDiff,
-      },
-      {
-        kind: "notice",
-        edge: "success",
-        title: "Worker changes are ready to review",
-        status: "2 files",
-        text: "Adopt merges this worker's changes into your workspace. Discard deletes them.",
-        actions: ["Discard", "Adopt changes"],
-      },
-    ],
-    dock: {
-      origin: "feat/worktree-lifecycle · uncommitted vs HEAD (8d0babe)",
-      added: 303,
-      removed: 23,
-      files: [
-        { dir: "src-tauri/bridge-core/src/", name: "worktree_coordinator.rs", added: 18, removed: 4, risk: "High", lang: "rust" },
-        { dir: "src/components/", name: "ChangesPanel.tsx", added: 42, removed: 6, risk: "Medium", lang: "frontend" },
-        { dir: "src/", name: "utils.ts", added: 3, removed: 1, risk: "Low", lang: "frontend" },
-      ],
-    },
   },
   {
     id: "policy",

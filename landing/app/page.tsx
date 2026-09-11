@@ -11,7 +11,7 @@ import LoopSection from "./components/LoopSection";
 import Principles from "./components/Principles";
 import SiteFooter from "./components/SiteFooter";
 import SiteHeader from "./components/SiteHeader";
-import { downloadPath, latestVersion, platformLabel } from "./content/site";
+import { downloadPath } from "./content/site";
 
 export default function Home() {
   return (
@@ -31,11 +31,6 @@ export default function Home() {
               <br className="hidden sm:inline" /> from one window.
             </h1>
 
-            <p style={{ "--i": 1 } as React.CSSProperties} className="enter mx-auto mt-4 max-w-[560px] text-[15px] leading-6 text-muted-foreground">
-              Bridge runs Codex, Claude Code, Cursor, and OpenCode as one team. An orchestrator plans and routes, a policy
-              engine owns every gate, and each worker lands in its own worktree.
-            </p>
-
             <div style={{ "--i": 2 } as React.CSSProperties} className="enter mt-6 flex flex-col items-center justify-center gap-3 sm:flex-row">
               <Link
                 href={downloadPath}
@@ -46,10 +41,6 @@ export default function Home() {
                   →
                 </span>
               </Link>
-              <span className="flex items-center gap-2 text-[12px] text-muted-foreground">
-                <span className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10.5px] text-foreground">v{latestVersion}</span>
-                {platformLabel}
-              </span>
             </div>
           </div>
 
