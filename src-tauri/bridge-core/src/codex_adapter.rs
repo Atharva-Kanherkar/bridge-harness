@@ -484,10 +484,12 @@ impl CodexRuntime {
         let _ = self.child.wait();
     }
     pub fn start_turn(&self, text: &str, context: TurnContext<'_>) -> Result<(), BridgeError> {
-        self.request(
-            "turn/start",
-            turn_start_params(&self.thread_id, text, context, self.sandbox_policy.as_ref()),
-        )?;
+        self.start_turn_with_images(text, context, &[])
+    }
+    fn start_turn_with_images(&self, text: &str, context: TurnContext<'_>, images: &[bridge_protocol::messages::TurnImage]) -> Result<(), BridgeError> {
+        let mut params = turn_start_params(&self.thread_id, text, context, self.sandbox_policy.as_ref());
+        append_images(&mut params, images);
+        self.request("turn/start", params)?;
         crate::context_inventory::record_runtime_inventory(
             &self.context_inventory,
             codex_context_inventory(ContextLifecyclePhase::PerTurn)?,
@@ -519,6 +521,13 @@ impl CodexRuntime {
             &json!({"method":method,"id":id,"params":params}),
         )
     }
+}
+
+/// Inline image bytes keep clipboard content independent of local file paths.
+fn append_images(params: &mut Value, images: &[bridge_protocol::messages::TurnImage]) {
+    params["input"].as_array_mut().expect("turn input array").extend(images.iter().map(|image| {
+        json!({"type": "image", "url": format!("data:{};base64,{}", image.media_type, image.base64_data)})
+    }));
 }
 
 /// The whole of `thread/compact/start`: Codex compacts the thread it is given
@@ -589,6 +598,10 @@ impl AdapterRuntime for CodexRuntime {
         context: TurnContext<'_>,
     ) -> Result<(), BridgeError> {
         self.start_turn(text, context)
+    }
+    fn supports_images(&self) -> bool { true }
+    fn send_turn_with_images(&self, text: &str, context: TurnContext<'_>, images: &[bridge_protocol::messages::TurnImage]) -> Result<(), BridgeError> {
+        self.start_turn_with_images(text, context, images)
     }
     fn interrupt(&self) -> Result<(), BridgeError> {
         CodexRuntime::interrupt(self)
@@ -817,6 +830,19 @@ fn wait_for_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn image_attachments_keep_native_shapes_and_order() {
+        let images = vec![
+            bridge_protocol::messages::TurnImage { media_type: "image/png".into(), base64_data: "cG5n".into() },
+            bridge_protocol::messages::TurnImage { media_type: "image/jpeg".into(), base64_data: "anBlZw==".into() },
+        ];
+        let mut payload = turn_start_params("thread", "describe", TurnContext::default(), None);
+        append_images(&mut payload, &images);
+        assert_eq!(payload["input"][0]["text"], "describe");
+        assert_eq!(payload["input"][1], json!({"type":"image", "url":"data:image/png;base64,cG5n"}));
+        assert_eq!(payload["input"][2], json!({"type":"image", "url":"data:image/jpeg;base64,anBlZw=="}));
+    }
+
     use crate::context_inventory::{ContextInventoryScope, ContextObservationProvenance};
     #[test]
     fn poisoned_writer_is_a_typed_adapter_error() {

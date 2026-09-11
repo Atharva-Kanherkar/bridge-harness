@@ -2581,14 +2581,16 @@ pub struct ProviderLogin {
 /// launches the process — any browser handoff is started by the vendor
 /// command itself, and Bridge never reads, stores, or logs the credential it
 /// produces.
-fn provider_login_command(provider: &str) -> Result<CommandBuilder, BridgeError> {
+fn provider_login_command(core: &Arc<BridgeCore>, provider: &str) -> Result<CommandBuilder, BridgeError> {
     match provider {
-        // Bare and interactive: Claude Code's own first-run flow prompts for
-        // login when no credential is present, with no separate subcommand.
+        // Run the dedicated flow even when an existing credential has expired.
         "claude" => {
-            let binary = binary::resolve("claude")
+            let binary = crate::managed_runtime::managed_entrypoint("claude")
+                .or_else(|| binary::resolve("claude"))
                 .ok_or_else(|| BridgeError::Invalid("Claude binary is not installed".into()))?;
-            Ok(CommandBuilder::new(binary))
+            let mut command = CommandBuilder::new(binary);
+            command.args(["auth", "login"]);
+            Ok(command)
         }
         "codex" => {
             let binary = crate::codex_adapter::resolve_runtime()
@@ -2616,8 +2618,8 @@ fn provider_login_command(provider: &str) -> Result<CommandBuilder, BridgeError>
             Ok(command)
         }
         "opencode" => {
-            let binary = binary::resolve("opencode")
-                .ok_or_else(|| BridgeError::Invalid("OpenCode binary is not installed".into()))?;
+            let settings = core.adapter_registry.opencode_settings()?;
+            let binary = crate::opencode_adapter::resolve_executable(&settings)?;
             let mut command = CommandBuilder::new(binary);
             command.args(["auth", "login"]);
             Ok(command)
@@ -2643,7 +2645,7 @@ pub fn start_provider_login(
             terminal_id: provider.into(),
         });
     }
-    let mut command = provider_login_command(provider)?;
+    let mut command = provider_login_command(core, provider)?;
     command.env("TERM", "xterm-256color");
     if let Some(home) = std::env::var_os("HOME") {
         command.cwd(home);

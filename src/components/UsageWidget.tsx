@@ -387,7 +387,7 @@ function ProviderDetail({ provider, snapshot, adapter, activeLogin, onStartLogin
   </section>;
 }
 
-function ProviderLoginPane({ provider, label, onClose }: { provider: UsageProvider; label: string; onClose: () => void }) {
+export function ProviderLoginPane({ provider, label, onClose }: { provider: UsageProvider; label: string; onClose: () => void }) {
   const [output, setOutput] = useState("");
   const [entry, setEntry] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -410,7 +410,7 @@ function ProviderLoginPane({ provider, label, onClose }: { provider: UsageProvid
         if (!alive || exit.sessionId !== "provider-login" || exit.terminalId !== provider) return;
         closeRef.current();
       });
-      if (!alive) return;
+      if (!alive) { unlistenOutput?.(); unlistenExit?.(); return; }
       try {
         await bridgeApi.startProviderLogin(provider);
       } catch {
@@ -434,7 +434,7 @@ function ProviderLoginPane({ provider, label, onClose }: { provider: UsageProvid
   return <div className="mt-2 grid gap-1.5">
     <div className="flex flex-wrap items-center gap-2">
       <span className="text-caption font-semibold uppercase tracking-[0.13em] text-muted-foreground">{label} sign-in</span>
-      <span className="text-caption text-muted-foreground">Runs {label}'s own flow — Bridge never sees the credential.</span>
+      <span className="text-caption text-muted-foreground">Follow {label}'s sign-in prompts to connect your account.</span>
       <button type="button" onClick={onClose} className="ml-auto min-h-7 rounded-md px-2 text-caption text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Hide</button>
     </div>
     <pre ref={outputRef} aria-live="polite" aria-label={`${label} sign-in output`} className="max-h-40 overflow-y-auto whitespace-pre-wrap rounded-md border border-border bg-card p-2 font-mono text-caption leading-relaxed text-foreground">{output || "Starting…"}</pre>

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import {  Archive,
- BarChart3, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, Home, Pin, Plus, RotateCw, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
+ BarChart3, TerminalSquare, ChartNoAxesColumn, ChevronRight, Folder, FolderGit2, FolderPlus, GitBranch, Home, Pin, Plus, Search, Settings2, SquarePen, Store, type LucideIcon, LayoutGrid } from "lucide-react";
 import { WindowNavButtons } from "./WindowNavButtons";
 import { HarnessMark } from "./harnessMarks";
 import type { Session, SessionStatus, Workspace } from "../types";
@@ -688,7 +688,7 @@ export function BridgeSidebar({
         </div>
 
         {/* A rail of achromatic icon buttons pinned to the bottom: settings
-            (the account's settings entry), source control, usage, and refresh. */}
+            (the account's settings entry), source control, and usage. */}
         <div className="mt-1 flex shrink-0 items-center gap-0.5 border-t border-sidebar-border pt-1.5">
           <button type="button" onClick={onOpenSettings} aria-label={`Open settings for ${accountName}`} aria-current={settingsActive ? "page" : undefined} title={`Open settings for ${accountName}`} className={cn("flex h-8 min-w-0 flex-1 items-center gap-2 rounded-lg px-2 text-[12px] transition-colors", settingsActive ? "bg-selection text-selection-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground")}><Settings2 size={16} strokeWidth={1.6} aria-hidden="true" /><span className="truncate">Settings</span></button>
           <RailBottomButton label="Source control" onClick={onOpenProjects}>
@@ -696,9 +696,6 @@ export function BridgeSidebar({
           </RailBottomButton>
           <RailBottomButton label="Usage" active={usageActive} onClick={() => onOpenUsage?.()}>
             <BarChart3 size={16} strokeWidth={1.6} aria-hidden="true" />
-          </RailBottomButton>
-          <RailBottomButton label="Refresh" onClick={() => window.location.reload()}>
-            <RotateCw size={15} strokeWidth={1.6} aria-hidden="true" />
           </RailBottomButton>
         </div>
       </div>

@@ -227,3 +227,35 @@ mod tests {
         assert_eq!(self_identity().unwrap(), file_identity(&own).unwrap());
     }
 }
+
+/// Installed Tauri Linux bundles put resources beside `usr/bin` in
+/// `usr/lib/Bridge`. The relative path also works inside an AppImage.
+#[cfg(any(target_os = "linux", test))]
+pub(crate) fn linux_resource_path(executable: &Path, resource: &str) -> Option<PathBuf> {
+    Some(executable.parent()?.join("../lib/Bridge").join(resource))
+}
+
+#[cfg(test)]
+mod linux_resource_tests {
+    use super::*;
+
+    #[test]
+    fn installed_and_appimage_sidecars_resolve_without_the_source_checkout() {
+        // Tauri's Linux bundler uses productName for its resource directory,
+        // rather than Cargo's package or executable name.
+        let config: serde_json::Value = serde_json::from_str(include_str!("../../tauri.conf.json")).unwrap();
+        assert_eq!(config["productName"], "Bridge");
+        let root = tempfile::tempdir().unwrap();
+        for prefix in ["debian", "appimage"] {
+            let usr = root.path().join(prefix).join("usr");
+            fs::create_dir_all(usr.join("bin")).unwrap();
+            for resource in ["sidecar/claude-agent/index.mjs", "sidecar/terminal-state/index.mjs"] {
+                let installed = usr.join("lib/Bridge").join(resource);
+                fs::create_dir_all(installed.parent().unwrap()).unwrap();
+                fs::write(&installed, "bundled runtime").unwrap();
+                let resolved = linux_resource_path(&usr.join("bin/bridged"), resource).unwrap();
+                assert_eq!(fs::read_to_string(resolved).unwrap(), "bundled runtime");
+            }
+        }
+    }
+}

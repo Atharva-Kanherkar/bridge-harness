@@ -1,3 +1,5 @@
+import { ProviderLoginPane } from "./UsageWidget";
+import type { UsageProvider } from "../usage";
 import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { bridgeApi } from "../api";
 import type {
@@ -184,6 +186,7 @@ function RowAction({ agent, state }: { agent: ManagedAgentStatus; state: Managed
 
 /** The Installed / Available groups of the Harnesses list. */
 export function ManagedAgentRows({ state, onOpen }: { state: ManagedAgents; onOpen?: (agentId: string) => void }) {
+  const [login, setLogin] = useState<string | null>(null);
   const groups = useMemo(() => {
     const agents = state.agents ?? [];
     return [
@@ -218,8 +221,10 @@ export function ManagedAgentRows({ state, onOpen }: { state: ManagedAgents; onOp
               <span data-testid={`agent-state-${agent.agentId}`}>{stateLabel(agent)}</span>
             </StatusPill>
             <RowAction agent={agent} state={state} />
+            {!isAbsent(agent) && ["claude", "codex", "cursor", "opencode"].includes(agent.agentId) && <GhostButton onClick={() => setLogin(agent.agentId)}>Sign in</GhostButton>}
           </>}
         />
+        {login === agent.agentId && <div className="px-3.5 pb-3"><ProviderLoginPane provider={agent.agentId as UsageProvider} label={agent.label} onClose={() => { setLogin(null); state.reload(); }} /></div>}
         {agent.vendorMessage && <p className="px-3.5 pb-2.5 text-[12px] text-warning" data-testid={`agent-vendor-${agent.agentId}`}>
           {agent.vendorMessage}
         </p>}

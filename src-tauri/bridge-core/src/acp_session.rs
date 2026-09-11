@@ -58,7 +58,7 @@ use agent_client_protocol::{
     is_incoming_transport_closed,
     schema::{
         v1::{
-            CancelNotification, ContentBlock, InitializeRequest, InitializeResponse,
+            CancelNotification, ContentBlock, ImageContent, InitializeRequest, InitializeResponse,
             LoadSessionRequest, NewSessionRequest, PromptRequest, RequestPermissionOutcome,
             RequestPermissionRequest, RequestPermissionResponse, ResumeSessionRequest,
             SelectedPermissionOutcome, SessionConfigOption, SessionConfigOptionValue, SessionId,
@@ -472,7 +472,7 @@ impl ReloadMode {
 /// prompt would deliver them after the turn they were meant to interrupt.
 enum AcpCommand {
     Prompt {
-        text: String,
+        content: Vec<ContentBlock>,
         reply: mpsc::SyncSender<Result<AcpTurnOutcome, AcpError>>,
     },
     Reload {
@@ -1130,10 +1130,18 @@ impl AcpSession {
     /// [`AcpTurnOutcome::Cancelled`] rather than an error: it is the answer the
     /// protocol requires to a cancel Bridge itself sent.
     pub fn prompt(&self, text: &str) -> Result<AcpTurnOutcome, AcpError> {
+        self.prompt_with_images(text, &[])
+    }
+
+    pub fn prompt_with_images(&self, text: &str, images: &[bridge_protocol::messages::TurnImage]) -> Result<AcpTurnOutcome, AcpError> {
+        if !images.is_empty() && !self.capabilities().prompt_images {
+            return Err(AcpError::Unsupported { capability: "promptCapabilities.image", method: "session/prompt" });
+        }
+        let content = image_prompt(text, images);
         let (reply_tx, reply_rx) = mpsc::sync_channel(1);
         self.commands
             .unbounded_send(AcpCommand::Prompt {
-                text: text.to_owned(),
+                content,
                 reply: reply_tx,
             })
             .map_err(|_| self.closed_error())?;
@@ -1583,8 +1591,8 @@ async fn serve(
             }
         };
         match command {
-            AcpCommand::Prompt { text, reply } => {
-                let outcome = run_turn(shared, &cx, &opened.session_id, &text).await;
+            AcpCommand::Prompt { content, reply } => {
+                let outcome = run_turn(shared, &cx, &opened.session_id, content).await;
                 drop(reply.send(outcome));
             }
             AcpCommand::Reload {
@@ -1746,17 +1754,23 @@ async fn initialize_only(
     Ok(capabilities)
 }
 
+fn image_prompt(text: &str, images: &[bridge_protocol::messages::TurnImage]) -> Vec<ContentBlock> {
+    let mut content = vec![ContentBlock::Text(TextContent::new(text))];
+    content.extend(images.iter().map(|image| ContentBlock::Image(ImageContent::new(image.base64_data.clone(), image.media_type.clone()))));
+    content
+}
+
 async fn run_turn(
     shared: &Arc<Shared>,
     cx: &ConnectionTo<Agent>,
     session_id: &SessionId,
-    text: &str,
+    content: Vec<ContentBlock>,
 ) -> Result<AcpTurnOutcome, AcpError> {
     shared.begin_turn();
     let response = cx
         .send_request(PromptRequest::new(
             session_id.clone(),
-            vec![ContentBlock::Text(TextContent::new(text))],
+            content,
         ))
         .block_task()
         .await;
@@ -2101,6 +2115,35 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn images_reach_the_acp_agent_only_when_advertised() {
+        let image = bridge_protocol::messages::TurnImage { media_type: "image/png".into(), base64_data: "cG5n".into() };
+        let (session, agent) = connect_scripted(|message, wire| {
+            if answer_handshake(message, wire, &json!({"promptCapabilities": {"image": true}})) { return; }
+            if message.get("method").and_then(Value::as_str) == Some("session/prompt") {
+                wire.result(message, json!({"stopReason": "end_turn"}));
+            }
+        });
+        session.prompt_with_images("describe", std::slice::from_ref(&image)).unwrap();
+        let params = agent.params_of("session/prompt").unwrap();
+        assert_eq!(params["prompt"][1], json!({"type":"image", "mimeType":"image/png", "data":"cG5n"}));
+        let (unsupported, agent) = connect_with_capabilities(json!({}));
+        assert!(matches!(unsupported.prompt_with_images("describe", &[image]), Err(AcpError::Unsupported { .. })));
+        assert!(agent.params_of("session/prompt").is_none());
+    }
+
+    #[test]
+    fn image_attachments_keep_native_shapes_and_order() {
+        let images = vec![
+            bridge_protocol::messages::TurnImage { media_type: "image/png".into(), base64_data: "cG5n".into() },
+            bridge_protocol::messages::TurnImage { media_type: "image/jpeg".into(), base64_data: "anBlZw==".into() },
+        ];
+        let payload = serde_json::to_value(image_prompt("describe", &images)).unwrap();
+        assert_eq!(payload[0]["text"], "describe");
+        assert_eq!(payload[1], json!({"type":"image", "mimeType":"image/png", "data":"cG5n"}));
+        assert_eq!(payload[2]["mimeType"], "image/jpeg");
+    }
+
     use agent_client_protocol::{Channel, TransportFrame};
     use serde_json::{json, Value};
 

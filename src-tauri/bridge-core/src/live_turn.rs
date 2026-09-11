@@ -10313,7 +10313,7 @@ fn deliver_prepared_input(
         // recoverable-failure path that would mark the session degraded.
         drop(adapters);
         return Err(BridgeError::Invalid(
-            "This provider does not accept image attachments. Paste images in a chat running Claude, or send the text on its own.".into(),
+            "This provider does not accept image attachments in this session. Choose a provider with image support, or send the text on its own.".into(),
         ));
     }
     let delivered = if has_images {
