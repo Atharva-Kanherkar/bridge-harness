@@ -12,6 +12,9 @@ import { cn } from "@/lib/utils";
 // back to an inline notice with a system-browser escape hatch.
 
 const DEFAULT_URL_SCHEME = /^https?:\/\//i;
+// Local dev servers (this repo's own Vite server included, http://localhost:1420)
+// are plain HTTP; defaulting them to https would fail with a TLS error.
+const LOOPBACK_HOST = /^(localhost|127(?:\.\d{1,3}){3}|\[::1\])(:\d+)?(\/.*)?$/i;
 
 /** Best-effort normalization: bare host or search-shaped input becomes a
  *  navigable URL, the way an OS omnibox would treat it. */
@@ -20,7 +23,8 @@ function normalizeUrl(input: string): string | undefined {
   if (!trimmed) return undefined;
   if (DEFAULT_URL_SCHEME.test(trimmed)) return trimmed;
   if (/^[\w-]+(\.[\w-]+)+(:\d+)?(\/.*)?$/.test(trimmed) || /^localhost(:\d+)?(\/.*)?$/.test(trimmed)) {
-    return `https://${trimmed}`;
+    const scheme = LOOPBACK_HOST.test(trimmed) ? "http" : "https";
+    return `${scheme}://${trimmed}`;
   }
   return `https://www.google.com/search?q=${encodeURIComponent(trimmed)}`;
 }
@@ -51,16 +55,15 @@ export function SimpleBrowser({ initialUrl = "" }: { initialUrl?: string }) {
     setLoading(true);
     setReloadKey(k => k + 1);
     if (mode === "push") {
-      setHistory(previous => {
-        const trimmed = previous.slice(0, index + 1);
-        if (trimmed[trimmed.length - 1] === next) return trimmed;
-        return [...trimmed, next];
-      });
-      setIndex(previous => previous + 1);
+      const trimmed = history.slice(0, index + 1);
+      const isDuplicate = trimmed[trimmed.length - 1] === next;
+      const nextHistory = isDuplicate ? trimmed : [...trimmed, next];
+      setHistory(nextHistory);
+      setIndex(nextHistory.length - 1);
     }
     clearTimeout(graceTimer.current);
     graceTimer.current = setTimeout(() => { setLoading(false); setBlocked(true); }, LOAD_GRACE_MS);
-  }, [index]);
+  }, [index, history]);
 
   const canBack = index > 0;
   const canForward = index >= 0 && index < history.length - 1;
@@ -103,7 +106,19 @@ export function SimpleBrowser({ initialUrl = "" }: { initialUrl?: string }) {
     navigate(draft);
   };
 
-  const onFrameLoad = () => {
+  const onFrameLoad = (event: React.SyntheticEvent<HTMLIFrameElement>) => {
+    // A site refusing to be framed (X-Frame-Options/CSP frame-ancestors) still
+    // fires `load` — the browser just navigates the frame to about:blank
+    // instead of the target. Reading contentWindow.location only succeeds for
+    // same-origin documents (including that blank page); a real cross-origin
+    // load throws instead, which is the actual "it worked" signal here.
+    let blockedByFraming = false;
+    try {
+      blockedByFraming = event.currentTarget.contentWindow?.location.href === "about:blank";
+    } catch {
+      blockedByFraming = false;
+    }
+    if (blockedByFraming) return;
     clearTimeout(graceTimer.current);
     setLoading(false);
   };
