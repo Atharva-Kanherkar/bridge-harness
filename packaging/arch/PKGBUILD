@@ -1,0 +1,17 @@
+# Repackage the exact Debian artifact produced by the same CI run.
+# CI adds source and sha256sums from that artifact before calling makepkg.
+pkgname=bridge-bin
+pkgver=0.5.6
+pkgrel=1
+pkgdesc='Supervise coding agents from one desktop window'
+arch=('x86_64')
+url='https://github.com/Atharva-Kanherkar/bridge-harness'
+license=('MIT')
+depends=('webkit2gtk-4.1' 'gtk3' 'libayatana-appindicator' 'librsvg' 'nodejs' 'git')
+provides=('bridge')
+conflicts=('bridge')
+
+package() {
+  bsdtar -xf "$srcdir"/data.tar.* -C "$pkgdir"
+  install -Dm644 "$srcdir/LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### 0.5.6 candidate
+
+- Send pasted and uploaded images to Codex, OpenCode, and image-capable Cursor sessions.
+- Offer agent installation and provider sign-in during setup, with login recovery that preserves the draft.
+- Remove the sidebar reload control.
+- Preserve the Doto B artwork through release builds.
+- Build Linux Debian, AppImage, and Arch package candidates alongside the signed macOS DMG workflow.
+
 - Show only connected integration activity from the past 24 hours on Work, using source timestamps rather than cache refresh times.
 - Remove local checks, approvals, workspace drift, and task-tracker controls from the board. Open it from Settings → Work briefing → Open Work.
 - Recognize native GitHub evidence fields and Slack workspace links; keep the browser preview empty instead of showing fabricated work.

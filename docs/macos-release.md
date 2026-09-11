@@ -51,8 +51,8 @@ validation instead of silently falling back to another account.
 ## What is verified
 
 - `npm run generate:icons` exports the full platform icon set from
-  `assets/bridge-icon.svg`, sorts ICNS entries for reproducible output, and checks
-  the Span icon's mint deck, off-white supports, and dark tile in every macOS PNG
+  `assets/bridge-icon.png`, sorts ICNS entries for reproducible output, and checks
+  the Doto B icon’s achromatic foreground and dark tile in every macOS PNG
   size and embedded ICNS PNG. The Tauri build hook runs this automatically.
 - The app must pass strict code-signature verification and have a Developer ID
   authority, a TeamIdentifier, Hardened Runtime, and the actual entitlement
