@@ -1,5 +1,6 @@
 #!/bin/sh
-# Deterministic native rendering/formatting checks; no provider, Keychain or UI actions.
+# Deterministic native checks; no providers, Keychain, or onscreen windows.
+# Set BRIDGE_MENU_BAR_RENDER_DIR to also write synthetic card appearance PNGs.
 set -eu
 if [ "$(uname -s)" != Darwin ]; then
   echo 'Native Menu Bar checks require macOS; skipped.'
@@ -11,6 +12,6 @@ trap 'rm -rf "$test_dir"' EXIT HUP INT TERM
 case "$(uname -m)" in arm64) target_arch=arm64 ;; *) target_arch=x86_64 ;; esac
 xcrun swiftc -module-cache-path "$test_dir/module-cache" -swift-version 5 -target "${target_arch}-apple-macosx12.0" \
   "$repo_dir"/src-tauri/bridge-menu-bar/swift/*.swift \
-  "$repo_dir/src-tauri/bridge-menu-bar/tests/main.swift" \
+  "$repo_dir"/src-tauri/bridge-menu-bar/tests/*.swift \
   -o "$test_dir/menu-bar-tests"
 "$test_dir/menu-bar-tests" "$repo_dir/src-tauri/bridge-protocol/tests/fixtures/menu-bar-presentation.json"

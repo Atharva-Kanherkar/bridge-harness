@@ -155,7 +155,7 @@ The old preview process was stopped before replacement. The installed bundle
 passes strict/deep signature verification, and its executable matches the signed
 build artifact byte for byte. The Mach-O minimum OS is 12.0 and its runtime search
 path includes `/usr/lib/swift`. The executable SHA-256 is
-`0d16ce37defb1cc0216e8a5457f99129da6e5c6e2d673278769d9b97378f0f68`.
+`f9281c1965eab284d03ff57027404c1b6af12c1c1c8e50c4a6a89ed7b99a7d83`.
 
 The installed preview also includes the app-logo correction: the native menu
 uses the exact foreground rectangles from `assets/bridge-icon.svg`, preserving
@@ -235,3 +235,53 @@ The native rendered alpha mask was checked separately as described above.
 OpenCode's complete sign-in round trip and a current Claude account read still
 require authenticated sessions. The normal release signing, notarization, and
 macOS 12 runtime gates from the original milestone still apply.
+
+## Native sizing and accessibility · 2026-09-11
+
+A GPT-5.6 Sol research subagent compared the relevant CodexBar implementations
+before this slice was chosen. The concrete sources and adaptations are recorded
+in [the CodexBar study](menu-bar-codexbar-study.md). Commit `ef7006a` fixes the
+viewport retaining its opening height when a tracked card grows or shrinks.
+The document and native row now resize together; same-provider updates preserve
+and clamp scroll position, and provider changes return to the top. Menus retain
+the exact effective appearance, including accessibility attributes. The hosted
+row has no fallback title or parallel native highlight. A shared status payload
+now supplies visible text, tooltip, and the provider/window/value accessibility
+title with explicit stale and unavailable wording.
+
+Validation for this slice:
+
+- Native tests pass for loading → full data → loading using the production
+  `MenuState` and `NSHostingView<MenuCard>`, including immediate measurement in
+  the event-tracking run loop. Geometry tests cover viewport caps, short/tall
+  transitions, scroll clamping, provider resets, and both coordinate directions.
+- The exact Aqua, Dark Aqua, and high-contrast appearance objects propagate to
+  root and child menus. Status tests cover used/remaining, zero, unavailable,
+  stale, estimated cost, and changing the provider. Expired account auth does
+  not taint fresh local cost; metric-level stale cost remains labelled.
+- Existing wire, quota, countdown, tracking, submenu and icon tests still pass.
+  Native source type-checks for x86_64 with a macOS 12 target. The release-mode
+  packaged preview built, was Developer ID signed and installed, passed
+  strict/deep signature verification, and matches the build binary hash above.
+- The installed preview relaunched and switched from the tall Codex card to
+  the short OpenCode card and back without dismissing the native menu. Provider
+  content and breakdowns matched the selection throughout. Runtime geometry is
+  covered by the native tests because the menu capture limitation remains.
+
+The native test script optionally renders synthetic production cards using
+CodexBar's `MenuLayoutScreenshotRenderTests` offscreen-window pattern:
+
+```sh
+BRIDGE_MENU_BAR_RENDER_DIR=/private/tmp/bridge-menu-card-proof sh scripts/test-menu-bar-native.sh
+```
+
+The window is never ordered onscreen, no provider or Keychain is read, and no
+system appearance preference is changed. The output covers light, dark and
+both high-contrast appearances, with full-height and 280-point capped viewports.
+These renders exercise the actual SwiftUI card and AppKit scroll view on a plain
+window background. The 12 full, capped-top and capped-bottom images were generated;
+light/dark and high-contrast cards were visually inspected with readable text,
+no overlaps, and the final coverage row reachable in the 280-point viewport.
+They do not represent native menu chrome, translucent glass,
+status-item highlighting, VoiceOver speech, or keyboard tracking. Those live
+appearance/input checks and the prior release/macOS 12 gates remain open.
