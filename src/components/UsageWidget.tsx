@@ -441,7 +441,7 @@ export function ProviderLoginPane({ provider, label, onClose }: { provider: Usag
       </span>
       <div className="min-w-0 flex-1">
         <h3 className="text-[13px] font-medium text-foreground">Connect {label}</h3>
-        <p className="mt-0.5 text-[11px] text-muted-foreground">Authentication stays with {label}; Bridge never sees your credentials.</p>
+        <p className="mt-0.5 text-[11px] text-muted-foreground">{label} handles authentication; Bridge does not store your credentials.</p>
       </div>
       <button type="button" onClick={onClose} className="min-h-7 rounded-lg px-2.5 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground">Cancel</button>
     </header>

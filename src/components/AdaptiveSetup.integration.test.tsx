@@ -47,10 +47,14 @@ describe("adaptive setup journeys", () => {
     vi.restoreAllMocks();
   });
 
-  it("completes first-run setup with one recommended-default action", async () => {
+  it("detects agents before completing first-run setup with recommended defaults", async () => {
     let completed: ModelSetupState | undefined;
     await act(async () => {
       root.render(<ModelSetupWizard adapters={adapters} onComplete={value => { completed = value; }} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    await act(async () => {
+      button("Continue").click();
       await flush();
     });
     await act(async () => {
@@ -66,10 +70,38 @@ describe("adaptive setup journeys", () => {
       root.render(<ModelSetupWizard adapters={adapters} onComplete={() => undefined} onError={error => { throw new Error(error); }} />);
       await flush();
     });
+    await act(async () => { button("Continue").click(); await flush(); });
     await act(async () => button("Customize role profiles").click());
     expect(document.body.textContent).toContain("Advanced role profiles");
     expect(document.body.textContent).toContain("Model evaluator");
     expect(document.body.textContent).not.toContain("Unsupported");
+  });
+
+  it("offers every supported agent and lets a person continue without installing one", async () => {
+    const skipped = vi.fn();
+    const recommendations = vi.spyOn(bridgeApi, "recommendedModelProfiles");
+    await act(async () => {
+      root.render(<ModelSetupWizard adapters={[]} onComplete={() => undefined} onSkip={skipped} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    for (const label of ["Claude Code", "Codex", "Cursor", "OpenCode"])
+      expect(document.body.textContent).toContain(label);
+    expect(document.body.textContent).toContain("Bring your agents with you");
+    await act(async () => button("Continue without an agent").click());
+    expect(skipped).toHaveBeenCalledTimes(1);
+    expect(recommendations).not.toHaveBeenCalled();
+  });
+
+  it("marks an existing signed-in Codex as detected without asking for sign-in", async () => {
+    const codex = adapters[0];
+    await act(async () => {
+      root.render(<ModelSetupWizard adapters={[{ ...codex, id: "codex", label: "Codex" }]} onComplete={() => undefined} onError={error => { throw new Error(error); }} />);
+      await flush();
+    });
+    const card = document.body.querySelector('[data-testid="onboarding-agent-codex"]');
+    expect(card?.textContent).toContain("Detected");
+    expect(card?.textContent).toContain("Signed in");
+    expect([...card!.querySelectorAll("button")].some(candidate => candidate.textContent?.includes("Sign in"))).toBe(false);
   });
 
   it("runs manual learning and renders its explicit no-op report", async () => {
