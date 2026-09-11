@@ -1,49 +1,36 @@
-import Image from "next/image";
+import { Agents, SessionStorage, SwitchHarness, Usage } from "./features/panels";
 import SectionHeader from "./SectionHeader";
 
 /*
- * Five features, each one a real capture of the app beside copy that sticks while its
- * screenshot scrolls past. No JavaScript: the text column is `position: sticky` inside its
- * own row, so the next feature pushes the last one out the way a page naturally would.
- *
- * Captures come from the app's preview mode at 1600×1000, 2× scale, encoded with
- * `cwebp -q 86`. Retake them in the same change as any app redesign.
+ * Four features, each one the mechanism running beside copy that sticks while it scrolls
+ * past. The text column is `position: sticky` inside its own row, so the next feature pushes
+ * the last one out the way a page naturally would; the panels animate on a scroll timeline,
+ * so the visual plays as it arrives rather than sitting there as a picture.
  */
 const features = [
   {
     id: "switch-harness",
     name: "Switch harness mid-chat",
-    text: "Change model or provider inside one conversation — Codex to Claude Code to Cursor — without starting over. The provider session restarts; your history stays where it is. Nobody else lets you do this.",
-    image: "/screens/switch-harness.webp",
-    alt: "The Bridge model picker open in a chat, listing Codex and Claude Code models together with the note that switching restarts the provider session while history stays.",
+    text: "Change model or provider inside one conversation, Codex to Claude Code to Cursor, without starting over. The provider session restarts; your history stays where it is. Nobody else lets you do this.",
+    panel: <SwitchHarness />,
   },
   {
-    id: "memory",
-    name: "Memory that carries",
-    text: "Bridge remembers how you work — your conventions, your constraints, the decisions you already made — and carries them into every new conversation, on any harness. Each pin shows how confident it is and how often it was recalled.",
-    image: "/screens/memory.webp",
-    alt: "The Bridge memory screen listing pinned preferences, facts, decisions, and constraints with confidence and recall counts.",
-  },
-  {
-    id: "forest",
-    name: "An append-only session forest",
-    text: "Every message, plan, tool call, and delegation lands in a local ledger that is never rewritten. Filter it, fork it, rewind it — the record of what an agent actually did survives the restart.",
-    image: "/screens/forest.webp",
-    alt: "The Bridge transcript pane showing a filtered event stream of message, plan, tool, and delegation events beside a conversation.",
+    id: "session-storage",
+    name: "History that is never rewritten",
+    text: "Every message, plan, tool call, and delegation lands in a local ledger that only ever grows. Filter it, fork it, rewind it. What an agent actually did survives the restart.",
+    panel: <SessionStorage />,
   },
   {
     id: "agents",
     name: "Bring or build your own agents",
     text: "Install the coding agents you want, add plugins and skills, and define your own roles for the orchestrator to route to. The harness id space is open, so a new provider is an adapter, not a rewrite.",
-    image: "/screens/agents.webp",
-    alt: "The Bridge marketplace listing Claude Code, Codex, Cursor, and OpenCode with install and uninstall actions.",
+    panel: <Agents />,
   },
   {
     id: "cost",
     name: "Spend less by delegating",
-    text: "Narrow work goes to a cheap tier; only the hard parts reach an expensive one. Tokens, cost, and cache savings are broken out per harness and per model, so the routing pays for itself visibly.",
-    image: "/screens/cost.webp",
-    alt: "The Bridge usage screen showing cost per harness, a daily cost chart, token totals, cache savings, and a per-model breakdown.",
+    text: "Narrow work goes to a cheap tier and only the hard parts reach an expensive one. Tokens, cost, and cache savings break out per harness and per model, so the routing pays for itself visibly.",
+    panel: <Usage />,
   },
 ];
 
@@ -75,11 +62,7 @@ export default function FeatureScroll() {
               <p className="mt-4 max-w-md text-[14.5px] leading-7 text-muted-foreground">{feature.text}</p>
             </div>
 
-            <div className="lg:py-12">
-              <div className="relative overflow-hidden rounded-xl border border-border-card bg-background shadow-[0_0_0_1px_#000,0_30px_90px_-30px_rgba(0,0,0,0.9)] lg:rounded-r-none lg:border-r-0">
-                <Image src={feature.image} alt={feature.alt} width={1600} height={1000} unoptimized className="h-auto w-full" />
-              </div>
-            </div>
+            <div className="lg:py-12">{feature.panel}</div>
           </article>
         ))}
       </div>

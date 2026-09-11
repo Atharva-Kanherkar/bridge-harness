@@ -62,7 +62,7 @@ export default function ChangesDock({ dock, progress }: { dock: Dock; progress: 
           ))}
         </div>
 
-        <p className="mt-3 text-[11px] text-faint">1 low-signal file hidden — show</p>
+        <p className="mt-3 text-[11px] text-faint">1 low-signal file hidden · show</p>
       </div>
     </aside>
   );
