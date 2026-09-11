@@ -108,7 +108,7 @@ jobs:
           pacman -U --noconfirm ./*.pkg.tar.zst
           ldd /usr/bin/bridge-deck > /tmp/bridge-arch-libraries.log
           cat /tmp/bridge-arch-libraries.log
-          ! grep -q 'not found' /tmp/bridge-arch-libraries.log
+          if grep -q 'not found' /tmp/bridge-arch-libraries.log; then exit 1; fi
           sha256sum ./*.pkg.tar.zst > SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
